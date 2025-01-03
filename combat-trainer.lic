@@ -2611,7 +2611,7 @@ class AbilityProcess
   def check_battle_cries(game_state)
     timer = game_state.cooldown_timers['Battle Cry']
     return unless !timer || (Time.now - timer).to_i > @battle_cry_cooldown
-    return unless game_state.npcs.length > 0
+    return unless game_state.can_face?
 
     Flags.reset('ct-battle-cry-not-facing')
 
@@ -2896,7 +2896,7 @@ class TrainerProcess
       waitrt?
       DRC.fix_standing
     when /^Tactics$/i
-      DRC.bput($tactics_actions.sample, 'roundtime', 'There is nothing else', 'Face what', 'You must be closer', 'You must be standing', 'Strangely, you don\'t feel like fighting right now', 'flying too high for you to attack') unless game_state.npcs.empty? || game_state.retreating?
+      DRC.bput($tactics_actions.sample, 'roundtime', 'There is nothing else', 'Face what', 'You must be closer', 'You must be standing', 'Strangely, you don\'t feel like fighting right now', 'flying too high for you to attack') if game_state.can_face?
     when /^Analyze$/i
       analyze(game_state, 0)
     when /^Hunt$/i
@@ -2956,7 +2956,7 @@ class TrainerProcess
     when /^Collect$/i
       game_state.sheath_whirlwind_offhand
       DRC.retreat
-      game_state.engage unless game_state.npcs.empty? || game_state.retreating?
+      game_state.engage if game_state.can_engage?
       DRC.collect(@forage_item)
       waitrt?
       game_state.wield_whirlwind_offhand
@@ -3028,7 +3028,7 @@ class TrainerProcess
 
     game_state.sheath_whirlwind_offhand if game_state.currently_whirlwinding
     DRC.retreat
-    game_state.engage unless game_state.npcs.empty? || game_state.retreating?
+    game_state.engage if game_state.can_engage?
     DRC.bput("get my #{@almanac}", 'You get', 'What were')
     if training_skill
       DRC.bput("turn #{@almanac} to #{training_skill}", 'You turn', 'You attempt to turn')
@@ -3171,7 +3171,7 @@ class TrainerProcess
   end
 
   def analyze(game_state, fail_count)
-    return if game_state.npcs.empty? || game_state.retreating?
+    return unless game_state.can_engage?
     return if fail_count > @analyze_retry_count
     return if DRSkill.getxp('Tactics') >= @combat_training_abilities_target
 
@@ -3220,7 +3220,7 @@ class TrainerProcess
     if DRSkill.getrank('Astrology') <= 120
       DRCMM.predict('weather')
       waitrt?
-      game_state.engage
+      game_state.engage if game_state.can_engage?
     else
       DRC.retreat
       check_heavens(game_state)
@@ -3460,6 +3460,8 @@ class AttackProcess
   end
 
   def attack_melee(charged_maneuver, game_state)
+    return unless game_state.can_engage?
+
     waitrt?
 
     maneuver_success = false
@@ -3816,7 +3818,7 @@ class AttackProcess
   def execute_aiming_action?(action, game_state)
     case DRC.bput(action, 'Roundtime', 'close enough', 'What are you', 'There is nothing', 'must be closer', 'Bumbling, you slip')
     when 'close enough', 'must be closer'
-      return false if game_state.retreating?
+      return false unless game_state.can_engage?
 
       game_state.engage
     when 'What are you', 'There is nothing'
@@ -3880,18 +3882,14 @@ class AttackProcess
   end
 
   def dance(game_state)
-    return if game_state.retreating?
-
-    if game_state.npcs.empty? || game_state.retreating?
-      pause 1
-    else
+    if game_state.can_engage?
       game_state.set_dance_queue
       case DRC.bput(game_state.next_dance_action, 'You must be closer', 'There is nothing else', 'What are you trying', /.*/)
       when 'You must be closer', 'There is nothing else', 'What are you trying'
         game_state.engage
       end
-      pause 0.5
-      waitrt?
+    else
+      pause 1
     end
   end
 
@@ -4039,6 +4037,7 @@ class CombatTrainer
         { name: 'debug', regex: /debug/i, optional: true },
         { name: 'construct', regex: /construct/i, optional: true, description: 'Construct setting to override empath no attack settings.' },
         { name: 'undead', regex: /undead/i, optional: true, description: 'Allows hunting of undead by empaths when absolution is up.' },
+        { name: 'innocence', regex: /innocence/i, optional: true, description: 'Allows an empath using Innocence to avoid taking actions that end the spell.' },
         { name: 'dance', display: 'd#', regex: /d\d+/i, optional: true, description: 'Dance threshold, d2 would keep two enemies alive.' },
         { name: 'retreat', display: 'r#', regex: /r\d+/i, optional: true, description: 'Retreat threshold, r3 would stay at range with three or more enemies' }
       ]
@@ -4050,6 +4049,7 @@ class CombatTrainer
 
     settings.construct = args.construct
     settings.undead = args.undead
+    settings.innocence = args.innocence
 
     settings.debug_mode = args.debug
     set_dance(args.dance, settings)
@@ -4454,6 +4454,9 @@ class GameState
 
     @undead_mode = settings.undead || false
     echo("  @undead_mode: #{@undead_mode}") if $debug_mode_ct
+
+    @innocence_mode = settings.innocence(false)
+    echo("  @innocence_mode: #{@innocence_mode}") if $debug_mode_ct
   end
 
   def next_clean_up_step
@@ -4480,6 +4483,20 @@ class GameState
 
   def cleaning_up?
     !@clean_up_step.nil?
+  end
+
+  def can_engage?
+    return false unless can_face?
+    return false if retreating?
+
+    true
+  end
+
+  def can_face?
+    return false if @innocence_mode
+    return false if npcs.empty?
+
+    true
   end
 
   def is_offense_allowed?
@@ -5385,6 +5402,7 @@ class GameState
   def perform_analyze?(combo_type, expertise_requirement)
     return false if combo_type != 'flame' && !Flags["ct-#{combo_type}-ready"] && DRStats.barbarian?
     return false if DRSkill.getrank('Expertise') < expertise_requirement
+    return false unless can_engage?
 
     result = DRC.bput("analyze #{combo_type}", 'cannot repeat', 'Analyze what\?', 'by landing an? .*', 'You need to hold', 'You must be closer', 'You fail to find any', 'What are you trying to attack\?')
     waitrt?
