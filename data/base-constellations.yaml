@@ -724,6 +724,7 @@ constellations:
       Survival: 1
       Magic: 1
       Lore: 1
+
 observe_finished_messages:
 - You learned something useful from your observation
 - Clouds obscure the sky
@@ -737,3 +738,21 @@ observe_success_messages:
 - You learned something useful from your observation
 - While the sighting wasn't quite
 - you still learned more
+
+observe_failed_messages:
+ - You are unable to make use of this latest observation
+ - You have not pondered your last observation sufficiently
+ - You see nothing regarding the future
+
+observe_full_messages:
+ - You believe you've learned
+ - Too many futures
+    
+observe_partial_messages:
+ - You learned something useful
+ - Although you were nearly
+
+observe_injured_messages:
+ - The pain is too much
+ - Your vision is too fuzzy
+
