@@ -48,6 +48,18 @@ unless Settings['dependency_version'] == $DEPENDENCY_VERSION
   Settings.save
 end
 
+unless UserVars.dependency_setflags
+  echo("Checking MonsterBold and ShowRoomID flags.")
+  flags = Lich::Util.issue_command("flag", /^Usage/, /^For other setting options, see AVOID, SET, and TOGGLE/, quiet: true, timeout: 1, usexml: false)
+  mandatory_flags = ["ShowRoomID", "MonsterBold"]
+  mandatory_flags.each do |flag|
+    unless flags.any? { |f| f.match?(/#{flag}\s+ON/) }
+      fput("flag #{flag} on")
+    end
+  end
+  UserVars.dependency_setflags = Time.now
+end
+
 class Object
   # IMPORT FUTURE LAWLZ
   def itself
@@ -251,7 +263,7 @@ class ScriptManager
     # Setting Settings['lich_fork_sha'] to nil if using lich5. This setting isn't used anymore.
 
     Settings['base_versions'] ||= {}
-    CharSettings['next_ruby_version_check_datetime'] = Time.now
+    Settings['next_ruby_version_check_datetime'] = Time.now
 
     @add_autos = []
     @remove_autos = []
@@ -1714,7 +1726,7 @@ end
 
 def validate_supported_ruby_version
   # Get stored time for next check (or now if not stored yet)
-  next_check_datetime = CharSettings['next_ruby_version_check_datetime'] || Time.now
+  next_check_datetime = Settings['next_ruby_version_check_datetime'] || Time.now
 
   # Don't spam user every iteration of run_queue
   return if next_check_datetime > Time.now
@@ -1731,7 +1743,7 @@ def validate_supported_ruby_version
   end
 
   # Set next check time to 3 hours from now
-  CharSettings['next_ruby_version_check_datetime'] = Time.now + (60 * 60 * 3)
+  Settings['next_ruby_version_check_datetime'] = Time.now + (60 * 60 * 3)
 end
 
 def remove_from_autostart(scripts)
