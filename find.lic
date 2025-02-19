@@ -8,7 +8,7 @@ class Find
   def initialize
     arg_definitions = [
       [
-        { name: 'town', options: ['crossing', 'dirge', 'shard', 'boar'], optional: true, description: 'Town/area to search' },
+        { name: 'town', options: ['crossing', 'dirge', 'shard', 'boar', 'riverhaven'], optional: true, description: 'Town/area to search' },
         { name: 'npc', regex: /^(?!follow)([\w\s\-']+)$/i, optional: true, description: 'Unique name/noun of the NPC to find' },
         { name: 'follow', regex: /^follow$/i, optional: true, description: 'Follow the NPC once it is found' }
       ]
@@ -61,6 +61,9 @@ class Find
     when /orliss/i
       town = 'Boar Clan' if town.nil? || town.empty?
       region = 'split_log_path' if town == 'Boar Clan'
+    when /crow/i
+      town = 'Riverhaven' if town.nil? || town.empty?
+      region = 'haven_thief_guild_leader' if town == 'Riverhaven'
     end
     town = 'Crossing' if town.nil? || town.empty?
     region = 'rooms' if region.nil? || region.empty?

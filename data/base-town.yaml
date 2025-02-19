@@ -829,6 +829,15 @@ Riverhaven:
     Warrior Mage:
       name: Karazhil
       id: 427
+  wandering_npcs:
+    haven_thief_guild_leader:
+      - 51506
+      - 51513
+      - 51510
+      - 51517
+      - 51519
+      - 51541
+  # athletics (jant river): 7651, 7650, 7649, 7648, 7647, 7633
 Rossman's Landing:
   tannery:
     id: 7702
