@@ -2441,7 +2441,6 @@ class AbilityProcess
 
     @khri_adaptation = settings.khri_adaptation
     echo("  @khri: #{@khri_adaptation}") if $debug_mode_ct
-
     @kneel_khri = settings.kneel_khri
     echo("  @kneel_khri: #{@kneel_khri}") if $debug_mode_ct
 
@@ -2749,7 +2748,7 @@ class AbilityProcess
       end
     end
 
-   unless @khri_adaptation.strip.empty?
+    unless @khri_adaptation.strip.empty?
       tokens = @khri_adaptation.split.map(&:capitalize)
       tokens.insert(tokens.first == "Delay" ? 1 : 0, "Adaptation")
       command = "khri #{tokens.join(' ')}"
@@ -2765,7 +2764,6 @@ class AbilityProcess
             echo "Did not activate khri: Adaptation" if $debug_mode_ct
           end
       end
-
     @khri
       .map { |name| "Khri #{name}" }
       .each do |name|
