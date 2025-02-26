@@ -269,12 +269,11 @@ class Astrology
           next if Flags['bad-search'] == 'turns up fruitless'
 
           result = observe_routine(data['name'])
-          finished = result.any? { |line| line.match?(Regexp.union(@finished_messages) ) }
+          finished = result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
 
           DRC.message("result: #{result}")
           DRC.message("finished_messages: #{Regexp.union(@finished_messages)}")
           DRC.message("finished: #{finished}")
-          
         end
 
         @success_messages.include?(result)
@@ -327,13 +326,13 @@ class Astrology
           closed = true
         end
       else
-        injuries = result.any? { |line| line.match?(Regexp.union(@injured_messages) ) }
-        closed = result.any? { |line| line.start_with?("You'll need to open it" ) }
+        injuries = result.any? { |line| line.match?(Regexp.union(@injured_messages)) }
+        closed = result.any? { |line| line.start_with?("You'll need to open it") }
       end
       case
       when injuries
         get_healed
-        return observe_routine(body) 
+        return observe_routine(body)
       when closed
         DRC.bput('open my telescope', 'extend your telescope')
         return observe_routine(body)
