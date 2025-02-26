@@ -2444,7 +2444,7 @@ class AbilityProcess
 
     @khri_adaptation = settings.khri_adaptation
     echo("  @khri: #{@khri_adaptation}") if $debug_mode_ct
-    
+
     @battle_cries = settings.battle_cries
     echo("  @battle_cries: #{@battle_cries}") if $debug_mode_ct
 
