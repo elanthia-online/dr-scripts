@@ -3455,9 +3455,9 @@ class TrainerProcess
       when 'The pain is too much'
         injured = true
       end
-    else    
-      full_pool = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_full_messages) ) }
-      injured = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_injured_messages) ) }
+    else
+      full_pool = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_full_messages)) }
+      injured = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_injured_messages)) }
     end
     case
     when full_pool
