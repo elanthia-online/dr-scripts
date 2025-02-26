@@ -54,16 +54,16 @@ class WalkingAstro
       echo("Cannot pause, trying again in 30 seconds.")
       pause 30
     end
-    
+
     DRC.wait_for_script_to_complete('buff', ['walkingastro'])
     get_telescope
 
     # Resume scripts
     DRC.safe_unpause_list(scripts_to_unpause)
   end
-  
+
   def get_telescope
-    if Flags['offense-full'] && Flags['defense-full'] && Flags['magic-full'] && Flags['survival-full'] && Flags['lore-full'] 
+    if Flags['offense-full'] && Flags['defense-full'] && Flags['magic-full'] && Flags['survival-full'] && Flags['lore-full']
       check_predict
       return
     end
@@ -93,9 +93,9 @@ class WalkingAstro
     case DRC.bput('time', 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk', 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise')
     when 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk'
       constellation = %w[champions elide issendar kirmhara].sample
-        @pool = 'survival' if @use_partial_pools == true
+      @pool = 'survival' if @use_partial_pools == true
       center(constellation)
-      #center('elanthian sun') # replace constellation and center lines above with this once wild magic event is over
+      # center('elanthian sun') # replace constellation and center lines above with this once wild magic event is over
     when 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise'
       constellation = 'heart' if DRStats.circle >= 1
       constellation = %w[heart wolf].sample if DRStats.circle >= 2
@@ -127,7 +127,7 @@ class WalkingAstro
 
   def center(target)
     case DRCMM.center_telescope(target)
-    when "That's a bit tough to do when you can't see the sky", 'Your search for', "The pain is too much","Your vision is too fuzzy"
+    when "That's a bit tough to do when you can't see the sky", 'Your search for', "The pain is too much", "Your vision is too fuzzy"
       DRCMM.store_telescope(@telescope_storage)
     else
       observe
