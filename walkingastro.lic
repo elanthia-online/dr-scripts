@@ -142,7 +142,7 @@ class WalkingAstro
         full_pool = true if Flags["#{@pool}-full"]
       when 'Too many futures cloud your mind - you learn nothing.'
         full_pool = true
-      when "You learned something useful", "Although you were nearly"
+      when "You learned something useful", "you still learned more"
         partial_pool = true
       else
         failed = true
@@ -279,15 +279,18 @@ class WalkingAstro
   end
 
   def main_loop
+    last_observe = Time.now
     do_prediction
     loop do
       if Flags['observation-ready']
         if should_observe?
           do_prediction
           Flags.reset("observation-ready")
+          last_observe = Time.now
         end
       end
       pause 10
+      Flags['observation-ready'] = true if Time.now - last_observe > 205
     end
   end
 end
