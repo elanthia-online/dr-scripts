@@ -318,7 +318,7 @@ class Astrology
         return observe_routine(body)
       end
       result = DRCMM.peer_telescope
-      if Gem::Version.new(LICH_VERSION) < Gem::Version.new('5.11.0')
+      if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
         case result
         when /The pain is too much/, /Your vision is too fuzzy/
           injuries = true
