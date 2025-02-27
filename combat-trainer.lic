@@ -3448,7 +3448,7 @@ class TrainerProcess
 
   def observe
     result = DRCMM.peer_telescope
-    if Gem::Version.new(LICH_VERSION) < Gem::Version.new('5.11.0')
+    if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
       case result
       when "You believe you've learned all that you can about survival", 'Too many futures cloud your mind - you learn nothing.'
         full_pool = true
