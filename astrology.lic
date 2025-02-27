@@ -271,9 +271,9 @@ class Astrology
           result = observe_routine(data['name'])
           finished = result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
 
-          DRC.message("result: #{result}")
-          DRC.message("finished_messages: #{Regexp.union(@finished_messages)}")
-          DRC.message("finished: #{finished}")
+          DRC.message("result: #{result}") if UserVars.astrology_debug
+          DRC.message("finished_messages: #{Regexp.union(@finished_messages)}") if UserVars.astrology_debug
+          DRC.message("finished: #{finished}") if UserVars.astrology_debug
         end
 
         @success_messages.include?(result)
