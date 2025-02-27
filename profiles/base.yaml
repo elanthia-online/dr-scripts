@@ -1981,6 +1981,9 @@ astrology_training:
   - weather
   - attunement
   #- events
+#Allows user to force visions even if divination_tool is set rather than having to delete the settings.
+#Useful if another script makes use of the tool settings and still wants to use them with that script.
+astrology_force_visions: 
 
 astrology_prediction_skills:
   defense: defense
@@ -1988,6 +1991,22 @@ astrology_prediction_skills:
   magic: magic
   offense: offense
   survival: survival
+
+#settings for the ;walkingastro script
+# Recommended to add Piercing Gaze to the walkingastro waggle set. 
+# Clear Vision and Aura Sight are also useful there, but not as necessary.
+walkingastro:
+  startup_delay: 
+  use_tools: 
+  use_partial_pools: 
+  # Setting walkingastro_predict_regardless_of_mindstate to true is meant to allow 
+  # passive tool bonding via more frequent predictions, so also set 
+  # walkingastro_use_partial_pools to false to maximize the chance of a bond if using it for that purpose.
+  # Recommended to add Destiny Cipher to the walkingastro waggle set for this purpose as well.
+  predict_regardless_of_mindstate: 
+  # Set to true if you want to analyze your divination tool after every prediction.
+  # Only useful for logging prediction tracking, does not add any in-game benefit.
+  analyze_divination_tool: 
 
 learned_column_count: 2
 sort_auto_head: true
@@ -2189,7 +2208,6 @@ walkingastro_no_use_scripts:
   - alchemy
   - astrology
   - athletics
-  - attunement
   - bescort
   - burgle
   - buff
@@ -2197,14 +2215,15 @@ walkingastro_no_use_scripts:
   - combat-trainer
   - craft
   - enchant
-  - faskinner
   - first-aid
   - forge
+  - go2
+  - hunting-buddy
   - mech-lore
-  - outdoorsmanship
   - performance
   - pick
   - remedy
+  - safe-room
   - sew
   - shape
   - smelt
