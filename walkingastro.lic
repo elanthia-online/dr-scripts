@@ -64,6 +64,7 @@ class WalkingAstro
 
   def get_telescope
     if Flags['offense-full'] && Flags['defense-full'] && Flags['magic-full'] && Flags['survival-full'] && Flags['lore-full']
+      DRC.message("walkingastro: all pools full, skipping directly to prediction checks") if $debug_mode_walkingastro
       check_predict
       return
     end
