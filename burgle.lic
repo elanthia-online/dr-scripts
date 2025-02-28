@@ -110,8 +110,6 @@ class Burgle
       end_burgle
     end
 
-    burgle
-    end_burgle
   end
 
   def valid_burgle_settings?
@@ -587,6 +585,12 @@ class Burgle
       end
     end
   end
+
+  def keep
+    @loot_type = 'keep'
+    DRC.message("Items looted this burgle run will be kept.") 
+  end
+
 end
 
 before_dying do
@@ -595,4 +599,8 @@ before_dying do
   Flags.delete('group-burgle-disband')
 end
 
-Burgle.new
+$BURGLE = Burgle.new
+$BURGLE.burgle
+$BURGLE.end_burgle
+$BURGLE = nil
+
