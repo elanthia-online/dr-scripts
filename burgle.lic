@@ -109,7 +109,6 @@ class Burgle
       pause 10
       end_burgle
     end
-
   end
 
   def valid_burgle_settings?
