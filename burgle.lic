@@ -590,7 +590,6 @@ class Burgle
     @loot_type = 'keep'
     DRC.message("Items looted this burgle run will be kept.")
   end
-
 end
 
 before_dying do
