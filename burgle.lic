@@ -588,7 +588,7 @@ class Burgle
 
   def keep
     @loot_type = 'keep'
-    DRC.message("Items looted this burgle run will be kept.") 
+    DRC.message("Items looted this burgle run will be kept.")
   end
 
 end
@@ -603,4 +603,3 @@ $BURGLE = Burgle.new
 $BURGLE.burgle
 $BURGLE.end_burgle
 $BURGLE = nil
-
