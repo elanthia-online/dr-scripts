@@ -22,6 +22,8 @@ class Astrology
     @constellations = get_data('constellations').constellations
     @finished_messages = get_data('constellations').observe_finished_messages
     @success_messages = get_data('constellations').observe_success_messages
+    @injured_messages = get_data('constellations').observe_injured_messages
+    @force_visions = @settings.astrology_force_visions
     @divination_tool = @settings.divination_tool
     @divination_bones_storage = @settings.divination_bones_storage
     @have_telescope = @settings.have_telescope
@@ -259,14 +261,19 @@ class Astrology
       DRC.message("things_to_try = #{things_to_try}") if UserVars.astrology_debug
 
       things_to_try.find do |data|
-        result = nil
+        finished = nil
         DRCMM.get_telescope?(@telescope_name, @telescope_storage) if @have_telescope
 
-        until @finished_messages.include?(result)
+        until finished
           return check_heavens if Flags['bad-search'] == 'is foiled by the daylight'
           next if Flags['bad-search'] == 'turns up fruitless'
 
           result = observe_routine(data['name'])
+          finished = result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
+
+          DRC.message("result: #{result}") if UserVars.astrology_debug
+          DRC.message("finished_messages: #{Regexp.union(@finished_messages)}") if UserVars.astrology_debug
+          DRC.message("finished: #{finished}") if UserVars.astrology_debug
         end
 
         @success_messages.include?(result)
@@ -311,11 +318,22 @@ class Astrology
         return observe_routine(body)
       end
       result = DRCMM.peer_telescope
-      case result
-      when /The pain is too much/, /Your vision is too fuzzy/
+      if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
+        case result
+        when /The pain is too much/, /Your vision is too fuzzy/
+          injuries = true
+        when /open it/
+          closed = true
+        end
+      else
+        injuries = result.any? { |line| line.match?(Regexp.union(@injured_messages)) }
+        closed = result.any? { |line| line.start_with?("You'll need to open it") }
+      end
+      case
+      when injuries
         get_healed
         return observe_routine(body)
-      when /open it/
+      when closed
         DRC.bput('open my telescope', 'extend your telescope')
         return observe_routine(body)
       end
@@ -334,9 +352,9 @@ class Astrology
     end
     DRCMM.align(skill)
     waitrt?
-    if !@divination_bones_storage.empty?
+    if !@divination_bones_storage.empty? && @force_visions != true
       DRCMM.roll_bones(@divination_bones_storage)
-    elsif !@divination_tool.empty?
+    elsif !@divination_tool.empty? && @force_visions != true
       DRCMM.use_div_tool(@divination_tool)
     else
       DRCMM.predict('future')
@@ -385,6 +403,10 @@ end
 
 before_dying do
   Flags.delete('bad-search')
+  telescope_storage = get_settings.telescope_storage
+  divination_tool = get_settings.divination_tool
+  DRCMM.store_telescope(telescope_storage) if DRC.left_hand.include?('telescope') || DRC.right_hand.include?('telescope')
+  DRCMM.store_div_tool(divination_tool) if DRC.left_hand.include?(divination_tool['name']) || DRC.right_hand.include?(divination_tool['name'])
 end
 
 # Call this last to avoid the need for forward declarations
