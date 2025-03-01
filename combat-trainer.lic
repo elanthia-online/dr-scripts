@@ -3447,12 +3447,24 @@ class TrainerProcess
   end
 
   def observe
-    case DRCMM.peer_telescope
-    when "You believe you've learned all that you can about survival", 'Too many futures cloud your mind - you learn nothing.'
+    result = DRCMM.peer_telescope
+    if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
+      case result
+      when "You believe you've learned all that you can about survival", 'Too many futures cloud your mind - you learn nothing.'
+        full_pool = true
+      when 'The pain is too much'
+        injured = true
+      end
+    else
+      full_pool = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_full_messages)) }
+      injured = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_injured_messages)) }
+    end
+    case
+    when full_pool
       waitrt?
       DRCMM.store_telescope(@telescope_storage)
       check_predict
-    when 'The pain is too much'
+    when injured
       waitrt?
       DRCMM.store_telescope(@telescope_storage)
       @training_abilities.delete('Astro')
