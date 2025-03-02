@@ -30,7 +30,7 @@ class DRYamlValidator
       respond("   PASSED")
     end
 
-     respond("")
+    respond("")
     respond("  CHECKING: That #{checkname}-setup.yaml exists in the proper folder.")
     if profiles.grep(/#{checkname}-setup/).empty?
       echo "**WARNING**: No #{checkname}-setup.yaml file found in #{File.join(SCRIPT_DIR, 'profiles')}."
@@ -41,7 +41,7 @@ class DRYamlValidator
       respond("   PASSED")
     end
 
-   respond("")
+    respond("")
     respond("  CHECKING: That character yaml files contain valid YAML.")
     Dir.glob(File.join(SCRIPT_DIR, "profiles/#{checkname}-*.yaml")) { |file|
       begin
