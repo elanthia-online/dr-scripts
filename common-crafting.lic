@@ -264,7 +264,7 @@ module DRCC
         return stow_crafting_item(name, bag, belt)
       end
     else
-      case DRC.bput("put my #{name} in my #{bag}", 'You put your', 'What were you referring to', 'is too \w+ to fit', 'Weirdly, you can\'t manage', 'There\'s no room', 'You can\'t put that there', 'You combine')
+      case DRC.bput("put my #{name} in my #{bag}", 'You tuck', 'You put your', 'What were you referring to', 'is too \w+ to fit', 'Weirdly, you can\'t manage', 'There\'s no room', 'You can\'t put that there', 'You combine')
       when /is too \w+ to fit/, 'Weirdly, you can\'t manage', 'There\'s no room'
         fput("stow my #{name}")
       when 'You can\'t put that there'
@@ -448,7 +448,7 @@ module DRCC
     when 'This work order has expired', 'The work order requires items of a higher quality', 'That isn\'t the correct type of item for this work order.'
       DRCI.dispose_trash(noun)
     end
-    case DRC.bput("put my #{logbook} logbook in my #{container}", 'You put', 'What were you referring to')
+    case DRC.bput("put my #{logbook} logbook in my #{container}", 'You tuck', 'You put', 'What were you referring to')
     when 'What were you referring to'
       DRC.bput("stow my #{logbook} logbook", 'You put', 'What were you referring to')
     end
