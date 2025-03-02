@@ -223,8 +223,10 @@ picking:
       rose-etched bronze: 600
       pale beige ordinary: 100
       earth-toned slim: 400
-    Ain Ghazal:
+    Ain Ghazal: &forf_lockpick_shop
       ordinary metal: 157
       stout azure: 248
       shimmering diamondique: 13,530
       night-black: 157
+    Hibarnhvidar:
+      << : *forf_lockpick_shop
