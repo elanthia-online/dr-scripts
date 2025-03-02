@@ -18,15 +18,6 @@ class DRYamlValidator
     setup_data
 
     respond("")
-    respond("  CHECKING: That #{checkname}-setup.yaml exists in the proper folder.")
-    if profiles.grep(/#{checkname}-setup/).empty?
-      echo "**WARNING**: No #{checkname}-setup.yaml file found in #{File.join(SCRIPT_DIR, 'profiles')}."
-      echo "This file is required. Check that the file exists and is in the correct folder."
-    else
-      respond("   PASSED")
-    end
-
-    respond("")
     respond("  CHECKING: That yaml file extensions are .yaml and not .yml")
 
     if !profiles.grep(/yml/).empty?
@@ -35,6 +26,17 @@ class DRYamlValidator
       profiles.each do |profile|
         respond("   #{profile}") if profile =~ /yml/
       end
+    else
+      respond("   PASSED")
+    end
+
+    respond("")
+    respond("  CHECKING: That #{checkname}-setup.yaml exists in the proper folder.")
+    if profiles.grep(/#{checkname}-setup/).empty?
+      echo "**WARNING**: No #{checkname}-setup.yaml file found in #{File.join(SCRIPT_DIR, 'profiles')}."
+      echo "This file is required. Check that the file exists and is in the correct folder."
+      echo "ENDING REMAINING CHECKS DUE TO MISSING SETUP FILE"
+      exit
     else
       respond("   PASSED")
     end
