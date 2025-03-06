@@ -269,8 +269,12 @@ class Astrology
           next if Flags['bad-search'] == 'turns up fruitless'
 
           result = observe_routine(data['name'])
-          finished = result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
-
+          if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
+            finished = @finished_messages.include?(result)
+          else
+            finished = result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
+          end
+          
           DRC.message("result: #{result}") if UserVars.astrology_debug
           DRC.message("finished_messages: #{Regexp.union(@finished_messages)}") if UserVars.astrology_debug
           DRC.message("finished: #{finished}") if UserVars.astrology_debug
