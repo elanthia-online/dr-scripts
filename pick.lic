@@ -493,6 +493,10 @@ class Pick
     box['trap'] = trap
     box['trap_difficulty'] = difficulty
 
+    # this waitrt? is used to give more processing time for the event flags to trip.  Without this wait,
+    # occasionally its possible for the trap condition to be not recognised (in time).
+    waitrt?
+
     # Handle Triggering During Identify and Finding Another...
     if Flags['more-traps']
       echo "Saw another trap after disarming/tripping one..." if @debug
@@ -554,6 +558,10 @@ class Pick
 
     box['trapped'] = trapped
     box['trap_difficulty'] += 1 if Flags['disarm-shift']
+
+    # this waitrt? is used to give more processing time for the event flags to trip.  Without this wait,
+    # occasionally its possible for the trap condition to be not recognised (in time).
+    waitrt?
 
     if Flags['more-traps']
       echo "Saw another trap after disarming/tripping one..." if @debug
@@ -680,6 +688,10 @@ class Pick
     end
 
     box['locked'] = locked
+
+    # this waitrt? is used to give more processing time for the event flags to trip.  Without this wait,
+    # occasionally its possible for the trap condition to be not recognised (in time).
+    waitrt?
 
     if Flags['more-traps']
       box['trapped'] = true
