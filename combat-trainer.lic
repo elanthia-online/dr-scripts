@@ -2757,9 +2757,9 @@ class AbilityProcess
       if DRSpells.active_spells["Khri Adaptation"]
         echo "Adaptation is already active." if $debug_mode_ct
       elsif game_state.danger && DRCA.kneel_for_khri?(@kneel_khri, command)
-          # 
+        # checking danger and kneel
       elsif (timer = game_state.cooldown_timers["Adaptation"]) && (Time.now - timer).to_i < 30
-          # 
+        # checking cooldown timer
       elsif DRCA.activate_khri?(@kneel_khri, command)
         game_state.cooldown_timers["Adaptation"] = Time.now
         echo "Activated khri: #{command}" if $debug_mode_ct
