@@ -2875,7 +2875,6 @@ class ManipulateProcess
       break if manipulate_count >= @threshold
 
       index = npc_occurrences[npc]
-      ordinal_string = $ORDINALS[index]
 
       case DRC.bput("manipulate friendship #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what')
       when 'does not seem to have a life essence' then
