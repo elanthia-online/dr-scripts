@@ -24,14 +24,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get changed files
-        id: changed-files
-        uses: tj-actions/changed-files@v45
-        with:
-          files: |
-            data/*.yaml
-            profiles/*.yaml
-            
       - name: Validate YAML file
         if: steps.changed-files-excluded.outputs.any_changed == 'true'
         run: |
