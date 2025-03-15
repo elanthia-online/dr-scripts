@@ -2874,8 +2874,6 @@ class ManipulateProcess
       next if game_state.construct?(npc)
       break if manipulate_count >= @threshold
 
-      index = npc_occurrences[npc]
-
       case DRC.bput("manipulate friendship #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what')
       when 'does not seem to have a life essence' then
         game_state.construct(npc)
