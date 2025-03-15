@@ -2868,7 +2868,6 @@ class ManipulateProcess
     DRC.bput('manipulate stop all', /^You relax your will/, /^But you aren't manipulating anything/)
 
     manipulate_count = 0
-    npc_occurrences = Hash.new(0)
 
     @filtered_npcs.each do |npc|
       next if game_state.construct?(npc)
