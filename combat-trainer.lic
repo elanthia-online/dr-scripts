@@ -2878,7 +2878,6 @@ class ManipulateProcess
         game_state.construct(npc)
       else
         manipulate_count += 1
-        npc_occurrences[npc] += 1
       end
     end
 
