@@ -279,9 +279,9 @@ register_slackbot(get_settings.slack_username)
 def update_health_bar(entry)
   hp = health
   if hp >= 75
-    entry.modify_base(Gtk::STATE_NORMAL, Gdk::Color.parse('green'))
+    entry.override_background_color(:normal, Gdk::RGBA.parse('green'))
   else
-    entry.modify_base(Gtk::STATE_NORMAL, Gdk::Color.parse('red'))
+    entry.override_background_color(:normal, Gdk::RBGA.parse('red'))
   end
   entry.text = "#{hp}%"
 end
@@ -343,18 +343,18 @@ begin
 
     messages_sw = Gtk::ScrolledWindow.new
     messages_sw.add(messages_tv)
-    messages_sw.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC)
+    messages_sw.set_policy(:automatic, :automatic)
 
     healthbar_et = Gtk::Entry.new
     healthbar_et.editable = false
     healthbar_et.xalign = 0.5
     health_font = Pango::FontDescription.new
-    health_font.weight = Pango::FontDescription::WEIGHT_BOLD
-    healthbar_et.modify_font(health_font)
+    health_font.weight = :bold
+    healthbar_et.override_font(health_font)
 
-    vbox = Gtk::VBox.new
+    vbox = Gtk::Box.new(:vertical, 0)
     vbox.pack_start(messages_sw)
-    vbox.pack_start(healthbar_et, false)
+    vbox.pack_start(healthbar_et, :expand => false)
 
     window              = Gtk::Window.new
     window.title        = window_title
