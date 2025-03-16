@@ -40,12 +40,12 @@ begin
   k_counter_disp = nil
 
   Gtk.queue do
-    vbox = Gtk::VBox.new
+    vbox = Gtk::Box.new(:vertical, 0)
     start_time = Gtk::Entry.new
     start_time.editable = false
     display_font = Pango::FontDescription.new
-    display_font.weight = Pango::FontDescription::WEIGHT_BOLD
-    start_time.modify_font(display_font)
+    display_font.weight = :bold
+    start_time.override_font(display_font)
     time_obj = Time.now
     start_time.text = "Start Time: #{time_obj.inspect}"
     vbox.pack_start(start_time)
@@ -53,8 +53,8 @@ begin
     k_counter_disp = Gtk::Entry.new
     k_counter_disp.editable = false
     display_font = Pango::FontDescription.new
-    display_font.weight = Pango::FontDescription::WEIGHT_BOLD
-    k_counter_disp.modify_font(display_font)
+    display_font.weight = :bold
+    k_counter_disp.override_font(display_font)
     vbox.pack_start(k_counter_disp)
 
     window              = Gtk::Window.new
