@@ -111,13 +111,13 @@ begin
   weapon_ets = {}
 
   Gtk.queue do
-    vbox = Gtk::VBox.new
+    vbox = Gtk::Box.new(:vertical, 0)
     filter.weapon_list.each do |weapon|
       stats_et = Gtk::Entry.new
       stats_et.editable = false
       display_font = Pango::FontDescription.new
-      display_font.weight = Pango::FontDescription::WEIGHT_BOLD
-      stats_et.modify_font(display_font)
+      display_font.weight = :bold
+      stats_et.override_font(display_font)
       weapon_ets[weapon] = stats_et
       vbox.pack_start(stats_et)
     end
