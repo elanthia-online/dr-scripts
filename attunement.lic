@@ -25,10 +25,10 @@ class Attunement
           optional: true,
           description: 'Do sigil walking (scholarship training) instead of regular attunement walking'
         },
-        { 
-          name: 'mindstates', 
-          regex: /^\d+/, 
-          optional: true, 
+        {
+          name: 'mindstates',
+          regex: /^\d+/,
+          optional: true,
           description: 'Override yaml setting attunement_target_increment for this run'
         },
         {
