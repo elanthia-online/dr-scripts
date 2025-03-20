@@ -686,7 +686,7 @@ TextSubs.add('As though in response, you feel a deep pain in your chest\.', 'As 
 TextSubs.add('The experience leaves you feeling naked for all to see\.', 'The experience leaves you feeling naked for all to see. (4/4 - Extreme DO. You are at risk of being smote. Stop generating DO!)')
 TextSubs.add("((?:The back of your neck prickles|You feel judged and hated|Muddled thoughts of paranoia nag at you|You are exposed and vulnerable in this place|You have a feeling that you aren't welcome here|You worry for your safety and well-being)\.)", "\1 (DO gained from being in a Holy area. Move away to avoid this hit.)")
 TextSubs.add('(The experience leaves you feeling somehow exposed\.)', '\1 (Detectable by Moon Mages/Clerics - Use RoC/RoG with enough mana to mask it.)')
-TextSubs.add('.*(Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame\.)'. '\1 (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)')
+TextSubs.add('.*(Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame\.)', '\1 (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)')
 TextSubs.add('.*(You feel a wave of filth wash over you, heralding the renewed health of your internal gauges\.)', '\1 (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from Clerics/Moon Mages. Recast with more mana.)')
 
 # defaults
