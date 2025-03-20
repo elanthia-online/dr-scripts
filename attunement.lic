@@ -24,11 +24,31 @@ class Attunement
           regex: /sigil/,
           optional: true,
           description: 'Do sigil walking (scholarship training) instead of regular attunement walking'
+        },
+        { 
+          name: 'mindstates', 
+          regex: /^\d+/, 
+          optional: true, 
+          description: 'Override yaml setting attunement_target_increment for this run'
+        },
+        {
+          name: 'rooms',
+          regex: /^rooms=\d+$/,
+          optional: true,
+          description: 'Set the number of rooms to walk before stopping [rooms=<n>]'
+        },
+        {
+          name: 'reset',
+          regex: /^reset$/,
+          optional: true,
+          description: 'reset the counter for which room to start in from the list'
         }
       ]
     ]
     args = parse_args(arg_definitions, true)
     settings = get_settings
+    CharSettings['rooms'] = {} unless CharSettings['rooms'].class == Hash
+    SessionVars.attunement_start_room = {} unless SessionVars.attunement_start_room.class == Hash
     @stationary_skills_only = settings.crossing_training_stationary_skills_only
     @hometown = settings.fang_cove_override_town || settings.hometown
     @attunement_rooms = settings.attunement_rooms
@@ -41,10 +61,13 @@ class Attunement
                       else
                         'Attunement'
                       end
-    @exp_max_threshold = settings.crossing_training_max_threshold
-    @exp_target_increment = settings.attunement_target_increment
+    if args.reset || SessionVars.attunement_start_room.nil? || SessionVars.attunement_start_room[@skill_to_train].nil?
+      SessionVars.attunement_start_room[@skill_to_train] = 0
+    end
+    @room_count = args.rooms ? args.rooms.split('=')[1].to_i : Float::INFINITY
+    @exp_target_increment = args.mindstates ? args.mindstates.to_i : settings.attunement_target_increment
     @exp_start_mindstate = DRSkill.getxp(@skill_to_train)
-    @exp_stop_mindstate = [@exp_start_mindstate + @exp_target_increment, @exp_max_threshold, 34].min
+    @exp_stop_mindstate = [@exp_start_mindstate + @exp_target_increment, 34].min
     @lunar_perceive_index = -1
     train_skill(settings)
   end
@@ -108,6 +131,12 @@ class Attunement
         exit
       end
     end
+
+    checkrooms = CharSettings['rooms'][@skill_to_train]
+    if checkrooms.nil? || checkrooms.empty? || checkrooms != rooms
+      CharSettings['rooms'][@skill_to_train] = rooms
+      SessionVars.attunement_start_room[@skill_to_train] = 0
+    end
     rooms
   end
 
@@ -117,13 +146,21 @@ class Attunement
 
   def train_skill(settings)
     room_list = get_rooms
-    until done_training?
-      # If we keep looping, ensure buffs stay active
+
+    # check *shouldn't* be necessary, but a good guard glause
+    SessionVars.attunement_start_room[@skill_to_train] = 0 if SessionVars.attunement_start_room[@skill_to_train] > room_list.length
+    start_room_index = SessionVars.attunement_start_room[@skill_to_train]
+    @room_count += start_room_index
+    room_list_cycle = room_list.cycle
+
+    # infinite loop
+    room_list_cycle.with_index do |room_id, index|
+      # skip rooms until we reach the starting room
+      next if index < start_room_index
+      break if index >= @room_count || done_training?
       DRCA.do_buffs(settings, 'attunement')
-      room_list.each do |room_id|
-        train_skill_in_room(room_id)
-        break if done_training?
-      end
+      train_skill_in_room(room_id)
+      SessionVars.attunement_start_room[@skill_to_train] = (index + 1) % room_list.length
     end
   end
 
