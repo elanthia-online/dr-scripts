@@ -26,8 +26,8 @@ parsing_exp_output = false
 squelch_exp_output = false
 learning_rates = ['clear', 'dabbling', 'perusing', 'learning', 'thoughtful', 'thinking', 'considering', 'pondering', 'ruminating', 'concentrating', 'attentive', 'deliberative', 'interested', 'examining', 'understanding', 'absorbing', 'intrigued', 'scrutinizing', 'analyzing', 'studious', 'focused', 'very focused', 'engaged', 'very engaged', 'cogitating', 'fascinated', 'captivated', 'engrossed', 'riveted', 'very riveted', 'rapt', 'very rapt', 'enthralled', 'nearly locked', 'mind lock']
 regex_flag_briefexp_on = %r{<component id='exp .*?<d cmd='skill (?<skill>[a-zA-Z\s]+)'.*:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s*\[\s?(?<rate>\d+)\/34\].*?<\/component>}
-#regex_flag_briefexp_off = %r{<component id='exp .*?\b(?<skill>[a-zA-Z\s]+)\b:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s+\b(?<rate>[a-zA-Z\s]+)\b.*?<\/component>}
-#regex_exp_clear_mindstate = %r{<component id='exp (?<skill>[a-zA-Z\s]+)'><\/component>}
+# regex_flag_briefexp_off = %r{<component id='exp .*?\b(?<skill>[a-zA-Z\s]+)\b:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s+\b(?<rate>[a-zA-Z\s]+)\b.*?<\/component>}
+# regex_exp_clear_mindstate = %r{<component id='exp (?<skill>[a-zA-Z\s]+)'><\/component>}
 regex_exp_columns = /(?:\s*(?<skill>[a-zA-Z\s]+)\b:\s*(?<rank>\d+)\s+(?<percent>\d+)%\s+(?<rate>[a-zA-Z\s]+)\b)/
 
 ### This thing has to be a proc not a function/method because it is called in DownstreamHook.
