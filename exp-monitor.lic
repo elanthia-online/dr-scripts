@@ -1,5 +1,6 @@
 no_pause_all
 no_kill_all
+silence_me
 
 custom_require.call(['drinfomon'])
 
@@ -12,9 +13,76 @@ before_dying do
   # continue to append data to DRSkill.gained_skills array as a memory leak.
   UserVars.echo_exp = false
   DRSkill.gained_skills.clear
+  DownstreamHook.remove('exp_hook')
 end
 
-loop do
+### THIS SECTION IS FOR DISPLAYING RANKS GAINED OVER A SESSION###
+# To track when the last time was we checked experience/info.
+info_check_interval = get_settings.drinfomon_passive_delay
+info_check_time = Time.now
+skills_check_interval = UserVars.echo_exp_time
+skills_check_time = Time.now
+parsing_exp_output = false
+squelch_exp_output = false
+learning_rates = ['clear', 'dabbling', 'perusing', 'learning', 'thoughtful', 'thinking', 'considering', 'pondering', 'ruminating', 'concentrating', 'attentive', 'deliberative', 'interested', 'examining', 'understanding', 'absorbing', 'intrigued', 'scrutinizing', 'analyzing', 'studious', 'focused', 'very focused', 'engaged', 'very engaged', 'cogitating', 'fascinated', 'captivated', 'engrossed', 'riveted', 'very riveted', 'rapt', 'very rapt', 'enthralled', 'nearly locked', 'mind lock']
+regex_flag_briefexp_on = %r{<component id='exp .*?<d cmd='skill (?<skill>[a-zA-Z\s]+)'.*:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s*\[\s?(?<rate>\d+)\/34\].*?<\/component>}
+# regex_flag_briefexp_off = %r{<component id='exp .*?\b(?<skill>[a-zA-Z\s]+)\b:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s+\b(?<rate>[a-zA-Z\s]+)\b.*?<\/component>}
+# regex_exp_clear_mindstate = %r{<component id='exp (?<skill>[a-zA-Z\s]+)'><\/component>}
+regex_exp_columns = /(?:\s*(?<skill>[a-zA-Z\s]+)\b:\s*(?<rank>\d+)\s+(?<percent>\d+)%\s+(?<rate>[a-zA-Z\s]+)\b)/
+
+### This thing has to be a proc not a function/method because it is called in DownstreamHook.
+### It is a pared down version from the now obselete drinfomon.lic
+exp_hook = proc do |server_string|
+  match_briefexp_on = regex_flag_briefexp_on.match(server_string)
+  if match_briefexp_on
+    skill = match_briefexp_on[:skill]
+    rank = match_briefexp_on[:rank]
+    rate = match_briefexp_on[:rate] # already a number
+    percent = match_briefexp_on[:percent]
+    DRSkill.update(skill, rank, rate, percent)
+    if UserVars.track_exp || UserVars.track_exp.nil?
+      UserVars.track_exp ||= true
+      server_string.sub!(/(....).(..)%..\[(..)\/34\]/, "\\1\.\\2 ~\\3 #{sprintf('%0.2f', DRSkill.gained_exp(skill))}")
+    end
+  end
+
+  case server_string
+  when /^(Circle: (\d+)|Showing all skills that you have skill in)/
+    parsing_exp_output = true
+  when regex_exp_columns
+    if parsing_exp_output
+      server_string.scan(regex_exp_columns) do |skill_value, rank_value, percent_value, rate_as_word|
+        rate_as_number = learning_rates.index(rate_as_word) # convert word to number
+        DRSkill.update(skill_value, rank_value, rate_as_number, percent_value)
+      end
+    end
+  when /^EXP HELP for more information/
+    if parsing_exp_output && squelch_exp_output
+      server_string = nil
+    end
+    if parsing_exp_output
+      parsing_exp_output = false
+      squelch_exp_output = false
+    end
+  when %r{^<output class=""/>}
+    if parsing_exp_output
+      parsing_exp_output = false
+      squelch_exp_output = false
+    end
+  end
+  if parsing_exp_output && squelch_exp_output
+    server_string = nil
+  end
+  server_string
+end
+
+check_exp_all = proc do
+  DownstreamHook.add('exp_hook', exp_hook)
+  squelch_exp_output = !UserVars.drinfomon_debug
+  fput('exp all 0')
+end
+
+skills_gained = proc do
   new_skills = DRSkill.gained_skills.shift(DRSkill.gained_skills.size)
   # Some actions may pulse the same skill multiple times.
   # When this happens then we aggregate the individual pulses
@@ -27,5 +95,33 @@ loop do
   end
   new_skills = new_skills.keys.map { |skill| "#{skill}(+#{new_skills[skill]})" }
   respond("Gained: #{new_skills.join(', ')}") unless new_skills.empty?
-  pause UserVars.echo_exp_time
+end
+
+skill_check = proc do
+  if (Time.now - skills_check_time > skills_check_interval)
+    skills_gained.call
+    skills_check_time = Time.now
+  end
+end
+
+### THE REAL START OF THE SCRIPT. THIS IS THE PART THAT EXECUTES ###
+DownstreamHook.add('exp_hook', exp_hook)
+check_exp_all.call
+
+# Start loop to process incoming data.
+while (line = script.gets)
+  begin
+    skill_check.call
+    if line =~ /^\* Log-on system converted \d+% of your character/
+      check_exp_all.call
+    end
+    if (Time.now - info_check_time > info_check_interval)
+      check_exp_all.call
+      info_check_time = Time.now
+    end
+  rescue
+    echo $ERROR_INFO
+    echo $ERROR_INFO.backtrace.first
+    sleep 1
+  end
 end
