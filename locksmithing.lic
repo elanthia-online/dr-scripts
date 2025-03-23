@@ -91,7 +91,7 @@ class Locksmithing
       @ords = $ORDINALS.dup
       while DRSkill.getxp('Locksmithing') < 34 && !@once_picked_twice_shy && get_box(box)
         pick_box(box)
-## Added setting to open @worn lockboxes if they are also main storage_containers, such as https://elanthipedia.play.net/Item:Secure_bag_with_a_silversteel_lock.
+        ## Added setting to open @worn lockboxes if they are also main storage_containers, such as https://elanthipedia.play.net/Item:Secure_bag_with_a_silversteel_lock.
         if get_settings.storage_containers.include?(box)
           DRC.bput("unlock my #{box}", 'You pull the key out', 'is already unlocked', 'What were')
           DRC.bput("open my #{box}", 'You open', 'is already open', 'It is locked', 'What were')
