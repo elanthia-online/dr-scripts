@@ -188,7 +188,12 @@ class Stabbity
   end
 
   def get_npcs
-    DRRoom.npcs - @ignored_npcs
+    # Not filtering by ignored NPCs because some nouns like "warrior"
+    # which generally refer to an Empath's Alfar warrior, are incorrectly
+    # ignoring enemy warriors like an armored necrotic warrior.
+    # And since this script is for solo thieves, there should be no other NPCs.
+    # DRRoom.npcs - @ignored_npcs
+    DRRoom.npcs
   end
 
   def npc_dead?
