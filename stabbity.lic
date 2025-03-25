@@ -5,6 +5,14 @@
 custom_require.call(%w[common common-arcana drinfomon equipmanager events])
 
 class Stabbity
+  # https://elanthipedia.play.net/Genie_numerical_hit_subs
+  LIGHT_STRIKES = [
+    # harmless
+    /(a|an) (benign|brushing|gentle|glancing|grazing|harmless|ineffective|skimming) (blow|hit|strike)/,
+    # could be better
+    /(a|an) (light|good|solid|hard|strong) (blow|hit|strike)/,
+  ]
+
   def initialize
     unless DRStats.thief?
       echo("*** But you're not a thief! ***")
@@ -121,6 +129,7 @@ class Stabbity
                         /You'll need to stand up first/,
                         /flying out of reach/,
                         /to stop flying before/,
+                        LIGHT_STRIKES,
                         /Roundtime/,
                         /\[You're /,
                         /What are you trying/,
@@ -141,11 +150,30 @@ class Stabbity
       when /flying out of reach/, /to stop flying before/
         if @thrown_weapon != nil
           DRC.message("*** Switching to thrown weapon -- add '#{@target}' to your use_thrown_on setting ***")
+          @thrown_weapon_npcs.push(@target)
           use_weapon('thrown')
           kill_thrown
           return
         end
         dodge_arena_trap if arena_mode?
+      when *LIGHT_STRIKES
+        # Some enemies are resistant to slice or impact damage.
+        # If we detect that your current weapon is ineffective,
+        # we'll switch to the other weapon in hopes it does better.
+        case @current_weapon_type
+        when 'preferred'
+          @alternate_weapon_npcs.push(@target)
+          use_weapon('alternate')
+        when 'alternate'
+          @alternate_weapon_npcs.delete(@target)
+          use_weapon('preferred')
+        end
+
+        return if npc_dead?
+
+        waitrt?
+        dodge_arena_trap if arena_mode?
+        DRC.hide?
       when /Roundtime/, /\[You're /
         return if npc_dead?
 
