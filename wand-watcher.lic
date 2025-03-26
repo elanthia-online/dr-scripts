@@ -22,6 +22,12 @@ class WandWatcher
           regex: /^reset$/,
           optional: true,
           description: 'Clear timing variables'
+        },
+        {
+          name: 'once',
+          regex: /^once$/,
+          optional: true,
+          description: 'Run once and exit'
         }
       ]
     ]
@@ -35,6 +41,7 @@ class WandWatcher
     @no_use_rooms = settings.wand_watcher_no_use_rooms
     @startup_delay = args.delay || settings.wand_watcher_startup_delay
     @passive_delay = settings.wand_watcher_passive_delay
+    @run_once = args.once
     @activation_failure_messages = [/^(The|An|A) .* remains inert/]
     @activation_blocked_messages = [/^Something in the area is interfering/,
                                     /^This is not a good place for that/,
@@ -81,7 +88,6 @@ class WandWatcher
 
     # Run passively in a loop
     passive_run
-    # TODO: run once option
   end
 
   def passive_run
@@ -93,6 +99,7 @@ class WandWatcher
         exit
       end
       check_timers
+      exit if @run_once
       pause @passive_delay
     end
   end
