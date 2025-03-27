@@ -693,6 +693,10 @@ check_discern_timer_in_hours: 24 # i.e., checking every 24 hours
 # Thief only - kneel to activate khri
 # With sufficient skill, you can activate while standing
 kneel_khri: false
+# Thief only - use khri adaptation
+# Can use PUNCTURE, SLICE, IMPACT, FIRE, COLD, or ELECTRIC, delay type or type
+# delay slice, slice, etc
+khri_adaptation:
 # Barbarian only - kneel to activate barbarian meditation
 # With the Yogi mastery, you can meditate while standing
 sit_to_meditate: false
