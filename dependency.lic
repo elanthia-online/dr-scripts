@@ -10,15 +10,21 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.8'
-$MIN_RUBY_VERSION = '3.2.2'
+$DEPENDENCY_VERSION = '2.0.9'
+$MIN_RUBY_VERSION = '3.3.1'
+$DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/KzSAUPnDHh'
 
-if defined?(Lich::Common) && defined?(DRInfomon) # testing for minimum 5.11.0
-  $DRINFOMON_IN_CORE_LICH = true # this should never be true pre 5.11
-  $DRINFOMON_CORE_LICH_DEFINES = DRInfomon::DRINFOMON_CORE_LICH_DEFINES # always defined in 5.11
-else
-  $DRINFOMON_CORE_LICH_DEFINES = Array.new
+unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.11.0')
+  _respond("<pushBold/>*****************************************************************************<popBold/>")
+  _respond("<pushBold/>* Lich versions prior to 5.11.0 were deprecated on Thursday 27 March 2025.  *<popBold/>")
+  _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
+  _respond("<pushBold/>* For update instructions.                                                  *<popBold/>")
+  _respond("<pushBold/>*****************************************************************************<popBold/>")
+  exit
 end
+
+$DRINFOMON_IN_CORE_LICH = true # this should never be true pre 5.11
+$DRINFOMON_CORE_LICH_DEFINES = DRInfomon::DRINFOMON_CORE_LICH_DEFINES # always defined in 5.11
 
 no_pause_all
 no_kill_all
@@ -233,14 +239,6 @@ class ScriptManager
       _respond("<pushBold/>* For an update path.                                                       *<popBold/>")
       _respond("<pushBold/>*****************************************************************************<popBold/>")
       exit
-    end
-
-    unless LICH_VERSION.match?(/^5.11/)
-      _respond("<pushBold/>*****************************************************************************<popBold/>")
-      _respond("<pushBold/>* This version of Lich will be deprecated on Thursday 13 March 2025.        *<popBold/>")
-      _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
-      _respond("<pushBold/>* For update instructions.                                                  *<popBold/>")
-      _respond("<pushBold/>*****************************************************************************<popBold/>")
     end
 
     @debug = debug
@@ -769,11 +767,7 @@ class BankbotManager
   end
 
   def safe_load_yaml(path)
-    if (RUBY_VERSION =~ /^2/)
-      OpenStruct.new(YAML.load_file(path)).to_h
-    elsif (RUBY_VERSION =~ /^3/)
-      OpenStruct.new(YAML.unsafe_load_file(path)).to_h
-    end
+    OpenStruct.new(YAML.unsafe_load_file(path)).to_h
   rescue => e
     echo('*** ERROR PARSING YAML FILE ***')
     echo(e.message)
@@ -826,11 +820,7 @@ class ReportbotManager
   end
 
   def safe_load_yaml(path)
-    if (RUBY_VERSION =~ /^2/)
-      YAML.load_file(path)
-    elsif (RUBY_VERSION =~ /^3/)
-      YAML.unsafe_load_file(path)
-    end
+    YAML.unsafe_load_file(path)
   rescue => e
     echo('*** ERROR PARSING YAML FILE ***')
     echo(e.message)
@@ -928,11 +918,7 @@ class SetupFiles
   end
 
   def safe_load_yaml(filepath)
-    if (RUBY_VERSION =~ /^2/)
-      OpenStruct.new(YAML.load_file(filepath)).to_h
-    elsif (RUBY_VERSION =~ /^3/)
-      OpenStruct.new(YAML.unsafe_load_file(filepath)).to_h
-    end
+    OpenStruct.new(YAML.unsafe_load_file(filepath)).to_h
   rescue => e
     echo('*** ERROR PARSING YAML FILE ***')
     echo(e.message)
@@ -1629,7 +1615,7 @@ def verify_script(script_names)
     .each do |name|
       echo "Failed to find a script named '#{name}'"
       echo "Please report this to <https://github.com/elanthia-online/dr-scripts/issues>"
-      echo "or to Discord <https://discord.gg/uxZWxuX>"
+      echo "or to Discord #{$DR_SCRIPTS_DISCORD_LINK}"
       state = false
     end
   state
@@ -1658,7 +1644,7 @@ def full_install
     echo "You are using an unsupported version of ruby."
     echo "In order to prevent people from wasting too much work on an unsupported version, this will not proceed."
     echo "Please update to at least version #{$MIN_RUBY_VERSION} and try again."
-    echo "For further details / assistance, please join the dr-scripts Lich Discord: https://discord.gg/uxZWxuX "
+    echo "For further details / assistance, please join the dr-scripts Lich Discord: #{$DR_SCRIPTS_DISCORD_LINK} "
     exitfrom
   end
   respond 'Performing setup for dr-scripts.  This will take some time.  Do not stop this script until finished.'
@@ -1745,7 +1731,7 @@ def validate_supported_ruby_version
     echo "WARN: You are using an unsupported version of ruby."
     echo "WARN: While many scripts may still continue to run, there are some that may not."
     echo "WARN: Please update to at least version #{$MIN_RUBY_VERSION} as soon as possible."
-    echo "WARN: For further details / assistance, please join the dr-scripts Lich Discord: https://discord.gg/uxZWxuX."
+    echo "WARN: For further details / assistance, please join the dr-scripts Lich Discord: #{$DR_SCRIPTS_DISCORD_LINK}"
     echo "WARN: This warning will repeat on startup and every three hours."
     echo "*** WARN WARN WARN WARN WARN WARN WARN ***"
   end
