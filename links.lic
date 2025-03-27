@@ -17,7 +17,7 @@ class Links
       'YAML Validator'                         => 'http://yaml-online-parser.appspot.com/',
       'Player Shops'                           => 'http://drservice.info/Plaza/',
       'Lich mapping guide'                     => 'https://elanthipedia.play.net/Lich_mapping_reference',
-      'Lich Discord'                           => 'https://discord.gg/uxZWxuX',
+      'Lich Discord'                           => $DR_SCRIPTS_DISCORD_LINK,
       'Trigger to fix GENIE chat spam'         => '#queue clear;#send 1 ,chat #queue clear'
     }
 
