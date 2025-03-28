@@ -195,8 +195,9 @@ class Stabbity
 
   def kill_thrown
     DRC.fix_standing
+
     attack_verb = thrown_attack_verb
-    retrieve_verb = thrown_retrieve_verb
+
     while @npc_is_alive
       result = DRC.bput(attack_verb,
                         /You'll need to stand up first/,
@@ -212,15 +213,43 @@ class Stabbity
         DRC.fix_standing
         DRC.hide?
       when /What are you trying/
-        DRC.bput(retrieve_verb, 'You pick up', 'suddenly leaps')
+        retrieve_thrown
         waitrt?
       when /Roundtime/, /\[You're /
         waitrt?
-        DRC.bput(retrieve_verb, 'You pick up', 'suddenly leaps')
+        retrieve_thrown
         return if npc_dead?
 
         waitrt?
       end
+    end
+  end
+
+  def retrieve_thrown
+    retrieve_verb = thrown_retrieve_verb
+
+    bonded_invoke_success = [ # standard and custom invoke messages
+      /reuniting you with your lost belonging/,
+      /In its place, you are left with your/,
+      /returning .* to your/,
+      /depositing .* back to the rightful owner/,
+      /Your .* appears within reach/,
+      /you are reunited with your/,
+      /You catch/,
+      /A tiny ripplegate gurgles into being near your/
+    ]
+
+    case DRC.bput(retrieve_verb,
+                  /^You are already holding/,
+                  /^You pick up/,
+                  /^You get/,
+                  /^What were you/,
+                  /^You don't have any bonds to invoke/,
+                  *bonded_invoke_success)
+    when 'What were you'
+      # Workaround for a game bug when you lob an unblessed weapon at a noncorporeal mob
+      # The weapon lands on the ground, not in the 'at feet' slot, and 'my' will not work
+      DRC.bput("get #{@thrown_weapon}", 'You pick up', 'You get')
     end
   end
 
