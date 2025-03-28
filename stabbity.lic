@@ -50,7 +50,14 @@ class Stabbity
     use_weapon('preferred')
     exit if equip_mode?
 
-    DRCA.do_buffs(@settings, 'stabbity')
+    if Script.running?('wand-watcher')
+      DRC.message("*** Stopping passive wand-watcher script, will run it as needed in between fights ***")
+      stop_script('wand-watcher')
+    end
+
+    check_buffs
+    check_wands
+
     DRC.hide?
     combat_loop
   end
@@ -110,7 +117,8 @@ class Stabbity
         waitrt?
         loot_mob unless @noloot
         use_weapon('preferred')
-        DRCA.do_buffs(@settings, 'stabbity')
+        check_buffs
+        check_wands
         DRC.hide?
       else
         echo("*** No targets ***") if @debug
@@ -321,6 +329,15 @@ class Stabbity
     fput("loot #{@settings.custom_loot_type}")
     pause 1
     # todo/maybe -- pick up loot
+  end
+
+  def check_buffs
+    DRCA.do_buffs(@settings, 'stabbity')
+  end
+
+  def check_wands
+    start_script('wand-watcher', ['once', 0])
+    pause 0.5 while Script.running?('wand-watcher')
   end
 end
 
