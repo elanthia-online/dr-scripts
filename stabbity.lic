@@ -33,8 +33,8 @@ class Stabbity
     @preferred_weapon = @settings.stabbity['weapons']['preferred']
     @alternate_weapon = @settings.stabbity['weapons']['alternate']
     @thrown_weapon = @settings.stabbity['weapons']['thrown']
-    @alternate_weapon_npcs = @settings.stabbity['use_alternate_on']
-    @thrown_weapon_npcs = @settings.stabbity['use_thrown_on']
+    @alternate_weapon_npcs = @settings.stabbity['use_alternate_on'] || []
+    @thrown_weapon_npcs = @settings.stabbity['use_thrown_on'] || []
     @khri_eliminate = @settings.stabbity['eliminate'] || false
     @noloot = args.mode == 'arena' || args.noloot ? true : false
     @mode = args.mode
