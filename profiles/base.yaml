@@ -1231,7 +1231,7 @@ mining_attempt_timer: 0
 # If you have basic and/or advanced tool repair blacksmithing techniques, this allows you to repair mining tool in place, rather than returning
 # to town whenever a repair is necessary. Not recommended for use without those techs, requires wire brush and flask of oil.
 mine_repair_own_tools: false
-# If mining with a yiamura, what's the minimum acceptable level of resources the room should have before using it? Higher is more gathered 
+# If mining with a yiamura, what's the minimum acceptable level of resources the room should have before using it? Higher is more gathered
 # material and more EXP, but may take longer to find a suitable room. Valid values are 0-5.
 mining_yiamura_resource_minimum: 4
 
@@ -1983,7 +1983,7 @@ astrology_training:
   #- events
 #Allows user to force visions even if divination_tool is set rather than having to delete the settings.
 #Useful if another script makes use of the tool settings and still wants to use them with that script.
-astrology_force_visions: 
+astrology_force_visions:
 
 astrology_prediction_skills:
   defense: defense
@@ -1993,20 +1993,20 @@ astrology_prediction_skills:
   survival: survival
 
 #settings for the ;walkingastro script
-# Recommended to add Piercing Gaze to the walkingastro waggle set. 
+# Recommended to add Piercing Gaze to the walkingastro waggle set.
 # Clear Vision and Aura Sight are also useful there, but not as necessary.
 walkingastro:
-  startup_delay: 
-  use_tools: 
-  use_partial_pools: 
-  # Setting walkingastro_predict_regardless_of_mindstate to true is meant to allow 
-  # passive tool bonding via more frequent predictions, so also set 
+  startup_delay:
+  use_tools:
+  use_partial_pools:
+  # Setting walkingastro_predict_regardless_of_mindstate to true is meant to allow
+  # passive tool bonding via more frequent predictions, so also set
   # walkingastro_use_partial_pools to false to maximize the chance of a bond if using it for that purpose.
   # Recommended to add Destiny Cipher to the walkingastro waggle set for this purpose as well.
-  predict_regardless_of_mindstate: 
+  predict_regardless_of_mindstate:
   # Set to true if you want to analyze your divination tool after every prediction.
   # Only useful for logging prediction tracking, does not add any in-game benefit.
-  analyze_divination_tool: 
+  analyze_divination_tool:
 
 learned_column_count: 2
 sort_auto_head: true
@@ -2198,12 +2198,12 @@ sanowret_no_use_scripts: # Don't try to use crystal while these scripts are acti
   - tinker
   - workorders
 
-sanowret_no_use_rooms: # Don't try to use crystal while in these rooms. This setting is also used for scholarship tomes currently. 
+sanowret_no_use_rooms: # Don't try to use crystal while in these rooms. This setting is also used for scholarship tomes currently.
   - Carousel Chamber     # Room with vault
   - Carousel Booth       # Room just before vault
   - 1900                 # You can specify room ids, too
   - Knife Clan, Triage
-  
+
 walkingastro_no_use_scripts:
   - alchemy
   - astrology
@@ -2303,7 +2303,44 @@ inventory_manager_vault_surfaces:
   - 'a bottom drawer'
   - 'a large shelf'
 
+####################
+# Stabbity
+#   - Thieves only
+#   - Repeatedly backstabs enemies until victory!
+#   - Automatically applies the 'stabbity' waggle buff between fights.
+#   - Automatically applies wands if you need them between fights.
+#   - Intelligently switches between weapons based on enemy and effectiveness.
+#   - Use in Duskruin Arena via `;stabbity arena` after you've entered the arena.
+####################
 stabbity:
+  # The name of the weapons must match what's in your gear config, just like combat.
+  weapons:
+    # Main backstab weapon to use.
+    # If the script detects you're not dealing enough damage then it will switch
+    # to your alternate weapon and continue using whichever is most effective.
+    preferred: assassin's blade
+    # Secondary backstab weapon to use.
+    # If the main is a slicer then this should be impact, or vice versa,
+    # to handle critters that are resistant to the main weapon's damage type.
+    alternate: belaying pin
+    # Thrown weapon for flying critters
+    thrown: imperial spear
+  # Names of critters to try your alternate weapon on first.
+  # If the script detects you're not dealing enough damage then it will switch
+  # to your preferred weapon and continue using whichever is most effective.
+  use_alternate_on:
+    - warcat
+    - frostweaver
+  # Names of critters to use your thrown weapon on.
+  # If not specified then your preferred weapon is used.
+  # However, if you encounter a flying critter not listed here
+  # the script is smart enough to begin using your thrown weapon.
+  use_thrown_on:
+    - bat
+    - gryphon
+  # When running Duskruin Arena, should Khri Eliminate be used on the bosses?
+  # Usually don't need it, but if you're struggling then try it out.
+  eliminate: false
 
 # Settings for script card-collector, defines bag to draw cards from(fresh) and bag to store duplicates and your case (duplicates)
 card_bags:
@@ -2490,6 +2527,7 @@ tarantula_no_use_scripts:
   - smith
   - tinker
   - workorders
+  - stabbity
 
 tarantula_debug: false
 
@@ -2556,6 +2594,7 @@ faux_atmo_no_use_scripts:
   - steal
   - tinker
   - workorders
+  - stabbity
 
 # Don't perform verbs on items if in these rooms.
 faux_atmo_no_use_rooms:
