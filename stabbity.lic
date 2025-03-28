@@ -168,6 +168,7 @@ class Stabbity
         # Some enemies are resistant to slice or impact damage.
         # If we detect that your current weapon is ineffective,
         # we'll switch to the other weapon in hopes it does better.
+        echo("*** Not hitting hard enough, switching weapon ***") if @debug
         case @current_weapon_type
         when 'preferred'
           @alternate_weapon_npcs.push(@target)
@@ -250,7 +251,7 @@ class Stabbity
       echo("*** Switching to thrown weapon ***") if @debug
       use_weapon('thrown')
     elsif @current_weapon_type != 'preferred'
-      echo("*** Switching to preferred weapon") if @debug
+      echo("*** Switching to preferred weapon ***") if @debug
       use_weapon('preferred')
       DRC.hide?
     end
@@ -320,7 +321,7 @@ class Stabbity
   def dodge_arena_trap
     if @arena_trap
       echo("*** Performing #{@arena_trap} to avoid trap ***") if @debug
-      DRC.bput(@arena_trap, 'You set yourself up to')
+      DRC.bput(@arena_trap, 'You set yourself up to', 'No need for that')
       @arena_trap = nil
     end
   end
