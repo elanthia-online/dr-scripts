@@ -43,29 +43,30 @@ class VanityPet
 
   def stow_pet(pet_name, pet_container)
     echo "stowing pet" if $debug_mode_pet
-    unless DRCI.in_hands?(pet_name) || DRCI.get_item_if_not_held?(pet_name, pet_container)
+    unless DRCI.in_hands?(pet_name) || DRCI.get_item_if_not_held?(pet_name, pet_container) || DRCI.get_item_if_not_held?(pet_name)
       wait_for_pet_to_arrive(pet_name, 15)
       unless DRCI.get_item_unsafe(pet_name)
         DRC.message("Could not pick up pet, where did it go?")
         exit
       end
     end
-    DRCI.put_away_item?(pet_name, pet_container)
+    unless DRCI.put_away_item?(pet_name, pet_container)
+      DRC.message("Unable to stow pet. Ensure you are either holding or wearing your pet's home.")
+    end
   end
 
   def drop_pet(pet_name, pet_container)
     echo "dropping pet" if $debug_mode_pet
-    unless DRCI.get_item_if_not_held?(pet_name, pet_container)
+    unless DRCI.get_item_if_not_held?(pet_name, pet_container) || DRCI.get_item_if_not_held?(pet_name)
       DRC.message("Could not find pet, are you sure you have it?")
       exit
     end
     case DRC.bput("drop my #{pet_name}",
                   /^You set the .* on the ground/,
+                  /^You give your .*#{pet_name}/,
                   /^No littering in the bank/,
                   /you can't drop anything here/,
-                  /^What were you referring/,
-                  /^You give your \w+ puppy/,
-                  /^You give your .*#{pet_name} an affectionate smooch/)
+                  /^What were you referring/)
     when /^No littering in the bank/, /you can't drop anything here/
       DRC.message("Can't drop pets in this room")
       DRCI.put_away_item?(pet_name, pet_container)
