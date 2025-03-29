@@ -18,7 +18,6 @@ end
 # To track when the last time was we checked experience/info.
 skills_check_interval = UserVars.echo_exp_time
 skills_check_time = Time.now
-learning_rates = ['clear', 'dabbling', 'perusing', 'learning', 'thoughtful', 'thinking', 'considering', 'pondering', 'ruminating', 'concentrating', 'attentive', 'deliberative', 'interested', 'examining', 'understanding', 'absorbing', 'intrigued', 'scrutinizing', 'analyzing', 'studious', 'focused', 'very focused', 'engaged', 'very engaged', 'cogitating', 'fascinated', 'captivated', 'engrossed', 'riveted', 'very riveted', 'rapt', 'very rapt', 'enthralled', 'nearly locked', 'mind lock']
 regex_flag_briefexp_on = %r{<component id='exp .*?<d cmd='skill (?<skill>[a-zA-Z\s]+)'.*:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s*\[\s?(?<rate>\d+)\/34\].*?<\/component>}
 regex_flag_briefexp_off = %r{<component id='exp .*?\b(?<skill>[a-zA-Z\s]+)\b:\s+(?<rank>\d+)\s+(?<percent>\d+)%\s+\b(?<rate>[a-zA-Z\s]+)\b.*?<\/component>}
 regex_exp_columns = %r{(?:\s*(?<skill>[a-zA-Z\s]+)\b:\s*(?<rank>\d+)\s+(?<percent>\d+)%\s+(?<rate>[a-zA-Z\s]+)\b)}
@@ -39,7 +38,7 @@ exp_hook = proc do |server_string|
     DRSkill.update(matches[:skill], matches[:rank], matches[:rate], matches[:percent])
   when regex_exp_columns
     matches = Regexp.last_match
-    DRSkill.update(matches[:skill], matches[:rank], learning_rates.index(matches[:rate]), matches[:percent])
+    DRSkill.update(matches[:skill], matches[:rank], DR_LEARNING_RATES.index(matches[:rate]), matches[:percent])
   end
   server_string
 end
