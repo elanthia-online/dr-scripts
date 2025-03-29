@@ -31,14 +31,15 @@ exp_hook = proc do |server_string|
     DRSkill.update(matches[:skill], matches[:rank], matches[:rate], matches[:percent])
     if UserVars.track_exp || UserVars.track_exp.nil?
       UserVars.track_exp ||= true
-      server_string.sub!(/(....).(..)%..\[(..)\/34\]/, "\\1\.\\2 ~\\3 #{sprintf('%0.2f', DRSkill.gained_exp(skill))}")
+      server_string.sub!(/(....).(..)%..\[(..)\/34\]/, "\\1\.\\2 ~\\3 #{sprintf('%0.2f', DRSkill.gained_exp(matches[:skill]))}")
     end
   when regex_flag_briefexp_off
     matches = Regexp.last_match
-    DRSkill.update(matches[:skill], matches[:rank], matches[:rate], matches[:percent])
-  when regex_exp_columns
-    matches = Regexp.last_match
     DRSkill.update(matches[:skill], matches[:rank], DR_LEARNING_RATES.index(matches[:rate]), matches[:percent])
+  when regex_exp_columns
+    server_string.scan(regex_exp_columns).each do |match|
+      DRSkill.update(match[0], match[1], DR_LEARNING_RATES.index(match[3]), match[2])
+    end
   end
   server_string
 end
