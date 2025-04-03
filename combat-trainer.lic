@@ -2753,7 +2753,7 @@ class AbilityProcess
       .split
       .map(&:capitalize)
       .then { |t| t.first == 'Delay' ? t.insert(1, 'Adaptation') : t.unshift('Adaptation') }
-      .then { |t| t.size > 1 ? ["khri #{t.join(' ')}"] : [] }  # Only create command if valid
+      .then { |t| t.size > 1 ? ["khri #{t.join(' ')}"] : [] }
       .each do |command|
         next if DRSpells.active_spells['Khri Adaptation']
         next if game_state.danger && DRCA.kneel_for_khri?(@kneel_khri, command)
