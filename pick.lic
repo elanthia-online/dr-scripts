@@ -4,10 +4,14 @@
 
 custom_require.call(%w[common common-arcana common-healing common-items common-money common-travel equipmanager events spellmonitor])
 
-### Added box popper mode April 2025 ##
-### This is added to handle whether to gear up on before_dying ###
-# @equipment_manager has been set to equal $gear, so we don't call redundent objects.
-$gear = EquipmentManager.new
+### Added 'box popper' mode April 2025 ###
+# This was added to handle whether to gear up in before_dying, since @equipment_manager won't pass through.
+# @equipment_manager has been set to equal GEAR, so we don't call two EquipmentManager needlessly.
+GEAR = EquipmentManager.new
+# $boxes_popped is reset every time ;pick is run
+# but the ;e echo $boxes_popped will continue to display most recent ;pick results,
+# even after ;pick has closed.
+$boxes_popped = nil
 
 class Pick
   def initialize
@@ -19,7 +23,7 @@ class Pick
         { name: 'all', regex: /all/, optional: true, description: 'Overwrite for @stop_pick_on_mindlock to keep picking' },
         { name: 'assume', regex: /(quick|normal|careful)/, optional: true, description: 'Skips identification - assumes given difficulty' },
         { name: 'stand', regex: /stand/i, optional: true, description: 'Stand to pop boxes. Default is sit.' },
-		    { name: 'popper', regex: /popper/i, optional: true, description: 'Sets to accept, pop, and return boxes.' }
+        { name: 'popper', regex: /popper/i, optional: true, description: 'Accept, pop, and return boxes.' }
       ]
     ]
 
@@ -145,12 +149,12 @@ class Pick
     elsif stop_picking?
       echo 'Exiting due to mindstate...'
     else
-      @equipment_manager = $gear
+      @equipment_manager = GEAR
       setup_flags
       open_containers
       check_for_boxes if !@popper
       remove_hindering_gear
-	  loop{box_popper}if @popper
+      loop {box_popper} if @popper
       crack_boxes
       stop_buffs
       wear_normal_gear
@@ -220,12 +224,12 @@ class Pick
       @equipment_manager.wear_items(@removed_items)
       exit
     end
-	$geared_up = false
+    $geared_up = false
   end
 
   def wear_normal_gear
     @equipment_manager.wear_equipment_set?('standard')
-	$geared_up = true
+    $geared_up = true
   end
 
   def setup_flags
@@ -414,6 +418,7 @@ class Pick
     end
 
     if holding_box?(current_box)
+      $boxes_popped += 1
       stow_hands_except(current_box['noun'])
       loot(current_box['noun']) unless @popper
       dispose_empty_box(current_box) unless @popper
@@ -868,54 +873,50 @@ class Pick
       DRCI.dispose_trash(DRC.left_hand, @worn_trashcan, @worn_trashcan_verb) if @trap_parts.include?(DRC.left_hand)
     end
   end
-  
+
   ### Box Popping! ###
   def box_popper
     Flags.add('box_offered', /offers you .* (box|caddy|case|casket|chest|coffer|crate|skippet|strongbox|trunk)/i)
-	fput("nod")
+    fput("nod")
     pause until Flags['box_offered']
-	echo "An offer has been made." if @debug
-    # Once flagged, we should now accept. #
-	case DRC.bput('accept', /You accept (\w*)\'s offer and are now holding .* (box|caddy|case|casket|chest|coffer|crate|skippet|strongbox|trunk)/i, /be in the same place for that/i, /You have no offers to accept/i)
-	when /You accept (\w*)\'s offer and are now holding .* (box|caddy|case|casket|chest|coffer|crate|skippet|strongbox|trunk)/i
+    # Once flagged, we should now accept.
+    case DRC.bput('accept', /You accept (\w*)\'s offer and are now holding .* (box|caddy|case|casket|chest|coffer|crate|skippet|strongbox|trunk)/i, /be in the same place for that/i, /You have no offers to accept/i)
+    when /You accept (\w*)\'s offer and are now holding .* (box|caddy|case|casket|chest|coffer|crate|skippet|strongbox|trunk)/i
       @popper_box_belongs_to = $1
-	  @popper_box = $2
-	  DRC.message("#{@popper_box_belongs_to} has given you a #{@popper_box} to pop for them.")
-	  # Attempts to open the popped box. #
-	  attempt_open(@popper_box)
-	  # Double checks that the box has been returned in attempt_open. #
-	  popper_return_box until !@popper_box
-	  $boxes_popped += 1
-	end
+      @popper_box = $2
+      DRC.message("#{@popper_box_belongs_to} has given you a #{@popper_box} to pop for them.")
+      # Attempts to open the popped box.
+      attempt_open(@popper_box)
+      # Double checks that the box has been returned in attempt_open.
+      popper_return_box until !@popper_box
+    end
   end
   
   def popper_return_box
     case DRC.bput("Give my #{@popper_box} to #{@popper_box_belongs_to}", /has accepted your offer/i, /nothing in your right hand/i, /What is it you\'re trying to give/i)
     when /has accepted your offer/i
-	  Flags.delete('box_offered')
-      DRC.message("Box has been returned to #{@popper_box_belongs_to}.")
-	  @popper_box = nil
+      Flags.delete('box_offered')
+      DRC.message("The #{@popper_box} has been returned to #{@popper_box_belongs_to}.")
+      @popper_box = nil
     when /What is it you\'re trying to give/i
-	  DRC.message("#{@popper_box_belongs_to} doesn't seem to be there to receive the box...")
-	  pause 5
-	else
-	  echo "Something went wrong in popper_return_box method."
-	  exit
-	end
+      DRC.message("#{@popper_box_belongs_to} doesn't seem to be there to receive the box...")
+      pause 5
+    else
+      echo "Something went wrong in popper_return_box method."
+      exit
+    end
   end
-  # end of Box Popping! #
+  ### end of Box Popping! ###
+
 end
 
 before_dying do
   echo "geared_up: #{$geared_up}"
   if !$geared_up
-	$gear.wear_equipment_set?('standard')
+    GEAR.wear_equipment_set?('standard')
     $geared_up = true
   end
-  if $boxes_popped > 0
-    echo "Popper Boxes popped this session: #{$boxes_popped}" if $boxes_popped > 0
-    $boxes_popped = nil
-  end    
+  echo "Boxes handled this PICK: #{$boxes_popped}" if $boxes_popped
   Flags.delete('box_offered')
   Flags.delete('disarm-trap-type')
   Flags.delete('disarm-shift')
@@ -923,7 +924,6 @@ before_dying do
   Flags.delete('more-locks')
   Flags.delete('glance-no-traps')
   Flags.delete('glance-no-locks')
-  $gear = nil
 end
 
 Pick.new
