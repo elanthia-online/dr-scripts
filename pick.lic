@@ -154,7 +154,7 @@ class Pick
       open_containers
       check_for_boxes if !@popper
       remove_hindering_gear
-      loop {box_popper} if @popper
+      loop { box_popper } if @popper
       crack_boxes
       stop_buffs
       wear_normal_gear
@@ -891,7 +891,7 @@ class Pick
       popper_return_box until !@popper_box
     end
   end
-  
+
   def popper_return_box
     case DRC.bput("Give my #{@popper_box} to #{@popper_box_belongs_to}", /has accepted your offer/i, /nothing in your right hand/i, /What is it you\'re trying to give/i)
     when /has accepted your offer/i
@@ -907,7 +907,6 @@ class Pick
     end
   end
   ### end of Box Popping! ###
-
 end
 
 before_dying do
