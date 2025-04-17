@@ -2442,6 +2442,9 @@ class AbilityProcess
     @kneel_khri = settings.kneel_khri
     echo("  @kneel_khri: #{@kneel_khri}") if $debug_mode_ct
 
+    @khri_adaptation = settings.khri_adaptation
+    echo("  @khri: #{@khri_adaptation}") if $debug_mode_ct
+
     @battle_cries = settings.battle_cries
     echo("  @battle_cries: #{@battle_cries}") if $debug_mode_ct
 
@@ -2745,6 +2748,26 @@ class AbilityProcess
         waitrt?
       end
     end
+
+    @khri_adaptation
+      .split
+      .map(&:capitalize)
+      .then { |t| t.first == 'Delay' ? t.insert(1, 'Adaptation') : t.unshift('Adaptation') }
+      .then { |t| t.size > 1 ? ["khri #{t.join(' ')}"] : [] }
+      .each do |command|
+        next if DRSpells.active_spells['Khri Adaptation']
+        next if game_state.danger && DRCA.kneel_for_khri?(@kneel_khri, command)
+
+        timer = game_state.cooldown_timers['Adaptation']
+        next unless !timer || (Time.now - timer).to_i > 20
+
+        if DRCA.activate_khri?(@kneel_khri, command)
+          game_state.cooldown_timers['Adaptation'] = Time.now
+          echo "Activated khri: #{command}" if $debug_mode_ct
+        else
+          echo "Did not activate khri: #{command}" if $debug_mode_ct
+        end
+      end
 
     @khri
       .map { |name| "Khri #{name}" }
