@@ -11,8 +11,6 @@
     - tart
 =end
 
-custom_require.call(%w[common common-items common-travel equipmanager events])
-
 class Smoker
   def initialize
     Flags.add('new-cig', 'That was the last of your', 'goes out and crumbles away'); Flags['new-cig'] = true

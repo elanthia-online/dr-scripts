@@ -1,7 +1,5 @@
 # Script to make sure your desired symbiosis is on.
 
-custom_require.call(%w[common])
-
 class Symbiosis
   def initialize
     @settings = get_settings

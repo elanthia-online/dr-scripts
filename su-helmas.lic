@@ -3,8 +3,6 @@
   This script runs non-combat tasks for Su Helmas.
 =end
 
-custom_require.call(%w(common drinfomon equipmanager events common-travel common-items))
-
 class SuHelmas
   def initialize
     settings = get_settings

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#tessera
 =end
 
-custom_require.call(%w[common common-items drinfomon])
-
 class Tessera
   # def for initialization of startupitems.
   def initialize

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#jail-buddy
 =end
 
-custom_require.call(%w[common common-items common-money])
-
 no_pause_all
 no_kill_all
 @settings = get_settings

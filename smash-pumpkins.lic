@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smash-pumpkins
 =end
 
-custom_require.call(%w[events common-items common-travel common])
-
 Flags.add('pumpkin-leeches', 'only to rain down around you afterwards')
 
 junk_list = get_settings.pumpkin_junk.map { |x| /\b#{x}/i }

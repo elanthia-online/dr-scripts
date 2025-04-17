@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#grave-pile
 =end
 
-custom_require.call(%w[events common-travel common])
-
 junk_list = get_settings.grave_junk.map { |x| /\b#{x}/i }
 
 DRCT.walk_to(10_291)

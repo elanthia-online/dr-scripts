@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#shit-list
 =end
 
-custom_require.call(%w[drinfomon])
-
 class ShitListRecorder
   def initialize
     arg_definitions = [

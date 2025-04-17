@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#theurgy
 =end
 
-custom_require.call(%w[common common-arcana common-crafting common-items common-money common-travel events drinfomon spellmonitor equipmanager])
-
 class TheurgyActions
   def initialize(settings)
     @settings = settings

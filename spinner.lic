@@ -3,8 +3,6 @@
   Documentation: TBD
 =end
 
-custom_require.call(%w[common common-healing common-travel])
-
 class Spinnerette
   def initialize
     settings = get_settings

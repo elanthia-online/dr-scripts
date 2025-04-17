@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smelt
 =end
 
-custom_require.call(%w[common common-crafting common-items events])
-
 class Smelt
   def initialize
     Flags.add('smelt-done', 'At last the metal appears to be thoroughly mixed')

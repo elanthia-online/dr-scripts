@@ -2,8 +2,6 @@
 Documentation: https://elanthipedia.play.net/Lich_script_repository#titlecheck
 =end
 
-custom_require.call %w[common]
-
 class TitleCheck
   def initialize
     arg_definitions = [

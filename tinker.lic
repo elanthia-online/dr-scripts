@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#tinker
 =end
 
-custom_require.call(%w[common common-arcana common-crafting common-items])
-
 class Tinker
   def initialize
     @settings = get_settings

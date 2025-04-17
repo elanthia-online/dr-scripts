@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smith
 =end
 
-custom_require.call(%w[common common-crafting common-items common-money common-travel drinfomon])
-
 class Smith
   def initialize
     arg_definitions = [

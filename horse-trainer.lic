@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#horse-trainer
 =end
 
-custom_require.call(%w[common])
-
 class TeachHorse
   def initialize
     @teachable_skills = %w[leadrope saddle animal joust kneel prance beg spin jump combat magic war]

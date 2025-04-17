@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#glyph-of-mana
 =end
 
-custom_require.call(%w[common])
-
 no_pause_all
 
 class GlyphMana

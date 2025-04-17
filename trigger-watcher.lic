@@ -1,5 +1,3 @@
-custom_require.call(%w[events common common-arcana common-crafting common-healing common-items common-money common-summoning common-theurgy common-moonmage common-travel drinfomon equipmanager])
-
 no_pause_all
 no_kill_all
 

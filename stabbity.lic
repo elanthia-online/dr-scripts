@@ -2,8 +2,6 @@
   https://elanthipedia.play.net/Lich_script_repository#stabbity
 =end
 
-custom_require.call(%w[common common-arcana drinfomon equipmanager events])
-
 class Stabbity
   # https://elanthipedia.play.net/Genie_numerical_hit_subs
   LIGHT_STRIKES = [

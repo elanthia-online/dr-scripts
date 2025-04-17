@@ -3,8 +3,6 @@
   It can be clickable to pause/unpause scripts as well\
 =end
 
-# custom_require
-
 no_pause_all
 no_kill_all
 hide_me

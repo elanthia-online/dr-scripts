@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#skill-recorder
 =end
 
-custom_require.call(%w[common drinfomon spellmonitor])
-
 no_pause_all
 no_kill_all
 

@@ -16,8 +16,6 @@ ulfhara:
 ---
 =end
 
-custom_require.call(%w[common common-items common-money common-travel drinfomon common-arcana equipmanager events spellmonitor])
-
 @returnpath = []
 
 class UlfHara

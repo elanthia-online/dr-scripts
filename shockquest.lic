@@ -5,8 +5,6 @@
   Change log: https://pastebin.com/3AJvXRXP
 =end
 
-custom_require.call(%w[common common-travel])
-
 class ShockQuest
   def initialize
     unless DRStats.empath?

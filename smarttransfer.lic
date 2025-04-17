@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smarttransfer
 =end
 
-custom_require.call(%w[common events])
-
 class SmartTransfer
   def initialize
     @wound_map = {

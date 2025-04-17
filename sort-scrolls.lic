@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#sort-scrolls
 =end
 
-custom_require.call(%w[common common-items])
-
 class ScrollSorter
   def initialize
     @all_spells = Array.new

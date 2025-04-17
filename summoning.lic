@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#summoning
 =end
 
-custom_require.call(%w[common-items common-summoning])
-
 class Summoning
   def initialize
     settings = get_settings

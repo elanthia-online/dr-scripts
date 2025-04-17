@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#tdps
 =end
 
-custom_require.call(%w[common drinfomon])
-
 races = { 'human'    => [0, 0, 0, 0, 0, 0, 0, 0],
           'dwarf'    => [0, 1, 1, 0, -1, 0, 0, -1],
           'elf'      => [1, -1, -1, -1, 1, 0, 0, 1],

@@ -1,7 +1,5 @@
 #   Documentation: https://elanthipedia.play.net/Lich_script_repository#gate
 
-custom_require.call(%w[common common-arcana events spellmonitor])
-
 # expects a 'gate' waggle set
 # expects raw channeling feat
 

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#training-manager
 =end
 
-custom_require.call(%w[common common-travel])
-
 class TrainingManager
   def initialize
     fput('awaken')

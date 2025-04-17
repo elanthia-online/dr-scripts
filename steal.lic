@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#steal
 =end
 
-custom_require.call(%w[common common-arcana common-items common-travel drinfomon equipmanager skill-recorder])
-
 class Steal
   def setup(settings)
     start_script('jail-buddy') unless Script.running?('jail-buddy')

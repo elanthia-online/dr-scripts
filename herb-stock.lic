@@ -1,7 +1,5 @@
 #   Documentation: https://elanthipedia.play.net/Lich_script_repository#herb-stock
 
-custom_require.call(%w[common common-items common-travel common-money])
-
 class HerbStock
   def initialize
     arg_definitions = [

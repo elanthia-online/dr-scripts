@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#weave-cloth
 =end
 
-custom_require.call(%w[common common-crafting])
-
 DRCC.find_loom_room(get_settings.hometown, nil)
 case DRC.bput('look on loom', /loom is loaded with some \w+ thread\.$/, /loom is loaded with some \w+ thread and some \w+ thread\.$/, /loom is not loaded/)
 when /loom is loaded with some/

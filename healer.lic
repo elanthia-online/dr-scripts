@@ -2,7 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#healer
 =end
 no_pause_all
-custom_require.call %w[common common-healing common-items]
 
 class Healer
   def empty_hands

@@ -12,8 +12,6 @@
    ## Important: set default stow to the same bag as your crafting bag ##
 =end
 
-custom_require.call(%w[common common-items common-money common-travel common-crafting events])
-
 class TaskMaster
   def initialize
     @settings = get_settings

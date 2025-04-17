@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#tithe
 =end
 
-custom_require.call(%w[common common-money common-travel events drinfomon])
-
 class TitheActions
   def initialize
     arg_definitions = [[]]

@@ -5,8 +5,6 @@
         and thresholds in which the scripts should be started
 =end
 
-custom_require.call(%w[common common-arcana equipmanager])
-
 class T2
   def initialize
     arg_definitions = [

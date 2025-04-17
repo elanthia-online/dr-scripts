@@ -1,7 +1,5 @@
 # Simple script to wear a gear set
 
-custom_require.call(%w[equipmanager])
-
 arg_definitions = [
   [
     { name: 'gearset', regex: /\w+/i, optional: true, description: 'Gear set to wear' }

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#tarantula
 =end
 
-custom_require.call(%w(common common-items drinfomon))
-
 no_kill_all
 
 class Tarantula
