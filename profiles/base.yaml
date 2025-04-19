@@ -235,6 +235,15 @@ stomp_to_engage: false
 pounce_on_cooldown: false
 # Toggle use of Pounce to engage (when it is available)
 pounce_to_engage: false
+# Toggle use of Maneuver Rush to engage (when it is available)
+maneuver_rush_to_engage: false
+# If "Charged Maneuver" is set in your training_abilities, or
+# `pounce_to_engage: true`, this setting determines which shield you will
+# equip to your offhand to rush to engage enemies with.
+# This can be the same as your arm-worn shield, or perhaps a larger one
+# that you pull out of a container just for this maneuver.
+# This must match the "{adjective} {noun}" of the same item in your gear: section.
+maneuver_rush_shield:
 
 # Define a worn shield to Rush to engage. It should match the name provided in your gear.
 rush_shield:
