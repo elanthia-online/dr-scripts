@@ -3639,7 +3639,7 @@ class AttackProcess
       return false
     end
 
-    charged_maneuver = check_charged_maneuver(game_state)
+    charged_maneuver = game_state.determine_charged_maneuver
 
     game_state.reset_barb_whirlwind_flags_if_needed
 
@@ -3682,7 +3682,7 @@ class AttackProcess
         end
       end
 
-      maneuver_success = use_charged_maneuver(charged_maneuver, game_state)
+      maneuver_success = game_state.use_charged_maneuver(charged_maneuver)
 
       game_state.sheath_offhand_weapon(skill) if offhand_weapon_name
     end
@@ -4002,7 +4002,25 @@ class AttackProcess
       if game_state.loaded
         # If we successfully perform a maneuver then count that as our action.
         # Otherwise begin aiming for normal shot.
-        if charged_maneuver && use_charged_maneuver(charged_maneuver, game_state)
+        if charged_maneuver && game_state.use_charged_maneuver(charged_maneuver)
+          # Only react to the powershot flag if we just did a powershot maneuver.
+          # This is an added protection in case the flag was tripped by an unrelated
+          # action like throwing a weapon. This way we don't try to "stow my throwing hammer"
+          # after a 'maneuver cleave' action, for example.
+          if Flags['ct-powershot-ammo'] && charged_maneuver == 'powershot'
+            # When the flag matches game output then the value of the flag
+            # is the regular expression matches. This is how we know the ammo to stow.
+            stow_ammo(Flags['ct-powershot-ammo'][:ammo])
+            Flags.reset('ct-powershot-ammo')
+            # When dual loading, powershot only fires one of the arrows.
+            # So let's take advantage of the remaining arrow that's still loaded.
+            if game_state.dual_load?
+              shoot_aimed('shoot', game_state)
+            end
+            game_state.loaded = false
+            @firing_check = 0
+            echo("@firing_check reset on maneuver fire: #{@firing_check}") if $debug_mode_ct
+          end
           game_state.action_taken
         else
           game_state.set_aim_queue
@@ -4102,114 +4120,6 @@ class AttackProcess
     end
   end
 
-  def check_charged_maneuver(game_state)
-    # Determines the next maneuver to do that's not on cooldown
-    maneuver = game_state.determine_charged_maneuver
-    return nil unless maneuver
-
-    echo "***Ready to use charged maneuver: #{maneuver}***" if $debug_mode_ct
-    maneuver
-  end
-
-  def use_charged_maneuver(action, game_state)
-    return false unless action
-
-    Flags.reset('ct-powershot-ammo')
-    Flags.reset('ct-maneuver-cooldown-reduced')
-    Flags.reset('ct-attack-out-of-range')
-
-    maneuver_success_messages = [
-      /^You raise your weapons before you and prepare to strike/,
-      /^Taking a full step back/,
-      /^You take a step back/,
-      /^You lower your shoulders/,
-      /^You angle to the side/,
-      /^You square up your feet/,
-      /^You crouch down/,
-      /^You step to the side/,
-      /^Swiftly, you attempt to/,
-      /^You brace your .* to increase the power of the next shot/
-    ]
-
-    maneuver_failure_messages = [
-      # Your ranged weapon is unloaded
-      /^You prepare the shot, but stop when you realize/,
-      # Maneuver is still on cooldown
-      /^You must rest a bit longer before attempting that maneuver again/,
-      # Trying to suplex but you're not grappled
-      /^You must first be grappled with an enemy/,
-      # Trying to doublestrike with a weapon that requires two hands (e.g. quarterstaff or long polearm)
-      /^You must free up your left hand first/,
-      # Trying to doublestrike without wielding two, one-handed melee weapons
-      /^This works best when you use a suitable weapon/,
-      /^This works best when you are dual wielding suitable weapons/,
-      # Maneuver requires a weapon but you're not wielding any
-      /^With your fist? That might hurt/,
-      # You can't aim before powershot maneuver
-      /^You are unable to focus on performing a maneuver while aiming at an enemy/
-    ]
-
-    attempt = DRC.bput("maneuver #{action}", *maneuver_success_messages, *maneuver_failure_messages)
-
-    waitrt?
-
-    if Flags['ct-attack-out-of-range']
-      game_state.engage
-      return use_charged_maneuver(action, game_state)
-    end
-
-    case attempt
-    when /^You must rest a bit longer before attempting that maneuver again/
-      # Barbarians who reduced the cooldown on this maneuver last time
-      # could have reduced it to anywhere between 45-55 seconds.
-      # We optimistically assumed 45 seconds. If that wasn't enough then
-      # we'll wait another 15 seconds and retry.
-      game_state.cooldown_timers[action] += 15
-      return false
-    when *maneuver_failure_messages
-      return false
-    when *maneuver_success_messages
-      # Only react to the powershot flag if we just did a powershot manuever.
-      # This is an added protection in case the flag was tripped by an unrelated
-      # action like throwing a weapon. This way we don't try to "stow my throwing hammer"
-      # after a 'maneuver cleave' action, for example.
-      if Flags['ct-powershot-ammo'] && action == 'powershot'
-        # When the flag matches game output then the value of the flag
-        # is the regular expression matches. This is how we know the ammo to stow.
-        stow_ammo(Flags['ct-powershot-ammo'][:ammo])
-        Flags.reset('ct-powershot-ammo')
-        # When dual loading, powershot only fires one of the arrows.
-        # So let's take advantage of the remaining arrow that's still loaded.
-        if game_state.dual_load?
-          shoot_aimed('shoot', game_state)
-        end
-        game_state.loaded = false
-        @firing_check = 0
-        echo("@firing_check reset on maneuver fire: #{@firing_check}") if $debug_mode_ct
-      end
-
-      # Woot! Barbarian reduced their maneuver cooldown so
-      # they can retry this specific ability sooner rather than later.
-      if Flags['ct-maneuver-cooldown-reduced'] && DRStats.barbarian?
-        # The new cooldown is somewhere between 45-55 seconds.
-        # We'll be optimistic and hope we got the shorter cooldown.
-        # If we didn't then next time around we'll add a few more seconds
-        # to finish out a 60 second cooldown.
-        game_state.cooldown_timers[action] = Time.now + 45
-        Flags.reset('ct-maneuver-cooldown-reduced')
-      else
-        # No special favors for you. Full cooldown!
-        game_state.cooldown_timers[action] = Time.now + 90
-      end
-
-      # Toggle off using charged maneuvers until
-      # training ability process toggles it back for training
-      game_state.use_charged_maneuvers = false
-
-      return true
-    end
-  end
-
   def stow_ammo(ammo = nil, quantity = 1)
     echo "Stowing ammo: #{ammo}, #{quantity}" if $debug_mode_ct
     return unless ammo
@@ -4219,7 +4129,7 @@ class AttackProcess
     # The majority of the time, if not always, the words to reference the item are the first and last (e.g. matte sphere).
     ammo_parts = ammo.strip.split(' ')
     ammo = [ammo_parts.first, ammo_parts.last].compact.uniq.join(' ')
-    case DRC.bput("stow my #{ammo}", 'You pick up', 'You put your', 'Stow what', 'needs to be tended to be removed', 'As you reach for a glowing')
+    case DRC.bput("stow my #{ammo}", 'You pick up', 'You put your', 'Stow what', 'needs to be tended to be removed', 'You need a free hand', 'As you reach for a glowing')
     when 'You pick up', 'You put your'
       stow_ammo(ammo, quantity - 1)
     when 'Stow what'
@@ -4658,6 +4568,12 @@ class GameState
     @cambrinth_invoke_exact_amount = settings.cambrinth_invoke_exact_amount
     echo("  @cambrinth_invoke_exact_amount: #{@cambrinth_invoke_exact_amount}") if $debug_mode_ct
 
+    @rush_to_engage = settings.maneuver_rush_to_engage
+    echo("  @rush_to_engage: #{@rush_to_engage}") if $debug_mode_ct
+
+    @rush_shield = settings.maneuver_rush_shield
+    echo("  @rush_shield: #{@rush_shield}") if $debug_mode_ct
+
     if @use_analyze_combos && DRStats.barbarian?
       Flags.add('ct-accuracy-ready', 'You sense your combat accuracy decrease')
       Flags['ct-accuracy-ready'] = true
@@ -4830,11 +4746,22 @@ class GameState
     return unless can_engage?
     return if stomp
     return if pounce
+    return if rush
 
     case DRC.bput("engage", /^You (are already|begin to) (stealthily )?(advanc(e|ing)|at melee)/, /^There is nothing else/, /is already quite dead/, /^What do you want to advance towards/)
     when /You are already advancing/, /You begin to advance/, /You begin to stealthily advance/
       pause 2
     end
+  end
+
+  def rush
+    return if retreating?
+    return false if DRC.left_hand # Need your offhand to equip a shield
+    return false unless @rush_shield # Need a shield to equip
+    return false unless npcs.any? # We should have an NPC to rush
+    return false unless @rush_to_engage && charged_maneuver_off_cooldown?(@charged_maneuvers['Shield Usage']) # ability is off cooldown and we've elected to use it
+
+    use_charged_maneuver(@charged_maneuvers['Shield Usage'])
   end
 
   def stomp
@@ -4873,6 +4800,7 @@ class GameState
   end
 
   def pounce
+    return if retreating?
     return false unless DRStats.ranger? # Current basic qualifications for use
     return false unless npcs.any? # We should have an NPC to pounce on
     return false unless (@pounce_on_cooldown || @pounce_to_engage) && Flags['pounce-ready'] # ability is off cooldown and we've elected to use
@@ -5268,8 +5196,8 @@ class GameState
   end
 
   def charged_maneuver_off_cooldown?(maneuver)
-    # Non-Barbarians can perform a maneuver every 90 seconds.
-    # Barbarians have a chance to reduce that to 60 seconds.
+    # All guilds can perform a maneuver every 90 seconds.
+    # Some guilds have a chance to reduce some maneuvers to every 60 seconds.
     # To account for the adjustable cooldown, the timer we store
     # for maneuvers is the future time when it'll be ready rather
     # than the start time as we do with other ability timers.
@@ -5278,18 +5206,134 @@ class GameState
     timer.nil? || (Time.now > timer)
   end
 
+  # Determines the next maneuver to do that's not on cooldown.
+  # Prioritizes dual wield to maximize weapons training.
+  # Next chooses based on the current weapon skill being trained.
+  # Finally, may attempt a shield rush.
   def determine_charged_maneuver
     return nil unless @use_charged_maneuvers
 
     maneuver = nil
+
     can_dual_wield_whirlwind = @currently_whirlwinding && !twohanded_weapon_skill?
     can_dual_wield_doublestrike = @prioritize_maneuver_doublestrike && doublestrikable_weapon_skill?
+    can_shield_rush = @rush_shield && !aimed_skill?
+
     if charged_maneuver_off_cooldown?(@charged_maneuvers['Dual Wield']) && (can_dual_wield_whirlwind || can_dual_wield_doublestrike)
       maneuver = @charged_maneuvers['Dual Wield']
     elsif charged_maneuver_off_cooldown?(@charged_maneuvers[weapon_skill])
       maneuver = @charged_maneuvers[weapon_skill]
+    elsif charged_maneuver_off_cooldown?(@charged_maneuvers['Shield Usage']) && can_shield_rush
+      maneuver = @charged_maneuvers['Shield Usage']
     end
+
+    echo "***Determined next available charged maneuver: #{maneuver}***" if $debug_mode_ct
+
     maneuver
+  end
+
+  def use_charged_maneuver(maneuver)
+    return false unless maneuver
+
+    Flags.reset('ct-powershot-ammo')
+    Flags.reset('ct-maneuver-cooldown-reduced')
+    Flags.reset('ct-attack-out-of-range')
+
+    maneuver_success_messages = [
+      /^You angle your .* towards .* and charge forwards/,
+      /^You raise your weapons before you and prepare to strike/,
+      /^Taking a full step back/,
+      /^You take a step back/,
+      /^You lower your shoulders/,
+      /^You angle to the side/,
+      /^You square up your feet/,
+      /^You crouch down/,
+      /^You step to the side/,
+      /^Swiftly, you attempt to/,
+      /^You brace your .* to increase the power of the next shot/,
+    ]
+
+    maneuver_failure_messages = [
+      # You are not engaged with any enemies
+      /^There is nothing else to face/,
+      # Your ranged weapon is unloaded
+      /^You prepare the shot, but stop when you realize/,
+      # Maneuver is still on cooldown
+      /^You must rest a bit longer before attempting that maneuver again/,
+      # Trying to suplex but you're not grappled
+      /^You must first be grappled with an enemy/,
+      # Trying to doublestrike with a weapon that requires two hands (e.g. quarterstaff or long polearm)
+      /^You must free up your left hand first/,
+      # Trying to doublestrike without wielding two, one-handed melee weapons
+      /^This works best when you use a suitable weapon/,
+      /^This works best when you are dual wielding suitable weapons/,
+      # Maneuver requires a weapon but you're not wielding any
+      /^With your fist? That might hurt/,
+      # You can't aim and perform a maneuver
+      /^You are unable to focus on performing a maneuver while aiming at an enemy/,
+      # Trying to rush without holding a shield
+      /^You must be holding a shield in your left hand to accomplish this maneuver/
+    ]
+
+    # Shield Rush cannot be used while engaged
+    maneuver_retreat_retry_messages = [
+      /^You are already engaged/,
+      /is already engaged to you/
+    ]
+
+    is_shield_rush = maneuver.casecmp?(@charged_maneuvers['Shield Usage'])
+
+    wield_specific_weapon(@rush_shield, 'Shield Usage', false) if is_shield_rush
+
+    attempt = DRC.bput("maneuver #{maneuver}", *maneuver_success_messages, *maneuver_failure_messages, *maneuver_retreat_retry_messages)
+
+    waitrt?
+
+    @equipment_manager.stow_weapon(@rush_shield) if is_shield_rush
+
+    if Flags['ct-attack-out-of-range']
+      engage
+      return use_charged_maneuver(maneuver)
+    end
+
+    case attempt
+    when /^You must rest a bit longer before attempting that maneuver again/
+      # Characters who reduced the cooldown on this maneuver last time
+      # could have reduced it to anywhere between 45-55 seconds.
+      # We optimistically assumed 45 seconds. If that wasn't enough then
+      # we'll wait another 15 seconds and retry.
+      @cooldown_timers[maneuver] += 15
+      return false
+    when *maneuver_failure_messages
+      return false
+    when *maneuver_retreat_retry_messages
+      if maneuver.casecmp?('rush')
+        DRC.retreat
+        return use_charged_maneuver(maneuver)
+      else
+        return false
+      end
+    when *maneuver_success_messages
+      # Woot! Barbarian or Paladin reduced their maneuver cooldown so
+      # they can retry this specific ability sooner rather than later.
+      if Flags['ct-maneuver-cooldown-reduced']
+        # The new cooldown is somewhere between 45-55 seconds.
+        # We'll be optimistic and hope we got the shorter cooldown.
+        # If we didn't then next time around we'll add a few more seconds
+        # to finish out a 60 second cooldown.
+        @cooldown_timers[maneuver] = Time.now + 45
+        Flags.reset('ct-maneuver-cooldown-reduced')
+      else
+        # No special favors for you. Full cooldown!
+        @cooldown_timers[maneuver] = Time.now + 90
+      end
+
+      # Toggle off using charged maneuvers until
+      # training ability process toggles it back for training
+      @use_charged_maneuvers = false
+
+      return true
+    end
   end
 
   def fatigue_low?
