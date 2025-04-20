@@ -5217,7 +5217,7 @@ class GameState
 
     can_dual_wield_whirlwind = @currently_whirlwinding && !twohanded_weapon_skill?
     can_dual_wield_doublestrike = @prioritize_maneuver_doublestrike && doublestrikable_weapon_skill?
-    can_shield_rush = @rush_shield && !aimed_skill?
+    can_shield_rush = @rush_shield && !aimed_skill? && !DRC.left_hand
 
     if charged_maneuver_off_cooldown?(@charged_maneuvers['Dual Wield']) && (can_dual_wield_whirlwind || can_dual_wield_doublestrike)
       maneuver = @charged_maneuvers['Dual Wield']
