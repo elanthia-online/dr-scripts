@@ -245,8 +245,6 @@ maneuver_rush_to_engage: false
 # This must match the "{adjective} {noun}" of the same item in your gear: section.
 maneuver_rush_shield:
 
-# Define a worn shield to Rush to engage. It should match the name provided in your gear.
-rush_shield:
 
 # Defines the number of monsters you will keep in combat with you by performing 'dance actions' or attacking with only 'harmless: true' spells. 0 means kill everything.
 dance_threshold: 0
