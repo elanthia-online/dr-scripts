@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#pay-debt
 =end
 
-custom_require.call(%w[common common-money common-travel events])
-
 class PayDebt
   def initialize
     arg_definitions = [

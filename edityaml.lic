@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#edityaml
 =end
 
-custom_require.call('common')
-
 class SetupConfig
   def initialize
     @line_length = 80

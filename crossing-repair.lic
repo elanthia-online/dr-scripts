@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#crossing-repair
 =end
 
-custom_require.call(%w[common common-money common-travel equipmanager])
-
 class CrossingRepair
   def initialize
     arg_definitions = [

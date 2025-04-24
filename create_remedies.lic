@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#create_remedies
 =end
 
-custom_require.call(%w[common])
-
 class CreateRemedies
   def initialize
     arg_definitions = [

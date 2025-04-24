@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#esp
 =end
 
-custom_require.call(%w[common common-items])
-
 class ESP
   def initialize
     @all_channels = ['General', 'Trade', 'Guild', 'Race', 'Local', 'Private', 'Personal']

@@ -1,7 +1,5 @@
 # Takes cards from a bag of freshly acquired cards and places them in your collector's cases
 
-custom_require.call(%w[common common-items])
-
 class Cards
   def initialize
     settings = get_settings

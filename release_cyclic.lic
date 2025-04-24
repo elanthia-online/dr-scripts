@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#release_cyclic
 =end
 
-custom_require.call(%w[common-arcana])
-
 class ReleaseCyclic
   def initialize
     DRCA.release_cyclics

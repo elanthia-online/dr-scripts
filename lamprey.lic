@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#lamprey
 =end
 
-custom_require.call(%w[common-travel common common-items])
-
 class Lamprey
   def initialize
     settings = get_settings

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#empathylink
 =end
 
-custom_require.call(%w[common equipmanager])
-
 class Empathylink
   def initialize
     if UserVars.empathylink.nil?

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#discern
 =end
 
-custom_require.call(%w[common-arcana])
-
 class Discern
   def initialize
     arg_definitions = [

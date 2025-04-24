@@ -206,8 +206,6 @@
 
 =end
 
-custom_require.call(%w[common common-arcana events spellmonitor])
-
 class Cast
   def initialize
     arg_definitions = [[

@@ -3,8 +3,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#bankbot
 =end
 
-custom_require.call(%w[common common-validation events])
-
 class Bankbot
   def initialize
     Flags.add('tip-accepted', '.* accepts your tip and slips it away with a smile')

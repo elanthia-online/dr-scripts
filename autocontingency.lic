@@ -1,7 +1,7 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#autocontingency
 =end
-custom_require.call(%w(common-arcana spellmonitor common-travel))
+
 class Contingency
   def initialize
     arg_definitions = [

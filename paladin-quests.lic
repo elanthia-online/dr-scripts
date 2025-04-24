@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#paladin-quests
 =end
 
-custom_require.call(%w[common common-travel equipmanager])
-
 class PaladinQuests
   def initialize
     unless DRStats.paladin?

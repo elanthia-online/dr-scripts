@@ -1,5 +1,3 @@
-custom_require.call(%w[common common-travel common-items common-arcana events])
-
 class Coordinator
   def initialize(debug)
     UserVars.coordinator_timers ||= {}

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#alchemy
 =end
 
-custom_require.call(%w[common common-crafting common-items common-travel])
-
 class Alchemy
   def initialize
     arg_definitions = [

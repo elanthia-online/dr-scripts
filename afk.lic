@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#afk
 =end
 
-custom_require.call(%w[common equipmanager])
-
 no_pause_all
 no_kill_all
 

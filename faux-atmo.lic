@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#faux-atmo
 =end
 
-custom_require.call(%w[common events])
-
 class FauxAtmo
   def initialize
     arg_definitions = [

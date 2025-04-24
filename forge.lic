@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#forge
 =end
 
-custom_require.call(%w[common common-arcana common-crafting common-items common-travel events drinfomon])
-
 class Forge
   def initialize
     arg_definitions = [

@@ -20,8 +20,6 @@
     primer: true | false
 =end
 
-custom_require.call(%w[common common-arcana common-crafting common-theurgy events])
-
 class CarveBead
   def initialize
     arg_definitions = [

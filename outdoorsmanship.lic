@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#outdoorsmanship
 =end
 
-custom_require.call(%w[common common-items common-arcana common-travel events])
-
 class Outdoorsmanship
   def initialize
     arg_definitions = [

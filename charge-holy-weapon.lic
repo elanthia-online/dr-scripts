@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#charge-holy-weapon
 =end
 
-custom_require.call(%w[common common-travel equipmanager])
-
 class HolyWeapon
   def initialize
     exit unless DRStats.paladin?

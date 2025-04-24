@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#multi
 =end
 
-custom_require.call(%w[common])
-
 class Multi
   def initialize(args = nil)
     if args.nil? || args.empty? || args[0] == "help"

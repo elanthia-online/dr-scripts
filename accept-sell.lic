@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#accept-sell
 =end
 
-custom_require.call(%w[common common-money])
-
 loop do
   if DRC.right_hand || DRC.left_hand
     echo('Empty your hands!')

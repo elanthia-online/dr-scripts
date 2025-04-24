@@ -7,8 +7,6 @@
   Label deeds in a deed register.
 =end
 
-custom_require.call(%w[common common-items])
-
 class Register
   def initialize
     arg_definitions =

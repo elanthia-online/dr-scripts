@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#play
 =end
 
-custom_require.call(%w[common common-items])
-
 class Play
   def initialize
     settings = get_settings

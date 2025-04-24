@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#carve
 =end
 
-custom_require.call(%w[common common-arcana events common-crafting])
-
 class Carve
   def initialize
     @settings = get_settings

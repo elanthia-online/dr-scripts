@@ -1,7 +1,6 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#combat-trainer
 =end
-custom_require.call(%w[common common-arcana common-healing common-items common-summoning common-theurgy common-moonmage common-travel equipmanager events spellmonitor])
 
 class SetupProcess
   def initialize(settings, equipment_manager)
