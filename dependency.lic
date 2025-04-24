@@ -1825,7 +1825,7 @@ else
   Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^Rested EXP Stored|type: AWAKEN|Unlock Rested Experience/, quiet: true, timeout: 1)
   Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
   Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("ability", /^You (know the Berserks|recall the spells you have learned from your training)|^From (your apprenticeship you remember practicing|the \w+ tree)/, /^You (recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
+  Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the [\w ]+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
 end
 
 $manager.check_base_files
