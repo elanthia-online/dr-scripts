@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#magic-training
 =end
 
-custom_require.call(%w[common common-arcana common-healing common-moonmage drinfomon common-travel])
-
 # Track how long we've been training and how many mindstates we increase at the end.
 # These are defined with @@ so that they can be referenced in before_dying block.
 

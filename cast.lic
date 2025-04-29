@@ -206,8 +206,6 @@
 
 =end
 
-custom_require.call(%w[common common-arcana events spellmonitor])
-
 class Cast
   def initialize
     arg_definitions = [[
@@ -275,9 +273,9 @@ class Cast
     @ritual_focus = @settings.ritual_focus
     @prep_scaling_factor = @settings.prep_scaling_factor || 1.0
     @camb_items = normalize_camb(@settings)
-    @attunement_threshold = @settings.cast_attunement_threshold&.to_i || 0
-    @concentration_threshold = @settings.cast_concentration_threshold || 0
-    @fatigue_threshold = @settings.cast_fatigue_threshold || 0
+    @attunement_threshold = @settings.cast_attunement_threshold.to_i
+    @concentration_threshold = @settings.cast_concentration_threshold.to_i
+    @fatigue_threshold = @settings.cast_fatigue_threshold.to_i
     @threshold_delay = @settings.cast_threshold_delay || 15
     logd "SETTINGS --", {
       ritual_focus: @ritual_focus,

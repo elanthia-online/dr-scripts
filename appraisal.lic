@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#appraisal
 =end
 
-custom_require.call(%w[common equipmanager])
-
 class Appraisal
   def initialize
     arg_definitions = [

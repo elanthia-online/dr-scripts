@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#favor
 =end
 
-custom_require.call(%w[common common-travel common-money common-items equipmanager])
-
 class CrossingFavor
   def initialize
     arg_definitions = [

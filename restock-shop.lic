@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#restock-shop
 =end
 
-custom_require.call(%w[common common-crafting common-items common-money common-travel])
-
 class ShopRestock
   def initialize
     @settings = get_settings

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#enchant
 =end
 
-custom_require.call(%w[common common-arcana events common-crafting equipmanager])
-
 class Enchant
   def initialize
     @settings = get_settings

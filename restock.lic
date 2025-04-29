@@ -1,7 +1,5 @@
 #   Documentation: https://elanthipedia.play.net/Lich_script_repository#restock
 
-custom_require.call(%w[common common-items common-money common-travel])
-
 class Restock
   def initialize
     arg_definitions = [

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#mining-manager
 =end
 
-custom_require.call(%w[common])
-
 class MiningManager
   def initialize
     loop do

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#feed-cloak
 =end
 
-custom_require.call(%w[common common-travel])
-
 class FeedCloak
   def initialize
     settings = get_settings

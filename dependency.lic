@@ -10,7 +10,7 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.10'
+$DEPENDENCY_VERSION = '2.0.11'
 $MIN_RUBY_VERSION = '3.3.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/KzSAUPnDHh'
 
@@ -261,7 +261,7 @@ class ScriptManager
     end
 
     if Settings['autostart'].include?('dependency')
-      echo("Dependency found in autostarts. It doesn't belond here. Removing it.")
+      echo("Dependency found in autostarts. It doesn't belong here. Removing it.")
       Settings['autostart'] -= ['dependency']
       Settings.save
     end
@@ -1443,7 +1443,7 @@ class MoonWatch
     return 60 unless UserVars.moons.reject { |m| m == 'visible' }.values.first['timer'] && UserVars.sun['timer']
     return @data_delay if @data_delay
 
-    echo("calculting next moon data request") if @debug
+    echo("calculating next moon data request") if @debug
     all_timers = UserVars.moons.reject { |m| m == 'visible' }.values.map { |data| data['timer'] } + [UserVars.sun['timer']]
     @data_delay = ([all_timers.min * 0.8, 1].max * 60).to_i
     echo("Next request in #{@data_delay} seconds") if @debug
@@ -1825,7 +1825,7 @@ else
   Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^Rested EXP Stored|type: AWAKEN|Unlock Rested Experience/, quiet: true, timeout: 1)
   Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
   Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("ability", /^You (know the Berserks|recall the spells you have learned from your training)|^From your apprenticeship you remember practicing/, /^You (recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
+  Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
 end
 
 $manager.check_base_files

@@ -1,5 +1,3 @@
-custom_require.call(%w[common common-items common-travel])
-
 class LearnFOU
   def initialize
     arg_definitions = [

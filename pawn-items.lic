@@ -7,8 +7,6 @@
 # only if the player explicitly unpauses this script does it unpause.
 no_pause_all
 
-custom_require.call %w[common common-items common-travel equipmanager]
-
 class PawnItems
   def initialize
     arg_definitions = [

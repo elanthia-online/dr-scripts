@@ -1,7 +1,5 @@
 #   Documentation: https://elanthipedia.play.net/Lich_script_repository#fir
 
-custom_require.call(%w[common common-crafting common-items common-money common-travel drinfomon equipmanager])
-
 class FirQuest
   def initialize
     arg_definitions = [

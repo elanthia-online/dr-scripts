@@ -3,8 +3,6 @@
   Advanced Options:  https://github.com/elanthia-online/dr-scripts/wiki/First-Aid-Strategy
 =end
 
-custom_require.call(%w[common common-travel drinfomon equipmanager])
-
 class FirstAid
   def initialize
     arg_definitions = [

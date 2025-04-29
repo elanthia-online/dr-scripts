@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#learned
 =end
 
-custom_require.call(%w[drinfomon])
-
 class LearnedData
   def initialize
     @skills_to_show = []

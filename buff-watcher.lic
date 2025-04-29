@@ -5,8 +5,6 @@
 no_kill_all
 no_pause_all
 
-custom_require.call(%w[common common-arcana common-items drinfomon spellmonitor])
-
 class BuffWatcher
   def initialize
     arg_definitions = [

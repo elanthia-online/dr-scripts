@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#riverhaven-thieves
 =end
 
-custom_require.call(%w[common-travel])
-
 class RiverhavenThieves
   def initialize
     pass = UserVars.riverhaven_password

@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#crossing-training
 =end
 
-custom_require.call(%w[equipmanager events spellmonitor common common-arcana common-healing common-items common-moonmage common-money common-travel common-summoning])
-
 class CrossingTraining
   attr_reader :running, :idling
 

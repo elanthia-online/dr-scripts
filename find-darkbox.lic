@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#find-darkbox
 =end
 
-custom_require.call(%w[events common-travel common common-items])
-
 arg_definitions = [
   [
     { name: 'override', regex: /override/i, optional: true, description: 'Use remedies instead of herbs if herbs defined in yaml and passed into heal-remedy.' }

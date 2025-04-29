@@ -12,8 +12,6 @@
   (probably works)
 =end
 
-custom_require.call(%w[common common-crafting common-items common-money common-travel equipmanager events])
-
 class Repair
   def initialize
     UserVars.repair_timer_snap ||= Time.now

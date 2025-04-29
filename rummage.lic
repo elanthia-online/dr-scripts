@@ -1,6 +1,5 @@
 # Rummage Parser
 
-custom_require.call(%w[common common-items])
 require 'terminal-table'
 
 class Rummage

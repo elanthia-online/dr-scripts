@@ -44,8 +44,8 @@ Crossing:
     id: 8266
     name: Falken
   npc_empath:
-    # id: 6870 # This is the Crossing npc healer room.  Martyr Saedelthorp and Apprentice Kaiva.
-    id: 6218 # This is dokt, commented out for the wild magic event.
+    id: 6870 # This is the Crossing npc healer room.  Martyr Saedelthorp and Apprentice Kaiva.
+    # id: 6218 # This is Dokt.  Dokt is no longer a healer.  Leaving in for posterity
   locksmithing:
     id: 19125
     name: Ragge
@@ -268,8 +268,8 @@ Knife Clan:
   nexus: # Crossing
     id: 19162
   deposit: *crossing_deposit
-  npc_empath:
-    id: 6218 # This is dokt
+  # npc_empath:
+    # id: 6218 # This is Dokt.  He no longer heals.  Leaving this here for Posterity
 Darkling Wood:
   currency: dokoras
   nexus: # Shard

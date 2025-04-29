@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#avtalia
 =end
 
-custom_require.call(%w[events])
-
 no_kill_all
 no_pause_all
 

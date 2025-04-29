@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#clean-leather
 =end
 
-custom_require.call(%w[common common-items common-crafting common-travel common-money])
-
 # Sample script call: ;clean-leather backpack troll skin rucksack quick
 
 class CleanLeather

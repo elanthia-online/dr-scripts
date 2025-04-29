@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#clean-leather
 =end
 
-custom_require.call(%w[common common-crafting])
-
 class CleanLumber
   def initialize
     arg_definitions = [

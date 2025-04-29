@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#lockbox
 =end
 
-custom_require.call(%w[common equipmanager])
-
 class Lockbox
   def initialize
     settings = get_settings

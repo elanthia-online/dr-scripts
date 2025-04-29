@@ -7,7 +7,6 @@ fa_skinning_trainer: crocodile
 # Options:  First Aid, Skinning, Both or leave blank for whichever happens first
 fa_skinning_priority: Skinning
 =end
-custom_require.call(%w[common events drinfomon equipmanager common-arcana])
 
 class FaSkinner
   def initialize

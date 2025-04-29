@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#levelup
 =end
 
-custom_require.call(%w[common common-travel drinfomon])
-
 class LevelUp
   def initialize
     arg_definitions = [

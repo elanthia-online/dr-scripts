@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#attunement
 =end
 
-custom_require.call(%w[common common-arcana common-travel])
-
 class Attunement
   LUNAR_PERCEIVE_COMMANDS = ['mana', 'moons in sky', 'planets']
 

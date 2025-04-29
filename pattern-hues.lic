@@ -2,8 +2,6 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#pattern_hues
 =end
 
-custom_require.call(%w(common))
-
 class PatternHues
   def initialize
     arg_definitions = [

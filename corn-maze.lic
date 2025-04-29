@@ -3,8 +3,6 @@
   This script runs non-combat tasks for sleeping dragon maze.
 =end
 
-custom_require.call(%w(common common-travel events common-items))
-
 class CornMaze
   def setup
     @done = false
