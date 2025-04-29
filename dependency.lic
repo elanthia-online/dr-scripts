@@ -10,7 +10,7 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.11'
+$DEPENDENCY_VERSION = '2.0.12'
 $MIN_RUBY_VERSION = '3.3.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/KzSAUPnDHh'
 
