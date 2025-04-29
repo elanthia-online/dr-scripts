@@ -7,22 +7,22 @@ no_kill_all
 
 silence_me
 
-skill_recorder_passive_delay = get_settings.skill_recorder_passive_delay
-skill_recorder_check_exp_mods = get_settings.skill_recorder_check_exp_mods
+class SkillRecorder
+  def initialize
+    settings = get_settings
 
-before_dying do
-  # We won't be checking `exp mods` regularly so
-  # revert values to their non-modified ranks.
-  DRSkill.exp_modifiers.clear
-  UserVars.athletics = DRSkill.getrank('Athletics')
-  UserVars.instinct = DRSkill.getrank('Instinct')
-end
+    @skill_recorder_passive_delay = settings.skill_recorder_passive_delay
+    @skill_recorder_check_exp_mods = settings.skill_recorder_check_exp_mods
 
+    passive_loop
+  end
+
+  def passive_loop
 loop do
   # If enabled, then check your actual effective skill ranks
   # rather than assume the base 10% from any buffs you may have active.
   # This also detects curses where your effective ranks are reduced.
-  if skill_recorder_check_exp_mods
+      if @skill_recorder_check_exp_mods
     check_exp_mods # drinfomon method
   end
 
@@ -53,5 +53,17 @@ loop do
 
   UserVars.know_rezz = (DRStats.guild == 'Cleric' && DRSpells.known_spells['Resurrection'])
 
-  pause skill_recorder_passive_delay
+      pause @skill_recorder_passive_delay
 end
+  end
+end
+
+before_dying do
+  # We won't be checking `exp mods` regularly so
+  # revert values to their non-modified ranks.
+  DRSkill.exp_modifiers.clear
+  UserVars.athletics = DRSkill.getrank('Athletics')
+  UserVars.instinct = DRSkill.getrank('Instinct')
+end
+
+SkillRecorder.new
