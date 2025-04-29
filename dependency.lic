@@ -698,7 +698,8 @@ class ScriptManager
         new_wayto = StringProc.new("#{values['str_proc']}")
       end
       if values['travel_time']
-        new_timeto = values['travel_time'].to_f
+        new_timeto = Float(values['travel_time'], exception: false)
+        new_timeto ||= StringProc.new("#{values['travel_time']}")
       end
       start_room.wayto["#{end_room_id}"] = new_wayto
       start_room.timeto["#{end_room_id}"] = new_timeto
