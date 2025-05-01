@@ -148,11 +148,11 @@ class Bescort
         { name: 'mode', options: %w[totheren torossman], description: 'Where do you need to get to?' }
       ],
       [
-        { name: 'gondola', regex: /gondola/i, description: 'Gondola between Shard and Leth Deriel' },
+        { name: 'gondola', regex: /^gondola$/i, description: 'Gondola between Shard and Leth Deriel' },
         { name: 'mode', options: %w[north south], description: 'Which direction are you going?' }
       ],
       [
-        { name: 'fly_under_gondola', regex: /fly_under_gondola/i, description: 'Fly over the obstacles under the gondola between Shard and Leth Deriel' },
+        { name: 'fly_under_gondola', regex: /^fly_under_gondola$/i, description: 'Fly over the obstacles under the gondola between Shard and Leth Deriel' },
         { name: 'mode', options: %w[north south], description: 'Which direction are you going?' }
       ],
       [
