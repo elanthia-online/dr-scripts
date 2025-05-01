@@ -152,6 +152,10 @@ class Bescort
         { name: 'mode', options: %w[north south], description: 'Which direction are you going?' }
       ],
       [
+        { name: 'fly_under_gondola', regex: /fly_under_gondola/i, description: 'Fly over the obstacles under the gondola between Shard and Leth Deriel' },
+        { name: 'mode', options: %w[north south], description: 'Which direction are you going?' }
+      ],
+      [
         { name: 'sandbarge', regex: /sandbarge/i, description: 'The sand barge between Hvaral, Oasis, and Muspari' },
         { name: 'start_location', options: %w[hvaral oasis muspari], description: 'Where are you coming from?' },
         { name: 'end_location', options: %w[hvaral oasis muspari], description: 'Where do you need to get to?' }
@@ -278,6 +282,8 @@ class Bescort
       take_theren_rope_bridge(args.mode)
     elsif args.gondola
       ride_gondola(args.mode)
+    elsif args.fly_under_gondola
+      fly_under_gondola(args.mode)
     elsif args.sandbarge
       take_sandbarge(args.start_location, args.end_location)
     elsif args.desert
@@ -1839,7 +1845,24 @@ class Bescort
     fput('rel mana')
   end
 
+  # Waits for and rides the gondola to the other platform.
   def ride_gondola(mode)
+    north_platform_room_id = 2249
+    south_platform_room_id = 2904
+
+    case mode.downcase
+    when /north/
+      unless Room.current.id == south_platform_room_id
+        echo("Must start at the south platform, room number #{south_platform_room_id}, to ride the gondola north")
+        exit
+      end
+    when /south/
+      unless Room.current.id == north_platform_room_id
+        echo("Must start at the north platform, room number #{north_platform_room_id}, to ride the gondola south")
+        exit
+      end
+    end
+
     case DRC.bput('go gondola', 'There is no wooden gondola here', 'Gondola, Cab')
     when /no wooden gondola here/i
       DRC.bput('look gondola', 'The wooden gondola')
@@ -1852,6 +1875,54 @@ class Bescort
       waitfor 'With a soft bump, the gondola comes to a stop at its destination'
       move 'out'
     end
+  end
+
+  # Uses a flying mount to bypass the athletics checks so you
+  # can take the shortcut under the gondola to the other side.
+  def fly_under_gondola(mode)
+    north_start_room_id = 2245  # on road north of gondola at branch
+    south_start_room_id = 19466 # under gondola at southside of the log
+
+    case mode.downcase
+    when /north/
+      unless Room.current.id == south_start_room_id
+        echo("Must start under gondola at southside of the log, room number #{south_start_room_id}, to fly under the gondola north")
+        exit
+      end
+      moveset = [
+        'go log',
+        'go embankment',
+        'southwest',
+        'south',
+        'down',
+        'go wall',
+        'go ledge',
+        'go niche',
+        'go branch'
+      ]
+    when /south/
+      unless Room.current.id == north_start_room_id
+        echo("Must start on road north of gondola at the branch, room number #{north_start_room_id}, to fly under the gondola south")
+        exit
+      end
+      moveset = [
+        'go branch',
+        'go niche',
+        'go ledge',
+        'go wall',
+        'up',
+        'north',
+        'northeast',
+        'go embankment',
+        'go log'
+      ]
+    end
+
+    # Set speed to slow so that we go one room at a time
+    # and don't mistakenly run down other paths.
+    use_flying_mount(@flying_mount, 'mount', 'slow')
+    moveset.each { |dir| move(dir) }
+    use_flying_mount(@flying_mount, 'dismount')
   end
 
   def take_xing_ferry(mode)
