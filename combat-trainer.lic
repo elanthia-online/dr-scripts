@@ -5255,6 +5255,8 @@ class GameState
     maneuver_failure_messages = [
       # You are not engaged with any enemies
       /^There is nothing else to face/,
+      /^What are you trying to attack/,
+      /^Face what/,
       # Your ranged weapon is unloaded
       /^You prepare the shot, but stop when you realize/,
       # Maneuver is still on cooldown
