@@ -10,7 +10,7 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.12'
+$DEPENDENCY_VERSION = '2.0.13'
 $MIN_RUBY_VERSION = '3.3.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/KzSAUPnDHh'
 
@@ -1823,7 +1823,7 @@ unless $DRINFOMON_IN_CORE_LICH
 
   echo("DRinfomon ready.")
 else
-  Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^Rested EXP Stored|type: AWAKEN|Unlock Rested Experience/, quiet: true, timeout: 1)
+  Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
   Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
   Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
   Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
