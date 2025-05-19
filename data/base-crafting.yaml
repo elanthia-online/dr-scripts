@@ -481,16 +481,16 @@ blacksmithing:
      - 14348
     anvils:
      - 14349
-     - 14371
-     - 14373
+     - 51656
+     - 51658
     crucibles:
      - 14350
-     - 14372
-     - 14374
+     - 51655
+     - 51657
     grindstones:
      - 14349
-     - 14371
-     - 14373
+     - 51656
+     - 51658
     logbook: forging
     pattern-book: blacksmithing
     finisher: oil
