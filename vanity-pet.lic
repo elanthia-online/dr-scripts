@@ -62,10 +62,10 @@ class VanityPet
     case DRC.bput("drop my #{pet_name}",
                   /^You set the .* on the ground/,
                   /^You give your .*#{pet_name}/,
-                  /^No littering in the bank/,
+                  /No littering in the bank/,
                   /you can't drop anything here/,
                   /^What were you referring/)
-    when /^No littering in the bank/, /you can't drop anything here/
+    when /No littering in the bank/, /you can't drop anything here/
       DRC.message("Can't drop pets in this room")
       DRCI.put_away_item?(pet_name, pet_container)
     when /^What were you referring/
