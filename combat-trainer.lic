@@ -3999,13 +3999,9 @@ class AttackProcess
       waitrt?
 
       if game_state.loaded
-        did_shoot = false
-        # If dual loading then cannot do powershot maneuver, just shoot.
-        if game_state.dual_load?
-          shoot_aimed('shoot', game_state)
-          did_shoot = true
-        # Otherwise, try to perform the maneuver.
-        elsif charged_maneuver && game_state.use_charged_maneuver(charged_maneuver)
+        # If we successfully perform a maneuver then count that as our action.
+        # Otherwise begin aiming for normal shot.
+        if charged_maneuver && game_state.use_charged_maneuver(charged_maneuver)
           # Only react to the powershot flag if we just did a powershot maneuver.
           # This is an added protection in case the flag was tripped by an unrelated
           # action like throwing a weapon. This way we don't try to "stow my throwing hammer"
@@ -4015,13 +4011,15 @@ class AttackProcess
             # is the regular expression matches. This is how we know the ammo to stow.
             stow_ammo(Flags['ct-powershot-ammo'][:ammo])
             Flags.reset('ct-powershot-ammo')
+            # When dual loading, powershot only fires one of the arrows.
+            # So let's take advantage of the remaining arrow that's still loaded.
+            if game_state.dual_load?
+              shoot_aimed('shoot', game_state)
+            end
+            game_state.loaded = false
+            @firing_check = 0
+            echo("@firing_check reset on maneuver fire: #{@firing_check}") if $debug_mode_ct
           end
-          did_shoot = true
-        end
-        if did_shoot
-          game_state.loaded = false
-          @firing_check = 0
-          echo("@firing_check reset on maneuver fire: #{@firing_check}") if $debug_mode_ct
           game_state.action_taken
         else
           game_state.set_aim_queue
@@ -5261,8 +5259,6 @@ class GameState
       /^Face what/,
       # Your ranged weapon is unloaded
       /^You prepare the shot, but stop when you realize/,
-      # You cannot powershot with a dual loaded bow
-      /^You cannot make this shot with two/,
       # Maneuver is still on cooldown
       /^You must rest a bit longer before attempting that maneuver again/,
       # Trying to suplex but you're not grappled
