@@ -105,6 +105,12 @@ class DRYamlValidator
     warn('You have no weapons configured in weapon_training: this will likely cause problems.')
   end
 
+  def assert_that_dual_load_and_charged_maneuvers_bows_do_not_coexist(settings)
+    return unless settings.dual_load && settings.charged_maneuvers.has_key?('Bow')
+
+    error('dual_load: true is not compatible with using charged_maneuvers with Bows!  Set dual_load to false or configure charged_maneuvers without Bows')
+  end
+
   def assert_that_cyclic_no_release_spell_is_invalid_unless_listed_in_base_spells(settings)
     return if !settings.cyclic_no_release
 
