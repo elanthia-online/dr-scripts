@@ -5028,7 +5028,7 @@ class GameState
 
       # blacklist skill if it hasn't been gaining for a while
       if (@no_gain_list[weapon_skill] > @gain_check) then
-        ("***STATUS*** Suppressing #{weapon_skill} due to skill not training")
+        DRC.message("***STATUS*** Suppressing #{weapon_skill} due to skill not training")
         @weapons_to_train.delete(weapon_skill)
         # must suppress for offhand too - doesn't make sense to train in offhand if mainhand doesn't train + it breaks code
         @offhand_blacklist |= [weapon_skill]
