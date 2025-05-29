@@ -4497,7 +4497,7 @@ class GameState
     echo("  @ignored_npcs: #{@ignored_npcs}") if $debug_mode_ct
 
     if settings.dual_load == true and settings.charged_maneuvers.has_key?('Bow')
-      DRC.message("Dual load is not compatable with using Bows with charged_maneuvers!  Remove Bow from charged_maneuvers if you want to use dual load.\n\nTurning off Dual Load."
+      DRC.message("Dual load is not compatible with using Bows with charged_maneuvers!  Remove Bow from charged_maneuvers if you want to use dual load.\n\nTurning off Dual Load.")
       @dual_load = false
     else
       @dual_load = settings.dual_load
