@@ -285,6 +285,11 @@ Dirge:
     id: 14633
   nexus: # Crossing
     id: 19162
+  deposit:
+    id: 16655
+  exchange:
+    id: 16655
+    fee: 0.10
   trade_minister:
     id: 15175
   currency: kronars
@@ -708,6 +713,9 @@ Wolf Clan:
     name: Randal
   metal_repair: *randal
   deposit: *crossing_deposit
+  tannery:
+    id: 1542
+    name: Crolin
 Riverhaven:
   currency: lirums
   nexus: # Riverhaven
