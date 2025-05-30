@@ -59,11 +59,17 @@ clothing - wings:
 container:
 - .*dergatine backpack enmeshed
 - shimmery cloth-of-gold gamebag
+- dark encompassing shadows of twilight dreamweave
+- (?:farmer's|brewer's|multi-strapped|doeskin) carryall
 container - autolooter:
-- loot(?:sack|pouch|belt)
+- loot(?:sack|pouch|belt|bag)
+- jadeleaf satchel
+- ankle purse
+- lotusweave bag
 - spidersilk clutch
 - pearlescent shagreen belt bag
 container - hold anything:
+- mottled green leather weapon harness
 - abyssal black thigh bag
 - spidersilk hip pouch
 - Elven wool thigh pouch
@@ -713,7 +719,7 @@ jewelry_nouns:
 - medallion
 - necklace
 - pendant
-- pin
+- /(?<!belaying\s)pin/
 - ring
 - /(?<!morning\s)star/
 material_nouns:
@@ -741,12 +747,15 @@ gear - weapon_nouns:
 - axe
 - backsword
 - battlesword
+- belaying pin
 - blackjack
 - blade
 - bludgeon
 - bola
+- boomerang
 - bow
 - broadsword
+- bulhawf
 - cestus
 - claidhmore
 - club
@@ -755,6 +764,7 @@ gear - weapon_nouns:
 - crowbill
 - cudgel
 - dagger
+- dagesse
 - dart
 - discus
 - epee
@@ -769,7 +779,6 @@ gear - weapon_nouns:
 - greataxe
 - greatsword
 - ceremonial iron greatsword
-- ceremonial iron greatsword enriched
 - halberd
 - hammer
 - hammer\-of\-Kai
@@ -784,12 +793,14 @@ gear - weapon_nouns:
 - katana
 - katar
 - khopesh
+- kneecapping stick
 - knife
 - knuckle\-blade
 - knuckle\-duster
 - kris
 - lance
 - langsax
+- light pernach
 - longsword
 - mace
 - machete
@@ -811,6 +822,7 @@ gear - weapon_nouns:
 - sabre
 - sai
 - scimitar
+- shotel
 - skefne
 - sledgehammer
 - spear
@@ -818,7 +830,7 @@ gear - weapon_nouns:
 - staff
 - sword
 - tachi
-- throwing blades
+- /throwing (?:blades|star|axe|mallet)s?/
 - tiger\-claw
 - trident
 - troll\-claw
@@ -846,7 +858,7 @@ gear - weapon_nouns:
 - longbow
 - shortbow
 - cutlass
-- (morning|throwing) star
+- morning star
 - pasabas
 - hhr\'ata
 - nightstick
