@@ -1244,7 +1244,12 @@ class Bescort
     manual_go2(start)
     moveset = north ? %w[north northwest northeast] : %w[south southwest southeast]
     if @flying_mount
-      use_flying_mount(@flying_mount, 'mount')
+      case @flying_mount
+      when /phoenix feather/i
+        use_flying_mount(@flying_mount, 'mount', 'streak')
+      else
+        use_flying_mount(@flying_mount, 'mount')
+      end
       move 'go river'
       if north
         move n
