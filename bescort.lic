@@ -1,5 +1,7 @@
 #   Documentation: https://elanthipedia.play.net/Lich_script_repository#bescort
 
+custom_require.call(%w[common common-arcana common-items common-travel common-money common-moonmage drinfomon equipmanager events skill-recorder])
+
 $turns_since_bad = 0
 
 class MazeRoom
@@ -148,11 +150,7 @@ class Bescort
         { name: 'mode', options: %w[totheren torossman], description: 'Where do you need to get to?' }
       ],
       [
-        { name: 'gondola', regex: /^gondola$/i, description: 'Gondola between Shard and Leth Deriel' },
-        { name: 'mode', options: %w[north south], description: 'Which direction are you going?' }
-      ],
-      [
-        { name: 'fly_under_gondola', regex: /^fly_under_gondola$/i, description: 'Fly over the obstacles under the gondola between Shard and Leth Deriel' },
+        { name: 'gondola', regex: /gondola/i, description: 'Gondola between Shard and Leth Deriel' },
         { name: 'mode', options: %w[north south], description: 'Which direction are you going?' }
       ],
       [
@@ -282,8 +280,6 @@ class Bescort
       take_theren_rope_bridge(args.mode)
     elsif args.gondola
       ride_gondola(args.mode)
-    elsif args.fly_under_gondola
-      fly_under_gondola(args.mode)
     elsif args.sandbarge
       take_sandbarge(args.start_location, args.end_location)
     elsif args.desert
@@ -332,6 +328,7 @@ class Bescort
   private
 
   def use_flying_mount(type, mode, speed = 'fly')
+    echo "Using flying mount: #{type} in mode: #{mode} at speed: #{speed}"
     mode = mode.downcase
     case mode
     when 'mount'
@@ -354,6 +351,15 @@ class Bescort
           exit
         end
         DRC.bput("command #{type} to #{speed}", /You command your/)
+      when /phoenix feather/i # This section is for mounts with different nouns than their activating item. May need to add more activation matches.
+        DRCI.remove_item?(@flying_mount_item)
+        DRCI.get_item_if_not_held?(@flying_mount_item)
+        case DRC.bput("light my #{@flying_mount_item}", /You reverently cradle a phoenix feather/, /What were you referring to/)
+        when /What were you referring/
+          DRC.message("Can't mount your #{type}, where is it?")
+          exit
+        end
+        DRC.bput("command phoenix to #{speed}", /You signal the starfire phoenix to speed up/)
       when /cloud/i # This section is for mounts with different nouns than their activating item. May need to add more activation matches.
         DRCI.remove_item?(@flying_mount_item)
         DRCI.get_item_if_not_held?(@flying_mount_item)
@@ -376,6 +382,11 @@ class Bescort
         DRC.bput('dismount', /Your .* floats down to the ground/, /You climb off/)
         DRC.bput("roll #{type}", /You roll up/, /You can't roll/)
         DRCI.put_away_item?(type)
+      when /phoenix feather/i
+        DRC.bput("snuff phoenix", /You beseech Murrula's grace as you beckon/)
+        DRCI.wear_item?(@flying_mount_item)
+        DRCI.put_away_item?(@flying_mount_item) if checkright
+        DRCI.put_away_item?(@flying_mount_item) if checkleft
       when /cloud/i
         DRC.bput("#{@flying_mount_dismount} #{type}", /With a gesture,/)
         DRCI.wear_item?(@flying_mount_item)
@@ -423,6 +434,7 @@ class Bescort
 
       # Find our primary image
       image = DRC.bput("look #{look_at}", 'I could not find what', *image_hash.keys)
+      echo("Image is #{image}")
 
       # Set our light and dark images based on primary image
       light = image_hash[image.to_sym][0]
@@ -435,20 +447,26 @@ class Bescort
       DRCT.walk_to(13602)
       until dseen
         wheel = DRC.bput("look wooden wheel", *black_tapestry)
+        echo("Wheel is #{wheel}")
+        echo("Dark is #{dark}")
         if wheel == dark
           dseen = true
           break
         end
+        DRC.bput("pull rope", /^You grasp onto the woven rope and heave downward with all your might/)
       end
 
       # Light tapestry
       DRCT.walk_to(13601)
       until lseen == true
         wheel = DRC.bput("look wooden wheel", *white_tapestry)
+        echo("Wheel is #{wheel}")
+        echo("Light is #{light}")
         if wheel == light
           lseen = true
           break
         end
+        DRC.bput("pull rope", /^You grasp onto the woven rope and heave downward with all your might/)
       end
 
       # Back to coffin
@@ -1140,7 +1158,7 @@ class Bescort
     if @flying_mount
       move_fast = true
       case @flying_mount
-      when /broom|dirigible|carpet|rug/i
+      when /broom|dirigible|carpet|rug|phoenix/i
         use_flying_mount(@flying_mount, 'mount', 'glide')
       when /cloud/i
         use_flying_mount(@flying_mount, 'mount', 'drift')
@@ -1540,6 +1558,8 @@ class Bescort
         use_flying_mount(@flying_mount, 'mount', 'skim')
       when /cloud/i
         use_flying_mount(@flying_mount, 'mount', 'hover')
+      when /phoenix/i
+        use_flying_mount(@flying_mount, 'mount', 'fly')
       else
         DRC.message("#{@flying_mount} is not a valid type of flying mount.")
         exit
@@ -1845,24 +1865,7 @@ class Bescort
     fput('rel mana')
   end
 
-  # Waits for and rides the gondola to the other platform.
   def ride_gondola(mode)
-    north_platform_room_id = 2249
-    south_platform_room_id = 2904
-
-    case mode.downcase
-    when /north/
-      unless Room.current.id == south_platform_room_id
-        echo("Must start at the south platform, room number #{south_platform_room_id}, to ride the gondola north")
-        exit
-      end
-    when /south/
-      unless Room.current.id == north_platform_room_id
-        echo("Must start at the north platform, room number #{north_platform_room_id}, to ride the gondola south")
-        exit
-      end
-    end
-
     case DRC.bput('go gondola', 'There is no wooden gondola here', 'Gondola, Cab')
     when /no wooden gondola here/i
       DRC.bput('look gondola', 'The wooden gondola')
@@ -1875,54 +1878,6 @@ class Bescort
       waitfor 'With a soft bump, the gondola comes to a stop at its destination'
       move 'out'
     end
-  end
-
-  # Uses a flying mount to bypass the athletics checks so you
-  # can take the shortcut under the gondola to the other side.
-  def fly_under_gondola(mode)
-    north_start_room_id = 2245  # on road north of gondola at branch
-    south_start_room_id = 19466 # under gondola at southside of the log
-
-    case mode.downcase
-    when /north/
-      unless Room.current.id == south_start_room_id
-        echo("Must start under gondola at southside of the log, room number #{south_start_room_id}, to fly under the gondola north")
-        exit
-      end
-      moveset = [
-        'go log',
-        'go embankment',
-        'southwest',
-        'south',
-        'down',
-        'go wall',
-        'go ledge',
-        'go niche',
-        'go branch'
-      ]
-    when /south/
-      unless Room.current.id == north_start_room_id
-        echo("Must start on road north of gondola at the branch, room number #{north_start_room_id}, to fly under the gondola south")
-        exit
-      end
-      moveset = [
-        'go branch',
-        'go niche',
-        'go ledge',
-        'go wall',
-        'up',
-        'north',
-        'northeast',
-        'go embankment',
-        'go log'
-      ]
-    end
-
-    # Set speed to slow so that we go one room at a time
-    # and don't mistakenly run down other paths.
-    use_flying_mount(@flying_mount, 'mount', 'slow')
-    moveset.each { |dir| move(dir) }
-    use_flying_mount(@flying_mount, 'dismount')
   end
 
   def take_xing_ferry(mode)
