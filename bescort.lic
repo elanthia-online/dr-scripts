@@ -354,7 +354,7 @@ class Bescort
           exit
         end
         DRC.bput("command #{type} to #{speed}", /You command your/)
-      when /phoenix feather/i # This section is for mounts with different nouns than their activating item. May need to add more activation matches.
+      when /phoenix feather/i # This section is for https://elanthipedia.play.net/Item:Phoenix_feather_strung_upon_a_burning_goldfyre_chain_set_with_anloral_beads
         DRCI.remove_item?(@flying_mount_item)
         DRCI.get_item_if_not_held?(@flying_mount_item)
         case DRC.bput("light my #{@flying_mount_item}", /You reverently cradle a phoenix feather/, /What were you referring to/)
