@@ -1868,7 +1868,6 @@ class Bescort
     fput('rel mana')
   end
 
-
   # Waits for and rides the gondola to the other platform.
   def ride_gondola(mode)
     north_platform_room_id = 2249
