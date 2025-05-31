@@ -1161,7 +1161,7 @@ class Bescort
     if @flying_mount
       move_fast = true
       case @flying_mount
-      when /broom|dirigible|carpet|rug|phoenix/i
+      when /broom|dirigible|carpet|rug|phoenix feather/i
         use_flying_mount(@flying_mount, 'mount', 'glide')
       when /cloud/i
         use_flying_mount(@flying_mount, 'mount', 'drift')
@@ -1561,7 +1561,7 @@ class Bescort
         use_flying_mount(@flying_mount, 'mount', 'skim')
       when /cloud/i
         use_flying_mount(@flying_mount, 'mount', 'hover')
-      when /phoenix/i
+      when /phoenix feather/i
         use_flying_mount(@flying_mount, 'mount', 'fly')
       else
         DRC.message("#{@flying_mount} is not a valid type of flying mount.")
