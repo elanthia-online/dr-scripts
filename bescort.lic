@@ -450,8 +450,6 @@ class Bescort
       DRCT.walk_to(13602)
       until dseen
         wheel = DRC.bput("look wooden wheel", *black_tapestry)
-        echo("Wheel is #{wheel}")
-        echo("Dark is #{dark}")
         if wheel == dark
           dseen = true
           break
@@ -463,8 +461,6 @@ class Bescort
       DRCT.walk_to(13601)
       until lseen == true
         wheel = DRC.bput("look wooden wheel", *white_tapestry)
-        echo("Wheel is #{wheel}")
-        echo("Light is #{light}")
         if wheel == light
           lseen = true
           break
