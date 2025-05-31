@@ -4,6 +4,7 @@
 
 class Almanac
   def initialize
+    exit unless DRSkill.list.map(&:rank).any? { |skill| skill < 1750 }
     settings = get_settings
     UserVars.almanac_last_use ||= Time.now - 600
     @no_use_scripts = settings.almanac_no_use_scripts
