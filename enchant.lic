@@ -12,6 +12,8 @@ class Enchant
     @belt = @settings.enchanting_belt
     @bag = @settings.crafting_container
     @stamp = @settings.mark_crafted_goods
+    @worn_trashcan = @settings.worn_trashcan
+    @worn_trashcan_verb = @settings.worn_trashcan_verb
 
     arg_definitions = [
       [
@@ -125,11 +127,14 @@ class Enchant
       DRC.bput("get my #{@baseitem} from my #{@bag}", 'You get a')
     end
     2.times do
-      case DRC.bput("put my #{@baseitem} on #{@brazier}", 'You glance down', 'With a flick', 'You must first clean', 'You put')
-      when 'With a flick', 'You put'
+      case DRC.bput("put my #{@baseitem} on #{@brazier}", /^You glance down/, /With a flick/, /^You must first clean/, /^You put/, /^The totem is already enchanted/)
+      when /^The totem is already enchanted/
+        DRCI.dispose_trash('totem', @worn_trashcan, @worn_trashcan_verb)
+        study_recipe
+      when /With a flick/, /^You put/
         waitrt?
         break
-      when 'You must first clean'
+      when /^You must first clean/
         clean_brazier
         empty_brazier
         DRC.bput("get my #{@baseitem} from my #{@bag}", 'You get a')
