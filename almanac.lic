@@ -4,7 +4,10 @@
 
 class Almanac
   def initialize
-    exit unless DRSkill.list.map(&:rank).any? { |skill| skill < 1750 }
+    unless DRSkill.list.map(&:rank).any? { |skill| skill < 1750 }
+      DRC.message("All skills are capped, exiting")
+      exit
+    end
     settings = get_settings
     UserVars.almanac_last_use ||= Time.now - 600
     @no_use_scripts = settings.almanac_no_use_scripts
