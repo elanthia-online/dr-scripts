@@ -437,7 +437,6 @@ class Bescort
 
       # Find our primary image
       image = DRC.bput("look #{look_at}", 'I could not find what', *image_hash.keys)
-      echo("Image is #{image}")
 
       # Set our light and dark images based on primary image
       light = image_hash[image.to_sym][0]
