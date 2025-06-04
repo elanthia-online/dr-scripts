@@ -121,7 +121,12 @@ class SellLoot
 
     DRC.release_invisibility
     DRC.bput('sell my bundle', 'ponders over the bundle', 'sorts through it', 'gives it a close inspection', 'takes the bundle')
-    DRC.bput('stow rope', 'You put')
+    case DRC.left_hand+" "+DRC.right_hand
+    when /rope/
+      DRCI.put_away_item('rope')
+    when /bundle/
+      DRCI.put_away_item('bundle') unless DRCI.wear_item?('bundle')
+    end
   end
 
   def check_spare_pouch(container, adj)
