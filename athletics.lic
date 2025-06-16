@@ -35,7 +35,6 @@ class Athletics
     args = parse_args(arg_definitions)
 
     @end_exp = 32 if args.max
-    start_script('skill-recorder') unless Script.running?('skill-recorder')
     if args.wyvern || (@settings.climbing_target == 'wyvern')
       climb_wyvern
     elsif args.undergondola || (@settings.climbing_target == 'undergondola')
