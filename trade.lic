@@ -330,9 +330,7 @@ class Trade
                       .values
                       .select { |data| data[entity] }
                       .map    { |data| data[entity]['id'] }
-    UserVars.athletics = 1
     result = DRCT.sort_destinations(rooms)
-    UserVars.athletics = DRSkill.getrank('Athletics')
     if need_business
       result.find do |data|
         should_go_to_town?(find_town(data))
@@ -822,13 +820,9 @@ class Trade
 
   def compute_path(destination)
     echo "computing path #{destination}" if debugging?
-    Script.pause('skill-recorder') if Script.running?('skill-recorder')
-    UserVars.athletics = 1
     previous, _shortest_paths = Map.dijkstra(Room.current.id, destination)
-    UserVars.athletics = DRSkill.getrank('Athletics')
     path = [destination]
     path.push(previous[path[-1]]) until previous[path[-1]].nil?
-    Script.unpause('skill-recorder') if Script.running?('skill-recorder')
     path.reverse
   end
 
@@ -2374,7 +2368,6 @@ before_dying do
   Flags.delete('trade-gondola-arrive')
   Flags.delete('trade-barge')
   Flags.delete('trade-bescort')
-  Script.unpause('skill-recorder') if Script.paused?('skill-recorder')
   # THEREN ROPE BRIDGE
   Room[8637].timeto['8650'] = 180.0 unless Room[8637].timeto['8650']
   Room[8650].timeto['8637'] = 180.0 unless Room[8650].timeto['8637']
