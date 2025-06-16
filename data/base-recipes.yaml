@@ -9100,7 +9100,7 @@ crafting_recipes:
   noun: bone totem
   type: artificing
   chapter: 2
-  work_order: true
+  work_order: false
   enchant_stock1_name: abolition
   enchant_stock1: 2
   enchant_stock2_name: metamorphosis
