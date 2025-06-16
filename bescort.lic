@@ -1127,13 +1127,13 @@ class Bescort
       return
     end
 
-    if UserVars.athletics >= 140
-      unless UserVars.athletics >= 300
+    if DRSkill.getmodrank('Athletics') >= 140
+      unless DRSkill.getmodrank('Athletics') >= 300
         @equipment_manager.empty_hands
         @equipment_manager.wear_equipment_set?('swimming')
       end
       swim_faldesu(mode =~ /haven/i)
-      @equipment_manager.wear_equipment_set?('standard') unless UserVars.athletics >= 300
+      @equipment_manager.wear_equipment_set?('standard') unless DRSkill.getmodrank('Athletics') >= 300
     else
       take_rh_ferry(mode =~ /haven/i)
     end
