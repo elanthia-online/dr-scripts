@@ -209,9 +209,9 @@ class Athletics
   end
 
   def crossing_athletics
-    if DRSkill.getrank('Athletics') <= 50
+    if DRSkill.getmodrank('Athletics') <= 50
       swim_loop(get_data('athletics').swimming_options['arthe_dale']['rooms'])
-    elsif DRSkill.getrank('Athletics') < 290
+    elsif DRSkill.getmodrank('Athletics') < 290
       waitrt?
       pause @performance_pause # to give performance time to complete before_dying if stopped from the previous script
       start_script('performance') unless Script.running?('performance')
@@ -222,18 +222,18 @@ class Athletics
           break unless climb?(data['room'], data['targets'])
         end
       end
-    elsif DRSkill.getrank('Athletics') < 450
+    elsif DRSkill.getmodrank('Athletics') < 450
       override_location_and_practice('segoltha_bank')
     else
-      DRC.message("The xalas argument will train faster at 650+ athletics.  Be aware that it's potentially dangerous.") if DRSkill.getrank('Athletics') > 650
+      DRC.message("The xalas argument will train faster at 650+ athletics.  Be aware that it's potentially dangerous.") if DRSkill.getmodrank('Athletics') > 650
       override_location_and_practice('arthelun_rocks')
-      DRC.message("The xalas argument will train faster at 650+ athletics.  Be aware that it's potentially dangerous.") if DRSkill.getrank('Athletics') > 650
+      DRC.message("The xalas argument will train faster at 650+ athletics.  Be aware that it's potentially dangerous.") if DRSkill.getmodrank('Athletics') > 650
     end
   end
 
   def shard_athletics
     until done_training?
-      if DRSkill.getrank('Athletics') < 240
+      if DRSkill.getmodrank('Athletics') < 240
         until done_training?
           @athletics_options['shard']
             .reject { |data| @settings.avoid_athletics_in_justice && data['justice'] }
@@ -241,9 +241,9 @@ class Athletics
             break unless climb?(data['room'], data['targets'])
           end
         end
-      elsif DRSkill.getrank('Athletics') < 540
+      elsif DRSkill.getmodrank('Athletics') < 540
         climb_cliffs
-      elsif DRSkill.getrank('Athletics') < 850
+      elsif DRSkill.getmodrank('Athletics') < 850
         climb_branch
       else
         climb_wyvern
@@ -341,10 +341,10 @@ class Athletics
   end
 
   def climb_branch
-    if DRSkill.getrank('Athletics') < 540
+    if DRSkill.getmodrank('Athletics') < 540
       override_location_and_practice('undergondola_branch')
     else
-      DRC.message("Warning: Using the undergondola arg with more than 850 athletics is not best use and you may consider the wyvern option instead.") if DRSkill.getrank('Athletics') > 850
+      DRC.message("Warning: Using the undergondola arg with more than 850 athletics is not best use and you may consider the wyvern option instead.") if DRSkill.getmodrank('Athletics') > 850
       DRCT.walk_to(9607)
       DRCT.walk_to(9515)
       until done_training?
@@ -374,7 +374,7 @@ class Athletics
   def climb_wyvern
     DRCT.walk_to(19_464)
     until done_training?
-      DRCT.walk_to(2245) if DRSkill.getrank('Athletics') > 540
+      DRCT.walk_to(2245) if DRSkill.getmodrank('Athletics') > 540
       DRCT.walk_to(9607)
       DRCT.walk_to(11_126)
       DRCT.walk_to(19_464)
