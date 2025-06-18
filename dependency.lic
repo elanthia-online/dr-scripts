@@ -10,16 +10,19 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.13'
+$DEPENDENCY_VERSION = '2.0.14'
 $MIN_RUBY_VERSION = '3.3.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/KzSAUPnDHh'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.11.0')
-  _respond("<pushBold/>*****************************************************************************<popBold/>")
-  _respond("<pushBold/>* Lich versions prior to 5.11.0 were deprecated on Thursday 27 March 2025.  *<popBold/>")
-  _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
-  _respond("<pushBold/>* For update instructions.                                                  *<popBold/>")
-  _respond("<pushBold/>*****************************************************************************<popBold/>")
+  100.times do
+    _respond("<pushBold/>*****************************************************************************<popBold/>")
+    _respond("<pushBold/>* Lich versions prior to 5.11.0 were deprecated on Thursday 27 March 2025.  *<popBold/>")
+    _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
+    _respond("<pushBold/>* For update instructions.                                                  *<popBold/>")
+    _respond("<pushBold/>*****************************************************************************<popBold/>")
+    pause 15
+  end
   exit
 end
 
@@ -250,7 +253,7 @@ class ScriptManager
 
     UserVars.autostart_scripts ||= []
     UserVars.autostart_scripts.uniq!
-    UserVars.autostart_scripts = UserVars.autostart_scripts - ['dependency']
+    UserVars.autostart_scripts -= ['dependency']
     Settings['autostart'] ||= Array.new
 
     unless Settings['autostart'] == Settings['autostart'].uniq
@@ -287,7 +290,7 @@ class ScriptManager
   end
 
   def update_autostarts
-    @autostarts = (UserVars.autostart_scripts + Settings['autostart']).uniq
+    @autostarts = (UserVars.autostart_scripts.to_a + SetupFiles.new.get_settings.autostarts.to_a + Settings['autostart']).uniq
   end
 
   def add_global_auto(script)
@@ -861,7 +864,6 @@ class SlackbotManager
     return unless @slackbot.nil?
 
     echo("Registering Slackbot")
-    custom_require.call('slackbot')
     @slackbot = SlackBot.new
   end
 
