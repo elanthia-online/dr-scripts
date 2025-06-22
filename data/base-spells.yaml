@@ -3007,7 +3007,7 @@ spell_data:
     metamagic: true
   River in the Sky:
     skill: Warding
-    abbrev: rits
+    abbrev: RITS
     mana: 15
     guild: Ranger
     mana_type: life
