@@ -1272,7 +1272,7 @@ carving:
     polish-number: 4
     repair-room: 8856
     repair-npc: Valomenica
-    stock-room: 9110
+    stock-room: 8858
     pattern-book: carving
   Langenfirth:
     << : *theren_carving
