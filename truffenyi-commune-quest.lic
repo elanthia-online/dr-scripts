@@ -128,7 +128,7 @@ class TruffenyiCommuneQuest
                              'trothfang'
                            when /a tithe box sitting outside of a small chapel, the tail of a snake disappearing into the slot/i
                              'huldah'
-                           when /a scene of wilted crops interspersed with livestock lying supine a rough texture to the carving is noticeable above each animal/i
+                           when /a scene of wilted crops interspersed with livestock lying supine; a rough texture to the carving is noticeable above each animal/i
                              'ushnish'
                            when /a simply dressed mage sleeping underneath an elm tree during a downpour. A spellbook sits open on a nearby picnic table/i
                              'drogor'
