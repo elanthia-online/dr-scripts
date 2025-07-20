@@ -173,7 +173,7 @@ class CarveLockpicks
 
   def carve
     loop do
-      case DRC.bput("carve my #{DRC.left_hand} with my knife", /proudly glance down at a (grand)?master/, /but feel your knife slip/, /^You are too injured to do any carving/, /^Roundtime/, /^It would be better to find a creature to carve/)
+      case DRC.bput("carve my #{DRC.left_hand} with my knife", /proudly glance down at a (grand)?master/, /but feel your knife slip/, /^You are too injured to do any carving/, /^Roundtime/, /^It would be better to find a creature to carve/, /^You cannot figure out how to do that/)
       when /proudly glance down at a grandmaster/
         DRC.bput("carve my lockpick with my knife", 'With the precision and skill') if @lockpick_carve_settings['initial_grand']
         @@grands_count += 1
@@ -184,6 +184,13 @@ class CarveLockpicks
         @masters_ring_ready -= 1
         stow_lockpick(@lockpick_carve_settings['master_container'])
       when /It would be better to find a creature to carve/
+        # Unmatched failure, or we carved a lesser pick
+        if @lockpick_carve_settings['trash_container'] && DRC.left_hand
+          DRCI.put_away_item?('lockpick', @lockpick_carve_settings['trash_container'])
+        elsif DRC.left_hand
+          DRCI.dispose_trash('lockpick', @settings.worn_trashcan, @settings.worn_trashcan_verb)
+        end
+      when /You cannot figure out how to do that/
         # Unmatched failure, or we carved a lesser pick
         if @lockpick_carve_settings['trash_container'] && DRC.left_hand
           DRCI.put_away_item?('lockpick', @lockpick_carve_settings['trash_container'])
