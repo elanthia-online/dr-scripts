@@ -3517,7 +3517,6 @@ hunting_zones:
   salt_crabs_fang:
   # - 8312 # rock in the room interferes with stowing rock ammo
   - 8313
-  - 8313
   - 8316
   - 8315
   - 8317
