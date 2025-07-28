@@ -13,13 +13,14 @@ def register_item(item_name, debug = false)
     return
   end
 
-  if match = tap_output.match(/^You tap (.+)\./i)
-    description = match[1]
-    echo "[reggear: Matched item: #{description}]" if debug
-  else
-    echo "[reggear: Could not match description for #{item_name}]"
-    return
-  end
+  match = tap_output.match(/^You tap (.+)\./i)
+    if match
+      description = match[1]
+      echo "[reggear: Matched item: #{description}]" if debug
+    else
+      echo "[reggear: Could not match description for #{item_name}]" if debug
+      return
+    end
 
   echo "[reggear: Removing #{item_name}...]"
   remove_result = fput("remove #{item_name}")
@@ -109,5 +110,5 @@ fput("go curtain")
 
 @items.each do |item|
   register_item(item, debug)
-  pause 1  # prevent command flooding
+  pause 1 # prevent command flooding
 end
