@@ -14,13 +14,13 @@ def register_item(item_name, debug = false)
   end
 
   match = tap_output.match(/^You tap (.+)\./i)
-    if match
-      description = match[1]
-      echo "[reggear: Matched item: #{description}]" if debug
-    else
-      echo "[reggear: Could not match description for #{item_name}]" if debug
-      return
-    end
+  if match
+    description = match[1]
+    echo "[reggear: Matched item: #{description}]" if debug
+  else
+    echo "[reggear: Could not match description for #{item_name}]" if debug
+    return
+  end
 
   echo "[reggear: Removing #{item_name}...]"
   remove_result = fput("remove #{item_name}")
