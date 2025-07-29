@@ -97,9 +97,9 @@ class RegGear
     echo "[reggear: Registering #{item_name} second time]" if @debug
     fput("register #{item_name}")
 
-    echo "[reggear: Rewearing #{item_name}...]" if @debug
+    echo "[Rewearing #{item_name}...]" if @debug
     wear_result = fput("wear #{item_name}")
-    unless wear_result =~ /(You wear|You already)/i
+    unless wear_result =~ /(You wear|strap|place|slip|put|You already)/i
       echo "[WARNING: Failed to rewear #{item_name}.]" if @debug
       unless wear_result =~ /already in your inventory/
         stow_item(item_name)
