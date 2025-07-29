@@ -68,7 +68,7 @@ class RegGear
     else
       echo "[Getting #{item_name}.]" if @debug
     end
-    
+
     echo "[Registering #{item_name} (1st time)...]" if @debug
     reg_result = fput("register #{item_name}")
 
