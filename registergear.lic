@@ -53,22 +53,22 @@ class RegGear
       return
     end
 
-    echo "[reggear: Removing #{item_name}...]" if @debug
+    echo "[Removing #{item_name}...]" if @debug
     remove_result = fput("remove #{item_name}")
-    if remove_result !~ /(remove|loosen|take off|unstrap|pull off|take .* off|detach|strip off|slide.*off)/i
+    if remove_result !~ /(remove|loosen|take off|unstrap|pull off|take|You place| .* off|detach|strip off|slide.*off)/i
       echo "[Failed to remove #{item_name}.]" if @debug
-    else
-      get_result = fput("get #{item_name}")
-      if get_result =~ /already holding/i
-        echo "[Already holding #{item_name} -- skipping.]" if @debug
-      elsif get_result =~ /need a free hand/
-        echo "[Hands are full, cannot get #{item_name}. Skipping.]" if @debug
-        return
-      else
-        echo "[getting #{item_name}.]" if @debug
-      end
     end
 
+    get_result = fput("get #{item_name}")
+    if get_result =~ /already holding/i
+      echo "[Already holding #{item_name} -- skipping.]" if @debug
+    elsif get_result =~ /need a free hand/
+      echo "[Hands are full, cannot get #{item_name}. Skipping.]" if @debug
+      return
+    else
+      echo "[Getting #{item_name}.]" if @debug
+    end
+    
     echo "[Registering #{item_name} (1st time)...]" if @debug
     reg_result = fput("register #{item_name}")
 
