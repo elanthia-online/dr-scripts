@@ -60,7 +60,7 @@ class RegGear
     else
       get_result = fput("get #{item_name}")
       if get_result =~ /already holding/i
-        echo "[Already holding #{item_name} — skipping get.]" if @debug
+        echo "[Already holding #{item_name} -- skipping.]" if @debug
       elsif get_result =~ /need a free hand/
         echo "[Hands are full, cannot get #{item_name}. Skipping.]" if @debug
         return
