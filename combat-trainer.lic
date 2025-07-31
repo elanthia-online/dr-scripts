@@ -3078,7 +3078,7 @@ class TrainerProcess
       appraise(game_state, 'careful')
     when /^App Pouch$/i
       DRC.retreat
-      DRC.bput("app my #{@gem_pouch_adjective} #{@gem_pouch_noun} quick", 'You sort', 'Appraise what', 'You cannot appraise', 'You can\'t appraise')
+      DRC.bput("app my #{@gem_pouch_adjective} #{@gem_pouch_noun} quick", 'You sort', 'Appraise what', 'You cannot appraise', 'You can\'t appraise', 'There doesn\'t appear to be anything')
     when /^App Bundle$/i
       DRC.retreat
       DRC.bput("app my bundle quick", 'You scan', 'Appraise what', 'You cannot appraise', 'You can\'t appraise')
