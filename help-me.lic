@@ -42,7 +42,7 @@ class HelpMe
 
     Dir[File.join(SCRIPT_DIR, 'profiles/*.yaml')].map { |item| File.path(item) }.select { |path| path.include?("#{checkname}-") }.each do |path|
       message_body += "\n****" * 3
-      message_body += path.to_s
+      message_body += "#{path.to_s}  -  Modified: #{File.mtime(path)}"
       message_body += "\n"
       message_body += File.read(path)
     end
