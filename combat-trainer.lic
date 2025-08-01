@@ -1580,16 +1580,17 @@ class SpellProcess
       moonblade_spell['mana'] = 1
 
       lunar_magic_rank = DRSkill.getrank('Lunar Magic')
-      moonblade_spell['prep_time'] = case lunar_magic_rank
-      when 200..299
-        3
-      when 300..399
-        2
-      when 400..Float::INFINITY
-        1
-      else
-        4
-      end
+      prep_time = case lunar_magic_rank
+                  when 200..299
+                    3
+                  when 300..399
+                    2
+                  when 400..Float::INFINITY
+                    1
+                  else
+                    4
+                  end
+      moonblade_spell['prep_time'] = prep_time
 
       DRCA.cast_spell(moonblade_spell, @settings)
 
