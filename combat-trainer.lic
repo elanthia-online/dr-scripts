@@ -1592,16 +1592,16 @@ class SpellProcess
       DRC.message("Waiting for moonblade cast message...") if $debug_mode_ct
 
       DRC.bput("tap moon", nil, 15,
-        /A shaft of intense/i,
-        /You are aided by the strength/i,
-        /diamond-hard metal/i,
-        /moonblade.*fiery.*liquid/i,
-        /moonblade.*substance/i,
-        /coalesces into a long narrow moonblade.*?/i,
-        /oozes into existence.*moonblade/i,
-        /moonblade of glossy blue-white diamond-hard metal/i,
-        /You are already holding a moonblade/i,
-        /a shadow coalesces/i)
+               /A shaft of intense/i,
+               /You are aided by the strength/i,
+               /diamond-hard metal/i,
+               /moonblade.*fiery.*liquid/i,
+               /moonblade.*substance/i,
+               /coalesces into a long narrow moonblade.*?/i,
+               /oozes into existence.*moonblade/i,
+               /moonblade of glossy blue-white diamond-hard metal/i,
+               /You are already holding a moonblade/i,
+               /a shadow coalesces/i)
 
       DRC.bput('break moonblade', nil, 5)
 
