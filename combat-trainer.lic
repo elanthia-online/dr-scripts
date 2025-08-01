@@ -1560,7 +1560,6 @@ class SpellProcess
     return if @checking_slivers
     return if game_state.casting
     return if DRSpells.slivers
-	  return unless UserVars.moons['visible'].any?
 
     # Cooldown check
     if @last_sliver_cast_time
@@ -1568,14 +1567,9 @@ class SpellProcess
       cooldown = 120
       if elapsed < cooldown
         remaining = (cooldown - elapsed).round
-
-        @last_sliver_print ||= Time.at(0)
-        if Time.now - @last_sliver_print >= 30
-          echo "combat-trainer: Sliver cooldown: #{remaining} seconds remaining."
-          @last_sliver_print = Time.now
-        end
+        echo "Sliver cooldown: #{remaining} seconds remaining."
+        return
       end
-      return
     end
 
     DRC.message("Last sliver cast: #{@last_sliver_cast_time.inspect}") if $debug_mode_ct
@@ -1597,7 +1591,7 @@ class SpellProcess
 
       DRC.message("Waiting for moonblade cast message...") if $debug_mode_ct
 
-      result = DRC.bput("tap moon", nil, 15,
+      DRC.bput("tap moon", nil, 15,
         /A shaft of intense/i,
         /You are aided by the strength/i,
         /diamond-hard metal/i,
@@ -1608,7 +1602,7 @@ class SpellProcess
         /moonblade of glossy blue-white diamond-hard metal/i,
         /You are already holding a moonblade/i,
         /a shadow coalesces/i
-      )
+     )
 
       DRC.bput('break moonblade', nil, 5)
 
