@@ -1580,11 +1580,11 @@ class SpellProcess
       moonblade_spell['mana'] = 1
 
       lunar_magic_rank = DRSkill.getrank('Lunar Magic')
-      moonblade_spell['prep_time'] =      case lunar_magic_rank
-      when 200..299 then 3
-      when 300..399 then 2
-      when 400..Float::INFINITY then 1
-      else 4
+      moonblade_spell['prep_time'] = case lunar_magic_rank
+        when 200..299 then 3
+        when 300..399 then 2
+        when 400..Float::INFINITY then 1
+        else 4
       end
 
       DRCA.cast_spell(moonblade_spell, @settings)
@@ -1592,17 +1592,16 @@ class SpellProcess
       DRC.message("Waiting for moonblade cast message...") if $debug_mode_ct
 
       DRC.bput("tap moon", nil, 15,
-      /A shaft of intense/i,
-      /You are aided by the strength/i,
-      /diamond-hard metal/i,
-      /moonblade.*fiery.*liquid/i,
-      /moonblade.*substance/i,
-      /coalesces into a long narrow moonblade.*?/i,
-      /oozes into existence.*moonblade/i,
-      /moonblade of glossy blue-white diamond-hard metal/i,
-      /You are already holding a moonblade/i,
-      /a shadow coalesces/i
-      )
+        /A shaft of intense/i,
+        /You are aided by the strength/i,
+        /diamond-hard metal/i,
+        /moonblade.*fiery.*liquid/i,
+        /moonblade.*substance/i,
+        /coalesces into a long narrow moonblade.*?/i,
+        /oozes into existence.*moonblade/i,
+        /moonblade of glossy blue-white diamond-hard metal/i,
+        /You are already holding a moonblade/i,
+        /a shadow coalesces/i)
 
       DRC.bput('break moonblade', nil, 5)
 
