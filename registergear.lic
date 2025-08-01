@@ -1,0 +1,123 @@
+class RegGear
+  def initialize(debug: true)
+    @debug = debug
+    settings = get_settings
+    @gearsets = settings.gear_sets
+    @set_name = settings.set_name || "standard"
+
+    unless @gearsets
+      echo "[No 'gear_sets' defined in yaml.]" if @debug
+      exit
+    end
+
+    @items = @gearsets[@set_name]
+
+    unless @items
+      echo "[Gear set '#{@set_name}' not found in yaml.]" if @debug
+      exit
+    end
+  end
+
+  def run
+    echo "[reggear: Walking to registrar...]" if @debug
+    DRCT.walk_to(14670)
+    fput("go curtain")
+
+    @items.each do |item|
+      register_item(item)
+      pause(1)
+    end
+  end
+
+  def register_item(item_name)
+    echo "[Tapping: #{item_name}]" if @debug
+    fput("tap #{item_name}")
+    tap_output = waitfor(/^You tap .+?\./, /^What were you referring/i, /^The faces on your stick pause/i)
+
+    if tap_output =~ /^What were you referring/i
+      echo "[Could not identify item: #{item_name}]"
+      return
+    end
+
+    if tap_output =~ /^The faces on your stick pause/
+      echo "[reggear: Cannot tap #{item_name} — skipping (locked/animated)]"
+      return
+    end
+
+    match = tap_output.match(/^You tap (.+)\./i)
+    if match
+      description = match[1]
+      echo "[Matched item: #{description}]" if @debug
+    else
+      echo "[Could not match description for #{item_name}]" if @debug
+      return
+    end
+
+    echo "[Removing #{item_name}...]" if @debug
+    remove_result = fput("remove #{item_name}")
+    if remove_result !~ /(remove|loosen|take off|unstrap|pull off|take|You place| .* off|detach|strip off|slide.*off)/i
+      echo "[Failed to remove #{item_name}.]" if @debug
+    end
+
+    get_result = fput("get #{item_name}")
+    if get_result =~ /already holding/i
+      echo "[Already holding #{item_name} -- skipping.]" if @debug
+    elsif get_result =~ /need a free hand/
+      echo "[Hands are full, cannot get #{item_name}. Skipping.]" if @debug
+      return
+    else
+      echo "[Getting #{item_name}.]" if @debug
+    end
+
+    echo "[Registering #{item_name} (1st time)...]" if @debug
+    reg_result = fput("register #{item_name}")
+
+    if reg_result =~ /do not have enough Kronars/i
+      echo "[Not enough Kronars to register #{item_name}. Skipping.]" if @debug
+      return
+    end
+
+    if reg_result =~ /You cannot register, I am sorry/i
+      echo "[Cannot register items in this room.]" if @debug
+      fput("go curtain")
+      return
+    end
+
+    if reg_result =~ /did the paperwork for that.+recently/i
+      echo "[#{item_name} is already registered. Skipping re-registration.]" if @debug
+      fput("wear #{item_name}")
+      return
+    end
+
+    if reg_result =~ /There appears to be some problems with the item/i
+      echo "[Cannot register #{item_name} because it has attached or contained items. Skipping.]" if @debug
+      return
+    end
+
+    echo "[reggear: Registering #{item_name} second time]" if @debug
+    fput("register #{item_name}")
+
+    echo "[Rewearing #{item_name}...]" if @debug
+    wear_result = fput("wear #{item_name}")
+    unless wear_result =~ /(You wear|strap|place|slip|put|You already)/i
+      echo "[WARNING: Failed to rewear #{item_name}.]" if @debug
+      unless wear_result =~ /already in your inventory/
+        stow_item(item_name)
+      end
+    end
+
+    echo "[#{item_name} registered successfully.]"
+  end
+
+  def get_item(item_name)
+    echo "[getting #{item_name}.]" if @debug
+    fput("get #{item_name}")
+  end
+
+  def stow_item(item_name)
+    echo "[stowing #{item_name}.]" if @debug
+    fput("stow #{item_name}")
+  end
+end
+
+RegGear.new.run
