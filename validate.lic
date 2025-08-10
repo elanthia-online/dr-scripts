@@ -352,7 +352,7 @@ class DRYamlValidator
             .select { |info| info[:duration].nil? }
             .select { |info| info['stop_on'].nil? }
             .select { |info| info['stop_on_low'].nil? }
-            .each { |info| error("Must have at least one of :duration or stop_on for hunting_info '#{info[:zone]}'") }
+            .each { |info| error("Must have at least one of :duration or stop_on or stop_on_low for hunting_info '#{info[:zone]}'") }
   end
 
   def assert_that_priority_skills_exists_if_hunting_priority(settings)
