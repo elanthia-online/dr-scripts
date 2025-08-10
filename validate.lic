@@ -351,6 +351,7 @@ class DRYamlValidator
     settings.hunting_info
             .select { |info| info[:duration].nil? }
             .select { |info| info['stop_on'].nil? }
+            .select { |info| info['stop_on_low'].nil? }
             .each { |info| error("Must have at least one of :duration or stop_on for hunting_info '#{info[:zone]}'") }
   end
 
