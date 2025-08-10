@@ -215,7 +215,7 @@ class DRYamlValidator
     valid_hometown_altars = get_data('theurgy')[settings.hometown]['favor_altars'].keys
     return if valid_hometown_altars.include?(settings.favor_god.capitalize)
 
-    warn("The favor_god: #{settings.favor_god} you have set does not have a favor altar in your hometown: #{settings.hometown}.  You will not be able to get favors if you fall below your favor_goal.")
+    warn("The favor_god: #{settings.favor_god} you have set does not have a favor altar in your hometown: #{settings.hometown}.  You will not be able to get favors if you fall below your favor_goal. Consider setting a favor_town where #{settings.favor_god} does have an altar.")
   end
 
   def assert_that_water_holder_is_set_when_using_altars(settings)
