@@ -1555,19 +1555,35 @@ class SpellProcess
 
   private
 
+  def slivers_exist?
+    echo "Checking for slivers with 'perc self'..." if $debug_mode_ct
+
+    line = dothistimeout('perc self', 7,
+                         /slivers from .*? suitable for use in Telekinetic Throw/i)
+
+    if line
+      echo "DEBUG: Matched sliver line: #{line.inspect}" if $debug_mode_ct
+      true
+    else
+      echo "DEBUG: No sliver line matched (timeout/no output)." if $debug_mode_ct
+      false
+    end
+  end
+
   def check_slivers(game_state)
     return unless DRStats.moon_mage?
+    return unless @tk_spell
     return if @checking_slivers
     return if game_state.casting
-    return if DRSpells.slivers
+    return if slivers_exist? # early exit if already up
 
-    # Cooldown check (do early)
     if @last_sliver_cast_time
-      elapsed = Time.now - @last_sliver_cast_time
-      cooldown = 120
+      elapsed  = Time.now - @last_sliver_cast_time
+      cooldown = @settings.sliver_duration.to_i.nonzero? || 200 # fallback
+
       if elapsed < cooldown
         remaining = (cooldown - elapsed).round
-        echo "Sliver cooldown: #{remaining} seconds remaining."
+        echo "Sliver cooldown: #{remaining} seconds remaining." if $debug_mode_ct
         return
       end
     end
@@ -1581,22 +1597,18 @@ class SpellProcess
 
       lunar_magic_rank = DRSkill.getrank('Lunar Magic')
       prep_time = case lunar_magic_rank
-                  when 200..299
-                    3
-                  when 300..399
-                    2
-                  when 400..Float::INFINITY
-                    1
-                  else
-                    4
+                  when 200..299 then 3
+                  when 300..399 then 2
+                  when 400..Float::INFINITY then 1
+                  else 4
                   end
       moonblade_spell['prep_time'] = prep_time
 
       DRCA.cast_spell(moonblade_spell, @settings)
 
-      DRC.message("Waiting for moonblade cast message...") if $debug_mode_ct
+      DRC.message('Waiting for moonblade cast message...') if $debug_mode_ct
 
-      DRC.bput("tap moon", nil, 15,
+      DRC.bput('tap moon', nil, 15,
                /A shaft of intense/i,
                /You are aided by the strength/i,
                /diamond-hard metal/i,
