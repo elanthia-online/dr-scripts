@@ -431,10 +431,10 @@ hunting_zones:
   - 6088
   - 6090
   - 6089
+  - 6087
   elder_silverfish:
   # Beyond the jagged opening elder hardened silverfish (~14 relative level) spawn.
   # Premie Only
-  - 6087
   - 6086
   - 6085
   - 6084
