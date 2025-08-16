@@ -4579,7 +4579,7 @@ class GameState
     echo("  @rush_shield: #{@rush_shield}") if $debug_mode_ct
 
     @rush_retreat_skip = settings.maneuver_rush_skip_retreat
-    echo("  @rush_shield: #{@rush_retreat_skip}") if $debug_mode_ct
+    echo("  @rush_retreat_skip: #{@rush_retreat_skip}") if $debug_mode_ct
 
     @rush_engage_only = settings.maneuver_rush_engage_only
     echo("  @rush_shield: #{@rush_engage_only}") if $debug_mode_ct
