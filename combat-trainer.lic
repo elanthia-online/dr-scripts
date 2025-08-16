@@ -3078,7 +3078,7 @@ class TrainerProcess
       appraise(game_state, 'careful')
     when /^App Pouch$/i
       DRC.retreat
-      DRC.bput("app my #{@gem_pouch_adjective} #{@gem_pouch_noun} quick", 'You sort', 'Appraise what', 'You cannot appraise', 'You can\'t appraise', 'There doesn\'t appear to be anything')
+      DRC.bput("app my #{@gem_pouch_adjective} #{@gem_pouch_noun} quick", 'You sort', 'Appraise what', 'You cannot appraise', 'You can\'t appraise')
     when /^App Bundle$/i
       DRC.retreat
       DRC.bput("app my bundle quick", 'You scan', 'Appraise what', 'You cannot appraise', 'You can\'t appraise')
@@ -3150,7 +3150,7 @@ class TrainerProcess
       return if game_state.loaded
       game_state.sheath_whirlwind_offhand
       DRC.retreat
-      game_state.engage
+      game_state.engage_slow
       DRC.collect(@forage_item)
       waitrt?
       game_state.wield_whirlwind_offhand
@@ -3222,7 +3222,7 @@ class TrainerProcess
 
     game_state.sheath_whirlwind_offhand if game_state.currently_whirlwinding
     DRC.retreat
-    game_state.engage
+    game_state.engage_slow
     DRC.bput("get my #{@almanac}", 'You get', 'What were')
     if training_skill
       DRC.bput("turn #{@almanac} to #{training_skill}", 'You turn', 'You attempt to turn')
@@ -4577,7 +4577,13 @@ class GameState
 
     @rush_shield = settings.maneuver_rush_shield
     echo("  @rush_shield: #{@rush_shield}") if $debug_mode_ct
+  
+    @rush_retreat_skip = settings.maneuver_rush_skip_retreat
+    echo("  @rush_shield: #{@rush_retreat_skip}") if $debug_mode_ct
 
+    @rush_engage_only = settings.maneuver_rush_engage_only
+    echo("  @rush_shield: #{@rush_engage_only}") if $debug_mode_ct
+    
     if @use_analyze_combos && DRStats.barbarian?
       Flags.add('ct-accuracy-ready', 'You sense your combat accuracy decrease')
       Flags['ct-accuracy-ready'] = true
@@ -4758,9 +4764,19 @@ class GameState
     end
   end
 
+  def engage_slow
+    return unless can_engage?
+
+    case DRC.bput("engage", /^You (are already|begin to) (stealthily )?(advanc(e|ing)|at melee)/, /^There is nothing else/, /is already quite dead/, /^What do you want to advance towards/)
+    when /You are already advancing/, /You begin to advance/, /You begin to stealthily advance/
+      pause 2
+    end
+  end
+
   def rush
     return if retreating?
     return false if DRC.left_hand # Need your offhand to equip a shield
+    return if loaded
     return false unless @rush_shield # Need a shield to equip
     return false unless npcs.any? # We should have an NPC to rush
     return false unless @rush_to_engage && charged_maneuver_off_cooldown?(@charged_maneuvers['Shield Usage']) # ability is off cooldown and we've elected to use it
@@ -5227,7 +5243,7 @@ class GameState
       maneuver = @charged_maneuvers['Dual Wield']
     elsif charged_maneuver_off_cooldown?(@charged_maneuvers[weapon_skill])
       maneuver = @charged_maneuvers[weapon_skill]
-    elsif charged_maneuver_off_cooldown?(@charged_maneuvers['Shield Usage']) && can_shield_rush
+    elsif charged_maneuver_off_cooldown?(@charged_maneuvers['Shield Usage']) && can_shield_rush && !@rush_engage_only
       maneuver = @charged_maneuvers['Shield Usage']
     end
 
@@ -5310,12 +5326,17 @@ class GameState
       # we'll wait another 15 seconds and retry.
       @cooldown_timers[maneuver] += 15
       return false
-    when *maneuver_failure_messages
-      return false
     when *maneuver_retreat_retry_messages
       if maneuver.casecmp?('rush')
-        DRC.retreat
-        return use_charged_maneuver(maneuver)
+        if @rush_retreat_skip
+          # Skip retreat and delay the next rush attempt
+          @cooldown_timers[maneuver] = Time.now + 10
+          echo "Rush failed due to engagement. Skipping retreat and retrying in 10 seconds."
+          return true
+        else
+          DRC.retreat
+          return use_charged_maneuver(maneuver)
+        end
       else
         return false
       end
