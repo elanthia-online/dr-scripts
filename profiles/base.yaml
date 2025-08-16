@@ -244,6 +244,9 @@ maneuver_rush_to_engage: false
 # that you pull out of a container just for this maneuver.
 # This must match the "{adjective} {noun}" of the same item in your gear: section.
 maneuver_rush_shield:
+# Set to true to avoid retreating if already at melee.
+maneuver_rush_skip_retreat: false
+maneuver_rush_engage_only: false
 
 
 # Defines the number of monsters you will keep in combat with you by performing 'dance actions' or attacking with only 'harmless: true' spells. 0 means kill everything.
