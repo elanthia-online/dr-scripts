@@ -1561,7 +1561,7 @@ class SpellProcess
 
     if line
       echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct
-	  return
+	    return
     else
       echo "No sliver line matched." if $debug_mode_ct
       false
@@ -1573,7 +1573,7 @@ class SpellProcess
     return unless @tk_spell
     return if @checking_slivers
     return if game_state.casting
-    return if slivers_exist? 
+    return if slivers_exist?
 
     if @last_sliver_cast_time
       elapsed  = Time.now - @last_sliver_cast_time
