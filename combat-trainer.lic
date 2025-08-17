@@ -1577,7 +1577,7 @@ class SpellProcess
 
     if @last_sliver_cast_time
       elapsed  = Time.now - @last_sliver_cast_time
-      cooldown = @settings.sliver_duration.to_i.nonzero? || 100 
+      cooldown = @settings.sliver_duration.to_i.nonzero? || 100
 
       if elapsed < cooldown
         remaining = (cooldown - elapsed).round
