@@ -1556,16 +1556,14 @@ class SpellProcess
   private
 
   def slivers_exist?
-    echo "Checking for slivers with 'perc self'..." if $debug_mode_ct
-
-    line = dothistimeout('perc self', 7,
-                         /slivers from .*? suitable for use in Telekinetic Throw/i)
+    line = dothistimeout('perc self', 15,
+                         /slivers/i)
 
     if line
-      echo "DEBUG: Matched sliver line: #{line.inspect}" if $debug_mode_ct
-      true
+      echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct
+	  return
     else
-      echo "DEBUG: No sliver line matched (timeout/no output)." if $debug_mode_ct
+      echo "No sliver line matched." if $debug_mode_ct
       false
     end
   end
@@ -1575,11 +1573,11 @@ class SpellProcess
     return unless @tk_spell
     return if @checking_slivers
     return if game_state.casting
-    return if slivers_exist? # early exit if already up
+    return if slivers_exist? 
 
     if @last_sliver_cast_time
       elapsed  = Time.now - @last_sliver_cast_time
-      cooldown = @settings.sliver_duration.to_i.nonzero? || 200 # fallback
+      cooldown = @settings.sliver_duration.to_i.nonzero? || 100 
 
       if elapsed < cooldown
         remaining = (cooldown - elapsed).round
