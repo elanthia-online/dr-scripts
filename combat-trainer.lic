@@ -1556,12 +1556,11 @@ class SpellProcess
   private
 
   def slivers_exist?
-    line = dothistimeout('perc self', 15,
-                         /slivers/i)
+    line = dothistimeout('perc self', 15, /slivers/i)
 
     if line
       echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct
-	    return
+      return
     else
       echo "No sliver line matched." if $debug_mode_ct
       false
