@@ -1,8 +1,8 @@
 =begin
 Runs to your local NPC Healer, touches the plant to transfer wounds, and heals. Intended to be used to train Empathy (will cycle until Empathy is mindlocked), but options include healing past mindlocked.
-  
+
   Can be used with or without Adaptive Curing, though ADC will help speed things up.
-  
+
   Logic Flow:
   - Stows hands (we don't want to be dropping things if our hands disappear!)
   - If adc is true, uses a waggle_set plant_heal to pre-cast healing spells, preferably Heal and Blood Staunching. If false, skips pre-casting.
@@ -25,7 +25,7 @@ Runs to your local NPC Healer, touches the plant to transfer wounds, and heals. 
   plant_adc: true  ## Set to true/false to pre-cast your plant_heal waggle set. Recommend at least BS and Heal.
   plant_total_touch_count: 3  ## Total number of times you want to touch your plant. This will be used as the max count without ADC, or will be used once Heal is expired if using ADC. Be mindful of bleeders and overhealing!
   plant_custom_room:  ## Add a custom room to drop your plant in. Otherwise will use npc healer room assigned to your hometown (or Fang Cove if you're using FC override)
-  plant_heal_past_ML: false  ## Set to true if you want to fully heal the plant. Can take a *long* time in busy areas and you might be stealing someone elses' plant wounds.  
+  plant_heal_past_ML: false  ## Set to true if you want to fully heal the plant. Can take a *long* time in busy areas and you might be stealing someone elses' plant wounds.
   plant_healing_room:  ## Add custom room to return to heal. Otherwise will use safe_room settings.
   plant_empathy_threshold: 24  ## Empathy mind state you want to stop returning/healing your plant.
   plant_prep_room: <room number> ## Newly added feature to let you prep in a room outside of the plant_room you want to cast in.
@@ -45,7 +45,6 @@ Runs to your local NPC Healer, touches the plant to transfer wounds, and heals. 
     ev
     plant_heal (if plant_adc == true)
 =end
-
 
 class PlantHeal
   unless DRStats.empath?
@@ -181,13 +180,12 @@ class PlantHeal
     sleep @ev_extra_wait
 
     DRC.bput('cast',
-             'You gesture',                           # success
-             'You strain, but are too mentally fatigued', # fatigue
+             'You gesture',
+             'You strain, but are too mentally fatigued',
              'You aren\'t harnessing any mana',
              'You lose your concentration',
              'Roundtime')
 
-    # 7) optional stow
     stow_focus
 
     DRCT.walk_to(@plantroom) if moved
