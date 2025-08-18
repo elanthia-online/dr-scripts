@@ -435,6 +435,7 @@ class Burgle
     return if Flags['burgle-footsteps']
 
     result = DRC.bput("search #{target}", 'It looks valuable', 'Roundtime', 'I could not')
+    waitrt?
     @search_count += 1
     if result =~ /It looks valuable/
       store_loot if DRC.right_hand && DRC.left_hand
