@@ -1555,49 +1555,74 @@ class SpellProcess
 
   private
 
+  def slivers_exist?
+    line = dothistimeout('perc self', 15, /slivers/i)
+
+    if line
+      echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct
+      return
+    else
+      echo "No sliver line matched." if $debug_mode_ct
+      false
+    end
+  end
+
   def check_slivers(game_state)
-    return unless DRSpells.known_spells.include?('Moonblade')
     return unless DRStats.moon_mage?
     return unless @tk_spell
+    return if @checking_slivers
     return if game_state.casting
-    return if DRSpells.slivers
+    return if slivers_exist?
 
-    unless UserVars.moons['visible'].any?
-      DRC.message "There are NO moons available and you have NO TK_AMMO set! You need to fix this!" if !@tk_ammo && $debug_mode_ct
-      return
-    end
+    if @last_sliver_cast_time
+      elapsed  = Time.now - @last_sliver_cast_time
+      cooldown = @settings.sliver_duration.to_i.nonzero? || 100
 
-    # With low skill you may fail to create the slivers
-    # when breaking your moonblade. If so, keep retrying.
-    retry_count = 0
-    max_retries = 3
-    created_slivers = false
-    # We don't need to cast the spell a fancy way
-    # so rather than asking users to define a new waggle
-    # then simply cast the spell at minimum prep.
-    moonblade_spell = get_data('spells').spell_data['Moonblade'].dup
-    # Minimally prepare the spell so we can cast it quickly.
-    moonblade_spell['mana'] = 1
-    # Try, try, try to break moonblade into slivers.
-    # For novices, this may fail a couple times.
-    while !created_slivers && retry_count < max_retries
-      # For skilled mages, try to snap cast
-      # unless we failed the first time.
-      if retry_count == 0
-        case DRSkill.getrank('Lunar Magic')
-        when 200..299
-          moonblade_spell['prep_time'] = 3
-        when 300..399
-          moonblade_spell['prep_time'] = 2
-        when 400..Float::INFINITY
-          moonblade_spell['prep_time'] = 1
-        end
+      if elapsed < cooldown
+        remaining = (cooldown - elapsed).round
+        echo "Sliver cooldown: #{remaining} seconds remaining." if $debug_mode_ct
+        return
       end
-      DRCA.cast_spell(moonblade_spell, @settings)
-      created_slivers = DRC.bput("break moonblade", "The slivers drift about", "dissipate without any benefit", "Break what?") == "The slivers drift about"
-      retry_count = retry_count + 1
     end
-    DRC.message("Failed to create slivers for telekinetic ammo after #{retry_count} attempts") unless created_slivers
+
+    DRC.message("Last sliver cast: #{@last_sliver_cast_time.inspect}") if $debug_mode_ct
+
+    @checking_slivers = true
+    begin
+      moonblade_spell = get_data('spells').spell_data['Moonblade'].dup
+      moonblade_spell['mana'] = 1
+
+      lunar_magic_rank = DRSkill.getrank('Lunar Magic')
+      prep_time = case lunar_magic_rank
+                  when 200..299 then 3
+                  when 300..399 then 2
+                  when 400..Float::INFINITY then 1
+                  else 4
+                  end
+      moonblade_spell['prep_time'] = prep_time
+
+      DRCA.cast_spell(moonblade_spell, @settings)
+
+      DRC.message('Waiting for moonblade cast message...') if $debug_mode_ct
+
+      DRC.bput('tap moon', nil, 15,
+               /A shaft of intense/i,
+               /You are aided by the strength/i,
+               /diamond-hard metal/i,
+               /moonblade.*fiery.*liquid/i,
+               /moonblade.*substance/i,
+               /coalesces into a long narrow moonblade.*?/i,
+               /oozes into existence.*moonblade/i,
+               /moonblade of glossy blue-white diamond-hard metal/i,
+               /You are already holding a moonblade/i,
+               /a shadow coalesces/i)
+
+      DRC.bput('break moonblade', nil, 5)
+
+      @last_sliver_cast_time = Time.now
+    ensure
+      @checking_slivers = false
+    end
   end
 
   def check_osrel(game_state)
