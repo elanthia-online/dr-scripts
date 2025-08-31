@@ -2129,10 +2129,21 @@ class Bescort
       when /^You say/
         DRC.message("fix yer yaml ye grub! Yer password is wrong!")
         DRC.message("Set the correct value for shard_thief_password")
+        stop_script("go2") if Script.running?("go2")
         exit
       end
     end
-    move 'go door'
+    case DRC.bput('go door', /From behind the doorway you hear a faint chuckle/, /Obvious exits/)
+    when /From behind the doorway you hear a faint chuckle/
+      case DRC.bput("say #{password}", 'You lean towards the doorway', /^You say/)
+      when /^You say/
+        DRC.message("fix yer yaml ye grub! Yer password is wrong!")
+        DRC.message("Set the correct value for shard_thief_password")
+        stop_script("go2") if Script.running?("go2")
+        exit
+      end
+      move 'go door'
+    end
   end
 
   def use_shard_gates
