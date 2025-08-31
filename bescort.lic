@@ -2123,9 +2123,14 @@ class Bescort
 
   def enter_thief_guild
     password = @settings.shard_thief_password
-    case DRC.bput('knock', /^You wait, but nothing happens/, /^A moment later, a slit opens in the door at eye level/)
+    case DRC.bput('knock',/^You wait, but nothing happens/, /^A moment later, a slit opens in the door at eye level/)
     when /^A moment later, a slit opens in the door at eye level/
-      DRC.bput("say #{password}", 'You lean towards the doorway')
+      case DRC.bput("say #{password}", 'You lean towards the doorway', /^You say/)
+      when /^You say/
+        DRC.message("fix yer yaml ye grub! Yer password is wrong!")
+        DRC.message("Set the correct value for shard_thief_password")
+        exit
+      end
     end
     move 'go door'
   end
