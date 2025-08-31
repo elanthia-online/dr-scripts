@@ -2123,7 +2123,7 @@ class Bescort
 
   def enter_thief_guild
     password = @settings.shard_thief_password
-    case DRC.bput('knock',/^You wait, but nothing happens/, /^A moment later, a slit opens in the door at eye level/)
+    case DRC.bput('knock', /^You wait, but nothing happens/, /^A moment later, a slit opens in the door at eye level/)
     when /^A moment later, a slit opens in the door at eye level/
       DRC.bput("say #{password}", 'You lean towards the doorway')
     end
