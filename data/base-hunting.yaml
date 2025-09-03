@@ -389,6 +389,7 @@ hunting_zones:
   - 665
   # https://elanthipedia.play.net/Giant_mechanical_mouse                  0-2000
   # Flex creatures, require special weapon material to hit
+  # 51715, 51716, and 132 are outdoors, rest are indoors.
   mechanical_mice:
   - 134
   - 13468
@@ -400,6 +401,8 @@ hunting_zones:
   - 6873
   - 132
   - 133
+  - 51716
+  - 51715
   # https://elanthipedia.play.net/Musk_Hog                                 10-35
   hogs:
   - 1438
