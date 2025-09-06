@@ -26,7 +26,8 @@ class InventoryManager
         { name: 'servant', regex: /servant/i, optional: true, description: "Save shadow servant inventory." },
         { name: 'shop', regex: /shop/i, optional: true, description: "Save your Trader shop inventory." },
         { name: 'pocket', regex: /pocket/i, optional: true, description: "Rummages your secret pocket container for list of items. NOTE: Must be wearing the container." },
-        { name: 'vault_standard', regex: /vault_standard/i, optional: true, description: "Uses VAULT STANDARD to get a list of items." }
+        { name: 'vault_standard', regex: /vault_standard/i, optional: true, description: "Uses VAULT STANDARD to get a list of items." },
+        { name: 'vault_family', regex: /vault_family/i, optional: true, description: "Uses VAULT FAMILY to get a list of items." }
       ],
       [
         { name: 'search', regex: /search/i, description: 'Start a search across all characters for specified item.' },
@@ -54,6 +55,8 @@ class InventoryManager
       add_vault_book
     elsif args.vault_standard
       add_vault_standard
+    elsif args.vault_family
+      add_vault_family
     elsif args.vault_regular
       add_vault_regular_inv
     elsif args.family_vault
@@ -291,6 +294,10 @@ class InventoryManager
 
   def add_vault_standard
     check_inventory("vault standard", /^Vault Inventory:/, 'vault')
+  end
+
+  def add_vault_family
+    check_inventory("vault family", /^Vault Inventory:/, 'Family')
   end
 
   def add_vault_book
