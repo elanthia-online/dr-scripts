@@ -82,8 +82,8 @@ class LearnedData
              .select { |item| @skills_to_show.include?(item.name) }
              .sort_by { |item| item.current - item.baseline }
              .reverse.each_slice(columns) do |skills|
-        output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
-        respond(output)
+               output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
+               respond(output)
              end
     else
       DRSkill.list
@@ -91,8 +91,8 @@ class LearnedData
              .select { |item| item.current - item.baseline > 0 }
              .sort_by { |item| item.current - item.baseline }
              .reverse.each_slice(columns) do |skills|
-        output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
-        respond(output)
+               output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
+               respond(output)
              end
     end
 
