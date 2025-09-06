@@ -35,7 +35,7 @@ class LearnedData
 
     DRSkill.reset if args.reset
 
-    @zero = args.zero ? true : false
+    @zero = !!args.zero
 
     if args.survival
       @skills_to_show.concat(survival_skills)
