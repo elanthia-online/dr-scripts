@@ -348,7 +348,7 @@ class InventoryManager
   end
 
   def add_family_vault
-    check_inventory("rummage vault", /^You rummage through a secure vault/, 'Family', 42)
+    check_inventory("rummage vault", /^You rummage through a vault/, 'Family', 42)
   end
 
   def add_vault_regular_inv
