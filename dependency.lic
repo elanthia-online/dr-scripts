@@ -10,18 +10,18 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.14'
+$DEPENDENCY_VERSION = '2.0.15'
 $MIN_RUBY_VERSION = '3.3.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/KzSAUPnDHh'
 
-unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.11.0')
+unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.14.5')
   10.times do
-    _respond("<pushBold/>*****************************************************************************<popBold/>")
-    _respond("<pushBold/>* Lich versions prior to 5.11.0 were deprecated on Thursday 27 March 2025.  *<popBold/>")
-    _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
-    _respond("<pushBold/>* For update instructions.                                                  *<popBold/>")
-    _respond("<pushBold/>* Exiting Dependency now. Nothing much will work from here...               *<popBold/>")
-    _respond("<pushBold/>*****************************************************************************<popBold/>")
+    _respond("<pushBold/>******************************************************************************<popBold/>")
+    _respond("<pushBold/>* Lich versions prior to 5.14.5 were deprecated on Monday 08 September 2025. *<popBold/>")
+    _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup    *<popBold/>")
+    _respond("<pushBold/>* For update instructions.                                                   *<popBold/>")
+    _respond("<pushBold/>* Exiting Dependency now. Nothing much will work from here...                *<popBold/>")
+    _respond("<pushBold/>******************************************************************************<popBold/>")
     pause 10
   end
   exit
