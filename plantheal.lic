@@ -100,9 +100,9 @@ class PlantHeal
     hometown = settings.force_healer_town ? town_data[settings.force_healer_town] : town_data[settings.hometown]
 
     if @droproom.nonzero?
-      @droproom = @droproom
+      # @droproom already set in settings
     elsif hometown && hometown['npc_empath'] && hometown['npc_empath']['id']
-      @plantroom = hometown['npc_empath']['id'].to_i
+      @droproom = hometown['npc_empath']['id'].to_i
     else
       DRC.message("Couldn't resolve NPC healer room from hometown settings. Set plant_drop_room.")
       exit
