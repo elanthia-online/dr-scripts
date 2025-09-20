@@ -27,7 +27,7 @@ class SmeltDeeds
     waitrt?
 
     results
-      .each_with_object([]) { |line, array| array << line.match(/A deed for (.+) (.*) (.+) is in/)[2] }
+      .each_with_object([]) { |line, array| array << line.match(/A deed for (.+) (.*) (.+) is in/)&.[2] }
       .each_with_object(Hash.new(0)) { |name, counts| counts[name] += 1 }
       .select { |metal, _count| all_metals.include?(metal) }
       .reject { |_metal, count| count <= 1 }
