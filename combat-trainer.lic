@@ -1555,15 +1555,34 @@ class SpellProcess
 
   private
 
-  def slivers_exist?
-    line = dothistimeout('perc self', 15, /slivers/i)
+  SLIVER_PERC_INTERVAL = 120
 
-    if line
-      echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct
-      return
-    else
-      echo "No sliver line matched." if $debug_mode_ct
-      false
+  def slivers_exist?(force: false)
+    return @last_perc_result if @checking_perc  
+
+    interval = @settings.sliver_perc_interval.to_i.nonzero? || SLIVER_PERC_INTERVAL
+    now = Time.now
+
+    if !force && @last_perc_check && (now - @last_perc_check) < interval
+      echo "slivers_exist? (cached #{@last_perc_result}, age=#{(now - @last_perc_check).round}s)" if $debug_mode_ct
+      return @last_perc_result
+    end
+
+    @checking_perc = true
+    begin
+      line = DRC.bput('perc self', nil, 6)
+
+      present = !!(line && line.downcase.include?("sliver"))
+
+      @last_perc_check  = now
+      @last_perc_result = present
+
+      echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct && present
+      echo "No sliver line matched."               if $debug_mode_ct && !present
+
+      present
+    ensure
+      @checking_perc = false
     end
   end
 
