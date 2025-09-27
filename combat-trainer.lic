@@ -1558,7 +1558,7 @@ class SpellProcess
   SLIVER_PERC_INTERVAL = 120
 
   def slivers_exist?(force: false)
-    return @last_perc_result if @checking_perc  
+    return @last_perc_result if @checking_perc
 
     interval = @settings.sliver_perc_interval.to_i.nonzero? || SLIVER_PERC_INTERVAL
     now = Time.now
@@ -1578,7 +1578,7 @@ class SpellProcess
       @last_perc_result = present
 
       echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct && present
-      echo "No sliver line matched."               if $debug_mode_ct && !present
+      echo "No sliver line matched." if $debug_mode_ct && !present
 
       present
     ensure
