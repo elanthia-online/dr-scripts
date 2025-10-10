@@ -390,6 +390,11 @@ barb_abilities:
     start_command: form buffalo
     activated_message: Lurching forward, you reposition your burden and mimic
     expired_message: finish practicing the Form of the Buffalo
+  Heitak:
+    type: form
+    start_command: form heitak
+    activated_message: Every fiber cries out to leap, to stomp!
+    expired_message: finish practicing the Form of the Heitak
   Drought:
     type: berserk
     start_command: berserk drought
@@ -494,6 +499,11 @@ barb_abilities:
     start_command: meditate seek
     activated_message: ^You .* to meditate
     expired_message: enhanced understanding of the natural world vanishes
+  Axis:
+    type: meditation
+    start_command: meditate axis
+    activated_message: ^You .* to meditate
+    expired_message: The rhythm of the Axis in your core dissolves
 
 # Barbarian Roars and Bardic Screams
 # https://elanthipedia.play.net/Category:Roars
