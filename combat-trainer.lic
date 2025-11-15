@@ -601,11 +601,9 @@ class LootProcess
         if DRC.bput('tie my bundle', 'you tie the bundle', 'You don\'t seem to be able to do that right now') == 'you tie the bundle'
           until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
           end
-          DRC.bput('flag skinkills on','You will attempt to skin creatures you kill automatically') if @auto_skin_flag 
           game_state.need_bundle = false
         end
       else
-        DRC.bput('flag skinkills on','You will attempt to skin creatures you kill automatically') if @auto_skin_flag 
         game_state.need_bundle = false
       end
     end
