@@ -594,7 +594,7 @@ class LootProcess
       game_state.next_clean_up_step
     end
 
-    # catch that game state thinks you need a bundle, but you've succesfully skinned something this means that likely you have a marked bundle already made
+    # catch that game state thinks you need a bundle, but you've successfully skinned something this means that likely you have a marked bundle already made
     if game_state.need_bundle && Flags['ct-successful-skin']
       if @tie_bundle
         DRC.bput('tie my bundle', 'TIE the bundle again')
