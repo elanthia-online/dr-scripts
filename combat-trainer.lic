@@ -562,6 +562,7 @@ class LootProcess
     Flags.add('using-corpse', 'begins arranging', 'completes arranging', 'kneels down briefly and draws a knife', 'cruelly into the body and carving out a chunk', 'makes additional cuts, purposeful but seemingly at random')
     Flags.add('pouch-full', 'You think the .* is too full to fit another gem into', /You'd better tie it up before putting/)
     Flags.add('container-full', 'There isn\'t any more room')
+    Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
   end
 
   def execute(game_state)
@@ -591,6 +592,20 @@ class LootProcess
       stow_lootables(game_state)
       echo('LootProcess::clean_up') if $debug_mode_ct
       game_state.next_clean_up_step
+    end
+
+    # catch that game state thinks you need a bundle, but you've successfully skinned something this means that likely you have a marked bundle already made
+    if game_state.need_bundle && Flags['ct-successful-skin']
+      if @tie_bundle
+        DRC.bput('tie my bundle', 'TIE the bundle again')
+        if DRC.bput('tie my bundle', 'you tie the bundle', 'You don\'t seem to be able to do that right now') == 'you tie the bundle'
+          until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
+          end
+          game_state.need_bundle = false
+        end
+      else
+        game_state.need_bundle = false
+      end
     end
 
     return true if game_state.finish_spell_casting? || game_state.stowing?
@@ -1075,10 +1090,14 @@ class LootProcess
       when /lumpy/
         if @tie_bundle
           DRC.bput('tie my bundle', 'TIE the bundle again')
-          DRC.bput('tie my bundle', 'you tie the bundle')
-          DRC.bput('adjust my bundle', 'You adjust')
+          if DRC.bput('tie my bundle', 'you tie the bundle', 'You don\'t seem to be able to do that right now') == 'you tie the bundle'
+            until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
+            end
+            game_state.need_bundle = false
+          end
+        else
+          game_state.need_bundle = false
         end
-        game_state.need_bundle = false
       when /tight/
         game_state.need_bundle = false
       end
@@ -5912,6 +5931,7 @@ before_dying do
   Flags.delete('using-corpse')
   Flags.delete('pouch-full')
   Flags.delete('container-full')
+  Flags.delete('ct-successful-skin')
   Flags.delete('ct-lodged')
   Flags.delete('ct-parasite')
   Flags.delete('ct-engaged')
