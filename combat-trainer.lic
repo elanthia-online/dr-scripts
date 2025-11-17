@@ -3159,7 +3159,7 @@ class TrainerProcess
     when /^PrayerMat$/i
       pray_mat(game_state)
     when /^Recall$/i
-      DRC.bput("recall #{game_state.npcs.first}", 'Roundtime', 'You are far too occupied') unless game_state.npcs.empty?
+      DRC.bput("recall #{game_state.npcs.first}", 'Roundtime', 'You are far too occupied', 'You search your mind') unless game_state.npcs.empty?
     when /^Barb Research Augmentation$/i
       DRC.bput('meditate research monkey', /^You clear your mind and begin to meditate/, /^What did you want to research/)
     when /^Barb Research Warding$/i
