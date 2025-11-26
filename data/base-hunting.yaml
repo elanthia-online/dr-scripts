@@ -1259,6 +1259,13 @@ hunting_zones:
   - 13035
   - 11284
   - 11281
+  # https://elanthipedia.play.net/Shadewing_harpy                        700-900
+  shadewing_harpy:
+  - 51762
+  - 51763
+  - 51764
+  - 51765
+  - 51766
   # https://elanthipedia.play.net/Xala%27shar_magus                     750-1000
   # https://elanthipedia.play.net/Xala%27shar_thrall                    750-1000
   xalas_1:
