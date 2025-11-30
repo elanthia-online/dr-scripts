@@ -597,9 +597,17 @@ class LootProcess
     # catch that game state thinks you need a bundle, but you've successfully skinned something this means that likely you have a marked bundle already made
     if game_state.need_bundle && Flags['ct-successful-skin']
       if @tie_bundle
-        DRC.bput('tie my bundle', 'TIE the bundle again')
-        if DRC.bput('tie my bundle', 'you tie the bundle', 'You don\'t seem to be able to do that right now') == 'you tie the bundle'
+        DRC.bput('tie my bundle', 'TIE the bundle again', 'But this bundle has already been tied off')
+        if DRC.bput('tie my bundle', 'you tie the bundle', 'But this bundle has already been tied off', 'You don\'t seem to be able to do that right now') =~ /you tie the bundle|already been tied off/
           until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
+            if DRC.right_hand && DRC.left_hand
+              DRCI.lower_item?(DRC.left_hand)
+              until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
+              end
+              fput 'lift'
+              fput 'bundle'
+              break
+            end
           end
           game_state.need_bundle = false
         end
@@ -1089,9 +1097,17 @@ class LootProcess
       case DRC.bput('tap my bundle', 'You tap a \w+ bundle that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
       when /lumpy/
         if @tie_bundle
-          DRC.bput('tie my bundle', 'TIE the bundle again')
-          if DRC.bput('tie my bundle', 'you tie the bundle', 'You don\'t seem to be able to do that right now') == 'you tie the bundle'
-            until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
+          DRC.bput('tie my bundle', 'TIE the bundle again', 'But this bundle has already been tied off')
+          if DRC.bput('tie my bundle', 'you tie the bundle', 'But this bundle has already been tied off', 'You don\'t seem to be able to do that right now') =~ /you tie the bundle|already been tied off/
+            until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/, /You'll need a free hand for that/)
+              if DRC.right_hand && DRC.left_hand
+                DRCI.lower_item?(DRC.left_hand)
+                until /You adjust your .* bundle so that you can more easily/ =~ DRC.bput('adjust my bundle', /^You adjust your .*/)
+                end
+                fput 'lift'
+                fput 'bundle'
+                break
+              end
             end
             game_state.need_bundle = false
           end
