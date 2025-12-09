@@ -132,7 +132,7 @@ class Knackstone
 
   # Issues a whisper command and returns true if confirmation is needed.
   def whisper_command(cmd)
-    Lich::Util.issue_command(cmd, /You whisper the fate/, /Roundtime|You have cast your lot to fate/,usexml: false).any?(CONFIRMATION_REGEX)
+    Lich::Util.issue_command(cmd, /You whisper the fate/, /Roundtime|You have cast your lot to fate/, usexml: false).any?(CONFIRMATION_REGEX)
   end
 end
 
