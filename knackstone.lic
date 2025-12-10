@@ -31,6 +31,7 @@ class Knackstone
     settings = get_settings
     @knackstone = settings.knackstone_noun || "knackstone"
     @knackstone_container = settings.knackstone_container || "watery portal"
+    @knackstone_worn = settings.knackstone_worn || false
     @knackstone_preferences = settings.knackstone_preferences || DEFAULT_PREFERENCES
     @debug = settings.knackstone_debug || false
   end
@@ -38,11 +39,16 @@ class Knackstone
   # Main execution method. Checks conditions, gets the knackstone, and uses it.
   def run
     return if unusable_state?
-    return unless ensure_knackstone_in_hand
 
-    use_knackstone
-
-    put_away_knackstone
+    if @knackstone_worn
+      return unless remove_worn_knackstone
+      use_knackstone
+      wear_knackstone
+    else
+      return unless ensure_knackstone_in_hand
+      use_knackstone
+      put_away_knackstone
+    end
   end
 
   private
@@ -59,6 +65,28 @@ class Knackstone
       return true
     end
     false
+  end
+
+  def remove_worn_knackstone
+    return true if DRCI.in_hands?(@knackstone)
+
+    if DRC.left_hand && DRC.right_hand
+      DRC.message('Hands full, cannot remove knackstone.')
+      return false
+    end
+
+    unless DRCI.remove_item?(@knackstone)
+      DRC.message("Could not remove knackstone. Something is wrong!")
+      exit
+    end
+    true
+  end
+
+  def wear_knackstone
+    unless DRCI.wear_item?(@knackstone)
+      DRC.message("Could not wear knackstone. Something is wrong!")
+      exit
+    end
   end
 
   def put_away_knackstone
