@@ -1,8 +1,6 @@
 =begin
   Original Author: Damiza Nihshyde
   Version: 1.16
-  Discord:  Obsidian#1345
-  Change log: https://pastebin.com/3AJvXRXP
 =end
 
 class ShockQuest
@@ -20,9 +18,9 @@ class ShockQuest
     DRCT.walk_to('3996')
     seed_meditate
     DRCT.walk_to('6226')
-    seed_meditate(true, '6257')
+    seed_meditate(true, '6272')
     DRCT.walk_to('6260')
-    seed_meditate(true, '6257')
+    seed_meditate(true, '6272')
     DRCT.walk_to('2837')
     seed_meditate
     DRCT.walk_to('2701')

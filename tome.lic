@@ -47,7 +47,14 @@ class Tome
       'togball manual'          => "A team may not enter the opposing team's Blood Zone",
       'weathered book'          => "\"There he is!\" Grundgy turned to see half a dozen of the guards hacking through the briars and reed",
       'worn book'               => "I was unsure a little of whether dragons drank wine,",
-      'Dwarven codex'           => "The Rituals of Consignment"
+      'Dwarven codex'           => "The Rituals of Consignment",
+      'radiant treatise'        => "VIII. Vice and Error",
+      'ox-hide memoir'          => "Finally, I noticed that on my path to Truffenyi's side",
+      'songsilk memoir'         => "What I didn't account for was how drastic of an effect the influence of the Heralds had on my memory",
+      'modest-sized biography'  => "At a quiet vigil, Miraena spoke of remorse",
+      'research journal'        => "To address this imbalance, Liraxes asserted itself",
+      'demonbone grimoire'      => "Skairelden, the Forge",
+      'darkspine grimoire'      => "Gwulach, the Drinker of Minds"
     }
 
     if @quit_early && @penultimate_page

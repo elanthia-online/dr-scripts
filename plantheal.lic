@@ -1,49 +1,28 @@
 =begin
-Runs to your local NPC Healer, touches the plant to transfer wounds, and heals. Intended to be used to train Empathy (will cycle until Empathy is mindlocked), but options include healing past mindlocked.
+Empathy training loop:
+- Walk to plant room (plant_drop_room if provided, otherwise hometown NPC Empath)
+- Ensure EV, touch plant up to X times
+- Go to healing room (plant_healing_room or safe_room) and run `healme`
+- Then walk to @castroom and cast EV again for others (using @ev_mana), then exit
+- Repeat until Empathy >= plant_empathy_threshold unless plant_heal_past_ML is true
 
-  Can be used with or without Adaptive Curing, though ADC will help speed things up.
+YAML Settings:
+  plant_total_touch_count: 3
+  plant_drop_room:<room> room it will go to when it starts prepping your spells and EV to heal it!
+  plant_healing_room:<room> also same room as where you prep the spells in!
+  plant_empathy_threshold: 24
+  plant_prep_room:<room> room you will prep spells in.
+  plant_heal_past_ML: false
+  cast_room: <room> where you will cast the final EV plant for others to use!
 
-  Logic Flow:
-  - Stows hands (we don't want to be dropping things if our hands disappear!)
-  - If adc is true, uses a waggle_set plant_heal to pre-cast healing spells, preferably Heal and Blood Staunching. If false, skips pre-casting.
-  - If custom_room is set, runs to that room. Else will walk_to your nearest npchealer (or Fang Cove healer if set to hometown override)
-  - Performs a series of "evcatch" functions to check for the following:
-    - If a plant is in the room and you have EV up.
-    - If the plant is in the room but you don't have EV up.
-    - If there's no plant in the room but you have EV up.
-    - If there's no plant in the room and you don't have EV up.
-  - Based on that, will take a follow-on series of actions
-    - If prep_room is set, will walk to the specified room to prepare the spell (great for Dokt's!)
-    - Otherwise, prepares/casts spell in the room you're in
-  - Uses waggle_set ev to recast ev if needed (make sure recast timer is set).
-  - If adc is true, will touch the plant and wait for Heal to pulse. Will continue to do so until Heal expires.
-    -- Once Heal expires, will touch the plant number of times set in touchcount.
-    -- If adc is false, will only touch plant the number of times set in touchcount.
-  - Returns to your safe_room or healing_room override and runs healme script (make sure this is configured to run correctly! Need the appropriate waggle_set)
-  - Check Empathy mindstate. If at or above threshold, will exit script unless healpastML is true. If true, will restart process.
-  YAML Settings required to make this work:
-  plant_adc: true  ## Set to true/false to pre-cast your plant_heal waggle set. Recommend at least BS and Heal.
-  plant_total_touch_count: 3  ## Total number of times you want to touch your plant. This will be used as the max count without ADC, or will be used once Heal is expired if using ADC. Be mindful of bleeders and overhealing!
-  plant_custom_room:  ## Add a custom room to drop your plant in. Otherwise will use npc healer room assigned to your hometown (or Fang Cove if you're using FC override)
-  plant_heal_past_ML: false  ## Set to true if you want to fully heal the plant. Can take a *long* time in busy areas and you might be stealing someone elses' plant wounds.
-  plant_healing_room:  ## Add custom room to return to heal. Otherwise will use safe_room settings.
-  plant_empathy_threshold: 24  ## Empathy mind state you want to stop returning/healing your plant.
-  plant_prep_room: <room number> ## Newly added feature to let you prep in a room outside of the plant_room you want to cast in.
-  Required waggle_sets:
-  ev = Create a waggle set to cast your ev spell. Set the recast timer appropriately so that it doesn't expire prior to you re-running the script.
-  plant_heal = If you intend to use ADC to pre-cast healing spells, this is the waggle_set to use.
-  TODO:
-  - Verify addition of bush syntax works
-  YAML (add as needed):
-  ritual_focus_item: "<ritual focus>"
-  ritual_focus_container: "backpack"
-  ritual_focus_hand: "right"                 # "right" or "left"
-  ritual_focus_invoke_cmd: "invoke my focus" # command to start ritual
+Optional ritual focus for EV:
+  ritual_focus_item: "<ritual focus>" What is your focus item?
+  ritual_focus_container: "backpack" Where are you storing it?
+  ritual_focus_hand: "right" What hand will it be in?
+  ritual_focus_invoke_cmd: "invoke my focus" Self-explanatory, right?
   ritual_focus_stow_after: true
-
-  Requires waggle sets:
-    ev
-    plant_heal (if plant_adc == true)
+  ritual_ev_mana: 600 Use discern EV, if you honestly don't know.
+  ritual_ev_extra_wait: 15 How much time to wait after the RT ends to cast? Default is 15 can set to what you need it to be!
 =end
 
 class PlantHeal
@@ -55,63 +34,92 @@ class PlantHeal
   def initialize
     settings = get_settings
 
-    # Normalize booleans
-    @adc        = %w[true 1 yes y].include?(settings.plant_adc.to_s.strip.downcase)
     @healpastML = %w[true 1 yes y].include?(settings.plant_heal_past_ML.to_s.strip.downcase)
+    DRC.message("*** Missing setting: plant_heal_past_ML (default=false)") if settings.plant_heal_past_ML.nil?
 
-    # Scalars
-    @totaltouchcount = settings.plant_total_touch_count.to_i
-    @customroom      = settings.plant_custom_room.to_i
-    @healingroom     = (settings.plant_healing_room.to_i.nonzero? || settings.safe_room.to_i)
-    @threshold       = settings.plant_empathy_threshold.to_i
-    @preproom        = settings.plant_prep_room.to_i
+    @threshold = settings.plant_empathy_threshold.to_i
+    DRC.message("*** Missing setting: plant_empathy_threshold (default=24)") if settings.plant_empathy_threshold.nil?
 
-    # Ritual focus config
-    @focus_item      = settings.ritual_focus_item.to_s.strip
+    @touch_total = (settings.plant_total_touch_count.to_i.nonzero? || 3)
+    DRC.message("*** Missing setting: plant_total_touch_count (default=3)") if settings.plant_total_touch_count.nil?
+
+    @droproom = settings.plant_drop_room.to_i
+    DRC.message("*** Missing setting: plant_drop_room (default=0)") if settings.plant_drop_room.nil?
+
+    @healingroom = (settings.plant_healing_room.to_i.nonzero? || settings.safe_room.to_i)
+    DRC.message("*** Missing setting: plant_healing_room (default=safe_room)") if settings.plant_healing_room.nil?
+
+    @preproom = settings.plant_prep_room.to_i
+    DRC.message("*** Missing setting: plant_prep_room (default=0)") if settings.plant_prep_room.nil?
+
+    @castroom = settings.cast_room.to_i
+    DRC.message("*** Missing setting: cast_room (default=0)") if settings.cast_room.nil?
+
+    @focus_item = settings.ritual_focus_item.to_s.strip
+    DRC.message("*** Missing setting: ritual_focus_item (default='')") if settings.ritual_focus_item.nil?
+
     @focus_container = settings.ritual_focus_container.to_s.strip
-    @focus_invoke    = settings.ritual_focus_invoke_cmd.to_s.strip
-    @focus_stow      = %w[true 1 yes y].include?(settings.ritual_focus_stow_after.to_s.strip.downcase)
-    @ev_mana         = (settings.ritual_ev_mana.to_i.nonzero? || 600)
-    @ev_extra_wait   = (settings.ritual_ev_extra_wait.to_i.nonzero? || 15)
+    DRC.message("*** Missing setting: ritual_focus_container (default='')") if settings.ritual_focus_container.nil?
 
-    # Waggle sets
-    @plant_heal = settings.waggle_sets['plant_heal']
+    @focus_invoke = settings.ritual_focus_invoke_cmd.to_s.strip
+    DRC.message("*** Missing setting: ritual_focus_invoke_cmd (default='')") if settings.ritual_focus_invoke_cmd.nil?
 
-    # Resolve plant room (custom > hometown empath)
+    @focus_stow = %w[true 1 yes y].include?(settings.ritual_focus_stow_after.to_s.strip.downcase)
+    DRC.message("*** Missing setting: ritual_focus_stow_after (default=false)") if settings.ritual_focus_stow_after.nil?
+
+    @ev_mana = (settings.ritual_ev_mana.to_i.nonzero? || 600) # used for cast_for_others
+    DRC.message("*** Missing setting: ritual_ev_mana (default=600)") if settings.ritual_ev_mana.nil?
+
+    @ev_extra_wait = (settings.ritual_ev_extra_wait.to_i.nonzero? || 15)
+    DRC.message("*** Missing setting: ritual_ev_extra_wait (default=15)") if settings.ritual_ev_extra_wait.nil?
+
     town_data = get_data('town')
-    hometown  = settings.force_healer_town ? town_data[settings.force_healer_town] : town_data[settings.hometown]
+    hometown = settings.force_healer_town ? town_data[settings.force_healer_town] : town_data[settings.hometown]
 
-    if @customroom.nonzero?
-      @plantroom = @customroom
+    if @droproom.nonzero?
+      @plantroom = @droproom
+    elsif hometown && hometown['npc_empath'] && hometown['npc_empath']['id']
+      @plantroom = hometown['npc_empath']['id'].to_i
     else
-      if hometown && hometown['npc_empath'] && hometown['npc_empath']['id']
-        @plantroom = hometown['npc_empath']['id'].to_i
-      else
-        DRC.message("Couldn’t resolve NPC healer room from hometown settings. Set plant_custom_room.")
-        exit
-      end
-    end
-
-    if @adc && @plant_heal.nil?
-      DRC.message("plant_adc is true but missing the plant_heal waggle_set!")
+      DRC.message("Couldn't resolve NPC healer room from hometown settings. Set plant_drop_room.")
       exit
     end
 
-    Flags.add('heal-expire', 'You feel the warmth in your flesh gradually subside.')
-
     DRCI.stow_hands
+    check_plant
+  end
+
+  # Start at preproom, light EV prep, then main loop
+  def check_plant
+    echo "Checking plant!"
+    DRCT.walk_to(@preproom.nonzero? ? @droproom : @plantroom)
+    heal_ev
     healplant
   end
 
-  def healer_run(room_id)
-    DRCT.walk_to(room_id)
+  # Check mindstate
+  def healplant
+    loop do
+      mindstate_check
+      prep_waggles_if_needed
+      touchplant
+    end
+  end
+
+  def prep_waggles_if_needed
+    if @preproom.nonzero?
+      DRCT.walk_to(@preproom)
+      ensure_ev(prep_ok: false)
+    else
+      ensure_ev(prep_ok: false)
+    end
   end
 
   def plant_noun_in_room
     obj = DRRoom.room_objs.grep(/vela'tohr (plant|thicket|bush|briar|shrub|thornbush)/i).first
     return nil unless obj
     m = obj.match(/vela'tohr (\w+)/i)
-    m && m[1]
+    m && m[1].downcase
   end
 
   def get_focus
@@ -135,7 +143,6 @@ class PlantHeal
     end
   end
 
-  # Single-attempt invoke; if not held, fetch once and retry.
   def invoke_focus
     return if @focus_item.empty? || @focus_invoke.empty?
     res = DRC.bput(@focus_invoke,
@@ -155,14 +162,69 @@ class PlantHeal
     res
   end
 
+  # Plant healing phase, casting here we go!
+  def heal_ev
+    echo "starting healing of plant now"
+    sleep(1)
+    get_focus unless @focus_item.empty?
+
+    DRC.bput("prepare EV 20",
+             'You begin to prepare',
+             'With rigid movements you prepare your body',
+             'You feel intense strain',
+             'You are already preparing',
+             'You are already preparing the Embrace of the Vela\'Tohr spell!')
+
+    invoke_focus unless @focus_item.empty?
+
+    waitrt?
+    sleep @ev_extra_wait
+
+    DRC.bput('cast',
+             'You gesture',
+             'You strain, but are too mentally fatigued',
+             'You aren\'t harnessing any mana',
+             'You lose your concentration',
+             'Roundtime')
+
+    stow_focus
+  end
+
+  # Keep EV up during loop
   def ensure_ev(prep_ok: true)
     return if DRSpells.active_spells.include?("Embrace of the Vela'Tohr")
 
-    moved = false
-    if @preproom.nonzero? && prep_ok
-      DRCT.walk_to(@preproom)
-      moved = true
-    end
+    DRCT.walk_to(@preproom) if @preproom.nonzero? && prep_ok
+
+    get_focus unless @focus_item.empty?
+
+    DRC.bput("prepare EV 20",
+             'You begin to prepare',
+             'With rigid movements you prepare your body',
+             'You feel intense strain',
+             'You are already preparing',
+             'You are already preparing the Embrace of the Vela\'Tohr spell!')
+
+    invoke_focus unless @focus_item.empty?
+
+    waitrt?
+    sleep @ev_extra_wait
+
+    DRC.bput('cast',
+             'You gesture',
+             'You strain, but are too mentally fatigued',
+             'You aren\'t harnessing any mana',
+             'You lose your concentration',
+             'Roundtime')
+
+    stow_focus
+    touchplantdone
+  end
+
+  # Cast @castroom for others to utilize the ev, then move on to exit
+  def cast_for_others
+    return exit unless @castroom.nonzero?
+    DRCT.walk_to(@castroom)
 
     get_focus unless @focus_item.empty?
 
@@ -176,7 +238,6 @@ class PlantHeal
     invoke_focus unless @focus_item.empty?
 
     waitrt?
-
     sleep @ev_extra_wait
 
     DRC.bput('cast',
@@ -187,140 +248,93 @@ class PlantHeal
              'Roundtime')
 
     stow_focus
-
-    DRCT.walk_to(@plantroom) if moved
+    DRC.message("Cast EV in cast_room for others, exiting script.")
+    exit
   end
 
-  def touchplantheal
-    return if Flags['heal-expire']
-    ensure_ev
-    loop do
-      break if Flags['heal-expire']
-      noun = plant_noun_in_room
-      unless noun
-        ensure_ev
-        next
-      end
+  # plant touching, up to @touch_total
+  def touchplant
+    noun = plant_noun_in_room || "plant"
+    need_no_heal = /indicating your vela'tohr (plant|thicket|bush|briar|shrub|thornbush) has no need of healing\./i
 
-      result = DRC.bput("touch #{noun}",
+    touches = 0
+    loop do
+      result = DRC.bput("touch #{noun}", # you can use hug or whatever here rather than touch!
                         'Roundtime',
-                        'indicating your vela\'tohr plant has no need of healing.',
-                        'indicating your vela\'tohr thicket has no need of healing.',
+                        need_no_heal,
                         'has no need of healing.',
                         'you have no empathic bond',
                         'Touch what?')
 
       case result
-      when /no need of healing/i
-        DRC.message("Plant doesn't require healing!")
-        ensure_ev
-        planthealed
-        return
+      when need_no_heal, /has no need of healing\./i
+        return planthealed
       when /you have no empathic bond/i
-        fput('release ev')
-        ensure_ev
-      when 'Roundtime'
-        break if Flags['heal-expire']
-        waitfor('A nearly painful prickling sensation surges through you.')
+        return planthealed
       when /Touch what\?/i
-        ensure_ev
+        return planthealed
+      when 'Roundtime'
+        touches += 1
+        break if touches >= @touch_total
+        sleep 0.6
+        next
+      else
+        # Unknown line; proceed to self-heal conservatively
+        return planthealed
       end
     end
+
+    planthealed
   end
 
-  def touchplantcount
-    ensure_ev
-    current = 1
-    while current <= @totaltouchcount
-      noun = plant_noun_in_room
-      unless noun
-        ensure_ev
-        next
-      end
+  # Single touch path after ensure_ev
+  def touchplantdone
+    noun = plant_noun_in_room || "plant"
+    need_no_heal = /indicating your vela'tohr (plant|thicket|bush|briar|shrub|thornbush) has no need of healing\./i
 
-      result = DRC.bput("touch #{noun}",
-                        'Roundtime',
-                        'indicating your vela\'tohr plant has no need of healing.',
-                        'indicating your vela\'tohr thicket has no need of healing.',
-                        'has no need of healing.',
-                        'you have no empathic bond',
-                        'Touch what?')
+    result = DRC.bput("touch #{noun}",
+                      'Roundtime',
+                      need_no_heal,
+                      'has no need of healing.',
+                      'you have no empathic bond',
+                      'Touch what?')
 
-      case result
-      when /no need of healing/i
-        DRC.message("Plant doesn't require healing!")
-        ensure_ev
-        planthealed
-        return
-      when /you have no empathic bond/i
-        fput('release ev')
-        ensure_ev
-      when 'Roundtime'
-        current += 1
-      when /Touch what\?/i
-        ensure_ev
-      end
+    case result
+    when need_no_heal, /has no need of healing\./i
+      wrapup
+    when /you have no empathic bond/i
+      ensure_ev
+    when 'Roundtime'
+      wrapup
+    when /Touch what\?/i
+      ensure_ev
+    else
+      wrapup
     end
   end
 
   def wrapup
-    ensure_ev
     DRCT.walk_to(@healingroom)
     DRC.wait_for_script_to_complete('healme')
+    cast_for_others
   end
 
   def planthealed
     DRCT.walk_to(@healingroom)
     DRC.wait_for_script_to_complete('healme')
-    DRC.message("Plant was fully healed, exiting script!")
-    exit
+    DRC.message("Plant was fully healed")
+    fput "release ev"
+    cast_for_others
   end
 
   def mindstate_check
+    echo "checking mindstate!"
     return if @healpastML
     if DRSkill.getxp('Empathy') >= @threshold
       DRC.message("Mind State at target, exiting script!")
       exit
     end
   end
-
-  def prep_waggles_if_needed
-    if @preproom.nonzero?
-      DRCT.walk_to(@preproom)
-      DRC.wait_for_script_to_complete('buff', ['plant_heal']) if @adc
-      ensure_ev(prep_ok: false)
-      DRCT.walk_to(@plantroom)
-    else
-      DRC.wait_for_script_to_complete('buff', ['plant_heal']) if @adc
-      ensure_ev(prep_ok: false)
-    end
-  end
-
-  def healplant
-    loop do
-      healer_run(@plantroom)
-
-      if @adc
-        prep_waggles_if_needed
-      else
-        ensure_ev
-      end
-
-      if @adc && !DRSpells.active_spells.include?('Heal')
-        prep_waggles_if_needed
-      end
-
-      touchplantheal if @adc
-      touchplantcount
-
-      wrapup
-      mindstate_check
-    end
-  end
-end
-
-before_dying do
-  Flags.delete('heal-expire')
 end
 
 PlantHeal.new

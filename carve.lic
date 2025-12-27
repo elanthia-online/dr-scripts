@@ -73,7 +73,7 @@ class Carve
     end
     DRCC.get_crafting_item(@main_tool, @bag, @bag_items, @belt)
     if @type != 'boulder'
-      case DRC.bput("get my #{@material} #{@type}", '^You get', '^You are already', '^What do you', '^What were you', 'You pick up', "can't quite lift it")
+      case DRC.bput("get my #{@material} #{@type}", /^You get/, /^You carefully remove/, /^You are already/, /^What do you/, /^What were you/, 'You pick up', "can't quite lift it")
       when 'What do you', 'What were you'
         DRC.beep
         echo("You seem to be missing: #{@material} #{@type}")

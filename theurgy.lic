@@ -251,7 +251,7 @@ class TheurgyActions
     items_to_buy.sort_by! { |item| item[:shop]['id'] }
 
     total_cost = items_to_buy.map { |i| i[:shop]['price'] }.reduce(:+)
-    DRCM.ensure_copper_on_hand(total_cost + 300, @settings) unless items_to_buy.empty?
+    DRCM.ensure_copper_on_hand(total_cost + 300, @settings, @hometown) unless items_to_buy.empty?
 
     unless holy_water?
       DRCT.walk_to(@data['holy_water']['id'])

@@ -113,14 +113,14 @@ class SellLoot
   end
 
   def sell_bundle
-    return unless DRCI.exists?('bundle')
+    return unless DRC.bput('count my bundle', /^You flip through .* bundle and find \d+ skins? in it/, /^I could not find/).scan(/\d+/).first.to_i.positive?
 
     return unless DRCT.walk_to(@hometown['tannery']['id'])
 
     return if DRC.bput('remove my bundle', 'You remove', 'You sling', 'Remove what', 'You take') == 'Remove what'
 
     DRC.release_invisibility
-    DRC.bput('sell my bundle', 'ponders over the bundle', 'sorts through it', 'gives it a close inspection', 'takes the bundle')
+    DRC.bput('sell my bundle', 'ponders over the bundle', 'sorts through it', 'gives it a close inspection', 'takes the bundle', 'I don\'t think I can give you anything for that worthless thing')
     case DRC.left_hand + " " + DRC.right_hand
     when /rope/
       DRCI.put_away_item?('rope')

@@ -211,6 +211,7 @@ class Sew
                         'You must assemble',
                         'You need another',
                         'You untie and discard',
+                        /^The .* needles must be cast to finish binding the knit yarn\.$/,
                         /^Roundtime/,
                         /^You realize that cannot be repaired, and stop/)
       case result
@@ -282,7 +283,7 @@ class Sew
         command = 'turn my needles'
       when 'Next the needles must be pushed', 'ready to be pushed', 'Some purl stitching is'
         command = 'push my needles'
-      when 'The garment is nearly complete and now must be cast off'
+      when 'The garment is nearly complete and now must be cast off', /^The .* needles must be cast to finish binding the knit yarn\.$/
         command = 'cast my needles'
       when 'You are already knitting', 'Do you really want to discard'
         command = 'pull my needles'

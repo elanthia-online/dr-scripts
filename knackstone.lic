@@ -1,0 +1,167 @@
+# frozen_string_literal: true
+
+# Manages using the knackstone to vote for the next boon.
+# To use, create an instance and call the `run` method.
+# e.g., Knackstone.new.run
+class Knackstone
+  # Default voting preferences, used if not specified in settings.
+  # The script will vote for the first available option that matches this list.
+  DEFAULT_PREFERENCES = [
+    "bonus gem value from creatures",
+    "bonus creature swarm activity",
+    "bonus coins dropped from creatures",
+    "bonus REXP value",
+    "bonus experience",
+    "bank fee removal",
+    "bonus crafting experience",
+    "bonus work order payouts",
+    "bonus item drop chance",
+    "bonus crafting prestige",
+    "bonus to treasure map drop chance"
+  ].freeze
+
+  # Regex to find the bonus options from the knackstone's message.
+  BONUS_OPTIONS_REGEX = /As best you can tell, it could be (.+), (.+), or (.+)\.\s+/.freeze
+  # Regex to detect if the knackstone has already been used.
+  ALREADY_USED_REGEX = /You have already cast your will to influence this cycle's future boon options/.freeze
+  # Regex to detect if a command needs to be repeated for confirmation.
+  CONFIRMATION_REGEX = /repeat the command within 15 seconds/.freeze
+
+  def initialize
+    settings = get_settings
+    @knackstone = settings.knackstone_noun || "knackstone"
+    @knackstone_container = settings.knackstone_container || "watery portal"
+    @knackstone_worn = settings.knackstone_worn || false
+    @knackstone_preferences = settings.knackstone_preferences || DEFAULT_PREFERENCES
+    @debug = settings.knackstone_debug || false
+  end
+
+  # Main execution method. Checks conditions, gets the knackstone, and uses it.
+  def run
+    return if unusable_state?
+
+    if @knackstone_worn
+      return unless remove_worn_knackstone
+      use_knackstone
+      wear_knackstone
+    else
+      return unless ensure_knackstone_in_hand
+      use_knackstone
+      put_away_knackstone
+    end
+  end
+
+  private
+
+  # Returns true if debug mode is enabled.
+  def debug?
+    @debug
+  end
+
+  # Checks if the character is in a state where the knackstone cannot be used.
+  def unusable_state?
+    if hidden? || invisible?
+      echo "Cannot use knackstone while hidden or invisible."
+      return true
+    end
+    false
+  end
+
+  def remove_worn_knackstone
+    return true if DRCI.in_hands?(@knackstone)
+
+    if DRC.left_hand && DRC.right_hand
+      DRC.message('Hands full, cannot remove knackstone.')
+      return false
+    end
+
+    unless DRCI.remove_item?(@knackstone)
+      DRC.message("Could not remove knackstone. Something is wrong!")
+      exit
+    end
+    true
+  end
+
+  def wear_knackstone
+    unless DRCI.wear_item?(@knackstone)
+      DRC.message("Could not wear knackstone. Something is wrong!")
+      exit
+    end
+  end
+
+  def put_away_knackstone
+    unless DRCI.put_away_item?(@knackstone, @knackstone_container)
+      DRC.message("Could not put away knackstone. Something is wrong!")
+      exit
+    end
+  end
+
+  # Ensures the knackstone is held.
+  # Returns false if hands are full, and exits if the knackstone is not found.
+  def ensure_knackstone_in_hand
+    return true if DRCI.in_hands?(@knackstone)
+
+    if DRC.left_hand && DRC.right_hand
+      DRC.message('Hands full, cannot get knackstone.')
+      return false
+    end
+
+    DRCI.get_item_if_not_held?(@knackstone, @knackstone_container)
+  end
+
+  # Rubs the knackstone, determines the best option, and votes for it.
+  def use_knackstone
+    response = Lich::Util.issue_command("rub my #{@knackstone}", /As you rub/, usexml: false)
+
+    if response.grep(ALREADY_USED_REGEX).any?
+      echo "Knackstone has already been used for this cycle."
+      return
+    end
+
+    options_line = response.grep(/As best you can tell/).first
+    unless options_line
+      echo "Could not determine knackstone options from response."
+      return
+    end
+
+    matches = options_line.match(BONUS_OPTIONS_REGEX)
+    unless matches
+      echo "Could not parse knackstone options from: #{options_line}"
+      return
+    end
+
+    options = matches.captures
+    choice = find_best_option(options)
+    vote_for(choice, options)
+  end
+
+  # Determines the best bonus option based on user preferences.
+  def find_best_option(options)
+    echo "Available options: #{options.inspect}" if debug?
+    echo "Sorting by preferences: #{@knackstone_preferences.inspect}" if debug?
+    # Find the option with the lowest index in the preferences array.
+    # Options not in the array are treated as having an infinite index.
+    choice = options.min_by { |opt| @knackstone_preferences.index(opt) || Float::INFINITY }
+    echo "Chosen option: #{choice}"
+    choice
+  end
+
+  # Whispers to the knackstone to cast a vote.
+  def vote_for(choice, options)
+    # The command is 1-indexed, so we find the index and add 1.
+    choice_number = options.index(choice) + 1
+    cmd = "WHISPER MY #{@knackstone} #{choice_number}"
+    echo "Executing: #{cmd}" if debug?
+
+    # Issue the command. If confirmation is needed, issue it again.
+    needs_confirmation = whisper_command(cmd)
+    whisper_command(cmd) if needs_confirmation
+  end
+
+  # Issues a whisper command and returns true if confirmation is needed.
+  def whisper_command(cmd)
+    Lich::Util.issue_command(cmd, /You whisper the fate/, /Roundtime|You have cast your lot to fate/, usexml: false).any?(CONFIRMATION_REGEX)
+  end
+end
+
+Knackstone.new.run

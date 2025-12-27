@@ -23,11 +23,11 @@ class SmeltDeeds
 
     @equipment_manager.empty_hands
 
-    results = reget(100, 'deed is in')
+    results = reget(100, 'A deed for')
     waitrt?
 
     results
-      .each_with_object([]) { |line, array| array << line.match(/Your (.*) deed is in/)[1] }
+      .each_with_object([]) { |line, array| array << line.match(/A deed for (.+) (.*) (.+) is in/)[2] }
       .each_with_object(Hash.new(0)) { |name, counts| counts[name] += 1 }
       .select { |metal, _count| all_metals.include?(metal) }
       .reject { |_metal, count| count <= 1 }

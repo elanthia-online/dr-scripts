@@ -20,6 +20,7 @@ class LearnedData
       [{ name: 'lore', regex: /lore/, description: 'Show exp gained in lore skills.' }],
       [{ name: 'guild', regex: /guild/, description: 'Show exp gained in your guild skill.' }],
       [{ name: 'reset', regex: /reset/, description: 'Reset learned experience' }],
+      [{ name: 'zero', regex: /^zero/, description: 'Show skills with no experience gain' }],
       []
     ]
 
@@ -33,6 +34,8 @@ class LearnedData
     guild_skills = ['Empathy', 'Astrology', 'Expertise', 'Instinct', 'Backstab', 'Summoning', 'Bardic Lore', 'Conviction', 'Theurgy', 'Thanatology', 'Trading']
 
     DRSkill.reset if args.reset
+
+    @zero = !!args.zero
 
     if args.survival
       @skills_to_show.concat(survival_skills)
@@ -74,12 +77,23 @@ class LearnedData
     learning_time = ((Time.now - DRSkill.start_time) / 60.0 / 60)
     columns = get_settings.learned_column_count
 
-    DRSkill.list
-           .select { |item| @skills_to_show.include?(item.name) }
-           .sort_by { |item| item.current - item.baseline }
-           .reverse.each_slice(columns) do |skills|
-      output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
-      respond(output)
+    if @zero
+      DRSkill.list
+             .select { |item| @skills_to_show.include?(item.name) }
+             .sort_by { |item| item.current - item.baseline }
+             .reverse.each_slice(columns) do |skills|
+               output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
+               respond(output)
+             end
+    else
+      DRSkill.list
+             .select { |item| @skills_to_show.include?(item.name) }
+             .select { |item| item.current - item.baseline > 0 }
+             .sort_by { |item| item.current - item.baseline }
+             .reverse.each_slice(columns) do |skills|
+               output = skills.map { |skill| format_skill_data(skill, learning_time) }.join
+               respond(output)
+             end
     end
 
     total = DRSkill.list
