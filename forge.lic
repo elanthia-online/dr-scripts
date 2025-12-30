@@ -420,6 +420,7 @@ class Forge
       when 'Ingredients can be added' # backup catch for assembly
         assemble_part
       when 'Roundtime' # The follow-on for most sub actions, eg shovel/bellows. When no next-step text is received, we revert to the "home" process.
+        waitrt?    # prevent race condition
         echo("Work done?                                   :: #{Flags['work-done']}") if @debug
         finish if Flags['work-done']
         swap_tool(@home_tool)
