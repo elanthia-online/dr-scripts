@@ -2848,3 +2848,22 @@ script_watch_script_argument_separator: " - "
 script_watch_argument_prefix: "&lt;"
 script_watch_argument_postfix: "&gt;"
 script_watch_argument_separator: ", "
+
+#capture-critter.lic settings
+capture_critter_settings:
+    # List of items to dispose of
+    junk:
+      - sharkskin
+    # Where to store rewards\prizes for turning in captured critters
+    reward_container: 
+    # Optional custom game settings, if base-capture.yaml is out of date. Should match the format of an entry in base-capture.yaml
+    custom: 
+      # Room number where you return the critter
+      return_room: 
+      # Surface you put the critter on
+      return_surface: 
+      # Rooms where the critters spawn
+      room_list: []
+      # Names of capturable critters
+      critter_names: []
+    debug: false
