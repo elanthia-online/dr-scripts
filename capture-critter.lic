@@ -46,7 +46,7 @@ class CaptureCritter
       DRCI.dispose_trash(item, @settings.worn_trashcan, @settings.worn_trashcan_verb)
     else
       echo "#{item} is not junk" if @debug
-      DRCI.put_away_item?(item, @capture_settings['reward_container'] || backpack)
+      DRCI.put_away_item?(item, @capture_settings['reward_container'])
     end
   end
 
