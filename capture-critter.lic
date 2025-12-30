@@ -5,8 +5,8 @@ class CaptureCritter
     @debug = @capture_settings["debug"]
     event_data = get_data('capture')
 
-    # Load custom event
-    if @capture_settings["custom"]
+    # Load custom event if one is specified
+    if @capture_settings["custom"]["room_list"].size > 0
       event_data = OpenStruct.new(
         event_data.to_h.merge(
           'custom' => @capture_settings["custom"]
