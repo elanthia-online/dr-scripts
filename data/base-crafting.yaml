@@ -2088,7 +2088,7 @@ recipe_parts:
     Langenfirth:
       << : *therengia_large_padding
     Therenborough:
-      << : *therengia_large_padding  
+      << : *therengia_large_padding
     Shard:
       part-room: 10939
       part-number: 12
