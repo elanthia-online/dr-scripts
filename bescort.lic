@@ -118,7 +118,7 @@ class Bescort
       ],
       [
         { name: 'ways', regex: /ways/i, description: 'Astral travelling' },
-        { name: 'mode', options: %w[shard crossing leth riverhaven merkresh fang raven throne muspari aesry taisgath theren steppes], description: 'Where do you need to get to?' }
+        { name: 'mode', options: %w[aesry crossing fang leth merkresh muspari raven riverhaven shard steppes taisgath theren throne velatohr], description: 'Where do you need to get to?' }
       ],
       [
         { name: 'mammoth', regex: /mammoth/i, description: 'The mammoths between Acenamacra, Fang Cove, and Ratha' },
@@ -1804,7 +1804,8 @@ class Bescort
       8302 => 'Vellano',
       3777 => "Dor'na'torna",
       287  => 'Tabelrem',
-      6991 => 'Besoge'
+      6991 => 'Besoge',
+      51786 => 'Aevargwem'
     }
 
     mode_to_shard = {
@@ -1820,7 +1821,8 @@ class Bescort
       'fang'       => 'Vellano',
       'muspari'    => 'Tabelrem',
       'steppes'    => "Dor'na'torna",
-      'merkresh'   => 'Besoge'
+      'merkresh'   => 'Besoge',
+      'velatohr'   => 'Aevargwem'
     }
 
     mode_to_pillar_roomid = {
@@ -1836,7 +1838,8 @@ class Bescort
       'theren'     => 9762,
       'riverhaven' => 9762,
       'throne'     => 9808,
-      'taisgath'   => 9808
+      'taisgath'   => 9808,
+      'velatohr'   => 9804
     }
 
     direction_to_pattern = {

@@ -640,6 +640,7 @@ if DRStats.moon_mage?
   TextSubs.add('Tabelrem', "Tabelrem (Muspar'i)")
   TextSubs.add("Dor'na'torna", "Dor'na'torna (Steppes)")
   TextSubs.add('Besoge', "Besoge (Mer'kresh)")
+  TextSubs.add('Aevargwem', "Aevargwem (Vela'Tohr Overlook)")
 end
 
 if settings.herb_textsubs
