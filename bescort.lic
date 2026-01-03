@@ -1792,19 +1792,19 @@ class Bescort
     Flags.add('walking-circles', "You end up walking in circles")
 
     room_id_to_shard = {
-      9999 => "Asharshpar'i",
-      607  => 'Rolagi',
-      2493 => 'Marendin',
-      306  => 'Taniendar',
-      3002 => 'Mintais',
-      3105 => 'Dinegavren',
-      4542 => 'Tamigen',
-      5050 => 'Erekinzil',
-      6867 => 'Auilusi',
-      8302 => 'Vellano',
-      3777 => "Dor'na'torna",
-      287  => 'Tabelrem',
-      6991 => 'Besoge',
+      9999  => "Asharshpar'i",
+      607   => 'Rolagi',
+      2493  => 'Marendin',
+      306   => 'Taniendar',
+      3002  => 'Mintais',
+      3105  => 'Dinegavren',
+      4542  => 'Tamigen',
+      5050  => 'Erekinzil',
+      6867  => 'Auilusi',
+      8302  => 'Vellano',
+      3777  => "Dor'na'torna",
+      287   => 'Tabelrem',
+      6991  => 'Besoge',
       51786 => 'Aevargwem'
     }
 
