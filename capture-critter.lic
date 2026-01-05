@@ -67,6 +67,7 @@ class CaptureCritter
 
     DRCT.walk_to(@event_info["return_room"])
     fput("put my #{held_item} on #{@event_info["return_surface"]}")
+    pause 1
     waitrt?
 
     handle_item(DRC.right_hand || DRC.left_hand)
