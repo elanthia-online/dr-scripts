@@ -116,7 +116,7 @@ class TruffenyiCommuneQuest
                             end
 
     dark_aspect_immortal = case altar_look_second
-                           when /an overloaded wagon travelling toward a wooden bridge. The supports look rotten and cracked/i
+                           when /an overloaded wagon travelling toward a wooden bridge.\s+The supports look rotten and cracked/i
                              'zachriedek'
                            when /a long row of dismembered bodies leading toward a broken altar/i
                              'asketi'
