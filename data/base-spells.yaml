@@ -1275,6 +1275,14 @@ spell_data:
     mana_type: holy
     prep: prepare
     guild: Cleric
+  Starry Waters:
+    skill: Augmentation
+    abbrev: STAW
+    mana: 5
+    recast: 1
+    mana_type: holy
+    prep: prepare
+    guild: Cleric
   Malediction:
     skill: Debilitation
     mana: 5
@@ -1302,6 +1310,14 @@ spell_data:
   Minor Physical Protection:
     skill: Warding
     abbrev: MPP
+    mana: 1
+    recast: 1
+    mana_type: holy
+    prep: prepare
+    guild: Cleric
+  Visage:
+    skill: Warding
+    abbrev: VISAGE
     mana: 1
     recast: 1
     mana_type: holy
