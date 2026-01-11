@@ -2106,6 +2106,9 @@ restock_shop:
 # The noun of your almanac (e.g. almanac, tome, treatise, monograph, etc)
 almanac_noun: almanac
 
+# report when used on usage details - skill selected, and mindstates gained
+almanac_report_details: false
+
 # Wait this many seconds before reading almanac
 almanac_startup_delay: 15
 
