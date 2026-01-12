@@ -1974,7 +1974,8 @@ class Bescort
     when 'You hand him', 'The Captain gives you a little nod'
       hide?
       waitfor 'reaches the dock and its crew ties the ferry off'
-      move 'go dock'
+      pause 0.5
+      move 'go dock' unless [1904, 957].include?(Room.current.id)
     when 'The ferry has just pulled away from the dock', 'There is no ferry here to go aboard'
       pause 1 while DRRoom.room_objs.find { |x| x =~ /the ferry/ }
       take_xing_ferry(mode)
