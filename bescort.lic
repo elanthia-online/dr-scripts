@@ -1904,7 +1904,8 @@ class Bescort
       move mode
       hide?
       waitfor 'With a soft bump, the gondola comes to a stop at its destination'
-      move 'out'
+      pause 0.5
+      move 'out' unless [2249, 2904].include?(Room.current.id)
     end
   end
 
