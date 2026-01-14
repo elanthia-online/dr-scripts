@@ -4568,6 +4568,9 @@ class GameState
     @summoned_weapons_ingot = settings.summoned_weapons_ingot
     echo("  @summoned_weapons_ingot: #{@summoned_weapons_ingot}") if $debug_mode_ct
 
+    @summoned_weapons_adjective = settings.summoned_weapon_adjective
+    echo("  @summoned_weapons_adjective: #{@summoned_weapons_adjective}") if $debug_mode_ct
+
     @stop_on_bleeding = settings.stop_hunting_if_bleeding
     echo("  @stop_on_bleeding: #{@stop_on_bleeding}") if $debug_mode_ct
 
@@ -5608,7 +5611,7 @@ class GameState
     info = summoned_info(weapon_skill)
 
     DRCS.summon_weapon(UserVars.moons['visible'].first, @summoned_weapons_element, @summoned_weapons_ingot, weapon_skill) unless weapon_already_summoned
-    DRCS.shape_summoned_weapon(weapon_skill, @summoned_weapons_ingot) if weapon_already_summoned || DRStats.moon_mage?
+    DRCS.shape_summoned_weapon(weapon_skill, @summoned_weapons_ingot, [summoned_weapons_adjective: @summoned_weapons_adjective]) if weapon_already_summoned || DRStats.moon_mage?
     DRCS.turn_summoned_weapon if info['turn']
     DRCS.push_summoned_weapon if info['push']
     DRCS.pull_summoned_weapon if info['pull']
