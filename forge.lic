@@ -315,6 +315,7 @@ class Forge
                         'I could not find what you were referring to',
                         'Ingredients can be added',
                         'Pour what',
+                        'Applying the final touches',
                         'Roundtime')
       echo("Match result                                 :: #{result}") if @debug
       echo("Assembly? Part string or false               :: #{Flags['forge-assembly']}") if @debug
@@ -419,7 +420,10 @@ class Forge
         exit
       when 'Ingredients can be added' # backup catch for assembly
         assemble_part
+      when 'Applying the final touches' # item completed - handle directly to avoid race condition
+        finish
       when 'Roundtime' # The follow-on for most sub actions, eg shovel/bellows. When no next-step text is received, we revert to the "home" process.
+        waitrt?
         echo("Work done?                                   :: #{Flags['work-done']}") if @debug
         finish if Flags['work-done']
         swap_tool(@home_tool)
@@ -452,13 +456,9 @@ class Forge
   end
 
   def magic_cleanup
-    if @training_spells.empty?
-      exit
-    else
-      DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
-      DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
-      DRC.bput('release symb', "But you haven't", 'You release', 'Repeat this command')
-    end
+    DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
+    DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+    DRC.bput('release symb', "But you haven't", 'You release', 'Repeat this command')
   end
 end
 

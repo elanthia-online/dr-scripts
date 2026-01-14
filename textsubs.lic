@@ -629,17 +629,18 @@ end
 if DRStats.moon_mage?
   TextSubs.add('Marendin', 'Marendin (Shard)')
   TextSubs.add('Rolagi', 'Rolagi (Crossing)')
-  TextSubs.add("Asharshpar'i", "Asharshpar'i (Leth)")
-  TextSubs.add('Dinegavren', 'Dinegavren (Theren)')
+  TextSubs.add("Asharshpar'i", "Asharshpar'i (Leth Deri'el)")
+  TextSubs.add('Dinegavren', 'Dinegavren (Therenborough)')
   TextSubs.add('Mintais', 'Mintais (Throne City)')
   TextSubs.add('Tamigen', "Tamigen (Raven's Point)")
   TextSubs.add('Taniendar', 'Taniendar (Riverhaven)')
   TextSubs.add('Erekinzil', 'Erekinzil (Taisgath)')
-  TextSubs.add('Auilusi', 'Auilusi (Aesry)')
+  TextSubs.add('Auilusi', "Auilusi (Aesry Surlaenis'a)")
   TextSubs.add('Vellano', 'Vellano (Fang Cove)')
   TextSubs.add('Tabelrem', "Tabelrem (Muspar'i)")
-  TextSubs.add("Dor'na'torna", "Dor'na'torna (Steppes)")
+  TextSubs.add("Dor'na'torna", "Dor'na'torna (Arid Steppe)")
   TextSubs.add('Besoge', "Besoge (Mer'kresh)")
+  TextSubs.add('Aevargwem', "Aevargwem (Vela'Tohr Overlook)")
 end
 
 if settings.herb_textsubs

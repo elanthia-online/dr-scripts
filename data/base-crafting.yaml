@@ -2082,6 +2082,13 @@ recipe_parts:
     Leth Deriel:
       part-room: 8776
       part-number:
+    Riverhaven: &therengia_large_padding
+      part-room: 9716
+      part-number: 12
+    Langenfirth:
+      << : *therengia_large_padding
+    Therenborough:
+      << : *therengia_large_padding
     Shard:
       part-room: 10939
       part-number: 12
