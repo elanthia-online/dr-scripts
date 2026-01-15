@@ -1267,14 +1267,6 @@ spell_data:
     harmless: true
     prep: prepare
     guild: Cleric
-  Major Physical Protection:
-    skill: Augmentation
-    abbrev: MAPP
-    mana: 5
-    recast: 1
-    mana_type: holy
-    prep: prepare
-    guild: Cleric
   Starry Waters:
     skill: Augmentation
     abbrev: STAW
@@ -1304,14 +1296,6 @@ spell_data:
     abbrev: MC
     mana: 10
     harmless: false
-    mana_type: holy
-    prep: prepare
-    guild: Cleric
-  Minor Physical Protection:
-    skill: Warding
-    abbrev: MPP
-    mana: 1
-    recast: 1
     mana_type: holy
     prep: prepare
     guild: Cleric
