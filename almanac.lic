@@ -2,6 +2,8 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#almanac
 =end
 
+$ALMANAC = nil
+
 class Almanac
   def initialize
     unless DRSkill.list.map(&:rank).any? { |skill| skill < 1750 }
@@ -30,32 +32,13 @@ class Almanac
     end
 
     pause startup_delay
-    passive_loop
   end
 
-  def passive_loop
+  def run
     loop do
       use_almanac unless should_not_use_almanac?
       pause
     end
-  end
-
-  def almanac_sort_by_rate_then_rank(skills)
-    skills
-      .select { |skill| DRSkill.getxp(skill) < 18 }
-      .min_by { |skill| [DRSkill.getxp(skill), DRSkill.getrank(skill)] }
-  end
-
-  def skill_with_lowest_mindstate
-    list = []
-    DRSkill.list
-           .map { |skill| [skill.name, skill.exp, skill.rank] }
-           .select { |element| element[1] }
-           .reject { |_skill, _exp, rank| (rank.to_i == 1750 || rank.to_i == 0) }
-           .reject { |skill, _exp| skill == "Mechanical Lore" }
-           .select { |skill, exp| list.append [skill, exp] }
-    skill = list.sort_by(&:last).first[0].sub(/(Lunar|Life|Arcane|Holy|Elemental)\s/, '')
-    return skill
   end
 
   def use_almanac
@@ -102,6 +85,26 @@ class Almanac
     DRCI.put_away_item?(@almanac)
 
     DRC.safe_unpause_list(scripts_to_unpause)
+  end
+
+  private
+
+  def almanac_sort_by_rate_then_rank(skills)
+    skills
+      .select { |skill| DRSkill.getxp(skill) < 18 }
+      .min_by { |skill| [DRSkill.getxp(skill), DRSkill.getrank(skill)] }
+  end
+
+  def skill_with_lowest_mindstate
+    list = []
+    DRSkill.list
+           .map { |skill| [skill.name, skill.exp, skill.rank] }
+           .select { |element| element[1] }
+           .reject { |_skill, _exp, rank| (rank.to_i == 1750 || rank.to_i == 0) }
+           .reject { |skill, _exp| skill == "Mechanical Lore" }
+           .select { |skill, exp| list.append [skill, exp] }
+    skill = list.sort_by(&:last).first[0].sub(/(Lunar|Life|Arcane|Holy|Elemental)\s/, '')
+    return skill
   end
 
   def study_almanac
@@ -160,4 +163,9 @@ class Almanac
   end
 end
 
-Almanac.new
+$ALMANAC = Almanac.new
+before_dying do
+  $ALMANAC = nil
+end
+$ALMANAC.run
+$ALMANAC = nil
