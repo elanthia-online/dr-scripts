@@ -2364,7 +2364,7 @@ class SpellProcess
     game_state.casting_regalia = data['abbrev'].casecmp('REGAL').zero?
 
     Flags.reset('ct-shock-warning')
-    DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'])
+    DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], @settings['custom_spell_prep'])
 
     if Flags['ct-shock-warning'] && !game_state.is_permashocked?
       DRC.message('Dropping spell: Got shock warning.')
