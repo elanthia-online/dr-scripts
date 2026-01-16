@@ -1,0 +1,31 @@
+chris_mass:
+  return_room: 11302
+  return_surface: worktable
+  room_list: [11302, 11300, 11301, 11312, 11303, 11304]
+  critter_names:
+    - spriggan
+    - boggle
+    - sprite
+    - welkin
+    - gremlin
+
+hollow_eve:
+  return_room: 16241
+  return_surface: shrine
+  room_list: [16241, 16256, 16257, 16248, 16249, 16263, 16264, 16242, 16244, 16267, 16268, 16195, 16203, 16188, 16185, 16174, 16235, 16227, 16226, 16224, 16221, 16217, 16204, 16205, 16208, 16238, 16240]
+  critter_names:
+    - shark
+    - bloodfish
+    - tigerfish
+    - piranha
+    - barracuda
+  
+taffelberry_faire:
+  return_room: 16831
+  return_surface: cart
+  room_list: [16831, 16823, 16824, 16825, 16826, 16827, 16828, 16829, 16830]
+  critter_names:
+    - !ruby/regexp /^(?!.*ragged\s)[\w\s]*scarecrow/ # Room 16823 contains a "ragged scarecrow" that is not part of the capture game, so no ragged scarecrows allowed.
+    - ram
+    - crow
+    - tankard

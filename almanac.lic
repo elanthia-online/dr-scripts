@@ -15,6 +15,7 @@ class Almanac
     @almanac_skills = settings.almanac_skills
     @almanac = settings.almanac_noun
     @priority_skills = settings.almanac_priority_skills
+    @report_usage_details = settings.almanac_report_details
 
     startup_delay = settings.almanac_startup_delay
 
@@ -104,19 +105,36 @@ class Almanac
   end
 
   def study_almanac
-    case DRC.bput("study my #{@almanac}", /You believe you've learned something significant/, /^You've gleaned all the insight you can/, /^Study what/, 'interrupt your research', /^The pages of the .* seem worn/, /is only usable by a character with a Premium subscription/, /STUDY its contents\./)
+    if @report_usage_details && !Script.running?('exp-monitor')
+      UserVars.echo_exp = true
+      DRSkill.gained_skills.clear
+    end
+    case DRC.bput("study my #{@almanac}", /You believe you've learned something significant about .+/, /^You've gleaned all the insight you can/, /^Study what/, 'interrupt your research', /^The pages of the .* seem worn/, /is only usable by a character with a Premium subscription/, /STUDY its contents\./)
     when /^You've gleaned all the insight you can/, /^The pages of the .* seem worn/
       UserVars.almanac_last_use = Time.now - 540
-    when /You believe you've learned something significant/
+    when /You believe you've learned something significant about (?<gained_skill>.+)!/
+      if @report_usage_details && !Script.running?('exp-monitor')
+        gained_skill_name = Regexp.last_match[:gained_skill]
+        gained_skill_change = DRSkill.gained_skills.select { |item| item[:skill] == gained_skill_name }.sum { |item| item[:change] }
+        DRC.message("Almanac picked skill: #{gained_skill_name}, gained exp: (+#{gained_skill_change}:#{DRSkill.getxp(gained_skill_name)}/34)", false) if gained_skill_change.positive?
+      end
       UserVars.almanac_last_use = Time.now
     when /is only usable by a character with a Premium subscription/
       DRC.message('Premium almanac detected in a non-premium account.')
       DRC.message('Exiting')
       DRCI.put_away_item?(@almanac)
+      if @report_usage_details && !Script.running?('exp-monitor')
+        UserVars.echo_exp = false
+        DRSkill.gained_skills.clear
+      end
       exit
     when /STUDY its contents\./
       DRC.bput("open my #{@almanac}", /^You open/)
       study_almanac
+    end
+    if @report_usage_details && !Script.running?('exp-monitor')
+      UserVars.echo_exp = false
+      DRSkill.gained_skills.clear
     end
     waitrt?
   end

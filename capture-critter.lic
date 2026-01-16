@@ -1,0 +1,109 @@
+class CaptureCritter
+  def initialize
+    @settings = get_settings
+    @capture_settings = @settings.capture_critter_settings
+    @debug = @capture_settings["debug"]
+    event_data = get_data('capture')
+
+    # Load custom event if one is specified
+    if @capture_settings["custom"]["room_list"].size > 0
+      event_data = OpenStruct.new(
+        event_data.to_h.merge(
+          'custom' => @capture_settings["custom"]
+        )
+      )
+    end
+
+    arg_definitions = [[{ name: 'event', regex: /\w+/, optional: false, description: "Name of event (#{event_data.to_h.keys.join(", ")})" }]]
+    args = parse_args(arg_definitions)
+
+    # Each capture event may have different "game over" messages. They seem similar, but this may not capture all of them.
+    Flags.add("critter-done", '^[PW]hew!  All of the')
+
+    # Set the target event
+    @event_info = event_data[args.event]
+    unless @event_info
+      valid_events = event_data.to_h.keys.join("\n  ")
+      echo "'#{args.event}' is not a valid event name. See base-capture.yaml for valid event names:\n\n  #{valid_events}\n\n"
+      exit
+    end
+
+    @critter_regexp = /\b(#{Regexp.union(@event_info["critter_names"]).source})\b/i
+
+    run
+  end
+
+  def critter?(obj_name)
+    echo "critter?(#{obj_name})" if @debug
+    @critter_regexp.match(obj_name)
+  end
+
+  def handle_item(item)
+    echo "handle_item(#{item})" if @debug
+
+    if @capture_settings['junk'].include?(item)
+      echo "#{item} is junk" if @debug
+      DRCI.dispose_trash(item, @settings.worn_trashcan, @settings.worn_trashcan_verb)
+    else
+      echo "#{item} is not junk" if @debug
+      DRCI.put_away_item?(item, @capture_settings['reward_container'])
+    end
+  end
+
+  def capture_and_return(critter_match)
+    echo "capture_and_return" if @debug
+    critter = critter_match[1]
+    DRC.fix_standing
+
+    fput("get #{critter}")
+    pause 0.5
+    waitrt?
+
+    held_item = DRC.right_hand || DRC.left_hand
+
+    # This junk check is mainly necessary for Hollows Eve, where we might "get shark" but end up with some discarded sharkskin
+    return if @capture_settings['junk'].include?(held_item) && handle_item(held_item)
+    return unless DRCI.in_hand?(held_item)
+
+    DRCT.walk_to(@event_info["return_room"])
+    fput("put my #{held_item} on #{@event_info["return_surface"]}")
+    pause 1
+    waitrt?
+
+    handle_item(DRC.right_hand || DRC.left_hand)
+  end
+
+  def run
+    echo "run" if @debug
+    loop do
+      # 1. Search rooms until we find a critter
+      found = false
+      @event_info["room_list"].each do |room|
+        DRCT.walk_to(room)
+        if DRRoom.room_objs.any? { |obj| critter?(obj) }
+          found = true
+          break
+        end
+      end
+
+      # 2. If no critters in any room, wait or exit
+      unless found
+        exit if Flags['critter-done']
+        DRC.message 'Waiting on more critters.'
+        pause 15
+        next
+      end
+
+      # 3. Capture all critters in the current room
+      while (match = DRRoom.room_objs.map { |obj| critter?(obj) }.compact.first)
+        capture_and_return(match)
+      end
+    end
+  end
+end
+
+before_dying do
+  Flags.delete('critter-done')
+end
+
+CaptureCritter.new

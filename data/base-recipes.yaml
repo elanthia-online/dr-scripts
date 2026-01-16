@@ -8728,6 +8728,7 @@ crafting_recipes:
   herb1: dioica
   herb1_stock:
   liquid: alcohol
+  # Remedies Chapter 6 recipes
 - name: a body draught
   noun: draught
   volume: 1
@@ -8738,7 +8739,6 @@ crafting_recipes:
   herb1: ojhenik
   herb1_stock: 12
   liquid: alcohol
-# Remedies Chapter 6 recipes
 - name: a face draught
   noun: draught
   volume: 1
