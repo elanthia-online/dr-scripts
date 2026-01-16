@@ -3283,6 +3283,14 @@ class TrainerProcess
     game_state.sheath_whirlwind_offhand if game_state.currently_whirlwinding
     DRC.retreat
     game_state.engage_slow
+
+    if Script.running?('almanac') && !$ALMANAC.nil?
+      echo "Almanac process is already running as script, using it's exposed method to invoke almanac usage." if $debug_mode_ct
+      $ALMANAC.use_almanac
+      game_state.wield_whirlwind_offhand if game_state.currently_whirlwinding
+      return
+    end
+
     DRC.bput("get my #{@almanac}", 'You get', 'What were')
     if training_skill
       DRC.bput("turn #{@almanac} to #{training_skill}", 'You turn', 'You attempt to turn')
