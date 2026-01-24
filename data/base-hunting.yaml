@@ -528,6 +528,14 @@ hunting_zones:
   - 10053
   - 10052
   - 10051
+  # https://elanthipedia.play.net/Cougar                                   30-49
+  cougars_forest_of_night:
+  - 9352
+  - 9353
+  - 9354
+  - 9355
+  - 9356
+  - 9357
   # https://elanthipedia.play.net/Grass_eel                                25-50
   grass_eels:
   - 1492
@@ -637,6 +645,14 @@ hunting_zones:
   - 8475
   - 8476
   - 8477
+  # https://elanthipedia.play.net/Ichorous_ossein_amalgam			70-90
+  ossein_amalgams:
+  - 10041
+  - 10042
+  - 10043
+  - 10044
+  - 10045
+  - 10046
   # new mob - critter level 18-22                                          85-130
   greater_water_sprites:
   - 8465
