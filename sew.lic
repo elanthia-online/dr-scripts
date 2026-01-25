@@ -312,7 +312,7 @@ class Sew
       DRCC.stow_crafting_item('stamp', @bag, @belt)
     end
 
-    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) unless DRC.right_hand =~ @noun
     case @finish
     when /log/
       DRCC.logbook_item('outfitting', @noun, @bag)
