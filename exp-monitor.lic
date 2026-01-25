@@ -2,6 +2,13 @@ no_pause_all
 no_kill_all
 silence_me
 
+# Check if the new DRExpMonitor module is available (Lich 5 drinfomon)
+if defined?(DRExpMonitor)
+  respond "exp-monitor.lic is deprecated - use ';display expgains' command instead"
+  respond "The new DRExpMonitor module is built into drinfomon"
+  exit
+end
+
 UserVars.echo_exp = true
 UserVars.echo_exp_time ||= 1
 DRSkill.gained_skills.clear
