@@ -2,16 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-require 'json'
-require 'net/http'
-require 'base64'
-require 'yaml'
-require 'ostruct'
-require 'digest/sha1'
-require 'monitor'
-
-$DEPENDENCY_VERSION = '2.0.17'
-$MIN_RUBY_VERSION = '3.3.1'
+$DEPENDENCY_VERSION = '2.0.18'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.12.5')
@@ -26,9 +17,6 @@ unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.12.5')
   end
   exit
 end
-
-$DRINFOMON_IN_CORE_LICH = true # this should never be true pre 5.11
-$DRINFOMON_CORE_LICH_DEFINES = DRInfomon::DRINFOMON_CORE_LICH_DEFINES # always defined in 5.11
 
 no_pause_all
 no_kill_all
@@ -273,8 +261,7 @@ class ScriptManager
     # Setting Settings['lich_fork_sha'] to nil if using lich5. This setting isn't used anymore.
 
     Settings['base_versions'] ||= {}
-    Settings['next_ruby_version_check_datetime'] = Time.now
-
+    
     @add_autos = []
     @remove_autos = []
     update_autostarts
@@ -332,7 +319,6 @@ class ScriptManager
   end
 
   def run_queue
-    validate_supported_ruby_version
     update = false
 
     unless @add_autos.empty?
@@ -1646,13 +1632,6 @@ def list_tracked_scripts
 end
 
 def full_install
-  if !supported_ruby_version?
-    echo "You are using an unsupported version of ruby."
-    echo "In order to prevent people from wasting too much work on an unsupported version, this will not proceed."
-    echo "Please update to at least version #{$MIN_RUBY_VERSION} and try again."
-    echo "For further details / assistance, please join the dr-scripts Lich Discord: #{$DR_SCRIPTS_DISCORD_LINK} "
-    exitfrom
-  end
   respond 'Performing setup for dr-scripts.  This will take some time.  Do not stop this script until finished.'
   respond '(Step 1 of 5) Removing lich autostarts for existing scripts...'
   remove_from_autostart(managed_scripts)
@@ -1718,32 +1697,6 @@ end
 def setup_data
   echo("Force checking scripts/data files.")
   $manager.setup_data
-end
-
-def supported_ruby_version?
-  return Gem::Version.new(RUBY_VERSION) >= Gem::Version.new($MIN_RUBY_VERSION)
-end
-
-def validate_supported_ruby_version
-  # Get stored time for next check (or now if not stored yet)
-  next_check_datetime = Settings['next_ruby_version_check_datetime'] || Time.now
-
-  # Don't spam user every iteration of run_queue
-  return if next_check_datetime > Time.now
-
-  # Check for supported version
-  if !supported_ruby_version?
-    echo "*** WARN WARN WARN WARN WARN WARN WARN ***"
-    echo "WARN: You are using an unsupported version of ruby."
-    echo "WARN: While many scripts may still continue to run, there are some that may not."
-    echo "WARN: Please update to at least version #{$MIN_RUBY_VERSION} as soon as possible."
-    echo "WARN: For further details / assistance, please join the dr-scripts Lich Discord: #{$DR_SCRIPTS_DISCORD_LINK}"
-    echo "WARN: This warning will repeat on startup and every three hours."
-    echo "*** WARN WARN WARN WARN WARN WARN WARN ***"
-  end
-
-  # Set next check time to 3 hours from now
-  Settings['next_ruby_version_check_datetime'] = Time.now + (60 * 60 * 3)
 end
 
 def remove_from_autostart(scripts)
