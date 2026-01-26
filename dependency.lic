@@ -10,7 +10,7 @@ require 'ostruct'
 require 'digest/sha1'
 require 'monitor'
 
-$DEPENDENCY_VERSION = '2.0.16'
+$DEPENDENCY_VERSION = '2.0.17'
 $MIN_RUBY_VERSION = '3.3.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 
@@ -1596,18 +1596,24 @@ end
 def custom_require
   lambda do |script_names|
     script_names = [script_names] unless script_names.is_a?(Array)
-    respond("CR:starting:#{script_names}") if UserVars.bootstrap_debug
+
     if $DRINFOMON_IN_CORE_LICH
-      echo("DRInfomon in core lich detected. Skipping loading drinfomon and commons") if UserVars.bootstrap_debug
       script_names -= $DRINFOMON_CORE_LICH_DEFINES
     end
-    bootstrapper = force_start_script('bootstrap', script_names)
-    pause 0.05
-    while Script.running.include?(bootstrapper)
-      respond("CR:waiting:#{script_names}") if UserVars.bootstrap_debug
+
+    return if script_names.empty?
+
+    # Inline loading - replaces bootstrap.lic
+    script_names.each do |script_name|
+      next if Script.running?(script_name)
+      next unless Script.exists?(script_name)
+      start_script(script_name)
       pause 0.05
+      snapshot = Time.now
+      until !Script.running?(script_name) || Time.now - snapshot > 0.25
+        pause 0.05
+      end
     end
-    respond("CR:done:#{script_names}") if UserVars.bootstrap_debug
   end
 end
 
