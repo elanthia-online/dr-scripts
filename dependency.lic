@@ -1597,10 +1597,6 @@ def custom_require
   lambda do |script_names|
     script_names = [script_names] unless script_names.is_a?(Array)
 
-    if $DRINFOMON_IN_CORE_LICH
-      script_names -= $DRINFOMON_CORE_LICH_DEFINES
-    end
-
     return if script_names.empty?
 
     # Inline loading - replaces bootstrap.lic
@@ -1770,7 +1766,6 @@ end
 
 def update_d
   echo('Restarting Dependency in 2 seconds...')
-  force_start_script('bootstrap', ['wipe_constants']) unless $DRINFOMON_IN_CORE_LICH
   before_dying do
     sleep 2
     force_start_script('dependency')
@@ -1820,23 +1815,13 @@ end
 
 full_install if install
 
-force_start_script('bootstrap', ['wipe_constants']) unless $DRINFOMON_IN_CORE_LICH
-
 # Proactively starting DRinfomon as script zero to prevent
 # race conditions involving this script which so many other
 # scripts depend on, and which is slow to start on its own
-unless $DRINFOMON_IN_CORE_LICH
-  echo("Starting DRinfomon, this will take a few seconds.")
-
-  custom_require.call('drinfomon')
-
-  echo("DRinfomon ready.")
-else
-  Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
-end
+Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
+Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
+Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
+Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
 
 $manager.check_base_files
 $manager.check_data_files
