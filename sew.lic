@@ -313,7 +313,7 @@ class Sew
     end
 
     DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) unless DRC.right_hand.include?(@noun)
-	  DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) unless DRC.left_hand.include?(@noun)
+    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) unless DRC.left_hand.include?(@noun)
 
     case @finish
     when /log/
