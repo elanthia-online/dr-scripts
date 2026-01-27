@@ -1591,7 +1591,7 @@ unless Script.respond_to?(:blocked?)
     script_name = name.to_s.sub(/\.lic$/, '')
     return false unless DR_BLOCKED_SCRIPTS.include?(script_name)
     path = File.exist?(File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")) ? 'scripts/custom' : 'scripts'
-    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and should not be used. It will cause problems. Renaming #{script_name}.lic to something else will remove this message andmight cause the resulting custom script to run. THIS IS NOT RECOMMENDED. If you don't know what to do here, please seek help in the DR Lich Discord.")
+    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and should not be used. It will cause problems. Renaming #{script_name}.lic to something else will remove this message and might cause the resulting custom script to run. THIS IS NOT RECOMMENDED. If you don't know what to do here, please seek help in the DR Lich Discord.")
     false
   end
 end
