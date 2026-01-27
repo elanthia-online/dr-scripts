@@ -16,24 +16,19 @@ YAML Settings (nested under plantheal_settings):
     empathy_threshold: 24       # stop when Empathy mindstate >= this
     heal_past_ml: false         # if true, keep cycling past threshold
     use_adc: false              # pre-cast plant_heal waggle_set (Heal, BS, etc.)
-    ev_mana: 20                 # mana for self-use EV prep
     ev_cast_mana: 600           # mana for community EV in cast_room
     ev_extra_wait: 15           # extra seconds after RT before casting EV
-    ritual_focus:               # manual focus handling (only needed if NOT using ev waggle_set)
-      item: null                # name of focus item (e.g. "runestone")
-      worn: false               # true if focus is worn (remove/wear)
-      tied: null                # container name if focus is tied (untie from/tie to)
-      sheathed: false           # true if focus is sheathed (wield/sheathe)
-      container: null           # container name if focus is stowed (get from/stow in)
-      invoke_cmd: null          # full invoke command (e.g. "invoke my runestone")
-      stow_after: true          # whether to stow/wear/tie/sheathe after invoke
+    focus_container: null       # container to get/stow focus from (e.g. "backpack")
+
+  Required waggle_sets:
+    plantheal: Must contain an "Embrace of the Vela'Tohr" spell entry. All spell data
+        (mana, focus, worn/tied/sheathed focus) is drawn from this entry. If no prep_room
+        is set, EV casting is delegated to buff. If prep_room is set, EV is cast manually
+        (buff can't switch rooms). Spell data not defined here is filled by dependency
+        from base-spells.yaml.
 
   Required waggle_sets (if use_adc is true):
     plant_heal: waggle_set for pre-casting healing spells (Heal, Blood Staunching, etc.)
-
-  Optional waggle_set:
-    ev: If defined AND no prep_room is set, the script will delegate EV casting to buff.
-        If prep_room is set, EV is always cast manually (buff can't switch rooms).
 
   Legacy flat settings are still supported with a deprecation warning:
     plant_total_touch_count -> touch_count
@@ -47,13 +42,7 @@ YAML Settings (nested under plantheal_settings):
     cast_room               -> cast_room
     ritual_ev_mana          -> ev_cast_mana
     ritual_ev_extra_wait    -> ev_extra_wait
-    ritual_focus_item        -> ritual_focus.item
-    ritual_focus_container   -> ritual_focus.container
-    ritual_focus_invoke_cmd  -> ritual_focus.invoke_cmd
-    ritual_focus_stow_after  -> ritual_focus.stow_after
-    ritual_focus_worn        -> ritual_focus.worn
-    ritual_focus_tied        -> ritual_focus.tied
-    ritual_focus_sheathed    -> ritual_focus.sheathed
+    ritual_focus_container   -> focus_container
 =end
 
 class PlantHeal
@@ -86,16 +75,8 @@ class PlantHeal
     @heal_past_ml   = ps[:heal_past_ml]
     @threshold      = ps[:empathy_threshold]
     @use_adc        = ps[:use_adc]
-    @ev_mana        = ps[:ev_mana]
     @ev_cast_mana   = ps[:ev_cast_mana]
     @ev_extra_wait  = ps[:ev_extra_wait]
-    @focus_item      = ps[:focus_item]
-    @focus_worn      = ps[:focus_worn]
-    @focus_tied      = ps[:focus_tied]
-    @focus_sheathed  = ps[:focus_sheathed]
-    @focus_container = ps[:focus_container]
-    @focus_invoke    = ps[:focus_invoke]
-    @focus_stow      = ps[:focus_stow]
 
     @plantroom = ps[:plant_room].to_i.nonzero? ||
                  (hometown && hometown['npc_empath'] && hometown['npc_empath']['id'].to_i) ||
@@ -105,10 +86,16 @@ class PlantHeal
     @preproom    = ps[:prep_room].to_i    # 0 means same as plantroom
     @castroom    = ps[:cast_room].to_i    # 0 means skip cast-for-others
 
-    # Waggle set references (may be nil)
+    # Waggle set references
     waggle = settings.waggle_sets || {}
-    @ev_waggle = waggle['ev']
+    @ev_waggle = waggle['plantheal']
     @plant_heal_waggle = waggle['plant_heal']
+
+    # Validate required plantheal waggle_set
+    validate_ev_waggle!
+
+    # Resolve focus config from plantheal waggle_set
+    resolve_focus_config(ps)
 
     # Validation
     if @use_adc && @plant_heal_waggle.nil?
@@ -117,8 +104,8 @@ class PlantHeal
     end
 
     # If prep_room is set, we MUST cast EV manually (buff can't switch rooms).
-    # If no prep_room AND ev waggle_set exists, we can delegate to buff.
-    @manual_ev = @preproom.nonzero? || @ev_waggle.nil?
+    # Otherwise delegate to buff via the plantheal waggle_set.
+    @manual_ev = @preproom.nonzero?
 
     Flags.add('plantheal-heal-expire', 'You feel the warmth in your flesh gradually subside.')
 
@@ -146,13 +133,7 @@ class PlantHeal
       'cast_room'               => 'cast_room',
       'ritual_ev_mana'          => 'ev_cast_mana',
       'ritual_ev_extra_wait'    => 'ev_extra_wait',
-      'ritual_focus_item'       => 'focus_item',
       'ritual_focus_container'  => 'focus_container',
-      'ritual_focus_invoke_cmd' => 'focus_invoke',
-      'ritual_focus_stow_after' => 'focus_stow',
-      'ritual_focus_worn'       => 'focus_worn',
-      'ritual_focus_tied'       => 'focus_tied',
-      'ritual_focus_sheathed'   => 'focus_sheathed',
     }
 
     migrate.each do |old_key, new_key|
@@ -164,16 +145,6 @@ class PlantHeal
       end
     end
 
-    # Also pull nested ritual_focus sub-hash
-    rf = ps.delete('ritual_focus') || {}
-    ps['focus_item']      ||= rf['item']
-    ps['focus_worn']      ||= rf['worn']
-    ps['focus_tied']      ||= rf['tied']
-    ps['focus_sheathed']  ||= rf['sheathed']
-    ps['focus_container'] ||= rf['container']
-    ps['focus_invoke']    ||= rf['invoke_cmd']
-    ps['focus_stow'] = rf.fetch('stow_after', ps['focus_stow'])
-
     # Apply defaults and type coercion
     {
       touch_count: (ps['touch_count'].to_i.nonzero? || 3),
@@ -184,17 +155,50 @@ class PlantHeal
       empathy_threshold: (ps['empathy_threshold'].to_i.nonzero? || 24),
       heal_past_ml: to_bool(ps['heal_past_ml'], false),
       use_adc: to_bool(ps['use_adc'], false),
-      ev_mana: (ps['ev_mana'].to_i.nonzero? || 20),
       ev_cast_mana: (ps['ev_cast_mana'].to_i.nonzero? || 600),
       ev_extra_wait: (ps['ev_extra_wait'].to_i.nonzero? || 15),
-      focus_item: ps['focus_item'].to_s.strip,
-      focus_worn: to_bool(ps['focus_worn'], false),
-      focus_tied: ps['focus_tied'].to_s.strip,
-      focus_sheathed: to_bool(ps['focus_sheathed'], false),
       focus_container: ps['focus_container'].to_s.strip,
-      focus_invoke: ps['focus_invoke'].to_s.strip,
-      focus_stow: to_bool(ps['focus_stow'], true),
     }
+  end
+
+  EV_SPELL_KEY = "Embrace of the Vela'Tohr"
+
+  # Validate that the plantheal waggle_set exists and contains an
+  # "Embrace of the Vela'Tohr" spell entry. Mana and other spell data
+  # are filled by dependency from base-spells.yaml, so only the key is required.
+  def validate_ev_waggle!
+    unless @ev_waggle
+      DRC.message("*** waggle_set 'plantheal' is required! Define a 'plantheal' waggle_set with an '#{EV_SPELL_KEY}' entry.")
+      exit
+    end
+
+    unless @ev_waggle.key?(EV_SPELL_KEY)
+      DRC.message("*** waggle_set 'plantheal' must contain an '#{EV_SPELL_KEY}' spell entry!")
+      DRC.message("*** Found keys: #{@ev_waggle.keys.join(', ')}")
+      exit
+    end
+  end
+
+  # Resolve focus configuration from the ev waggle_set.
+  # All spell data (focus, worn_focus, tied_focus, sheathed_focus) comes from the
+  # waggle_set. The only user-configurable override is focus_container (no waggle_set
+  # equivalent -- used for "get from"/"stow in" when focus is in a specific container).
+  def resolve_focus_config(ps)
+    ev_spell = ev_spell_data
+
+    @focus_item      = ev_spell['focus'].to_s.strip
+    @focus_worn      = ev_spell['worn_focus'] || false
+    @focus_tied      = ev_spell['tied_focus'].to_s.strip
+    @focus_sheathed  = ev_spell['sheathed_focus'] || false
+    @focus_container = ps[:focus_container].to_s.strip
+    @focus_invoke    = @focus_item.empty? ? '' : "invoke my #{@focus_item}"
+  end
+
+  # Extract the EV spell data hash from the plantheal waggle_set.
+  def ev_spell_data
+    return nil unless @ev_waggle
+
+    @ev_waggle[EV_SPELL_KEY]
   end
 
   def safe_setting(settings, key)
@@ -244,31 +248,27 @@ class PlantHeal
   # ---------------------------------------------------------------------------
 
   def ensure_ev
-    return if DRSpells.active_spells.include?("Embrace of the Vela'Tohr")
+    return if DRSpells.active_spells.include?(EV_SPELL_KEY)
 
     if @manual_ev
-      cast_ev_manual(@ev_mana)
+      cast_ev_manual(ev_spell_data['mana'].to_i)
     else
       # Delegate to buff script (no room switching needed)
-      DRC.wait_for_script_to_complete('buff', ['ev'])
+      DRC.wait_for_script_to_complete('buff', ['plantheal'])
     end
   end
 
   # Recast EV if it's below the recast threshold defined in the waggle_set.
-  # Falls back to ensure_ev if no waggle_set data available.
   def recast_ev_if_needed
-    if @ev_waggle && @ev_waggle['Embrace of the Vela\'Tohr']
-      recast = @ev_waggle['Embrace of the Vela\'Tohr']['recast'].to_i
-      remaining = DRSpells.active_spells['Embrace of the Vela\'Tohr'].to_i
-      return if remaining > recast
-    else
-      return if DRSpells.active_spells.include?("Embrace of the Vela'Tohr")
-    end
+    ev_spell = ev_spell_data
+    recast = ev_spell['recast'].to_i
+    remaining = DRSpells.active_spells[EV_SPELL_KEY].to_i
+    return if remaining > recast
 
     if @manual_ev
-      cast_ev_manual(@ev_mana)
+      cast_ev_manual(ev_spell['mana'].to_i)
     else
-      DRC.wait_for_script_to_complete('buff', ['ev'])
+      DRC.wait_for_script_to_complete('buff', ['plantheal'])
     end
   end
 
@@ -346,7 +346,6 @@ class PlantHeal
 
   def stow_focus
     return if @focus_item.empty?
-    return unless @focus_stow
 
     if @focus_worn || !@focus_tied.empty? || @focus_sheathed
       DRCA.stow_focus(@focus_item, @focus_worn, @focus_tied.empty? ? nil : @focus_tied, @focus_sheathed)
