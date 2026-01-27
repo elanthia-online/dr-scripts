@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.0.18'
+$DEPENDENCY_VERSION = '2.0.19'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.12.5')
@@ -261,7 +261,7 @@ class ScriptManager
     # Setting Settings['lich_fork_sha'] to nil if using lich5. This setting isn't used anymore.
 
     Settings['base_versions'] ||= {}
-
+    
     @add_autos = []
     @remove_autos = []
     update_autostarts
@@ -1579,6 +1579,23 @@ def format_yaml_name(name)
   name =~ /\.yaml$/ ? name : "#{name}.yaml"
 end
 
+unless Script.respond_to?(:blocked?)
+  DR_BLOCKED_SCRIPTS = %w[
+    common-crafting common-healing-data common-healing common-items
+    common-money common-moonmage common-summoning common-theurgy
+    common-travel common-validation common drinfomon equipmanager
+    events slackbot spellmonitor
+  ].freeze
+
+  def dr_blocked_script?(name)
+    script_name = name.to_s.sub(/\.lic$/, '')
+    return false unless DR_BLOCKED_SCRIPTS.include?(script_name)
+    path = File.exist?(File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")) ? 'scripts/custom' : 'scripts'
+    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and should not be used. It will cause problems. Renaming #{script_name}.lic to something else will remove this message andmight cause the resulting custom script to run. THIS IS NOT RECOMMENDED. If you don't know what to do here, please seek help in the DR Lich Discord.")
+    false
+  end
+end
+
 def custom_require
   lambda do |script_names|
     script_names = [script_names] unless script_names.is_a?(Array)
@@ -1587,6 +1604,7 @@ def custom_require
 
     # Inline loading - replaces bootstrap.lic
     script_names.each do |script_name|
+      next if Script.respond_to?(:blocked?) ? Script.blocked?(script_name) : dr_blocked_script?(script_name)
       next if Script.running?(script_name)
       next unless Script.exists?(script_name)
       start_script(script_name)
