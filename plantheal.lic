@@ -50,8 +50,6 @@ YAML Settings (nested under plantheal_settings):
     ritual_focus_stow_after  -> ritual_focus.stow_after
 =end
 
-custom_require.call(%w[common common-items events common-arcana common-healing common-money common-travel common-validation drinfomon])
-
 class PlantHeal
   unless DRStats.empath?
     DRC.message('*** Must be an Empath with the Embrace of the Vela\'Tohr spell to run this! ***')
