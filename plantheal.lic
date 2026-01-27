@@ -20,10 +20,13 @@ YAML Settings (nested under plantheal_settings):
     ev_cast_mana: 600           # mana for community EV in cast_room
     ev_extra_wait: 15           # extra seconds after RT before casting EV
     ritual_focus:               # manual focus handling (only needed if NOT using ev waggle_set)
-      item: null
-      container: null
-      invoke_cmd: null
-      stow_after: true
+      item: null                # name of focus item (e.g. "runestone")
+      worn: false               # true if focus is worn (remove/wear)
+      tied: null                # container name if focus is tied (untie from/tie to)
+      sheathed: false           # true if focus is sheathed (wield/sheathe)
+      container: null           # container name if focus is stowed (get from/stow in)
+      invoke_cmd: null          # full invoke command (e.g. "invoke my runestone")
+      stow_after: true          # whether to stow/wear/tie/sheathe after invoke
 
   Required waggle_sets (if use_adc is true):
     plant_heal: waggle_set for pre-casting healing spells (Heal, Blood Staunching, etc.)
@@ -48,6 +51,9 @@ YAML Settings (nested under plantheal_settings):
     ritual_focus_container   -> ritual_focus.container
     ritual_focus_invoke_cmd  -> ritual_focus.invoke_cmd
     ritual_focus_stow_after  -> ritual_focus.stow_after
+    ritual_focus_worn        -> ritual_focus.worn
+    ritual_focus_tied        -> ritual_focus.tied
+    ritual_focus_sheathed    -> ritual_focus.sheathed
 =end
 
 class PlantHeal
@@ -83,10 +89,13 @@ class PlantHeal
     @ev_mana        = ps[:ev_mana]
     @ev_cast_mana   = ps[:ev_cast_mana]
     @ev_extra_wait  = ps[:ev_extra_wait]
-    @focus_item     = ps[:focus_item]
+    @focus_item      = ps[:focus_item]
+    @focus_worn      = ps[:focus_worn]
+    @focus_tied      = ps[:focus_tied]
+    @focus_sheathed  = ps[:focus_sheathed]
     @focus_container = ps[:focus_container]
-    @focus_invoke   = ps[:focus_invoke]
-    @focus_stow     = ps[:focus_stow]
+    @focus_invoke    = ps[:focus_invoke]
+    @focus_stow      = ps[:focus_stow]
 
     @plantroom = ps[:plant_room].to_i.nonzero? ||
                  (hometown && hometown['npc_empath'] && hometown['npc_empath']['id'].to_i) ||
@@ -141,6 +150,9 @@ class PlantHeal
       'ritual_focus_container'  => 'focus_container',
       'ritual_focus_invoke_cmd' => 'focus_invoke',
       'ritual_focus_stow_after' => 'focus_stow',
+      'ritual_focus_worn'       => 'focus_worn',
+      'ritual_focus_tied'       => 'focus_tied',
+      'ritual_focus_sheathed'   => 'focus_sheathed',
     }
 
     migrate.each do |old_key, new_key|
@@ -155,6 +167,9 @@ class PlantHeal
     # Also pull nested ritual_focus sub-hash
     rf = ps.delete('ritual_focus') || {}
     ps['focus_item']      ||= rf['item']
+    ps['focus_worn']      ||= rf['worn']
+    ps['focus_tied']      ||= rf['tied']
+    ps['focus_sheathed']  ||= rf['sheathed']
     ps['focus_container'] ||= rf['container']
     ps['focus_invoke']    ||= rf['invoke_cmd']
     ps['focus_stow'] = rf.fetch('stow_after', ps['focus_stow'])
@@ -173,6 +188,9 @@ class PlantHeal
       ev_cast_mana: (ps['ev_cast_mana'].to_i.nonzero? || 600),
       ev_extra_wait: (ps['ev_extra_wait'].to_i.nonzero? || 15),
       focus_item: ps['focus_item'].to_s.strip,
+      focus_worn: to_bool(ps['focus_worn'], false),
+      focus_tied: ps['focus_tied'].to_s.strip,
+      focus_sheathed: to_bool(ps['focus_sheathed'], false),
       focus_container: ps['focus_container'].to_s.strip,
       focus_invoke: ps['focus_invoke'].to_s.strip,
       focus_stow: to_bool(ps['focus_stow'], true),
@@ -292,17 +310,23 @@ class PlantHeal
 
   # ---------------------------------------------------------------------------
   # Focus handling (only used for manual EV casting)
+  # Delegates to DRCA.find_focus/stow_focus which support worn, tied, sheathed,
+  # and stowed focus items.
   # ---------------------------------------------------------------------------
 
   def get_focus
     return if @focus_item.empty?
 
-    if !@focus_container.empty?
+    # DRCA.find_focus uses container as the tied-to target when tied is set.
+    # For plain stowed items (not worn/tied/sheathed), it does "get my <item>".
+    # We pass the container-based "get from" as a fallback for non-worn/tied/sheathed.
+    if @focus_worn || !@focus_tied.empty? || @focus_sheathed
+      DRCA.find_focus(@focus_item, @focus_worn, @focus_tied.empty? ? nil : @focus_tied, @focus_sheathed)
+    elsif !@focus_container.empty?
       DRC.bput("get #{@focus_item} from #{@focus_container}",
                'You get', 'You are already holding', 'What were you referring')
     else
-      DRC.bput("get #{@focus_item}",
-               'You get', 'You are already holding', 'What were you referring')
+      DRCA.find_focus(@focus_item, false, nil, false)
     end
   end
 
@@ -324,10 +348,12 @@ class PlantHeal
     return if @focus_item.empty?
     return unless @focus_stow
 
-    if !@focus_container.empty?
+    if @focus_worn || !@focus_tied.empty? || @focus_sheathed
+      DRCA.stow_focus(@focus_item, @focus_worn, @focus_tied.empty? ? nil : @focus_tied, @focus_sheathed)
+    elsif !@focus_container.empty?
       fput("stow #{@focus_item} in #{@focus_container}")
     else
-      fput("stow #{@focus_item}")
+      DRCA.stow_focus(@focus_item, false, nil, false)
     end
   end
 
