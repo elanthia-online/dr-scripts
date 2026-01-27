@@ -234,6 +234,9 @@ class PlantHeal
       # Touch the plant
       touch_plant
 
+      # Re-check empathy before healing (may have crossed threshold during touching)
+      mindstate_check
+
       # Return to heal
       DRCT.walk_to(@healingroom)
       DRC.wait_for_script_to_complete('healme')
@@ -382,38 +385,45 @@ class PlantHeal
       end
     end
 
+    touches = 0
+
     # Phase 1: If ADC is active and Heal is running, touch until Heal expires
+    # (capped by touch_count so total touches never exceed the configured limit)
     if @use_adc && DRSpells.active_spells.include?('Heal')
-      touch_until_heal_expires(noun)
+      touches = touch_until_heal_expires(noun, @touch_count)
     end
 
-    # Phase 2: Count-based touches
-    touch_by_count(noun)
+    # Phase 2: Remaining count-based touches
+    remaining = @touch_count - touches
+    touch_by_count(noun, remaining) if remaining > 0
   end
 
-  def touch_until_heal_expires(noun)
-    until Flags['plantheal-heal-expire']
+  def touch_until_heal_expires(noun, max_touches)
+    touches = 0
+    until Flags['plantheal-heal-expire'] || touches >= max_touches
       result = DRC.bput("touch #{noun}", *TOUCH_RESPONSES)
       case result
       when *NO_HEAL_NEEDED
         DRC.message("Plant fully healed (during Heal phase).")
-        return
+        return touches
       when 'you have no empathic bond'
         release_and_recast_ev
       when 'Touch what?'
         recast_ev_if_needed
-        return unless plant_noun_in_room
+        return touches unless plant_noun_in_room
       when 'Roundtime'
-        break if Flags['plantheal-heal-expire']
+        touches += 1
+        break if Flags['plantheal-heal-expire'] || touches >= max_touches
         waitfor('A nearly painful prickling sensation surges through you.',
                 'You feel a surge of life energy as your regeneration')
       end
     end
+    touches
   end
 
-  def touch_by_count(noun)
+  def touch_by_count(noun, count = @touch_count)
     touches = 0
-    while touches < @touch_count
+    while touches < count
       result = DRC.bput("touch #{noun}", *TOUCH_RESPONSES)
       case result
       when *NO_HEAL_NEEDED
