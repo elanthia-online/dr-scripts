@@ -81,7 +81,7 @@ class PlantHeal
     ht_name = settings.force_healer_town || settings.hometown
     hometown = town_data[ht_name]
 
-    @hug_count    = ps[:hug_count]
+    @hug_count = ps[:hug_count]
     @heal_past_ml   = ps[:heal_past_ml]
     @threshold      = ps[:empathy_threshold]
     @use_adc        = ps[:use_adc]
