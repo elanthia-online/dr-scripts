@@ -4,15 +4,17 @@
 
 $DEPENDENCY_VERSION = '2.0.19'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
+$MIN_LICH_VERSION = '5.13.6'
 
-unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.12.5')
+unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   10.times do
-    _respond("<pushBold/>******************************************************************************<popBold/>")
-    _respond("<pushBold/>* Lich versions prior to 5.12.5 were deprecated on Monday 08 September 2025. *<popBold/>")
-    _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup    *<popBold/>")
-    _respond("<pushBold/>* For update instructions.                                                   *<popBold/>")
-    _respond("<pushBold/>* Exiting Dependency now. Nothing much will work from here...                *<popBold/>")
-    _respond("<pushBold/>******************************************************************************<popBold/>")
+    border = "*" * 78
+    _respond("<pushBold/>#{border}<popBold/>")
+    _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} were deprecated on Tuesday 28 January 2026.".ljust(74)} *<popBold/>")
+    _respond("<pushBold/>* #{"See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup".ljust(74)} *<popBold/>")
+    _respond("<pushBold/>* #{"For update instructions.".ljust(74)} *<popBold/>")
+    _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(74)} *<popBold/>")
+    _respond("<pushBold/>#{border}<popBold/>")
     pause 10
   end
   exit
@@ -224,15 +226,6 @@ class ScriptManager
   attr_reader :autostarts
 
   def initialize(debug)
-    unless LICH_VERSION.match?(/^5/)
-      _respond("<pushBold/>*****************************************************************************<popBold/>")
-      _respond("<pushBold/>* Unsupported Lich versions detected.                                       *<popBold/>")
-      _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
-      _respond("<pushBold/>* For an update path.                                                       *<popBold/>")
-      _respond("<pushBold/>*****************************************************************************<popBold/>")
-      exit
-    end
-
     @debug = debug
     @paste_bin_token = 'dca351a27a8af501a8d3123e29af7981'
     @paste_bin_url = 'https://pastebin.com/api/api_post.php'
@@ -261,7 +254,7 @@ class ScriptManager
     # Setting Settings['lich_fork_sha'] to nil if using lich5. This setting isn't used anymore.
 
     Settings['base_versions'] ||= {}
-
+    
     @add_autos = []
     @remove_autos = []
     update_autostarts
@@ -1581,7 +1574,7 @@ end
 
 unless Script.respond_to?(:blocked?)
   DR_BLOCKED_SCRIPTS = %w[
-    common-crafting common-healing-data common-healing common-items
+    bootstrap common-crafting common-healing-data common-healing common-items
     common-money common-moonmage common-summoning common-theurgy
     common-travel common-validation common drinfomon equipmanager
     events slackbot spellmonitor
@@ -1591,8 +1584,25 @@ unless Script.respond_to?(:blocked?)
     script_name = name.to_s.sub(/\.lic$/, '')
     return false unless DR_BLOCKED_SCRIPTS.include?(script_name)
     path = File.exist?(File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")) ? 'scripts/custom' : 'scripts'
-    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and should not be used. It will cause problems. Renaming #{script_name}.lic to something else will remove this message and might cause the resulting custom script to run. THIS IS NOT RECOMMENDED. If you don't know what to do here, please seek help in the DR Lich Discord.")
+    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and should not be used. It will cause problems. Renaming #{script_name}.lic to something else will remove this message andmight cause the resulting custom script to run. THIS IS NOT RECOMMENDED. If you don't know what to do here, please seek help in the DR Lich Discord.")
     false
+  end
+
+end
+
+def warn_obsolete_blocked_scripts
+  obsolete_scripts = %w[
+    bootstrap common-crafting common-healing-data common-healing common-items
+    common-money common-moonmage common-summoning common-theurgy
+    common-travel common-validation common drinfomon equipmanager
+    events slackbot spellmonitor
+  ]
+
+  obsolete_scripts.each do |script_name|
+    path = File.join(SCRIPT_DIR, "#{script_name}.lic")
+    next unless File.exist?(path)
+
+    _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
   end
 end
 
@@ -1813,6 +1823,9 @@ $setupfiles.reload
 
 # Remind user of curated scripts with a copy in custom folder
 warn_custom_scripts
+
+# Warn about obsolete blocked scripts still present in SCRIPT_DIR
+warn_obsolete_blocked_scripts
 
 loop do
   if $turn_on_moon_watch && $moon_watch.nil?
