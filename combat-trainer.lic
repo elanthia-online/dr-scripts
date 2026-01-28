@@ -4570,6 +4570,9 @@ class GameState
     end
     echo("  @dual_load: #{@dual_load}") if $debug_mode_ct
 
+    @summoned_weapons_adjective = settings.summoned_weapons_adjective
+    echo("  @summoned_weapons_adjective: #{@summoned_weapons_adjective}") if $debug_mode_ct
+
     @summoned_weapons_element = settings.summoned_weapons_element
     echo("  @summoned_weapons_element: #{@summoned_weapons_element}") if $debug_mode_ct
 
@@ -5614,9 +5617,10 @@ class GameState
 
   def prepare_summoned_weapon(weapon_already_summoned)
     info = summoned_info(weapon_skill)
+    adj = JSON.parse("{\"summoned_weapons_adjective\": \"#{@summoned_weapons_adjective}\"}", object_class: OpenStruct)
 
     DRCS.summon_weapon(UserVars.moons['visible'].first, @summoned_weapons_element, @summoned_weapons_ingot, weapon_skill) unless weapon_already_summoned
-    DRCS.shape_summoned_weapon(weapon_skill, @summoned_weapons_ingot) if weapon_already_summoned || DRStats.moon_mage?
+    DRCS.shape_summoned_weapon(weapon_skill, @summoned_weapons_ingot, adj) if weapon_already_summoned || DRStats.moon_mage?
     DRCS.turn_summoned_weapon if info['turn']
     DRCS.push_summoned_weapon if info['push']
     DRCS.pull_summoned_weapon if info['pull']
