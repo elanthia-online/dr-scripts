@@ -302,10 +302,9 @@ class PlantHeal
     end
     # Heal to full before each hug - wait for wound score to be 0
     heal_between_hugs if DRCH.check_health['score'] > 0
-    unless @heal_past_ml || DRSkill.getxp('Empathy') < @threshold
-      DRC.message("Empathy mindstate at target (#{@threshold}), stopping hugs.")
-      return false
-    end
+    # Note: threshold check is intentionally NOT done here. The hug_count must be
+    # honored within a cycle. Threshold is checked by mindstate_check at the
+    # start and end of each cycle in run_loop.
     ensure_ev
     ensure_healing_spells
     noun = plant_noun_in_room
