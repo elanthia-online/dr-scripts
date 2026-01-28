@@ -54,15 +54,23 @@ class PlantHeal
   end
 
   PLANT_NOUNS = /vela'tohr (plant|thicket|bush|briar|shrub|thornbush)/i
-  NO_HEAL_NEEDED = [
-    'has no need of healing.'
-  ]
+  NO_HEAL_NEEDED = /has no need of healing\./i
+  HUG_APPRECIATES = /appreciates the sentiment/i
   HUG_RESPONSES = [
-    'Roundtime',
-    *NO_HEAL_NEEDED,
-    'you have no empathic bond',
-    'Hug what?'
+    /Roundtime/i,
+    NO_HEAL_NEEDED,
+    /you have no empathic bond/i,
+    /Hug what\?/i,
+    HUG_APPRECIATES
   ]
+
+  # Result from hug_plant containing count and reason for zero hugs.
+  # Reasons: :ok (hugs > 0), :no_plant, :fully_healed, :stopped_early
+  HugResult = Struct.new(:hugs, :reason) do
+    def zero?
+      hugs.zero?
+    end
+  end
 
   def initialize
     settings = get_settings
@@ -239,15 +247,25 @@ class PlantHeal
       DRCT.walk_to(@plantroom)
 
       # Hug the plant (pre-hug checks ensure EV + healing spells before each hug)
-      total_hugs = hug_plant
+      hug_result = hug_plant
 
       # Always heal after hugging, even if at threshold
       DRCT.walk_to(@healingroom)
       DRC.wait_for_script_to_complete('healme')
 
-      # If the plant was fully healed (no wounds transferred), exit after healing
-      if total_hugs.zero?
-        DRC.message("Plant fully healed, no wounds transferred. Exiting after health check.")
+      # If zero hugs, exit with context-specific message
+      if hug_result.zero?
+        exit_message = case hug_result.reason
+                       when :no_plant
+                         "**No plant found in room after EV recast.** Check your plant_room setting or cast EV manually."
+                       when :fully_healed
+                         "**Plant fully healed** — no wounds to transfer. Cast a new EV or wait for plant to accumulate wounds."
+                       when :stopped_early
+                         "**Stopped before hugging** (bleeding, threshold, or plant disappeared). Check logs above for details."
+                       else
+                         "**No wounds transferred.** Exiting after health check."
+                       end
+        DRC.message(exit_message)
         exit
       end
 
@@ -415,8 +433,8 @@ class PlantHeal
     m && m[1].downcase
   end
 
-  # Returns total successful hugs (Roundtime count). Zero means the plant
-  # had nothing to heal and no wounds were transferred.
+  # Returns HugResult containing total successful hugs and reason for stopping.
+  # Reasons: :ok (hugs > 0), :no_plant, :fully_healed, :stopped_early
   def hug_plant
     Flags.reset('plantheal-heal-expire')
     noun = plant_noun_in_room
@@ -427,25 +445,40 @@ class PlantHeal
       noun = plant_noun_in_room
       unless noun
         DRC.message("*** Still no plant. Skipping to heal phase.")
-        return 0
+        return HugResult.new(0, :no_plant)
       end
     end
 
     hugs = 0
+    fully_healed = false
 
     # Phase 1: If ADC is active and Heal is running, hug until Heal expires
     # (capped by touch_count so total hugs never exceed the configured limit)
     if @use_adc && DRSpells.active_spells.include?('Heal')
-      hugs = hug_until_heal_expires(noun, @touch_count)
+      phase_hugs, phase_healed = hug_until_heal_expires(noun, @touch_count)
+      hugs = phase_hugs
+      fully_healed = phase_healed
     end
 
-    # Phase 2: Remaining count-based hugs
+    # Phase 2: Remaining count-based hugs (skip if plant was fully healed in phase 1)
     remaining = @touch_count - hugs
-    hugs += hug_by_count(noun, remaining) if remaining > 0
+    if remaining > 0 && !fully_healed
+      phase_hugs, phase_healed = hug_by_count(noun, remaining)
+      hugs += phase_hugs
+      fully_healed = phase_healed
+    end
 
-    hugs
+    reason = if hugs > 0
+               :ok
+             elsif fully_healed
+               :fully_healed
+             else
+               :stopped_early
+             end
+    HugResult.new(hugs, reason)
   end
 
+  # Returns [hugs, fully_healed] where fully_healed is true if plant had no wounds.
   def hug_until_heal_expires(noun, max_hugs)
     hugs = 0
     until Flags['plantheal-heal-expire'] || hugs >= max_hugs
@@ -453,27 +486,31 @@ class PlantHeal
       break unless noun
       result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
       case result
-      when *NO_HEAL_NEEDED
-        DRC.message("Plant fully healed (during Heal phase).")
-        return hugs
-      when 'you have no empathic bond'
+      when NO_HEAL_NEEDED
+        DRC.message("**Plant fully healed** (during Heal phase).")
+        return [hugs, true]
+      when /you have no empathic bond/i
         release_and_recast_ev
-      when 'Hug what?'
+      when HUG_APPRECIATES
+        DRC.message("Hug returned 'appreciates the sentiment' — **releasing and recasting EV**.")
+        release_and_recast_ev
+      when /Hug what\?/i
         # Fallback: noun was stale despite pre_hug_check (rare race condition).
         recast_ev_if_needed
         new_noun = plant_noun_in_room
-        return hugs unless new_noun
+        return [hugs, false] unless new_noun
         noun = new_noun
-      when 'Roundtime'
+      when /Roundtime/i
         hugs += 1
         break if Flags['plantheal-heal-expire'] || hugs >= max_hugs
         waitfor('A nearly painful prickling sensation surges through you.',
                 'You feel a surge of life energy as your regeneration')
       end
     end
-    hugs
+    [hugs, false]
   end
 
+  # Returns [hugs, fully_healed] where fully_healed is true if plant had no wounds.
   def hug_by_count(noun, count = @touch_count)
     hugs = 0
     while hugs < count
@@ -481,26 +518,29 @@ class PlantHeal
       break unless noun
       result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
       case result
-      when *NO_HEAL_NEEDED
-        DRC.message("Plant fully healed.")
-        return hugs
-      when 'you have no empathic bond'
+      when NO_HEAL_NEEDED
+        DRC.message("**Plant fully healed.**")
+        return [hugs, true]
+      when /you have no empathic bond/i
         release_and_recast_ev
-      when 'Hug what?'
+      when HUG_APPRECIATES
+        release_and_recast_ev
+      when /Hug what\?/i
         # Fallback: noun was stale despite pre_hug_check (rare race condition).
         recast_ev_if_needed
         new_noun = plant_noun_in_room
-        return hugs unless new_noun
+        return [hugs, false] unless new_noun
         noun = new_noun
-      when 'Roundtime'
+      when /Roundtime/i
         hugs += 1
       end
     end
-    hugs
+    [hugs, false]
   end
 
   def release_and_recast_ev
     fput('release ev')
+    pause 5
     ensure_ev
   end
 
