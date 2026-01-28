@@ -8,12 +8,12 @@ $MIN_LICH_VERSION = '5.13.6'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   10.times do
-    border = "*" * 78
+    border = "*" * 107
     _respond("<pushBold/>#{border}<popBold/>")
-    _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} were deprecated on Tuesday 28 January 2026.".ljust(74)} *<popBold/>")
-    _respond("<pushBold/>* #{"See https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich".ljust(74)} *<popBold/>")
-    _respond("<pushBold/>* #{"For update instructions.".ljust(74)} *<popBold/>")
-    _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(74)} *<popBold/>")
+    _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} were deprecated on Tuesday 28 January 2026.".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"See https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"For update instructions.".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(103)} *<popBold/>")
     _respond("<pushBold/>#{border}<popBold/>")
     pause 10
   end
