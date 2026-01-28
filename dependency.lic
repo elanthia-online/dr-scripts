@@ -11,7 +11,7 @@ unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
     border = "*" * 78
     _respond("<pushBold/>#{border}<popBold/>")
     _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} were deprecated on Tuesday 28 January 2026.".ljust(74)} *<popBold/>")
-    _respond("<pushBold/>* #{"See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup".ljust(74)} *<popBold/>")
+    _respond("<pushBold/>* #{"See https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich".ljust(74)} *<popBold/>")
     _respond("<pushBold/>* #{"For update instructions.".ljust(74)} *<popBold/>")
     _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(74)} *<popBold/>")
     _respond("<pushBold/>#{border}<popBold/>")
