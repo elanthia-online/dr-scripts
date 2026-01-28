@@ -254,7 +254,7 @@ class ScriptManager
     # Setting Settings['lich_fork_sha'] to nil if using lich5. This setting isn't used anymore.
 
     Settings['base_versions'] ||= {}
-    
+
     @add_autos = []
     @remove_autos = []
     update_autostarts
