@@ -1,14 +1,14 @@
 =begin
 Empathy training via Embrace of the Vela'Tohr (EV) plant healing.
 
-Cycles: stow hands -> (optional ADC pre-cast) -> walk to plant room -> ensure EV ->
-touch plant N times -> walk to healing room -> healme -> (optional community EV cast) ->
-check empathy threshold -> repeat.
+Cycles: stow hands -> (optional ADC pre-cast) -> walk to plant room ->
+hug plant N times (with pre-hug spell checks) -> walk to healing room -> healme ->
+(optional community EV cast) -> check empathy threshold -> repeat.
 
 YAML Settings (nested under plantheal_settings):
 
   plantheal_settings:
-    touch_count: 3              # times to touch plant per cycle
+    touch_count: 3              # times to hug plant per cycle
     plant_room: null            # room with the plant (default: hometown NPC empath)
     healing_room: null          # room to heal in (default: safe_room)
     prep_room: null             # room to prep EV if different from plant_room
@@ -55,11 +55,11 @@ class PlantHeal
   NO_HEAL_NEEDED = [
     'has no need of healing.'
   ]
-  TOUCH_RESPONSES = [
+  HUG_RESPONSES = [
     'Roundtime',
     *NO_HEAL_NEEDED,
     'you have no empathic bond',
-    'Touch what?'
+    'Hug what?'
   ]
 
   def initialize
@@ -220,6 +220,14 @@ class PlantHeal
     loop do
       mindstate_check
 
+      # Ensure we start each cycle with no wounds (score 0)
+      unless DRCH.check_health['score'].zero?
+        DRC.message("Wounds detected, healing before next cycle.")
+        DRCT.walk_to(@healingroom)
+        DRC.wait_for_script_to_complete('healme')
+        next
+      end
+
       # Pre-cast healing spells via ADC if enabled
       if @use_adc
         DRC.wait_for_script_to_complete('buff', ['plant_heal'])
@@ -228,13 +236,10 @@ class PlantHeal
       # Walk to plant room
       DRCT.walk_to(@plantroom)
 
-      # Ensure EV is active
-      ensure_ev
+      # Hug the plant (pre-hug checks ensure EV + healing spells before each hug)
+      hug_plant
 
-      # Touch the plant
-      touch_plant
-
-      # Re-check empathy before healing (may have crossed threshold during touching)
+      # Re-check empathy before healing (may have crossed threshold during hugging)
       mindstate_check
 
       # Return to heal
@@ -259,6 +264,31 @@ class PlantHeal
       # Delegate to buff script (no room switching needed)
       DRC.wait_for_script_to_complete('buff', ['plantheal'])
     end
+  end
+
+  # Pre-hug check: verify safe to continue hugging.
+  # Called before every hug. Returns false if we should stop hugging.
+  def pre_hug_check
+    if bleeding?
+      DRC.message("Bleeding detected, stopping hugs to go heal.")
+      return false
+    end
+    unless @heal_past_ml || DRSkill.getxp('Empathy') < @threshold
+      DRC.message("Empathy mindstate at target (#{@threshold}), stopping hugs.")
+      return false
+    end
+    ensure_ev
+    ensure_healing_spells
+    true
+  end
+
+  # Ensure at least one of Heal or Regenerate is active.
+  # Rebuffs via plant_heal waggle_set if neither is up and the waggle_set exists.
+  def ensure_healing_spells
+    return unless @plant_heal_waggle
+    return if DRSpells.active_spells.include?('Heal') || DRSpells.active_spells.include?('Regenerate')
+
+    DRC.wait_for_script_to_complete('buff', ['plant_heal'])
   end
 
   # Recast EV if it's below the recast threshold defined in the waggle_set.
@@ -371,7 +401,7 @@ class PlantHeal
     m && m[1].downcase
   end
 
-  def touch_plant
+  def hug_plant
     Flags.reset('plantheal-heal-expire')
     noun = plant_noun_in_room
 
@@ -385,57 +415,59 @@ class PlantHeal
       end
     end
 
-    touches = 0
+    hugs = 0
 
-    # Phase 1: If ADC is active and Heal is running, touch until Heal expires
-    # (capped by touch_count so total touches never exceed the configured limit)
+    # Phase 1: If ADC is active and Heal is running, hug until Heal expires
+    # (capped by touch_count so total hugs never exceed the configured limit)
     if @use_adc && DRSpells.active_spells.include?('Heal')
-      touches = touch_until_heal_expires(noun, @touch_count)
+      hugs = hug_until_heal_expires(noun, @touch_count)
     end
 
-    # Phase 2: Remaining count-based touches
-    remaining = @touch_count - touches
-    touch_by_count(noun, remaining) if remaining > 0
+    # Phase 2: Remaining count-based hugs
+    remaining = @touch_count - hugs
+    hug_by_count(noun, remaining) if remaining > 0
   end
 
-  def touch_until_heal_expires(noun, max_touches)
-    touches = 0
-    until Flags['plantheal-heal-expire'] || touches >= max_touches
-      result = DRC.bput("touch #{noun}", *TOUCH_RESPONSES)
+  def hug_until_heal_expires(noun, max_hugs)
+    hugs = 0
+    until Flags['plantheal-heal-expire'] || hugs >= max_hugs
+      break unless pre_hug_check
+      result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
       case result
       when *NO_HEAL_NEEDED
         DRC.message("Plant fully healed (during Heal phase).")
-        return touches
+        return hugs
       when 'you have no empathic bond'
         release_and_recast_ev
-      when 'Touch what?'
+      when 'Hug what?'
         recast_ev_if_needed
-        return touches unless plant_noun_in_room
+        return hugs unless plant_noun_in_room
       when 'Roundtime'
-        touches += 1
-        break if Flags['plantheal-heal-expire'] || touches >= max_touches
+        hugs += 1
+        break if Flags['plantheal-heal-expire'] || hugs >= max_hugs
         waitfor('A nearly painful prickling sensation surges through you.',
                 'You feel a surge of life energy as your regeneration')
       end
     end
-    touches
+    hugs
   end
 
-  def touch_by_count(noun, count = @touch_count)
-    touches = 0
-    while touches < count
-      result = DRC.bput("touch #{noun}", *TOUCH_RESPONSES)
+  def hug_by_count(noun, count = @touch_count)
+    hugs = 0
+    while hugs < count
+      break unless pre_hug_check
+      result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
       case result
       when *NO_HEAL_NEEDED
         DRC.message("Plant fully healed.")
         return
       when 'you have no empathic bond'
         release_and_recast_ev
-      when 'Touch what?'
+      when 'Hug what?'
         recast_ev_if_needed
         return unless plant_noun_in_room
       when 'Roundtime'
-        touches += 1
+        hugs += 1
       end
     end
   end
