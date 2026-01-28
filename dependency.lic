@@ -1573,7 +1573,7 @@ def format_yaml_name(name)
 end
 
 DR_OBSOLETE_SCRIPTS = %w[
-  bootstrap common-crafting common-healing-data common-healing common-items
+  bootstrap common-arcana common-crafting common-healing-data common-healing common-items
   common-money common-moonmage common-summoning common-theurgy
   common-travel common-validation common drinfomon equipmanager
   events slackbot spellmonitor
