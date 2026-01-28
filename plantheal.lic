@@ -1,9 +1,11 @@
 =begin
 Empathy training via Embrace of the Vela'Tohr (EV) plant healing.
 
-Cycles: stow hands -> (optional ADC pre-cast) -> walk to plant room ->
-hug plant N times (with pre-hug spell checks) -> walk to healing room -> healme ->
-(optional community EV cast) -> check empathy threshold -> repeat.
+Cycles: stow hands -> check empathy threshold -> check wound score ->
+(optional ADC pre-cast) -> walk to plant room ->
+hug plant N times (with pre-hug checks: bleeding, threshold, EV, healing spells) ->
+walk to healing room -> healme -> check empathy threshold ->
+(optional community EV cast) -> repeat.
 
 YAML Settings (nested under plantheal_settings):
 
@@ -239,15 +241,13 @@ class PlantHeal
       # Hug the plant (pre-hug checks ensure EV + healing spells before each hug)
       hug_plant
 
-      # Re-check empathy before healing (may have crossed threshold during hugging)
-      mindstate_check
-
-      # Return to heal
+      # Always heal after hugging, even if at threshold
       DRCT.walk_to(@healingroom)
       DRC.wait_for_script_to_complete('healme')
 
-      # Optional: cast community EV
-      cast_for_others if @castroom.nonzero?
+      # Now safe to check threshold (wounds are healed)
+      # mindstate_check handles cast_for_others on exit
+      mindstate_check
     end
   end
 
@@ -485,6 +485,7 @@ class PlantHeal
     return if @heal_past_ml
 
     if DRSkill.getxp('Empathy') >= @threshold
+      cast_for_others if @castroom.nonzero?
       DRC.message("Empathy mindstate at target (#{@threshold}), exiting.")
       exit
     end
