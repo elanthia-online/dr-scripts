@@ -239,11 +239,17 @@ class PlantHeal
       DRCT.walk_to(@plantroom)
 
       # Hug the plant (pre-hug checks ensure EV + healing spells before each hug)
-      hug_plant
+      total_hugs = hug_plant
 
       # Always heal after hugging, even if at threshold
       DRCT.walk_to(@healingroom)
       DRC.wait_for_script_to_complete('healme')
+
+      # If the plant was fully healed (no wounds transferred), exit after healing
+      if total_hugs.zero?
+        DRC.message("Plant fully healed, no wounds transferred. Exiting after health check.")
+        exit
+      end
 
       # Now safe to check threshold (wounds are healed)
       # mindstate_check handles cast_for_others on exit
@@ -401,6 +407,8 @@ class PlantHeal
     m && m[1].downcase
   end
 
+  # Returns total successful hugs (Roundtime count). Zero means the plant
+  # had nothing to heal and no wounds were transferred.
   def hug_plant
     Flags.reset('plantheal-heal-expire')
     noun = plant_noun_in_room
@@ -411,7 +419,7 @@ class PlantHeal
       noun = plant_noun_in_room
       unless noun
         DRC.message("*** Still no plant. Skipping to heal phase.")
-        return
+        return 0
       end
     end
 
@@ -425,7 +433,9 @@ class PlantHeal
 
     # Phase 2: Remaining count-based hugs
     remaining = @touch_count - hugs
-    hug_by_count(noun, remaining) if remaining > 0
+    hugs += hug_by_count(noun, remaining) if remaining > 0
+
+    hugs
   end
 
   def hug_until_heal_expires(noun, max_hugs)
@@ -460,16 +470,17 @@ class PlantHeal
       case result
       when *NO_HEAL_NEEDED
         DRC.message("Plant fully healed.")
-        return
+        return hugs
       when 'you have no empathic bond'
         release_and_recast_ev
       when 'Hug what?'
         recast_ev_if_needed
-        return unless plant_noun_in_room
+        return hugs unless plant_noun_in_room
       when 'Roundtime'
         hugs += 1
       end
     end
+    hugs
   end
 
   def release_and_recast_ev
