@@ -549,8 +549,17 @@ class PlantHeal
 
   def release_and_recast_ev
     fput('release ev')
-    pause 5
-    ensure_ev
+    pause 1
+    # Force DRSpells.active_spells update via perceive self
+    fput('perceive self')
+    waitrt?
+    pause 1
+    # Force recast - bypass ensure_ev's active check since we just released.
+    if @manual_ev
+      cast_ev_manual(ev_spell_data['mana'].to_i)
+    else
+      DRC.wait_for_script_to_complete('buff', ['plantheal'])
+    end
   end
 
   # ---------------------------------------------------------------------------
