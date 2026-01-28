@@ -10,7 +10,7 @@ walk to healing room -> healme -> check empathy threshold ->
 YAML Settings (nested under plantheal_settings):
 
   plantheal_settings:
-    touch_count: 3              # times to hug plant per cycle
+    hug_count: 3              # times to hug plant per cycle
     plant_room: null            # room with the plant (default: hometown NPC empath)
     healing_room: null          # room to heal in (default: safe_room)
     prep_room: null             # room to prep EV if different from plant_room
@@ -33,7 +33,7 @@ YAML Settings (nested under plantheal_settings):
     plant_heal: waggle_set for pre-casting healing spells (Heal, Blood Staunching, etc.)
 
   Legacy flat settings are still supported with a deprecation warning:
-    plant_total_touch_count -> touch_count
+    plant_total_hug_count -> hug_count
     plant_custom_room       -> plant_room
     plant_drop_room         -> plant_room
     plant_healing_room      -> healing_room
@@ -81,7 +81,7 @@ class PlantHeal
     ht_name = settings.force_healer_town || settings.hometown
     hometown = town_data[ht_name]
 
-    @touch_count    = ps[:touch_count]
+    @hug_count    = ps[:hug_count]
     @heal_past_ml   = ps[:heal_past_ml]
     @threshold      = ps[:empathy_threshold]
     @use_adc        = ps[:use_adc]
@@ -132,7 +132,7 @@ class PlantHeal
 
     # Migrate legacy flat settings into the hash, warning if found
     migrate = {
-      'plant_total_touch_count' => 'touch_count',
+      'plant_total_touch_count' => 'hug_count',
       'plant_custom_room'       => 'plant_room',
       'plant_drop_room'         => 'plant_room',
       'plant_healing_room'      => 'healing_room',
@@ -157,7 +157,7 @@ class PlantHeal
 
     # Apply defaults and type coercion
     {
-      touch_count: (ps['touch_count'].to_i.nonzero? || 3),
+      hug_count: (ps['hug_count'].to_i.nonzero? || 3),
       plant_room: ps['plant_room'].to_i,
       healing_room: ps['healing_room'].to_i,
       prep_room: ps['prep_room'].to_i,
@@ -297,9 +297,11 @@ class PlantHeal
   # without a wasted "Hug what?" attempt.
   def pre_hug_check
     if bleeding?
-      DRC.message("Bleeding detected, stopping hugs to go heal.")
+      DRC.message("**Bleeding detected**, stopping hugs to go heal.")
       return false
     end
+    # Heal to full before each hug - wait for wound score to be 0
+    heal_between_hugs if DRCH.check_health['score'] > 0
     unless @heal_past_ml || DRSkill.getxp('Empathy') < @threshold
       DRC.message("Empathy mindstate at target (#{@threshold}), stopping hugs.")
       return false
@@ -308,10 +310,18 @@ class PlantHeal
     ensure_healing_spells
     noun = plant_noun_in_room
     unless noun
-      DRC.message("Plant disappeared from room during cycle.")
+      DRC.message("**Plant disappeared** from room during cycle.")
       return false
     end
     noun
+  end
+
+  # Heal between hugs: walk to healing room, run healme, walk back to plant room.
+  def heal_between_hugs
+    DRC.message("**Wounds detected** (score: #{DRCH.check_health['score']}), healing before next hug.")
+    DRCT.walk_to(@healingroom)
+    DRC.wait_for_script_to_complete('healme')
+    DRCT.walk_to(@plantroom)
   end
 
   # Ensure at least one of Heal or Regenerate is active.
@@ -453,15 +463,15 @@ class PlantHeal
     fully_healed = false
 
     # Phase 1: If ADC is active and Heal is running, hug until Heal expires
-    # (capped by touch_count so total hugs never exceed the configured limit)
+    # (capped by hug_count so total hugs never exceed the configured limit)
     if @use_adc && DRSpells.active_spells.include?('Heal')
-      phase_hugs, phase_healed = hug_until_heal_expires(noun, @touch_count)
+      phase_hugs, phase_healed = hug_until_heal_expires(noun, @hug_count)
       hugs = phase_hugs
       fully_healed = phase_healed
     end
 
     # Phase 2: Remaining count-based hugs (skip if plant was fully healed in phase 1)
-    remaining = @touch_count - hugs
+    remaining = @hug_count - hugs
     if remaining > 0 && !fully_healed
       phase_hugs, phase_healed = hug_by_count(noun, remaining)
       hugs += phase_hugs
@@ -511,7 +521,7 @@ class PlantHeal
   end
 
   # Returns [hugs, fully_healed] where fully_healed is true if plant had no wounds.
-  def hug_by_count(noun, count = @touch_count)
+  def hug_by_count(noun, count = @hug_count)
     hugs = 0
     while hugs < count
       noun = pre_hug_check
