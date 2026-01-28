@@ -451,7 +451,9 @@ class PlantHeal
         release_and_recast_ev
       when 'Hug what?'
         recast_ev_if_needed
-        return hugs unless plant_noun_in_room
+        new_noun = plant_noun_in_room
+        return hugs unless new_noun
+        noun = new_noun
       when 'Roundtime'
         hugs += 1
         break if Flags['plantheal-heal-expire'] || hugs >= max_hugs
@@ -475,7 +477,9 @@ class PlantHeal
         release_and_recast_ev
       when 'Hug what?'
         recast_ev_if_needed
-        return hugs unless plant_noun_in_room
+        new_noun = plant_noun_in_room
+        return hugs unless new_noun
+        noun = new_noun
       when 'Roundtime'
         hugs += 1
       end
