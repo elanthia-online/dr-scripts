@@ -272,8 +272,11 @@ class PlantHeal
     end
   end
 
-  # Pre-hug check: verify safe to continue hugging.
-  # Called before every hug. Returns false if we should stop hugging.
+  # Pre-hug check: verify safe to continue hugging and resolve the current
+  # plant noun from DRRoom.room_objs. Returns the noun string (truthy) to
+  # continue, or false to stop hugging. Proactively re-resolves the noun
+  # before every hug so morphology changes (briar -> thicket) are caught
+  # without a wasted "Hug what?" attempt.
   def pre_hug_check
     if bleeding?
       DRC.message("Bleeding detected, stopping hugs to go heal.")
@@ -285,7 +288,12 @@ class PlantHeal
     end
     ensure_ev
     ensure_healing_spells
-    true
+    noun = plant_noun_in_room
+    unless noun
+      DRC.message("Plant disappeared from room during cycle.")
+      return false
+    end
+    noun
   end
 
   # Ensure at least one of Heal or Regenerate is active.
@@ -441,7 +449,8 @@ class PlantHeal
   def hug_until_heal_expires(noun, max_hugs)
     hugs = 0
     until Flags['plantheal-heal-expire'] || hugs >= max_hugs
-      break unless pre_hug_check
+      noun = pre_hug_check
+      break unless noun
       result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
       case result
       when *NO_HEAL_NEEDED
@@ -450,6 +459,7 @@ class PlantHeal
       when 'you have no empathic bond'
         release_and_recast_ev
       when 'Hug what?'
+        # Fallback: noun was stale despite pre_hug_check (rare race condition).
         recast_ev_if_needed
         new_noun = plant_noun_in_room
         return hugs unless new_noun
@@ -467,7 +477,8 @@ class PlantHeal
   def hug_by_count(noun, count = @touch_count)
     hugs = 0
     while hugs < count
-      break unless pre_hug_check
+      noun = pre_hug_check
+      break unless noun
       result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
       case result
       when *NO_HEAL_NEEDED
@@ -476,6 +487,7 @@ class PlantHeal
       when 'you have no empathic bond'
         release_and_recast_ev
       when 'Hug what?'
+        # Fallback: noun was stale despite pre_hug_check (rare race condition).
         recast_ev_if_needed
         new_noun = plant_noun_in_room
         return hugs unless new_noun
