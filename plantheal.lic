@@ -490,12 +490,23 @@ class PlantHeal
     noun = plant_noun_in_room
 
     unless noun
-      DRC.message("*** No plant found in room! Re-casting EV.")
-      release_and_recast_ev
-      noun = plant_noun_in_room
+      # If EV is active, do a LOOK to refresh DRRoom.room_objs before assuming plant is missing
+      if DRSpells.active_spells.include?(EV_SPELL_KEY)
+        DRC.message("Plant not visible in room objects — refreshing with LOOK...")
+        fput('look')
+        pause 0.5
+        noun = plant_noun_in_room
+      end
+
+      # Still no plant? Then EV is either not active or the bond is broken — recast
       unless noun
-        DRC.message("*** Still no plant. Skipping to heal phase.")
-        return HugResult.new(0, :no_plant)
+        DRC.message("*** No plant found in room! Re-casting EV.")
+        release_and_recast_ev
+        noun = plant_noun_in_room
+        unless noun
+          DRC.message("*** Still no plant. Skipping to heal phase.")
+          return HugResult.new(0, :no_plant)
+        end
       end
     end
 
