@@ -2,17 +2,19 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.0.18'
+$DEPENDENCY_VERSION = '2.0.20'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
+$MIN_LICH_VERSION = '5.13.6'
 
-unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new('5.12.5')
+unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   10.times do
-    _respond("<pushBold/>******************************************************************************<popBold/>")
-    _respond("<pushBold/>* Lich versions prior to 5.12.5 were deprecated on Monday 08 September 2025. *<popBold/>")
-    _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup    *<popBold/>")
-    _respond("<pushBold/>* For update instructions.                                                   *<popBold/>")
-    _respond("<pushBold/>* Exiting Dependency now. Nothing much will work from here...                *<popBold/>")
-    _respond("<pushBold/>******************************************************************************<popBold/>")
+    border = "*" * 107
+    _respond("<pushBold/>#{border}<popBold/>")
+    _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} were deprecated on Tuesday 28 January 2026.".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"See https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"For update instructions.".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>#{border}<popBold/>")
     pause 10
   end
   exit
@@ -224,15 +226,6 @@ class ScriptManager
   attr_reader :autostarts
 
   def initialize(debug)
-    unless LICH_VERSION.match?(/^5/)
-      _respond("<pushBold/>*****************************************************************************<popBold/>")
-      _respond("<pushBold/>* Unsupported Lich versions detected.                                       *<popBold/>")
-      _respond("<pushBold/>* See https://github.com/elanthia-online/dr-scripts/wiki/First-Time-Setup   *<popBold/>")
-      _respond("<pushBold/>* For an update path.                                                       *<popBold/>")
-      _respond("<pushBold/>*****************************************************************************<popBold/>")
-      exit
-    end
-
     @debug = debug
     @paste_bin_token = 'dca351a27a8af501a8d3123e29af7981'
     @paste_bin_url = 'https://pastebin.com/api/api_post.php'
@@ -1579,6 +1572,30 @@ def format_yaml_name(name)
   name =~ /\.yaml$/ ? name : "#{name}.yaml"
 end
 
+DR_OBSOLETE_SCRIPTS = %w[
+  events slackbot spellmonitor
+  common-travel common-validation common drinfomon equipmanager
+  common-money common-moonmage common-summoning common-theurgy common-arcana
+  bootstrap common-crafting common-healing-data common-healing common-items
+].freeze
+
+def dr_obsolete_script?(name)
+  script_name = name.to_s.sub(/\.lic$/, '')
+  return false unless DR_OBSOLETE_SCRIPTS.include?(script_name)
+  path = File.exist?(File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")) ? 'scripts/custom' : 'scripts'
+  _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and not recommended. It may cause problems. If you don't know what to do here, please seek help in the DR Lich Discord.")
+  false
+end
+
+def warn_obsolete_scripts
+  DR_OBSOLETE_SCRIPTS.each do |script_name|
+    path = File.join(SCRIPT_DIR, "#{script_name}.lic")
+    next unless File.exist?(path)
+
+    _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
+  end
+end
+
 def custom_require
   lambda do |script_names|
     script_names = [script_names] unless script_names.is_a?(Array)
@@ -1587,6 +1604,7 @@ def custom_require
 
     # Inline loading - replaces bootstrap.lic
     script_names.each do |script_name|
+      next if dr_obsolete_script?(script_name)
       next if Script.running?(script_name)
       next unless Script.exists?(script_name)
       start_script(script_name)
@@ -1768,13 +1786,25 @@ end
 
 full_install if install
 
-# Proactively starting DRinfomon as script zero to prevent
-# race conditions involving this script which so many other
-# scripts depend on, and which is slow to start on its own
-Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
-Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
-Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
-Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
+# Populate initial game state (exp, info, played, ability).
+# Core lich handles this via DRInfomon.startup if available.
+# Fall back to issuing the commands ourselves for older lich versions.
+if defined?(Lich::DragonRealms::DRInfomon) && Lich::DragonRealms::DRInfomon.respond_to?(:startup_complete?)
+  # Wait for core startup to finish (it runs async via ExecScript)
+  300.times { break if Lich::DragonRealms::DRInfomon.startup_complete?; pause 0.1 }
+  unless Lich::DragonRealms::DRInfomon.startup_complete?
+    echo "WARNING: Core DRInfomon startup did not complete in time, sending commands ourselves"
+    Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
+    Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
+    Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
+    Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
+  end
+else
+  Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
+  Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
+  Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
+  Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
+end
 
 $manager.check_base_files
 $manager.check_data_files
@@ -1795,6 +1825,9 @@ $setupfiles.reload
 
 # Remind user of curated scripts with a copy in custom folder
 warn_custom_scripts
+
+# Warn about obsolete scripts still present in SCRIPT_DIR
+warn_obsolete_scripts
 
 loop do
   if $turn_on_moon_watch && $moon_watch.nil?
