@@ -49,7 +49,7 @@ YAML Settings (nested under plantheal_settings):
 
 class PlantHeal
   unless DRStats.empath?
-    DRC.message('*** Must be an Empath with the Embrace of the Vela\'Tohr spell to run this! ***')
+    DRC.message('**EXIT: Must be an Empath with the Embrace of the Vela\'Tohr spell to run this!**')
     exit
   end
 
@@ -90,7 +90,7 @@ class PlantHeal
 
     @plantroom = ps[:plant_room].to_i.nonzero? ||
                  (hometown && hometown['npc_empath'] && hometown['npc_empath']['id'].to_i) ||
-                 (DRC.message("*** Can't resolve plant room. Set plantheal_settings.plant_room."); exit)
+                 (DRC.message("**EXIT: Can't resolve plant room. Set plantheal_settings.plant_room.**"); exit)
 
     @healingroom = ps[:healing_room].to_i.nonzero? || settings.safe_room.to_i
     @preproom    = ps[:prep_room].to_i    # 0 means same as plantroom
@@ -109,7 +109,7 @@ class PlantHeal
 
     # Validation
     if @use_adc && @plant_heal_waggle.nil?
-      DRC.message("*** use_adc is true but waggle_set 'plant_heal' is not defined!")
+      DRC.message("**EXIT: use_adc is true but waggle_set 'plant_heal' is not defined!**")
       exit
     end
 
@@ -194,13 +194,13 @@ class PlantHeal
   # are filled by dependency from base-spells.yaml, so only the key is required.
   def validate_ev_waggle!
     unless @ev_waggle
-      DRC.message("*** waggle_set 'plantheal' is required! Define a 'plantheal' waggle_set with an '#{EV_SPELL_KEY}' entry.")
+      DRC.message("**EXIT: waggle_set 'plantheal' is required! Define a 'plantheal' waggle_set with an '#{EV_SPELL_KEY}' entry.**")
       exit
     end
 
     unless @ev_waggle.key?(EV_SPELL_KEY)
-      DRC.message("*** waggle_set 'plantheal' must contain an '#{EV_SPELL_KEY}' spell entry!")
-      DRC.message("*** Found keys: #{@ev_waggle.keys.join(', ')}")
+      DRC.message("**EXIT: waggle_set 'plantheal' must contain an '#{EV_SPELL_KEY}' spell entry!**")
+      DRC.message("   Found keys: #{@ev_waggle.keys.join(', ')}")
       exit
     end
   end
@@ -297,13 +297,14 @@ class PlantHeal
 
     if @total_hugs >= @hug_count
       cast_for_others if @castroom.nonzero?
-      DRC.message("Total hug count reached (#{@hug_count}), exiting.")
+      DRC.message("**EXIT: Total hug count reached (#{@total_hugs}/#{@hug_count}).**")
       exit
     end
 
-    if DRSkill.getxp('Empathy') >= @threshold
+    current_xp = DRSkill.getxp('Empathy')
+    if current_xp >= @threshold
       cast_for_others if @castroom.nonzero?
-      DRC.message("Empathy mindstate at target (#{@threshold}), exiting.")
+      DRC.message("**EXIT: Empathy mindstate #{current_xp} already at or above threshold (#{@threshold}).**")
       exit
     end
   end
@@ -419,7 +420,7 @@ class PlantHeal
 
     DRCT.walk_to(@castroom)
     cast_ev_manual(@ev_cast_mana)
-    DRC.message("Cast community EV in cast_room, exiting.")
+    DRC.message("**EXIT: Cast community EV in cast_room.**")
     exit
   end
 
