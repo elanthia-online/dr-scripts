@@ -1573,7 +1573,6 @@ def format_yaml_name(name)
 end
 
 DR_OBSOLETE_SCRIPTS = %w[
-
   events slackbot spellmonitor
   common-travel common-validation common drinfomon equipmanager
   common-money common-moonmage common-summoning common-theurgy common-arcana
