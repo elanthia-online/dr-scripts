@@ -349,6 +349,10 @@ class PlantHeal
     heal_between_hugs if DRCH.check_health['score'] > 0
     ensure_ev
     ensure_healing_spells
+
+    # Refresh room objects after ensure_ev (EV cast may have changed plant state)
+    refresh_room_objs
+
     noun = plant_noun_in_room
     unless noun
       DRC.message("**Plant disappeared** from room during cycle.")
@@ -476,6 +480,13 @@ class PlantHeal
   # Plant interaction
   # ---------------------------------------------------------------------------
 
+  # Force refresh of DRRoom.room_objs by issuing a LOOK command.
+  # This ensures the room state is current after EV cast or other changes.
+  def refresh_room_objs
+    fput('look')
+    pause 0.5
+  end
+
   def plant_noun_in_room
     obj = DRRoom.room_objs.grep(PLANT_NOUNS).first
     return nil unless obj
@@ -536,6 +547,7 @@ class PlantHeal
       DRC.message("Hug #{@total_hugs}/#{@hug_count} complete.")
       HugResult.new(1, :ok)
     else
+      DRC.message("**Unexpected hug response:** #{result.inspect}")
       HugResult.new(0, :stopped_early)
     end
   end
