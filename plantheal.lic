@@ -300,11 +300,13 @@ class PlantHeal
       DRC.message("**Bleeding detected**, stopping hugs to go heal.")
       return false
     end
+    # Check threshold before each hug (unless heal_past_ml is set)
+    if !@heal_past_ml && DRSkill.getxp('Empathy') >= @threshold
+      DRC.message("**Empathy threshold reached** (#{@threshold}), stopping hugs.")
+      return false
+    end
     # Heal to full before each hug - wait for wound score to be 0
     heal_between_hugs if DRCH.check_health['score'] > 0
-    # Note: threshold check is intentionally NOT done here. The hug_count must be
-    # honored within a cycle. Threshold is checked by mindstate_check at the
-    # start and end of each cycle in run_loop.
     ensure_ev
     ensure_healing_spells
     noun = plant_noun_in_room
