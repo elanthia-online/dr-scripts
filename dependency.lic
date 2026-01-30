@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.0.20'
+$DEPENDENCY_VERSION = '2.0.21'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.13.6'
 
@@ -1582,8 +1582,18 @@ DR_OBSOLETE_SCRIPTS = %w[
 def dr_obsolete_script?(name)
   script_name = name.to_s.sub(/\.lic$/, '')
   return false unless DR_OBSOLETE_SCRIPTS.include?(script_name)
-  path = File.exist?(File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")) ? 'scripts/custom' : 'scripts'
-  _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}' (#{path}/#{script_name}.lic) is obsolete and not recommended. It may cause problems. If you don't know what to do here, please seek help in the DR Lich Discord.")
+
+  custom_path = File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")
+  scripts_path = File.join(SCRIPT_DIR, "#{script_name}.lic")
+
+  if File.exist?(custom_path)
+    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from scripts/custom. It is no longer needed and may cause problems.")
+  elsif File.exist?(scripts_path)
+    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
+  end
+
+  caller_name = Script.current.name rescue 'unknown'
+  _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{caller_name}' references obsolete script '#{script_name}'. The calling script should be updated to remove this dependency.")
   false
 end
 
