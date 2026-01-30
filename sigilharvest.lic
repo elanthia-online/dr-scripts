@@ -3,30 +3,20 @@
 =end
 
 class SigilHarvest
+  VERSION = '1.3.2'
+
   def initialize
-    @sigil_list = ['abolition', 'congruence', 'induction', 'permutation', 'rarefaction', 'antipode', 'ascension', 'clarification', 'decay', 'evolution', 'integration', 'metamorphosis', 'nurture', 'paradox', 'unity']
+    @sigil_list = %w[abolition congruence induction permutation rarefaction antipode ascension clarification decay evolution integration metamorphosis nurture paradox unity]
 
     arg_definitions = [
       [
         { name: 'city', regex: /\w+/, description: 'Region to find sigils in: Shard, Crossing, Riverhaven' },
         { name: 'sigil', regex: /\w+/, description: "Type of sigil to harvest OR enter 'random' to target a random sigil." },
         { name: 'precision', regex: /\d+/, description: 'Precision target.' },
-        { name: 'roomcap', regex: /[\w\d]+/i, optional: true, description: "Max number of rooms to harvest OR choose 'loop' to continuously harvest sigils" },
+        { name: 'minutes', regex: /\d+/, optional: true, description: 'Session time limit in minutes (default: 30)' },
         { name: 'debug', regex: /debug/i, optional: true, description: 'Provides extra debug information while the script runs' }
       ]
     ]
-
-    @settings = get_settings
-    @burin = @settings.enchanting_tools.find { |item| /burin/ =~ item } || 'burin'
-    @bag = @settings.crafting_container
-    @belt = @settings.enchanting_belt
-    @bag_items = @settings.crafting_items_in_container
-    @danger_rooms = @settings.sigil_harvest_settings['danger_rooms']
-    @stock_scrolls = @settings.sigil_harvest_settings['blank_scrolls']
-    @season = get_season
-    @data = get_data('sigils')
-    # used to store rooms that enemies are detected in so the player can be alerted when the script is finished
-    @enemy_rooms = []
 
     # patterns which signal that the sigil hunting process is proceeding successfully but a sigil has not yet been found
     @search_patterns = [/^You clear your mind/,
@@ -47,239 +37,364 @@ class SigilHarvest
     # patterns that detect when sigil improvement has failed
     @mishaps = /Chills creep down your spine|About the area you wander|A sudden sneeze|You lose track|You prepare yourself for continued exertion|You are too distracted/
 
-    # arbitrary numerical values for minigame resource costs
+    # numerical values for minigame resource costs
     @action_cost = { "taxing" => 1, "disrupting" => 2, "destroying" => 3 }
 
-    # arbitrary numerical values for ranking difficulty of improvement action in the minigame
+    # numerical values for ranking difficulty of improvement action in the minigame
     @action_difficulty = { "trivial" => 1, "straightforward" => 2, "challenging" => 3, "difficult" => 4, "formidable" => 5 }
 
-    @args = parse_args(arg_definitions)
+    @settings = get_settings
+    @burin = @settings.enchanting_tools.find { |item| /burin/ =~ item } || 'burin'
+    @bag = @settings.crafting_container
+    @belt = @settings.enchanting_belt
+    @bag_items = @settings.crafting_items_in_container
+    @danger_rooms = @settings.sigil_harvest_settings['danger_rooms']
+    @stock_scrolls = @settings.sigil_harvest_settings['blank_scrolls']
+    @season = get_season
+    @data = get_data('sigils')
+    @enemy_rooms = []
 
-    # sigil harvesting uses the same sorts of buffs that other gathering skills use i.e. outdoorsmanship and perception
+    @args = parse_args(arg_definitions)
+    @debug = @args.debug
+    @sigil_count = 0
+    @sigil_results = []
+    @scribed_in_session = false
+    @start_time = Time.now
+    @time_limit = (@args.minutes || 30).to_i
+    @rooms_visited = 0
+
+    log_startup_banner
+
     DRCA.do_buffs(@settings, 'outdoors')
 
-    Flags.add('sigilharvest-found', @found_patterns) # flag for when any sigil has been found
-    Flags.add('sigilharvest-type', @sigil_patterns) # stores the type of sigil that was found
+    Flags.add('sigilharvest-found', @found_patterns)
+    Flags.add('sigilharvest-type', @sigil_patterns)
     Flags.add('sigilharvest-noactions', /You are unable to perceive any opportunities for improving the sigil/)
 
     DRC.message("Finding #{@args.sigil.downcase} sigils near #{@args.city.capitalize}")
 
-    # store the current room so we can walk back here later
     startroom = Room.current.id
-
-    # check @settings and ensure we have enough scrolls on hand for harvesting
     get_scrolls
-
-    # contains main loop
     find_sigils(@args.city.capitalize, @args.sigil.downcase)
-
-    # return to starting spot before exiting
     DRCT.walk_to(startroom)
 
-    # alert the player if enemies were detected in any rooms. YAML is not automatically updated to prevent things like invasions from polluting the data
-    DRC.message("Enemies were encountered in the following rooms: #{@enemy_rooms}") if @enemy_rooms.length > 0
-    DRC.message("Consider adding them to danger_rooms under sigil_harvest_settings in your YAML.") if @enemy_rooms.length > 0
-  end # initialize
+    if @enemy_rooms.length > 0
+      DRC.message("Enemies were encountered in the following rooms: #{@enemy_rooms}")
+      DRC.message("Consider adding them to danger_rooms under sigil_harvest_settings in your YAML.")
+    end
+
+    log_exit_summary
+  end
 
   def find_sigils(city, sigil)
-    # this loop only occurs when roomcap is set to 'loop', else it runs the code only once
     loop do
-      # if 'random' is selected, choose a random sigil from @sigil_list
       sigil = @sigil_list.sample if @args.sigil.downcase == 'random'
 
-      # get the list of rooms containing the desired sigil from base-sigils
       roomlist = @data.SigilInfo.dig(city, sigil, @season)
-      DRC.message("Harvesting #{sigil} sigils from #{roomlist.length} known rooms in the vicinity of #{@args.city.capitalize}.") if @args.debug
+      DRC.message("Harvesting #{sigil} sigils from #{roomlist.length} known rooms in the vicinity of #{@args.city.capitalize}.") if @debug
 
-      # track how many rooms have been harvested
-      num_rooms = 0
-
-      # main loop
       roomlist.each do |room|
-        # check setup YAML for list of player-specified rooms to avoid
         next if @danger_rooms.include?(room)
+        break if time_expired?
 
-        # check buffs before harvesting each room
         DRCA.do_buffs(@settings, 'outdoors')
-
-        # head to the room with the desired sigil
         DRCT.walk_to(room)
 
-        # increment only if the sigil hunt in the room was uninterrupted
-        num_rooms += 1 if harvest_sigil(sigil)
+        @rooms_visited += 1
+        @num_iterations = 0
+        @num_aspect_repairs = 0
+        @consecutive_refreshes = 0
 
-        DRC.message("Number of rooms harvested: #{num_rooms}") if @args.debug
+        harvest_sigil(sigil)
 
-        # If we've successfully searched the desired number of rooms break out of the loop, otherwise keep going
-        (num_rooms >= @args.roomcap.to_i ? break : next) if /\d+/ =~ @args.roomcap
-      end # each
+        # After a successful scribe, keep harvesting this room until exhausted
+        while @sigil_results.last && @sigil_results.last[:result] == 'SCRIBED'
+          @scribed_in_session = true
+          @num_iterations = 0
+          @num_aspect_repairs = 0
+          @consecutive_refreshes = 0
+          harvest_sigil(sigil)
+        end
 
-      # do not loop unless explicitly delcared in args
-      break if @args.roomcap.downcase != 'loop'
-    end # loop
+        break if @scribed_in_session
+      end
+
+      break if @scribed_in_session
+      break if time_expired?
+    end
   end
 
   def harvest_sigil(sigil)
-    # sigil finding loop
-    while true
-      # this case specifically only looks for bad outcomes, the desired outcomes are captured by the flags
-      case DRC.bput('perc sigil', @found_patterns, @search_patterns, /You are too distracted/, /You recall|Having recently been searched|You are already/)
+    @sigil_count += 1
+    sigil_result = 'FAILED'
+    @sigil_precision = 0
+    @danger_lvl = 0
 
-      # this response should only occur if any enemy has engaged the player, skip room and move on
+    # sigil finding loop
+    loop do
+      case DRC.bput('perc sigil', @found_patterns, @search_patterns, /You are too distracted/, /You recall|Having recently been searched|You are already/)
       when /You are too distracted/
         DRC.message("Enemies detected. Consider adding room #{Room.current.id} to personal no-go list in your character-setup YAML.")
         @enemy_rooms.push(Room.current.id)
+        log_sigil_summary(sigil, 'SKIPPED')
         return false
-
-      # room searched too recently 'return false' to skip the room and move on
       when /You recall|Having recently been searched|You are already/
-        DRC.message('This room does not contain the desired sigil or has been searched too recently.') if @args.debug
+        DRC.message('This room does not contain the desired sigil or has been searched too recently.') if @debug
+        log_sigil_summary(sigil, 'SKIPPED')
         return false
-      end # case
+      end
       waitrt?
 
-      # If a sigil has been found store the sigil type captured by the -type flag, then compare to see if it's the target sigil
       if Flags['sigilharvest-found']
         flagstring = Flags['sigilharvest-type'].to_s.gsub(/ sigil/, '')
-        DRC.message("Sigil found: #{flagstring}") if @args.debug
+        DRC.message("Sigil found: #{flagstring}") if @debug
         Flags.reset('sigilharvest-found')
         Flags.reset('sigilharvest-type')
-        sigil_match = true if flagstring.downcase == sigil
+        break if flagstring.downcase == sigil
       else
         pause 0.2
-      end # if
+      end
+    end
 
-      # break the loop if the desired sigil was found (if base-sigils has incorrect data this will result in an infinite loop)
-      if sigil_match
-        break
-      end # if
-    end # while
-
-    # kick off the improvement loop by capturing the current stats of the found sigil with the 'improve' verb, i.e. perc sigil improve
+    # kick off the improvement loop
     if sigil_info('improve')
-
-      # main sigil improvement loop
       while improve_sigil(@args.precision.to_i)
-        DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision} | Danger Modifier: #{(@danger_lvl * 0.5).floor()}") if @args.debug
-      end # while
+        DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision} | Danger Modifier: #{(@danger_lvl * 0.5).floor}") if @debug
+      end
+      sigil_result = 'SCRIBED' if @sigil_precision >= (@args.precision.to_i - 5)
     else
+      log_sigil_summary(sigil, sigil_result)
       return false
     end
 
-    return true
-  end # harvest_sigil
+    log_sigil_summary(sigil, sigil_result)
+    true
+  end
 
   def check_sigil(sigil)
-    DRC.message('Checking if this is the desired sigil') if @args.debug
+    DRC.message('Checking if this is the desired sigil') if @debug
 
-    # comparing found sigil to the desired sigil
     /\) (\w+) sigil/ =~ DRC.bput('perc sigil info', /^You have perceived an? \w+ \(Clarity:\d+\) (\w+) sigil comprised of broad strokes \(Precision:\d+\) in the area.*/)
     @sigil_type = $1
-    DRC.message("Sigil type found: #{@sigil_type} - Sigil target: #{sigil}") if @args.debug
+    DRC.message("Sigil type found: #{@sigil_type} - Sigil target: #{sigil}") if @debug
 
-    # if the desired sigil has been found return true to break out of the sigil hunting loop and enter the sigil improvement process, else return false to keep using 'perc sigil' to uncover the secondary sigil
     if @sigil_type == sigil
-      DRC.message("Desired sigil found! #{@sigil_type}") if @args.debug
-      return true
+      DRC.message("Desired sigil found! #{@sigil_type}") if @debug
+      true
     else
-      DRC.message("This is not the sigil we are looking for.") if @args.debug # continue loop
-      return false
-    end # case
-  end # check_sigil
+      DRC.message("This is not the sigil we are looking for.") if @debug
+      false
+    end
+  end
 
   def improve_sigil(precision)
     waitrt?
 
-    # declare empty hash to store the possible actions we might take
     sigil_action = {}
+    aspect_repair = {}
+    best_repair_aspect = {}
+    second_best_repair_aspect = {}
+    repair_override = false
 
-    # check each improvement for which minigame stat it drains
+    # --- Phase 1: Pre-scan for repair candidates ---
+    # Identify precision actions that are too difficult to execute, so we can repair
+    # the resource they consume.
     @sigil_improvement.each do |x|
-      case x['resource']
-      when 'sanity'
-        DRC.message('Contesting Sanity') if @args.debug
-        contest_stat = @sanity_lvl.to_i
-      when 'resolve'
-        DRC.message('Contesting Resolve') if @args.debug
-        contest_stat = @resolve_lvl.to_i
-      when 'focus'
-        DRC.message('Contesting Focus') if @args.debug
-        contest_stat = @focus_lvl.to_i
+      contest_stat = contest_stat_for(x['resource'])
+      next unless x['aspect'] == 'precision' && (contest_stat - x['difficulty'].to_i < 2) && (x['difficulty'].to_i >= 3)
+
+      if best_repair_aspect.key?("difficulty")
+        if x['difficulty'].to_i > best_repair_aspect['difficulty'].to_i
+          second_best_repair_aspect = best_repair_aspect
+          best_repair_aspect = x
+        end
+      else
+        best_repair_aspect = x
+        DRC.message('Best repair option selected') if @debug
       end
+    end
 
-      DRC.message("Aspect: #{x['aspect']} -> Precision Comparison #{@sigil_precision}|#{precision} -> Risk|Stat: #{x['risk']}|#{contest_stat}") if @args.debug
+    # --- Phase 2: Select precision action and repair opportunities ---
+    @sigil_improvement.each do |x|
+      contest_stat = contest_stat_for(x['resource'])
 
-      # This is somewhat arbitrary, if a stat gets knocked to a low value early on, the script will skip that improvement based on the values in @action_cost and @action_difficulty.
-      # As Danger accumulates the script takes more risks to try to boost Precision before the auto-fail from high Danger.
-      if x['aspect'] == 'precision' && @sigil_precision <= precision && (x['risk'] - (@danger_lvl * 0.5).floor()) < contest_stat
-        DRC.message("Potential precision upgrade found... ") if @args.debug
+      DRC.message("Aspect: #{x['aspect']} -> Precision Comparison #{@sigil_precision}|#{precision} -> Risk|Stat: #{x['risk']}|#{contest_stat}") if @debug
+
+      # Select a precision upgrade action.
+      # Conditions: stat must have enough margin over difficulty.
+      if x['aspect'] == 'precision' && precision_action_viable?(x, contest_stat, precision)
+        # Resource floor: skip actions that would drain a resource to 0
+        next if contest_stat_for(x['resource']) <= x['risk'] + @danger_lvl / 2
+
+        DRC.message("Potential precision upgrade found... ") if @debug
+
         if sigil_action.key?("difficulty")
-          sigil_action['risk'] > x['risk'] ? sigil_action = x : DRC.message('Previous precision verb has less risk, keeping old values') if @args.debug
+          if high_target?(precision) && @danger_lvl < danger_threshold(precision)
+            # High target, manageable danger: prefer highest difficulty for max precision/iteration
+            sigil_action = x if x['difficulty'].to_i > sigil_action['difficulty'].to_i
+          elsif @danger_lvl >= danger_threshold(precision)
+            # High danger: prefer lower risk regardless of target
+            sigil_action = x if x['risk'] < sigil_action['risk']
+          elsif @sigil_precision < (precision - 20)
+            # Low target, far from goal: prefer lower risk to conserve resources
+            sigil_action = x if x['risk'] < sigil_action['risk']
+          else
+            # Low target, close to goal, low danger: prefer higher risk
+            sigil_action = x if x['risk'] > sigil_action['risk']
+          end
         else
           sigil_action = x
-          DRC.message('Storing new verb for precision improvement') if @args.debug
-        end # if
-      end # if
-    end # do
+          DRC.message('Storing new verb for precision improvement') if @debug
+        end
+      end
 
-    # if data is stored in the 'difficulty' key perform the chosen verb, otherwise perform an 'improve' to get a new list of actions
-    # if either fails, return false to signify the process has failed and end the improvement loop
-    if sigil_action.key?("difficulty")
-      return false if !(sigil_info(sigil_action['verb']))
-    else
-      return false if !(sigil_info('improve'))
-    end # if
+      # Check best repair opportunity: an action that restores the resource consumed by
+      # the hardest precision action we identified
+      select_repair_action(x, contest_stat, precision, best_repair_aspect, aspect_repair) do |selected|
+        aspect_repair = selected
+        repair_override = true
+      end
 
-    # if the target precision has been reached scribe the sigils and then return false to break the improvement loop, else return true to continue the improvement process
-    if @sigil_precision >= precision
-      DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @args.debug
+      # Check second-best repair opportunity
+      select_repair_action(x, contest_stat, precision, second_best_repair_aspect, aspect_repair) do |selected|
+        aspect_repair = selected
+        repair_override = true
+      end
+    end
+
+    DRC.message("Iteration #: #{@num_iterations}")
+
+    # --- Phase 3: Early bail-out checks ---
+
+    # Scribe if precision target reached, or close enough near iteration cap
+    if (@sigil_precision >= precision) || ((@num_iterations >= 15 || (@num_iterations == 14 && !sigil_action.key?("difficulty"))) && @sigil_precision >= (precision - 5))
+      DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @debug
+      DRC.message("Final precision: #{@sigil_precision}, scribing")
       scribe_sigils
       return false
     else
-      DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @args.debug
-      return true
+      DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @debug
     end
+
+    # Hard iteration cap
+    if @num_iterations >= 15
+      DRC.message("Final precision: #{@sigil_precision}")
+      return false
+    end
+
+    # Resource exhaustion check: estimate whether remaining resources can reach target
+    available_stars = (@sanity_lvl.to_i + @resolve_lvl.to_i + @focus_lvl.to_i) * 2.25 + @sigil_precision
+    DRC.message("Available from stars + current precision: #{available_stars}")
+
+    if available_stars < (precision - 5) && @sigil_precision <= 80
+      DRC.message("Exiting: available resources (#{available_stars}) below target precision - 5")
+      DRC.message("Final precision: #{@sigil_precision}")
+      return false
+    end
+
+    # Move budget check: can remaining iterations reach target at ~10 precision per move?
+    if (14 - @num_iterations) * 10 < (precision - @sigil_precision - 5) && @sigil_precision <= 80
+      DRC.message("Exiting: insufficient moves remaining to reach target")
+      return false
+    end
+
+    # --- Phase 4: Apply repair if no precision action available ---
+    if (@num_aspect_repairs < 2 || repair_override) && !sigil_action.key?("difficulty")
+      if @danger_lvl <= 18 && aspect_repair.key?("difficulty")
+        DRC.message('Executing aspect repair') if @debug
+        sigil_action = aspect_repair
+        @num_aspect_repairs += 1
+      end
+    end
+
+    # High target: prefer repair over a weak action if it enables a much stronger one
+    if high_target?(precision) && sigil_action.key?("difficulty") && aspect_repair.key?("difficulty")
+      if best_repair_aspect['difficulty'].to_i >= sigil_action['difficulty'].to_i + 2
+        DRC.message('High target: proactive repair to enable stronger action') if @debug
+        sigil_action = aspect_repair
+        @num_aspect_repairs += 1
+      end
+    end
+
+    # Execute chosen action or refresh available actions
+    if sigil_action.key?("difficulty")
+      @consecutive_refreshes = 0
+      return false unless sigil_info(sigil_action['verb'])
+    else
+      # Fallback: pick the best available precision action before refreshing
+      fallback = best_available_precision_action
+      if fallback
+        DRC.message('Using fallback precision action to avoid refresh') if @debug
+        @consecutive_refreshes = 0
+        return false unless sigil_info(fallback['verb'])
+      elsif @consecutive_refreshes >= 1
+        # Force any non-formidable action with positive margin to break the refresh chain
+        any_action = @sigil_improvement
+                     .select { |x| x['difficulty'].to_i < 5 && contest_stat_for(x['resource']) > x['risk'] }
+                     .min_by { |x| x['risk'] }
+        if any_action
+          DRC.message('Forcing action to break refresh chain') if @debug
+          @consecutive_refreshes = 0
+          return false unless sigil_info(any_action['verb'])
+        else
+          @consecutive_refreshes += 1
+          return false unless sigil_info('improve')
+        end
+      else
+        @consecutive_refreshes += 1
+        return false unless sigil_info('improve')
+      end
+    end
+
+    true
   end
 
   def sigil_info(command)
-    # Detect whether the command resulted in failed harvest attempt, if not, capture the sigils new stats
     case results = DRC.bput("perc sigil #{command}", /^You have perceived a.*/, @mishaps)
     when @mishaps
-      DRC.message('Sigil harvesting failed') if @args.debug
+      DRC.message("Final precision: #{@sigil_precision}")
+      DRC.message('Sigil harvesting failed') if @debug
       return false
     else
       /\(Clarity:(\d+)\).*\(Precision:(\d+)\).*/ =~ results
       @sigil_clarity = $1.to_i
       @sigil_precision = $2.to_i
-    end # case
+    end
+
+    # When targeting high precision (80+), skip sigils that start too low
+    if @args.precision.to_i >= 80 && @sigil_precision < 10
+      DRC.message("Target precision >= 80, moving on as starting precision is below 10")
+      return false
+    end
+
+    # When targeting moderate precision (65+), skip sigils starting very low
+    if @args.precision.to_i >= 65 && @sigil_precision < 5
+      DRC.message("Target precision >= 65, moving on as starting precision is below 5")
+      return false
+    end
 
     improvements = []
     @sigil_improvement = []
 
-    # If there are no more improvement actions available return true after clearing the improvement arrays. This will cause improve_sigil to run with empty arrays and generate another 'perc sigil improve' to generate fresh actions.
     if Flags['sigilharvest-noactions']
       Flags.reset('sigilharvest-noactions')
-      DRC.message("No actions remain. Generating new actions...") if @args.debug
+      DRC.message("No actions remain. Generating new actions...") if @debug
       return true
-      # sigil_info('improve') #testing out a recursive function here. The more I think about how this is set up the more I think this might be the best solution.
     end
 
-    # loop through the list of possible actions and store them in an array
-    DRC.message("Entering improvement capture loop...") if @args.debug
-    while true
+    # Capture improvement actions from game output
+    DRC.message("Entering improvement capture loop...") if @debug
+    loop do
       improvements.push(waitfor(/^\.|^You also take the opportunity to take stock of your mental health\.|^You are unable to perceive any opportunities for improving the sigil\./))
 
-      # if the most recent addition to the array is not an improvement action, pop it out of the array and break the loop
       if improvements.last =~ /^You also take the opportunity to take stock of your mental health\.|^You are unable to perceive any opportunities for improving the sigil\./
         improvements.pop
         break
-      end # if
-    end # while
+      end
+    end
 
-    index = 0
-
-    # loop through the each improvement and capture information about what it modifies and how risky/expensive it is
-    improvements.each do |x|
+    # Parse each improvement action
+    improvements.each_with_index do |x, index|
       /^\.\.\.a (\w+), (\w+) (\w+) (\w+).*(your|sigil) (\w+)\.?$/ =~ x
       @sigil_improvement[index] = {
         "difficulty" => @action_difficulty[$1],
@@ -288,78 +403,66 @@ class SigilHarvest
         "verb"       => $4,
         "target"     => $5,
         "aspect"     => $6,
-        "risk"       => (@action_difficulty[$1].to_i + @action_cost[$3].to_i) # choose riskier actions once Danger begins to accumulate
+        "risk"       => (@action_difficulty[$1].to_i + @action_cost[$3].to_i)
       }
-      index += 1
-    end # each
+    end
 
-    # captures raw text data for the various minigame stats
+    # Parse minigame resource stats
     danger_str = waitfor "Danger:"
     sanity_str = waitfor "Sanity:"
     resolve_str = waitfor "Resolve:"
     focus_str = waitfor "Focus:"
 
-    # convert raw text to integers
     @danger_lvl = danger_str.split('*').length - 1
     @sanity_lvl = sanity_str.split('*').length - 1
     @resolve_lvl = resolve_str.split('*').length - 1
     @focus_lvl = focus_str.split('*').length - 1
 
-    return true
-  end # sigil_info
+    # Trader luck: on first iteration with decent starting precision, speculate for better RNG
+    if @sigil_precision >= 14 && @num_iterations == 0
+      if DRStats.trader? && DRStats.circle >= 65
+        waitrt?
+        fput('speculate luck')
+      end
+    end
 
-  # Get those sigils!
+    @num_iterations += 1
+    true
+  end
+
   def scribe_sigils
-    # clear hands and then get burin and scrolls for scribing
     DRCI.stow_hands
     DRCI.get_item?('blank scrolls')
     DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
 
-    # scribing loop, keeps scribing/stowing sigils until it detects that the sigil is no longer present
-    while true
+    loop do
       case DRC.bput('scribe sigil', /You carefully/, /You should/)
       when /You carefully/
         DRCI.stow_item?('sigil-scroll')
         DRC.bput('get blank scroll', /You pick/, /You get/)
       when /You should/
         break
-      end # case
-    end # while
+      end
+    end
 
-    # put away buring/blanks
     DRCC.stow_crafting_item(@burin, @bag, @belt)
     DRCI.stow_item?('blank scroll')
-
-    # stow feet just in case
     fput('stow feet')
-
-    # check our stock of scrolls since we just used some
     get_scrolls
+  end
 
-    # if roomcap was not specified, exit script once sigil-scrolls are harvested
-    exit unless @args.roomcap
-  end # scribe_sigils
-
-  # returns the current seasonw which determines what room list to pull from base-sigils
   def get_season
     /^It is currently (\w+) and it is.*$/ =~ DRC.bput('time', /^It is currently.*/)
-    return $1.downcase
-  end # get_season
+    $1.downcase
+  end
 
-  # check stock of scrolls, get money and buy scrolls if it's below default threshold or minimum stock set in player's YAML
   def get_scrolls
-    # default minimum is 25, otherwise use player-defined value from YAML
-    @stock_scrolls ? target_scrolls = @stock_scrolls : target_scrolls = 25
-
-    # Count scrolls and store number in a variable, set variable to 0 if scrolls are not found
+    target_scrolls = @stock_scrolls || 25
     num_scrolls = DRCI.count_item_parts('blank scroll')
-    DRC.message("Scrolls Remaining: #{num_scrolls}") if @args.debug
-    DRC.message("Target Scrolls: #{target_scrolls}") if @args.debug
+    DRC.message("Scrolls remaining: #{num_scrolls}") if @debug
 
-    # if we have enough scrolls exit the function
     return if num_scrolls >= target_scrolls
 
-    # determine room number and amount of coppers needed per order of scrolls
     case @args.city
     when /crossing/i
       scroll_room = 14754
@@ -372,38 +475,161 @@ class SigilHarvest
       scroll_price = 90 # dokora
     end
 
-    DRC.message("Buying more scrolls from #{Room[scroll_room].title}") if @args.debug
+    DRC.message("Buying scrolls from #{Room[scroll_room].title}") if @debug
 
-    # ensure hands are clear
     DRCI.stow_hands
 
-    # blank scrolls come in a stack of 25, divide the difference by 25 and round to determine the number of times we need to order. (Changed to ROUND instead of CEIL. No longer tries to always meet or exceed value but instead gets close to target quantity.)
-    num_to_order = target_scrolls - num_scrolls
-    num_to_order = (num_to_order.to_f / 25).ceil
-
-    # calculate the amount of money needed
+    num_to_order = ((target_scrolls - num_scrolls) / 25.0).ceil
     coppers_needed = num_to_order * scroll_price
 
-    # go to bank if insufficient funds on hand
-    DRC.message("Getting #{coppers_needed} coppers to buy scrolls.") if @args.debug
-
-    # get money if needed
+    DRC.message("Getting #{coppers_needed} coppers to buy scrolls.") if @debug
     DRCM.ensure_copper_on_hand(coppers_needed, @settings)
 
-    # order repeatedly and combine
-    DRC.message("Ordering scrolls #{num_to_order} times.") if @args.debug
+    DRC.message("Ordering scrolls #{num_to_order} times.") if @debug
     (1..num_to_order).each do
       DRCT.order_item(scroll_room, 8)
       DRC.bput('combine', /^You combine|^You must/)
     end
 
-    # if we had more scrolls in containers get them and combine them also
     DRC.bput('combine', /^You combine|^You must/) if DRCI.get_item?('blank scroll', @bag)
-
-    # put away the scrolls
     DRCI.stow_item?('blank scroll')
   end
-end # SigilHarvest
+
+  private
+
+  def log_startup_banner
+    DRC.message("== SigilHarvest v#{VERSION} ==")
+    DRC.message("  City:             #{@args.city}")
+    DRC.message("  Sigil:            #{@args.sigil}")
+    DRC.message("  Target prec:      #{@args.precision}")
+    DRC.message("  Time limit:       #{@time_limit} minutes")
+    DRC.message("  Debug:            #{@debug ? 'true' : 'false'}")
+    DRC.message("  Season:           #{@season}")
+    DRC.message("  Burin:            #{@burin}")
+    DRC.message("  Bag:              #{@bag}")
+    DRC.message("  Belt:             #{@belt}")
+    DRC.message("  Danger rooms:     #{@danger_rooms}")
+    DRC.message("  Stock scrolls:    #{@stock_scrolls}")
+    DRC.message("  Enchanting tools: #{@settings.enchanting_tools}")
+    DRC.message("========================")
+  end
+
+  def log_sigil_summary(sigil, result)
+    prec = @sigil_precision || 0
+    danger = @danger_lvl || 0
+    iters = @num_iterations || 0
+    DRC.message("[Sigil ##{@sigil_count}] type=#{sigil} result=#{result} precision=#{prec}/#{@args.precision} iterations=#{iters} danger=#{danger} room=#{@rooms_visited} elapsed=#{elapsed_minutes}m")
+    @sigil_results << { number: @sigil_count, type: sigil, result: result, precision: prec, target: @args.precision.to_i, iterations: iters, danger: danger, room: @rooms_visited, elapsed: elapsed_minutes }
+  end
+
+  def log_exit_summary
+    total = @sigil_results.size
+    scribed = @sigil_results.count { |r| r[:result] == 'SCRIBED' }
+    failed = @sigil_results.count { |r| r[:result] == 'FAILED' }
+    skipped = @sigil_results.count { |r| r[:result] == 'SKIPPED' }
+    attempted = @sigil_results.reject { |r| r[:result] == 'SKIPPED' }
+    avg_prec = attempted.empty? ? 0 : (attempted.sum { |r| r[:precision] } / attempted.size.to_f).round(1)
+    avg_iters = attempted.empty? ? 0 : (attempted.sum { |r| r[:iterations] } / attempted.size.to_f).round(1)
+    best = attempted.max_by { |r| r[:precision] }
+
+    DRC.message("== Session Summary ==")
+    DRC.message("  City:             #{@args.city}")
+    DRC.message("  Sigil:            #{@args.sigil}")
+    DRC.message("  Target prec:      #{@args.precision}")
+    DRC.message("  Time limit:       #{@time_limit} minutes")
+    DRC.message("  Run time:         #{elapsed_minutes} minutes")
+    DRC.message("  Rooms visited:    #{@rooms_visited}")
+    DRC.message("  ---")
+    DRC.message("  Sigils total:     #{total}")
+    DRC.message("  Scribed:          #{scribed}")
+    DRC.message("  Failed:           #{failed}")
+    DRC.message("  Skipped:          #{skipped}")
+    DRC.message("  Success rate:     #{total > 0 ? ((scribed.to_f / total) * 100).round(1) : 0}%")
+    DRC.message("  Avg precision:    #{avg_prec} (non-skipped)")
+    DRC.message("  Avg iterations:   #{avg_iters} (non-skipped)")
+    DRC.message("  Best sigil:       ##{best[:number]} precision=#{best[:precision]}/#{best[:target]} iterations=#{best[:iterations]}") if best
+    DRC.message("== End SigilHarvest v#{VERSION} ==")
+  end
+
+  # Returns the current minigame stat level for a given resource name
+  def contest_stat_for(resource)
+    case resource
+    when 'sanity'  then @sanity_lvl.to_i
+    when 'resolve' then @resolve_lvl.to_i
+    when 'focus'   then @focus_lvl.to_i
+    else 0
+    end
+  end
+
+  # Determines whether a precision action is viable given the current contest stat.
+  # Trivial actions are always accepted when margin is comfortable — they are the
+  # cheapest option and rejecting them forces a wasteful refresh.
+  # Formidable (difficulty=5) actions are always rejected — log analysis shows they
+  # cause mishaps even at danger 0.
+  def precision_action_viable?(action, contest_stat, _precision)
+    difficulty = action['difficulty'].to_i
+    return false if difficulty >= 5
+
+    margin = contest_stat - difficulty
+
+    # Path 1: comfortable margin (>1) — accept any difficulty level including trivial
+    return true if margin > 1
+
+    # Path 2: any margin (>0) AND challenging+ difficulty
+    return true if margin > 0 && difficulty > 2
+
+    false
+  end
+
+  # Returns the best fallback precision action with any positive margin, or nil.
+  # Used as a fallback before refreshing to avoid wasting iterations.
+  # Excludes formidable (difficulty=5) actions which carry intrinsic mishap risk.
+  # High targets: prefer highest difficulty; standard: prefer lowest risk.
+  def best_available_precision_action
+    candidates = @sigil_improvement
+                 .select { |x| x['aspect'] == 'precision' && x['difficulty'].to_i < 5 && contest_stat_for(x['resource']) > x['risk'] }
+    return nil if candidates.empty?
+
+    high_target? ? candidates.max_by { |x| x['difficulty'].to_i } : candidates.min_by { |x| x['risk'] }
+  end
+
+  # High target mode: precision >= 80 requires aggressive action selection
+  def high_target?(precision = nil)
+    (precision || @args.precision.to_i) >= 80
+  end
+
+  # Danger threshold for switching to conservative mode
+  # High targets: 14 (data shows mishaps cluster at 17+)
+  # Standard: 10
+  def danger_threshold(precision = nil)
+    high_target?(precision) ? 14 : 10
+  end
+
+  def elapsed_minutes
+    ((Time.now - @start_time) / 60.0).round(1)
+  end
+
+  def time_expired?
+    elapsed_minutes >= @time_limit
+  end
+
+  # Checks if the given action can serve as a repair for a depleted resource.
+  # Yields the selected repair action if it qualifies.
+  def select_repair_action(action, contest_stat, precision, repair_target, current_repair)
+    return unless action['difficulty'].to_i <= 3
+    return unless repair_target.key?("difficulty")
+    return unless (contest_stat - action['difficulty'].to_i) >= 2
+    return unless @sigil_precision >= (precision - 15) || (precision >= 80 && contest_stat_for(repair_target['resource']) < 5)
+    return unless action['aspect'] == repair_target['resource']
+
+    if current_repair.key?("difficulty")
+      yield action if current_repair['risk'] > action['risk']
+    else
+      DRC.message('Storing new verb for aspect repair') if @debug
+      yield action
+    end
+  end
+end
 
 before_dying do
   Flags.delete('sigilharvest-found')
