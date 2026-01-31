@@ -392,31 +392,52 @@ class PlantHeal
     end
   end
 
+  MAX_BACKFIRE_RETRIES = 2
+
   def cast_ev_manual(mana)
-    # If we have a separate prep room, go there first
-    origin = nil
-    if @preproom.nonzero?
-      origin = @plantroom
-      DRCT.walk_to(@preproom)
+    attempts = 0
+
+    loop do
+      # If we have a separate prep room, go there first
+      origin = nil
+      if @preproom.nonzero?
+        origin = @plantroom
+        DRCT.walk_to(@preproom)
+      end
+
+      get_focus
+      DRCA.prepare?('EV', mana)
+      invoke_focus
+      waitrt?
+      sleep @ev_extra_wait
+      stow_focus
+
+      # If we prepped elsewhere, walk back to cast
+      DRCT.walk_to(origin) if origin
+
+      result = DRC.bput('cast',
+                        'You gesture',
+                        'You strain, but are too mentally fatigued',
+                        'You aren\'t harnessing any mana',
+                        'You lose your concentration',
+                        'backfires',
+                        'Roundtime')
+      waitrt?
+
+      if result =~ /backfires/i
+        attempts += 1
+        if attempts > MAX_BACKFIRE_RETRIES
+          DRC.message("**EV backfired #{attempts} times -- giving up.**")
+          return false
+        end
+        DRC.message("**EV backfired** (attempt #{attempts}/#{MAX_BACKFIRE_RETRIES + 1}). Re-preparing...")
+        pause 1
+        next
+      end
+
+      pause 3
+      return result =~ /You gesture|Roundtime/i ? true : false
     end
-
-    get_focus
-    DRCA.prepare?('EV', mana)
-    invoke_focus
-    waitrt?
-    sleep @ev_extra_wait
-    stow_focus
-
-    # If we prepped elsewhere, walk back to cast
-    DRCT.walk_to(origin) if origin
-
-    DRC.bput('cast',
-             'You gesture',
-             'You strain, but are too mentally fatigued',
-             'You aren\'t harnessing any mana',
-             'You lose your concentration',
-             'Roundtime')
-    pause 3
   end
 
   def cast_for_others
@@ -523,7 +544,10 @@ class PlantHeal
 
     # Pre-hug check: bleeding, threshold, hug_count, wounds, EV, healing spells, plant noun
     noun = pre_hug_check
-    return HugResult.new(0, :stopped_early) unless noun
+    unless noun
+      DRC.message("pre_hug_check state: bleeding=#{bleeding?} hugs=#{@total_hugs}/#{@hug_count} empathy=#{DRSkill.getxp('Empathy')}/#{@threshold} plant=#{plant_noun_in_room.inspect}")
+      return HugResult.new(0, :stopped_early)
+    end
 
     result = DRC.bput("hug #{noun}", *HUG_RESPONSES)
     case result
