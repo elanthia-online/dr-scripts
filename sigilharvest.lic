@@ -1,9 +1,40 @@
 =begin
-  Documentation: https://elanthipedia.play.net/Lich_script_repository#sigilharvest
+  Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-sigilharvest.lic
 =end
 
 class SigilHarvest
-  VERSION = '1.3.2'
+  VERSION = '2.0.0'
+  # === Experiment History (v1.2.0 → v1.5.27) ===
+  # Retrospective simulation: 100% decision agreement (15/15). Net: v1.2.0 2.9% → v1.5.27 3.0%.
+  #
+  # v1.5.27 KEPT: EXP-18 — Min difficulty threshold. Skip trivial-difficulty (1) precision actions,
+  #   forcing refresh. Avg gain 7.18→8.54 (+1.36), trivial 25.8%→3.6%, 60+ rate +6.9pp. Best since EXP-6.
+  # v1.5.26 INFRA: D7 fix — Unconditional repair logging. Repairs=0 in 2606 iters. Phase 3/4 CLOSED.
+  # v1.5.25 KEPT: EXP-17 — Resource-aware tiebreaker. On tied difficulty+cost, prefer most-available
+  #   resource. Fires 9.4% of iters. Mishap -5.3pp (n.s. p=0.21), resource_exhausted -1.6pp.
+  # v1.5.24 KEPT: EXP-14r — Cost equalization clean retest ({1,2,3}→{1,1,1}). Neutral (-1.6pp n.s.).
+  # v1.5.23 REVERTED: EXP-16 — Resource coeff 1.75→1.5. Mathematically impossible (need prec>=18).
+  # v1.5.22 REVERTED: EXP-15 — Move budget 14→15. Mishap +11.7pp, 0 scribes, sim scribe -0.2%.
+  # v1.5.21 BASELINE: Corrected baseline. Restores EXP-9 resource exhaustion check.
+  # v1.5.20 INFRA: Baseline restore + C1 fix. Reverts to v1.5.17 algorithm, adds @actually_scribed.
+  # v1.5.19 REVERTED: EXP-14 — Cost equalization (confounded with EXP-13 cap removal). Mishap +11.4pp.
+  # v1.5.18 REVERTED: EXP-13 — Remove iteration cap + move budget. Mishap +21.4pp (p=0.008).
+  # v1.5.17 KEPT: Awakened technique. Avg gain +0.23, 80+ rate +2.1pp, sim scribe +0.4%.
+  # v1.5.16 REVERTED: EXP-12r — Loosen viability margin retest. Confirmed first test was noise.
+  # v1.5.15 KEPT: EXP-9 — Resource exhaustion coeff 2.25→1.75. Neutral (sim -0.1%).
+  # v1.5.14 REVERTED: EXP-12 — Loosen viability margin (margin=0 for challenging+). Mishap +6.6pp.
+  # v1.5.13 KEPT: EXP-7 — Difficulty-based action selection (decouple risk from cost). Neutral.
+  # v1.5.12 KEPT: EXP-10 — Skip threshold <13 (standalone retest of v1.5.11). Neutral.
+  # v1.5.11 REVERTED: EXP-10+11 — Skip+velocity bundled. EffGain collapsed (-14.1), avg iters 7.0.
+  # v1.5.10 KEPT: EXP-6 — Fix difficulty ordering + filter ACTION verb. Mishap -0.79pp/iter (p=0.02).
+  # v1.5.9 NEUTRAL: Illuminated technique test. No algorithm change.
+  # v1.5.8 KEPT: EXP-5 — Tighten move budget formula (15→13 precision/move). Sim scribe +0.3%.
+  # v1.5.7 INFRA: Baseline restore (EXP-4 reverted).
+  # v1.5.6 REVERTED: EXP-4 — Composite resource health guard. Skipped too many sigils.
+  # v1.5.5 REVERTED: EXP-3 — Prefer repair over trivial/straightforward precision actions.
+  # v1.5.4 KEPT: EXP-2 — Accept trivial actions + burin validate_tools fix.
+  # v1.5.0–v1.5.3: Algorithm rewrite, patches, baseline establishment.
+  # v1.2.0: Original baseline (Matt). Risk-based selection. Sim scribe 2.9%.
 
   def initialize
     @sigil_list = %w[abolition congruence induction permutation rarefaction antipode ascension clarification decay evolution integration metamorphosis nurture paradox unity]
@@ -37,11 +68,14 @@ class SigilHarvest
     # patterns that detect when sigil improvement has failed
     @mishaps = /Chills creep down your spine|About the area you wander|A sudden sneeze|You lose track|You prepare yourself for continued exertion|You are too distracted/
 
-    # numerical values for minigame resource costs
-    @action_cost = { "taxing" => 1, "disrupting" => 2, "destroying" => 3 }
+    # Resource cost descriptors: taxing=resolve, disrupting=focus, destroying=sanity.
+    # Each action costs ~4.2 stars of exactly one resource (100% correlation, 2416 actions).
+    # EXP-14 retest (v1.5.24) confirmed: {1,1,1} is neutral vs baseline (mishap -1.6pp, n.s.)
+    # Original "harmful" verdict was confounded by EXP-13's broken code base.
+    @action_cost = { "taxing" => 1, "disrupting" => 1, "destroying" => 1 }
 
     # numerical values for ranking difficulty of improvement action in the minigame
-    @action_difficulty = { "trivial" => 1, "straightforward" => 2, "challenging" => 3, "difficult" => 4, "formidable" => 5 }
+    @action_difficulty = { "trivial" => 1, "straightforward" => 2, "formidable" => 3, "challenging" => 4, "difficult" => 5 }
 
     @settings = get_settings
     @burin = @settings.enchanting_tools.find { |item| /burin/ =~ item } || 'burin'
@@ -51,6 +85,7 @@ class SigilHarvest
     @danger_rooms = @settings.sigil_harvest_settings['danger_rooms']
     @stock_scrolls = @settings.sigil_harvest_settings['blank_scrolls']
     @season = get_season
+    @techniques = get_techniques
     @data = get_data('sigils')
     @enemy_rooms = []
 
@@ -58,12 +93,19 @@ class SigilHarvest
     @debug = @args.debug
     @sigil_count = 0
     @sigil_results = []
-    @scribed_in_session = false
     @start_time = Time.now
     @time_limit = (@args.minutes || 30).to_i
     @rooms_visited = 0
 
     log_startup_banner
+
+    tool_errors = validate_tools
+    unless tool_errors.empty?
+      tool_errors.each { |e| DRC.message("  ERROR: #{e}") }
+      log_exit_summary
+      return
+    end
+    DRC.message("  Burin resolved:   '#{@burin}' (#{@burin_belt ? 'belt' : 'pack'})")
 
     DRCA.do_buffs(@settings, 'outdoors')
 
@@ -103,32 +145,21 @@ class SigilHarvest
         @rooms_visited += 1
         @num_iterations = 0
         @num_aspect_repairs = 0
-        @consecutive_refreshes = 0
 
         harvest_sigil(sigil)
-
-        # After a successful scribe, keep harvesting this room until exhausted
-        while @sigil_results.last && @sigil_results.last[:result] == 'SCRIBED'
-          @scribed_in_session = true
-          @num_iterations = 0
-          @num_aspect_repairs = 0
-          @consecutive_refreshes = 0
-          harvest_sigil(sigil)
-        end
-
-        break if @scribed_in_session
       end
 
-      break if @scribed_in_session
       break if time_expired?
     end
   end
 
   def harvest_sigil(sigil)
     @sigil_count += 1
+    @sigil_start_time = Time.now
     sigil_result = 'FAILED'
     @sigil_precision = 0
     @danger_lvl = 0
+    @actually_scribed = false
 
     # sigil finding loop
     loop do
@@ -161,7 +192,10 @@ class SigilHarvest
       while improve_sigil(@args.precision.to_i)
         DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision} | Danger Modifier: #{(@danger_lvl * 0.5).floor}") if @debug
       end
-      sigil_result = 'SCRIBED' if @sigil_precision >= (@args.precision.to_i - 5)
+      # C1 fix (v1.5.20): Use @actually_scribed flag instead of precision check.
+      # The old check `@sigil_precision >= (target - 5)` misclassified high-precision
+      # mishaps as SCRIBED (50% of all SCRIBED results were fakes).
+      sigil_result = 'SCRIBED' if @actually_scribed
     else
       log_sigil_summary(sigil, sigil_result)
       return false
@@ -218,29 +252,32 @@ class SigilHarvest
     @sigil_improvement.each do |x|
       contest_stat = contest_stat_for(x['resource'])
 
+
       DRC.message("Aspect: #{x['aspect']} -> Precision Comparison #{@sigil_precision}|#{precision} -> Risk|Stat: #{x['risk']}|#{contest_stat}") if @debug
 
       # Select a precision upgrade action.
-      # Conditions: stat must have enough margin over difficulty.
-      if x['aspect'] == 'precision' && precision_action_viable?(x, contest_stat, precision)
-        # Resource floor: skip actions that would drain a resource to 0
-        next if contest_stat_for(x['resource']) <= x['risk'] + @danger_lvl / 2
-
+      # Conditions: stat must have enough margin over difficulty, and difficulty must be non-trivial
+      # (unless danger is high or precision is close to target).
+      # Skip ACTION verb — 24.8% zero-gain rate (EXP-6).
+      if x['aspect'] == 'precision' && x['verb'].upcase != 'ACTION' && precision_action_viable?(x, contest_stat, precision)
         DRC.message("Potential precision upgrade found... ") if @debug
 
         if sigil_action.key?("difficulty")
-          if high_target?(precision) && @danger_lvl < danger_threshold(precision)
-            # High target, manageable danger: prefer highest difficulty for max precision/iteration
-            sigil_action = x if x['difficulty'].to_i > sigil_action['difficulty'].to_i
-          elsif @danger_lvl >= danger_threshold(precision)
-            # High danger: prefer lower risk regardless of target
-            sigil_action = x if x['risk'] < sigil_action['risk']
-          elsif @sigil_precision < (precision - 20)
-            # Low target, far from goal: prefer lower risk to conserve resources
-            sigil_action = x if x['risk'] < sigil_action['risk']
-          else
-            # Low target, close to goal, low danger: prefer higher risk
-            sigil_action = x if x['risk'] > sigil_action['risk']
+          # EXP-7: Select by difficulty (determines gain), break ties by cost (conserve resources).
+          # Data shows gain is determined entirely by difficulty (trivial=2.3 to difficult=13.3),
+          # cost has zero correlation with gain. Decoupling from risk composite.
+          if x['difficulty'].to_i > sigil_action['difficulty'].to_i
+            sigil_action = x
+          elsif x['difficulty'].to_i == sigil_action['difficulty'].to_i && x['impact'].to_i < sigil_action['impact'].to_i
+            sigil_action = x
+          elsif x['difficulty'].to_i == sigil_action['difficulty'].to_i && x['impact'].to_i == sigil_action['impact'].to_i
+            # EXP-17 (v1.5.25): Resource-aware tiebreaker — when difficulty and cost are equal,
+            # prefer the action that drains the most-available resource. This preserves scarce
+            # resources for future iterations. Fires in ~9.4% of iterations (all ties have
+            # heterogeneous cost profiles, so every tie offers a meaningful resource choice).
+            if contest_stat_for(x['resource']) > contest_stat_for(sigil_action['resource'])
+              sigil_action = x
+            end
           end
         else
           sigil_action = x
@@ -266,8 +303,33 @@ class SigilHarvest
 
     # --- Phase 3: Early bail-out checks ---
 
-    # Scribe if precision target reached, or close enough near iteration cap
-    if (@sigil_precision >= precision) || ((@num_iterations >= 15 || (@num_iterations == 14 && !sigil_action.key?("difficulty"))) && @sigil_precision >= (precision - 5))
+    # Hard iteration cap: stop after 15 iterations.
+    # v1.5.17 guardrail restored in v1.5.20 after EXP-13 proved removal catastrophic.
+    if @num_iterations >= 15
+      if @sigil_precision >= (precision - 5)
+        DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @debug
+        DRC.message("Final precision: #{@sigil_precision}, scribing (iteration cap)")
+        scribe_sigils
+        return false
+      else
+        DRC.message("Exiting: iteration cap reached at precision #{@sigil_precision}")
+        DRC.message("Final precision: #{@sigil_precision}")
+        return false
+      end
+    end
+
+    # Move budget check: estimate whether remaining iterations can plausibly reach target.
+    # Formula: (max_useful_iters - used) * precision_per_move < remaining_gap
+    # 14 = max useful iterations, 13 = precision/move coefficient (EXP-5), 5 = scribe buffer
+    # v1.5.17 guardrail restored in v1.5.20. EXP-15 (14→15) reverted — harmful.
+    if (14 - @num_iterations) * 13 < (precision - @sigil_precision - 5)
+      DRC.message("Exiting: insufficient moves to reach target")
+      DRC.message("Final precision: #{@sigil_precision}")
+      return false
+    end
+
+    # Scribe if precision target reached
+    if @sigil_precision >= precision
       DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @debug
       DRC.message("Final precision: #{@sigil_precision}, scribing")
       scribe_sigils
@@ -276,41 +338,10 @@ class SigilHarvest
       DRC.message("Current Precision: #{@sigil_precision} | Target Precision: #{@args.precision}") if @debug
     end
 
-    # Hard iteration cap
-    if @num_iterations >= 15
-      DRC.message("Final precision: #{@sigil_precision}")
-      return false
-    end
-
-    # Resource exhaustion check: estimate whether remaining resources can reach target
-    available_stars = (@sanity_lvl.to_i + @resolve_lvl.to_i + @focus_lvl.to_i) * 2.25 + @sigil_precision
-    DRC.message("Available from stars + current precision: #{available_stars}")
-
-    if available_stars < (precision - 5) && @sigil_precision <= 80
-      DRC.message("Exiting: available resources (#{available_stars}) below target precision - 5")
-      DRC.message("Final precision: #{@sigil_precision}")
-      return false
-    end
-
-    # Move budget check: can remaining iterations reach target at ~10 precision per move?
-    if (14 - @num_iterations) * 10 < (precision - @sigil_precision - 5) && @sigil_precision <= 80
-      DRC.message("Exiting: insufficient moves remaining to reach target")
-      return false
-    end
-
     # --- Phase 4: Apply repair if no precision action available ---
     if (@num_aspect_repairs < 2 || repair_override) && !sigil_action.key?("difficulty")
       if @danger_lvl <= 18 && aspect_repair.key?("difficulty")
-        DRC.message('Executing aspect repair') if @debug
-        sigil_action = aspect_repair
-        @num_aspect_repairs += 1
-      end
-    end
-
-    # High target: prefer repair over a weak action if it enables a much stronger one
-    if high_target?(precision) && sigil_action.key?("difficulty") && aspect_repair.key?("difficulty")
-      if best_repair_aspect['difficulty'].to_i >= sigil_action['difficulty'].to_i + 2
-        DRC.message('High target: proactive repair to enable stronger action') if @debug
+        DRC.message('Executing aspect repair')
         sigil_action = aspect_repair
         @num_aspect_repairs += 1
       end
@@ -318,32 +349,9 @@ class SigilHarvest
 
     # Execute chosen action or refresh available actions
     if sigil_action.key?("difficulty")
-      @consecutive_refreshes = 0
       return false unless sigil_info(sigil_action['verb'])
     else
-      # Fallback: pick the best available precision action before refreshing
-      fallback = best_available_precision_action
-      if fallback
-        DRC.message('Using fallback precision action to avoid refresh') if @debug
-        @consecutive_refreshes = 0
-        return false unless sigil_info(fallback['verb'])
-      elsif @consecutive_refreshes >= 1
-        # Force any non-formidable action with positive margin to break the refresh chain
-        any_action = @sigil_improvement
-                     .select { |x| x['difficulty'].to_i < 5 && contest_stat_for(x['resource']) > x['risk'] }
-                     .min_by { |x| x['risk'] }
-        if any_action
-          DRC.message('Forcing action to break refresh chain') if @debug
-          @consecutive_refreshes = 0
-          return false unless sigil_info(any_action['verb'])
-        else
-          @consecutive_refreshes += 1
-          return false unless sigil_info('improve')
-        end
-      else
-        @consecutive_refreshes += 1
-        return false unless sigil_info('improve')
-      end
+      return false unless sigil_info('improve')
     end
 
     true
@@ -361,15 +369,11 @@ class SigilHarvest
       @sigil_precision = $2.to_i
     end
 
-    # When targeting high precision (80+), skip sigils that start too low
-    if @args.precision.to_i >= 80 && @sigil_precision < 10
-      DRC.message("Target precision >= 80, moving on as starting precision is below 10")
-      return false
-    end
+    # Skip <15 for target 90 removed in v1.5.20: SIM-7 showed ALL scribes started at
+    # precision 13, which would be killed by the <15 threshold.
 
-    # When targeting moderate precision (65+), skip sigils starting very low
-    if @args.precision.to_i >= 65 && @sigil_precision < 5
-      DRC.message("Target precision >= 65, moving on as starting precision is below 5")
+    if @args.precision.to_i >= 80 && @sigil_precision < 13
+      DRC.message("Target precision >= 80, moving on as starting precision is below 13")
       return false
     end
 
@@ -418,6 +422,17 @@ class SigilHarvest
     @resolve_lvl = resolve_str.split('*').length - 1
     @focus_lvl = focus_str.split('*').length - 1
 
+    # Resource exhaustion check (EXP-9): bail out if remaining resources can't
+    # plausibly reach scribe threshold. Coefficient = precision headroom per star.
+    # EXP-16 tried 1.5 but that's mathematically impossible (need prec>=18 at max resources).
+    # Minimum viable coefficient for target 90: (85 - 13) / 45 = 1.6. Keeping 1.75.
+    available = (@sanity_lvl + @resolve_lvl + @focus_lvl) * 1.75 + @sigil_precision
+    if available < (@args.precision.to_i - 5)
+      DRC.message("Exiting: available resources (#{available}) below target precision - 5")
+      DRC.message("Final precision: #{@sigil_precision}")
+      return false
+    end
+
     # Trader luck: on first iteration with decent starting precision, speculate for better RNG
     if @sigil_precision >= 14 && @num_iterations == 0
       if DRStats.trader? && DRStats.circle >= 65
@@ -431,13 +446,16 @@ class SigilHarvest
   end
 
   def scribe_sigils
+    @actually_scribed = true
     DRCI.stow_hands
     DRCI.get_item?('blank scrolls')
-    DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
+    get_burin
 
+    scribe_count = 0
     loop do
       case DRC.bput('scribe sigil', /You carefully/, /You should/)
       when /You carefully/
+        scribe_count += 1
         DRCI.stow_item?('sigil-scroll')
         DRC.bput('get blank scroll', /You pick/, /You get/)
       when /You should/
@@ -445,7 +463,9 @@ class SigilHarvest
       end
     end
 
-    DRCC.stow_crafting_item(@burin, @bag, @belt)
+    DRC.message("Scribes: #{scribe_count}")
+
+    stow_burin
     DRCI.stow_item?('blank scroll')
     fput('stow feet')
     get_scrolls
@@ -454,6 +474,25 @@ class SigilHarvest
   def get_season
     /^It is currently (\w+) and it is.*$/ =~ DRC.bput('time', /^It is currently.*/)
     $1.downcase
+  end
+
+  def get_techniques
+    lines = Lich::Util.issue_command(
+      'craft artificing',
+      /^From the artificing crafting discipline|^You have no knowledge/,
+      silent: true, quiet: true, timeout: 3
+    )
+    response = lines.first.to_s.strip
+    return [] if response =~ /no crafting techniques/ || response =~ /no knowledge/
+
+    if response =~ /have been trained in (.+)\.\s*$/
+      all = $1.split(/,\s*|\s+and\s+/).map(&:strip)
+      all.select { |t| t =~ /Sigil Comprehension/ }
+    else
+      []
+    end
+  rescue StandardError
+    []
   end
 
   def get_scrolls
@@ -497,6 +536,88 @@ class SigilHarvest
 
   private
 
+  def validate_tools
+    errors = []
+    errors << "No crafting container configured (crafting_container setting)" if @bag.nil? || @bag.empty?
+    errors << "No sigil_harvest_settings configured" if @settings.sigil_harvest_settings.nil?
+    return errors unless errors.empty?
+
+    DRCI.stow_hands
+    resolve_burin(errors)
+    errors
+  end
+
+  # Determine which burin name and stow method works for this character.
+  # Sets @burin (resolved name) and @burin_belt (belt ref or nil).
+  def resolve_burin(errors)
+    belt_name = @belt.is_a?(Hash) ? @belt['name'] : @belt
+
+    # Attempt 1: Settings name from belt (e.g., "untie my precise burin from my toolbelt")
+    if belt_name
+      result = DRC.bput("untie my #{@burin} from my #{belt_name}",
+                        /You untie/, /Untie what/, /You are not wearing/)
+      if result =~ /You untie/
+        @burin_belt = @belt
+        DRC.bput("tie my #{@burin} to my #{belt_name}", /You (?:tie|attach)/, /doesn't seem to fit/)
+        return
+      end
+    end
+
+    # Attempt 2: Settings name from bag (e.g., "get my precise burin")
+    result = DRC.bput("get my #{@burin}",
+                      /You get/, /You pick/, /What were you/, /You are already/)
+    if result =~ /You get|You pick|already/
+      @burin_belt = nil
+      fput("stow my #{@burin}")
+      return
+    end
+
+    # Attempt 3: Plain 'burin' — may be in bag or redirect to belt untie
+    result = DRC.bput('get my burin',
+                      /You get/, /You pick/, /What were you/, /You are already/,
+                      /You should untie .+ from .+ first/)
+    if result =~ /You get|You pick|already/
+      @burin = 'burin'
+      @burin_belt = nil
+      fput('stow my burin')
+      return
+    end
+
+    # Attempt 4: Game told us "You should untie the <name> from the <belt>"
+    # Parse the actual item name and retry untie with it.
+    if result =~ /You should untie/ && belt_name
+      if result =~ /untie the (.+?) from/
+        real_name = $1
+        untie_result = DRC.bput("untie my #{real_name} from my #{belt_name}",
+                                /You untie/, /Untie what/)
+        if untie_result =~ /You untie/
+          @burin = real_name
+          @burin_belt = @belt
+          DRC.bput("tie my #{real_name} to my #{belt_name}", /You (?:tie|attach)/, /doesn't seem to fit/)
+          return
+        end
+      end
+    end
+
+    errors << "Could not find any burin in inventory or on belt"
+  end
+
+  def get_burin
+    if @burin_belt
+      DRCC.get_crafting_item(@burin, @bag, @bag_items, @burin_belt)
+    else
+      DRC.bput("get my #{@burin}", /You get/, /You pick/, /What were you/, /You are already/)
+    end
+  end
+
+  def stow_burin
+    if @burin_belt
+      DRCC.stow_crafting_item(@burin, @bag, @burin_belt)
+    else
+      fput("stow my #{@burin}")
+    end
+  end
+
   def log_startup_banner
     DRC.message("== SigilHarvest v#{VERSION} ==")
     DRC.message("  City:             #{@args.city}")
@@ -505,9 +626,9 @@ class SigilHarvest
     DRC.message("  Time limit:       #{@time_limit} minutes")
     DRC.message("  Debug:            #{@debug ? 'true' : 'false'}")
     DRC.message("  Season:           #{@season}")
+    DRC.message("  Techniques:       #{format_techniques(@techniques)}")
     DRC.message("  Burin:            #{@burin}")
     DRC.message("  Bag:              #{@bag}")
-    DRC.message("  Belt:             #{@belt}")
     DRC.message("  Danger rooms:     #{@danger_rooms}")
     DRC.message("  Stock scrolls:    #{@stock_scrolls}")
     DRC.message("  Enchanting tools: #{@settings.enchanting_tools}")
@@ -518,8 +639,9 @@ class SigilHarvest
     prec = @sigil_precision || 0
     danger = @danger_lvl || 0
     iters = @num_iterations || 0
-    DRC.message("[Sigil ##{@sigil_count}] type=#{sigil} result=#{result} precision=#{prec}/#{@args.precision} iterations=#{iters} danger=#{danger} room=#{@rooms_visited} elapsed=#{elapsed_minutes}m")
-    @sigil_results << { number: @sigil_count, type: sigil, result: result, precision: prec, target: @args.precision.to_i, iterations: iters, danger: danger, room: @rooms_visited, elapsed: elapsed_minutes }
+    sigil_elapsed = sigil_elapsed_minutes
+    DRC.message("[Sigil ##{@sigil_count}] type=#{sigil} result=#{result} precision=#{prec}/#{@args.precision} iterations=#{iters} danger=#{danger} room=#{@rooms_visited} elapsed=#{sigil_elapsed}m total=#{elapsed_minutes}m")
+    @sigil_results << { number: @sigil_count, type: sigil, result: result, precision: prec, target: @args.precision.to_i, iterations: iters, danger: danger, room: @rooms_visited, elapsed: sigil_elapsed }
   end
 
   def log_exit_summary
@@ -551,6 +673,24 @@ class SigilHarvest
     DRC.message("== End SigilHarvest v#{VERSION} ==")
   end
 
+  def format_techniques(techniques)
+    return 'none' if techniques.nil? || techniques.empty?
+
+    techniques.map { |t| t.gsub(' Sigil Comprehension', '') }.join(', ')
+  end
+
+  def elapsed_minutes
+    ((Time.now - @start_time) / 60.0).round(1)
+  end
+
+  def sigil_elapsed_minutes
+    ((Time.now - (@sigil_start_time || @start_time)) / 60.0).round(1)
+  end
+
+  def time_expired?
+    elapsed_minutes >= @time_limit
+  end
+
   # Returns the current minigame stat level for a given resource name
   def contest_stat_for(resource)
     case resource
@@ -561,56 +701,27 @@ class SigilHarvest
     end
   end
 
-  # Determines whether a precision action is viable given the current contest stat.
-  # Trivial actions are always accepted when margin is comfortable — they are the
-  # cheapest option and rejecting them forces a wasteful refresh.
-  # Formidable (difficulty=5) actions are always rejected — log analysis shows they
-  # cause mishaps even at danger 0.
-  def precision_action_viable?(action, contest_stat, _precision)
+  # Determines whether a precision action is viable given the current contest stat and danger level.
+  # Actions require sufficient stat margin over difficulty. Trivial actions (difficulty=1) are
+  # accepted when margin allows — a trivial action (+2 avg) beats a refresh (+0).
+  def precision_action_viable?(action, contest_stat, precision)
     difficulty = action['difficulty'].to_i
-    return false if difficulty >= 5
-
     margin = contest_stat - difficulty
 
-    # Path 1: comfortable margin (>1) — accept any difficulty level including trivial
+    # EXP-18 (v1.5.27): Skip trivial-difficulty (1) precision actions.
+    # Trivial avg gain=2.3 vs 6.8+ for formidable+. Refreshing for a better menu is
+    # +EV: P(non-trivial)*avg_gain = 74%*8.0=5.9 >> 2.3. See gain optimization analysis.
+    return false if difficulty < 2
+
+    # Path 1: comfortable margin (>1) — accept straightforward+ difficulty
     return true if margin > 1
 
-    # Path 2: any margin (>0) AND challenging+ difficulty
+    # Path 2: margin (>0) AND challenging+ difficulty
+    # EXP-12 tested margin >= 0 twice (v1.5.14, v1.5.16). Both showed increased mishap rate
+    # (+6.6pp, +4.6pp) without consistent improvement in >=80 outcomes. Keeping margin > 0.
     return true if margin > 0 && difficulty > 2
 
     false
-  end
-
-  # Returns the best fallback precision action with any positive margin, or nil.
-  # Used as a fallback before refreshing to avoid wasting iterations.
-  # Excludes formidable (difficulty=5) actions which carry intrinsic mishap risk.
-  # High targets: prefer highest difficulty; standard: prefer lowest risk.
-  def best_available_precision_action
-    candidates = @sigil_improvement
-                 .select { |x| x['aspect'] == 'precision' && x['difficulty'].to_i < 5 && contest_stat_for(x['resource']) > x['risk'] }
-    return nil if candidates.empty?
-
-    high_target? ? candidates.max_by { |x| x['difficulty'].to_i } : candidates.min_by { |x| x['risk'] }
-  end
-
-  # High target mode: precision >= 80 requires aggressive action selection
-  def high_target?(precision = nil)
-    (precision || @args.precision.to_i) >= 80
-  end
-
-  # Danger threshold for switching to conservative mode
-  # High targets: 14 (data shows mishaps cluster at 17+)
-  # Standard: 10
-  def danger_threshold(precision = nil)
-    high_target?(precision) ? 14 : 10
-  end
-
-  def elapsed_minutes
-    ((Time.now - @start_time) / 60.0).round(1)
-  end
-
-  def time_expired?
-    elapsed_minutes >= @time_limit
   end
 
   # Checks if the given action can serve as a repair for a depleted resource.
@@ -619,7 +730,7 @@ class SigilHarvest
     return unless action['difficulty'].to_i <= 3
     return unless repair_target.key?("difficulty")
     return unless (contest_stat - action['difficulty'].to_i) >= 2
-    return unless @sigil_precision >= (precision - 15) || (precision >= 80 && contest_stat_for(repair_target['resource']) < 5)
+    return unless @sigil_precision >= (precision - 15)
     return unless action['aspect'] == repair_target['resource']
 
     if current_repair.key?("difficulty")

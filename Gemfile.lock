@@ -37,16 +37,19 @@ GEM
     language_server-protocol (3.17.0.4)
     lint_roller (1.1.0)
     logger (1.6.6)
-    minitest (5.25.5)
+    minitest (6.0.1)
+      prism (~> 1.5)
     multi_json (1.15.0)
     mutex_m (0.3.0)
     net-http (0.6.0)
       uri
     os (1.1.4)
+    ostruct (0.6.3)
     parallel (1.26.3)
     parser (3.3.7.2)
       ast (~> 2.4.1)
       racc
+    prism (1.9.0)
     public_suffix (6.0.1)
     racc (1.8.1)
     rainbow (3.1.1)
@@ -93,7 +96,7 @@ GEM
     timecop (0.9.10)
     unicode-display_width (3.1.4)
       unicode-emoji (~> 4.0, >= 4.0.4)
-    unicode-emoji (4.0.4)
+    unicode-emoji (4.2.0)
     uri (1.0.4)
 
 PLATFORMS
@@ -103,6 +106,7 @@ PLATFORMS
 DEPENDENCIES
   firebase
   minitest
+  ostruct (~> 0.6.3)
   rake
   rspec
   rubocop

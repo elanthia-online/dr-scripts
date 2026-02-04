@@ -10,3 +10,5 @@ group :test do
   gem 'simplecov'
   gem 'timecop'
 end
+
+gem "ostruct", "~> 0.6.3", group: :test
