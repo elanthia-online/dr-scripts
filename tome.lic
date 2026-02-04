@@ -1,3 +1,5 @@
+no_kill_all
+
 class Tome
   @@tome = nil
 
