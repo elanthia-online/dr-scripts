@@ -252,7 +252,6 @@ class SigilHarvest
     @sigil_improvement.each do |x|
       contest_stat = contest_stat_for(x['resource'])
 
-
       DRC.message("Aspect: #{x['aspect']} -> Precision Comparison #{@sigil_precision}|#{precision} -> Risk|Stat: #{x['risk']}|#{contest_stat}") if @debug
 
       # Select a precision upgrade action.
@@ -704,7 +703,7 @@ class SigilHarvest
   # Determines whether a precision action is viable given the current contest stat and danger level.
   # Actions require sufficient stat margin over difficulty. Trivial actions (difficulty=1) are
   # accepted when margin allows — a trivial action (+2 avg) beats a refresh (+0).
-  def precision_action_viable?(action, contest_stat, precision)
+  def precision_action_viable?(action, contest_stat, _precision)
     difficulty = action['difficulty'].to_i
     margin = contest_stat - difficulty
 

@@ -1088,7 +1088,7 @@ RSpec.describe SigilHarvest do
       harvester.instance_variable_set(:@sigil_improvement, [action])
       harvester.instance_variable_set(:@num_iterations, 5)
       harvester.instance_variable_set(:@sigil_precision, 60)
-      harvester.instance_variable_set(:@sanity_lvl, 6)  # margin = 6-3 = 3 > 1
+      harvester.instance_variable_set(:@sanity_lvl, 6) # margin = 6-3 = 3 > 1
       harvester.instance_variable_set(:@resolve_lvl, 2)
       harvester.instance_variable_set(:@focus_lvl, 2)
 
@@ -1123,7 +1123,7 @@ RSpec.describe SigilHarvest do
       harvester.instance_variable_set(:@sigil_improvement, actions)
       harvester.instance_variable_set(:@num_iterations, 3)
       harvester.instance_variable_set(:@sigil_precision, 50)
-      harvester.instance_variable_set(:@sanity_lvl, 5)  # margin to diff 5 = 0
+      harvester.instance_variable_set(:@sanity_lvl, 5) # margin to diff 5 = 0
       harvester.instance_variable_set(:@resolve_lvl, 5)  # margin to diff 4 = 1
       harvester.instance_variable_set(:@focus_lvl, 10)   # margin to diff 2 = 8
 
