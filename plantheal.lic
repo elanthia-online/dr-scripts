@@ -113,6 +113,9 @@ class PlantHeal
       exit
     end
 
+    # Warn about missing healing spells (skip if Heal+AC or Regenerate are known)
+    validate_healing_spells!
+
     # If prep_room is set, we MUST cast EV manually (buff can't switch rooms).
     # Otherwise delegate to buff via the plantheal waggle_set.
     @manual_ev = @preproom.nonzero?
@@ -185,6 +188,20 @@ class PlantHeal
       ev_extra_wait: (ps['ev_extra_wait'].to_i.nonzero? || 15),
       focus_container: ps['focus_container'].to_s.strip,
     }
+  end
+
+  # Validate that the character knows sufficient healing spells for healme.
+  # Heal + Adaptive Curing replace HW + HS (Heal is a prerequisite for
+  # Regenerate, so anyone who knows Regenerate also knows Heal).
+  def validate_healing_spells!
+    return if DRSpells.known_spells['Heal'] && DRSpells.known_spells['Adaptive Curing']
+
+    unless DRSpells.known_spells['Heal Wounds']
+      DRC.message("**WARNING: You don't know Heal Wounds (HW)!** healme may not work properly.")
+    end
+    unless DRSpells.known_spells['Heal Scars']
+      DRC.message("**WARNING: You don't know Heal Scars (HS)!** healme may not work properly.")
+    end
   end
 
   EV_SPELL_KEY = "Embrace of the Vela'Tohr"
