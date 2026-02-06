@@ -161,8 +161,8 @@ class Sew
 
   def lift_or_stow_feet
     if DRCI.lift?
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand && !DRC.right_hand.include?(@noun)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if  DRC.left_hand && !DRC.left_hand.include?(@noun)
+      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand && !DRC.right_hand.include?(@noun.tr('.', ' '))
+      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand && !DRC.left_hand.include?(@noun.tr('.', ' '))
     else
       DRC.bput('stow feet', 'You put', 'Stow what')
     end
@@ -312,8 +312,8 @@ class Sew
       DRCC.stow_crafting_item('stamp', @bag, @belt)
     end
 
-    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) unless DRC.right_hand.include?(@noun)
-    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) unless DRC.left_hand.include?(@noun)
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) unless DRC.right_hand&.include?(@noun.tr('.', ' '))
+    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) unless DRC.left_hand&.include?(@noun.tr('.', ' '))
 
     case @finish
     when /log/
