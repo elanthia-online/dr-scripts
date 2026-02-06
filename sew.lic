@@ -2,6 +2,8 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#sew
 =end
 
+require 'time'
+
 class Sew
   def initialize
     @settings = get_settings
@@ -16,7 +18,7 @@ class Sew
     arg_definitions = [
       [
         { name: 'finish', options: %w[hold log stow trash], description: 'What to do with the finished item.' },
-        { name: 'type', options: %w[knitting sewing leather], description: 'What tailoring type is this item.' }, # no longer in use, being removed next edit. Have to change the calls from other scripts.
+        { name: 'type', options: %w[knitting sewing leather], description: 'What tailoring type is this item.' },
         { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
         { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
         { name: 'material', regex: /\w+/i, variable: true, description: 'Type of material to use.' },
@@ -43,7 +45,7 @@ class Sew
 
     args = parse_args(arg_definitions)
 
-    @finish = args.finish
+    @finish = args.finish || 'hold'
     args.recipe_name.sub!('lighten', 'tailored armor lightening')
     args.recipe_name.sub!('seal', 'tailored armor sealing')
     args.recipe_name.sub!('reinforce', 'tailored armor reinforcing')
@@ -52,7 +54,7 @@ class Sew
     @noun = args.noun
     @knit = args.knit
     @mat_type = args.material
-    @chapter = args.chapter.nil? ? 1 : args.chapter.to_i # chapter 5 for enhancements
+    @chapter = args.chapter.nil? ? 1 : args.chapter.to_i
     @info = get_data('crafting')['tailoring'][@hometown]
     @instructions = args.instructions
     @cloth = %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne]
@@ -61,8 +63,10 @@ class Sew
 
     Flags.add('sew-assembly', 'ready to be .* with some (small|large) cloth (padding)', 'another finished \S+ shield (handle)', 'another finished wooden (hilt|haft)', 'another finished (long|short|small|large) leather (cord|backing)', 'another finished (small|large) cloth (padding)', 'another finished (long|short) wooden (pole)')
     Flags.add('sew-done', 'The .* shows improved', 'Applying the final touches', 'The .* shows a slightly reduced weight', /^You realize that cannot be repaired, and stop/)
+    Flags.add('sew-rental-warning', 'Your rental time is almost up')
 
     if args.resume
+      Lich::Messaging.msg('plain', "Resuming work on #{@noun} (finish mode: #{@finish}).")
       if DRCI.in_hands?('knitting needles')
         @home_command = 'knit my needles'
         command = 'analyze my knitting needles'
@@ -80,6 +84,7 @@ class Sew
       DRCC.check_consumables('thread', @info['stock-room'], 6, @bag, @bag_items, @belt) unless args.skip
     end
 
+    check_rental_status
     work(prep)
   end
 
@@ -87,10 +92,15 @@ class Sew
     if DRCI.in_right_hand?(item)
       DRC.bput('swap', 'You move', 'You have nothing')
     else
-      DRC.message('***Please hold the item or material you wish to work on.***')
+      Lich::Messaging.msg('bold', "Please hold the item or material you wish to work on. Expected '#{item}' in right hand.")
       magic_cleanup
       exit
     end
+  end
+
+  def list_at_feet
+    atfeet = Lich::Util.issue_command('inv atfeet', /All of your items lying at your feet/, /Use INVENTORY HELP for more options/, usexml: false)
+    Lich::Messaging.msg('plain', "Items at feet: #{atfeet.join(', ')}") if atfeet&.any?
   end
 
   def prep
@@ -104,12 +114,12 @@ class Sew
       DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
     else
       DRCC.get_crafting_item('tailoring book', @bag, @bag_items, @belt)
-      echo('*** You will need to upgrade to a journeyman or master book before 176 ranks! ***') if DRSkill.getrank('Outfitting') == 175
+      Lich::Messaging.msg('bold', 'You will need to upgrade to a journeyman or master book before 176 ranks!') if DRSkill.getrank('Outfitting') == 175
       DRCC.find_recipe2(@chapter, @recipe_name)
       DRCC.stow_crafting_item('tailoring book', @bag, @belt)
     end
 
-    if @chapter == 5 || @knit # knitting
+    if @knit || @chapter == 5 # knitting
       DRCC.get_crafting_item('yarn', @bag, @bag_items, @belt)
       check_hand('yarn') unless DRCI.in_left_hand?('yarn')
       swap_tool('knitting needles')
@@ -150,28 +160,31 @@ class Sew
   def assemble_part
     while Flags['sew-assembly']
       tool = DRC.right_hand
-      DRCC.stow_crafting_item(tool, @bag, @belt)
+      DRCC.stow_crafting_item(tool, @bag, @belt) if tool
       part = Flags['sew-assembly'].to_a[1..-1].join(' ')
       Flags.reset('sew-assembly')
       DRCC.get_crafting_item(part, @bag, @bag_items, @belt)
       DRC.bput("assemble my #{@noun} with my #{part}", 'affix it securely in place', 'and tighten the pommel to secure it', 'carefully mark where it will attach when you continue crafting')
-      swap_tool(tool)
+      swap_tool(tool) if tool
     end
   end
 
   def lift_or_stow_feet
     if DRCI.lift?
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand && !DRC.right_hand.include?(@noun.tr('.', ' '))
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand && !DRC.left_hand.include?(@noun.tr('.', ' '))
+      right = DRC.right_hand
+      left = DRC.left_hand
+      DRCC.stow_crafting_item(right, @bag, @belt) if right && !right.include?(@noun.tr('.', ' '))
+      DRCC.stow_crafting_item(left, @bag, @belt) if left && !left.include?(@noun.tr('.', ' '))
     else
       DRC.bput('stow feet', 'You put', 'Stow what')
     end
   end
 
   def work(command)
-    DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/) if @cube
+    DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/, /^You reach out and touch/) if @cube
     loop do
       DRCA.crafting_magic_routine(@settings)
+      renew_rental if Flags['sew-rental-warning']
       assemble_part
       result = DRC.bput(command,
                         'a slip knot in your yarn',
@@ -212,9 +225,15 @@ class Sew
                         'You need another',
                         'You untie and discard',
                         /^The .* needles must be cast to finish binding the knit yarn\.$/,
+                        /You need a larger amount of material to continue crafting/,
                         /^Roundtime/,
+                        /^You need a free hand to do that/,
                         /^You realize that cannot be repaired, and stop/)
       case result
+      when /You need a larger amount of material to continue crafting/
+        Lich::Messaging.msg('bold', "Not enough material to continue crafting #{@noun}. Exiting.")
+        magic_cleanup
+        exit
       when 'dimensions appear to have shifted and could benefit from some remeasuring', 'dimensions changed while working on it'
         swap_tool('yardstick')
         @home_tool = 'sewing needles'
@@ -236,6 +255,7 @@ class Sew
         swap_tool('sewing needles')
         command = "push my #{@noun} with my sewing needles"
       when 'What were you referring', 'I could not find what you were'
+        list_at_feet
         lift_or_stow_feet
         if command.include?('wax')
           DRCC.check_consumables('wax', @info['tool-room'], 10, @bag, @bag_items, @belt)
@@ -289,7 +309,7 @@ class Sew
         command = 'pull my needles'
       when 'You untie and discard'
         command = 'knit my yarn with my knitting needles'
-      when /^Roundtime/, /^You realize that cannot be repaired, and stop/
+      when /^Roundtime/, /^You realize that cannot be repaired, and stop/, /^You need a free hand to do that/
         waitrt?
         finish if Flags['sew-done']
         swap_tool(@home_tool) unless @home_tool.nil?
@@ -299,7 +319,7 @@ class Sew
   end
 
   def swap_tool(next_tool, skip = false)
-    return if DRC.right_hand.include?(next_tool)
+    return if next_tool.nil? || DRC.right_hand&.include?(next_tool)
 
     DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
     DRCC.get_crafting_item(next_tool, @bag, @bag_items, @belt, skip)
@@ -312,8 +332,10 @@ class Sew
       DRCC.stow_crafting_item('stamp', @bag, @belt)
     end
 
-    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) unless DRC.right_hand&.include?(@noun.tr('.', ' '))
-    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) unless DRC.left_hand&.include?(@noun.tr('.', ' '))
+    right = DRC.right_hand
+    left = DRC.left_hand
+    DRCC.stow_crafting_item(right, @bag, @belt) if right && !right.include?(@noun.tr('.', ' '))
+    DRCC.stow_crafting_item(left, @bag, @belt) if left && !left.include?(@noun.tr('.', ' '))
 
     case @finish
     when /log/
@@ -323,27 +345,69 @@ class Sew
     when /trash/
       DRCI.dispose_trash(@noun, @worn_trashcan, @worn_trashcan_verb)
     when /hold/
-      DRC.message("#{@noun} Complete")
+      Lich::Messaging.msg('bold', "#{@noun} complete — holding in hand.")
     end
 
     lift_or_stow_feet
     magic_cleanup
 
+    Lich::Messaging.msg('plain', "Sew script finished (#{@noun}, finish: #{@finish}).")
     exit
   end
-end
 
-def magic_cleanup
-  return if @settings.crafting_training_spells.empty?
+  def magic_cleanup
+    return if @settings.crafting_training_spells.empty?
 
-  DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
-  DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
-  DRC.bput('release symb', "But you haven't", 'You release', 'Repeat this command')
+    DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
+    DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
+    DRC.bput('release symb', "But you haven't", 'You release', 'Repeat this command')
+  end
+
+  def check_rental_status
+    result = DRC.bput('read notice',
+                      /It will expire (.+)\./,
+                      'I could not find',
+                      'What were you referring to')
+    return unless result =~ /It will expire (.+)\./
+
+    expire_str = Regexp.last_match(1)
+    expire_str_normalized = expire_str.sub(' ET ', ' -0500 ')
+    expire_time = Time.parse(expire_str_normalized)
+    minutes_remaining = ((expire_time - Time.now) / 60).to_i
+
+    if minutes_remaining < 10
+      Lich::Messaging.msg('bold', "*** RENTAL LOW (#{minutes_remaining} min) — AUTO-RENEWING ***")
+      renew_rental
+    elsif minutes_remaining < 20
+      Lich::Messaging.msg('bold', "*** Rental has #{minutes_remaining} minutes remaining ***")
+    end
+  rescue ArgumentError
+    Lich::Messaging.msg('bold', "Could not parse rental expiry time: #{expire_str}")
+  end
+
+  def renew_rental
+    Lich::Messaging.msg('bold', '*** RENTAL EXPIRING — AUTO-RENEWING ***')
+    Flags.reset('sew-rental-warning')
+    case DRC.bput('mark notice',
+                  'You mark the notice',
+                  'renewed your rental',
+                  'extends your rental',
+                  "You don't have enough",
+                  'I could not find')
+    when "You don't have enough"
+      Lich::Messaging.msg('bold', '*** INSUFFICIENT FUNDS TO RENEW RENTAL ***')
+    when 'I could not find'
+      Lich::Messaging.msg('bold', '*** COULD NOT FIND NOTICE — CHECK LOCATION ***')
+    else
+      Lich::Messaging.msg('bold', '*** RENTAL RENEWED ***')
+    end
+  end
 end
 
 before_dying do
   Flags.delete('sew-assembly')
-  Flags.delete('sealing-done')
+  Flags.delete('sew-done')
+  Flags.delete('sew-rental-warning')
 end
 
 Sew.new
