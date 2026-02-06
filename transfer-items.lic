@@ -38,6 +38,11 @@ class ItemTransfer
       end
       # Attempt to get the item from the source container.
       if DRCI.get_item(item, source)
+        # Coins are automatically picked up and added to coin purse.
+        # Skip trying to transfer them to destination container.
+        if item =~ /coins?/i
+          next
+        end
         if destination == 'trash'
           trash_item(item)
         else
