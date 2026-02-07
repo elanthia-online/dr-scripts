@@ -1,6 +1,6 @@
 AllCops:
   SuggestExtensions: false
-  TargetRubyVersion: 3.3
+  TargetRubyVersion: 4.0
   NewCops: disable
   Include:
     - '**/*.lic'
@@ -26,6 +26,9 @@ Layout/HeredocIndentation:
 
 Layout/LineLength:
   Enabled: false
+
+Lint/MissingSuper:
+  AllowedParentClasses: [Object, BaseObject, GameBase::Game]
 
 Metrics/AbcSize:
   Enabled: false
