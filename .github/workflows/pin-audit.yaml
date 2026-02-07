@@ -1,0 +1,158 @@
+# Audit: Verify action pins & currency
+# Purpose: List non-SHA `uses:` refs and flag SHA pins as current/new vs the latest semver tag.
+# Trigger: workflow_dispatch (manual). Read-only.
+# Cache: Within a run, tag lookups are cached per action repo.
+# Rollback: Non-invasive; revert by removing this file.
+name: Pin Audit (actions uses)
+on:
+  workflow_dispatch:
+    inputs:
+      fail_on_find:
+        description: "Fail the job if any non-SHA refs are found"
+        required: false
+        default: "false"
+permissions:
+  contents: read
+jobs:
+  audit:
+    name: Scan workflow uses for pins and currency
+    runs-on: ubuntu-latest
+    steps:
+      # Steps: checkout (read-only) + scanner (summary output)
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      - name: Scan refs & check currency
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ensure temporary file is removed even on error/exit
+          trap '[[ -n "${tmpfile:-}" ]] && rm -f "$tmpfile"' EXIT
+
+          # --- helpers ---
+          parse_uses_line() {
+            # stdin: a full YAML line; stdout: cleaned `owner/repo@ref` or empty
+            local line="$1" content
+            # allow optional leading "- " before "uses:"
+            if [[ "$line" =~ ^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*(.*)$ ]]; then
+              content="${BASH_REMATCH[2]}"
+            else
+              return 1
+            fi
+            # strip trailing inline comment
+            if [[ "$content" =~ ^([^#]+) ]]; then
+              content="${BASH_REMATCH[1]}"
+            fi
+            # trim
+            content="${content#"${content%%[![:space:]]*}"}"
+            content="${content%"${content##*[![:space:]]}"}"
+            printf '%s' "$content"
+          }
+
+          ensure_latest_for_repo() {
+            # args: owner/repo ; fills latest_tag[...] and latest_sha[...]
+            local repo="$1"
+            if [[ -n "${latest_tag[$repo]:-}" ]]; then
+              return 0
+            fi
+            mapfile -t tag_lines < <(git ls-remote --tags "https://github.com/${repo}.git" 2>/dev/null) || tag_lines=()
+            # build tag->commit, prefer '^{}' for annotated tags
+            declare -A tag_commit=()
+            for l2 in "${tag_lines[@]}"; do
+              sha="${l2%%	*}"; refname="${l2##*	}"
+              [[ "$refname" != refs/tags/* ]] && continue
+              tag="${refname#refs/tags/}"
+              if [[ "$tag" =~ \^\{\}$ ]]; then
+                base="${tag%^{}}"
+                tag_commit["$base"]="$sha"
+              elif [[ -z "${tag_commit[$tag]:-}" ]]; then
+                tag_commit["$tag"]="$sha"
+              fi
+            done
+            mapfile -t tags_sorted < <(printf '%s\n' "${!tag_commit[@]}" | grep -E '^v[0-9]+(\.[0-9]+){0,2}$' | sort -V) || tags_sorted=()
+            if [[ "${#tags_sorted[@]}" -eq 0 ]]; then
+              latest_tag[$repo]="(no-tags)"
+              latest_sha[$repo]=""  # unknown; caller will treat mismatch as "new"
+            else
+              latest="${tags_sorted[${#tags_sorted[@]}-1]}"
+              latest_tag[$repo]="$latest"
+              latest_sha[$repo]="${tag_commit[$latest]}"
+            fi
+          }
+          # --- end helpers ---
+
+          echo "Scanning .github/workflows and .github/actions for 'uses:' refs..."
+          tmpfile="$(mktemp)"
+          find .github/workflows .github/actions -type f \
+            \( -iname '*.yml' -o -iname '*.yaml' -o -iname 'action.yml' -o -iname 'action.yaml' \) \
+            -print > "$tmpfile" || true
+
+          echo "### Pin Audit Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          non_sha=0
+          declare -A latest_tag latest_sha
+          # buckets for ordered output
+          declare -a list_non_sha=()
+          declare -a list_sha_new=()
+          declare -a list_sha_current=()
+
+          # Pass 1: gather pinned SHA refs and classify current/new
+          while IFS= read -r f; do
+            while IFS= read -r ln; do
+              lineno="${ln%%:*}"
+              line="${ln#*:}"
+              uses="$(parse_uses_line "$line")" || continue
+              # Ignore docker:// and local calls
+              [[ "$uses" == docker://* || "$uses" == ./* || "$uses" == .github/* ]] && continue
+
+              owner_repo="${uses%@*}"
+              ref="${uses##*@}"
+              [[ "$owner_repo" == "$uses" ]] && continue  # no '@' found
+
+              if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                ensure_latest_for_repo "$owner_repo"
+                if [[ -n "${latest_sha[$owner_repo]}" && "$ref" == "${latest_sha[$owner_repo]}" ]]; then
+                  list_sha_current+=("• $f:$lineno uses: $uses — current at ${latest_tag[$owner_repo]}")
+                else
+                  list_sha_new+=("• $f:$lineno uses: $uses — new at ${latest_tag[$owner_repo]:-(no-tags)}")
+                fi
+              fi
+            done < <(grep -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^#]+' "$f" || true)
+          done < "$tmpfile"
+
+          # Pass 2: collect non-SHA refs (excluding local/docker)
+          while IFS= read -r f; do
+            while IFS= read -r ln; do
+              lineno="${ln%%:*}"
+              line="${ln#*:}"
+              uses="$(parse_uses_line "$line")" || continue
+              [[ "$uses" == docker://* || "$uses" == ./* || "$uses" == .github/* ]] && continue
+
+              ref="${uses##*@}"
+              if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                list_non_sha+=("• $f:$lineno uses: $uses")
+                ((non_sha++)) || true
+              fi
+            done < <(grep -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^#]+' "$f" || true)
+          done < "$tmpfile"
+
+          # Emit in requested order
+          {
+            echo "#### Non-SHA refs (excluding local and docker)"
+            for x in "${list_non_sha[@]:-}"; do echo "$x"; done
+            echo ""
+            echo "#### SHA refs that require updates (new at …)"
+            for x in "${list_sha_new[@]:-}"; do echo "$x"; done
+            echo ""
+            echo "#### SHA refs that are current (current at …)"
+            for x in "${list_sha_current[@]:-}"; do echo "$x"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "non_sha_count=$non_sha" >> "$GITHUB_OUTPUT"
+      - name: Optionally fail on findings
+        if: ${{ steps.scan.outputs.non_sha_count != '0' && inputs.fail_on_find == 'true' }}
+        run: |
+          echo "Failing due to non-SHA refs per input flag."
+          exit 1
