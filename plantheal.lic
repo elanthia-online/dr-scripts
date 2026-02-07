@@ -2,8 +2,11 @@
 Empathy training via Embrace of the Vela'Tohr (EV) plant healing.
 
 Cycles: stow hands -> check limits (threshold, hug_count) -> check wound score ->
-(optional ADC pre-cast) -> walk to plant room -> hug plant once ->
-walk to healing room -> healme -> check limits -> repeat.
+walk to plant room -> hug plant once -> heal -> check limits -> repeat.
+
+Healing strategy is chosen at startup based on spell knowledge:
+  - Heal + Adaptive Curing known: passive healing via plantheal waggle_set (no healme).
+  - Otherwise: healme script (relies on HW/HS).
 
 Stops when FIRST of: total hugs reaches hug_count OR empathy reaches threshold.
 
@@ -17,7 +20,6 @@ YAML Settings (nested under plantheal_settings):
     cast_room: null             # room to cast a community EV on exit
     empathy_threshold: 24       # stop when Empathy mindstate >= this
     heal_past_ml: false         # if true, keep cycling past threshold
-    use_adc: false              # pre-cast plant_heal waggle_set (Heal, BS, etc.)
     ev_cast_mana: 600           # mana for community EV in cast_room
     ev_extra_wait: 15           # extra seconds after RT before casting EV
     focus_container: null       # container to get/stow focus from (e.g. "backpack")
@@ -28,9 +30,8 @@ YAML Settings (nested under plantheal_settings):
         is set, EV casting is delegated to buff. If prep_room is set, EV is cast manually
         (buff can't switch rooms). Spell data not defined here is filled by dependency
         from base-spells.yaml.
-
-  Required waggle_sets (if use_adc is true):
-    plant_heal: waggle_set for pre-casting healing spells (Heal, Blood Staunching, etc.)
+        If the character knows Heal + Adaptive Curing, the waggle_set must also contain
+        a Heal or Regenerate entry for passive healing (replaces healme).
 
   Legacy flat settings are still supported with a deprecation warning:
     plant_total_hug_count -> hug_count
@@ -39,7 +40,6 @@ YAML Settings (nested under plantheal_settings):
     plant_healing_room      -> healing_room
     plant_prep_room         -> prep_room
     plant_heal_past_ML      -> heal_past_ml
-    plant_adc               -> use_adc
     plant_empathy_threshold -> empathy_threshold
     cast_room               -> cast_room
     ritual_ev_mana          -> ev_cast_mana
@@ -84,7 +84,6 @@ class PlantHeal
     @hug_count = ps[:hug_count]
     @heal_past_ml   = ps[:heal_past_ml]
     @threshold      = ps[:empathy_threshold]
-    @use_adc        = ps[:use_adc]
     @ev_cast_mana   = ps[:ev_cast_mana]
     @ev_extra_wait  = ps[:ev_extra_wait]
 
@@ -99,7 +98,6 @@ class PlantHeal
     # Waggle set references
     waggle = settings.waggle_sets || {}
     @ev_waggle = waggle['plantheal']
-    @plant_heal_waggle = waggle['plant_heal']
 
     # Validate required plantheal waggle_set
     validate_ev_waggle!
@@ -107,11 +105,8 @@ class PlantHeal
     # Resolve focus config from plantheal waggle_set
     resolve_focus_config(ps)
 
-    # Validation
-    if @use_adc && @plant_heal_waggle.nil?
-      DRC.message("**EXIT: use_adc is true but waggle_set 'plant_heal' is not defined!**")
-      exit
-    end
+    # Determine healing strategy and validate spell configuration
+    validate_healing_spells!
 
     # If prep_room is set, we MUST cast EV manually (buff can't switch rooms).
     # Otherwise delegate to buff via the plantheal waggle_set.
@@ -129,6 +124,12 @@ class PlantHeal
 
   # Display a message indicating the script's operating mode.
   def display_mode_message
+    if @waggle_healing
+      DRC.message("** Healing via Heal/Regenerate (waggle) — healme will not be used. **")
+    else
+      DRC.message("** Healing via healme script (HW/HS). **")
+    end
+
     if @heal_past_ml
       DRC.message("** heal_past_ml is ON **")
       DRC.message("   Will cycle until the plant is FULLY HEALED (ignoring hug_count and threshold).")
@@ -154,7 +155,6 @@ class PlantHeal
       'plant_healing_room'      => 'healing_room',
       'plant_prep_room'         => 'prep_room',
       'plant_heal_past_ML'      => 'heal_past_ml',
-      'plant_adc'               => 'use_adc',
       'plant_empathy_threshold' => 'empathy_threshold',
       'cast_room'               => 'cast_room',
       'ritual_ev_mana'          => 'ev_cast_mana',
@@ -180,11 +180,34 @@ class PlantHeal
       cast_room: ps['cast_room'].to_i,
       empathy_threshold: (ps['empathy_threshold'].to_i.nonzero? || 24),
       heal_past_ml: to_bool(ps['heal_past_ml'], false),
-      use_adc: to_bool(ps['use_adc'], false),
       ev_cast_mana: (ps['ev_cast_mana'].to_i.nonzero? || 600),
       ev_extra_wait: (ps['ev_extra_wait'].to_i.nonzero? || 15),
       focus_container: ps['focus_container'].to_s.strip,
     }
+  end
+
+  # Determine healing strategy based on spell knowledge and set @waggle_healing.
+  # Heal + Adaptive Curing (or Regenerate, which requires Heal) enable passive
+  # healing via the plantheal waggle_set, replacing the healme script.
+  def validate_healing_spells!
+    @waggle_healing = !!(DRSpells.known_spells['Heal'] && DRSpells.known_spells['Adaptive Curing'])
+
+    if @waggle_healing
+      # Require Heal or Regenerate in the plantheal waggle_set
+      unless @ev_waggle.key?('Heal') || @ev_waggle.key?('Regenerate')
+        DRC.message("**EXIT: You know Heal+AC but neither Heal nor Regenerate is in your plantheal waggle_set!**")
+        DRC.message("   Add a Heal or Regenerate entry to waggle_sets.plantheal so the script can keep healing spells active.")
+        exit
+      end
+    else
+      # healme path — warn about missing HW/HS
+      unless DRSpells.known_spells['Heal Wounds']
+        DRC.message("**WARNING: You don't know Heal Wounds (HW)!** healme may not work properly.")
+      end
+      unless DRSpells.known_spells['Heal Scars']
+        DRC.message("**WARNING: You don't know Heal Scars (HS)!** healme may not work properly.")
+      end
+    end
   end
 
   EV_SPELL_KEY = "Embrace of the Vela'Tohr"
@@ -250,14 +273,8 @@ class PlantHeal
       # Ensure we start each cycle with no wounds (score 0)
       unless DRCH.check_health['score'].zero?
         DRC.message("Wounds detected, healing before next cycle.")
-        DRCT.walk_to(@healingroom)
-        DRC.wait_for_script_to_complete('healme')
+        heal_now
         next
-      end
-
-      # Pre-cast healing spells via ADC if enabled
-      if @use_adc
-        DRC.wait_for_script_to_complete('buff', ['plant_heal'])
       end
 
       # Walk to plant room
@@ -267,8 +284,7 @@ class PlantHeal
       hug_result = hug_plant_once
 
       # Always heal after hugging, even if at threshold
-      DRCT.walk_to(@healingroom)
-      DRC.wait_for_script_to_complete('healme')
+      heal_now
 
       # If zero hugs, exit with context-specific message
       if hug_result.zero?
@@ -361,21 +377,57 @@ class PlantHeal
     noun
   end
 
-  # Heal between hugs: walk to healing room, run healme, walk back to plant room.
+  # Heal between hugs. Waggle path heals in place; healme path walks to healing room and back.
   def heal_between_hugs
     DRC.message("**Wounds detected** (score: #{DRCH.check_health['score']}), healing before next hug.")
-    DRCT.walk_to(@healingroom)
-    DRC.wait_for_script_to_complete('healme')
-    DRCT.walk_to(@plantroom)
+    if @waggle_healing
+      ensure_healing_spells
+      wait_for_passive_healing
+    else
+      DRCT.walk_to(@healingroom)
+      DRC.wait_for_script_to_complete('healme')
+      DRCT.walk_to(@plantroom)
+    end
+  end
+
+  # Heal now: waggle path ensures spells are active and waits for passive healing;
+  # healme path walks to healing room and runs healme.
+  def heal_now
+    if @waggle_healing
+      ensure_healing_spells
+      wait_for_passive_healing
+    else
+      DRCT.walk_to(@healingroom)
+      DRC.wait_for_script_to_complete('healme')
+    end
   end
 
   # Ensure at least one of Heal or Regenerate is active.
-  # Rebuffs via plant_heal waggle_set if neither is up and the waggle_set exists.
+  # Rebuffs via plantheal waggle_set if neither is up (waggle healing only).
   def ensure_healing_spells
-    return unless @plant_heal_waggle
+    return unless @waggle_healing
     return if DRSpells.active_spells.include?('Heal') || DRSpells.active_spells.include?('Regenerate')
 
-    DRC.wait_for_script_to_complete('buff', ['plant_heal'])
+    DRC.wait_for_script_to_complete('buff', ['plantheal'])
+  end
+
+  PASSIVE_HEAL_POLL_INTERVAL = 5
+  PASSIVE_HEAL_MAX_WAIT = 120
+
+  # Wait for passive healing (Heal/Regenerate) to clear wounds.
+  # Falls back to healme if wounds persist beyond the timeout.
+  def wait_for_passive_healing
+    elapsed = 0
+    until DRCH.check_health['score'].zero?
+      if elapsed >= PASSIVE_HEAL_MAX_WAIT
+        DRC.message("**WARNING: Still wounded after #{PASSIVE_HEAL_MAX_WAIT}s of passive healing.** Running healme as fallback.")
+        DRCT.walk_to(@healingroom)
+        DRC.wait_for_script_to_complete('healme')
+        return
+      end
+      pause PASSIVE_HEAL_POLL_INTERVAL
+      elapsed += PASSIVE_HEAL_POLL_INTERVAL
+    end
   end
 
   # Recast EV if it's below the recast threshold defined in the waggle_set.
