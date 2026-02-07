@@ -1415,7 +1415,7 @@ hunting_zones:
 ##########                           ILITHI                           ##########
 ##########                                                            ##########
 ################################################################################
-  # https://elanthipedia.play.net/Kobold                                   35-50
+  # https://elanthipedia.play.net/Kobold                                  35-50
   shard_kobolds:
   - 2739
   - 2744
@@ -1423,6 +1423,15 @@ hunting_zones:
   - 2763
   - 2764
   - 2740
+  # https://elanthipedia.play.net/Lengthy_grass_eel                       45-60
+  lengthy_grass_eels:
+  - 51789
+  - 51790
+  - 51791
+  - 51792
+  - 51793
+  - 51794
+  - 51795
   # https://elanthipedia.play.net/Snippet                                 70-100
   # Construct
   snippets:
