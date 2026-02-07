@@ -1,15 +1,9 @@
 name: RSpec Tests
-on:
+on: 
   push:
-    branches: 
-      - 'master'
-    paths:
-      - "*.lic"
-      - "*.rb"
+    branches:
+      - master
   pull_request:
-    paths:
-      - "*.lic"
-      - "*.rb"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
