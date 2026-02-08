@@ -455,7 +455,7 @@ class SigilHarvest
       case DRC.bput('scribe sigil', /You carefully/, /You should/)
       when /You carefully/
         scribe_count += 1
-        DRCI.stow_item?('sigil-scroll')
+        DRCC.stow_crafting_item('sigil-scroll', @bag, @belt)
         DRC.bput('get blank scroll', /You pick/, /You get/)
       when /You should/
         break
@@ -465,7 +465,7 @@ class SigilHarvest
     DRC.message("Scribes: #{scribe_count}")
 
     stow_burin
-    DRCI.stow_item?('blank scroll')
+    DRCC.stow_crafting_item('blank scroll', @bag, @belt)
     fput('stow feet')
     get_scrolls
   end
@@ -511,6 +511,9 @@ class SigilHarvest
     when /shard/i
       scroll_room = 14772
       scroll_price = 90 # dokora
+    when /hib|hibbles|hibarnhvidar/i
+      scroll_room = 15522
+      scroll_price = 90 # dokora
     end
 
     DRC.message("Buying scrolls from #{Room[scroll_room].title}") if @debug
@@ -530,7 +533,7 @@ class SigilHarvest
     end
 
     DRC.bput('combine', /^You combine|^You must/) if DRCI.get_item?('blank scroll', @bag)
-    DRCI.stow_item?('blank scroll')
+    DRCC.stow_crafting_item('blank scroll', @bag, @belt)
   end
 
   private

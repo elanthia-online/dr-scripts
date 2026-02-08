@@ -1,8 +1,78 @@
+# frozen_string_literal: true
+
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#workorders
 =end
 
 class WorkOrders
+  VERSION = '1.0.0'.freeze
+
+  # Pattern constants for game responses
+  GIVE_LOGBOOK_SUCCESS_PATTERNS = [
+    'You hand',
+    'You can',
+    'What were you',
+    'Apparently the work order time limit has expired',
+    "The work order isn't yet complete"
+  ].freeze
+
+  GIVE_LOGBOOK_RETRY_PATTERNS = [
+    'What were you',
+    'You can',
+    "What is it you're trying to give"
+  ].freeze
+
+  NPC_NOT_FOUND_PATTERN = "What is it you're trying to give".freeze
+
+  REPAIR_GIVE_PATTERNS = [
+    "I don't repair those here",
+    'What is it',
+    "There isn't a scratch on that",
+    'Just give it to me again',
+    'I will not',
+    "I can't fix those.  They only have so many uses and then you must buy another."
+  ].freeze
+
+  REPAIR_NO_NEED_PATTERNS = [/scratch/, /I will not/, /They only have so many uses/].freeze
+
+  BUNDLE_SUCCESS_PATTERNS = [
+    'You notate the',
+    'This work order has expired',
+    'The work order requires items of a higher quality',
+    'Only undamaged enchanted items may be used with workorders.',
+    "That's not going to work"
+  ].freeze
+
+  BUNDLE_FAILURE_PATTERN = /requires items of|Only undamaged enchanted/.freeze
+
+  WORK_ORDER_REQUEST_PATTERNS = [
+    '^To whom',
+    'order for .* I need \d+ ',
+    'order for .* I need \d+ stacks \(5 uses each\) of .* quality',
+    'You realize you have items bundled with the logbook',
+    'You want to ask about shadowlings'
+  ].freeze
+
+  WORK_ORDER_ITEM_PATTERN = /order for (?<item>.*)\. I need (?<quantity>\d+) /.freeze
+  WORK_ORDER_STACKS_PATTERN = /order for (?<item>.*)\. I need (?<quantity>\d+) stacks \(5 uses each\) of .* quality/.freeze
+
+  READ_LOGBOOK_PATTERNS = [
+    'This work order appears to be complete.',
+    'You must bundle and deliver \d+ more'
+  ].freeze
+
+  LOGBOOK_REMAINING_PATTERN = /You must bundle and deliver (?<remaining>\d+) more/.freeze
+
+  COUNT_PATTERN = /(?<count>\d+)/.freeze
+  POLISH_COUNT_PATTERN = /The surface polish has (?<count>\d+) uses remaining/.freeze
+
+  TAP_HERB_PATTERN = /You tap (?<item>.*) inside your/.freeze
+  HERB_COUNT_PATTERN = /You count out (?<count>\d+) pieces\./.freeze
+
+  REMEDY_COUNT_PATTERN = /You count out (?<count>\d+) uses remaining\./.freeze
+
+  MATERIAL_NOUNS = %w[deed pebble stone rock rock boulder].freeze
+
   def initialize
     arg_definitions = [
       [
@@ -57,7 +127,7 @@ class WorkOrders
     recipes = recipes.select { |x| x['material'] == @carving_type } if discipline == 'carving'
 
     unless info
-      echo("No crafting settings found for discipline: #{discipline}")
+      Lich::Messaging.msg('bold', "WorkOrders: No crafting settings found for discipline: #{discipline}")
       exit
     end
 
@@ -97,7 +167,7 @@ class WorkOrders
         craft_method = :knit_items
       else
         if item['chapter']
-          echo("UNKNOWN CHAPTER FOR TAILORING ITEM #{item}")
+          Lich::Messaging.msg('bold', "WorkOrders: Unknown chapter for tailoring item: #{item}")
           exit
         end
       end
@@ -132,14 +202,14 @@ class WorkOrders
       @belt = @settings.enchanting_belt
       craft_method = :enchanting_items
     else
-      echo 'No discipline found?'
+      Lich::Messaging.msg('bold', 'WorkOrders: No discipline found')
       return
     end
 
     return repair_items(info, tools) if repair
 
     if DRSkill.getxp(skill) > @craft_max_mindstate
-      echo("Exiting because your current mindstate for #{skill} over the set maximum craft_max_mindstate:#{@craft_max_mindstate}")
+      Lich::Messaging.msg('bold', "WorkOrders: Exiting because your current mindstate for #{skill} (#{DRSkill.getxp(skill)}) is over the set maximum craft_max_mindstate: #{@craft_max_mindstate}")
       exit
     end
 
@@ -160,13 +230,20 @@ class WorkOrders
   def complete_work_order(info)
     DRCI.stow_hands
     loop do
-      find_npc(info['npc-rooms'], info['npc_last_name'])
-      DRC.bput("get my #{info['logbook']} logbook", 'You get')
+      unless find_npc(info['npc-rooms'], info['npc_last_name'])
+        Lich::Messaging.msg('bold', "WorkOrders: Could not find NPC #{info['npc_last_name']} in any of the expected rooms")
+        return
+      end
+      unless DRCI.get_item?("#{info['logbook']} logbook")
+        Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for turn-in")
+        return
+      end
       DRC.release_invisibility
-      result = DRC.bput("give log to #{info['npc']}", 'You hand', 'You can', 'What were you', 'Apparently the work order time limit has expired', 'The work order isn\'t yet complete')
-      break unless ['What were you', 'You can'].include?(result)
+      result = DRC.bput("give logbook to #{info['npc']}", *GIVE_LOGBOOK_SUCCESS_PATTERNS, NPC_NOT_FOUND_PATTERN)
+      break unless GIVE_LOGBOOK_RETRY_PATTERNS.any? { |pattern| pattern.is_a?(Regexp) ? pattern.match?(result) : result.include?(pattern) }
     end
     stow_tool('logbook')
+    Lich::Messaging.msg('plain', 'WorkOrders: Work order completed and turned in')
   end
 
   def get_tool(name)
@@ -183,6 +260,7 @@ class WorkOrders
       DRCM.ensure_copper_on_hand(1500, @settings, @hometown)
       DRCT.walk_to(current)
       DRCC.repair_own_tools(get_data('crafting')['blacksmithing'][@hometown], tools, @bag, @bag_items, @belt)
+      Lich::Messaging.msg('plain', 'WorkOrders: Tool repair using own materials completed')
       return
     end
 
@@ -190,22 +268,25 @@ class WorkOrders
 
     tools.each do |tool_name|
       get_tool(tool_name)
-      case DRC.bput("give #{info['repair-npc']}", "I don't repair those here", 'What is it', "There isn't a scratch on that", 'Just give it to me again', 'I will not', "I can't fix those.  They only have so many uses and then you must buy another.")
-      when /scratch/, /I will not/, /They only have so many uses/
+      result = DRC.bput("give #{info['repair-npc']}", *REPAIR_GIVE_PATTERNS)
+      if REPAIR_NO_NEED_PATTERNS.any? { |pat| pat.match?(result) }
         stow_tool(tool_name)
-      when /give/
+      elsif result.include?('give')
         DRC.bput("give #{info['repair-npc']}", 'repair ticket')
-        DRC.bput('stow ticket', 'You put')
+        unless DRCI.put_away_item?('ticket')
+          Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow repair ticket')
+        end
       end
     end
 
-    while DRC.bput("get my #{info['repair-npc']} ticket", 'You get', 'What were') == 'You get'
+    while DRCI.get_item?("#{info['repair-npc']} ticket")
       pause 30 until DRC.bput('look at my ticket', 'should be ready by now', 'Looking at the') == 'should be ready by now'
       DRC.bput("give #{info['repair-npc']}", 'You hand')
       pause 1
       stow_tool(DRC.right_hand) if DRC.right_hand
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
+    Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
   end
 
   def find_recipe(materials_info, recipe, quantity)
@@ -226,15 +307,13 @@ class WorkOrders
   def carve_items(info, materials_info, item, quantity)
     DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
     recipe, items_per_stock, spare_stock, scrap = find_recipe(materials_info, item, quantity)
-    material_noun = %w[deed pebble stone rock rock boulder]
     material_volume = 0
     bone_carving = recipe['material'] == 'bone'
 
-    case DRC.bput('get my surface polish', 'You get', 'What were')
-    when 'You get'
-      /(\d+)/ =~ DRC.bput('count my polish', 'The surface polish has \d+ uses remaining')
-      if Regexp.last_match(1).to_i < 3
-        # stow_tool('polish')
+    if DRCI.get_item?('surface polish')
+      count_result = DRC.bput('count my polish', 'The surface polish has \d+ uses remaining')
+      match = count_result.match(POLISH_COUNT_PATTERN)
+      if match && match[:count].to_i < 3
         DRCI.dispose_trash('polish', @worn_trashcan, @worn_trashcan_verb)
         DRCT.order_item(info['polish-room'], info['polish-number'])
       end
@@ -246,7 +325,7 @@ class WorkOrders
     order_parts(recipe['part'], quantity) if recipe['part']
 
     quantity.times do |count|
-      DRCI.dispose_trash("#{materials_info['stock-name']} #{material_noun[material_volume]}", @worn_trashcan, @worn_trashcan_verb) if count.positive? && spare_stock
+      DRCI.dispose_trash("#{materials_info['stock-name']} #{MATERIAL_NOUNS[material_volume]}", @worn_trashcan, @worn_trashcan_verb) if count.positive? && spare_stock
       if items_per_stock.zero? || (count % items_per_stock).zero?
         if count.positive?
           go_door if XMLData.room_title.include?('Workshop')
@@ -271,14 +350,14 @@ class WorkOrders
       end
 
       if !bone_carving
-        rock_result = DRC.bput("get #{materials_info['stock-name']} #{material_noun[material_volume]}", 'You get', 'What were', 'You are not strong', 'You pick up', 'but can\'t quite lift it')
+        rock_result = DRC.bput("get #{materials_info['stock-name']} #{MATERIAL_NOUNS[material_volume]}", 'You get', 'What were', 'You are not strong', 'You pick up', "but can't quite lift it")
         DRCC.find_shaping_room(@hometown, @engineering_room) unless rock_result =~ /You are not strong|but can't quite lift it/i
       else
         DRCC.find_shaping_room(@hometown, @engineering_room)
       end
       DRC.bput('swap', 'You move') if DRC.right_hand =~ /#{@noun}/i
 
-      DRC.wait_for_script_to_complete('carve', [recipe['chapter'], recipe['name'], materials_info['stock-name'], bone_carving ? 'stack' : material_noun[material_volume], recipe['noun']])
+      DRC.wait_for_script_to_complete('carve', [recipe['chapter'], recipe['name'], materials_info['stock-name'], bone_carving ? 'stack' : MATERIAL_NOUNS[material_volume], recipe['noun']])
 
       material_volume = materials_info['stock-volume'] if material_volume.zero?
       material_volume -= recipe['volume']
@@ -292,7 +371,7 @@ class WorkOrders
         DRCI.dispose_trash("#{materials_info['stock-name']} stack", @worn_trashcan, @worn_trashcan_verb) unless @retain_crafting_materials
       end
     elsif scrap
-      DRCI.dispose_trash("#{materials_info['stock-name']} #{material_noun[material_volume]}", @worn_trashcan, @worn_trashcan_verb)
+      DRCI.dispose_trash("#{materials_info['stock-name']} #{MATERIAL_NOUNS[material_volume]}", @worn_trashcan, @worn_trashcan_verb)
     end
     go_door if XMLData.room_title.include?('Workshop')
   end
@@ -330,9 +409,10 @@ class WorkOrders
       end
 
       DRC.wait_for_script_to_complete('shape', ['log', recipe['chapter'], recipe['name'], materials_info['stock-name'], recipe['noun']])
-      case DRC.bput('read my engineering logbook', 'This work order appears to be complete.', 'You must bundle and deliver \d+ more')
-      when /You must bundle and deliver \d+ more /
-        log_num = Regexp.last_match(1).to_i
+      result = DRC.bput('read my engineering logbook', *READ_LOGBOOK_PATTERNS)
+      match = result.match(LOGBOOK_REMAINING_PATTERN)
+      if match
+        log_num = match[:remaining].to_i
         break if count + 1 + log_num != quantity
       end
     end
@@ -354,14 +434,14 @@ class WorkOrders
   end
 
   def buy_parts(parts, partroom)
-    parts.each do |part|
+    parts&.each do |part|
       DRCT.buy_item(partroom, part)
       stow_tool(part)
     end
   end
 
   def order_parts(parts, quantity)
-    parts.each do |part|
+    parts&.each do |part|
       data = @recipe_parts[part][@hometown]
       quantity.times do
         if data['part-number']
@@ -402,9 +482,10 @@ class WorkOrders
 
     quantity.times do |count|
       DRC.wait_for_script_to_complete('sew', ['log', 'sewing', recipe['chapter'], recipe['name'], materials_info['stock-name'], recipe['noun']])
-      case DRC.bput('read my outfitting logbook', 'This work order appears to be complete.', 'You must bundle and deliver \d+ more')
-      when /You must bundle and deliver \d+ more /
-        log_num = Regexp.last_match(1).to_i
+      result = DRC.bput('read my outfitting logbook', *READ_LOGBOOK_PATTERNS)
+      match = result.match(LOGBOOK_REMAINING_PATTERN)
+      if match
+        log_num = match[:remaining].to_i
         break if count + 1 + log_num != quantity
       end
     end
@@ -430,9 +511,10 @@ class WorkOrders
 
     quantity.times do |count|
       DRC.wait_for_script_to_complete('sew', ['log', 'knitting', recipe['chapter'], recipe['name'], materials_info['stock-name'], recipe['noun']])
-      case DRC.bput('read my outfitting logbook', 'This work order appears to be complete.', 'You must bundle and deliver \d+ more')
-      when /You must bundle and deliver \d+ more /
-        log_num = Regexp.last_match(1).to_i
+      result = DRC.bput('read my outfitting logbook', *READ_LOGBOOK_PATTERNS)
+      match = result.match(LOGBOOK_REMAINING_PATTERN)
+      if match
+        log_num = match[:remaining].to_i
         break if count + 1 + log_num != quantity
       end
     end
@@ -452,7 +534,7 @@ class WorkOrders
   end
 
   def gather_process_herb(herb, herb_volume_to_purchase)
-    echo herb
+    Lich::Messaging.msg('plain', "WorkOrders: Gathering herb: #{herb}")
     DRC.wait_for_script_to_complete('alchemy', [herb, 'forage', herb_volume_to_purchase])
     DRC.wait_for_script_to_complete('alchemy', [herb, 'prepare'])
   end
@@ -464,7 +546,6 @@ class WorkOrders
     herb_volume_total = 0
     last_herb_volume = 0
     last_descriptor = ''
-    stack_descriptor = ''
 
     # We have to only ever use the last word in a multi-word herb.  We will need to be careful when counting because of this.
     # This is to resolve "red flower" vs "blue flower" because "count third red flower in my bag" fails.
@@ -485,17 +566,20 @@ class WorkOrders
       # example:
       #   [workorders]>tap first flower in my haversack
       #   You lightly tap Inkin on the shoulder.
-      /You tap (.*) inside your|I could not find|You lightly tap/ =~ DRC.bput("tap #{stack_descriptor} #{herb_for_tapping} in my #{@bag}", 'You tap (.*) inside your', 'I could not find', 'You lightly tap')
-      tap_result = Regexp.last_match(1)
-      if tap_result.nil?
+      tap_result = DRC.bput("tap #{stack_descriptor} #{herb_for_tapping} in my #{@bag}", 'You tap (.*) inside your', 'I could not find', 'You lightly tap')
+      match = tap_result.match(TAP_HERB_PATTERN)
+      if match.nil?
         herb_volume = 0
         found_stack = false
       else
+        tap_item = match[:item]
         # Check to see if the generic item we just tapped matches the exact item we are looking for.
-        herb_volume = if tap_result.include? herb
-                        DRC.bput("count #{stack_descriptor} #{herb_for_tapping} in my #{@bag}", 'I could not find', 'You count out \d+ pieces.').scan(/\d+/).first.to_i
+        herb_volume = if tap_item.include?(herb)
+                        count_result = DRC.bput("count #{stack_descriptor} #{herb_for_tapping} in my #{@bag}", 'I could not find', 'You count out \d+ pieces.')
+                        count_match = count_result.match(HERB_COUNT_PATTERN)
+                        count_match ? count_match[:count].to_i : 0
                       else
-                        # Since this looks like the wrong item, we can't count it's volume, and we just move on.
+                        # Since this looks like the wrong item, we can't count its volume, and we just move on.
                         0
                       end
       end
@@ -560,23 +644,35 @@ class WorkOrders
       else
         DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], info['catalyst'], recipe['container'], recipe['noun']])
       end
-      DRC.bput("get my #{info['logbook']} logbook", 'You get')
-      case DRC.bput("bun my #{recipe['noun']} with logbook", 'You notate', 'You put', 'You notice the workorder', 'The work order requires items of a higher quality')
+      unless DRCI.get_item?("#{info['logbook']} logbook")
+        Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for bundling remedy")
+        break
+      end
+      case DRC.bput("bundle my #{recipe['noun']} with logbook", 'You notate', 'You put', 'You notice the workorder', 'The work order requires items of a higher quality')
       when 'You notice the workorder'
         stow_tool(DRC.right_hand)
         DRC.bput("Mark my #{recipe['noun']} at 5", 'You measure')
         DRC.bput("Break my #{recipe['noun']}", 'You carefully')
-        /(\d+)/ =~ DRC.bput("count my first #{recipe['noun']}", 'You count out \d+ uses remaining.')
-        if Regexp.last_match(1).to_i == 5
-          DRC.bput("stow my second #{recipe['noun']}", 'You put', 'You combine')
+        count_result = DRC.bput("count my first #{recipe['noun']}", 'You count out \d+ uses remaining.')
+        match = count_result.match(REMEDY_COUNT_PATTERN)
+        count_value = match ? match[:count].to_i : 0
+        if count_value == 5
+          unless DRCI.put_away_item?("second #{recipe['noun']}")
+            Lich::Messaging.msg('bold', "WorkOrders: Failed to stow second #{recipe['noun']}")
+          end
         else
-          DRC.bput("stow my first #{recipe['noun']}", 'You put', 'You combine')
+          unless DRCI.put_away_item?("first #{recipe['noun']}")
+            Lich::Messaging.msg('bold', "WorkOrders: Failed to stow first #{recipe['noun']}")
+          end
         end
         leftovers += 1
         bundle_item(recipe['noun'], info['logbook'])
       when 'You notate', 'You put'
-        DRC.bput('stow my logbook', 'You put')
+        unless DRCI.put_away_item?('logbook')
+          Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow logbook after bundling remedy')
+        end
       when 'The work order requires items of a higher quality'
+        Lich::Messaging.msg('bold', 'WorkOrders: Work order requires higher quality items. Disposing and stopping.')
         DRCI.dispose_trash(recipe['noun'], @worn_trashcan, @worn_trashcan_verb)
         unless @retain_crafting_materials
           DRCI.dispose_trash(recipe['herb1'], @worn_trashcan, @worn_trashcan_verb) while recipe['herb1'] && DRCI.exists?(recipe['herb1'])
@@ -619,7 +715,7 @@ class WorkOrders
   end
 
   def ingot_volume
-    res = DRC.bput('anal my ingot', 'About \d+ volume')
+    res = DRC.bput('analyze my ingot', 'About \d+ volume')
     res.scan(/\d+/).first.to_i
   end
 
@@ -631,16 +727,15 @@ class WorkOrders
   def forge_items_with_own_ingot(info, materials_info, item, quantity)
     recipe = find_recipe(materials_info, item, quantity).first
 
-    if DRC.bput("get my #{@use_own_ingot_type} ingot", 'You get', 'What were') == 'What were'
-      if DRC.bput("get my #{@use_own_ingot_type} deed", 'You get', 'What were') == 'What were'
-        echo('out of material/deeds')
+    unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
+      unless DRCI.get_item?("#{@use_own_ingot_type} deed")
+        Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging')
         exit
-      else
-        volume = deed_ingot_volume
-        fput('tap my deed')
-        pause
-        DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
       end
+      volume = deed_ingot_volume
+      fput('tap my deed')
+      pause
+      DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
     end
 
     volume ||= ingot_volume
@@ -650,23 +745,22 @@ class WorkOrders
 
     if volume < quantity * recipe['volume']
       smelt = true
-      if DRC.bput("get my #{@use_own_ingot_type} deed", 'You get', 'What were') == 'What were'
-        echo('out of material/deeds')
+      unless DRCI.get_item?("#{@use_own_ingot_type} deed")
+        Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging (need more volume)')
         DRCI.stow_hands
         exit
-      else
-        volume = deed_ingot_volume
-        fput('tap my deed')
-        pause
-        DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
       end
+      deed_ingot_volume
+      fput('tap my deed')
+      pause
+      DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
       volume = ingot_volume
     end
 
     DRCI.stow_hands
 
     if volume < quantity * recipe['volume']
-      echo('out of material/deeds')
+      Lich::Messaging.msg('bold', "WorkOrders: Insufficient material volume (have #{volume}, need #{quantity * recipe['volume']})")
       exit
     end
 
@@ -678,8 +772,11 @@ class WorkOrders
     if smelt
       DRCC.find_empty_crucible(@hometown)
       2.times do
-        fput("get my #{@use_own_ingot_type} ingot")
-        fput('put my ingot in cruc')
+        unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
+          Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{@use_own_ingot_type} ingot for smelting")
+          break
+        end
+        fput('put my ingot in crucible')
       end
       DRC.wait_for_script_to_complete('smelt')
       DRCI.stow_hands
@@ -690,13 +787,25 @@ class WorkOrders
     unless DRC.bput('look my deed packet', /You count \d+ deed claim forms remaining/, /I could not find what you were referring to/) =~ /You count \d+ deed claim forms remaining/
       DRCM.ensure_copper_on_hand(@cash_on_hand || 10_000, @settings, @hometown)
       DRCT.order_item(@deeds_room, @deeds_number)
-      fput('stow my packet')
+      unless DRCI.put_away_item?('packet')
+        Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed packet after ordering')
+      end
     end
-    fput("get my #{@use_own_ingot_type} ingot")
-    fput('get packet')
+    unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
+      Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{@use_own_ingot_type} ingot for deeding")
+      return
+    end
+    unless DRCI.get_item?('packet')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to get deed packet for deeding')
+      return
+    end
     fput('push my ingot with packet')
-    fput('stow packet')
-    fput('stow deed')
+    unless DRCI.put_away_item?('packet')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed packet')
+    end
+    unless DRCI.put_away_item?('deed')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed')
+    end
   end
 
   def enchanting_items(info, _materials_info, recipe, quantity)
@@ -746,35 +855,31 @@ class WorkOrders
     end
 
     # Exit script if one of the four sigil checks is false.
-    exit if tally >= 1
+    if tally >= 1
+      Lich::Messaging.msg('bold', "WorkOrders: Missing #{tally} required sigil type(s) for enchanting")
+      exit
+    end
 
     # Enchant component #1
     tmp_comp_count = 0
-    need_comp = 0
     if recipe['item']
       tmp_comp_count = DRCI.count_items_in_container(recipe['noun'].split.last, @bag)
       if tmp_comp_count < quantity
         need_comp = quantity - tmp_comp_count
-        # Found a weird challenge that made the temp_part_count equal 1 even though no "component" was in container
-        need_comp += 1 if reget(3, 'but there is nothing in there like that') && (need_comp + tmp_comp_count) != quantity
-        DRC.message("need_comp with potiental plus 1 is #{need_comp}.")
+        Lich::Messaging.msg('plain', "WorkOrders: Need #{need_comp} more enchanting components")
         DRCC.order_enchant(info['stock-room'], need_comp, recipe['item'], @bag, @belt)
       end
     end
 
     # Parts #
-    tmp_part_count = 0
-    need_part = 0
     if recipe['part']
-      (recipe['part']).each do |p|
-        p.to_s
-
+      recipe['part'].each do |p|
         tmp_part_count = DRCI.count_items_in_container(p, @bag)
         next unless tmp_part_count < quantity
 
         need_part = quantity - tmp_part_count
 
-        DRC.message("need_part is #{need_part}.")
+        Lich::Messaging.msg('plain', "WorkOrders: Need #{need_part} more parts: #{p}")
 
         # parts are listed by only their noun
         order_parts([p.split.last], need_part)
@@ -797,10 +902,10 @@ class WorkOrders
                   recipe['noun'].split.last
                 end
       bundle_item(product, info['logbook'])
-      case DRC.bput('read my enchanting logbook', 'This work order appears to be complete.',\
-                    'You must bundle and deliver \d+ more')
-      when /You must bundle and deliver (\d+) more/
-        log_num = Regexp.last_match(1).to_i
+      result = DRC.bput('read my enchanting logbook', *READ_LOGBOOK_PATTERNS)
+      match = result.match(LOGBOOK_REMAINING_PATTERN)
+      if match
+        log_num = match[:remaining].to_i
         break if count + 1 + log_num != quantity
       end
     end
@@ -808,8 +913,13 @@ class WorkOrders
 
   def bundle_item(noun, logbook)
     noun = 'fount' if noun == 'small sphere'
-    DRC.bput("get my #{logbook} logbook", 'You get')
-    if /requires items of|Only undamaged enchanted/ =~ DRC.bput("bundle my #{noun} with my logbook", 'You notate the', 'This work order has expired', 'The work order requires items of a higher quality', 'Only undamaged enchanted items may be used with workorders.', 'That\'s not going to work')
+    unless DRCI.get_item?("#{logbook} logbook")
+      Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{logbook} logbook for bundling")
+      return false
+    end
+    result = DRC.bput("bundle my #{noun} with my logbook", *BUNDLE_SUCCESS_PATTERNS)
+    if BUNDLE_FAILURE_PATTERN.match?(result)
+      Lich::Messaging.msg('bold', "WorkOrders: Bundle failed - #{result}. Disposing item.")
       DRCI.dispose_trash(noun, @worn_trashcan, @worn_trashcan_verb)
     end
     DRCI.stow_hands
@@ -820,46 +930,61 @@ class WorkOrders
     diff ||= 'challenging'
     DRCI.stow_hands
     500.times do
-      find_npc(npc_rooms, npc_last_name)
-      DRC.bput("get my #{logbook} logbook", 'You get') unless DRC.left_hand || DRC.right_hand
-      case DRC.bput("ask #{npc} for #{diff} #{discipline} work", '^To whom', 'order for .* I need \d+ ', 'order for .* I need \d+ stacks \(5 uses each\) of .* quality', 'You realize you have items bundled with the logbook', 'You want to ask about shadowlings')
+      unless find_npc(npc_rooms, npc_last_name)
+        Lich::Messaging.msg('bold', "WorkOrders: Could not find NPC #{npc_last_name} - will retry")
+        next
+      end
+      unless DRC.left_hand || DRC.right_hand
+        unless DRCI.get_item?("#{logbook} logbook")
+          Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{logbook} logbook for work order request")
+          next
+        end
+      end
+      result = DRC.bput("ask #{npc} for #{diff} #{discipline} work", *WORK_ORDER_REQUEST_PATTERNS)
+      case result
       when 'You want to ask about shadowlings'
         pause 10
         fput('say Hmm.')
-      when /order for (.*)\. I need (\d+) /
-        item = Regexp.last_match(1)
-        quantity = Regexp.last_match(2).to_i
-        if @min_items <= quantity && quantity <= @max_items && match_names.include?(item)
-          stow_tool('logbook')
-          return [item, quantity]
-        end
-      when /order for (.*)\. I need (\d+) stacks \(5 uses each\) of .* quality/
-        item = Regexp.last_match(1)
-        quantity = Regexp.last_match(2).to_i
-        if @min_items <= quantity && quantity <= @max_items && match_names.include?(item)
-          stow_tool('logbook')
-          return [item, quantity]
+      when WORK_ORDER_ITEM_PATTERN, WORK_ORDER_STACKS_PATTERN
+        match = result.match(WORK_ORDER_ITEM_PATTERN) || result.match(WORK_ORDER_STACKS_PATTERN)
+        if match
+          item = match[:item]
+          quantity = match[:quantity].to_i
+          if @min_items <= quantity && quantity <= @max_items && match_names.include?(item)
+            stow_tool('logbook')
+            Lich::Messaging.msg('plain', "WorkOrders: Accepted work order for #{quantity} #{item}")
+            return [item, quantity]
+          end
         end
       when 'You realize you have items bundled with the logbook'
-        DRC.bput('untie my logbook', 'You untie')
-        if DRC.left_hand.include?('logbook')
+        unless DRCI.untie_item?('logbook')
+          Lich::Messaging.msg('bold', 'WorkOrders: Failed to untie logbook')
+        end
+        if DRC.left_hand&.include?('logbook')
           DRCI.dispose_trash(DRC.right_hand, @worn_trashcan, @worn_trashcan_verb)
         else
           DRCI.dispose_trash(DRC.left_hand, @worn_trashcan, @worn_trashcan_verb)
         end
-        fput('get logbook') unless [DRC.left_hand, DRC.right_hand].grep(/logbook/i).any?
+        unless [DRC.left_hand, DRC.right_hand].grep(/logbook/i).any?
+          unless DRCI.get_item?('logbook')
+            Lich::Messaging.msg('bold', 'WorkOrders: Failed to get logbook after untying')
+          end
+        end
       end
     end
     stow_tool('logbook')
+    Lich::Messaging.msg('bold', 'WorkOrders: Failed to get a suitable work order after 500 attempts')
     exit
   end
 
   def find_npc(room_list, npc)
     room_list.each do |room_id|
-      break if DRRoom.npcs.include?(npc)
+      return true if DRRoom.npcs.include?(npc)
 
       DRCT.walk_to(room_id)
     end
+    # Final check after walking to all rooms
+    DRRoom.npcs.include?(npc)
   end
 end
 
