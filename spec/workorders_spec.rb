@@ -87,7 +87,19 @@ module DRCI
 
   def self.get_item(*_args); end
 
+  def self.get_item?(*_args)
+    true
+  end
+
   def self.get_item_if_not_held?(*_args)
+    true
+  end
+
+  def self.put_away_item?(*_args)
+    true
+  end
+
+  def self.untie_item?(*_args)
     true
   end
 
@@ -362,7 +374,7 @@ RSpec.describe WorkOrders do
 
     context 'when give succeeds on first try' do
       it 'gives logbook and stows it' do
-        expect(DRC).to receive(:bput).with('get my engineering logbook', 'You get').once
+        expect(DRCI).to receive(:get_item?).with('engineering logbook').and_return(true)
         expect(DRC).to receive(:release_invisibility).once
         expect(DRC).to receive(:bput).with('give log to Jakke', any_args).and_return('You hand')
         expect(workorders).to receive(:stow_tool).with('logbook')
@@ -374,6 +386,7 @@ RSpec.describe WorkOrders do
     context 'when NPC walks away (bug fix scenario)' do
       it 'retries finding NPC and giving again' do
         call_count = 0
+        allow(DRCI).to receive(:get_item?).and_return(true)
         allow(DRC).to receive(:bput) do |cmd, *_patterns|
           if cmd.include?('give log')
             call_count += 1
@@ -411,7 +424,7 @@ RSpec.describe WorkOrders do
 
     context 'when bundling succeeds' do
       it 'gets logbook and bundles item' do
-        expect(DRC).to receive(:bput).with('get my engineering logbook', 'You get')
+        expect(DRCI).to receive(:get_item?).with('engineering logbook').and_return(true)
         expect(DRC).to receive(:bput).with('bundle my gloves with my logbook', *WorkOrders::BUNDLE_SUCCESS_PATTERNS).and_return('You notate the')
         expect(DRCI).to receive(:stow_hands)
         expect(DRCI).not_to receive(:dispose_trash)
@@ -422,7 +435,7 @@ RSpec.describe WorkOrders do
 
     context 'when item quality is too low' do
       it 'disposes the item and logs message' do
-        expect(DRC).to receive(:bput).with('get my engineering logbook', 'You get')
+        expect(DRCI).to receive(:get_item?).with('engineering logbook').and_return(true)
         expect(DRC).to receive(:bput).with('bundle my gloves with my logbook', any_args).and_return('The work order requires items of a higher quality')
         expect(Lich::Messaging).to receive(:msg).with('bold', /Bundle failed/)
         expect(DRCI).to receive(:dispose_trash).with('gloves', nil, nil)
@@ -434,7 +447,7 @@ RSpec.describe WorkOrders do
 
     context 'when item is damaged enchanted' do
       it 'disposes the item and logs message' do
-        expect(DRC).to receive(:bput).with('get my engineering logbook', 'You get')
+        expect(DRCI).to receive(:get_item?).with('engineering logbook').and_return(true)
         expect(DRC).to receive(:bput).with('bundle my sphere with my logbook', any_args).and_return('Only undamaged enchanted items may be used with workorders.')
         expect(Lich::Messaging).to receive(:msg).with('bold', /Bundle failed/)
         expect(DRCI).to receive(:dispose_trash).with('sphere', nil, nil)
@@ -446,7 +459,7 @@ RSpec.describe WorkOrders do
 
     context 'when noun is small sphere (fount)' do
       it 'converts noun to fount' do
-        expect(DRC).to receive(:bput).with('get my enchanting logbook', 'You get')
+        expect(DRCI).to receive(:get_item?).with('enchanting logbook').and_return(true)
         expect(DRC).to receive(:bput).with('bundle my fount with my logbook', any_args).and_return('You notate the')
         expect(DRCI).to receive(:stow_hands)
 

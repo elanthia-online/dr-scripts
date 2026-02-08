@@ -232,7 +232,10 @@ class WorkOrders
         Lich::Messaging.msg('bold', "WorkOrders: Could not find NPC #{info['npc_last_name']} in any of the expected rooms")
         return
       end
-      DRC.bput("get my #{info['logbook']} logbook", 'You get')
+      unless DRCI.get_item?("#{info['logbook']} logbook")
+        Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for turn-in")
+        return
+      end
       DRC.release_invisibility
       result = DRC.bput("give log to #{info['npc']}", *GIVE_LOGBOOK_SUCCESS_PATTERNS, NPC_NOT_FOUND_PATTERN)
       break unless GIVE_LOGBOOK_RETRY_PATTERNS.any? { |pattern| pattern.is_a?(Regexp) ? pattern.match?(result) : result.include?(pattern) }
@@ -268,7 +271,9 @@ class WorkOrders
         stow_tool(tool_name)
       elsif result.include?('give')
         DRC.bput("give #{info['repair-npc']}", 'repair ticket')
-        DRC.bput('stow ticket', 'You put')
+        unless DRCI.put_away_item?('ticket')
+          Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow repair ticket')
+        end
       end
     end
 
@@ -638,7 +643,10 @@ class WorkOrders
       else
         DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], info['catalyst'], recipe['container'], recipe['noun']])
       end
-      DRC.bput("get my #{info['logbook']} logbook", 'You get')
+      unless DRCI.get_item?("#{info['logbook']} logbook")
+        Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for bundling remedy")
+        break
+      end
       case DRC.bput("bun my #{recipe['noun']} with logbook", 'You notate', 'You put', 'You notice the workorder', 'The work order requires items of a higher quality')
       when 'You notice the workorder'
         stow_tool(DRC.right_hand)
@@ -648,14 +656,20 @@ class WorkOrders
         match = count_result.match(REMEDY_COUNT_PATTERN)
         count_value = match ? match[:count].to_i : 0
         if count_value == 5
-          DRC.bput("stow my second #{recipe['noun']}", 'You put', 'You combine')
+          unless DRCI.put_away_item?("second #{recipe['noun']}")
+            Lich::Messaging.msg('bold', "WorkOrders: Failed to stow second #{recipe['noun']}")
+          end
         else
-          DRC.bput("stow my first #{recipe['noun']}", 'You put', 'You combine')
+          unless DRCI.put_away_item?("first #{recipe['noun']}")
+            Lich::Messaging.msg('bold', "WorkOrders: Failed to stow first #{recipe['noun']}")
+          end
         end
         leftovers += 1
         bundle_item(recipe['noun'], info['logbook'])
       when 'You notate', 'You put'
-        DRC.bput('stow my logbook', 'You put')
+        unless DRCI.put_away_item?('logbook')
+          Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow logbook after bundling remedy')
+        end
       when 'The work order requires items of a higher quality'
         Lich::Messaging.msg('bold', 'WorkOrders: Work order requires higher quality items. Disposing and stopping.')
         DRCI.dispose_trash(recipe['noun'], @worn_trashcan, @worn_trashcan_verb)
@@ -885,7 +899,10 @@ class WorkOrders
 
   def bundle_item(noun, logbook)
     noun = 'fount' if noun == 'small sphere'
-    DRC.bput("get my #{logbook} logbook", 'You get')
+    unless DRCI.get_item?("#{logbook} logbook")
+      Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{logbook} logbook for bundling")
+      return false
+    end
     result = DRC.bput("bundle my #{noun} with my logbook", *BUNDLE_SUCCESS_PATTERNS)
     if BUNDLE_FAILURE_PATTERN.match?(result)
       Lich::Messaging.msg('bold', "WorkOrders: Bundle failed - #{result}. Disposing item.")
@@ -903,7 +920,12 @@ class WorkOrders
         Lich::Messaging.msg('bold', "WorkOrders: Could not find NPC #{npc_last_name} - will retry")
         next
       end
-      DRC.bput("get my #{logbook} logbook", 'You get') unless DRC.left_hand || DRC.right_hand
+      unless DRC.left_hand || DRC.right_hand
+        unless DRCI.get_item?("#{logbook} logbook")
+          Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{logbook} logbook for work order request")
+          next
+        end
+      end
       result = DRC.bput("ask #{npc} for #{diff} #{discipline} work", *WORK_ORDER_REQUEST_PATTERNS)
       case result
       when 'You want to ask about shadowlings'
@@ -921,7 +943,9 @@ class WorkOrders
           end
         end
       when 'You realize you have items bundled with the logbook'
-        DRC.bput('untie my logbook', 'You untie')
+        unless DRCI.untie_item?('logbook')
+          Lich::Messaging.msg('bold', 'WorkOrders: Failed to untie logbook')
+        end
         if DRC.left_hand&.include?('logbook')
           DRCI.dispose_trash(DRC.right_hand, @worn_trashcan, @worn_trashcan_verb)
         else
