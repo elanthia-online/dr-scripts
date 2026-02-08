@@ -239,7 +239,7 @@ class WorkOrders
         return
       end
       DRC.release_invisibility
-      result = DRC.bput("give log to #{info['npc']}", *GIVE_LOGBOOK_SUCCESS_PATTERNS, NPC_NOT_FOUND_PATTERN)
+      result = DRC.bput("give logbook to #{info['npc']}", *GIVE_LOGBOOK_SUCCESS_PATTERNS, NPC_NOT_FOUND_PATTERN)
       break unless GIVE_LOGBOOK_RETRY_PATTERNS.any? { |pattern| pattern.is_a?(Regexp) ? pattern.match?(result) : result.include?(pattern) }
     end
     stow_tool('logbook')
@@ -648,7 +648,7 @@ class WorkOrders
         Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for bundling remedy")
         break
       end
-      case DRC.bput("bun my #{recipe['noun']} with logbook", 'You notate', 'You put', 'You notice the workorder', 'The work order requires items of a higher quality')
+      case DRC.bput("bundle my #{recipe['noun']} with logbook", 'You notate', 'You put', 'You notice the workorder', 'The work order requires items of a higher quality')
       when 'You notice the workorder'
         stow_tool(DRC.right_hand)
         DRC.bput("Mark my #{recipe['noun']} at 5", 'You measure')
@@ -715,7 +715,7 @@ class WorkOrders
   end
 
   def ingot_volume
-    res = DRC.bput('anal my ingot', 'About \d+ volume')
+    res = DRC.bput('analyze my ingot', 'About \d+ volume')
     res.scan(/\d+/).first.to_i
   end
 
@@ -727,16 +727,15 @@ class WorkOrders
   def forge_items_with_own_ingot(info, materials_info, item, quantity)
     recipe = find_recipe(materials_info, item, quantity).first
 
-    if DRC.bput("get my #{@use_own_ingot_type} ingot", 'You get', 'What were') == 'What were'
-      if DRC.bput("get my #{@use_own_ingot_type} deed", 'You get', 'What were') == 'What were'
+    unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
+      unless DRCI.get_item?("#{@use_own_ingot_type} deed")
         Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging')
         exit
-      else
-        volume = deed_ingot_volume
-        fput('tap my deed')
-        pause
-        DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
       end
+      volume = deed_ingot_volume
+      fput('tap my deed')
+      pause
+      DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
     end
 
     volume ||= ingot_volume
@@ -746,16 +745,15 @@ class WorkOrders
 
     if volume < quantity * recipe['volume']
       smelt = true
-      if DRC.bput("get my #{@use_own_ingot_type} deed", 'You get', 'What were') == 'What were'
+      unless DRCI.get_item?("#{@use_own_ingot_type} deed")
         Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging (need more volume)')
         DRCI.stow_hands
         exit
-      else
-        volume = deed_ingot_volume
-        fput('tap my deed')
-        pause
-        DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
       end
+      deed_ingot_volume
+      fput('tap my deed')
+      pause
+      DRCI.get_item_if_not_held?("#{@use_own_ingot_type} ingot")
       volume = ingot_volume
     end
 
@@ -774,8 +772,11 @@ class WorkOrders
     if smelt
       DRCC.find_empty_crucible(@hometown)
       2.times do
-        fput("get my #{@use_own_ingot_type} ingot")
-        fput('put my ingot in cruc')
+        unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
+          Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{@use_own_ingot_type} ingot for smelting")
+          break
+        end
+        fput('put my ingot in crucible')
       end
       DRC.wait_for_script_to_complete('smelt')
       DRCI.stow_hands
@@ -786,13 +787,25 @@ class WorkOrders
     unless DRC.bput('look my deed packet', /You count \d+ deed claim forms remaining/, /I could not find what you were referring to/) =~ /You count \d+ deed claim forms remaining/
       DRCM.ensure_copper_on_hand(@cash_on_hand || 10_000, @settings, @hometown)
       DRCT.order_item(@deeds_room, @deeds_number)
-      fput('stow my packet')
+      unless DRCI.put_away_item?('packet')
+        Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed packet after ordering')
+      end
     end
-    fput("get my #{@use_own_ingot_type} ingot")
-    fput('get packet')
+    unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
+      Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{@use_own_ingot_type} ingot for deeding")
+      return
+    end
+    unless DRCI.get_item?('packet')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to get deed packet for deeding')
+      return
+    end
     fput('push my ingot with packet')
-    fput('stow packet')
-    fput('stow deed')
+    unless DRCI.put_away_item?('packet')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed packet')
+    end
+    unless DRCI.put_away_item?('deed')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed')
+    end
   end
 
   def enchanting_items(info, _materials_info, recipe, quantity)
@@ -952,7 +965,11 @@ class WorkOrders
         else
           DRCI.dispose_trash(DRC.left_hand, @worn_trashcan, @worn_trashcan_verb)
         end
-        fput('get logbook') unless [DRC.left_hand, DRC.right_hand].grep(/logbook/i).any?
+        unless [DRC.left_hand, DRC.right_hand].grep(/logbook/i).any?
+          unless DRCI.get_item?('logbook')
+            Lich::Messaging.msg('bold', 'WorkOrders: Failed to get logbook after untying')
+          end
+        end
       end
     end
     stow_tool('logbook')
