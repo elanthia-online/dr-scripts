@@ -328,5 +328,289 @@ RSpec.describe PlantHeal do
       expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
       instance.send(:wait_for_passive_healing)
     end
+
+    it 'uses PASSIVE_HEAL_POLL_INTERVAL for pause duration' do
+      call_count = 0
+      allow(DRCH).to receive(:check_health) do
+        call_count += 1
+        { 'score' => call_count >= 2 ? 0 : 5 }
+      end
+      instance = build_instance(healingroom: 1234)
+      expect(instance).to receive(:pause).with(PlantHeal::PASSIVE_HEAL_POLL_INTERVAL).once
+      instance.send(:wait_for_passive_healing)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # display_mode_message
+  # ---------------------------------------------------------------------------
+
+  describe '#display_mode_message' do
+    context 'waggle healing mode' do
+      it 'displays waggle healing message' do
+        instance = build_instance(waggle_healing: true, heal_past_ml: false, hug_count: 3, threshold: 24)
+        expect(DRC).to receive(:message).with(/Healing via Heal\/Regenerate \(waggle\)/)
+        expect(DRC).to receive(:message).with(/Will stop at FIRST of: 3 total hugs OR empathy mindstate 24/)
+        instance.send(:display_mode_message)
+      end
+    end
+
+    context 'healme mode' do
+      it 'displays healme script message' do
+        instance = build_instance(waggle_healing: false, heal_past_ml: false, hug_count: 5, threshold: 30)
+        expect(DRC).to receive(:message).with(/Healing via healme script \(HW\/HS\)/)
+        expect(DRC).to receive(:message).with(/Will stop at FIRST of: 5 total hugs OR empathy mindstate 30/)
+        instance.send(:display_mode_message)
+      end
+    end
+
+    context 'heal_past_ml mode' do
+      it 'displays heal_past_ml ON messages' do
+        instance = build_instance(waggle_healing: true, heal_past_ml: true, hug_count: 3, threshold: 24)
+        expect(DRC).to receive(:message).with(/Healing via Heal\/Regenerate \(waggle\)/)
+        expect(DRC).to receive(:message).with(/heal_past_ml is ON/)
+        expect(DRC).to receive(:message).with(/Will cycle until the plant is FULLY HEALED/)
+        expect(DRC).to receive(:message).with(/To stop at a threshold/)
+        expect(DRC).to receive(:message).with(/To stop after N hugs/)
+        instance.send(:display_mode_message)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # load_settings
+  # ---------------------------------------------------------------------------
+
+  describe '#load_settings' do
+    let(:instance) { PlantHeal.allocate }
+
+    it 'returns default values when plantheal_settings is empty' do
+      settings = OpenStruct.new(plantheal_settings: {})
+      result = instance.send(:load_settings, settings)
+      expect(result[:hug_count]).to eq(3)
+      expect(result[:empathy_threshold]).to eq(24)
+      expect(result[:heal_past_ml]).to eq(false)
+      expect(result[:ev_cast_mana]).to eq(600)
+      expect(result[:ev_extra_wait]).to eq(15)
+    end
+
+    it 'returns default values when plantheal_settings is nil' do
+      settings = OpenStruct.new(plantheal_settings: nil)
+      result = instance.send(:load_settings, settings)
+      expect(result[:hug_count]).to eq(3)
+      expect(result[:empathy_threshold]).to eq(24)
+    end
+
+    it 'uses configured values from plantheal_settings' do
+      settings = OpenStruct.new(plantheal_settings: {
+        'hug_count'         => 10,
+        'empathy_threshold' => 30,
+        'heal_past_ml'      => true,
+        'plant_room'        => 1234,
+        'healing_room'      => 5678,
+        'ev_cast_mana'      => 800,
+        'ev_extra_wait'     => 20,
+        'focus_container'   => 'backpack'
+      })
+      result = instance.send(:load_settings, settings)
+      expect(result[:hug_count]).to eq(10)
+      expect(result[:empathy_threshold]).to eq(30)
+      expect(result[:heal_past_ml]).to eq(true)
+      expect(result[:plant_room]).to eq(1234)
+      expect(result[:healing_room]).to eq(5678)
+      expect(result[:ev_cast_mana]).to eq(800)
+      expect(result[:ev_extra_wait]).to eq(20)
+      expect(result[:focus_container]).to eq('backpack')
+    end
+
+    it 'migrates legacy plant_total_touch_count to hug_count' do
+      settings = OpenStruct.new(
+        plantheal_settings: {},
+        plant_total_touch_count: 7
+      )
+      expect(DRC).to receive(:message).with(/Deprecated setting 'plant_total_touch_count'.*hug_count/)
+      result = instance.send(:load_settings, settings)
+      expect(result[:hug_count]).to eq(7)
+    end
+
+    it 'migrates legacy plant_custom_room to plant_room' do
+      settings = OpenStruct.new(
+        plantheal_settings: {},
+        plant_custom_room: 999
+      )
+      expect(DRC).to receive(:message).with(/Deprecated setting 'plant_custom_room'.*plant_room/)
+      result = instance.send(:load_settings, settings)
+      expect(result[:plant_room]).to eq(999)
+    end
+
+    it 'migrates legacy plant_heal_past_ML to heal_past_ml' do
+      settings = OpenStruct.new(
+        plantheal_settings: {},
+        plant_heal_past_ML: true
+      )
+      expect(DRC).to receive(:message).with(/Deprecated setting 'plant_heal_past_ML'.*heal_past_ml/)
+      result = instance.send(:load_settings, settings)
+      expect(result[:heal_past_ml]).to eq(true)
+    end
+
+    it 'does not migrate legacy settings when new settings exist' do
+      settings = OpenStruct.new(
+        plantheal_settings: { 'hug_count' => 5 },
+        plant_total_touch_count: 10
+      )
+      expect(DRC).not_to receive(:message).with(/Deprecated/)
+      result = instance.send(:load_settings, settings)
+      expect(result[:hug_count]).to eq(5)
+    end
+
+    it 'converts heal_past_ml string values to boolean' do
+      %w[true 1 yes y].each do |val|
+        settings = OpenStruct.new(plantheal_settings: { 'heal_past_ml' => val })
+        result = instance.send(:load_settings, settings)
+        expect(result[:heal_past_ml]).to eq(true), "Expected '#{val}' to be true"
+      end
+
+      %w[false 0 no n].each do |val|
+        settings = OpenStruct.new(plantheal_settings: { 'heal_past_ml' => val })
+        result = instance.send(:load_settings, settings)
+        expect(result[:heal_past_ml]).to eq(false), "Expected '#{val}' to be false"
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # HugResult struct
+  # ---------------------------------------------------------------------------
+
+  describe 'HugResult' do
+    it 'returns true for zero? when hugs is 0' do
+      result = PlantHeal::HugResult.new(0, :no_plant)
+      expect(result.zero?).to be true
+    end
+
+    it 'returns false for zero? when hugs is positive' do
+      result = PlantHeal::HugResult.new(1, :ok)
+      expect(result.zero?).to be false
+    end
+
+    it 'stores hugs count' do
+      result = PlantHeal::HugResult.new(5, :ok)
+      expect(result.hugs).to eq(5)
+    end
+
+    it 'stores reason symbol' do
+      result = PlantHeal::HugResult.new(0, :fully_healed)
+      expect(result.reason).to eq(:fully_healed)
+    end
+
+    it 'supports all valid reason symbols' do
+      %i[ok no_plant fully_healed stopped_early].each do |reason|
+        result = PlantHeal::HugResult.new(0, reason)
+        expect(result.reason).to eq(reason)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # validate_ev_waggle!
+  # ---------------------------------------------------------------------------
+
+  describe '#validate_ev_waggle!' do
+    it 'exits when ev_waggle is nil' do
+      instance = build_instance(ev_waggle: nil)
+      expect(DRC).to receive(:message).with(/waggle_set 'plantheal' is required/)
+      expect { instance.send(:validate_ev_waggle!) }.to raise_error(SystemExit)
+    end
+
+    it 'exits when EV spell key is missing from waggle' do
+      instance = build_instance(ev_waggle: { 'Heal' => {} })
+      expect(DRC).to receive(:message).with(/must contain an 'Embrace of the Vela'Tohr' spell entry/)
+      expect(DRC).to receive(:message).with(/Found keys: Heal/)
+      expect { instance.send(:validate_ev_waggle!) }.to raise_error(SystemExit)
+    end
+
+    it 'does not exit when EV spell key is present' do
+      instance = build_instance(ev_waggle: { "Embrace of the Vela'Tohr" => {} })
+      expect(DRC).not_to receive(:message)
+      expect { instance.send(:validate_ev_waggle!) }.not_to raise_error
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Constants
+  # ---------------------------------------------------------------------------
+
+  describe 'constants' do
+    it 'defines PASSIVE_HEAL_POLL_INTERVAL as 5' do
+      expect(PlantHeal::PASSIVE_HEAL_POLL_INTERVAL).to eq(5)
+    end
+
+    it 'defines PASSIVE_HEAL_MAX_WAIT as 120' do
+      expect(PlantHeal::PASSIVE_HEAL_MAX_WAIT).to eq(120)
+    end
+
+    it 'defines EV_SPELL_KEY' do
+      expect(PlantHeal::EV_SPELL_KEY).to eq("Embrace of the Vela'Tohr")
+    end
+
+    it 'defines MAX_BACKFIRE_RETRIES as 2' do
+      expect(PlantHeal::MAX_BACKFIRE_RETRIES).to eq(2)
+    end
+
+    it 'defines PLANT_NOUNS regex matching plant forms' do
+      %w[plant thicket bush briar shrub thornbush].each do |form|
+        expect("a vela'tohr #{form}").to match(PlantHeal::PLANT_NOUNS)
+      end
+    end
+
+    it 'defines NO_HEAL_NEEDED regex' do
+      expect('The plant has no need of healing.').to match(PlantHeal::NO_HEAL_NEEDED)
+    end
+
+    it 'defines HUG_APPRECIATES regex' do
+      expect('The plant appreciates the sentiment').to match(PlantHeal::HUG_APPRECIATES)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # ev_spell_data
+  # ---------------------------------------------------------------------------
+
+  describe '#ev_spell_data' do
+    it 'returns nil when ev_waggle is nil' do
+      instance = build_instance(ev_waggle: nil)
+      expect(instance.send(:ev_spell_data)).to be_nil
+    end
+
+    it 'returns EV spell hash from waggle' do
+      ev_data = { 'mana' => 40, 'focus' => 'orb' }
+      instance = build_instance(ev_waggle: { "Embrace of the Vela'Tohr" => ev_data })
+      expect(instance.send(:ev_spell_data)).to eq(ev_data)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # to_bool helper
+  # ---------------------------------------------------------------------------
+
+  describe '#to_bool' do
+    let(:instance) { PlantHeal.allocate }
+
+    it 'returns default when val is nil' do
+      expect(instance.send(:to_bool, nil, true)).to eq(true)
+      expect(instance.send(:to_bool, nil, false)).to eq(false)
+    end
+
+    it 'returns true for truthy strings' do
+      %w[true TRUE True 1 yes YES Yes y Y].each do |val|
+        expect(instance.send(:to_bool, val, false)).to eq(true), "Expected '#{val}' to be true"
+      end
+    end
+
+    it 'returns false for non-truthy strings' do
+      %w[false FALSE 0 no NO n N nope anything].each do |val|
+        expect(instance.send(:to_bool, val, true)).to eq(false), "Expected '#{val}' to be false"
+      end
+    end
   end
 end
