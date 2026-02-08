@@ -238,6 +238,7 @@ class WorkOrders
       break unless GIVE_LOGBOOK_RETRY_PATTERNS.any? { |pattern| pattern.is_a?(Regexp) ? pattern.match?(result) : result.include?(pattern) }
     end
     stow_tool('logbook')
+    Lich::Messaging.msg('plain', 'WorkOrders: Work order completed and turned in')
   end
 
   def get_tool(name)
@@ -254,6 +255,7 @@ class WorkOrders
       DRCM.ensure_copper_on_hand(1500, @settings, @hometown)
       DRCT.walk_to(current)
       DRCC.repair_own_tools(get_data('crafting')['blacksmithing'][@hometown], tools, @bag, @bag_items, @belt)
+      Lich::Messaging.msg('plain', 'WorkOrders: Tool repair using own materials completed')
       return
     end
 
@@ -277,6 +279,7 @@ class WorkOrders
       stow_tool(DRC.right_hand) if DRC.right_hand
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
+    Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
   end
 
   def find_recipe(materials_info, recipe, quantity)
@@ -897,7 +900,7 @@ class WorkOrders
     DRCI.stow_hands
     500.times do
       unless find_npc(npc_rooms, npc_last_name)
-        Lich::Messaging.msg('bold', "WorkOrders: Could not find NPC #{npc_last_name}")
+        Lich::Messaging.msg('bold', "WorkOrders: Could not find NPC #{npc_last_name} - will retry")
         next
       end
       DRC.bput("get my #{logbook} logbook", 'You get') unless DRC.left_hand || DRC.right_hand
@@ -913,6 +916,7 @@ class WorkOrders
           quantity = match[:quantity].to_i
           if @min_items <= quantity && quantity <= @max_items && match_names.include?(item)
             stow_tool('logbook')
+            Lich::Messaging.msg('plain', "WorkOrders: Accepted work order for #{quantity} #{item}")
             return [item, quantity]
           end
         end
