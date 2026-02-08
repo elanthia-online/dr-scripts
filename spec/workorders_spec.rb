@@ -548,16 +548,11 @@ RSpec.describe WorkOrders do
 
     context 'when tool needs no repair' do
       it 'stows tool when repair not needed' do
-        # Mock sequence: give hammer (no scratch), give tongs (no scratch), get ticket (none)
-        allow(DRC).to receive(:bput) do |cmd, *_patterns|
-          if cmd.include?('give')
-            "There isn't a scratch on that"
-          elsif cmd.include?('get my')
-            'What were'
-          else
-            ''
-          end
-        end
+        # Mock sequence: give hammer (no scratch), give tongs (no scratch), no tickets to pick up
+        allow(DRC).to receive(:bput).and_return("There isn't a scratch on that")
+        # No tickets to pick up - DRCI.get_item? returns false
+        allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+
         expect(workorders).to receive(:get_tool).with('hammer')
         expect(workorders).to receive(:get_tool).with('tongs')
         expect(workorders).to receive(:stow_tool).with('hammer')

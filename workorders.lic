@@ -279,7 +279,7 @@ class WorkOrders
       end
     end
 
-    while DRC.bput("get my #{info['repair-npc']} ticket", 'You get', 'What were') == 'You get'
+    while DRCI.get_item?("#{info['repair-npc']} ticket")
       pause 30 until DRC.bput('look at my ticket', 'should be ready by now', 'Looking at the') == 'should be ready by now'
       DRC.bput("give #{info['repair-npc']}", 'You hand')
       pause 1
@@ -310,8 +310,7 @@ class WorkOrders
     material_volume = 0
     bone_carving = recipe['material'] == 'bone'
 
-    case DRC.bput('get my surface polish', 'You get', 'What were')
-    when 'You get'
+    if DRCI.get_item?('surface polish')
       count_result = DRC.bput('count my polish', 'The surface polish has \d+ uses remaining')
       match = count_result.match(POLISH_COUNT_PATTERN)
       if match && match[:count].to_i < 3
