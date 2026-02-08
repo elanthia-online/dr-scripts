@@ -3,54 +3,41 @@
 require 'ostruct'
 require 'time'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
+# Define Flags BEFORE loading test harness to avoid conflicts with other specs
+# that may define Flags differently (e.g., workorders_spec.rb defines it as a module)
+class Flags
+  @flags = {}
 
-# Ensure Flags has the methods we need (may be a module from lich-5 or a class from harness)
-# Add each method individually if not already defined
-class << Flags
-  unless method_defined?(:[]=)
+  class << self
     def []=(key, value)
-      @flags ||= {}
       @flags[key] = value
     end
-  end
 
-  unless method_defined?(:[])
     def [](key)
-      @flags ||= {}
       @flags[key]
     end
-  end
 
-  unless method_defined?(:reset)
     def reset(key)
-      @flags ||= {}
       @flags[key] = false
     end
-  end
 
-  unless method_defined?(:add)
     def add(key, *_matchers)
-      @flags ||= {}
       @flags[key] = false
     end
-  end
 
-  unless method_defined?(:delete)
     def delete(key)
-      @flags ||= {}
       @flags.delete(key)
     end
-  end
 
-  unless method_defined?(:_reset_all)
     def _reset_all
       @flags = {}
     end
   end
 end
+
+# Load test harness which provides mock game objects
+load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
+include Harness
 
 # Extract and eval a class from a .lic file without executing top-level code
 def load_lic_class(filename, class_name)
