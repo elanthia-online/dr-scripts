@@ -1,11 +1,127 @@
+# frozen_string_literal: true
+
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#forge
 =end
 
 class Forge
+  # Rental notice patterns
+  RENTAL_EXPIRE_PATTERN = /It will expire (?<expire_time>.+)\./
+  RENTAL_NOT_FOUND_PATTERNS = ['I could not find', 'What were you referring to'].freeze
+  RENTAL_RENEW_SUCCESS_PATTERNS = ['You mark the notice', 'renewed your rental', 'extends your rental'].freeze
+  RENTAL_RENEW_FAILURE_PATTERNS = ["You don't have enough", 'I could not find'].freeze
+
+  # Tool-related patterns
+  TONGS_ERROR_PATTERNS = ['You must be holding some metal tongs', 'That tool does not seem'].freeze
+
+  # Forge state patterns - temper
+  TEMPER_START_PATTERN = 'You glance down at the hot coals of the forge'
+  TEMPER_CONTINUE_PATTERN = 'ensure even heating in the forge'
+
+  # Fuel patterns
+  FUEL_NEEDED_PATTERNS = ['needs more fuel', 'need some more fuel', 'Almost all of the coal has been consumed'].freeze
+  BELLOWS_NEEDED_PATTERNS = ['fire dims and produces less heat', 'fire flickers and is unable to consume its fuel', 'The forge fire has died down'].freeze
+
+  # Tongs turn patterns
+  TONGS_TURN_PATTERNS = [
+    'straightening along the horn of the anvil',
+    'would benefit from some soft reworking.',
+    'set using tongs',
+    'sets using tongs',
+    'into wire using a mandrel or mold set',
+    'metal is in need of some gentle bending'
+  ].freeze
+
+  # Cooling patterns
+  COOLING_PATTERNS = ['in the slack tub', 'The metal is ready to be cooled'].freeze
+
+  # Wire brush pattern
+  WIRE_BRUSH_PATTERN = 'The grinding has left many nicks and burs'
+
+  # Pounding patterns
+  POUND_PATTERNS = [
+    'must be pounded free',
+    'the armor now needs reassembly with a hammer',
+    'looks ready to be pounded',
+    'appears ready for more pounding',
+    'anything that would obstruct pounding of the metal',
+    'appears ready for pounding the assembled handle'
+  ].freeze
+
+  # Grindstone patterns
+  GRINDSTONE_PATTERNS = [
+    'ready for grinding away of the excess metal',
+    'now appears ready for grinding and polishing',
+    "thinning the armor's metal at a grindstone",
+    'The armor is ready to be lightened',
+    'ready to be ground away',
+    'You think adjusting the armor'
+  ].freeze
+
+  # Pliers patterns
+  PLIERS_PATTERNS = [
+    'Some pliers are now required',
+    'appear ready to be woven',
+    'using a pair of pliers',
+    'using pliers',
+    'ready for more bending of links and plates'
+  ].freeze
+
+  # Oil patterns
+  OIL_PATTERNS = [
+    'in need of some oil to preserve',
+    'protection by pouring oil on it',
+    'metal will quickly rust',
+    'to be cleaned of the clay'
+  ].freeze
+
+  # Assembly patterns
+  HANDLE_ASSEMBLY_PATTERN = 'now needs the handle assembled and pounded into place'
+  INGREDIENTS_PATTERN = 'Ingredients can be added'
+
+  # Error patterns
+  INGOT_TOO_SMALL_PATTERN = 'You need a larger volume of metal'
+  ITEM_NOT_FOUND_PATTERN = 'I could not find what you were referring to'
+  OIL_EMPTY_PATTERN = 'Pour what'
+
+  # Completion patterns
+  FINAL_TOUCHES_PATTERN = 'Applying the final touches'
+  ROUNDTIME_PATTERN = 'Roundtime'
+  GRINDSTONE_SLOW_PATTERN = 'not spinning fast enough'
+
+  # Grindstone spin patterns
+  SPIN_SUCCESS_PATTERNS = ['keeping it spinning fast', 'making it spin even faster'].freeze
+  SPIN_FAILURE_PATTERNS = ['not spinning fast enough', 'Roundtime'].freeze
+  SPIN_MISSING_PATTERN = 'Turn what'
+
+  # Get/put patterns
+  GET_SUCCESS_PATTERN = 'You get'
+  GET_FAILURE_PATTERN = 'What were you referring to?'
+  PUT_SUCCESS_PATTERN = 'You put'
+  ASSEMBLE_SUCCESS_PATTERNS = [
+    'affix it securely in place',
+    'and tighten the pommel to secure it',
+    'carefully mark where it will attach when you continue crafting',
+    'You layer the leather strips'
+  ].freeze
+  ASSEMBLE_NOT_REQUIRED_PATTERN = 'is not required to continue crafting'
+
+  # Stamp patterns
+  STAMP_PATTERNS = ['carefully hammer the stamp', 'You cannot figure out how to do that', 'too badly damaged'].freeze
+
+  # Swap patterns
+  SWAP_PATTERNS = ['You move', 'You have nothing'].freeze
+
+  # Find item patterns
+  ANVIL_HAS_ITEM_PATTERN = 'anvil you see'
+  ANVIL_EMPTY_PATTERN = 'clean and ready'
+  FORGE_HAS_ITEM_PATTERN = 'forge you see'
+  FORGE_EMPTY_PATTERN = 'There is nothing'
+
   def initialize
     arg_definitions = [
       [
+        { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
         { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
         { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
         { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
@@ -15,6 +131,7 @@ class Forge
         { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
       ],
       [
+        { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
         { name: 'instructions', regex: /instructions/i, description: 'Instructions if using instructions' },
         { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
         { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item being crafted' },
@@ -38,7 +155,8 @@ class Forge
     args = parse_args(arg_definitions)
     Flags.add('forge-assembly', 'another finished \S+ shield (handle)', 'another finished wooden (hilt|haft)', 'another finished (long|short|small|large) leather (cord|backing)', 'another finished (small|large) cloth (padding)', 'another finished (long|short) wooden (pole)', 'appears ready to be reinforced with some (leather strips)')
     Flags.add('work-done', 'from the successful .* process', 'shows a slightly reduced weight', 'shows improved protection', 'Applying the final touches', /^The .* was successfully/)
-    Flags.add('ingot-restow', /^You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)./)
+    Flags.add('ingot-restow', /^You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
+    Flags.add('forge-rental-warning', 'Your rental time is almost up')
 
     settings = get_settings
     @hometown = settings.hometown
@@ -53,32 +171,23 @@ class Forge
     @resume = args.resume
     @instruction = args.instructions
     @item = args.noun
+    @finish = args.finish || 'hold'
     @info = get_data('crafting')['blacksmithing'][@hometown]
-    case args.recipe_name
-    when 'hone'
-      @recipe_name = "metal weapon honing"
-    when 'balance'
-      @recipe_name = "metal weapon balancing"
-    when 'lighten'
-      @recipe_name = "metal armor lightening"
-    when 'reinforce'
-      @recipe_name = "metal armor reinforcing"
-    else
-      @recipe_name = args.recipe_name
-    end
-    echo("Recipe                                       :: #{@recipe_name}") if @debug
+    @recipe_name = resolve_recipe_name(args.recipe_name)
     @metal = args.metal
     @next_spin = Time.now
     @debug = args.debug || settings.debug_mode
+    debug_log("Recipe                                       :: #{@recipe_name}")
 
     DRC.wait_for_script_to_complete('buff', ['forge'])
     if settings.adjustable_tongs && @item != 'tongs'
       @adjustable_tongs = DRCC.get_adjust_tongs?('reset tongs', @bag, @bag_items, @forging_belt)
-      echo("Tongs adjustable?                            :: #{@adjustable_tongs}") if @debug
+      debug_log("Tongs adjustable?                            :: #{@adjustable_tongs}")
       DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
     end
 
     find_item if args.resume
+    check_rental_status
     DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt) unless args.skip
     set_defaults
     work(settings) if args.resume
@@ -87,11 +196,36 @@ class Forge
     work(settings)
   end
 
+  private
+
+  def resolve_recipe_name(recipe_arg)
+    case recipe_arg
+    when 'hone'
+      'metal weapon honing'
+    when 'balance'
+      'metal weapon balancing'
+    when 'lighten'
+      'metal armor lightening'
+    when 'reinforce'
+      'metal armor reinforcing'
+    else
+      recipe_arg
+    end
+  end
+
+  def debug_log(message)
+    Lich::Messaging.msg('plain', "Forge: #{message}") if @debug
+  end
+
+  def error_log(message)
+    Lich::Messaging.msg('bold', "Forge: #{message}")
+  end
+
   def check_hand(item)
     if DRCI.in_right_hand?(item)
-      DRC.bput('swap', 'You move', 'You have nothing')
+      DRC.bput('swap', *SWAP_PATTERNS)
     else
-      DRC.message("MISSING #{item}, Please find it and restart.")
+      error_log("MISSING #{item}. Please find it and restart.")
       magic_cleanup
       exit
     end
@@ -104,8 +238,8 @@ class Forge
       @home_command = "turn #{@item} on forge with my tongs"
       @stamp = false
       swap_tool('tongs')
-      check_hand("tongs") unless DRCI.in_left_hand?("tongs")
-      @location = "on forge"
+      check_hand('tongs') unless DRCI.in_left_hand?('tongs')
+      @location = 'on forge'
       @command ||= "put my #{@item} on the forge"
     when 'metal weapon honing', 'metal weapon balancing'
       @home_tool = 'wire brush'
@@ -124,14 +258,14 @@ class Forge
       @book_type = 'armorsmithing'
       @stamp = false
     else
-      @location = "on anvil"
+      @location = 'on anvil'
       @home_tool = @hammer
       @home_command = "pound #{@item} on anvil with my #{@hammer}"
     end
-    echo("Default tool for this routine                :: #{@home_tool}") if @debug
-    echo("Default command for this routine             :: #{@home_command}") if @debug
-    echo("Item is where? Empty if held                 :: #{@location}") if @debug
-    echo("Item's name?                                 :: #{@item}") if @debug
+    debug_log("Default tool for this routine                :: #{@home_tool}")
+    debug_log("Default command for this routine             :: #{@home_command}")
+    debug_log("Item is where? Empty if held                 :: #{@location}")
+    debug_log("Item's name?                                 :: #{@item}")
   end
 
   def prep(settings)
@@ -149,34 +283,36 @@ class Forge
         DRCC.find_recipe2(@chapter, @recipe_name, settings.master_crafting_book, @book_type)
       else
         DRCC.get_crafting_item("#{@book_type} book", @bag, @bag_items, @forging_belt)
-        echo('*** You will need to upgrade to a journeyman or master book before 176 ranks! ***') if DRSkill.getrank('Forging') == 175
+        if DRSkill.getrank('Forging') == 175
+          error_log('You will need to upgrade to a journeyman or master book before 176 ranks!')
+        end
         DRCC.find_recipe2(@chapter, @recipe_name)
-        DRCC.stow_crafting_item("book", @bag, @forging_belt)
+        DRCC.stow_crafting_item('book', @bag, @forging_belt)
       end
     end
     swap_tool(@home_tool)
-    if @metal
-      DRCC.get_crafting_item("#{@metal} ingot", @bag, @bag_items, @forging_belt)
-      DRC.bput('put my ingot on anvil', 'You put your')
-      swap_tool(@hammer)
-      swap_tool('tongs')
-      @command = "pound ingot on anvil with my #{@hammer}"
+    return unless @metal
+
+    unless DRCI.get_item?("#{@metal} ingot", @bag)
+      error_log("Failed to get #{@metal} ingot from #{@bag}. Exiting.")
+      magic_cleanup
+      exit
     end
+    DRC.bput('put my ingot on anvil', PUT_SUCCESS_PATTERN)
+    swap_tool(@hammer)
+    swap_tool('tongs')
+    @command = "pound ingot on anvil with my #{@hammer}"
   end
 
   def spin_grindstone
     waitrt? # Keep, makes it perform the time check AFTER rt.
     return if Time.now <= @next_spin
 
-    case DRC.bput('turn grind',
-                  'keeping it spinning fast',
-                  'making it spin even faster',
-                  'not spinning fast enough',
-                  'Turn what',
-                  'Roundtime')
-    when 'Roundtime', 'not spinning fast enough'
+    result = DRC.bput('turn grind', *SPIN_SUCCESS_PATTERNS, *SPIN_FAILURE_PATTERNS, SPIN_MISSING_PATTERN)
+    case result
+    when *SPIN_FAILURE_PATTERNS
       spin_grindstone
-    when 'Turn what'
+    when SPIN_MISSING_PATTERN
       DRCC.find_grindstone(@hometown)
       spin_grindstone
     else
@@ -185,20 +321,20 @@ class Forge
   end
 
   def swap_tool(next_tool, skip = false)
-    echo("What is the next tool?                       :: #{next_tool}") if @debug
-    echo("Are we holding the next tool?                :: #{DRCI.in_hands?(next_tool)}") if @debug
-    echo("Is the next tool tongs?                      :: #{next_tool.include?('tongs')}") if @debug
-    echo("Are we adjusting tongs (to tongs)?           :: #{(next_tool == 'tongs') && @adjustable_tongs}") if @debug
-    echo("Are we adjusting tongs (to shovel)?          :: #{(next_tool == 'shovel') && @adjustable_tongs}") if @debug
+    debug_log("What is the next tool?                       :: #{next_tool}")
+    debug_log("Are we holding the next tool?                :: #{DRCI.in_hands?(next_tool)}")
+    debug_log("Is the next tool tongs?                      :: #{next_tool.include?('tongs')}")
+    debug_log("Are we adjusting tongs (to tongs)?           :: #{(next_tool == 'tongs') && @adjustable_tongs}")
+    debug_log("Are we adjusting tongs (to shovel)?          :: #{(next_tool == 'shovel') && @adjustable_tongs}")
     if next_tool.include?('tongs') && @adjustable_tongs
-      echo("Making tongs tongs again                     :: NOW") if @debug
+      debug_log('Making tongs tongs again                     :: NOW')
       DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs)
     elsif next_tool.include?('shovel') && @adjustable_tongs
-      echo("Making tongs shovel again                  :: NOW") if @debug
+      debug_log('Making tongs shovel again                    :: NOW')
       DRCC.get_adjust_tongs?('shovel', @bag, @bag_items, @forging_belt, @adjustable_tongs)
     elsif !DRCI.in_hands?(next_tool)
       if next_tool == 'tongs'
-        echo("Getting tongs (AjT false)                  :: NOW") if @debug
+        debug_log('Getting tongs (AjT false)                    :: NOW')
         DRCC.get_crafting_item(next_tool, @bag, @bag_items, @forging_belt)
       else
         DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
@@ -211,45 +347,54 @@ class Forge
     while Flags['forge-assembly']
       tool = DRC.right_hand
       DRCC.stow_crafting_item(tool, @bag, @forging_belt)
-      part = nil
       part = Flags['forge-assembly'].to_a[1..-1].join(' ')
       Flags.reset('forge-assembly')
-      if /referring/ =~ DRC.bput("get my #{part}", 'You get', 'What were you referring to?')
-        DRC.message("Missing #{part}, exiting")
+
+      unless DRCI.get_item?(part)
+        error_log("Missing #{part}. Cannot continue assembly. Exiting.")
         magic_cleanup
         exit
       end
-      if /not required/ =~ DRC.bput("assemble my #{@item} with my #{part}", 'affix it securely in place', 'and tighten the pommel to secure it', 'carefully mark where it will attach when you continue crafting', 'You layer the leather strips', 'is not required to continue crafting')
-        DRC.bput("stow my #{part}")
+
+      result = DRC.bput("assemble my #{@item} with my #{part}", *ASSEMBLE_SUCCESS_PATTERNS, ASSEMBLE_NOT_REQUIRED_PATTERN)
+      if result == ASSEMBLE_NOT_REQUIRED_PATTERN
+        DRCI.put_away_item?(part, @bag)
       end
       swap_tool(tool) if tool
     end
   end
 
   def find_item
-    if DRCI.in_hands?(@item) # subsumes any enhancement. if you're holding it, it's in this box.
-      @recipe_name = "metal weapon balancing"
+    if DRCI.in_hands?(@item)
+      # Item in hand - assume it's an enhancement in progress
+      @recipe_name = 'metal weapon balancing'
       @command = "analyze my #{@item}"
       return
-    elsif /anvil you see/ =~ DRC.bput("look on anvil", 'anvil you see', 'clean and ready')  # anything on the anvil is likely being crafted.
+    end
+
+    result = DRC.bput('look on anvil', ANVIL_HAS_ITEM_PATTERN, ANVIL_EMPTY_PATTERN)
+    if result == ANVIL_HAS_ITEM_PATTERN
       @home_tool = @hammer
       @recipe_name = 'metal thing'
       @home_command = "pound #{@item} on anvil with my #{@hammer}"
       @command = "analyze #{@item} on anvil"
-      @location = "on anvil"
+      @location = 'on anvil'
       return
-    elsif /forge you see/ =~ DRC.bput("look on forge", 'forge you see', 'There is nothing') # temper. Only reason anything is on the forge.
+    end
+
+    result = DRC.bput('look on forge', FORGE_HAS_ITEM_PATTERN, FORGE_EMPTY_PATTERN)
+    if result == FORGE_HAS_ITEM_PATTERN
       @recipe_name = 'temper'
       @home_tool = 'tongs'
       @home_command = "turn #{@item} on forge with my tongs"
       @stamp = false
       @command = "analyze #{@item} on forge"
-      @location = "on forge"
+      @location = 'on forge'
       return
-    else
-      DRC.message("#{@item} not found")
-      exit
     end
+
+    error_log("#{@item} not found on anvil, forge, or in hands. Exiting.")
+    exit
   end
 
   def restow_ingot
@@ -259,197 +404,251 @@ class Forge
     return if /#{temp_bag}/ =~ @bag
 
     DRCC.stow_crafting_item(tool, @bag, @forging_belt)
-    DRCI.put_away_item?("#{@metal} ingot", @bag) if DRCI.get_item?("#{@metal} ingot", temp_bag)
+    if DRCI.get_item?("#{@metal} ingot", temp_bag)
+      unless DRCI.put_away_item?("#{@metal} ingot", @bag)
+        error_log("Failed to stow #{@metal} ingot in #{@bag}.")
+      end
+    end
     swap_tool(tool) if tool
+  end
+
+  def check_rental_status
+    result = DRC.bput('read notice', RENTAL_EXPIRE_PATTERN, *RENTAL_NOT_FOUND_PATTERNS)
+    match = result.match(RENTAL_EXPIRE_PATTERN)
+    return unless match
+
+    expire_str = match[:expire_time]
+    begin
+      # Parse format: "Sun Dec 28 23:39:15 ET 2025"
+      # Convert ET to a timezone offset for parsing
+      expire_str_normalized = expire_str.sub(' ET ', ' -0500 ')
+      expire_time = Time.parse(expire_str_normalized)
+      minutes_remaining = ((expire_time - Time.now) / 60).to_i
+
+      debug_log("Rental expires: #{expire_str} (#{minutes_remaining} minutes remaining)")
+
+      if minutes_remaining < 10
+        error_log("RENTAL LOW (#{minutes_remaining} min) - PRE-EMPTIVELY RENEWING")
+        renew_forge_rental
+      elsif minutes_remaining < 20
+        error_log("Rental has #{minutes_remaining} minutes remaining")
+      end
+    rescue ArgumentError => e
+      debug_log("Could not parse rental time: #{expire_str} - #{e.message}")
+    end
+  end
+
+  def renew_forge_rental
+    error_log('FORGE RENTAL EXPIRING - AUTO-RENEWING')
+    Flags.reset('forge-rental-warning')
+    result = DRC.bput('mark notice', *RENTAL_RENEW_SUCCESS_PATTERNS, *RENTAL_RENEW_FAILURE_PATTERNS)
+    case result
+    when "You don't have enough"
+      error_log('INSUFFICIENT FUNDS TO RENEW RENTAL')
+    when 'I could not find'
+      error_log('COULD NOT FIND NOTICE - CHECK LOCATION')
+    else
+      error_log('RENTAL RENEWED')
+    end
   end
 
   def work(settings)
     loop do
       DRCA.crafting_magic_routine(settings)
+      renew_forge_rental if Flags['forge-rental-warning']
       assemble_part
       spin_grindstone if @command.include?('grindstone')
       @command = @home_command unless @command
 
       result = DRC.bput(@command,
-                        'You must be holding some metal tongs',
-                        'That tool does not seem',
-                        'You glance down at the hot coals of the forge',
-                        'ensure even heating in the forge',
-                        'needs more fuel',
-                        'need some more fuel',
-                        'Almost all of the coal has been consumed',
-                        'fire dims and produces less heat',
-                        'fire flickers and is unable to consume its fuel',
-                        'The forge fire has died down',
-                        'straightening along the horn of the anvil',
-                        'would benefit from some soft reworking.',
-                        'set using tongs', 'sets using tongs',
-                        'into wire using a mandrel or mold set',
-                        'metal is in need of some gentle bending',
-                        'The grinding has left many nicks and burs',
-                        'not spinning fast enough',
-                        'must be pounded free',
-                        'the armor now needs reassembly with a hammer',
-                        'looks ready to be pounded',
-                        'appears ready for more pounding',
-                        'anything that would obstruct pounding of the metal',
-                        'appears ready for pounding the assembled handle',
-                        'ready for grinding away of the excess metal',
-                        'now appears ready for grinding and polishing',
-                        'thinning the armor\'s metal at a grindstone',
-                        'The armor is ready to be lightened',
-                        'ready to be ground away',
-                        'in the slack tub',
-                        'The metal is ready to be cooled',
-                        'Some pliers are now required',
-                        'appear ready to be woven',
-                        'using a pair of pliers',
-                        'using pliers',
-                        'ready for more bending of links and plates',
-                        'in need of some oil to preserve',
-                        'protection by pouring oil on it',
-                        'metal will quickly rust',
-                        'to be cleaned of the clay',
-                        'now needs the handle assembled and pounded into place',
-                        'You need a larger volume of metal',
-                        'I could not find what you were referring to',
-                        'Ingredients can be added',
-                        'Pour what',
-                        'Applying the final touches',
-                        'Roundtime')
-      echo("Match result                                 :: #{result}") if @debug
-      echo("Assembly? Part string or false               :: #{Flags['forge-assembly']}") if @debug
+                        *TONGS_ERROR_PATTERNS,
+                        TEMPER_START_PATTERN,
+                        TEMPER_CONTINUE_PATTERN,
+                        *FUEL_NEEDED_PATTERNS,
+                        *BELLOWS_NEEDED_PATTERNS,
+                        *TONGS_TURN_PATTERNS,
+                        WIRE_BRUSH_PATTERN,
+                        GRINDSTONE_SLOW_PATTERN,
+                        *POUND_PATTERNS,
+                        *GRINDSTONE_PATTERNS,
+                        *COOLING_PATTERNS,
+                        *PLIERS_PATTERNS,
+                        *OIL_PATTERNS,
+                        HANDLE_ASSEMBLY_PATTERN,
+                        INGOT_TOO_SMALL_PATTERN,
+                        ITEM_NOT_FOUND_PATTERN,
+                        INGREDIENTS_PATTERN,
+                        OIL_EMPTY_PATTERN,
+                        FINAL_TOUCHES_PATTERN,
+                        ROUNDTIME_PATTERN)
+      debug_log("Match result                                 :: #{result}")
+      debug_log("Assembly? Part string or false               :: #{Flags['forge-assembly']}")
       restow_ingot if Flags['ingot-restow']
-      case result
-      when 'You must be holding some metal tongs', 'That tool does not seem' # tool snafu
-        DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs)
-      when 'You glance down at the hot coals of the forge' # first temper put
-        @command = "put my #{@item} on the forge"
-      when 'ensure even heating in the forge' # keep tempering
-        swap_tool('tongs')
-        @command = "turn #{@item} on forge with my tongs"
-      when 'needs more fuel', 'need some more fuel', 'Almost all of the coal has been consumed' # add fuel
-        if @adjustable_tongs
-          shovel = "tongs"
-          echo("Tool selected for shovel (AjT TRUE)          :: #{shovel}") if @debug
-        else
-          shovel = "shovel"
-          echo("Tool selected for shovel (AjT FALSE)         :: #{shovel}") if @debug
-        end
-        echo("Tool selected for shovel                       :: #{shovel}") if @debug
-        swap_tool('shovel')
-        @command = "push fuel with my #{shovel}"
-      when 'fire dims and produces less heat', 'fire flickers and is unable to consume its fuel',
-           'The forge fire has died down' # push bellows
-        swap_tool('bellows')
-        @command = "push my bellows"
-      when 'straightening along the horn of the anvil', 'would benefit from some soft reworking.',
-           'set using tongs', 'sets using tongs', 'into wire using a mandrel or mold set',
-           'metal is in need of some gentle bending' # turn with tongs
-        swap_tool(@hammer)
-        swap_tool('tongs')
-        @command = "turn #{@item} on anvil with my tongs"
-      when 'in the slack tub', 'The metal is ready to be cooled' # tub-time
-        DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-        DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-        @command = "push tub"
-      when 'The grinding has left many nicks and burs'
-        swap_tool('wire brush')
-        @command = "rub my #{@item} with my brush"
-      when 'must be pounded free', 'the armor now needs reassembly with a hammer', 'appears ready for more pounding', # hammer+tongs
-           'looks ready to be pounded', 'anything that would obstruct pounding of the metal', 'appears ready for pounding the assembled handle'
-        DRC.bput("put my #{@item} on anvil", 'You put') if DRCI.in_hands?(@item)
-        swap_tool(@hammer)
-        swap_tool('tongs')
-        @command = "pound #{@item} on anvil with my #{@hammer}"
-      when 'not spinning fast enough' # grindstone slowed before we used
-        spin_grindstone
-      when 'ready for grinding away of the excess metal', 'now appears ready for grinding and polishing',
-           'thinning the armor\'s metal at a grindstone', 'The armor is ready to be lightened', 'ready to be ground away', 'You think adjusting the armor' # grindstone time
-        unless DRCI.in_left_hand?(@item)
-          DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
-          DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
-          DRC.bput("get #{@item} from anvil", 'You get')
-          check_hand(@item) unless DRCI.in_left_hand?(@item)
-        end
-        @home_tool = 'wire brush' if @resume
-        @command = "push grindstone with my #{@item}"
-      when 'Some pliers are now required', 'appear ready to be woven',
-        'using a pair of pliers', 'using pliers', 'ready for more bending of links and plates' # All the pliers
-        unless DRCI.in_left_hand?(@item)
-          DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
-          DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
-          DRC.bput("get #{@item} from anvil", 'You get')
-          check_hand(@item) unless DRCI.in_left_hand?(@item)
-        end
-        swap_tool('pliers')
-        @command = "pull my #{@item} with my pliers"
-      when 'in need of some oil to preserve', 'protection by pouring oil on it',
-           'metal will quickly rust', 'to be cleaned of the clay' # pour oil
-        if @home_tool == 'tongs'
-          DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-          DRC.bput("get #{@item} #{@location}", 'You get')
-        elsif !DRCI.in_left_hand?(@item)
-          DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-          DRC.bput("get #{@item} #{@location}", 'You get')
-        end
-        check_hand(@item) unless DRCI.in_left_hand?(@item)
-        swap_tool('oil', true)
-        @command = "pour my oil on my #{@item}"
-      when 'now needs the handle assembled and pounded into place'
-        DRC.bput("get #{@item} from anvil", 'You get')
-        check_hand(@item) unless DRCI.in_left_hand?(@item)
-        assemble_part
-        DRC.bput("put my #{@item} on anvil", 'You put')
-        swap_tool(@hammer)
-        swap_tool('tongs')
-        @command = "pound #{@item} on anvil with my #{@hammer}"
-      when 'You need a larger volume of metal'
-        echo '***You need a larger ingot to forge this item.***'
-        DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-        DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-        magic_cleanup
-        exit
-      when 'Pour what'
-        DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
-        swap_tool('oil')
-      when 'I could not find what you were referring to' # generally missing a tool
-        echo '*** ERROR TRYING TO CRAFT, EXITING ***'
-        DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-        DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-        exit
-      when 'Ingredients can be added' # backup catch for assembly
-        assemble_part
-      when 'Applying the final touches' # item completed - handle directly to avoid race condition
-        finish
-      when 'Roundtime' # The follow-on for most sub actions, eg shovel/bellows. When no next-step text is received, we revert to the "home" process.
-        waitrt?
-        echo("Work done?                                   :: #{Flags['work-done']}") if @debug
-        finish if Flags['work-done']
-        swap_tool(@home_tool)
-        DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs) if @home_tool == @hammer
-        @command = @home_command
-      end
+
+      handle_work_result(result, settings)
     end
   end
 
+  def handle_work_result(result, _settings)
+    case result
+    when *TONGS_ERROR_PATTERNS
+      DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs)
+    when TEMPER_START_PATTERN
+      @command = "put my #{@item} on the forge"
+    when TEMPER_CONTINUE_PATTERN
+      swap_tool('tongs')
+      @command = "turn #{@item} on forge with my tongs"
+    when *FUEL_NEEDED_PATTERNS
+      handle_fuel_needed
+    when *BELLOWS_NEEDED_PATTERNS
+      swap_tool('bellows')
+      @command = 'push my bellows'
+    when *TONGS_TURN_PATTERNS
+      swap_tool(@hammer)
+      swap_tool('tongs')
+      @command = "turn #{@item} on anvil with my tongs"
+    when *COOLING_PATTERNS
+      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
+      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+      @command = 'push tub'
+    when WIRE_BRUSH_PATTERN
+      swap_tool('wire brush')
+      @command = "rub my #{@item} with my brush"
+    when *POUND_PATTERNS
+      handle_pounding
+    when GRINDSTONE_SLOW_PATTERN
+      spin_grindstone
+    when *GRINDSTONE_PATTERNS
+      handle_grindstone
+    when *PLIERS_PATTERNS
+      handle_pliers
+    when *OIL_PATTERNS
+      handle_oiling
+    when HANDLE_ASSEMBLY_PATTERN
+      handle_handle_assembly
+    when INGOT_TOO_SMALL_PATTERN
+      error_log('You need a larger ingot to forge this item. Exiting.')
+      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
+      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+      magic_cleanup
+      exit
+    when OIL_EMPTY_PATTERN
+      DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
+      swap_tool('oil')
+    when ITEM_NOT_FOUND_PATTERN
+      error_log('Could not find item or tool. Check your setup. Exiting.')
+      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
+      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+      exit
+    when INGREDIENTS_PATTERN
+      assemble_part
+    when FINAL_TOUCHES_PATTERN
+      finish
+    when ROUNDTIME_PATTERN
+      handle_roundtime
+    end
+  end
+
+  def handle_fuel_needed
+    shovel = @adjustable_tongs ? 'tongs' : 'shovel'
+    debug_log("Tool selected for shovel (AjT #{@adjustable_tongs ? 'TRUE' : 'FALSE'})          :: #{shovel}")
+    swap_tool('shovel')
+    @command = "push fuel with my #{shovel}"
+  end
+
+  def handle_pounding
+    DRC.bput("put my #{@item} on anvil", PUT_SUCCESS_PATTERN) if DRCI.in_hands?(@item)
+    swap_tool(@hammer)
+    swap_tool('tongs')
+    @command = "pound #{@item} on anvil with my #{@hammer}"
+  end
+
+  def handle_grindstone
+    unless DRCI.in_left_hand?(@item)
+      DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
+      DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
+      result = DRC.bput("get #{@item} from anvil", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
+      if result == GET_FAILURE_PATTERN
+        error_log("Failed to get #{@item} from anvil for grindstone work.")
+      end
+      check_hand(@item) unless DRCI.in_left_hand?(@item)
+    end
+    @home_tool = 'wire brush' if @resume
+    @command = "push grindstone with my #{@item}"
+  end
+
+  def handle_pliers
+    unless DRCI.in_left_hand?(@item)
+      DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
+      DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
+      result = DRC.bput("get #{@item} from anvil", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
+      if result == GET_FAILURE_PATTERN
+        error_log("Failed to get #{@item} from anvil for pliers work.")
+      end
+      check_hand(@item) unless DRCI.in_left_hand?(@item)
+    end
+    swap_tool('pliers')
+    @command = "pull my #{@item} with my pliers"
+  end
+
+  def handle_oiling
+    if @home_tool == 'tongs' || !DRCI.in_left_hand?(@item)
+      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+      result = DRC.bput("get #{@item} #{@location}", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
+      if result == GET_FAILURE_PATTERN
+        error_log("Failed to get #{@item} from #{@location} for oiling.")
+      end
+    end
+    check_hand(@item) unless DRCI.in_left_hand?(@item)
+    swap_tool('oil', true)
+    @command = "pour my oil on my #{@item}"
+  end
+
+  def handle_handle_assembly
+    result = DRC.bput("get #{@item} from anvil", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
+    if result == GET_FAILURE_PATTERN
+      error_log("Failed to get #{@item} from anvil for handle assembly.")
+    end
+    check_hand(@item) unless DRCI.in_left_hand?(@item)
+    assemble_part
+    DRC.bput("put my #{@item} on anvil", PUT_SUCCESS_PATTERN)
+    swap_tool(@hammer)
+    swap_tool('tongs')
+    @command = "pound #{@item} on anvil with my #{@hammer}"
+  end
+
+  def handle_roundtime
+    waitrt?
+    debug_log("Work done?                                   :: #{Flags['work-done']}")
+    finish if Flags['work-done']
+    swap_tool(@home_tool)
+    DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs) if @home_tool == @hammer
+    @command = @home_command
+  end
+
   def finish
-    DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt) # stows any tools we're holding, item should be in our left hand always.
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
     if @stamp
       swap_tool('stamp')
-      DRC.bput("mark my #{@item} with my stamp", 'carefully hammer the stamp', 'You cannot figure out how to do that', 'too badly damaged')
+      DRC.bput("mark my #{@item} with my stamp", *STAMP_PATTERNS)
       DRCC.stow_crafting_item('stamp', @bag, @forging_belt)
     end
 
     case @finish
     when /log/
       DRCC.logbook_item('engineering', @item, @bag)
+      error_log("#{@item} logged to engineering logbook.")
     when /stow/
-      DRCC.stow_crafting_item(@item, @bag, @forging_belt)
+      if DRCC.stow_crafting_item(@item, @bag, @forging_belt)
+        error_log("#{@item} stowed in #{@bag}.")
+      else
+        error_log("Failed to stow #{@item}. Item may still be in hand.")
+      end
     when /trash/
       DRCI.dispose_trash(@item)
-    else # hold. Just leaves it in your hand.
-      DRC.message("#{@item} complete")
+      error_log("#{@item} disposed.")
+    else
+      error_log("#{@item} complete. Holding in hand.")
     end
     magic_cleanup
     exit
@@ -466,6 +665,7 @@ before_dying do
   Flags.delete('forge-assembly')
   Flags.delete('hone-done')
   Flags.delete('ingot-restow')
+  Flags.delete('forge-rental-warning')
 end
 
 Forge.new
