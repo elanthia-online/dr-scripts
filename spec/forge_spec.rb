@@ -3,41 +3,48 @@
 require 'ostruct'
 require 'time'
 
-# Define Flags BEFORE loading test harness to avoid conflicts with other specs
-# that may define Flags differently (e.g., workorders_spec.rb defines it as a module)
-class Flags
-  @flags = {}
-
-  class << self
-    def []=(key, value)
-      @flags[key] = value
-    end
-
-    def [](key)
-      @flags[key]
-    end
-
-    def reset(key)
-      @flags[key] = false
-    end
-
-    def add(key, *_matchers)
-      @flags[key] = false
-    end
-
-    def delete(key)
-      @flags.delete(key)
-    end
-
-    def _reset_all
-      @flags = {}
-    end
-  end
-end
-
 # Load test harness which provides mock game objects
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 include Harness
+
+# Helper to create a Flags stub for tests that need it
+# Use stub_const to avoid conflicts with other specs (e.g., workorders_spec.rb)
+def stub_flags_class
+  stub_const('Flags', Class.new do
+    @flags = {}
+
+    class << self
+      def []=(key, value)
+        @flags ||= {}
+        @flags[key] = value
+      end
+
+      def [](key)
+        @flags ||= {}
+        @flags[key]
+      end
+
+      def reset(key)
+        @flags ||= {}
+        @flags[key] = false
+      end
+
+      def add(key, *_matchers)
+        @flags ||= {}
+        @flags[key] = false
+      end
+
+      def delete(key)
+        @flags ||= {}
+        @flags.delete(key)
+      end
+
+      def _reset_all
+        @flags = {}
+      end
+    end
+  end)
+end
 
 # Extract and eval a class from a .lic file without executing top-level code
 def load_lic_class(filename, class_name)
@@ -353,6 +360,8 @@ RSpec.describe Forge do
     end
 
     describe '#check_rental_status' do
+      before { stub_flags_class }
+
       it 'returns early when notice not found' do
         allow(DRC).to receive(:bput).and_return('I could not find')
         expect(forge_instance.send(:check_rental_status)).to be_nil
@@ -398,6 +407,7 @@ RSpec.describe Forge do
 
     describe '#renew_forge_rental' do
       before do
+        stub_flags_class
         Flags.add('forge-rental-warning', 'test')
         Flags['forge-rental-warning'] = true
       end
@@ -467,6 +477,7 @@ RSpec.describe Forge do
 
     describe '#restow_ingot' do
       before do
+        stub_flags_class
         Flags.add('ingot-restow', /pattern/)
         Flags['ingot-restow'] = ['full match', 'pouch.']
       end
@@ -619,6 +630,7 @@ RSpec.describe Forge do
 
     describe '#handle_roundtime' do
       before do
+        stub_flags_class
         Flags.add('work-done', 'pattern')
         forge_instance.instance_variable_set(:@home_tool, 'forging hammer')
         forge_instance.instance_variable_set(:@home_command, 'pound sword on anvil with my forging hammer')
@@ -653,6 +665,7 @@ RSpec.describe Forge do
 
     describe '#assemble_part' do
       before do
+        stub_flags_class
         Flags.add('forge-assembly', 'pattern')
       end
 
