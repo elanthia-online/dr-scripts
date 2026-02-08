@@ -45,6 +45,7 @@ class SigilHarvest
         { name: 'sigil', regex: /\w+/, description: "Type of sigil to harvest OR enter 'random' to target a random sigil." },
         { name: 'precision', regex: /\d+/, description: 'Precision target.' },
         { name: 'minutes', regex: /\d+/, optional: true, description: 'Session time limit in minutes (default: 30)' },
+        { name: 'one', regex: /one/i, optional: true, description: 'Override time and only harvest from one room.' },
         { name: 'debug', regex: /debug/i, optional: true, description: 'Provides extra debug information while the script runs' }
       ]
     ]
@@ -95,6 +96,7 @@ class SigilHarvest
     @sigil_results = []
     @start_time = Time.now
     @time_limit = (@args.minutes || 30).to_i
+    @one = @args.one || nil
     @rooms_visited = 0
 
     log_startup_banner
@@ -455,7 +457,7 @@ class SigilHarvest
       case DRC.bput('scribe sigil', /You carefully/, /You should/)
       when /You carefully/
         scribe_count += 1
-        DRCI.stow_item?('sigil-scroll')
+        DRCC.stow_crafting_item('sigil-scroll', @bag, @belt)
         DRC.bput('get blank scroll', /You pick/, /You get/)
       when /You should/
         break
@@ -465,7 +467,7 @@ class SigilHarvest
     DRC.message("Scribes: #{scribe_count}")
 
     stow_burin
-    DRCI.stow_item?('blank scroll')
+    DRCC.stow_crafting_item('blank scroll', @bag, @belt)
     fput('stow feet')
     get_scrolls
   end
@@ -533,7 +535,7 @@ class SigilHarvest
     end
 
     DRC.bput('combine', /^You combine|^You must/) if DRCI.get_item?('blank scroll', @bag)
-    DRCI.stow_item?('blank scroll')
+    DRCC.stow_crafting_item('blank scroll', @bag, @belt)
   end
 
   private
@@ -690,6 +692,7 @@ class SigilHarvest
   end
 
   def time_expired?
+    return true if (@one && @rooms_visited == 1)
     elapsed_minutes >= @time_limit
   end
 
