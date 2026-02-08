@@ -5,6 +5,8 @@
 =end
 
 class WorkOrders
+  VERSION = '1.0.0'.freeze
+
   # Pattern constants for game responses
   GIVE_LOGBOOK_SUCCESS_PATTERNS = [
     'You hand',
