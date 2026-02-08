@@ -7,35 +7,45 @@ require 'time'
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 include Harness
 
-# Ensure Flags class has the methods we need (may be overwritten by other specs)
-# This handles the case where Flags might be a module from lich-5 or a class from the harness
-unless Flags.respond_to?(:[]=)
-  class << Flags
+# Ensure Flags has the methods we need (may be a module from lich-5 or a class from harness)
+# Add each method individually if not already defined
+class << Flags
+  unless method_defined?(:[]=)
     def []=(key, value)
       @flags ||= {}
       @flags[key] = value
     end
+  end
 
+  unless method_defined?(:[])
     def [](key)
       @flags ||= {}
       @flags[key]
     end
+  end
 
+  unless method_defined?(:reset)
     def reset(key)
       @flags ||= {}
       @flags[key] = false
     end
+  end
 
+  unless method_defined?(:add)
     def add(key, *_matchers)
       @flags ||= {}
       @flags[key] = false
     end
+  end
 
+  unless method_defined?(:delete)
     def delete(key)
       @flags ||= {}
       @flags.delete(key)
     end
+  end
 
+  unless method_defined?(:_reset_all)
     def _reset_all
       @flags = {}
     end
