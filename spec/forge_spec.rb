@@ -7,6 +7,41 @@ require 'time'
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 include Harness
 
+# Ensure Flags class has the methods we need (may be overwritten by other specs)
+# This handles the case where Flags might be a module from lich-5 or a class from the harness
+unless Flags.respond_to?(:[]=)
+  class << Flags
+    def []=(key, value)
+      @flags ||= {}
+      @flags[key] = value
+    end
+
+    def [](key)
+      @flags ||= {}
+      @flags[key]
+    end
+
+    def reset(key)
+      @flags ||= {}
+      @flags[key] = false
+    end
+
+    def add(key, *_matchers)
+      @flags ||= {}
+      @flags[key] = false
+    end
+
+    def delete(key)
+      @flags ||= {}
+      @flags.delete(key)
+    end
+
+    def _reset_all
+      @flags = {}
+    end
+  end
+end
+
 # Extract and eval a class from a .lic file without executing top-level code
 def load_lic_class(filename, class_name)
   return if Object.const_defined?(class_name)
