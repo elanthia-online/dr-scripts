@@ -1075,13 +1075,13 @@ class SetupFiles
            .uniq
            .select { |filepath| File.file?(filepath) } # ignore directories
            .each do |filepath|
-          filename = File.basename(filepath)
-          last_modified_date = File.mtime(filepath)
-          cached_file = cache_get_by_filename(filename)
-          echo "#{self.class}::#{__callee__} filepath=#{filepath}, last_modified_date=#{last_modified_date}, cached_file=#{cached_file.inspect}" if @debug
-          if cached_file.mtime != last_modified_date
-            cache_put_by_filepath(filepath)
-          end
+             filename = File.basename(filepath)
+             last_modified_date = File.mtime(filepath)
+             cached_file = cache_get_by_filename(filename)
+             echo "#{self.class}::#{__callee__} filepath=#{filepath}, last_modified_date=#{last_modified_date}, cached_file=#{cached_file.inspect}" if @debug
+             if cached_file.mtime != last_modified_date
+               cache_put_by_filepath(filepath)
+             end
         end
       end
     end

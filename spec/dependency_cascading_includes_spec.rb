@@ -2,7 +2,6 @@
 
 require 'ostruct'
 require 'yaml'
-require 'set'
 require 'monitor'
 require 'fileutils'
 require 'tmpdir'
@@ -15,70 +14,70 @@ require 'tmpdir'
 # Rather than trying to eval the complex SetupFiles class with all its dependencies,
 # we test the core algorithm in isolation with a minimal mock.
 
-RSpec.describe 'Cascading Includes Algorithm' do
-  # Minimal mock that replicates the resolve_includes_recursively behavior
-  # This allows us to test the algorithm without SetupFiles's complex dependencies
-  class IncludeResolver
-    attr_reader :files, :loaded_files, :debug
+# Minimal mock that replicates the resolve_includes_recursively behavior
+# This allows us to test the algorithm without SetupFiles's complex dependencies
+class IncludeResolver
+  attr_reader :files, :loaded_files, :debug
 
-    def initialize(files = {}, debug: false)
-      @files = files  # Map of filename => { include: [...], ...settings }
-      @loaded_files = []
-      @debug = debug
-    end
-
-    # Simulates reload_profiles - just tracks that a file was "loaded"
-    def reload_profiles(filenames)
-      filenames.each { |f| @loaded_files << f unless @loaded_files.include?(f) }
-    end
-
-    # Simulates cache_get_by_filename - returns FileInfo-like object
-    def cache_get_by_filename(filename)
-      return nil unless @files.key?(filename)
-
-      data = @files[filename]
-      OpenStruct.new(
-        name: filename,
-        data: data,
-        peek: ->(prop) { data[prop.to_sym] || data[prop.to_s] }
-      )
-    end
-
-    def to_include_filename(suffix)
-      "include-#{suffix}.yaml"
-    end
-
-    def echo(msg)
-      puts msg if @debug
-    end
-
-    # The actual algorithm under test - copied from dependency.lic
-    def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
-      filenames.each do |filename|
-        # Circular dependency protection - skip already visited files
-        next if visited.include?(filename)
-
-        visited << filename
-        # Load this include file into cache
-        reload_profiles([filename])
-        file_info = cache_get_by_filename(filename)
-        next unless file_info
-
-        # Get nested includes from this file
-        nested_suffixes = file_info.peek.call('include') || []
-        echo "#{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
-        nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
-
-        # Depth-first: resolve nested includes BEFORE adding this file
-        # This ensures dependencies are merged before dependents
-        resolve_includes_recursively(nested_filenames, visited, include_order)
-
-        include_order << filename
-      end
-      include_order
-    end
+  def initialize(files = {}, debug: false)
+    @files = files # Map of filename => { include: [...], ...settings }
+    @loaded_files = []
+    @debug = debug
   end
 
+  # Simulates reload_profiles - just tracks that a file was "loaded"
+  def reload_profiles(filenames)
+    filenames.each { |f| @loaded_files << f unless @loaded_files.include?(f) }
+  end
+
+  # Simulates cache_get_by_filename - returns FileInfo-like object
+  def cache_get_by_filename(filename)
+    return nil unless @files.key?(filename)
+
+    data = @files[filename]
+    OpenStruct.new(
+      name: filename,
+      data: data,
+      peek: ->(prop) { data[prop.to_sym] || data[prop.to_s] }
+    )
+  end
+
+  def to_include_filename(suffix)
+    "include-#{suffix}.yaml"
+  end
+
+  def echo(msg)
+    puts msg if @debug
+  end
+
+  # The actual algorithm under test - copied from dependency.lic
+  def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
+    filenames.each do |filename|
+      # Circular dependency protection - skip already visited files
+      next if visited.include?(filename)
+
+      visited << filename
+      # Load this include file into cache
+      reload_profiles([filename])
+      file_info = cache_get_by_filename(filename)
+      next unless file_info
+
+      # Get nested includes from this file
+      nested_suffixes = file_info.peek.call('include') || []
+      echo "#{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
+      nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
+
+      # Depth-first: resolve nested includes BEFORE adding this file
+      # This ensures dependencies are merged before dependents
+      resolve_includes_recursively(nested_filenames, visited, include_order)
+
+      include_order << filename
+    end
+    include_order
+  end
+end
+
+RSpec.describe 'Cascading Includes Algorithm' do
   describe '#resolve_includes_recursively' do
     context 'with no includes' do
       it 'returns empty array when no include files specified' do
@@ -106,7 +105,7 @@ RSpec.describe 'Cascading Includes Algorithm' do
       let(:files) do
         {
           'include-hunting.yaml' => { include: ['combat'], hunting_zones: ['zone1'] },
-          'include-combat.yaml' => { combat_style: 'aggressive' }
+          'include-combat.yaml'  => { combat_style: 'aggressive' }
         }
       end
 
@@ -122,7 +121,7 @@ RSpec.describe 'Cascading Includes Algorithm' do
       let(:files) do
         {
           'include-hunting.yaml' => { include: ['combat'], hunting_zones: ['zone1'] },
-          'include-combat.yaml' => { include: ['weapons'], combat_style: 'aggressive' },
+          'include-combat.yaml'  => { include: ['weapons'], combat_style: 'aggressive' },
           'include-weapons.yaml' => { primary_weapon: 'sword' }
         }
       end
@@ -138,8 +137,8 @@ RSpec.describe 'Cascading Includes Algorithm' do
     context 'with sibling includes at same level' do
       let(:files) do
         {
-          'include-hunting.yaml' => { include: ['combat', 'survival'], hunting_zones: ['zone1'] },
-          'include-combat.yaml' => { combat_style: 'aggressive' },
+          'include-hunting.yaml'  => { include: ['combat', 'survival'], hunting_zones: ['zone1'] },
+          'include-combat.yaml'   => { combat_style: 'aggressive' },
           'include-survival.yaml' => { survival_skill: 'evasion' }
         }
       end
@@ -160,9 +159,9 @@ RSpec.describe 'Cascading Includes Algorithm' do
           #    hunting  crafting
           #        \      /
           #         common
-          'include-hunting.yaml' => { include: ['common'], hunting_zones: ['zone1'] },
+          'include-hunting.yaml'  => { include: ['common'], hunting_zones: ['zone1'] },
           'include-crafting.yaml' => { include: ['common'], crafting_type: 'forging' },
-          'include-common.yaml' => { safe_room: 1234 }
+          'include-common.yaml'   => { safe_room: 1234 }
         }
       end
 
@@ -240,7 +239,7 @@ RSpec.describe 'Cascading Includes Algorithm' do
     context 'with include file having nil/missing include key' do
       let(:files) do
         {
-          'include-nil-includes.yaml' => { some_setting: 'value' }  # No 'include' key
+          'include-nil-includes.yaml' => { some_setting: 'value' } # No 'include' key
         }
       end
 
@@ -286,12 +285,12 @@ RSpec.describe 'Cascading Includes Algorithm' do
         {
           # Character -> [guild, hometown] -> [common]
           # where guild also includes class-specific settings
-          'include-moon-mage.yaml' => {
+          'include-moon-mage.yaml'  => {
             include: ['magic-user', 'common'],
             guild: 'Moon Mage',
             cambrinth: 'moon-staff'
           },
-          'include-crossing.yaml' => {
+          'include-crossing.yaml'   => {
             include: ['common'],
             hometown: 'Crossing',
             safe_room: 1234
@@ -300,9 +299,9 @@ RSpec.describe 'Cascading Includes Algorithm' do
             include: ['common'],
             train_magic: true
           },
-          'include-common.yaml' => {
+          'include-common.yaml'     => {
             loot_coins: true,
-            safe_room: 9999  # This should be overridden by crossing
+            safe_room: 9999 # This should be overridden by crossing
           }
         }
       end
@@ -339,11 +338,11 @@ RSpec.describe 'Cascading Includes Algorithm' do
     context 'multiple initial includes with shared dependencies' do
       let(:files) do
         {
-          'include-hunting.yaml' => { include: ['weapons', 'armor'] },
-          'include-crafting.yaml' => { include: ['tools', 'armor'] },
-          'include-weapons.yaml' => { include: ['materials'] },
-          'include-tools.yaml' => { include: ['materials'] },
-          'include-armor.yaml' => {},
+          'include-hunting.yaml'   => { include: ['weapons', 'armor'] },
+          'include-crafting.yaml'  => { include: ['tools', 'armor'] },
+          'include-weapons.yaml'   => { include: ['materials'] },
+          'include-tools.yaml'     => { include: ['materials'] },
+          'include-armor.yaml'     => {},
           'include-materials.yaml' => {}
         }
       end
