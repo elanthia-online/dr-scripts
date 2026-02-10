@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.0.21'
+$DEPENDENCY_VERSION = '2.1.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.13.6'
 
@@ -913,22 +913,24 @@ class SetupFiles
   # You can also provide an array of character yaml suffixes to load additionally.
   # For example, ['hunt'] to load 'scripts/profiles/MyChar-hunt.yaml'.
   # The suffixes feature is primarily used by hunting-buddy.
+  #
+  # Supports cascading includes: include files can themselves have an 'include:'
+  # property that references other include files. Resolution is depth-first
+  # with circular dependency protection.
   def get_settings(character_suffixes = [])
     character_suffixes = ['setup', character_suffixes].flatten.compact.uniq
     character_filenames = character_suffixes_to_filenames(character_suffixes)
     # Ensure latest profiles are loaded into cache
     reload_profiles(character_filenames)
-    # Get 'include' filenames, suffixes to other files where players externalize
-    # reusable settings that they share/include in other character setting files.
-    include_filenames = character_filenames
-                        .reduce([]) do |result, filename|
-                          result + (cache_get_by_filename(filename).peek('include') || [])
-                        end
-                        .map do |suffix|
-      to_include_filename(suffix)
+    # Get initial 'include' suffixes from character files
+    initial_include_suffixes = character_filenames.reduce([]) do |result, filename|
+      result + (cache_get_by_filename(filename).peek('include') || [])
     end
-    reload_profiles(include_filenames)
-    # Merge base and character settings
+    initial_include_filenames = initial_include_suffixes.map { |suffix| to_include_filename(suffix) }
+    # Recursively resolve all includes (cascading includes support)
+    include_filenames = resolve_includes_recursively(initial_include_filenames)
+    echo "#{self.class}::#{__callee__} resolved include_filenames=#{include_filenames}" if @debug
+    # Merge order: base.yaml -> base-empty.yaml -> includes (depth-first) -> character files
     settings = [
       'base.yaml',
       'base-empty.yaml',
@@ -1029,6 +1031,39 @@ class SetupFiles
     "include-#{suffix}.yaml"
   end
 
+  # Recursively resolves include files, supporting cascading includes.
+  # Include files can themselves have an 'include:' property that references
+  # other include files. Uses depth-first resolution with circular dependency protection.
+  #
+  # @param filenames [Array<String>] Initial include filenames to resolve
+  # @param visited [Set] Tracks visited files to prevent circular dependencies
+  # @param include_order [Array<String>] Accumulates the final ordered list of includes
+  # @return [Array<String>] Ordered list of include filenames (deepest dependencies first)
+  def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
+    filenames.each do |filename|
+      # Circular dependency protection - skip already visited files
+      next if visited.include?(filename)
+
+      visited << filename
+      # Load this include file into cache
+      reload_profiles([filename])
+      file_info = cache_get_by_filename(filename)
+      next unless file_info
+
+      # Get nested includes from this file
+      nested_suffixes = file_info.peek('include') || []
+      echo "#{self.class}::#{__callee__} #{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
+      nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
+
+      # Depth-first: resolve nested includes BEFORE adding this file
+      # This ensures dependencies are merged before dependents
+      resolve_includes_recursively(nested_filenames, visited, include_order)
+
+      include_order << filename
+    end
+    include_order
+  end
+
   # Iterates the files matched by the glob pattern and for those that
   # have been modified since the last time they were cached then those
   # are read from disk and cached. Unchanged files are not read again.
@@ -1040,13 +1075,13 @@ class SetupFiles
            .uniq
            .select { |filepath| File.file?(filepath) } # ignore directories
            .each do |filepath|
-          filename = File.basename(filepath)
-          last_modified_date = File.mtime(filepath)
-          cached_file = cache_get_by_filename(filename)
-          echo "#{self.class}::#{__callee__} filepath=#{filepath}, last_modified_date=#{last_modified_date}, cached_file=#{cached_file.inspect}" if @debug
-          if cached_file.mtime != last_modified_date
-            cache_put_by_filepath(filepath)
-          end
+             filename = File.basename(filepath)
+             last_modified_date = File.mtime(filepath)
+             cached_file = cache_get_by_filename(filename)
+             echo "#{self.class}::#{__callee__} filepath=#{filepath}, last_modified_date=#{last_modified_date}, cached_file=#{cached_file.inspect}" if @debug
+             if cached_file.mtime != last_modified_date
+               cache_put_by_filepath(filepath)
+             end
         end
       end
     end
