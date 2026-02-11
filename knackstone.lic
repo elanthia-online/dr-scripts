@@ -12,6 +12,7 @@ class Knackstone
     "bonus coins dropped from creatures",
     "bonus REXP value",
     "bonus experience",
+    "bonus scroll drop chance",
     "bank fee removal",
     "bonus crafting experience",
     "bonus work order payouts",
