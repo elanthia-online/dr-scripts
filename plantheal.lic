@@ -568,9 +568,17 @@ class PlantHeal
     m && m[1].downcase
   end
 
+  MAX_HUG_RETRIES = 3
+
   # Hug the plant once. Returns HugResult with count (0 or 1) and reason.
   # Reasons: :ok (hugged), :no_plant, :fully_healed, :stopped_early
-  def hug_plant_once
+  # retries: internal counter for EV recast retries (prevents infinite recursion)
+  def hug_plant_once(retries = MAX_HUG_RETRIES)
+    if retries <= 0
+      DRC.message("**Max hug retries reached** — stopping to prevent infinite loop.")
+      return HugResult.new(0, :stopped_early)
+    end
+
     noun = plant_noun_in_room
 
     unless noun
@@ -609,11 +617,13 @@ class PlantHeal
     when /you have no empathic bond/i
       DRC.message("Lost empathic bond — releasing and recasting EV.")
       release_and_recast_ev
-      HugResult.new(0, :stopped_early)
+      # Fresh EV should restore the bond - retry the hug
+      return hug_plant_once(retries - 1)
     when HUG_APPRECIATES
       DRC.message("Hug returned 'appreciates the sentiment' — **releasing and recasting EV**.")
       release_and_recast_ev
-      HugResult.new(0, :stopped_early)
+      # Fresh plant should have wounds now - retry the hug
+      return hug_plant_once(retries - 1)
     when /Hug what\?/i
       # Fallback: noun was stale despite pre_hug_check (rare race condition).
       recast_ev_if_needed

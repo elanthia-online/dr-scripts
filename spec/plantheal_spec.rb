@@ -557,6 +557,10 @@ RSpec.describe PlantHeal do
       expect(PlantHeal::MAX_BACKFIRE_RETRIES).to eq(2)
     end
 
+    it 'defines MAX_HUG_RETRIES as 3' do
+      expect(PlantHeal::MAX_HUG_RETRIES).to eq(3)
+    end
+
     it 'defines PLANT_NOUNS regex matching plant forms' do
       %w[plant thicket bush briar shrub thornbush].each do |form|
         expect("a vela'tohr #{form}").to match(PlantHeal::PLANT_NOUNS)
@@ -611,6 +615,127 @@ RSpec.describe PlantHeal do
       %w[false FALSE 0 no NO n N nope anything].each do |val|
         expect(instance.send(:to_bool, val, true)).to eq(false), "Expected '#{val}' to be false"
       end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # hug_plant_once retry behavior
+  # ---------------------------------------------------------------------------
+
+  describe '#hug_plant_once' do
+    # Mock DRRoom for plant_noun_in_room
+    before(:each) do
+      stub_const('DRRoom', Class.new do
+        def self.room_objs
+          $mock_room_objs || []
+        end
+      end)
+    end
+
+    it 'returns stopped_early when retries exhausted' do
+      instance = build_instance(
+        total_hugs: 0,
+        hug_count: 3,
+        threshold: 24,
+        heal_past_ml: false
+      )
+      $mock_room_objs = ["an ethereal vela'tohr thicket"]
+      expect(DRC).to receive(:message).with(/Max hug retries reached/)
+      result = instance.send(:hug_plant_once, 0)
+      expect(result.zero?).to be true
+      expect(result.reason).to eq(:stopped_early)
+    end
+
+    it 'retries after HUG_APPRECIATES response' do
+      instance = build_instance(
+        total_hugs: 0,
+        hug_count: 3,
+        threshold: 24,
+        heal_past_ml: false,
+        waggle_healing: false,
+        manual_ev: false
+      )
+      $mock_room_objs = ["an ethereal vela'tohr thicket"]
+
+      # First call: appreciates, second call: Roundtime
+      call_count = 0
+      allow(DRC).to receive(:bput) do |cmd, *_patterns|
+        if cmd.start_with?('hug')
+          call_count += 1
+          call_count == 1 ? 'appreciates the sentiment' : 'Roundtime: 3 sec.'
+        end
+      end
+
+      # Stub methods that would normally run
+      allow(instance).to receive(:bleeding?).and_return(false)
+      allow(instance).to receive(:pre_hug_check).and_return('thicket')
+      allow(instance).to receive(:release_and_recast_ev)
+      allow(DRSkill).to receive(:getxp).and_return(0)
+      allow(DRC).to receive(:message)
+
+      result = instance.send(:hug_plant_once, 3)
+      expect(result.hugs).to eq(1)
+      expect(result.reason).to eq(:ok)
+      expect(call_count).to eq(2)
+    end
+
+    it 'retries after "no empathic bond" response' do
+      instance = build_instance(
+        total_hugs: 0,
+        hug_count: 3,
+        threshold: 24,
+        heal_past_ml: false,
+        waggle_healing: false,
+        manual_ev: false
+      )
+      $mock_room_objs = ["an ethereal vela'tohr thicket"]
+
+      # First call: no bond, second call: Roundtime
+      call_count = 0
+      allow(DRC).to receive(:bput) do |cmd, *_patterns|
+        if cmd.start_with?('hug')
+          call_count += 1
+          call_count == 1 ? 'you have no empathic bond' : 'Roundtime: 3 sec.'
+        end
+      end
+
+      allow(instance).to receive(:bleeding?).and_return(false)
+      allow(instance).to receive(:pre_hug_check).and_return('thicket')
+      allow(instance).to receive(:release_and_recast_ev)
+      allow(DRSkill).to receive(:getxp).and_return(0)
+      allow(DRC).to receive(:message)
+
+      result = instance.send(:hug_plant_once, 3)
+      expect(result.hugs).to eq(1)
+      expect(result.reason).to eq(:ok)
+      expect(call_count).to eq(2)
+    end
+
+    it 'decrements retry counter on each retry' do
+      instance = build_instance(
+        total_hugs: 0,
+        hug_count: 3,
+        threshold: 24,
+        heal_past_ml: false,
+        waggle_healing: false,
+        manual_ev: false
+      )
+      $mock_room_objs = ["an ethereal vela'tohr thicket"]
+
+      # Always return appreciates to force retry until exhausted
+      allow(DRC).to receive(:bput) do |cmd, *_patterns|
+        cmd.start_with?('hug') ? 'appreciates the sentiment' : nil
+      end
+
+      allow(instance).to receive(:bleeding?).and_return(false)
+      allow(instance).to receive(:pre_hug_check).and_return('thicket')
+      allow(instance).to receive(:release_and_recast_ev)
+      allow(DRSkill).to receive(:getxp).and_return(0)
+      allow(DRC).to receive(:message)
+
+      result = instance.send(:hug_plant_once, 2)
+      expect(result.zero?).to be true
+      expect(result.reason).to eq(:stopped_early)
     end
   end
 end
