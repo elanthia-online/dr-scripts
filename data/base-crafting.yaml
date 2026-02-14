@@ -545,7 +545,7 @@ blacksmithing:
     repair-npc: clerk
     stock-volume: 5
     stock-room: 8785
-    bingots-room: # left intentionally blank until bingots are added here
+    bingots-room: 51685
     trash-room: 8787
     idle-room: 8785
   Langenfirth:
