@@ -1,0 +1,28 @@
+=begin
+  Documentation: 
+=end
+
+class Summoning
+  def initialize
+    @settings = get_settings
+    @ec_minimum_level = @settings.elemental_charge_minimum_level || 6
+    @charging_room = @settings.elemental_charge_room
+    DRCT.walk_to(@charging_room)
+    charge_elemental_charge
+  end
+
+  def done_charging?
+    DRCA.check_elemental_charge >= @ec_minimum_level
+  end
+
+  def charge_elemental_charge
+    until done_charging?
+      #current_charge = DRCA.check_elemental_charge
+      fput('summon admittance')
+      waitrt?
+    end
+    fput('stand')
+  end
+end
+
+Summoning.new
