@@ -1,5 +1,5 @@
 =begin
-  Documentation: 
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#charge-elemental-charge
 =end
 
 class Summoning
@@ -26,3 +26,4 @@ class Summoning
 end
 
 Summoning.new
+
