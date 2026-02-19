@@ -157,25 +157,31 @@ RSpec.describe Enchant do
   # ---------------------------------------------------------------------------
 
   describe '#setup_flags' do
-    it 'adds all required flags' do
+    it 'calls Flags.add for all required flags' do
       instance = build_instance
-      instance.send(:setup_flags)
 
-      expect(Flags.flags.keys).to include('enchant-focus')
-      expect(Flags.flags.keys).to include('enchant-complete')
-      expect(Flags.flags.keys).to include('imbue-backlash')
+      expect(Flags).to receive(:add).with('enchant-focus', anything)
+      expect(Flags).to receive(:add).with('enchant-meditate', anything)
+      expect(Flags).to receive(:add).with('enchant-imbue', anything)
+      expect(Flags).to receive(:add).with('enchant-push', anything)
+      expect(Flags).to receive(:add).with('enchant-sigil', anything)
+      expect(Flags).to receive(:add).with('enchant-complete', anything, anything, anything, anything)
+      expect(Flags).to receive(:add).with('imbue-failed', anything)
+      expect(Flags).to receive(:add).with('imbue-backlash', anything)
+
+      instance.send(:setup_flags)
     end
   end
 
   describe '#cleanup_flags' do
-    it 'removes all flags' do
+    it 'calls Flags.delete for all flags' do
       instance = build_instance
-      instance.send(:setup_flags)
-      instance.send(:cleanup_flags)
 
       Enchant::FLAG_NAMES.each do |flag|
-        expect(Flags.flags.keys).not_to include(flag)
+        expect(Flags).to receive(:delete).with(flag)
       end
+
+      instance.send(:cleanup_flags)
     end
   end
 
@@ -186,8 +192,8 @@ RSpec.describe Enchant do
   describe '#empty_brazier' do
     it 'extracts items using named capture from brazier contents' do
       instance = build_instance
-      $mock_bput_result = 'On the brass brazier you see a fount and a totem.'
 
+      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount and a totem.')
       expect(DRCI).to receive(:get_item?).with('fount', 'brazier').and_return(true)
       expect(DRCI).to receive(:get_item?).with('totem', 'brazier').and_return(true)
       expect(DRCC).to receive(:stow_crafting_item).twice
@@ -197,16 +203,17 @@ RSpec.describe Enchant do
 
     it 'handles nothing on brazier' do
       instance = build_instance
-      $mock_bput_result = 'There is nothing'
 
+      allow(DRC).to receive(:bput).and_return('There is nothing')
       expect(DRCI).not_to receive(:get_item?)
+
       instance.send(:empty_brazier)
     end
 
     it 'logs error when item cannot be retrieved' do
       instance = build_instance
-      $mock_bput_result = 'On the brass brazier you see a fount.'
 
+      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount.')
       expect(DRCI).to receive(:get_item?).with('fount', 'brazier').and_return(false)
       expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to get fount/)
 
@@ -221,8 +228,14 @@ RSpec.describe Enchant do
   describe '#scribe' do
     it 'checks enchant-complete flag before scribing again' do
       instance = build_instance
-      Flags.add('enchant-complete', 'complete')
-      Flags['enchant-complete'] = true
+
+      allow(Flags).to receive(:[]).with('enchant-sigil').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-focus').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-meditate').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-push').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-imbue').and_return(nil)
+      allow(Flags).to receive(:[]).with('imbue-backlash').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-complete').and_return(true)
 
       expect(instance).to receive(:handle_complete_flag)
       expect(DRC).not_to receive(:bput)
@@ -232,19 +245,26 @@ RSpec.describe Enchant do
 
     it 'checks enchant-sigil flag and handles it' do
       instance = build_instance
-      Flags.add('enchant-sigil', /You need another/)
-      Flags['enchant-sigil'] = { type: 'induction ', order: 'primary' }
+
+      allow(Flags).to receive(:[]).with('enchant-sigil').and_return({ type: 'induction ', order: 'primary' })
 
       expect(instance).to receive(:handle_sigil_flag)
+
       instance.send(:scribe)
     end
 
     it 'checks imbue-backlash flag' do
       instance = build_instance
-      Flags.add('imbue-backlash', 'backlash')
-      Flags['imbue-backlash'] = true
+
+      allow(Flags).to receive(:[]).with('enchant-sigil').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-focus').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-meditate').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-push').and_return(nil)
+      allow(Flags).to receive(:[]).with('enchant-imbue').and_return(nil)
+      allow(Flags).to receive(:[]).with('imbue-backlash').and_return(true)
 
       expect(instance).to receive(:handle_backlash_flag)
+
       instance.send(:scribe)
     end
   end
@@ -256,8 +276,9 @@ RSpec.describe Enchant do
   describe '#handle_sigil_flag' do
     it 'extracts sigil type from flag and traces it' do
       instance = build_instance
-      Flags.add('enchant-sigil', /You need another/)
-      Flags['enchant-sigil'] = { type: 'induction ', order: 'primary' }
+
+      allow(Flags).to receive(:[]).with('enchant-sigil').and_return({ type: 'induction ', order: 'primary' })
+      allow(Flags).to receive(:reset).with('enchant-sigil')
 
       expect(DRCC).to receive(:stow_crafting_item).with('burin', 'backpack', 'toolbelt')
       expect(instance).to receive(:trace_sigil).with('induction')
@@ -269,8 +290,9 @@ RSpec.describe Enchant do
 
     it 'defaults to congruence sigil when type is empty' do
       instance = build_instance
-      Flags.add('enchant-sigil', /You need another/)
-      Flags['enchant-sigil'] = { type: '', order: 'primary' }
+
+      allow(Flags).to receive(:[]).with('enchant-sigil').and_return({ type: '', order: 'primary' })
+      allow(Flags).to receive(:reset).with('enchant-sigil')
 
       expect(instance).to receive(:trace_sigil).with('congruence')
       allow(DRCC).to receive(:stow_crafting_item)
@@ -298,8 +320,8 @@ RSpec.describe Enchant do
 
     it 'logs error and returns early when sigil not found' do
       instance = build_instance
-      $mock_drci_get_item = false
 
+      expect(DRCI).to receive(:get_item?).with('induction sigil').and_return(false)
       expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to get induction sigil/)
       expect(DRC).not_to receive(:bput)
 
@@ -367,6 +389,7 @@ RSpec.describe Enchant do
           call_count += 1
           call_count > 1
         end
+        allow(Flags).to receive(:reset).with('enchant-imbue')
 
         expect(Lich::Messaging).to receive(:msg).with('bold', /Casting Imbue failed/).once
 
@@ -388,6 +411,7 @@ RSpec.describe Enchant do
           Enchant::IMBUE_WAND_SIGIL_NEEDED,
           Enchant::IMBUE_WAND_FAILED
         ).and_return('Roundtime')
+        allow(Flags).to receive(:reset).with('enchant-imbue')
 
         instance.send(:imbue)
       end
@@ -404,6 +428,7 @@ RSpec.describe Enchant do
           call_count += 1
           call_count > 1 ? 'Roundtime' : Enchant::IMBUE_WAND_FAILED
         end
+        allow(Flags).to receive(:reset).with('enchant-imbue')
 
         expect(Lich::Messaging).to receive(:msg).with('bold', /Imbue wand failed/).once
 
