@@ -2,9 +2,9 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.1.0'
+$DEPENDENCY_VERSION = '2.1.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
-$MIN_LICH_VERSION = '5.13.6'
+$MIN_LICH_VERSION = '5.14.2'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   10.times do
@@ -1493,71 +1493,11 @@ class MoonWatch
   end
 end
 
-class HornWatch
-  def initialize(debug)
-    @debug = debug
-    @firebase_url = 'https://dr-scripts.firebaseio.com/'
-  end
-
-  def debug
-    @debug = !@debug
-  end
-
-  def submit_horn_update(room, timestamp)
-    unless room && timestamp
-      echo('Nothing left to submit') if @debug
-      return
-    end
-
-    echo("submitting:#{room}:#{timestamp}") if @debug
-    uri = URI.parse("#{@firebase_url}/egg_warhorn/#{room}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Put.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    request.body = timestamp.to_i.to_json
-    response = http.request(request)
-    unless response.body
-      echo("No response body for some reason. Returning nil.")
-      return nil
-    else
-      response.body.chomp
-    end
-  end
-
-  def get_horn_data(room)
-    echo("retrieving warhorn data for room:#{room}") if @debug
-    uri = URI.parse("#{@firebase_url}/egg_warhorn/#{room}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Get.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    response = http.request(request)
-    return horn_data = Time.at(0) unless response.body
-
-    begin
-      return horn_data = Time.at(JSON.parse(response.body.chomp))
-    rescue
-      return horn_data = Time.at(0)
-    end
-    echo("warhorn data for room:#{room} is #{horn_data.inspect}") if @debug
-  rescue => e
-    echo("error in hornwatch #{e.inspect}")
-    echo("Returning time.at(0)")
-    return Time.at(0)
-  end
-end
-
 $setupfiles = SetupFiles.new(debug)
 $manager = ScriptManager.new(debug)
 $bankbot = BankbotManager.new(debug)
 $reportbot = ReportbotManager.new(debug)
 $slackbot = SlackbotManager.new(debug)
-$hornwatch = HornWatch.new(debug)
 
 def enable_moon_connection
   $turn_on_moon_watch = true
