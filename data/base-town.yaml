@@ -341,8 +341,10 @@ Leth Deriel:
     id: 19162
   vault:
     id: 4488
-  leather_repair: *catrox
-  metal_repair: *catrox
+  leather_repair: &verrys
+    id: 51797
+    name: Verrys
+  metal_repair: *verrys
   gemshop:
     id: 50268
     name: Ghendil
