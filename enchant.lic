@@ -1,8 +1,83 @@
+# frozen_string_literal: true
+
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#enchant
 =end
 
 class Enchant
+  # Analyze patterns
+  ANALYZE_READY_PATTERNS = [
+    /scribing additional sigils onto the fount\./,
+    /ready for additional scribing\./,
+    /free of problems that would impede further sigil scribing\./,
+    /You do not see anything that would prevent scribing additional sigils/
+  ].freeze
+  ANALYZE_IMBUE_PATTERN = /application of an imbue spell to advance the enchanting process\./.freeze
+
+  # Look on brazier
+  BRAZIER_HAS_FOUNT_PATTERN = /On the.*brazier you see.*and a.*/.freeze
+  BRAZIER_CONTENTS_PATTERN = /On the (?:\w+ )?brazier you see (?<items>.*)\./.freeze
+
+  # Wave fount
+  WAVE_FOUNT_SUCCESS = /^You slowly wave/.freeze
+  WAVE_FOUNT_NOT_NEEDED = 'The fragile mana fount is not required'
+
+  # Touch cube
+  TOUCH_CUBE_PATTERNS = [
+    /^Warm vapor swirls around your head in a misty halo/,
+    /^A thin cloud of vapor manifests with no particular effect\./,
+    /^Touch what/
+  ].freeze
+
+  # Put on brazier
+  PUT_BRAZIER_ALREADY_ENCHANTED = /^The totem is already enchanted/.freeze
+  PUT_BRAZIER_SUCCESS = [/With a flick/, /^You put/].freeze
+  PUT_BRAZIER_NEEDS_CLEAN = /^You must first clean/.freeze
+  PUT_BRAZIER_GLANCE = /^You glance down/.freeze
+
+  # Get item patterns
+  GET_SUCCESS = /You get/.freeze
+  GET_DANGEROUS = 'That is far too dangerous'
+
+  # Imbue wand
+  IMBUE_WAND_SUCCESS = /^Roundtime/.freeze
+  IMBUE_WAND_SIGIL_NEEDED = /^You need another .* sigil to continue the enchanting process/.freeze
+  IMBUE_WAND_FAILED = 'The streams collide, rending the space before you and disrupting the enchantment'
+
+  # Clean brazier
+  CLEAN_SUCCESS = 'You prepare to clean off the brazier'
+  CLEAN_NOTHING = 'There is nothing'
+  CLEAN_NOT_LIT = 'The brazier is not currently lit'
+  CLEAN_SINGED = 'a massive ball of flame jets forward and singes everything nearby'
+
+  # Sigil study/trace
+  SIGIL_STUDY_SUCCESS = /^You study the sigil-scroll and commit the design to memory/.freeze
+  SIGIL_TRACE_SUCCESS = /^Recalling the intricacies of the sigil, you trace its form/.freeze
+
+  # Scribe patterns
+  SCRIBE_RT_PATTERN = /^Roundtime/.freeze
+  SCRIBE_SIGIL_NEEDED = /^You need another .* sigil to continue the enchanting process/.freeze
+
+  # Focus/meditate/push patterns
+  FOCUS_IMBUE_NEEDED = /Once finished you sense an imbue spell will be required to continue enchanting/.freeze
+
+  # Stamp patterns
+  STAMP_PATTERNS = [
+    'carefully hammer the stamp',
+    'You cannot figure out how to do that',
+    'too badly damaged',
+    /You lazily wave the stamp over the freshly enchanted/
+  ].freeze
+
+  # Book turn
+  BOOK_TURN_PATTERNS = ['You turn your', 'The book is already'].freeze
+
+  # Flag names
+  FLAG_NAMES = %w[
+    enchant-focus enchant-imbue enchant-meditate enchant-push
+    enchant-sigil enchant-complete imbue-failed imbue-backlash
+  ].freeze
+
   def initialize
     @settings = get_settings
     @book_type = 'artificing'
@@ -10,7 +85,6 @@ class Enchant
     @bag = @settings.crafting_container
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.enchanting_belt
-    @bag = @settings.crafting_container
     @stamp = @settings.mark_crafted_goods
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
@@ -28,15 +102,6 @@ class Enchant
         { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to resume.' },
       ]
     ]
-
-    Flags.add('enchant-focus', 'material struggles to accept the sigil scribing')
-    Flags.add('enchant-meditate', 'The traced sigil pattern blurs before your eyes')
-    Flags.add('enchant-imbue', 'Once finished you sense an imbue spell will be required to continue enchanting')
-    Flags.add('enchant-push', 'You notice many of the scribed sigils are slowly merging back')
-    Flags.add('enchant-sigil', /You need another (?<type>[\w ]*)(?<order>primary|secondary) sigil to continue the enchanting process/)
-    Flags.add('enchant-complete', 'With the enchanting process completed, you believe it is safe to collect your things once more.', 'With the enchantment complete', 'With enchanting complete', /^You collect the \w+ and place it at your feet/)
-    Flags.add('imbue-failed', 'The streams collide, rending the space before you and disrupting the enchantment')
-    Flags.add('imbue-backlash', 'Suddenly the streams slip through your grasp and cascade violently against each other')
 
     @brazier = @settings.enchanting_tools.find { |item| /brazier/ =~ item } || 'brazier'
     @fount = @settings.enchanting_tools.find { |item| /fount/ =~ item } || 'fount'
@@ -63,51 +128,90 @@ class Enchant
     @secondary_sigils = []
 
     @equipment_manager = EquipmentManager.new
+
+    begin
+      setup_flags
+      run_enchant
+    ensure
+      cleanup_flags
+    end
+  end
+
+  def setup_flags
+    Flags.add('enchant-focus', 'material struggles to accept the sigil scribing')
+    Flags.add('enchant-meditate', 'The traced sigil pattern blurs before your eyes')
+    Flags.add('enchant-imbue', 'Once finished you sense an imbue spell will be required to continue enchanting')
+    Flags.add('enchant-push', 'You notice many of the scribed sigils are slowly merging back')
+    Flags.add('enchant-sigil', /You need another (?<type>[\w ]*)(?<order>primary|secondary) sigil to continue the enchanting process/)
+    Flags.add('enchant-complete', 'With the enchanting process completed, you believe it is safe to collect your things once more.', 'With the enchantment complete', 'With enchanting complete', /^You collect the \w+ and place it at your feet/)
+    Flags.add('imbue-failed', 'The streams collide, rending the space before you and disrupting the enchantment')
+    Flags.add('imbue-backlash', 'Suddenly the streams slip through your grasp and cascade violently against each other')
+  end
+
+  def cleanup_flags
+    FLAG_NAMES.each { |flag| Flags.delete(flag) }
+  end
+
+  def run_enchant
     @equipment_manager.empty_hands
     DRC.wait_for_script_to_complete('buff', ['enchant'])
+
     if @resume
-      DRCC.get_crafting_item(@brazier, @bag, @bag_items, @belt)
-      case DRC.bput("analyze #{@item} on my brazier", /scribing additional sigils onto the fount./, /ready for additional scribing./, /application of an imbue spell to advance the enchanting process./, /free of problems that would impede further sigil scribing./, /You do not see anything that would prevent scribing additional sigils/)
-      when /scribing additional sigils onto the fount./, /ready for additional scribing./, /free of problems that would impede further sigil scribing./, /You do not see anything that would prevent scribing additional sigils/
-        DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
-        scribe
-      when /application of an imbue spell to advance the enchanting process./
-        case DRC.bput("look on my #{@brazier}", /On the.*brazier you see.*and a.*/)
-        when /On the.*brazier you see.*and a.*/
-          imbue
-        else
-          DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
-          case DRC.bput("wave my #{@fount} at #{@item} on #{@brazier}", /^You slowly wave/, 'The fragile mana fount is not required')
-          when 'The fragile mana fount is not required'
-            DRCC.stow_crafting_item(@fount, @bag, @belt)
-          end
-          imbue
-        end
-      end
+      handle_resume
     else
-      study_recipe
-      @item = 'fount' if @item == 'small sphere'
+      handle_new_enchant
+    end
+  end
 
-      unless @item == "fount"
+  def handle_resume
+    DRCC.get_crafting_item(@brazier, @bag, @bag_items, @belt)
 
-        unless DRCI.exists?(@fount)
-          cleanup
-          exit
-        end
+    analyze_patterns = ANALYZE_READY_PATTERNS + [ANALYZE_IMBUE_PATTERN]
+    result = DRC.bput("analyze #{@item} on my brazier", *analyze_patterns)
 
-        DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
-        case DRC.bput("wave my #{@fount} at #{@item} on #{@brazier}", /^You slowly wave/, 'The fragile mana fount is not required')
-        when 'The fragile mana fount is not required'
-          DRCC.stow_crafting_item(@fount, @bag, @belt)
-        end
-      end
-
-      DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/) if @cube
-      imbue
-
+    if ANALYZE_READY_PATTERNS.any? { |pat| pat.match?(result) }
       DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
       scribe
+    elsif ANALYZE_IMBUE_PATTERN.match?(result)
+      handle_imbue_resume
+    else
+      Lich::Messaging.msg("bold", "Enchant: Unexpected analyze result: #{result}")
     end
+  end
+
+  def handle_imbue_resume
+    result = DRC.bput("look on my #{@brazier}", BRAZIER_HAS_FOUNT_PATTERN, 'There is nothing')
+    if BRAZIER_HAS_FOUNT_PATTERN.match?(result)
+      imbue
+    else
+      DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
+      wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
+      DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
+      imbue
+    end
+  end
+
+  def handle_new_enchant
+    study_recipe
+    @item = 'fount' if @item == 'small sphere'
+
+    unless @item == "fount"
+      unless DRCI.exists?(@fount)
+        Lich::Messaging.msg("bold", "Enchant: #{@fount} not found in inventory. Cannot proceed.")
+        cleanup
+        return
+      end
+
+      DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
+      wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
+      DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
+    end
+
+    DRC.bput("touch my #{@cube}", *TOUCH_CUBE_PATTERNS) if @cube
+    imbue
+
+    DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
+    scribe
   end
 
   def study_recipe
@@ -120,31 +224,52 @@ class Enchant
     end
     DRCC.get_crafting_item(@brazier, @bag, @bag_items, @belt) if @use_own_brazier
 
-    case DRC.bput("get my #{@baseitem} from my #{@bag}", 'You get a', 'That is far too dangerous')
-    when 'That is far too dangerous'
+    get_result = DRC.bput("get my #{@baseitem} from my #{@bag}", GET_SUCCESS, GET_DANGEROUS)
+    if get_result == GET_DANGEROUS
       clean_brazier
       empty_brazier
-      DRC.bput("get my #{@baseitem} from my #{@bag}", 'You get a')
+      unless DRCI.get_item?(@baseitem, @bag)
+        Lich::Messaging.msg("bold", "Enchant: Failed to get #{@baseitem} from #{@bag}.")
+        return
+      end
     end
+
+    place_item_on_brazier
+  end
+
+  def place_item_on_brazier
     2.times do
-      case DRC.bput("put my #{@baseitem} on #{@brazier}", /^You glance down/, /With a flick/, /^You must first clean/, /^You put/, /^The totem is already enchanted/)
-      when /^The totem is already enchanted/
+      all_patterns = [PUT_BRAZIER_ALREADY_ENCHANTED, PUT_BRAZIER_GLANCE, PUT_BRAZIER_NEEDS_CLEAN] + PUT_BRAZIER_SUCCESS
+      result = DRC.bput("put my #{@baseitem} on #{@brazier}", *all_patterns)
+
+      if PUT_BRAZIER_ALREADY_ENCHANTED.match?(result)
+        Lich::Messaging.msg("plain", "Enchant: Totem already enchanted, disposing and retrying.")
         DRCI.dispose_trash('totem', @worn_trashcan, @worn_trashcan_verb)
         study_recipe
-      when /With a flick/, /^You put/
+        return
+      elsif PUT_BRAZIER_SUCCESS.any? { |pat| pat.match?(result) }
         waitrt?
-        break
-      when /^You must first clean/
+        return
+      elsif PUT_BRAZIER_NEEDS_CLEAN.match?(result)
         clean_brazier
         empty_brazier
-        DRC.bput("get my #{@baseitem} from my #{@bag}", 'You get a')
-        2.times do
-          case DRC.bput("put my #{@baseitem} on #{@brazier}", 'You glance down', 'With a flick', 'You put')
-          when 'With a flick', 'You put'
-            waitrt?
-            break
-          end
+        unless DRCI.get_item?(@baseitem, @bag)
+          Lich::Messaging.msg("bold", "Enchant: Failed to get #{@baseitem} from #{@bag} after cleaning.")
+          return
         end
+        place_item_inner
+        return
+      end
+    end
+  end
+
+  def place_item_inner
+    2.times do
+      all_patterns = [PUT_BRAZIER_GLANCE] + PUT_BRAZIER_SUCCESS
+      result = DRC.bput("put my #{@baseitem} on #{@brazier}", *all_patterns)
+      if PUT_BRAZIER_SUCCESS.any? { |pat| pat.match?(result) }
+        waitrt?
+        return
       end
     end
   end
@@ -154,114 +279,158 @@ class Enchant
     if imbue_data
       imbue_data['cast'] = "cast #{@item} on #{@brazier}"
       until DRCA.cast_spell?(imbue_data, @settings)
-        DRC.message("Casting Imbue failed. Retrying")
+        Lich::Messaging.msg("bold", "Enchant: Casting Imbue failed. Retrying.")
       end
     else
-      DRCC.get_crafting_item(@imbue_wand, @bag, @bag_items, @belt) unless DRC.left_hand.include?(@imbue_wand)
-      case DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier}", /^Roundtime/, /^You need another .* sigil to continue the enchanting process/, 'The streams collide, rending the space before you and disrupting the enchantment')
-      when 'The streams collide, rending the space before you and disrupting the enchantment'
-        # Imbue wand failed.  Let's try again
-        imbue
-      else
-        DRCC.stow_crafting_item(@imbue_wand, @bag, @belt) if DRC.left_hand.include?(@imbue_wand)
+      unless DRC.left_hand.to_s.include?(@imbue_wand)
+        DRCC.get_crafting_item(@imbue_wand, @bag, @bag_items, @belt)
       end
+
+      result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
+      if result == IMBUE_WAND_FAILED
+        Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
+        imbue
+        return
+      end
+
+      DRCC.stow_crafting_item(@imbue_wand, @bag, @belt) if DRC.left_hand.to_s.include?(@imbue_wand)
     end
     Flags.reset('enchant-imbue')
   end
 
   def clean_brazier
-    case DRC.bput("clean #{@brazier}", 'You prepare to clean off the brazier', 'There is nothing', 'The brazier is not currently lit')
-    when 'You prepare to clean off the brazier'
-      DRC.bput("clean #{@brazier}", 'a massive ball of flame jets forward and singes everything nearby')
-    when 'The brazier is not currently lit'
+    result = DRC.bput("clean #{@brazier}", CLEAN_SUCCESS, CLEAN_NOTHING, CLEAN_NOT_LIT)
+    case result
+    when CLEAN_SUCCESS
+      DRC.bput("clean #{@brazier}", CLEAN_SINGED)
+    when CLEAN_NOT_LIT
       DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
     end
   end
 
   def empty_brazier
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
-    case DRC.bput("look on #{@brazier}", /On the (.*)brazier you see (.*)./, 'There is nothing')
-    when /On the (.*)brazier you see (.*)./
-      items = Regexp.last_match(2)
-      items = items.split(' and ')
-      items.each do |item|
-        item = item.split.last
-        DRC.bput("get #{item} from brazier", 'You get')
-        DRCC.stow_crafting_item(item, @bag, @belt)
+
+    result = DRC.bput("look on #{@brazier}", BRAZIER_CONTENTS_PATTERN, 'There is nothing')
+    match = BRAZIER_CONTENTS_PATTERN.match(result)
+    return unless match
+
+    items_str = match[:items]
+    items = items_str.split(' and ')
+    items.each do |item|
+      item_noun = item.split.last
+      unless DRCI.get_item?(item_noun, @brazier)
+        Lich::Messaging.msg("bold", "Enchant: Failed to get #{item_noun} from #{@brazier}.")
+        next
       end
+      DRCC.stow_crafting_item(item_noun, @bag, @belt)
     end
   end
 
   def trace_sigil(sigil)
-    DRCI.get_item?("#{sigil} sigil")
-    DRC.bput("study my #{sigil} sigil", /^You study the sigil-scroll and commit the design to memory/)
+    unless DRCI.get_item?("#{sigil} sigil")
+      Lich::Messaging.msg("bold", "Enchant: Failed to get #{sigil} sigil.")
+      return
+    end
+    DRC.bput("study my #{sigil} sigil", SIGIL_STUDY_SUCCESS)
     waitrt?
-    DRC.bput("trace #{@item} on #{@brazier}", /^Recalling the intricacies of the sigil, you trace its form/)
+    DRC.bput("trace #{@item} on #{@brazier}", SIGIL_TRACE_SUCCESS)
   end
 
   def scribe
     if Flags['enchant-sigil']
-      sigil_type = Flags['enchant-sigil'][:type].delete(' ')
-      Flags.reset('enchant-sigil')
-      sigil_type = 'congruence' if sigil_type == ''
-      DRCC.stow_crafting_item(@burin, @bag, @belt)
-      trace_sigil(sigil_type)
-      DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
-      scribe
+      handle_sigil_flag
     elsif Flags['enchant-focus']
-      Flags.reset('enchant-focus')
-      DRC.bput("focus #{@item} on #{@brazier}", /Once finished you sense an imbue spell will be required to continue enchanting/, /^Roundtime/, /^You need another .* sigil to continue the enchanting process/)
-      waitrt?
-      scribe
+      handle_focus_flag
     elsif Flags['enchant-meditate']
-      Flags.reset('enchant-meditate')
-      DRC.bput("meditate fount on #{@brazier}", /^Roundtime/, /^You need another .* sigil to continue the enchanting process/)
-      waitrt?
-      scribe
+      handle_meditate_flag
     elsif Flags['enchant-push']
-      Flags.reset('enchant-push')
-      DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.include?('burin')
-      DRCC.get_crafting_item(@loop, @bag, @bag_items, @belt)
-      DRC.bput("push #{@item} on #{@brazier} with my #{@loop}", /^Roundtime/, /^You need another .* sigil to continue the enchanting process/)
-      waitrt?
-      DRCC.stow_crafting_item(@loop, @bag, @belt)
-      DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
-      scribe
+      handle_push_flag
     elsif Flags['enchant-imbue']
-      Flags.reset('enchant-imbue')
-      DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.include?('burin')
-      imbue
-      DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
-      scribe
+      handle_imbue_flag
     elsif Flags['imbue-backlash']
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
-      cleanup
-      DRC.wait_for_script_to_complete('safe-room', ['force'])
-      exit
+      handle_backlash_flag
     elsif Flags['enchant-complete']
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
-      cleanup
-      stamp_item(@item) if @stamp
-      exit
+      handle_complete_flag
     else
-      DRC.bput("scribe #{@item} on #{@brazier} with my #{@burin}", /^Roundtime/, /^You need another .* sigil to continue the enchanting process/)
+      DRC.bput("scribe #{@item} on #{@brazier} with my #{@burin}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+      waitrt?
       scribe
     end
   end
 
+  def handle_sigil_flag
+    sigil_type = Flags['enchant-sigil'][:type].delete(' ')
+    Flags.reset('enchant-sigil')
+    sigil_type = 'congruence' if sigil_type == ''
+    DRCC.stow_crafting_item(@burin, @bag, @belt)
+    trace_sigil(sigil_type)
+    DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
+    scribe
+  end
+
+  def handle_focus_flag
+    Flags.reset('enchant-focus')
+    DRC.bput("focus #{@item} on #{@brazier}", FOCUS_IMBUE_NEEDED, SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+    waitrt?
+    scribe
+  end
+
+  def handle_meditate_flag
+    Flags.reset('enchant-meditate')
+    DRC.bput("meditate fount on #{@brazier}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+    waitrt?
+    scribe
+  end
+
+  def handle_push_flag
+    Flags.reset('enchant-push')
+    DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.to_s.include?('burin')
+    DRCC.get_crafting_item(@loop, @bag, @bag_items, @belt)
+    DRC.bput("push #{@item} on #{@brazier} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+    waitrt?
+    DRCC.stow_crafting_item(@loop, @bag, @belt)
+    DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
+    scribe
+  end
+
+  def handle_imbue_flag
+    Flags.reset('enchant-imbue')
+    DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.to_s.include?('burin')
+    imbue
+    DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
+    scribe
+  end
+
+  def handle_backlash_flag
+    Lich::Messaging.msg("bold", "Enchant: Imbue backlash occurred! Cleaning up and heading to safe room.")
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
+    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
+    cleanup
+    DRC.wait_for_script_to_complete('safe-room', ['force'])
+  end
+
+  def handle_complete_flag
+    Lich::Messaging.msg("plain", "Enchant: Enchanting complete!")
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
+    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
+    cleanup
+    stamp_item(@item) if @stamp
+  end
+
   def stamp_item(noun)
     DRCC.get_crafting_item('stamp', @bag, @bag_items, @belt)
-    DRC.bput("mark my #{noun} with my stamp", 'carefully hammer the stamp', 'You cannot figure out how to do that', 'too badly damaged', /You lazily wave the stamp over the freshly enchanted/)
+    DRC.bput("mark my #{noun} with my stamp", *STAMP_PATTERNS)
     DRCC.stow_crafting_item('stamp', @bag, @belt)
   end
 
   def cleanup
     DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
-    DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt) unless @item == 'fount'
-    DRCC.stow_crafting_item(@fount, @bag, @belt) unless @item == 'fount'
+    unless @item == 'fount'
+      DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
+      DRCC.stow_crafting_item(@fount, @bag, @belt)
+    end
     if DRCI.get_item?(@item)
       DRCC.stow_crafting_item(@item, @bag, @belt)
       DRCI.get_item?(@item)
@@ -269,12 +438,8 @@ class Enchant
   end
 
   def turn_to(section)
-    DRC.bput("turn my book to #{section}", 'You turn your', 'The book is already')
+    DRC.bput("turn my book to #{section}", *BOOK_TURN_PATTERNS)
   end
 end
 
 Enchant.new
-
-before_dying do
-  ['enchant-focus', 'enchant-imbue', 'enchant-meditate', 'enchant-push', 'enchant-sigil', 'enchant-complete', 'imbue-failed', 'imbue-backlash'].each { |flag| Flags.delete(flag) }
-end
