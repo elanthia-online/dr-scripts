@@ -17,7 +17,6 @@ class Summoning
 
   def charge_elemental_charge
     until done_charging?
-      #current_charge = DRCA.check_elemental_charge
       fput('summon admittance')
       waitrt?
     end
@@ -26,4 +25,5 @@ class Summoning
 end
 
 Summoning.new
+
 
