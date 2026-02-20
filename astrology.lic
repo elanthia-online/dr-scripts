@@ -36,7 +36,9 @@ class Astrology
     'You learn nothing',            # Circle too low (observation done)
     'too close to the sun',         # Solar conjunction (observation done)
     'too faint for you',            # Telescope needed (observation done)
-    'below the horizon'             # Body not visible (observation done)
+    'below the horizon',            # Body not visible (observation done)
+    'You have not pondered',        # Observation cooldown (done, no XP)
+    'You are unable to make use'    # Cooldown followup (done, no XP)
   ].freeze
 
   # Perceive targets for attunement training.
