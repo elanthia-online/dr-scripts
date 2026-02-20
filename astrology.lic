@@ -26,8 +26,18 @@ class Astrology
   # End pattern for predict state all output capture.
   PREDICT_STATE_END = /Roundtime/i.freeze
 
-  # Patterns for successful naked-eye observation.
-  OBSERVE_SUCCESS_PATTERNS = ['Roundtime', 'Clouds obscure', 'too close to the sun'].freeze
+  # Patterns indicating observation completed (success or acceptable completion).
+  # Used by observe_routine for non-telescope observation to determine if done.
+  # Note: Roundtime removed - DRCMM.observe no longer returns it (more specific patterns match first).
+  OBSERVE_SUCCESS_PATTERNS = [
+    'While the sighting',           # Partial success
+    'You learned something useful', # Full success
+    'Clouds obscure',               # Weather blocking (observation done)
+    'You learn nothing',            # Circle too low (observation done)
+    'too close to the sun',         # Solar conjunction (observation done)
+    'too faint for you',            # Telescope needed (observation done)
+    'below the horizon'             # Body not visible (observation done)
+  ].freeze
 
   # Perceive targets for attunement training.
   PERCEIVE_TARGETS = ['', 'mana', 'moons', 'planets', 'psychic', 'transduction', 'perception', 'moonlight'].freeze
