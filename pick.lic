@@ -320,9 +320,9 @@ class Pick
         while current_box['trap_difficulty'].nil?
           identify_attempts += 1
           if identify_attempts > @max_identify_attempts
-            DRC.message("Pick: Failed to identify trap after #{@max_identify_attempts} attempts. Stowing box.")
-            handle_trap_too_hard_or_blacklisted(current_box, @too_hard_container)
-            return
+            DRC.message("Pick: Failed to identify trap after #{@max_identify_attempts} attempts. Proceeding with careful disarm.")
+            current_box['trap_difficulty'] = @disarm_careful_threshold
+            break
           end
           glance(current_box) if @use_glance
           identify_trap(current_box)
@@ -370,9 +370,9 @@ class Pick
         while current_box['lock_difficulty'].nil?
           lock_identify_attempts += 1
           if lock_identify_attempts > @max_identify_attempts
-            DRC.message("Pick: Failed to identify lock after #{@max_identify_attempts} attempts. Stowing box.")
-            handle_trap_too_hard_or_blacklisted(current_box, @too_hard_container)
-            return
+            DRC.message("Pick: Failed to identify lock after #{@max_identify_attempts} attempts. Proceeding with careful pick.")
+            current_box['lock_difficulty'] = @pick_careful_threshold
+            break
           end
           glance(current_box) if @use_glance
           find_lockpick unless @use_lockpick_ring

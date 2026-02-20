@@ -734,6 +734,129 @@ RSpec.describe Pick do
   end
 
   # ---------------------------------------------------------------------------
+  # Identification failure behavior (proceed vs dispose)
+  # ---------------------------------------------------------------------------
+
+  describe 'identification failure behavior' do
+    before(:each) do
+      # Mock Flags module methods used by attempt_open flow
+      allow(Flags).to receive(:reset)
+      allow(Flags).to receive(:[]).and_return(nil)
+    end
+
+    it 'proceeds with careful disarm when trap identification fails' do
+      instance = build_instance
+      instance.instance_variable_get(:@disarm_careful_threshold)
+
+      identify_count = 0
+      in_hands_count = 0
+
+      allow(DRCI).to receive(:in_hands?) do
+        in_hands_count += 1
+        # Return true for first 6 calls (entering loops and identify attempts), then false
+        in_hands_count <= 6
+      end
+
+      allow(DRC).to receive(:bput) do |cmd, *_args|
+        if cmd.include?('disarm') && cmd.include?('identify')
+          identify_count += 1
+          'not make head or tails'
+        else
+          'Roundtime'
+        end
+      end
+
+      instance.send(:attempt_open, 'strongbox')
+
+      expect(identify_count).to eq(5)
+      expect(messages).to include('Pick: Failed to identify trap after 5 attempts. Proceeding with careful disarm.')
+    end
+
+    it 'proceeds with careful pick when lock identification fails' do
+      instance = build_instance
+
+      identify_count = 0
+      in_hands_count = 0
+
+      allow(DRCI).to receive(:in_hands?) do
+        in_hands_count += 1
+        # Return true for loops, then false after lock identify fails
+        in_hands_count <= 8
+      end
+
+      allow(DRC).to receive(:bput) do |cmd, *_args|
+        if cmd.include?('disarm') && cmd.include?('identify')
+          # Trap identify succeeds (no trap)
+          'disarmed flame'
+        elsif cmd.include?('pick') && cmd.include?('ident')
+          identify_count += 1
+          'unable to make progress'
+        else
+          'Roundtime'
+        end
+      end
+
+      instance.send(:attempt_open, 'strongbox')
+
+      expect(identify_count).to eq(5)
+      expect(messages).to include('Pick: Failed to identify lock after 5 attempts. Proceeding with careful pick.')
+    end
+
+    it 'disposes box when disarm attempts fail' do
+      instance = build_instance
+
+      disarm_count = 0
+
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+
+      allow(DRC).to receive(:bput) do |cmd, *_args|
+        if cmd.include?('disarm') && cmd.include?('identify')
+          # Return a successful identify with difficulty 5 (careful)
+          'You have a simple trap here'
+        elsif cmd.include?('disarm') && !cmd.include?('identify')
+          disarm_count += 1
+          'You are unable to make any progress'
+        else
+          'Roundtime'
+        end
+      end
+
+      instance.send(:attempt_open, 'strongbox')
+
+      expect(disarm_count).to eq(5)
+      expect(messages).to include('Pick: Failed to disarm trap after 5 attempts. Stowing box.')
+    end
+
+    it 'disposes box when pick attempts fail' do
+      instance = build_instance
+
+      pick_count = 0
+
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+
+      allow(DRC).to receive(:bput) do |cmd, *_args|
+        if cmd.include?('disarm')
+          # Trap already disarmed
+          'disarmed flame'
+        elsif cmd.include?('pick') && cmd.include?('ident')
+          # Lock identify succeeds with difficulty
+          'easy lock'
+        elsif cmd.include?('pick') && !cmd.include?('ident')
+          pick_count += 1
+          'You are unable to make any progress towards opening the lock'
+        else
+          'Roundtime'
+        end
+      end
+
+      instance.send(:attempt_open, 'strongbox')
+
+      expect(pick_count).to eq(5)
+      expect(messages).to include('Pick: Failed to pick lock after 5 attempts. Stowing box.')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Messaging prefix tests
   # ---------------------------------------------------------------------------
 
