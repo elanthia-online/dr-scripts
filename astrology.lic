@@ -1,10 +1,54 @@
+# frozen_string_literal: true
+
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#astrology
 =end
 
 class Astrology
+  # Pool understanding level patterns for predict state parsing.
+  POOL_PATTERNS = {
+    /You have no understanding of the celestial influences over/            => 0,
+    /You have a feeble understanding of the celestial influences over/      => 1,
+    /You have a weak understanding of the celestial influences over/        => 2,
+    /You have a fledgling understanding of the celestial influences over/   => 3,
+    /You have a modest understanding of the celestial influences over/      => 4,
+    /You have a decent understanding of the celestial influences over/      => 5,
+    /You have a significant understanding of the celestial influences over/ => 6,
+    /You have a potent understanding of the celestial influences over/      => 7,
+    /You have an insightful understanding of the celestial influences over/ => 8,
+    /You have a powerful understanding of the celestial influences over/    => 9,
+    /You have a complete understanding of the celestial influences over/    => 10
+  }.freeze
+
+  # Start pattern for predict state all output capture.
+  PREDICT_STATE_START = /celestial influences/.freeze
+
+  # End pattern for predict state all output capture.
+  PREDICT_STATE_END = /Roundtime/i.freeze
+
+  # Patterns indicating observation completed (success or acceptable completion).
+  # Used by observe_routine for non-telescope observation to determine if done.
+  # Note: Roundtime removed - DRCMM.observe no longer returns it (more specific patterns match first).
+  OBSERVE_SUCCESS_PATTERNS = [
+    'While the sighting',           # Partial success
+    'You learned something useful', # Full success
+    'Clouds obscure',               # Weather blocking (observation done)
+    'You learn nothing',            # Circle too low (observation done)
+    'too close to the sun',         # Solar conjunction (observation done)
+    'too faint for you',            # Telescope needed (observation done)
+    'below the horizon',            # Body not visible (observation done)
+    'You have not pondered',        # Observation cooldown (done, no XP)
+    'You are unable to make use'    # Cooldown followup (done, no XP)
+  ].freeze
+
+  # Perceive targets for attunement training.
+  PERCEIVE_TARGETS = ['', 'mana', 'moons', 'planets', 'psychic', 'transduction', 'perception', 'moonlight'].freeze
+
   def initialize
-    exit unless DRStats.moon_mage?
+    unless DRStats.moon_mage?
+      Lich::Messaging.msg('bold', 'Astrology: This script is only for Moon Mages. Exiting.')
+      exit
+    end
 
     @settings = get_settings
     arg_definitions = [
@@ -36,8 +80,8 @@ class Astrology
     @astrology_prediction_skills_offense = @settings.astrology_prediction_skills['offense']
     @astrology_prediction_skills_defense = @settings.astrology_prediction_skills['defense']
     @astrology_prediction_skills_survival = @settings.astrology_prediction_skills['survival']
-    DRC.message("Flags['rtr-expire'].nil? #{Flags['rtr-expire'].nil?}") if UserVars.astrology_debug
-    DRC.message("Flags['rtr-expire'] = #{Flags['rtr-expire']}") if UserVars.astrology_debug
+    Lich::Messaging.msg('plain', "Astrology: Flags['rtr-expire'].nil? #{Flags['rtr-expire'].nil?}") if UserVars.astrology_debug
+    Lich::Messaging.msg('plain', "Astrology: Flags['rtr-expire'] = #{Flags['rtr-expire']}") if UserVars.astrology_debug
 
     do_buffs(@settings)
 
@@ -65,7 +109,7 @@ class Astrology
     end
 
     if all_buffs_active
-      DRC.message("All buffs are already active") if UserVars.astrology_debug
+      Lich::Messaging.msg('plain', 'Astrology: All buffs are already active.') if UserVars.astrology_debug
       return
     end
 
@@ -85,8 +129,8 @@ class Astrology
     all_bodies = @constellations
     case DRCMM.observe('heavens')
     when "That's a bit hard to do while inside"
-      DRC.message("Must be outdoors to observe sky")
-      exit
+      Lich::Messaging.msg('bold', 'Astrology: Must be outdoors to observe sky. Exiting.')
+      return nil
     end
 
     until (line = get?) =~ /^Roundtime/i
@@ -98,7 +142,7 @@ class Astrology
   def check_attunement
     return if DRSkill.getxp('Attunement') > 30
 
-    ['', 'mana', 'moons', 'planets', 'psychic', 'transduction', 'perception', 'moonlight'].each do |target|
+    PERCEIVE_TARGETS.each do |target|
       DRC.bput("perceive #{target}", 'roundtime')
       waitrt?
     end
@@ -113,25 +157,39 @@ class Astrology
       'defensive combat' => 0,
       'future events'    => 0
     }
-    pools_to_size = {
-      /You have no understanding of the celestial influences over/            => 0,
-      /You have a feeble understanding of the celestial influences over/      => 1,
-      /You have a weak understanding of the celestial influences over/        => 2,
-      /You have a fledgling understanding of the celestial influences over/   => 3,
-      /You have a modest understanding of the celestial influences over/      => 4,
-      /You have a decent understanding of the celestial influences over/      => 5,
-      /You have a significant understanding of the celestial influences over/ => 6,
-      /You have a potent understanding of the celestial influences over/      => 7,
-      /You have an insightful understanding of the celestial influences over/ => 8,
-      /You have a powerful understanding of the celestial influences over/    => 9,
-      /You have a complete understanding of the celestial influences over/    => 10
-    }
-    DRCMM.predict('all')
-    lines = reget(50).reverse
+
+    # Use issue_command for reliable multi-line capture instead of reget
+    # This replaces the old DRCMM.predict('all') + reget(50) pattern
+    lines = Lich::Util.issue_command(
+      'predict state all',
+      PREDICT_STATE_START,
+      PREDICT_STATE_END,
+      timeout: 10,
+      usexml: false,
+      silent: true,
+      quiet: true
+    )
+
+    if lines.nil?
+      Lich::Messaging.msg('bold', 'Astrology: Failed to capture predict state output. Using default pool values.')
+      waitrt?
+      return pools
+    end
+
     lines.select! { |line| line =~ /celestial influences/ }
-    pools.select! { |name, _level| pools[name] = lines.find { |line| line =~ /#{name}/ } }
-    pools.each { |name, text| pools_to_size.each { |match_text, value| pools[name] = value if match_text =~ text } }
-    DRC.message("pools: #{pools}") if UserVars.astrology_debug
+    pools.each_key do |name|
+      matching_line = lines.find { |line| line =~ /#{name}/ }
+      next unless matching_line
+
+      POOL_PATTERNS.each do |pattern, value|
+        if pattern =~ matching_line
+          pools[name] = value
+          break
+        end
+      end
+    end
+
+    Lich::Messaging.msg('plain', "Astrology: pools: #{pools}") if UserVars.astrology_debug
     waitrt?
     pools
   end
@@ -145,7 +203,7 @@ class Astrology
     until Time.now - start_time > timeout
       result = DRCMM.study_sky
       waitrt?
-      return if ['You are unable to sense additional information', 'detect any portents'].include? result
+      return if result =~ /You are unable to sense additional information|detect any portents/
 
       new_pools = check_pools
       break if new_pools['future events'] == prev_size
@@ -157,7 +215,7 @@ class Astrology
   end
 
   def check_weather
-    DRC.message("Checking the weather") if UserVars.astrology_debug
+    Lich::Messaging.msg('plain', 'Astrology: Checking the weather.') if UserVars.astrology_debug
     DRCMM.predict('weather')
     waitrt?
   end
@@ -172,9 +230,18 @@ class Astrology
   end
 
   def check_ripples(settings)
-    return unless @rtr_data
-    return unless settings
-    return if !Flags['rtr-expire'].nil? && !Flags['rtr-expire']
+    unless @rtr_data
+      Lich::Messaging.msg('bold', 'Astrology: No Read the Ripples spell data configured. Skipping ripples check.')
+      return
+    end
+    unless settings
+      Lich::Messaging.msg('bold', 'Astrology: No settings provided to check_ripples. Skipping.')
+      return
+    end
+    if !Flags['rtr-expire'].nil? && !Flags['rtr-expire']
+      Lich::Messaging.msg('plain', 'Astrology: RtR expire flag indicates spell recently expired. Skipping.') if UserVars.astrology_debug
+      return
+    end
 
     empty_hands
     DRCA.cast_spell(@rtr_data, settings)
@@ -196,14 +263,23 @@ class Astrology
 
   def check_astral
     return unless DRStats.circle > 99
-    return unless @astral_place_source
-    return unless @astral_plane_destination
-    return if !UserVars.astral_plane_exp_timer.nil? && Time.now - UserVars.astral_plane_exp_timer < 3600
+    unless @astral_place_source
+      Lich::Messaging.msg('plain', 'Astrology: No astral_plane_training train_source configured. Skipping.') if UserVars.astrology_debug
+      return
+    end
+    unless @astral_plane_destination
+      Lich::Messaging.msg('plain', 'Astrology: No astral_plane_training train_destination configured. Skipping.') if UserVars.astrology_debug
+      return
+    end
+    if !UserVars.astral_plane_exp_timer.nil? && Time.now - UserVars.astral_plane_exp_timer < 3600
+      Lich::Messaging.msg('plain', 'Astrology: Astral plane training on cooldown. Skipping.') if UserVars.astrology_debug
+      return
+    end
 
     DRC.wait_for_script_to_complete('bescort', ['ways', @astral_plane_destination])
     UserVars.astral_plane_exp_timer = Time.now
     DRC.wait_for_script_to_complete('bescort', ['ways', @astral_place_source])
-    exit
+    Lich::Messaging.msg('plain', 'Astrology: Completed astral plane training.')
   end
 
   def empty_hands
@@ -221,17 +297,21 @@ class Astrology
       'future events'    => 'future events'
     }
 
-    pools.reject { |_skill, size| (size < @prediction_pool_target) }
+    pools.reject { |_skill, size| size < @prediction_pool_target }
          .each_key do |skill|
-      break if DRSkill.getxp('Astrology') > 30
+           break if DRSkill.getxp('Astrology') > 30
 
-      align_routine(skillset_to_pool[skill])
+           align_routine(skillset_to_pool[skill])
     end
   end
 
   def check_heavens
     empty_hands
     vis_bodies = visible_bodies
+    unless vis_bodies
+      Lich::Messaging.msg('bold', 'Astrology: Could not observe visible bodies. Aborting check_heavens.')
+      return
+    end
 
     night = vis_bodies.find { |body| body['constellation'] }
 
@@ -239,7 +319,12 @@ class Astrology
                     .select { |data| @have_telescope || !data['telescope'] }
                     .max_by { |data| [data['pools'].values.compact.size, data['circle']] }
 
-    DRC.message("best_eye_data = #{best_eye_data}") if UserVars.astrology_debug
+    unless best_eye_data
+      Lich::Messaging.msg('bold', 'Astrology: No observable celestial bodies found. Aborting check_heavens.')
+      return
+    end
+
+    Lich::Messaging.msg('plain', "Astrology: best_eye_data = #{best_eye_data}") if UserVars.astrology_debug
 
     waitrt?
 
@@ -254,34 +339,33 @@ class Astrology
 
       things_to_try << best_eye_data
 
-      things_to_try.sort! { |data| data['circle'] }.reverse!
+      # Fixed: sort_by! instead of sort! with single-argument block
+      things_to_try.sort_by! { |data| -data['circle'] }
 
-      DRC.message("things_to_try = #{things_to_try}") if UserVars.astrology_debug
+      Lich::Messaging.msg('plain', "Astrology: things_to_try = #{things_to_try}") if UserVars.astrology_debug
 
-      things_to_try.find do |data|
-        finished = nil
-        DRCMM.get_telescope?(@telescope_name, @telescope_storage) if @have_telescope
+      begin
+        things_to_try.find do |data|
+          finished = nil
+          DRCMM.get_telescope?(@telescope_name, @telescope_storage) if @have_telescope
 
-        until finished
-          return check_heavens if Flags['bad-search'] == 'is foiled by the daylight'
-          next if Flags['bad-search'] == 'turns up fruitless'
+          until finished
+            return check_heavens if Flags['bad-search'] == 'is foiled by the daylight'
+            next if Flags['bad-search'] == 'turns up fruitless'
 
-          result = observe_routine(data['name'])
-          if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
-            finished = @finished_messages.include?(result)
-          else
-            finished = result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
+            result = observe_routine(data['name'])
+            finished = check_observation_finished?(result)
+
+            Lich::Messaging.msg('plain', "Astrology: result: #{result}") if UserVars.astrology_debug
+            Lich::Messaging.msg('plain', "Astrology: finished_messages: #{Regexp.union(@finished_messages)}") if UserVars.astrology_debug
+            Lich::Messaging.msg('plain', "Astrology: finished: #{finished}") if UserVars.astrology_debug
           end
 
-          DRC.message("result: #{result}") if UserVars.astrology_debug
-          DRC.message("finished_messages: #{Regexp.union(@finished_messages)}") if UserVars.astrology_debug
-          DRC.message("finished: #{finished}") if UserVars.astrology_debug
+          check_observation_success?(result)
         end
-
-        @success_messages.include?(result)
+      ensure
+        DRCMM.store_telescope?(@telescope_name, @telescope_storage) if @have_telescope
       end
-
-      DRCMM.store_telescope?(@telescope_name, @telescope_storage) if @have_telescope
     else
       until observe_routine(best_eye_data['name'])
         if Flags['bad-search']
@@ -293,6 +377,28 @@ class Astrology
 
     pause 2
     waitrt?
+  end
+
+  # Check if observation is finished based on result type (handles both old and new Lich versions).
+  def check_observation_finished?(result)
+    return false unless result
+
+    if result.is_a?(Array)
+      result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
+    else
+      @finished_messages.include?(result)
+    end
+  end
+
+  # Check if observation was successful based on result type (handles both old and new Lich versions).
+  def check_observation_success?(result)
+    return false unless result
+
+    if result.is_a?(Array)
+      result.any? { |line| @success_messages.any? { |msg| line.include?(msg) } }
+    else
+      @success_messages.include?(result)
+    end
   end
 
   def get_healed
@@ -307,56 +413,71 @@ class Astrology
   def observe_routine(body)
     Flags.add('bad-search', 'is foiled by the (daylight|darkness)', 'turns up fruitless')
 
-    if @have_telescope
-      case DRCMM.center_telescope(body)
-      when /Center what/
-        DRCMM.get_telescope?(@telescope_name, @telescope_storage)
-        return observe_routine(body)
-      when /open it/
-        DRC.bput('open my telescope', 'extend your telescope')
-        return observe_routine(body)
-      when /The pain is too much/, /Your vision is too fuzzy/
-        get_healed
-        return observe_routine(body)
-      end
-      result = DRCMM.peer_telescope
-      if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
-        case result
-        when /The pain is too much/, /Your vision is too fuzzy/
-          injuries = true
+    begin
+      if @have_telescope
+        case DRCMM.center_telescope(body)
+        when /Center what/
+          DRCMM.get_telescope?(@telescope_name, @telescope_storage)
+          return observe_routine(body)
         when /open it/
-          closed = true
+          DRC.bput('open my telescope', 'extend your telescope')
+          return observe_routine(body)
+        when /The pain is too much/, /Your vision is too fuzzy/
+          get_healed
+          return observe_routine(body)
         end
-      else
-        injuries = result.any? { |line| line.match?(Regexp.union(@injured_messages)) }
-        closed = result.any? { |line| line.start_with?("You'll need to open it") }
-      end
-      case
-      when injuries
-        get_healed
-        return observe_routine(body)
-      when closed
-        DRC.bput('open my telescope', 'extend your telescope')
-        return observe_routine(body)
-      end
+        result = DRCMM.peer_telescope
+        injuries, closed = check_telescope_result(result)
+        if injuries
+          get_healed
+          return observe_routine(body)
+        elsif closed
+          DRC.bput('open my telescope', 'extend your telescope')
+          return observe_routine(body)
+        end
 
-      result
-    else
-      ['Roundtime', 'Clouds obscure'].include?(DRCMM.observe(body))
+        result
+      else
+        observe_result = DRCMM.observe(body)
+        OBSERVE_SUCCESS_PATTERNS.any? { |pattern| observe_result&.include?(pattern) }
+      end
+    ensure
+      # Flags cleanup is handled in before_dying, but we reset here for loop iterations
+      Flags.reset('bad-search') if Flags['bad-search']
     end
   end
 
+  # Check telescope peer result for injuries or closed telescope.
+  def check_telescope_result(result)
+    injuries = false
+    closed = false
+
+    if result.is_a?(Array)
+      injuries = result.any? { |line| line.match?(Regexp.union(@injured_messages)) }
+      closed = result.any? { |line| line.start_with?("You'll need to open it") }
+    else
+      case result
+      when /The pain is too much/, /Your vision is too fuzzy/
+        injuries = true
+      when /open it/
+        closed = true
+      end
+    end
+
+    [injuries, closed]
+  end
+
   def align_routine(skill = nil)
-    DRC.message("align_routine called with skill: #{skill.inspect}") if UserVars.astrology_debug
+    Lich::Messaging.msg('plain', "Astrology: align_routine called with skill: #{skill.inspect}") if UserVars.astrology_debug
     if skill == 'future events'
       DRCMM.predict('event')
       return
     end
     DRCMM.align(skill)
     waitrt?
-    if !@divination_bones_storage.empty? && @force_visions != true
+    if !@divination_bones_storage.nil? && !@divination_bones_storage.empty? && @force_visions != true
       DRCMM.roll_bones(@divination_bones_storage)
-    elsif !@divination_tool.empty? && @force_visions != true
+    elsif !@divination_tool.nil? && !@divination_tool.empty? && @force_visions != true
       DRCMM.use_div_tool(@divination_tool)
     else
       DRCMM.predict('future')
@@ -369,9 +490,18 @@ class Astrology
 
   def train_astrology(settings)
     loop do
-      return unless settings
-      return unless settings.astrology_training.is_a?(Array)
-      return if settings.astrology_training.none?
+      unless settings
+        Lich::Messaging.msg('bold', 'Astrology: No settings provided. Exiting training loop.')
+        return
+      end
+      unless settings.astrology_training.is_a?(Array)
+        Lich::Messaging.msg('bold', 'Astrology: astrology_training is not an array. Exiting training loop.')
+        return
+      end
+      if settings.astrology_training.none?
+        Lich::Messaging.msg('bold', 'Astrology: astrology_training is empty. Exiting training loop.')
+        return
+      end
 
       settings.astrology_training.each do |task|
         break if DRSkill.getxp('Astrology') >= 32
@@ -389,15 +519,18 @@ class Astrology
           check_events(check_pools)
         when 'attunement'
           check_attunement
+        else
+          Lich::Messaging.msg('bold', "Astrology: Unknown training task '#{task}'. Skipping.")
         end
       end
 
       if DRSkill.getxp('Astrology') >= 32
+        Lich::Messaging.msg('plain', 'Astrology: Reached target Astrology XP. Training complete.')
         break
       else
         predict_all(check_pools)
         DRCMM.predict('analyze')
-        waitrt? # Wait for 60 seconds before looping again
+        waitrt?
       end
     end
   end
@@ -405,10 +538,19 @@ end
 
 before_dying do
   Flags.delete('bad-search')
+  Flags.delete('rtr-expire')
   telescope_storage = get_settings.telescope_storage
+  telescope_name = get_settings.telescope_name
   divination_tool = get_settings.divination_tool
-  DRCMM.store_telescope(telescope_storage) if DRC.left_hand.include?('telescope') || DRC.right_hand.include?('telescope')
-  DRCMM.store_div_tool(divination_tool) if DRC.left_hand.include?(divination_tool['name']) || DRC.right_hand.include?(divination_tool['name'])
+
+  # Use DRCI.in_hands? for nil-safe hand checks
+  if DRCI.in_hands?(telescope_name)
+    DRCMM.store_telescope?(telescope_name, telescope_storage)
+  end
+
+  if divination_tool && divination_tool['name'] && DRCI.in_hands?(divination_tool['name'])
+    DRCMM.store_div_tool?(divination_tool)
+  end
 end
 
 # Call this last to avoid the need for forward declarations
