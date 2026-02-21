@@ -299,9 +299,9 @@ class Astrology
 
     pools.reject { |_skill, size| size < @prediction_pool_target }
          .each_key do |skill|
-      break if DRSkill.getxp('Astrology') > 30
+           break if DRSkill.getxp('Astrology') > 30
 
-      align_routine(skillset_to_pool[skill])
+           align_routine(skillset_to_pool[skill])
     end
   end
 
