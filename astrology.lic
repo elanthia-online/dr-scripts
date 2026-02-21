@@ -47,7 +47,7 @@ class Astrology
   def initialize
     unless DRStats.moon_mage?
       Lich::Messaging.msg('bold', 'Astrology: This script is only for Moon Mages. Exiting.')
-      return
+      exit
     end
 
     @settings = get_settings
