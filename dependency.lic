@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.1.1'
+$DEPENDENCY_VERSION = '2.1.2'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.14.2'
 
@@ -827,6 +827,11 @@ class SlackbotManager
 
   def register(username)
     return if @slackbot
+
+    if username.nil? || username.to_s.strip.empty?
+      DRC.message("SlackbotManager: No slackbot_username configured. Slack messaging disabled.")
+      return
+    end
 
     @username = username
   end
