@@ -118,6 +118,13 @@ class Forge
   FORGE_HAS_ITEM_PATTERN = 'forge you see'
   FORGE_EMPTY_PATTERN = 'There is nothing'
 
+  # Private forge defaults
+  DEFAULT_PRIVATE_FORGE_COST = 5000 # 5 plat in copper
+
+  # Patterns for entering private forge
+  PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
+  PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
+
   def initialize
     arg_definitions = [
       [
@@ -177,6 +184,8 @@ class Forge
     @metal = args.metal
     @next_spin = Time.now
     @debug = args.debug || settings.debug_mode
+    @use_private_forge = settings.forge_use_private_forge
+    @private_forge_cost = settings.forge_private_forge_cost || DEFAULT_PRIVATE_FORGE_COST
     debug_log("Recipe                                       :: #{@recipe_name}")
 
     DRC.wait_for_script_to_complete('buff', ['forge'])
@@ -187,6 +196,7 @@ class Forge
     end
 
     find_item if args.resume
+    go_to_private_forge(settings) if @use_private_forge && !args.resume
     check_rental_status
     DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt) unless args.skip
     set_defaults
@@ -219,6 +229,53 @@ class Forge
 
   def error_log(message)
     Lich::Messaging.msg('bold', "Forge: #{message}")
+  end
+
+  def go_to_private_forge(settings)
+    private_forge_room = @info['private_forge']
+    unless private_forge_room
+      error_log("No private forge defined for #{@hometown}. Using public forge.")
+      return
+    end
+
+    debug_log("Private forge room: #{private_forge_room}")
+    debug_log("Private forge cost: #{@private_forge_cost} copper")
+
+    # Ensure we have enough money on hand for the rental
+    unless DRCM.ensure_copper_on_hand(@private_forge_cost, settings, @hometown)
+      error_log("Unable to get #{@private_forge_cost} copper for private forge rental.")
+      error_log('Check your bank balance and try again. Exiting.')
+      exit
+    end
+
+    debug_log('Navigating to private forge...')
+    DRCT.walk_to(private_forge_room)
+
+    # Check if we made it into the private forge
+    if Room.current.id == private_forge_room
+      error_log('Arrived at private forge.')
+      return
+    end
+
+    # We didn't make it - try going through the door manually
+    debug_log('Not in private forge room - trying to enter manually...')
+    result = DRC.bput('go door', *PRIVATE_FORGE_ENTRY_SUCCESS, *PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
+
+    case result
+    when *PRIVATE_FORGE_ENTRY_BLOCKED
+      error_log('BLOCKED from entering private forge!')
+      error_log("The sentry won't let you in. Possible reasons:")
+      error_log('  - Not enough money on hand (need ~5 plat)')
+      error_log('  - Forge is already rented by someone else')
+      error_log('  - Other restriction')
+      error_log('Exiting. Use a public forge or resolve the issue.')
+      exit
+    when 'What were you'
+      error_log('No door found to enter private forge. Check room setup.')
+      error_log('Falling back to current location.')
+    else
+      error_log('Entered private forge.')
+    end
   end
 
   def check_hand(item)

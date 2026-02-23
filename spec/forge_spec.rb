@@ -137,6 +137,37 @@ module DRCA
   def self.crafting_magic_routine(*_args); end
 end
 
+module DRCM
+  def self.ensure_copper_on_hand(*_args)
+    true
+  end
+end
+
+module DRCT
+  def self.walk_to(*_args); end
+end
+
+# Mock Room object for private forge testing
+class MockRoom
+  attr_accessor :id
+
+  def initialize(id = 0)
+    @id = id
+  end
+end
+
+module Room
+  @current = MockRoom.new(0)
+
+  def self.current
+    @current
+  end
+
+  def self.current=(room)
+    @current = room
+  end
+end
+
 module DRSkill
   def self.getrank(*_args)
     100
@@ -284,6 +315,22 @@ RSpec.describe Forge do
       expect(Forge::ANVIL_EMPTY_PATTERN).to eq('clean and ready')
       expect(Forge::FORGE_HAS_ITEM_PATTERN).to eq('forge you see')
       expect(Forge::FORGE_EMPTY_PATTERN).to eq('There is nothing')
+    end
+
+    it 'defines DEFAULT_PRIVATE_FORGE_COST as 5000 copper (5 plat)' do
+      expect(Forge::DEFAULT_PRIVATE_FORGE_COST).to eq(5000)
+    end
+
+    it 'defines PRIVATE_FORGE_ENTRY_SUCCESS as frozen array' do
+      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to be_frozen
+      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('You head through')
+      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('Obvious exits')
+    end
+
+    it 'defines PRIVATE_FORGE_ENTRY_BLOCKED as frozen array' do
+      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to be_frozen
+      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to include("You don't have enough")
+      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to include('The sentry blocks')
     end
   end
 
@@ -835,6 +882,71 @@ RSpec.describe Forge do
         expect(DRC).to receive(:bput).with('release mana', 'You release all', "You aren't harnessing any mana")
         expect(DRC).to receive(:bput).with('release symb', "But you haven't", 'You release', 'Repeat this command')
         forge_instance.send(:magic_cleanup)
+      end
+    end
+
+    describe '#go_to_private_forge' do
+      let(:settings) { OpenStruct.new(hometown: 'Crossing') }
+
+      before do
+        forge_instance.instance_variable_set(:@info, { 'private_forge' => 16_936 })
+        forge_instance.instance_variable_set(:@private_forge_cost, 5000)
+        forge_instance.instance_variable_set(:@hometown, 'Crossing')
+      end
+
+      it 'returns early and logs when no private forge defined' do
+        forge_instance.instance_variable_set(:@info, {})
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: No private forge defined for Crossing. Using public forge.')
+        expect(DRCM).not_to receive(:ensure_copper_on_hand)
+        forge_instance.send(:go_to_private_forge, settings)
+      end
+
+      it 'exits when unable to get money' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Unable to get 5000 copper/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Check your bank balance/)
+        expect { forge_instance.send(:go_to_private_forge, settings) }.to raise_error(SystemExit)
+      end
+
+      it 'succeeds when already in private forge room after walk_to' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:walk_to)
+        Room.current = MockRoom.new(16_936)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Arrived at private forge.')
+        forge_instance.send(:go_to_private_forge, settings)
+      end
+
+      it 'tries go door when not in private forge room' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:walk_to)
+        Room.current = MockRoom.new(12_345) # Different room
+        expect(DRC).to receive(:bput).with('go door', *Forge::PRIVATE_FORGE_ENTRY_SUCCESS, *Forge::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Entered private forge.')
+        forge_instance.send(:go_to_private_forge, settings)
+      end
+
+      it 'exits with verbose error when blocked by sentry' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:walk_to)
+        Room.current = MockRoom.new(12_345)
+        expect(DRC).to receive(:bput).and_return("You don't have enough")
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: BLOCKED from entering private forge!')
+        expect(Lich::Messaging).to receive(:msg).with('bold', /sentry won't let you in/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Not enough money/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Forge is already rented/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Other restriction/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Exiting/)
+        expect { forge_instance.send(:go_to_private_forge, settings) }.to raise_error(SystemExit)
+      end
+
+      it 'falls back gracefully when no door found' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:walk_to)
+        Room.current = MockRoom.new(12_345)
+        expect(DRC).to receive(:bput).and_return('What were you')
+        expect(Lich::Messaging).to receive(:msg).with('bold', /No door found/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Falling back/)
+        forge_instance.send(:go_to_private_forge, settings)
       end
     end
 
