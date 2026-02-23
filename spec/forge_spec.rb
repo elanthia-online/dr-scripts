@@ -147,24 +147,12 @@ module DRCT
   def self.walk_to(*_args); end
 end
 
-# Mock Room object for private forge testing
+# MockRoom for private forge testing - Room is defined in test_harness.rb
 class MockRoom
   attr_accessor :id
 
   def initialize(id = 0)
     @id = id
-  end
-end
-
-module Room
-  @current = MockRoom.new(0)
-
-  def self.current
-    @current
-  end
-
-  def self.current=(room)
-    @current = room
   end
 end
 
@@ -911,7 +899,7 @@ RSpec.describe Forge do
       it 'succeeds when already in private forge room after walk_to' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
-        Room.current = MockRoom.new(16_936)
+        allow(Room).to receive(:current).and_return(MockRoom.new(16_936))
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Arrived at private forge.')
         forge_instance.send(:go_to_private_forge, settings)
       end
@@ -919,7 +907,7 @@ RSpec.describe Forge do
       it 'tries go door when not in private forge room' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
-        Room.current = MockRoom.new(12_345) # Different room
+        allow(Room).to receive(:current).and_return(MockRoom.new(12_345)) # Different room
         expect(DRC).to receive(:bput).with('go door', *Forge::PRIVATE_FORGE_ENTRY_SUCCESS, *Forge::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Entered private forge.')
         forge_instance.send(:go_to_private_forge, settings)
@@ -928,7 +916,7 @@ RSpec.describe Forge do
       it 'exits with verbose error when blocked by sentry' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
-        Room.current = MockRoom.new(12_345)
+        allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
         expect(DRC).to receive(:bput).and_return("You don't have enough")
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: BLOCKED from entering private forge!')
         expect(Lich::Messaging).to receive(:msg).with('bold', /sentry won't let you in/)
@@ -942,7 +930,7 @@ RSpec.describe Forge do
       it 'falls back gracefully when no door found' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
-        Room.current = MockRoom.new(12_345)
+        allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
         expect(DRC).to receive(:bput).and_return('What were you')
         expect(Lich::Messaging).to receive(:msg).with('bold', /No door found/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Falling back/)
