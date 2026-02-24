@@ -938,6 +938,84 @@ RSpec.describe Forge do
       end
     end
 
+    describe '#prep' do
+      let(:settings) do
+        OpenStruct.new(
+          master_crafting_book: false
+        )
+      end
+
+      before do
+        forge_instance.instance_variable_set(:@bag, 'backpack')
+        forge_instance.instance_variable_set(:@bag_items, [])
+        forge_instance.instance_variable_set(:@forging_belt, nil)
+        forge_instance.instance_variable_set(:@instruction, false)
+        forge_instance.instance_variable_set(:@recipe_name, 'short sword')
+        forge_instance.instance_variable_set(:@chapter, 3)
+        forge_instance.instance_variable_set(:@book_type, 'weaponsmithing')
+        forge_instance.instance_variable_set(:@home_tool, 'forging hammer')
+        forge_instance.instance_variable_set(:@hammer, 'forging hammer')
+        allow(DRCA).to receive(:crafting_magic_routine)
+        allow(DRSkill).to receive(:getrank).and_return(200)
+      end
+
+      context 'when fetching ingot with metal specified' do
+        before do
+          forge_instance.instance_variable_set(:@metal, 'bronze')
+          allow(DRCC).to receive(:get_crafting_item)
+          allow(DRCC).to receive(:find_recipe2)
+          allow(DRCC).to receive(:stow_crafting_item)
+          allow(forge_instance).to receive(:swap_tool)
+        end
+
+        it 'uses DRCC.get_crafting_item to fetch ingot' do
+          allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
+          allow(DRC).to receive(:bput).with('put my ingot on anvil', Forge::PUT_SUCCESS_PATTERN).and_return('You put')
+
+          expect(DRCC).to receive(:get_crafting_item).with('bronze ingot', 'backpack', [], nil, true)
+          forge_instance.send(:prep, settings)
+        end
+
+        it 'exits when ingot not in hands after fetch attempt' do
+          allow(DRCI).to receive(:in_hands?).with('ingot').and_return(false)
+          allow(forge_instance).to receive(:magic_cleanup)
+
+          # error_log adds "Forge:" prefix
+          expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to get bronze ingot. Exiting.')
+          expect { forge_instance.send(:prep, settings) }.to raise_error(SystemExit)
+        end
+
+        it 'places ingot on anvil when successfully fetched' do
+          allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
+          expect(DRC).to receive(:bput).with('put my ingot on anvil', Forge::PUT_SUCCESS_PATTERN)
+          forge_instance.send(:prep, settings)
+        end
+
+        it 'sets up command for pounding after placing ingot' do
+          allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
+          allow(DRC).to receive(:bput).with('put my ingot on anvil', Forge::PUT_SUCCESS_PATTERN)
+          forge_instance.send(:prep, settings)
+          expect(forge_instance.instance_variable_get(:@command)).to eq('pound ingot on anvil with my forging hammer')
+        end
+      end
+
+      context 'when metal is not specified (enhancement)' do
+        before do
+          forge_instance.instance_variable_set(:@metal, nil)
+          forge_instance.instance_variable_set(:@recipe_name, 'temper')
+          allow(DRCC).to receive(:get_crafting_item)
+          allow(DRCC).to receive(:find_recipe2)
+          allow(DRCC).to receive(:stow_crafting_item)
+          allow(forge_instance).to receive(:swap_tool)
+        end
+
+        it 'does not attempt to fetch ingot' do
+          expect(DRCC).not_to receive(:get_crafting_item).with(/ingot/, anything, anything, anything, anything)
+          forge_instance.send(:prep, settings)
+        end
+      end
+    end
+
     describe '#set_defaults' do
       it 'sets up for temper recipe' do
         forge_instance.instance_variable_set(:@recipe_name, 'temper')

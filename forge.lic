@@ -350,8 +350,9 @@ class Forge
     swap_tool(@home_tool)
     return unless @metal
 
-    unless DRCI.get_item?("#{@metal} ingot", @bag)
-      error_log("Failed to get #{@metal} ingot from #{@bag}. Exiting.")
+    DRCC.get_crafting_item("#{@metal} ingot", @bag, @bag_items, @forging_belt, true)
+    unless DRCI.in_hands?('ingot')
+      error_log("Failed to get #{@metal} ingot. Exiting.")
       magic_cleanup
       exit
     end
