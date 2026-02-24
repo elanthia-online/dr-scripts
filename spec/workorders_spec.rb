@@ -791,13 +791,13 @@ RSpec.describe WorkOrders do
   describe '#order_parts' do
     before do
       workorders.instance_variable_set(:@recipe_parts, {
-                                         'clasp' => {
-                                           'Crossing' => { 'part-room' => 100, 'part-number' => 5 }
-                                         },
-                                         'rivet' => {
-                                           'Crossing' => { 'part-room' => 101 }
-                                         }
-                                       })
+        'clasp' => {
+          'Crossing' => { 'part-room' => 100, 'part-number' => 5 }
+        },
+        'rivet' => {
+          'Crossing' => { 'part-room' => 101 }
+        }
+      })
     end
 
     context 'when parts is nil' do
@@ -1064,6 +1064,73 @@ RSpec.describe WorkOrders do
   end
 
   # ===========================================================================
+  # #forge_items - blacksmithing workflow
+  # ===========================================================================
+  describe '#forge_items' do
+    let(:info) do
+      {
+        'stock-room' => 100,
+        'trash-room' => 200
+      }
+    end
+    let(:materials_info) do
+      {
+        'stock-name'   => 'bronze',
+        'stock-number' => 11,
+        'stock-volume' => 10
+      }
+    end
+    let(:item) { { 'name' => 'short sword' } }
+    let(:recipe) do
+      {
+        'name'   => 'short sword',
+        'volume' => 5,
+        'noun'   => 'sword'
+      }
+    end
+
+    before do
+      workorders.instance_variable_set(:@settings, OpenStruct.new)
+      workorders.instance_variable_set(:@hometown, 'Crossing')
+      workorders.instance_variable_set(:@bag, 'backpack')
+      workorders.instance_variable_set(:@belt, 'toolbelt')
+      workorders.instance_variable_set(:@worn_trashcan, nil)
+      workorders.instance_variable_set(:@worn_trashcan_verb, nil)
+      workorders.instance_variable_set(:@cash_on_hand, 5000)
+
+      allow(workorders).to receive(:find_recipe).and_return([recipe])
+      allow(DRCM).to receive(:ensure_copper_on_hand)
+      allow(DRCT).to receive(:order_item)
+      allow(DRCT).to receive(:dispose)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+      allow(workorders).to receive(:bundle_item)
+    end
+
+    it 'stows ingot to crafting_container using DRCC.stow_crafting_item' do
+      expect(DRCC).to receive(:stow_crafting_item).with('bronze ingot', 'backpack', 'toolbelt')
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+
+    it 'orders ingot from correct stock room' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      expect(DRCT).to receive(:order_item).with(100, 11)
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+
+    it 'disposes leftover ingot when remaining volume is positive' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      expect(DRCT).to receive(:dispose).with('bronze ingot', 200, nil, nil)
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+
+    it 'calls smith script with correct material and item name' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword'])
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+  end
+
+  # ===========================================================================
   # Error messaging tests
   # ===========================================================================
   describe 'error messaging' do
@@ -1072,11 +1139,11 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).to receive(:msg).with('bold', /^WorkOrders:/)
 
       workorders.send(:complete_work_order, {
-                        'npc-rooms' => [100],
-                        'npc_last_name' => 'Jakke',
-                        'npc' => 'Jakke',
-                        'logbook' => 'engineering'
-                      })
+        'npc-rooms'     => [100],
+        'npc_last_name' => 'Jakke',
+        'npc'           => 'Jakke',
+        'logbook'       => 'engineering'
+      })
     end
 
     it 'uses WorkOrders: prefix for bundle failure' do
