@@ -325,6 +325,28 @@ RSpec.describe WorkOrders do
       expect(described_class::MATERIAL_NOUNS).to eq(%w[deed pebble stone rock rock boulder])
     end
 
+    it 'defines DEED_SIZE_NOUNS as frozen hash' do
+      expect(described_class::DEED_SIZE_NOUNS).to be_frozen
+      expect(described_class::DEED_SIZE_NOUNS).to eq({
+        'small_number'  => 'pebble',
+        'medium_number' => 'rock',
+        'large_number'  => 'boulder'
+      })
+    end
+
+    it 'maps deed sizes to correct volume nouns' do
+      # Verify the mapping matches MATERIAL_NOUNS indices for each deed size
+      nouns = described_class::MATERIAL_NOUNS
+      deed_nouns = described_class::DEED_SIZE_NOUNS
+
+      # small = pebble (MATERIAL_NOUNS[1])
+      expect(deed_nouns['small_number']).to eq(nouns[1])
+      # medium = rock (MATERIAL_NOUNS[3] or [4])
+      expect(deed_nouns['medium_number']).to eq(nouns[3])
+      # large = boulder (MATERIAL_NOUNS[5])
+      expect(deed_nouns['large_number']).to eq(nouns[5])
+    end
+
     it 'defines READ_LOGBOOK_PATTERNS as frozen array' do
       expect(described_class::READ_LOGBOOK_PATTERNS).to be_frozen
       expect(described_class::READ_LOGBOOK_PATTERNS.length).to eq(2)
@@ -791,13 +813,13 @@ RSpec.describe WorkOrders do
   describe '#order_parts' do
     before do
       workorders.instance_variable_set(:@recipe_parts, {
-                                         'clasp' => {
-                                           'Crossing' => { 'part-room' => 100, 'part-number' => 5 }
-                                         },
-                                         'rivet' => {
-                                           'Crossing' => { 'part-room' => 101 }
-                                         }
-                                       })
+        'clasp' => {
+          'Crossing' => { 'part-room' => 100, 'part-number' => 5 }
+        },
+        'rivet' => {
+          'Crossing' => { 'part-room' => 101 }
+        }
+      })
     end
 
     context 'when parts is nil' do
@@ -850,6 +872,122 @@ RSpec.describe WorkOrders do
     it 'parses volume from deed read result' do
       allow(DRC).to receive(:bput).with('read my deed', 'Volume:\s*\d+').and_return('Volume: 75')
       expect(workorders.send(:deed_ingot_volume)).to eq(75)
+    end
+  end
+
+  # ===========================================================================
+  # #forge_items_with_own_ingot - deed noun bug fix
+  # ===========================================================================
+  describe '#forge_items_with_own_ingot' do
+    let(:info) do
+      {
+        'logbook'    => 'blacksmithing',
+        'trash-room' => 100
+      }
+    end
+    let(:materials_info) do
+      {
+        'stock-name'   => 'steel',
+        'stock-volume' => 100
+      }
+    end
+    let(:item) { { 'name' => 'dagger', 'volume' => 10 } }
+
+    before do
+      workorders.instance_variable_set(:@use_own_ingot_type, 'alabaster')
+      workorders.instance_variable_set(:@deeds_noun, 'rock')
+      workorders.instance_variable_set(:@deed_own_ingot, false)
+      workorders.instance_variable_set(:@hometown, 'Shard')
+
+      allow(workorders).to receive(:find_recipe).and_return([item, 10, nil, nil])
+      allow(workorders).to receive(:bundle_item)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+    end
+
+    context 'when ingot is available' do
+      it 'gets ingot directly without needing deed' do
+        expect(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(true)
+        allow(workorders).to receive(:ingot_volume).and_return(100)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
+    end
+
+    context 'when ingot is not available but deed is' do
+      it 'uses correct deed name with volume noun (alabaster rock deed)' do
+        # First call for ingot fails, then deed succeeds
+        allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(false, true)
+
+        # This is the bug fix - should use "alabaster rock deed" not "alabaster deed"
+        expect(DRCI).to receive(:get_item?).with('alabaster rock deed').and_return(true)
+        allow(workorders).to receive(:deed_ingot_volume).and_return(100)
+        allow(DRCI).to receive(:get_item_if_not_held?)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
+    end
+
+    context 'when more volume is needed' do
+      it 'searches for deed with correct volume noun' do
+        # First ingot available but not enough volume, need to get more
+        allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(true, true)
+        allow(workorders).to receive(:ingot_volume).and_return(5, 100)
+
+        # The key assertion: deed search uses volume noun "rock" not just "deed"
+        expect(DRCI).to receive(:get_item?).with('alabaster rock deed').and_return(true)
+        allow(workorders).to receive(:deed_ingot_volume).and_return(50)
+        allow(DRCI).to receive(:get_item_if_not_held?)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
+    end
+
+    context 'with different deed sizes' do
+      it 'uses pebble noun for small deeds' do
+        workorders.instance_variable_set(:@deeds_noun, 'pebble')
+        allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(false)
+
+        expect(DRCI).to receive(:get_item?).with('alabaster pebble deed').and_return(true)
+        allow(workorders).to receive(:deed_ingot_volume).and_return(100)
+        allow(DRCI).to receive(:get_item_if_not_held?)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
+
+      it 'uses boulder noun for large deeds' do
+        workorders.instance_variable_set(:@deeds_noun, 'boulder')
+        allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(false)
+
+        expect(DRCI).to receive(:get_item?).with('alabaster boulder deed').and_return(true)
+        allow(workorders).to receive(:deed_ingot_volume).and_return(100)
+        allow(DRCI).to receive(:get_item_if_not_held?)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
+    end
+
+    context 'with different material types' do
+      it 'uses correct material name in deed search' do
+        workorders.instance_variable_set(:@use_own_ingot_type, 'steel')
+        allow(DRCI).to receive(:get_item?).with('steel ingot').and_return(false)
+
+        expect(DRCI).to receive(:get_item?).with('steel rock deed').and_return(true)
+        allow(workorders).to receive(:deed_ingot_volume).and_return(100)
+        allow(DRCI).to receive(:get_item_if_not_held?)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
+
+      it 'uses correct material name for bronze' do
+        workorders.instance_variable_set(:@use_own_ingot_type, 'bronze')
+        allow(DRCI).to receive(:get_item?).with('bronze ingot').and_return(false)
+
+        expect(DRCI).to receive(:get_item?).with('bronze rock deed').and_return(true)
+        allow(workorders).to receive(:deed_ingot_volume).and_return(100)
+        allow(DRCI).to receive(:get_item_if_not_held?)
+
+        workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
+      end
     end
   end
 
@@ -1072,11 +1210,11 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).to receive(:msg).with('bold', /^WorkOrders:/)
 
       workorders.send(:complete_work_order, {
-                        'npc-rooms' => [100],
-                        'npc_last_name' => 'Jakke',
-                        'npc' => 'Jakke',
-                        'logbook' => 'engineering'
-                      })
+        'npc-rooms'     => [100],
+        'npc_last_name' => 'Jakke',
+        'npc'           => 'Jakke',
+        'logbook'       => 'engineering'
+      })
     end
 
     it 'uses WorkOrders: prefix for bundle failure' do

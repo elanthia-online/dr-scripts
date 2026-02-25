@@ -73,6 +73,14 @@ class WorkOrders
 
   MATERIAL_NOUNS = %w[deed pebble stone rock rock boulder].freeze
 
+  # Maps deed size setting keys to the volume noun used in the item name
+  # e.g., "alabaster rock deed" for medium_number
+  DEED_SIZE_NOUNS = {
+    'small_number'  => 'pebble',
+    'medium_number' => 'rock',
+    'large_number'  => 'boulder'
+  }.freeze
+
   def initialize
     arg_definitions = [
       [
@@ -100,6 +108,7 @@ class WorkOrders
     deeds_data = get_data('crafting').deeds[@hometown]
     @deeds_room = deeds_data['room']
     @deeds_number = deeds_data['medium_number']
+    @deeds_noun = DEED_SIZE_NOUNS['medium_number']
     @carving_type = @settings.carving_workorder_material_type
     @min_items = @settings.workorder_min_items
     @max_items = @settings.workorder_max_items
@@ -728,7 +737,7 @@ class WorkOrders
     recipe = find_recipe(materials_info, item, quantity).first
 
     unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
-      unless DRCI.get_item?("#{@use_own_ingot_type} deed")
+      unless DRCI.get_item?("#{@use_own_ingot_type} #{@deeds_noun} deed")
         Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging')
         exit
       end
@@ -745,7 +754,7 @@ class WorkOrders
 
     if volume < quantity * recipe['volume']
       smelt = true
-      unless DRCI.get_item?("#{@use_own_ingot_type} deed")
+      unless DRCI.get_item?("#{@use_own_ingot_type} #{@deeds_noun} deed")
         Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging (need more volume)')
         DRCI.stow_hands
         exit
