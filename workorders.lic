@@ -737,7 +737,7 @@ class WorkOrders
     recipe = find_recipe(materials_info, item, quantity).first
 
     unless DRCI.get_item?("#{@use_own_ingot_type} ingot")
-      unless DRCI.get_item?("#{@use_own_ingot_type} #{@deeds_noun} deed")
+      unless DRCI.get_item?("#{@deeds_noun} deed")
         Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging')
         exit
       end
@@ -754,7 +754,7 @@ class WorkOrders
 
     if volume < quantity * recipe['volume']
       smelt = true
-      unless DRCI.get_item?("#{@use_own_ingot_type} #{@deeds_noun} deed")
+      unless DRCI.get_item?("#{@deeds_noun} deed")
         Lich::Messaging.msg('bold', 'WorkOrders: Out of material/deeds for forging (need more volume)')
         DRCI.stow_hands
         exit

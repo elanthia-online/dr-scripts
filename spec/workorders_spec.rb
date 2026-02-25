@@ -914,12 +914,12 @@ RSpec.describe WorkOrders do
     end
 
     context 'when ingot is not available but deed is' do
-      it 'uses correct deed name with volume noun (alabaster rock deed)' do
+      it 'uses volume noun only for deed retrieval (rock deed)' do
         # First call for ingot fails, then deed succeeds
         allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(false, true)
 
-        # This is the bug fix - should use "alabaster rock deed" not "alabaster deed"
-        expect(DRCI).to receive(:get_item?).with('alabaster rock deed').and_return(true)
+        # Game only accepts "rock deed" not "alabaster rock deed"
+        expect(DRCI).to receive(:get_item?).with('rock deed').and_return(true)
         allow(workorders).to receive(:deed_ingot_volume).and_return(100)
         allow(DRCI).to receive(:get_item_if_not_held?)
 
@@ -928,13 +928,13 @@ RSpec.describe WorkOrders do
     end
 
     context 'when more volume is needed' do
-      it 'searches for deed with correct volume noun' do
+      it 'searches for deed with volume noun only' do
         # First ingot available but not enough volume, need to get more
         allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(true, true)
         allow(workorders).to receive(:ingot_volume).and_return(5, 100)
 
-        # The key assertion: deed search uses volume noun "rock" not just "deed"
-        expect(DRCI).to receive(:get_item?).with('alabaster rock deed').and_return(true)
+        # Game only accepts "rock deed" not "alabaster rock deed"
+        expect(DRCI).to receive(:get_item?).with('rock deed').and_return(true)
         allow(workorders).to receive(:deed_ingot_volume).and_return(50)
         allow(DRCI).to receive(:get_item_if_not_held?)
 
@@ -947,7 +947,7 @@ RSpec.describe WorkOrders do
         workorders.instance_variable_set(:@deeds_noun, 'pebble')
         allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(false)
 
-        expect(DRCI).to receive(:get_item?).with('alabaster pebble deed').and_return(true)
+        expect(DRCI).to receive(:get_item?).with('pebble deed').and_return(true)
         allow(workorders).to receive(:deed_ingot_volume).and_return(100)
         allow(DRCI).to receive(:get_item_if_not_held?)
 
@@ -958,7 +958,7 @@ RSpec.describe WorkOrders do
         workorders.instance_variable_set(:@deeds_noun, 'boulder')
         allow(DRCI).to receive(:get_item?).with('alabaster ingot').and_return(false)
 
-        expect(DRCI).to receive(:get_item?).with('alabaster boulder deed').and_return(true)
+        expect(DRCI).to receive(:get_item?).with('boulder deed').and_return(true)
         allow(workorders).to receive(:deed_ingot_volume).and_return(100)
         allow(DRCI).to receive(:get_item_if_not_held?)
 
@@ -966,23 +966,25 @@ RSpec.describe WorkOrders do
       end
     end
 
-    context 'with different material types' do
-      it 'uses correct material name in deed search' do
+    context 'deed retrieval is material-agnostic' do
+      it 'uses same deed noun regardless of material type (steel)' do
         workorders.instance_variable_set(:@use_own_ingot_type, 'steel')
         allow(DRCI).to receive(:get_item?).with('steel ingot').and_return(false)
 
-        expect(DRCI).to receive(:get_item?).with('steel rock deed').and_return(true)
+        # Still just "rock deed" - material type not used in deed retrieval
+        expect(DRCI).to receive(:get_item?).with('rock deed').and_return(true)
         allow(workorders).to receive(:deed_ingot_volume).and_return(100)
         allow(DRCI).to receive(:get_item_if_not_held?)
 
         workorders.send(:forge_items_with_own_ingot, info, materials_info, item, 1)
       end
 
-      it 'uses correct material name for bronze' do
+      it 'uses same deed noun regardless of material type (bronze)' do
         workorders.instance_variable_set(:@use_own_ingot_type, 'bronze')
         allow(DRCI).to receive(:get_item?).with('bronze ingot').and_return(false)
 
-        expect(DRCI).to receive(:get_item?).with('bronze rock deed').and_return(true)
+        # Still just "rock deed" - material type not used in deed retrieval
+        expect(DRCI).to receive(:get_item?).with('rock deed').and_return(true)
         allow(workorders).to receive(:deed_ingot_volume).and_return(100)
         allow(DRCI).to receive(:get_item_if_not_held?)
 
