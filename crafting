@@ -1,0 +1,2308 @@
+=begin
+  Crafting.lic  Version 1.0
+  Authors: Mhikal (and Gemini AI)
+  Contributers: (please feel free to contribute to the code to add any missing functionality).
+  
+  
+  This script is intended to be able to complete a crafting PROJECT needing only the recipe name
+  as an argument. There is an optional material name argument, though there are no filters or
+  sorters to ensure that the optional material name is of the material type needed for the recipe.
+  
+  1. This script utilizes [ base-recipes.yaml ] and [ base-crafting.yaml ] to...
+    (a) find the [BaseRecipe] in [ base-recipes.yaml ] of matching a given name,
+    (b) determine the [BaseDiscipline] in [ base-crafting.yaml ] by cross-referencing the 
+        [BaseRecipe] discipline and [hometown],
+    (c) create the needed [CraftingComponent] objects out of [BaseStock] and [BaseRecipePart], 
+        both utilizing [ base-crafting.yaml], based on the information in the [BaseRecipe] 
+        and [BaseDiscipline] for the [CraftingProject].
+  
+  All [CraftingComponent] objects contain...
+    (a) the required recipe quantity information,
+    (b) a method to determine what is currently on hand in the player's crafting container,
+    (c) what is still needed, and
+    (d) a method to resolve any missing components through purchase.
+  
+  2. The script will then PREPARE to craft by resolving the necessary CraftingComponents by...
+    (a) ordering the ones with an order id, or
+    (b) buying them by name.
+  
+  3. The script will then execute the correct lich crafting script, assembling and passing on
+     the necessary arguments using a variety of CraftingProduct information.
+
+
+  *NOTE* This script also has a LIST function to access the raw information from the the two
+         databases:   [ base-recipes.yaml ] and [ base-crafting.yaml ]
+
+=end
+
+COMPONENT_INFO = {
+  'basic'              => [:name, :order_id, :value, :room],
+  'base_stock'         => [:base_key, :name, :order_id, :volume, :value, :is_bulk, :info_type],
+  'base_part'          => [:base_key, :name, :order_id, :room, :info_type],
+  'crafting_material'  => [:base_key, :name, :volume, :base_material, :required_quantity, :required_volume, :base_material, :material_name],
+  'material_component' => [:base_key, :name, :volume, :quantity, :on_hand_quantity, :on_hand_volume, :info_type]
+  }
+
+class Default
+  attr_accessor :base_tab
+  
+  SOLID_LINE  = "________________________________________________________________________________\n"
+  
+  def self.to_base_info(info_obj)
+    info_hash = nil
+	
+	if info_obj.is_a?(Hash)
+	  info_hash = info_obj.transform_keys(&:to_sym)
+	  return info_hash
+	end
+    
+	if info_obj.respond_to?(:base_info)
+	  info_hash = info_obj.base_info
+	  return info_hash
+	end
+    
+    info_hash = to_hash(info_obj)
+	info_hash
+  end
+
+  def self.has_keys?(info, key_list)
+    info_hash = to_base_info(info)
+    key_list.all? { |key| info_hash.key?(key) && !info_hash[key].nil? }
+  end
+
+  def self.up_tabs!(tab_objs, amount = 1)
+    tab_objs.each { |obj| obj.tab_up!(amount) if obj.respond_to?(:tab_up!) }
+    tab_objs
+  end
+  
+  def self.tab_parent!(parent, children)
+	offspring = Array(children)
+    
+	return nil unless parent.respond_to?(:base_tab=)
+    return nil unless offspring.all? { |child| child.respond_to?(:base_tab=) }
+
+    parent_tab = parent.base_tab || 0
+    child_tab = parent_tab + 1
+  
+    offspring.each { |child| child.base_tab = child_tab }
+    return parent, children
+  end
+  
+  def self.as_instance_variable(raw_var)
+    var_str = raw_var.to_s
+	return "@#{var_str}".to_sym unless var_str.include?("@")
+	raw_var.to_sym
+  end
+  
+  def self.as_hash_key(raw_var)
+    return raw_var.to_s.delete("@").to_sym
+  end
+  
+  def self.to_hash(info_obj, exclude = [])
+    return {} unless info_obj.respond_to?(:instance_variables)
+	
+	excluded_variables = [:@base_tab]
+	unless exclude.empty?
+	  exclude.each do |excl_var|
+	    excluded_variables << as_instance_variable(excl_var)
+	  end
+	end
+	
+    info_hash = info_obj.instance_variables.each_with_object({}) do |var, hash|
+      next if excluded_variables.include?(var)
+	  key = as_hash_key(var)
+      hash[key] = info_obj.instance_variable_get(var)
+    end
+
+    info_hash
+  end
+
+  def self.clean_str(raw_arg)
+    return "" if raw_arg.nil?
+    "#{raw_arg.to_s.downcase.strip}"
+  end
+  
+  def initialize
+    @base_tab = 0
+	@hidden_attributes = [:base_tab]
+  end
+
+  # Helper to get the current indentation string
+  def tab
+    "      " * (@base_tab || 0)
+  end
+
+  # Helper for newline + current indentation
+  def nest_tab
+    "\n" + tab
+  end
+
+  def are_children!(tab_objs)
+    self.class.tab_parent!(self, tab_objs)
+  end
+
+  # Increases the current object's tab level
+  def tab_up!(amount = 1)
+    @base_tab = (@base_tab || 0) + amount
+  end
+
+  # Joins an array of strings using the nested indentation
+  def nest_string(str_arr = [])
+    str_arr.join(nest_tab)
+  end
+  
+  # Converts elements to strings and joins them with nested indentation
+  def nest_array(arr = [])
+    arr.map { |element| "#{element}" }.join(nest_tab)
+  end
+  
+  def to_h(exclude = @hidden_attributes)
+    self.class.to_hash(self, exclude)
+  end
+  
+  # Updated to_s using your nesting logic
+  def to_s
+    data = to_h
+    
+    lines = data.map do |key, val|
+      "#{key}: #{val.inspect}"
+    end
+    
+    header = "#{tab}<#{self.class.name}>"
+    body = nest_string(lines.map { |l| "  " + l })
+    footer = "#{tab}</#{self.class.name}>"
+    
+    "#{header}\n#{body}\n#{footer}"
+  end
+
+
+end
+
+module Data
+  ORDINAL = [
+    'first', 'second', 'third', 'fourth', 'fifth',
+    'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
+	'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth',
+	'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth', 'twentieth',
+	'twenty-first', 'twenty-second', 'twenty-third', 'twenty-fourth', 'twenty-fifth'
+  ].freeze
+  
+  DEFAULT_MATERIAL = {
+    'metal'   => 'bronze',
+    'cloth'   => 'burlap', 
+    'leather' => 'rat-pelt',
+    'yarn'    => 'wool',
+    'bone'    => 'deer',
+    'stone'   => 'alabaster',
+    'wood'    => 'maple'
+  }.freeze
+  
+  MATERIAL_UNIT = {
+    'metal'   => ['ingot'],
+    'cloth'   => ['cloth'],
+    'leather' => ['leather', 'hide', 'skin'],
+    'yarn'    => ['yarn'],
+    'bone'    => ['stack'],
+    'stone'   => ['deed', 'pebble', 'stone', 'rock', 'rock', 'boulder'],
+    'wood'    => ['lumber']
+  }.freeze
+  
+  # Lich.rwb Method for API to retrieve player file settings (player-setup.yaml).
+  SETTINGS = get_settings 
+  
+  # SETTINGS contain user-specific settings.
+  HOMETOWN = SETTINGS.force_crafting_town || SETTINGS.hometown 
+  
+  # Lich.rwb Method for API to retrieve game data files.
+  BASE_RECIPES = get_data('recipes').freeze
+  BASE_CRAFTING = get_data('crafting').freeze
+  BASE_STOCKS = BASE_CRAFTING.stock.dup.freeze
+  BASE_PARTS = BASE_CRAFTING.recipe_parts.dup.freeze
+
+  BASE_SKILLS = {
+    'forging'     => ['blacksmithing', 'armorsmithing', 'weaponsmithing'],
+    'outfitting'  => ['tailoring', 'artistry', 'jewelry making'],
+    'engineering' => ['shaping', 'tinkering', 'carving'],
+    'alchemy'     => ['remedies', 'cooking', 'reactants'],
+    'enchanting'  => ['artificing', 'binding', 'invoking']
+  }
+  
+  ALCHEMY_BASE_MATERIALS = {
+    1  => 'water',
+    2  => 'grain alcohol',
+    3  => 'dried nemoih',
+    4  => 'dried plovik',
+    5  => 'dried jadice',
+    6  => 'dried nilos',
+    7  => 'dried georin',
+    8  => 'crushed riolur',
+    9  => 'crushed junliar',
+    10 => 'crushed aevaes',
+    11 => 'dried genich stem',
+    12 => 'crushed ojhenik',
+    13 => 'red flowers',
+    14 => 'ithor root',
+    15 => 'qun pollen'
+  }
+
+  BASE_MATERIALS = {
+    'blacksmithing'  => ['metal'],
+	'armorsmithing'  => ['metal'],
+	'weaponsmithing' => ['metal'],
+	'tailoring'      => ['cloth', 'leather', 'yarn'],
+    'carving'        => ['stone', 'bone'],
+	'shaping'        => ['wood'],
+	'tinkering'      => ['wood'],
+	'remedies'       => ALCHEMY_BASE_MATERIALS
+  }
+
+  class BaseRecipe < Default
+    @@crafting_recipes = Data::BASE_RECIPES.crafting_recipes.freeze
+	@@crafting_skills = Data::BASE_SKILLS.freeze
+	@@crafting_materials = Data::BASE_MATERIALS.freeze
+    
+    attr_reader :name, :noun, :volume, :type, :work_order, :chapter, :material # Mapped from @raw_recipe_data
+	attr_reader :skill_type, :discipline_type, :base_material # Determined by @raw_recipe_data
+    attr_reader :alchemy_container
+    
+	# recipe_component info arrays.
+	attr_reader :parts, :alchemy, :enchanting
+
+    attr_reader :raw_recipe_data
+
+    def initialize(name)
+	  super()
+
+      @raw_recipe_data = @@crafting_recipes.find do |recipe| 
+        recipe['name'].to_s.downcase.strip == name.to_s.downcase.strip 
+      end
+      
+      return unless @raw_recipe_data
+
+      @name       = @raw_recipe_data['name']
+      @noun       = @raw_recipe_data['noun']
+      @volume     = @raw_recipe_data['volume']
+      @type       = @raw_recipe_data['type']
+      @work_order = @raw_recipe_data['work_order']
+      @chapter    = @raw_recipe_data['chapter']
+      @material   = @raw_recipe_data['material']
+	  
+      determine_types!
+	  determine_base_material!
+      determine_parts!
+      determine_alchemy!
+      determine_enchanting!
+      
+    end
+	
+    def determine_types!
+      @skill_type = nil
+	  @discipline_type = nil
+	  
+      return unless @type
+      
+      @discipline_type = @type.downcase.strip
+      @@crafting_skills.each do |skill_group, disciplines|
+        if disciplines.include?(@discipline_type)
+          @skill_type = skill_group
+          break
+        end
+      end
+      @skill_type
+    end
+
+	def determine_base_material!
+	  @base_material = @raw_recipe_data['material'] || @@crafting_materials[@discipline_type][0]	  
+	end	
+	 
+    def determine_parts!
+      @parts = []
+      part_names = @raw_recipe_data['part']
+      return unless part_names
+
+      part_names.each do |_name|
+        @parts << { name: _name }
+      end
+    end 
+    
+    def determine_alchemy!
+	  @alchemy_container = @raw_recipe_data['container']
+    
+      first_herb = @raw_recipe_data['herb1'] ? { 
+        name:    @raw_recipe_data['herb1'], 
+        order_id: @raw_recipe_data['herb1_stock']
+      } : nil
+      second_herb = @raw_recipe_data['herb2'] ? {
+        name:    @raw_recipe_data['herb2'], 
+        order_id: @raw_recipe_data['herb2_stock']
+      } : nil
+      
+      raw_alchemy = [first_herb, second_herb]
+	  @alchemy = raw_alchemy.compact
+    end
+    
+    def determine_enchanting!
+	
+	  sigil_scroll = " sigil-scroll"
+	  
+      sigil_1 =   @raw_recipe_data['enchant_stock1_name'] ? { 
+        name:     @raw_recipe_data['enchant_stock1_name'] + sigil_scroll, 
+        order_id: @raw_recipe_data['enchant_stock1']
+      } : nil	  
+      sigil_2 =   @raw_recipe_data['enchant_stock2_name'] ? {
+        name:     @raw_recipe_data['enchant_stock2_name'] + sigil_scroll,
+        order_id: @raw_recipe_data['enchant_stock2']
+      } : nil	  
+      sigil_3 =   @raw_recipe_data['enchant_stock3_name'] ? {
+        name:     @raw_recipe_data['enchant_stock3_name'] + sigil_scroll,
+        order_id: @raw_recipe_data['enchant_stock3']
+      } : nil	  
+      sigil_4 =   @raw_recipe_data['enchant_stock4_name'] ? { 
+        name:     @raw_recipe_data['enchant_stock4_name'] + sigil_scroll, 
+        order_id: @raw_recipe_data['enchant_stock4']
+      } : nil	  
+      enchant_item = @raw_recipe_data['item'] ? {
+        name:        @raw_recipe_data['noun'],
+        order_id:    @raw_recipe_data['item']
+      } : nil
+      
+	  raw_enchanting = [sigil_1, sigil_2, sigil_3, sigil_4, enchant_item]
+	  
+	  @enchanting = raw_enchanting.compact
+    end
+    
+  end
+
+  class BaseDiscipline < Default
+    @@base_blacksmithing = BASE_CRAFTING.blacksmithing.freeze
+    @@base_tailoring     = BASE_CRAFTING.tailoring.freeze 
+    @@base_shaping       = BASE_CRAFTING.shaping.freeze
+    @@base_carving       = BASE_CRAFTING.carving.freeze
+    @@base_remedies      = BASE_CRAFTING.remedies.freeze
+    @@base_artificing    = BASE_CRAFTING.artificing.freeze
+  
+    @@hometown = Data::HOMETOWN
+    
+    attr_reader :raw_discipline_data
+    attr_reader :discipline
+    attr_reader :pattern_book
+    attr_reader :trash_room, :tool_room, :part_room, :idle_room, :stock_room, :bingots_room
+	attr_reader :brazier_rooms, :shaping_rooms, :sewing_rooms, :spinning_rooms, :loom_rooms, :press_grinder_rooms
+    attr_reader :repair_npc, :repair_room, :workorder
+	# These are the CraftingComponent info for discipline_components.
+    attr_reader :blacksmithing, :tailoring, :shaping, :carving, :remedies, :artificing
+
+    def initialize(discipline)
+      super()
+      @discipline = discipline.downcase
+      
+      source = case @discipline
+               when 'blacksmithing', 'armorsmithing', 'weaponsmithing' then @@base_blacksmithing
+               when 'tailoring', 'artistry', 'jewelry making'          then @@base_tailoring
+               when 'shaping', 'tinkering'                             then @@base_shaping
+               when 'carving'                                          then @@base_carving
+               when 'remedies', 'cooking', 'reactants'                 then @@base_remedies
+               when 'artificing', 'binding', 'invoking'                then @@base_artificing
+               end
+
+      @raw_discipline_data = source[@@hometown] if source
+      return unless @raw_discipline_data
+
+      @pattern_book        = @raw_discipline_data['pattern-book']        || nil
+      @trash_room          = @raw_discipline_data['trash-room']          || nil
+      @tool_room           = @raw_discipline_data['tool-room']           || nil
+      @part_room           = @raw_discipline_data['part-room']           || nil
+      @idle_room           = @raw_discipline_data['idle-room']           || SETTINGS.safe_room
+      @stock_room          = @raw_discipline_data['stock-room']          || nil
+      @brazier_rooms       = @raw_discipline_data['brazier-rooms']       || nil
+	  @shaping_rooms       = @raw_discipline_data['shaping-rooms']       || nil
+	  @bingots_room        = @raw_discipline_data['bingots-room']        || nil
+	  @sewing_rooms        = @raw_discipline_data['sewing-rooms']        || nil
+      @spinning_rooms      = @raw_discipline_data['spinning-rooms']      || nil
+      @loom_rooms          = @raw_discipline_data['loom-rooms']          || nil
+	  @press_grinder_rooms = @raw_discipline_data['press_grinder_rooms'] || nil
+	  @repair_npc          = @raw_discipline_data['repair-npc']          || nil
+      @repair_room         = @raw_discipline_data['repair-room']         || nil
+      
+	  determine_workorder!
+	  
+      determine_blacksmithing!
+      determine_shaping!
+      determine_carving!
+      determine_remedies!
+      determine_artificing!
+    end
+    
+    def determine_workorder!
+      @workorder = {
+        npc: { 
+          name:       @raw_discipline_data['npc'], 
+          last_name:  @raw_discipline_data['npc_last_name'], 
+          rooms:      @raw_discipline_data['npc-rooms'] 
+        },
+        logbook:      @raw_discipline_data['logbook']     
+      }
+    end
+
+    def determine_blacksmithing!
+      _finisher = {
+        name:         @raw_discipline_data['finisher'],
+        order_id:     @raw_discipline_data['finisher-number'],
+        room:         @raw_discipline_data['finisher-room'],
+        full_name:    @raw_discipline_data['finisher-full'],
+		value:        1000
+      } if @raw_discipline_data['finisher']
+      
+	  @blacksmithing = [
+        _finisher
+      ]
+    end
+	
+    def determine_shaping!
+      _clamps = {
+        name:        'clamps',
+        order_id:    @raw_discipline_data['clamps-number'],
+        room:        @raw_discipline_data['tool-room'],
+		value:       625
+      } if @raw_discipline_data['clamps-number']
+      _glue = {
+        name:        'glue',
+        order_id:    @raw_discipline_data['glue-number'],
+        room:        @raw_discipline_data['tool-room'],
+		value:       437
+      } if @raw_discipline_data['glue-number']
+      _stain = {
+        name:       'stain',
+        order_id:    @raw_discipline_data['stain-number'],
+        room:        @raw_discipline_data['tool-room'],
+		value:       375
+      } if @raw_discipline_data['stain-number']
+      
+	  @shaping = [
+        _clamps,
+        _glue,
+        _stain
+      ]
+    end
+	
+    def determine_carving!
+      _polish = {
+        name:       'polish',
+        order_id:   @raw_discipline_data['polish-number'],
+        room:       @raw_discipline_data['polish-room'],
+		value:      635
+      } if @raw_discipline_data['polish-number']
+	  
+      @carving = [
+	    _polish
+	  ]
+    end
+
+    def determine_remedies!
+      _catalyst = { 
+        name:     @raw_discipline_data['catalyst'], 
+        order_id: @raw_discipline_data['catalyst_number'], 
+        volume:   @raw_discipline_data['catalyst_volume'], 
+        room:     @raw_discipline_data['catalyst-room'],
+		value:    212
+      } if @raw_discipline_data['catalyst']
+	  _stock0 = { 
+        name:       @raw_discipline_data['stock-name'],
+        order_id:   @raw_discipline_data['stock-number'],
+        volume:     @raw_discipline_data['stock-volume'],
+        room:       @raw_discipline_data['stock-room']
+      } if @raw_discipline_data['stock-name']
+      _stock1 = {
+        name:       @raw_discipline_data['stock-name-a'],
+        order_id:   @raw_discipline_data['stock-number-a'],
+        volume:     @raw_discipline_data['stock-volume-a'],
+        room:       @raw_discipline_data['stock-room']
+      } if @raw_discipline_data['stock-name-a']	
+	  
+      @remedies = [
+        _catalyst,
+		_stock0, 
+		_stock1
+      ]
+    end
+
+    def determine_artificing!
+      _blank_scrolls = {
+        name:    'blank scrolls',
+        order_id: @raw_discipline_data['blank-scrolls'],
+        room:     @raw_discipline_data['tool-room'],
+		value:    125
+      } if @raw_discipline_data['blank-scrolls']
+      _fount = {
+        name:    'fount',
+        order_id: @raw_discipline_data['fount'],
+        room:     @raw_discipline_data['tool-room'],
+		value:    312
+      } if @raw_discipline_data['fount']
+      
+	  @artificing = [
+        _blank_scrolls,
+        _fount
+      ]
+    end
+
+  end
+  
+  class BaseStock < Default
+    # Assuming BASE_CRAFTING is defined globally elsewhere
+    @@base_stocks = BASE_CRAFTING.stock.freeze
+    
+    attr_reader :raw_stock_data
+    attr_reader :base_key, :name, :order_id, :volume, :value
+	
+	def self._attr_key_search(query_name)
+      # Assuming Data::BASE_PARTS and clean_str are defined in the broader scope
+      source_database = @@base_stocks
+	  query_str = clean_str(query_name)
+      
+	  exact_matches = []
+      close_matches = []
+
+      # Iterate through the entire database
+      source_database.each do |base_key, base_data|
+ 
+        key_str = clean_str(base_key)
+		attr_str = clean_str(base_data['stock-name'])		
+		
+		exact_key = (key_str == query_str)
+		exact_attr = (attr_str == query_str)
+
+		exact_match = exact_key || exact_attr
+		
+		close_key = key_str.include?(query_str)
+		close_attr = attr_str.include?(query_str)
+		
+		close_match = close_key || close_attr
+		
+        exact_matches << base_key if exact_match
+        close_matches << base_key if close_match
+      end
+
+      { exact: exact_matches, close: close_matches }
+    end
+	
+	def self.query_keys(query_name, rtrn_close = false, number_of_chops = 3)
+      
+	  chops_remaining = number_of_chops
+	  search_results = nil
+      exact_matches = []
+      close_matches = []
+  
+      query_match = query_name.dup
+	  
+	        # Run at least once, then continue if target array is empty and we have attempts/length
+      loop do
+        # Perform the base search
+        search_results = _attr_key_search(query_match)
+        exact_matches  = search_results[:exact]
+        close_matches  = search_results[:close]
+
+        # Check if we should stop: either we found what we need, or we are out of retries
+        target_found = rtrn_close ? !close_matches.empty? : !exact_matches.empty?
+        break if target_found || chops_remaining <= 0 || query_match.length <= 3
+
+        # Prepare for next iteration
+        query_match.chop!
+        chops_remaining -= 1
+      end
+	  
+	  query_result = rtrn_close ? close_matches : exact_matches
+	  return query_result
+    end
+	
+	def self.has_key?(key_name)
+	  target_keys = []
+	  target_keys = query_keys(key_name, true)
+	  query_result = !target_keys.empty?
+	end
+
+    # Factory method to find and create a single BaseStock instance
+    def self.name(stock_name)
+      stock_key = nil
+      target_keys = BaseStock.query_keys(stock_name, true)
+	  if target_keys.empty?
+		return nil
+	  end
+	  
+	  if target_keys.size == 1
+	    stock_key = target_keys.first
+	  
+	  elsif target_keys.size > 1
+	    target_keys.each do |target_key|
+		  stock_data = @@base_stocks[target_key]
+		  
+		  key_str = clean_str(target_key)
+		  name_str = clean_str(stock_data['stock-name'])
+		  
+		  cond_key_equals_name = (key_str == name_str)
+		  cond_no_name = (!stock_data['stock-name'])
+		  
+		  if (cond_key_equals_name || cond_no_name)
+		    stock_key = target_key
+			break
+		  end		  
+		end
+	  end
+	  
+	  new(stock_key)
+    end
+
+  	def self.key(stock_key)
+	  return nil unless @@base_stocks[stock_key]
+	  new(stock_key)
+	end
+  
+    def self.get_volume_info(exact_stock_name, target_volume)
+      target_keys = BaseStock.query_keys(exact_stock_name, false)
+    
+      # Correctly mapping, sorting by volume descending, and freezing
+      target_base_stocks = target_keys.map { |stock_key| send(:new, stock_key) }
+                                      .sort_by(&:volume)
+                                      .reverse
+                                      .freeze
+
+      last_target_index = target_base_stocks.size - 1
+      volume_stock_info = []
+      current_volume = 0
+      remaining_volume = target_volume
+
+      # Guard check for empty collection
+      return [] if target_base_stocks.empty?
+
+      while current_volume < target_volume
+        # Reset info for each pass to recalculate the distribution
+        volume_stock_info = []
+      
+        target_base_stocks.each_with_index do |base_stock, index|
+          is_last_index = (index == last_target_index)    
+          stock_volume = base_stock.volume
+        
+          # Guard against division by zero
+          next if stock_volume.zero?
+
+          qty_ratio = remaining_volume.to_f / stock_volume
+          volume_stock_qty = is_last_index ? qty_ratio.ceil : qty_ratio.floor
+        
+          # Add the :quantity key to the info hash
+		  if volume_stock_qty > 0
+            _info = base_stock.base_info.merge(quantity: volume_stock_qty)
+            volume_stock_info << _info
+		  end
+
+          current_volume = volume_stock_info.sum { |stock_info| stock_info[:volume] * stock_info[:quantity] }      
+          remaining_volume = target_volume - current_volume
+		  break if remaining_volume <= 0
+        end
+        break if remaining_volume <= 0
+      end
+
+      volume_stock_info
+    end
+
+    def initialize(stock_key)
+	  super()
+      @base_key = stock_key
+      @raw_stock_data = @@base_stocks[stock_key]
+      
+      return unless @raw_stock_data
+	  
+      # @name represents the in-game string to interact with the object.
+	  @name     = @raw_stock_data['stock-name']   || @base_key
+      # @order_id represents stock id number used to order the item by number. 
+	  # (Some items are purchased through order number, if it exists. 
+	  # Others are purchased by name.
+	  @order_id = @raw_stock_data['stock-number'] || nil
+      # @volume is the amount of pieces/uses/parts within the item. Default is 1.
+	  @volume   = @raw_stock_data['stock-volume'] || 1
+	  # @value is the amount of copper the stock will cost. All @@base_stocks have value defined in the database.
+      @value    = @raw_stock_data['stock-value']  || 1000
+    end
+	
+	private_class_method :new
+
+    def is_bulk?
+	  key_str = @base_key.to_s
+	  namevolume_str = "#{@name}#{@volume}".to_s	  
+	  is_bulk = false
+	  is_bulk = true if (key_str == namevolume_str)
+	  
+	  return is_bulk
+	end
+    
+	# This is the hash format to be used for creating the Crafting Component.
+    def base_info
+	  _info = {
+		info_type: 'base_stock',
+	    base_key: @base_key, 
+	    name: @name, 
+	    order_id: @order_id, 
+	    volume: @volume, 
+	    value: @value, 
+	    is_bulk: is_bulk?
+	  }
+	  
+	  return _info
+    end
+
+    def to_s
+      return base_info.to_s
+    end
+	
+  end
+
+  class BaseRecipePart < Default
+    @@base_recipe_parts = BASE_CRAFTING.recipe_parts.freeze
+    @@hometown          = Data::HOMETOWN
+    
+    attr_reader :raw_part_data, :name, :order_id, :room
+
+    def self._basic_key_search(query_name)
+      # Assuming Data::BASE_PARTS and clean_str are defined in the broader scope
+      source_database = Data::BASE_PARTS
+      exact_matches = []
+      close_matches = []
+	  
+	  query_str = clean_str(query_name)
+
+      # Iterate through the entire database
+      source_database.each do |key, _value|
+        # Using clean_str as provided in your snippet
+        key_str = clean_str(key)
+        exact_matches << key if (key_str == query_str)
+        close_matches << key if (key_str.include?(query_str))
+      end
+
+      { exact: exact_matches, close: close_matches }
+    end
+
+    # Primary function to handle return types and the recursive "chopping" logic
+    def self.query_keys(query_name, rtrn_close = false, number_of_chops = 3)
+      
+	  chops_remaining = number_of_chops
+	  search_results = nil
+      exact_matches = []
+      close_matches = []
+  
+      query_match = query_name.dup
+  
+      # Run at least once, then continue if target array is empty and we have attempts/length
+      loop do
+        # Perform the base search
+        search_results = _basic_key_search(query_match)
+        exact_matches = search_results[:exact]
+        close_matches = search_results[:close]
+
+        # Check if we should stop: either we found what we need, or we are out of retries
+        target_found = rtrn_close ? !close_matches.empty? : !exact_matches.empty?
+        break if target_found || chops_remaining <= 0 || query_match.length <= 3
+
+        # Prepare for next iteration
+        query_match.chop!
+        chops_remaining -= 1
+      end
+	  
+	  query_result = rtrn_close ? close_matches : exact_matches
+	  
+	  return query_result
+    end
+	
+	def self.has_key?(key_name)
+	  target_keys = []
+	  target_keys = query_keys(key_name, true)
+	  !target_keys.empty?
+	end
+
+    def self.name(part_name)
+	  target_keys = BaseRecipePart.query_keys(part_name, true)
+	  if target_keys.empty?
+	    
+	    return nil
+	  end
+	  part_key = target_keys.sort.first
+      new(part_key)
+    end
+    
+	def self.key(part_key)
+	  return nil unless @@base_recipe_parts[part_key]  
+	  new(part_key)
+	end
+
+    def initialize(part_key)
+	  super()
+	  @base_key = part_key
+      @name = @base_key
+      @raw_part_data = @@base_recipe_parts.dig(@name, @@hometown)
+      return unless @raw_part_data
+
+      @order_id = @raw_part_data['part-number']
+      @room    = @raw_part_data['part-room']
+    end
+	
+	private_class_method :new
+	
+	def base_info
+	  _info = { 
+		info_type: 'base_part',
+	    base_key: @base_key, 
+		name: @name, 
+		order_id: @order_id,
+		room: @room
+		}
+	  return _info
+	end
+	
+  end
+
+end
+
+class CraftingSettings < Default
+  DEFAULT_MATERIAL = Data::DEFAULT_MATERIAL.freeze    
+  ORDINAL = Data::ORDINAL.freeze  
+  MATERIAL_UNIT    = Data::MATERIAL_UNIT.freeze
+  # Class-level settings acting as session constants
+  SETTINGS = Data::SETTINGS  
+  CRAFTING_BELT = {
+    'forging'     => SETTINGS.forging_belt,
+    'outfitting'  => SETTINGS.outfitting_belt,
+    'engineering' => SETTINGS.engineering_belt,
+    'alchemy'     => SETTINGS.alchemy_belt,
+    'enchanting'  => SETTINGS.enchanting_belt    
+  }
+  ### Determined by SETTINGS for 
+  @@bag = SETTINGS.crafting_container
+  @@bag_items = SETTINGS.crafting_items_in_container
+  @@hometown = SETTINGS.force_crafting_town || SETTINGS.hometown
+  # Determined by SETTINGS and @@discipline_type
+  @@belt = nil
+  #
+  ### Set by CraftingProject
+  @@material_name = nil
+  # BaseRecipe object. 
+  @@base_recipe = nil
+  # Determined by @@base_recipe
+  @@skill_type = nil
+  @@discipline_type = nil
+  @@recipe_name = nil
+  @@recipe_chapter = nil
+  @@base_material = nil
+  @@recipe_volume = nil
+  @@product_noun = nil  
+  # Set by CraftingProject
+  @@base_discipline = nil
+ 
+  # Set by CraftingProject
+  @@material_name = nil
+    
+  def self.set_recipe!(recipe_name)
+    @@base_recipe         = Data::BaseRecipe.new(recipe_name)
+	# These come from @@base_recipe.
+	@@skill_type          = @@base_recipe.skill_type.to_s.downcase
+    @@discipline_type     = @@base_recipe.discipline_type.to_s.downcase	
+    @@recipe_name         = @@base_recipe.name
+    @@recipe_chapter      = @@base_recipe.chapter
+	@@base_material       = @@base_recipe.base_material
+    @@recipe_volume       = @@base_recipe.volume
+	@@product_noun        = @@base_recipe.noun   	
+  end
+
+  def self.set_discipline!
+    @@base_discipline = Data::BaseDiscipline.new(@@discipline_type)
+	return unless @@base_discipline
+    @@belt = CRAFTING_BELT[@@discipline_type]
+  end
+  
+  def self.set_material_name!(material_name)
+    @@material_name = material_name || DEFAULT_MATERIAL[@@base_material]
+  end
+ 
+  def initialize
+    super() #Initializes Tabs
+  end
+  
+  private_class_method :new
+  
+  #
+  ### These are just API utility functions to manage item storage and retrieval.
+  def stow_items_in_hand!
+    stow_item!(DRC.right_hand) if DRC.right_hand
+    stow_item!(DRC.left_hand) if DRC.left_hand
+	return (DRC.right_hand.empty? && DRC.left_hand_empty?)
+  end
+  #
+  def get_item!(name)
+    DRCC.get_crafting_item(name, @@bag, @@bag_items, @@belt, true)
+	return DRCI.in_hands?(@name)
+  end
+  #
+  def stow_item!(name)
+    _stowed = false
+    if DRCC.stow_crafting_item(name, @@bag, @@belt)
+	  @@bag_items << name unless @@bag_items.include?(name)
+      _stowed = true
+	end
+    _stowed
+  end
+  ###
+  #
+end
+
+class CraftingComponent < CraftingSettings
+  attr_reader   :base_key
+  # Data::Base_Info
+  attr_reader   :name, :order_id, :volume, :value, :room
+  # Crafting  logic
+  attr_reader   :required, :on_hand, :cost
+  # Component_Methods execute these variables.
+  attr_reader   :update_method, :verify_method, :needs_method, :resolution_method  
+  
+  def self.check_info_type(info_hash)
+    type = info_hash[:info_type]
+	return type
+  end
+  
+  def self.is_basic_info?(info_hash)
+    info_hash[:info_type] = 'basic'
+  end
+  
+  def self.has_basic_info?(info_hash)
+    has_keys?(info_hash, COMPONENT_INFO['basic'])
+  end
+  
+  def self.is_stock_info?(info_hash)
+    info_hash[:info_type] = 'base_stock'
+  end
+  
+  def self.has_stock_info?(info_hash)
+    has_keys?(info_hash, COMPONENT_INFO['base_stock'])
+  end
+  
+  def self.is_part_info?(info_hash)
+    info_hash[:info_type] = 'base_part'
+  end
+  
+  def self.has_part_info?(info_hash)
+    has_keys?(info_hash, COMPONENT_INFO['base_part'])
+  end
+  
+  def self.is_crafting_material_info?(info_hash)
+    info_hash[:info_type] = 'crafting_material'
+  end
+  
+  def self.has_crafting_material_info?(info_hash)
+    has_keys?(info_hash, COMPONENT_INFO['crafting_material'])
+  end
+  
+  def self.is_material_component_info?(info_hash)
+    info_hash[:info_type] = 'material_component'
+  end
+  
+  def self.has_material_component_info?(info_hash)
+    has_keys?(info_hash, COMPONENT_INFO['material_component'])
+  end
+
+  def self.quantify_info(info_array)
+    return [] if info_array.nil? || info_array.empty?
+    amalgamated = {}
+    info_array.each do |comp_info|
+      next if comp_info.nil?
+      comp_info[:name] = comp_info[:name].to_s.downcase
+      qty = comp_info.delete(:quantity) || comp_info.delete(:required) || 1
+      identity = comp_info
+      amalgamated[identity] = (amalgamated[identity] || 0) + qty
+    end
+    quantified_info = amalgamated.map { |info_hash, total_qty| info_hash.merge({ quantity: total_qty }) }
+	return quantified_info
+  end
+  
+  def self.compose_discipline_components
+    discipline_components = []
+    
+    discipline_components_info = case @@discipline_type
+                when 'blacksmithing', 'armorsmithing', 'weaponsmithing' 
+                  @@base_discipline.blacksmithing
+                when 'tailoring', 'artistry', 'jewelry making'          
+                  @@base_discipline.tailoring
+                when 'shaping', 'tinkering'                             
+                  @@base_discipline.shaping
+                when 'carving'                                          
+                  @@base_discipline.carving
+                when 'remedies', 'cooking', 'reactants'                 
+                  @@base_discipline.remedies
+                when 'artificing', 'binding', 'invoking'                
+                  @@base_discipline.artificing
+                end
+	
+	quantify_info(discipline_components_info).each { |comp_info| discipline_components << self.compose(comp_info) if comp_info }
+	discipline_components.compact!
+	discipline_components.each(&:verify!)
+	discipline_components
+  end
+  
+  def self.compose_recipe_components
+    recipe_components = []
+  
+    parts_info      = quantify_info(@@base_recipe.parts)
+	parts_info.each { |comp_info| recipe_components << self.compose(comp_info) if comp_info } unless parts_info.empty?
+	
+    alchemy_info    = quantify_info(@@base_recipe.alchemy)
+	alchemy_info.each { |comp_info| recipe_components << self.compose(comp_info) if comp_info } unless alchemy_info.empty?
+	
+	enchanting_info = quantify_info(@@base_recipe.enchanting)
+	enchanting_info.each { |comp_info| recipe_components << self.compose(comp_info) if comp_info } unless enchanting_info.empty?
+  
+    recipe_components.compact!
+	recipe_components.each(&:verify!)
+	recipe_components
+  end
+  
+  # --- Low-Level Factory Methods ---
+  # _stock_info is a outside constructor for a new BaseStock object. [BaseStock.name creates BaseStock.new()]
+  # Creates a set of stock_info for a single BaseStock.
+  def self.stock_comp_info(info)
+    return {} if info.nil?
+    info_hash = to_base_info(info)
+	comp_info = nil	
+	
+    # Creates a fresh BaseStock from the provided [:name] key.
+	base_stock = info_hash[:base_key] ? Data::BaseStock.key(info_hash[:base_key]) : Data::BaseStock.name(info_hash[:name])
+    # BaseStocks.base_info [ base_key: string, name: string, order_id: number, volume: number, value: number, is_bulk: boolean ]
+	stock_info = base_stock&.base_info
+	
+	return {} if stock_info.nil?
+	
+	is_bulk_stock = (info_hash[:is_bulk] == true) || base_stock.is_bulk?
+	
+	stock_room = @@base_discipline.stock_room
+	bingots_room = @@base_discipline.bingots_room
+	room_info = { room: is_bulk_stock ? bingots_room : stock_room }
+	
+	comp_info = stock_info.merge(room_info) if !stock_info.nil?
+	# Returns an info_hash
+	return comp_info
+  end
+  
+  def self.part_comp_info(info)
+    info_hash = to_base_info(info)	
+	info_key = info_hash[:base_key] || info_hash[:name]	
+	part_info = Data::BaseRecipePart.name(info_key)&.base_info
+	return part_info
+  end
+  
+  def self.compose(info)
+    return nil if info.nil?
+    base_info  = to_base_info(info)
+
+    info_key  = base_info[:base_key]
+	info_name = base_info[:name]
+	
+	part_info  = part_comp_info(base_info)
+
+	stock_info = stock_comp_info(base_info)
+
+    comp_info =  {
+	  info_type: 'comp_info',
+	  base_key:         part_info[:base_key] || stock_info[:base_key] || base_info[:base_key],
+	  name:             part_info[:name]     || stock_info[:name]     || base_info[:name],
+	  order_id:         part_info[:order_id] || stock_info[:order_id] || base_info[:order_id],
+	  volume:                                   stock_info[:volume]   || base_info[:volume], 
+	  value:                                    stock_info[:value]    || base_info[:value],
+	  room:             part_info[:room]     || stock_info[:room]     || base_info[:room],
+	  quantity:                                                          base_info[:quantity],
+	  on_hand_quantity:                                                  base_info[:on_hand_quantity],
+	  on_hand_volume:                                                    base_info[:on_hand_volume]
+	}
+	
+    return send(:new, comp_info)
+  end
+  
+  def self.valid_base_key?(info)
+    info_hash = to_base_info(info)
+	info_key = info_hash[:base_key] || info_hash[:name]
+	
+	contains_min_info       = is_basic_info?(info_hash)
+	contains_craft_mat_info = is_crafting_material_info?(info_hash)
+	contains_mat_comp_info  = is_material_component_info?(info_hash)
+   
+    is_base_stock = Data::BASE_STOCKS[info_key]
+	is_base_part  = Data::BASE_PARTS[info_key]
+	
+    return true if contains_min_info || contains_craft_mat_info || contains_mat_comp_info || is_base_stock || is_base_part
+	return false
+  end
+
+  # --- Instance ---
+  def initialize(info)
+    # 1. Set explicit defaults/system properties
+    @component_class = "CraftingComponent"
+    @verify_method = :determine_on_hand!
+    @update_method = :_update_component!
+    @needs_method = :_component_needs?
+    @resolution_method = :_resolution_purchase_component!
+    @cost = 0
+
+    _base_key = info[:base_key] || info[:name]
+    @base_key = _base_key.to_s.downcase.dup.freeze
+    unless self.class.valid_base_key?(info)
+      raise "Invalid Component: #{@base_key}. Not found in data tables and info is incomplete."
+    end
+	# 2. Define the "known" keys we handle specifically
+    specific_keys = [:base_key, :name, :order_id, :volume, :value, :room, :quantity, :on_hand_quantity, :on_hand_volume]
+	
+    # 3. Handle specific assignments with logic/formatting
+    @name     = info[:base_key] ? info[:name] : @base_key.dup
+    @order_id = info[:order_id]
+    @volume   = info[:volume] || 1
+    @value    = info[:value]
+    @room     = info[:room]
+
+    @required = {
+      quantity: info[:quantity] || 1,
+      volume:   info[:volume]   || 1
+    }
+
+    @on_hand = {
+      quantity: info[:on_hand_quantity] || 0,
+      volume:   info[:on_hand_volume]   || 0,
+      verified: false
+    }
+
+    # 4. Dynamic Assignment: Populate unspecified properties
+    info.each do |key, value|
+      unless specific_keys.include?(key)
+        instance_variable_set("@#{key}", value)
+        # Dynamically create a getter method if it doesn't exist
+        self.class.send(:attr_reader, key) unless respond_to?(key)
+      end
+    end
+
+    update!
+  end
+  
+  private_class_method :new
+
+  def determine_on_hand!
+    
+    name_array = @name.split
+	item_noun = name_array.last
+	match_patterns = []
+	match_captures = []
+    determined_quantity = 0
+		
+	match_string_0 = /(?:a|an|some)\s#{@name}/
+	
+	match_string_1a = /(?:a|an|some)\s#{item_noun}/
+	match_string_1b = /(?:a|an|some)\s(?:\w+\s)?#{item_noun}/
+	match_string_1c = /(?:a|an|some)\s(?:\w+\s)?(?:\w+\s)?#{item_noun}/
+	
+	match_string_2a = /(?:a|an|some)\s#{name_array.first}\s#{item_noun}/	
+	match_string_2b = /(?:a|an|some)\s(?:\w+\s)?#{name_array.first}\s#{item_noun}/	
+	match_string_2c = /(?:a|an|some)\s#{name_array.first}\s(?:\w+\s)?#{item_noun}/
+
+	if (name_array.size == 1)
+	  match_patterns = [match_string_1a, match_string_1b, match_string_1c]
+	elsif (name_array.size == 2)
+	  match_patterns = [match_string_2a, match_string_2b, match_string_2c]
+	end
+	
+	
+    contents = DRC.bput("rummage /C #{@name.split.last} in my #{@@bag}", /^You rummage .*/, /That would accomplish nothing/)
+    
+    case contents
+    when /^You rummage .*/
+	  retries = 0
+	  match_patterns.each do |match_string|
+	    
+	    match_captures = contents.scan(match_string)
+	    
+        break unless match_captures.empty?
+		retries += 1
+	  end
+	  determined_quantity = match_captures.size
+    else
+      determined_quantity = 0
+    end
+
+    
+    
+    @on_hand[:quantity] = determined_quantity
+    @on_hand[:verified] = true
+    self
+  end
+
+  def update!
+    send(@update_method)
+    return self
+  end
+  
+  def override_name!(name)
+    @name = name.downcase.to_s
+    update!
+    return self
+  end
+
+  def verify!
+    send(@verify_method)
+    update!
+    return self
+  end
+  
+  def unverify!
+    @on_hand[:verified] = false
+    return self
+  end
+  
+  def is_verified?
+    @on_hand[:verified]
+  end
+  
+  def override_verified!(ovrd = true)
+    @on_hand[:verified] = ovrd
+    return self
+  end
+
+  def has_needs?
+    update!
+    send(@needs_method)
+  end
+  
+  def resolve!
+    send(@resolution_method) if has_needs?
+    update!
+    return self
+  end
+
+  def to_s
+    _base_array = []
+	_base_array << "base_key: #{@base_key}" if @base_key
+    _base_array << "name: #{@name}"
+    _base_array << "order_id: #{@order_id}" if @order_id
+    _base_array << "room: #{@room}" if @room
+    _base_array << "volume: #{@volume}" if @volume
+    _base_array << "value: #{@value} copper" if @value
+    
+    base_str = "{" + _base_array.join(", ") + " }"
+    obj_str = []  
+    obj_str << ">#{_status_flag}"
+    obj_str << "#{base_str}"
+    obj_str << "    - required:  { quantity:#{@required[:quantity]}, volume:#{@required[:volume]} }"
+    obj_str << "    - on_hand: { quantity:#{@on_hand[:quantity]}, volume:#{@on_hand[:volume]} }"
+    obj_str << "    - cost: #{@cost} copper" if @cost
+      
+    return nest_string(obj_str)
+  end  
+
+  def _ordinal_name(index = 0)
+    min_maxed = [[index, 0].max , ORDINAL.size].min
+    "#{ORDINAL[min_maxed]} #{@name}"    
+  end
+
+  def _update_component!
+    @on_hand[:volume] = @on_hand[:quantity] * (@volume || 0)
+    @cost = @value ? @value * __calculate_needed_quantity : 0    
+    self    
+  end
+  
+  def __calculate_needed_quantity
+    [0, @required[:quantity] - @on_hand[:quantity]].max
+  end
+  
+  def __calculate_needed_volume
+    [0, @required[:volume] - @on_hand[:volume]].max
+  end
+
+  def _component_needs?    
+    @on_hand[:quantity] < @required[:quantity] || @on_hand[:volume] < @required[:volume]
+  end
+
+  def _resolution_purchase_component!
+    return unless @value
+    _needed_quantity = __calculate_needed_quantity
+    DRCM.ensure_copper_on_hand(@cost, SETTINGS, @@hometown)
+    
+    _needed_quantity.times do
+      @order_id && @room ? DRCT.order_item(@room, @order_id) : DRCT.buy_item(@room, @name)
+      stow_items_in_hand!
+    end
+    
+    @on_hand[:verified] = false
+    self
+  end
+
+  def _status_flag
+    return "[READY]" unless has_needs?
+    return "[MISSING]" if @on_hand[:quantity] == 0
+    "[INCOMPLETE]"
+  end
+end
+
+class CraftingMaterial < CraftingComponent
+  MAX_VOLUME = {
+    'cloth'  => 400,
+    'bone'   => 100,
+    'lumber' => 75,
+    'metal'  => 210
+  }
+  attr_reader :material_components
+  attr_reader :stack_method
+
+  def self.material_unit
+    required_volume = @@base_recipe.volume
+    base_material = @@base_recipe.base_material
+    unit_nouns = MATERIAL_UNIT[base_material] || []
+    unit_type_index = (base_material == 'stone' && (1..5).cover?(required_volume)) ? required_volume : 0
+    unit_nouns[unit_type_index] || unit_nouns.first
+  end
+  # Main creator method.
+  def self.from_Base    
+    return nil unless @@material_name
+    
+    material_info = {
+	  info_type: 'crafting_material',
+	  base_key: "[ #{@@material_name} #{@@base_material} ]",
+      name: "#{@@material_name} #{material_unit}",
+	  volume: @@recipe_volume,
+	  required_quantity: 1,
+      required_volume: @@recipe_volume || 1, 
+      base_material: @@base_material,
+      material_name: @@material_name
+      }
+    
+    crafting_material = new(material_info)
+    crafting_material.verify!
+  end
+  
+  def initialize(info)    
+    super(info)
+    @component_class = "CraftingMaterial"
+    @material_components = []
+    
+    @required = { quantity: 1, volume: info[:required_volume] || 1 }
+    
+	@update_method = :_update_material!
+	@verify_method = :determine_material_components!
+    @needs_method = :_material_needs?
+    @resolution_method = :_resolution_stack_material!
+    determine_stack_method!	
+  end
+  
+  private_class_method :new
+  
+  def determine_stack_method!
+    @stack_method = (@@base_material == 'metal') ? :_stack_smelt_all! : :_stack_combine_all!
+  end
+  
+  # builds @material_components from the @name InGame items found in the @@bag.
+  def determine_material_components!
+    @material_components = []
+    determine_on_hand! # Determines the quantity of @name on hand (in the @@bag), verifies the class CraftingMaterial object.
+    # we do not update yet as material_update will override the @on_hand[:quantity] determined by determine_on_hand!
+	qty_on_hand = @on_hand[:quantity]
+	
+	# We use push (<<) here because we are reading the bag from top to bottom
+    qty_on_hand.times { |index| @material_components << _compose_material_component!(index, true) } if qty_on_hand > 0
+
+    update!
+    volume_stock_components.each { |vol_comp| @material_components << vol_comp }
+    update!
+    self
+  end
+
+  def stack!
+    send(@stack_method)
+    update!
+	self
+  end
+
+  def to_s
+    header_str = super
+    obj_str = []
+    
+	obj_str << header_str
+	if @material_components.any?
+	  are_children!(@material_components)
+      CraftingSettings.up_tabs!(@material_components, 1)	
+	  mat_comp_str = nest_string(@material_components)
+	  obj_str << "material_components:"
+      obj_str << "#{mat_comp_str}"
+	end
+	
+    nest_string(obj_str)
+  end
+
+  def _update_material!
+    @material_components.each do |mat_comp|
+      mat_comp.update!
+      mat_comp.override_name!(@name)
+    end
+    
+    @on_hand[:quantity] = @material_components.sum { |mat_comp| mat_comp.on_hand[:quantity] }
+    @on_hand[:volume]   = @material_components.sum { |mat_comp| mat_comp.on_hand[:volume] }
+    @cost               = @material_components.sum { |mat_comp| mat_comp.cost }
+    return self  
+  end
+  
+    # Creates an individual verified material_component: CraftingComponent
+  def _compose_material_component!(index = -1, in_bag = false)
+    stow_item!(@name) if DRCI.in_hands?(@name) && in_bag
+	
+    nominal_group = index >= 0 ? _ordinal_name(index) : "my #{@name}"
+	component_volume = __count_volume(nominal_group, in_bag) 
+  
+    mat_comp_info = {
+	  base_key: "[ #{@name} on hand in #{@@bag.split(".").join(" ")} ] ",
+      name: @name,
+      volume: component_volume,
+      quantity: 1,
+      on_hand_quantity: 1,
+      on_hand_volume: component_volume,
+	  info_type: 'material_component'
+    }
+    
+    material_component = CraftingComponent.compose(mat_comp_info)
+    material_component.override_verified!
+    material_component
+  end
+  
+  def volume_stock_components
+    
+    volume_components = []
+	vol_needed = __calculate_needed_volume
+	return volume_components unless vol_needed > 0
+	
+	# get_volume_info should return an array of _info hashes with the base_stock.base_info combined with the quantity needed.
+	volume_stocks_info = Data::BaseStock.get_volume_info(@@material_name, vol_needed)
+	
+	volume_stocks_info.each do |stock_info|
+	  volume_components << CraftingComponent.compose(stock_info)
+	end
+	
+	
+	return volume_components
+  end
+  
+  def _sort_material_components!
+	update!
+    # Sorts lowest to highest volumes.
+    sorted_volumes = @material_components.map { |mat_comp| mat_comp.on_hand[:volume] }.uniq.sort
+    return unless @on_hand[:quantity] > 1 # Does not need re-sorting if only 1 quantity on hand.
+	
+    until sorted_volumes.empty?
+      target_volume = sorted_volumes.shift 
+    
+	
+	  target_index = 0
+      @material_components.each do |mat_comp|
+        if mat_comp.on_hand[:volume] == target_volume
+          __get_material_component!(target_index) 
+          __stow_material_component! 
+          break
+        end
+		target_index += 1
+      end
+    end
+	
+	@material_components
+  end
+  
+  def __get_material_component!(index = 0)
+    nominal_group = _ordinal_name(index)
+	get_item!(nominal_group)	
+	mat_comp = @material_components.delete_at(index)
+	mat_comp
+  end
+  
+  def __stow_material_component!
+    if DRCI.in_hands?(@name)	  
+	  @material_components.unshift(_compose_material_component!)
+	  stow_item!(@name)
+	end
+  end
+ 
+  def __count_volume(nominal_group = @name, in_bag = false)
+    game_command  = "count #{nominal_group}"
+	game_command += " in my #{@@bag}" if in_bag == true	
+	command_result = DRC.bput(game_command, 'out (\d+) yards', 'out (\d+) pieces', 'About (\d+) volume')
+	return command_result.scan(/\d+/).first.to_i
+  end 
+  
+   # Should return true if any @material_components have DO NOT HAVE needs.
+  def __ready_condition_mat_comps?
+    update!
+    !@material_components.any?(&:has_needs?)
+  end
+  
+  # Should return true if the combined on_hand volume
+  def __ready_condition_volume?
+    update!
+    @on_hand[:volume] >= @required[:volume]
+  end
+  
+  # Should return true if the first material component in the array meets the volume requirements.
+  def __ready_condition_first_component?
+    update!
+    @material_components[0].volume >= @required[:volume]
+  end
+  
+  def __stack_sort_condition_quantity?
+    update!
+    @on_hand[:quantity] > 1
+  end
+  
+    # This is the @needs_method for CraftingMaterial
+  def _material_needs?
+    update!
+	cond_1 = __ready_condition_mat_comps?
+	cond_2 = __ready_condition_volume?
+	cond_3 = __ready_condition_first_component?
+    
+    return true unless cond_1 && cond_2 && cond_3
+	
+	return false
+  end
+
+  def _resolution_stack_material!
+    
+    update!
+    return self if __ready_condition_first_component?  
+    	
+	# This should indirectly resolve ensuring the total volume on hand is needed.
+	unless __ready_condition_mat_comps?
+	  
+	  unverify!	
+	  @material_components.each { |mat_comp| mat_comp.resolve! if mat_comp.has_needs? }
+	  verify!
+      update!
+	end
+	
+	# This should resolve ensuring that at least 1 of the material_components on_hand satisfies the volume.
+	# If there is enough volume on_hand, and of there are more than 1 components on_hand, and if the first component DOES NOT have all the required volume...
+	# ... stack them...
+	if __ready_condition_volume? && __stack_sort_condition_quantity? && !__ready_condition_first_component?
+	  
+	  unverify!	
+	  stack!
+      verify!
+      update!
+	end
+	
+	# If there is enough volume on_hand, and of there are more than 1 components on_hand, and if the first component DOES NOT have all the required volume...
+    # ... sort them (by greatest to least volume)
+	if __ready_condition_volume? && __stack_sort_condition_quantity? && !__ready_condition_first_component?
+      
+	  unverify!	
+	  _sort_material_components!
+      verify!
+      update!
+	end
+
+    return self
+  end
+  
+  def _stack_combine_all!
+    
+    return unless get_item!(@name)
+    @material_components = []
+    
+    loop do 
+      get_item!(@name)
+      case DRC.bput("combine", "You combine .* together", "must be holding both")
+      when "You combine .* together"
+        result = get_item!(@name)
+        break if result.include?("I could not find") 
+      when "must be holding both"
+        break
+      end
+    end
+  
+    stow_items_in_hand!
+	
+	@on_hand[:verified] = false # Invalidates the verfication status if script executes.
+    return self	
+  end
+  
+  def _stack_smelt_all!
+    crucible = {
+	  count:  { current: 0, max: 22  },
+	  volume: { current: 0, max: 210 }
+	}
+    # Finds an empty crucible and sets the initial crucible stats.
+    DRCC.find_empty_crucible(@@hometown) 
+    
+	# Checks how many @name are currently on_hand in the @@bag.
+	on_hand_item_count = DRCI.count_items_in_container(@name, @@bag)
+    # Loading the crucible.
+    on_hand_item_count.times do
+      
+	  break unless get_item!(@name)
+	  
+	  ingot_volume = __count_volume
+	  # Compares against crucible's max limits.
+      if ( crucible[:count][:current] + 1 > crucible[:count][:max] ) || ( crucible[:volume][:current] + ingot_volume > crucible[:volume][:max] )
+	    stow_item!(@name)
+		break
+	  end
+	  
+	  # Puts the @name into the crucible.
+      case DRC.bput("put my #{@name} in crucible", "You put", "What were", "smelting such a volume of metal", "smelting so many metal pieces")
+      when "You put"
+        crucible[:volume][:current] += ingot_volume
+        crucible[:count][:current]  += 1
+      when "What were" 
+        break
+      when "smelting such a volume of metal", "smelting so many metal pieces"
+        stow_item!(@name)
+        break
+      end
+      
+	  # Checks crucibles current theoretical contents against their maximums.
+      break if ( crucible[:volume][:current] >= crucible[:volume][:max] ) || ( crucible[:count][:current] >= crucible[:count][:max] )
+    end
+	
+	
+    crucible_contents = DRC.bput("rummage /C #{@name.split.last} in crucible", /^You rummage .*/, /That would accomplish nothing/)
+    crucible_item_count = crucible_contents.scan(/ #{@name}\W/).size
+ 
+  
+    # Smelts the @name in the crucible if there is more than one @name inside.  
+    if crucible_item_count > 1
+      DRC.wait_for_script_to_complete('smelt')
+    elsif crucible_item_count == 1
+      DRC.bput("get #{@name} from the crucible", "You get", "What were")
+    end
+    
+    stow_item!(@name)
+	
+    @material_components = []
+	@on_hand[:verified] = false # Invalidates the verfication status if script executes.
+    return self
+  end
+  
+end
+
+class CraftingInventory < CraftingSettings
+  attr_reader :crafting_material, :recipe_components, :discipline_components
+
+  def initialize
+    super()
+    # 1. Material probes immediately via from_Base -> determine_on_hand!
+    @crafting_material = CraftingMaterial.from_Base	
+	@recipe_components = CraftingComponent.compose_recipe_components
+	@discipline_components = CraftingComponent.compose_discipline_components
+  end
+  
+  public_class_method :new
+
+  def has_needs?
+    need = false
+	inventoried_components.each do |comp|
+	  need = true if comp.has_needs?
+	end
+	return need
+  end
+  
+  # NOT EXECUTED ON INITIALIZATION
+  def resolve_all!
+    needed_cash = [total_cost, 5000].max
+    DRCM.ensure_copper_on_hand(needed_cash, SETTINGS, @@hometown)
+	DRCT.walk_to(@@base_discipline.idle_room)
+	# @crafting_material.resolve! should handle the resolution of internal components as well as the @crafting_material stacking.
+    @crafting_material.resolve! if @crafting_material && @crafting_material.respond_to?(:resolve!)
+	#@part_components.each { |part_comp| part_comp.resolve! } if @part_components.any? && @part_components[0].respond_to?(:resolve!)
+    @recipe_components.each { |recipe_comp| recipe_comp.resolve! } if @recipe_components.any? && @recipe_components[0].respond_to?(:resolve!)
+    
+	@disipline_components.each { |disc_comp| disc_comp.resolve! } if @discipline_components.any? && @discipline_components[0].respond_to?(:resolve!)
+	
+	#This is the catchall for all individual root components. This does not resolve the stacking in CraftingMaterials.
+	inventoried_components.each do |comp|
+      comp.resolve! if comp.has_needs?
+    end
+	
+	verify_all!	
+	self
+  end
+  
+  def verify_all!
+    @crafting_material&.verify! unless @crafting_material&.is_verified?
+	#@part_components.each { |part_comp| part_comp&.verify! unless part_comp&.is_verified? } unless @part_components.empty?
+	@recipe_components.each { |recipe_comp| recipe_comp&.verify! unless recipe_comp&.is_verified? } unless @recipe_components.empty?
+	@discipline_components.each { |disc_comp| disc_comp&.verify! unless disc_comp&.is_verified? } unless @discipline_components.empty?
+    self
+  end
+
+  def inventoried_components
+    #[@crafting_material, *@part_components, *@discipline_components].compact
+	[@crafting_material, *@recipe_components, *@discipline_components].compact
+  end
+
+  def total_cost
+    inventoried_components.sum { |c| c.has_needs? ? (c.cost || 0) : 0 }
+  end
+  
+  def to_s
+    obj_str = [""]
+	
+	obj_str << "Craft Bag:  [ #{@@bag.split(".").join(" ")} ]" if @@bag
+    obj_str << "Craft Belt:  [ #{@@belt} ]" if @@belt
+	
+	
+    if @crafting_material
+	  are_children!(@crafting_material)
+	  obj_str << "Crafting Material:"
+	  obj_str << "#{@crafting_material}"
+	end
+	
+    if @recipe_components.any?
+	  are_children!(@recipe_components)
+	  obj_str << "Recipe Components:"
+	  obj_str << "#{nest_string(@recipe_components)}"
+    end
+	
+	if @discipline_components.any?
+	  are_children!(@discipline_components)
+	  obj_str << "Discipline Components:"
+	  obj_str << "#{nest_string(@discipline_components)}"
+	end
+	
+	nest_string(obj_str)
+  end
+  
+end
+
+module CraftingMethod
+  class CraftingProduct < CraftingSettings
+    class << self
+      attr_accessor :script_name, :script_arguments
+
+      def script_name
+        @script_name || 'unknown_script'
+      end
+
+      def script_arguments
+        set_config if @script_arguments.nil? || @script_arguments.empty?
+        @script_arguments || []
+      end
+
+      def lich_script_config
+        [script_name, script_arguments]
+      end
+
+      def craft!
+        # This ensures fresh data from the inventory is used right before execution.
+        self.set_config 
+        DRC.wait_for_script_to_complete(*lich_script_config)
+      end
+      
+      def set_config
+        raise "Must implement set_config in subclass"
+      end
+
+      def to_s
+        "#{self.name.split('::').last}: {  #{script_name}, #{script_arguments}  }"
+       end
+    end
+  end
+
+  class ForgingProduct < CraftingProduct
+    LICH_SCRIPTS = ['forge', 'smith']
+
+    def self.set_config
+      configs = { 
+      'forge' => [@@discipline_type, @@recipe_chapter, @@recipe_name, @@material_name, @@product_noun],
+	  'smith' => [@@material_name, @@recipe_name, 'stamp', 'temper']
+      }
+      @script_name = LICH_SCRIPTS[0]
+	  DRCC.find_anvil(@@hometown) if @script_name = LICH_SCRIPTS[0]
+      @script_arguments = configs[@script_name]
+    end
+	
+  end
+
+  class OutfittingProduct < CraftingProduct
+    FINISH_TYPES = ['hold', 'stow', 'log', 'trash']
+    SEWING_TYPES = ['sewing', 'leather', 'knitting']
+    LICH_SCRIPTS = ['sew']
+    def self.set_config
+      configs = { 
+        'sew' => [FINISH_TYPES[0], SEWING_TYPES[0], @@recipe_chapter, @@recipe_name, @@material_name, @@product_noun] 
+	  }
+      @script_name = LICH_SCRIPTS[0]
+      @script_arguments = configs[@script_name]
+    end
+  end
+
+  class EngineeringProduct < CraftingProduct
+    FINISH_TYPES  = ['hold', 'stow', 'log', 'trash']
+    CARVING_TYPES = { 
+	  'bone'  => ['stack'], 
+	  'stone' => ['deed', 'rock', 'stone', 'pebble', 'boulder']
+	}  
+    LICH_SCRIPTS  = { 
+	  'shaping' => 'shape', 
+	  'carving' => 'carve'
+	}  
+	
+	def self.set_config
+      configs = {
+        'shape' => [FINISH_TYPES[0], @@recipe_chapter, @@recipe_name, @@material_name, @@product_noun],
+        'carve' => [@@recipe_chapter, @@recipe_name, @@material_name, CARVING_TYPES[@@base_material][0], @@product_noun]
+      }
+      @script_name = LICH_SCRIPTS[@@discipline_type] || 'shape'
+      @script_arguments = configs[@script_name]    
+    end
+  end
+
+  class AlchemyProduct < CraftingProduct
+    LICH_SCRIPTS = ['remedy']
+	
+    def self.set_config
+	  
+      first_herb_name  = @@base_recipe.alchemy[0][:name]
+      second_herb_name = @@base_recipe.alchemy[1] ? @@base_recipe.alchemy[1][:name] : 'none'
+      
+	  catalyst_name    = @@base_discipline.remedies[0][:name]
+	  container_name   = @@base_recipe.alchemy_container
+      
+	  configs = {
+	  'remedy' => [@@discipline_type, @@recipe_chapter, @@recipe_name, first_herb_name, second_herb_name, catalyst_name, container_name, @@product_noun] 
+	  }
+      @script_name = LICH_SCRIPTS[0]
+      @script_arguments = configs[@script_name]
+    end 
+  end
+
+  class EnchantingProduct < CraftingProduct
+    LICH_SCRIPTS = ['enchant']
+	
+    def self.set_config
+      configs = {
+	    'enchant' => [@@recipe_chapter, @@recipe_name, @@product_noun]
+	  }
+      @script_name = LICH_SCRIPTS[0]
+      @script_arguments = configs[@script_name]  
+    end
+  end
+end
+
+class CraftingProject < CraftingSettings
+
+  attr_reader :crafting_inventory # Instance of CraftingInventory
+  attr_reader :crafting_method    # This will hold the Product CLASS (e.g. CraftingMethod::ForgingProduct)
+
+  def initialize(recipe_name, material_name = nil)
+    super()
+    @base_tab = 1
+	@report_number = 0
+    DRC.message("CraftingProject Initializing: #{recipe_name} with #{material_name || 'default material'}")
+    
+    # 1. Set the Global Recipe state
+    CraftingSettings.set_recipe!(recipe_name)
+    unless @@base_recipe && @@base_recipe.raw_recipe_data
+      DRC.message("CraftingProject: Recipe #{recipe_name} not found. Exiting...")
+      exit
+    end
+
+    # 2. Setup Disciplines and Materials
+    CraftingSettings.set_discipline!
+    CraftingSettings.set_material_name!(material_name)
+    
+    # 3. Initialize Inventory
+    @crafting_inventory = CraftingInventory.new
+    
+    # 4. Resolve the correct CraftingMethod subclass
+    determine_crafting_method!
+    
+  end
+  
+  public_class_method :new
+  
+  def has_needs?
+    @crafting_inventory.has_needs?
+  end
+  
+  def resolve!
+    @crafting_inventory.resolve_all!
+    DRC.message("### @crafting_inventory.resolve_all! unsuccessful... ###") if @crafting_inventory.has_needs?
+    self  
+  end
+   
+  def determine_crafting_method!
+    # Logic to map skill_type to the targeted subclass in the CraftingMethod module
+    @crafting_method = case @@skill_type
+                         when 'forging'     then CraftingMethod::ForgingProduct
+                         when 'outfitting'  then CraftingMethod::OutfittingProduct
+                         when 'engineering' then CraftingMethod::EngineeringProduct
+                         when 'alchemy'     then CraftingMethod::AlchemyProduct
+                         when 'enchanting'  then CraftingMethod::EnchantingProduct
+                         else
+                           DRC.message("Warning: No CraftingMethod found for skill_type: #{@@skill_type}")
+                           nil
+                       end
+    @crafting_method.set_config
+	self
+  end
+   
+  def craft!
+    DRCT.walk_to(@@base_discipline.idle_room)
+    if @crafting_method
+      
+      @crafting_method.craft! # Calls the class method in the subclass
+    else
+      DRC.message("Error: Cannot craft, no crafting_method set.")
+    end
+	self
+  end
+  
+  def report(report_heading = 'Summary')
+    @report_number += 1
+    are_children!(@crafting_inventory) if @crafting_inventory
+
+    _str = ["*** Crafting Project Report ##{@report_number}: #{report_heading} ***"]
+	_str << SOLID_LINE
+    _str << "Crafting Town:  [ #{@@hometown.capitalize} ]"
+    _str << "#{@crafting_method.to_s}" if @crafting_method
+	_str << SOLID_LINE
+    _str << "Recipe Name:  [ #{@@recipe_name} ]"
+    _str << "Crafting Type:  [ #{@@skill_type.capitalize} - Book of #{@@discipline_type.capitalize}, Chapter #{@@recipe_chapter} ]"   
+    _str << "Material Base:  [ #{@@recipe_volume} units of #{@@base_material}, #{@@material_name} ]" if @@base_material 
+	_str << "Craft Product:  [ #{@@product_noun} ]"
+	_str << SOLID_LINE
+    _str << "Crafting Inventory >>  #{@crafting_inventory.to_s}" if @crafting_inventory
+	_str << SOLID_LINE
+	
+	return nest_string(_str)
+  end
+end
+
+class CraftingLibrary
+  attr_reader :args
+
+  def initialize(args)
+    @args = args
+  end
+
+  # Orchestrates the database query based on the parsed @args
+  def query
+    attr = @args.attribute
+    val  = @args.value
+
+    case @args.database
+    when 'recipes' then list_recipes(attr, val)
+    when 'stocks'  then list_stocks(attr, val)
+    when 'parts'   then list_parts(attr, val)
+    else "Unknown database: #{@args.database}"
+    end
+  end
+
+  def list_recipes(attr = nil, val = nil)
+    generic_list_filter('Recipe', Data::BASE_RECIPES.crafting_recipes.freeze, 'name', attr, val)
+  end
+
+  def list_stocks(attr = nil, val = nil)
+    generic_list_filter('Stock', Data::BASE_CRAFTING.stock.freeze, 'stock', attr, val)
+  end
+
+  def list_parts(attr = nil, val = nil)
+    generic_list_filter('Part', Data::BASE_CRAFTING.recipe_parts.freeze, 'part', attr, val)
+  end
+
+  def generic_list_filter(title, collection, label_key, attribute, attribute_value)
+    attr_str = attribute.to_s.downcase.strip
+
+    # 1. Handle "index" keyword for specific record lookup
+    if !attr_str.empty? && "index".start_with?(attr_str)
+      return list_item_by_index(title, collection, attribute_value.to_i)
+    end
+
+    # 2. Handle Attribute/Key list request (partial match for attr, key, attributes, keys)
+    is_attr_cmd = %w[attr key attributes keysof].any? { |cmd| cmd.start_with?(attr_str) }
+    if !attr_str.empty? && is_attr_cmd
+      return list_available_attributes(title, collection)
+    end
+
+    # 3. Handle Unique Value list (e.g. LIST parts hometown)
+    if attribute && (attribute_value.nil? || attribute_value.to_s.empty?)
+      return list_unique_attribute_values(title, collection, attribute)
+    end
+
+    # 4. Filtered List Logic
+    results = []
+    collection.each_with_index do |item, index|
+      info_hashes = []
+      display_name = ""
+
+      case @args.database
+      when 'recipes'
+        info_hashes = [item]
+        display_name = item[label_key]
+      when 'stocks'
+        display_name = item[0]
+        h = item[1].dup
+        h['stock'] = item[0]
+        info_hashes = [h]
+      when 'parts'
+        display_name = item[0]
+        item[1].each do |town, data|
+          h = data.dup
+          h['part'] = item[0]
+          h['hometown'] = town
+          info_hashes << h
+        end
+      end
+
+      matched_value = nil
+      match = info_hashes.any? do |h|
+        if attribute && attribute_value
+          target_data = h[attribute]
+          search_term = attribute_value.to_s.downcase.strip
+          if target_data.to_s.downcase.include?(search_term)
+            matched_value = target_data
+            true
+          else
+            false
+          end
+        else
+          true
+        end
+      end
+
+      if match
+        results << {
+          index_tag: "#{title}[#{index}]",
+          label_key: "[:#{label_key}]",
+          label_val: "'#{display_name}'",
+          attr_key:  attribute ? "[:#{attribute}]" : nil,
+          attr_val:  matched_value ? "'#{matched_value}'" : nil
+        }
+      end
+    end
+
+    return "#{title} List:\nNo matches found.\n" if results.empty?
+
+    hide_attr_suffix = (attribute.to_s.downcase == label_key.to_s.downcase)
+    max_idx   = results.map { |r| r[:index_tag].length }.max
+    max_label = results.map { |r| r[:label_key].length }.max
+    max_val   = results.map { |r| r[:label_val].length }.max
+    max_attr  = results.map { |r| r[:attr_key].to_s.length }.max
+
+    list = ["#{title} List:"]
+    list << "(Filter: [:#{attribute}] =~ /#{attribute_value}/i)" if attribute && attribute_value
+    
+    results.each do |r|
+      line = ">> #{r[:index_tag].ljust(max_idx)} : #{r[:label_key].ljust(max_label)} => #{r[:label_val].ljust(max_val)}"
+      if !hide_attr_suffix && r[:attr_key] && r[:attr_val]
+        line += " | #{r[:attr_key].ljust(max_attr)} => #{r[:attr_val]}"
+      end
+      list << line
+    end
+    list.join("\n") + "\n"
+  end
+
+  def list_item_by_index(title, collection, index)
+    items = collection.is_a?(Hash) ? collection.to_a : collection
+    entry = items[index]
+    return "Index #{index} not found in #{title} database." if entry.nil?
+
+    label = (@args.database == 'recipes' ? entry['name'] : entry[0])
+    list = ["Detailed Report for #{title}[#{index}]: '#{label}'"]
+
+    case @args.database
+    when 'recipes'
+      data_hash = entry
+      max_k = data_hash.keys.map { |k| k.to_s.length }.max + 1
+      data_hash.keys.sort.each { |k| list << "  [:#{k.to_s.ljust(max_k)}] => #{data_hash[k].inspect}" }
+    when 'stocks'
+      data_hash = entry[1]
+      list << "  stock: '#{entry[0]}'"
+      max_k = data_hash.keys.map { |k| k.to_s.length }.max + 1
+      data_hash.keys.sort.each { |k| list << "    [:#{k.to_s.ljust(max_k)}] => #{data_hash[k].inspect}" }
+    when 'parts'
+      list << "  part: '#{entry[0]}'"
+      hometown_hash = entry[1]
+      hometown_hash.keys.sort.each do |town|
+        list << "  hometown: '#{town}'"
+        data = hometown_hash[town]
+        max_k = data.keys.map { |k| k.to_s.length }.max + 1
+        data.keys.sort.each { |k| list << "    [:#{k.to_s.ljust(max_k)}] => #{data[k].inspect}" }
+      end
+    end
+    list.join("\n") + "\n"
+  end
+
+  def list_available_attributes(title, collection)
+    return "Database is empty." if collection.empty?
+    key_counts = Hash.new(0)
+    total_items = 0
+
+    collection.each do |item|
+      info_hashes = []
+      case @args.database
+      when 'recipes' then info_hashes = [item]
+      when 'stocks'
+        h = item[1].dup
+        h['stock'] = item[0]
+        info_hashes = [h]
+      when 'parts'
+        item[1].each do |town, data|
+          h = data.dup
+          h['part'] = item[0]
+          h['hometown'] = town
+          info_hashes << h
+        end
+      end
+      
+      info_hashes.each do |h|
+        next unless h
+        total_items += 1
+        h.keys.each { |k| key_counts[k] += 1 }
+      end
+    end
+
+    universal_keys = []
+    optional_keys = []
+    key_counts.each do |key, count|
+      count >= total_items ? universal_keys << key : optional_keys << key
+    end
+
+    list = ["Available Attributes for #{title}:", "(* indicates optional key)"]
+    universal_keys.sort.each { |key| list << ">> :#{key}" }
+    optional_keys.sort.each { |key| list << ">> :#{key} (*)" }
+    list.join("\n") + "\n"
+  end
+
+  def list_unique_attribute_values(title, collection, attribute)
+    unique_values = []
+    collection.each do |item|
+      info_hashes = []
+      case @args.database
+      when 'recipes' then info_hashes = [item]
+      when 'stocks'
+        h = item[1].dup
+        h['stock'] = item[0]
+        info_hashes = [h]
+      when 'parts'
+        item[1].each do |town, data|
+          h = data.dup
+          h['part'] = item[0]
+          h['hometown'] = town
+          info_hashes << h
+        end
+      end
+      
+      info_hashes.each do |h|
+        val = h[attribute]
+        if val.is_a?(Array)
+          unique_values.concat(val.map { |v| v.to_s.downcase })
+        elsif val
+          unique_values << val.to_s.downcase
+        end
+      end
+    end
+
+    unique_values = unique_values.map(&:strip).reject(&:empty?).uniq.sort
+    list = ["Unique values for #{title}[:#{attribute}]:"]
+    unique_values.each { |v| list << ">> '#{v}'" }
+    list << "No values found." if unique_values.empty?
+    list.join("\n") + "\n"
+  end
+end
+
+class LichCrafting
+  attr_reader :args, :project, :library, :report
+  HELP_NOTE = "\n   - "
+  
+  LIST_HELP = ( 
+    HELP_NOTE + "Example usage:" + HELP_NOTE +
+    "LIST 'recipes'                       ->  will list all the recipes in the database." + HELP_NOTE +
+    "LIST 'recipes' 'attribute'           ->  will list all the attribute keys for recipes." + HELP_NOTE +
+    "LIST 'recipes' 'type'                ->  will list all the different possible values for recipe type." + HELP_NOTE +
+    "LIST 'recipes' 'type' 'artificing'   ->  will list all the recipes whose type is artificing." + HELP_NOTE +
+    "LIST 'recipes' INDEX <index_number>  ->  will retrieve the database element values for recipe of index value <index_number>"
+  )
+  
+  # Argument definition structure for parse_args (Lich.rb method)
+  LICH_ARGS_DEF = [
+    [
+      { name: 'LIST', regex: /LIST/i, optional: false, variable: false, description: 'Query the crafting databases.'},
+      { name: 'database', options: %w[recipes stocks parts], optional: false, variable: true, description: 'Which database to query.' },
+      { name: 'attribute', regex: /\w+/i, optional: true, variable: true, description: 'Filter by <attribute> || INDEX.'},
+      { name: 'value', regex: /\w+/i, optional: true, variable: true, description: 'attribute: <value> to match || INDEX <value> to retrieve'+ LIST_HELP}
+    ],
+    [
+      { name: 'PROJECT', regex: /PROJECT/i, optional: false, variable: false, description: 'PLAN, PREPARE and produce the full Crafting Project (Crafts the Product)' + HELP_NOTE + 'Full Execution of Crafting Project' },
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes. ("some blister cream", "a metal chain hauberk", etc)' },
+      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' }
+    ],
+	[
+      { name: 'PLAN', regex: /PLAN/i, optional: false, variable: false, description: 'Determines necessary Crafting Components for a given recipe, checking to see which are already on hand.' + HELP_NOTE + 'PLAN is meant for users to check their own inventory for necessary Crafting Components.'  + HELP_NOTE + 'DOES NOT RESOLVE missing components.' },
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes. ("some blister cream", "a metal chain hauberk", etc)'},
+      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' }
+    ],
+	[
+      { name: 'PREPARE', regex: /PREPARE/i, optional: false, variable: false, description: 'PLAN, purchase and PREPARE the components for the Crafting Project.' + HELP_NOTE + 'PREPARE is meant for users to check for, purchase, and PREPARE their own inventory for necessary Crafting Components.'  + HELP_NOTE + 'DOES RESOLVE missing components, DOES NOT CRAFT the project. '},
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes.("some blister cream", "a metal chain hauberk", etc)'},
+      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' }, 
+    ]
+  ]
+  
+  def initialize
+    # parse_args is provided by Lich.rb environment
+    @args = parse_args(LICH_ARGS_DEF)
+
+    plan_project!    if @args.PROJECT || @args.PREPARE || @args.PLAN	  
+	prepare_project! if @args.PROJECT || @args.PREPARE	  
+	produce_project! if @args.PROJECT
+
+    determine_list!  if @args.LIST
+
+    DRC.message("No valid command provided. Use PROJECT, PLAN, PREPARE or LIST.") unless _executable_command?
+    DRC.message("...Done.")
+  end
+  
+  def _executable_command?
+    !!(@args.PROJECT || @args.PREPARE || @args.PLAN || @args.LIST)
+  end
+
+  def prepped?
+    return false unless @project
+    is_ready = !@project.has_needs?
+    DRC.message("Project Ready? #{is_ready}")
+    !!(is_ready)
+  end
+
+  def plan_project!
+    @project = CraftingProject.new(@args.recipe_name, @args.material)
+    project_report('Planning Stage')
+	prepped?
+	return @project
+  end
+  
+  def prepare_project!
+    @project.resolve!
+	project_report('Preparation Stage')
+	prepped?
+	return @project
+  end  
+
+  def produce_project!    
+    @project.craft! if prepped?
+	project_report('Production Stage')
+	return @project
+  end
+
+  def project_report(report_heading = 'Crafting Summary')
+    DRC.message("Project not found or initialized.") unless @project
+    DRC.message(@project.report(report_heading)) if @project
+  end
+  
+  def determine_list!
+    @library = CraftingLibrary.new(@args)
+	DRC.message(@library.query) if @library
+  end
+end
+
+LichCrafting.new
