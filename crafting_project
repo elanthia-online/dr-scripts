@@ -1,8 +1,12 @@
 =begin
-  Crafting.lic  Version 1.0
+  crafting_project.lic  Version 1.1
   Authors: Mhikal (and Gemini AI)
   Contributers: (please feel free to contribute to the code to add any missing functionality).
-  
+  1.1 Notes - Added a filter to tighten material determination, which fixed the knitting issue.
+            - Renamed file to crafting_project.lic
+            - Full execution command is now, for example ;crafting_project PRODUCE "a knit hat"
+            - Added a filter for default yarn to correctly pull the 'yarn' stock, not the 'wool'
+            - Cleaned up the help notes a little in LichCraftingProject
   
   This script is intended to be able to complete a crafting PROJECT needing only the recipe name
   as an argument. There is an optional material name argument, though there are no filters or
@@ -186,22 +190,38 @@ module Data
 	'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth', 'twentieth',
 	'twenty-first', 'twenty-second', 'twenty-third', 'twenty-fourth', 'twenty-fifth'
   ].freeze
+
+  BASE_SKILLS = {
+    'forging'     => ['blacksmithing', 'armorsmithing', 'weaponsmithing'].freeze,
+    'outfitting'  => ['tailoring', 'artistry', 'jewelry making'].freeze,
+    'engineering' => ['shaping', 'tinkering', 'carving'].freeze,
+    'alchemy'     => ['remedies', 'cooking', 'reactants'].freeze,
+    'enchanting'  => ['artificing', 'binding', 'invoking'].freeze
+  }.freeze
   
+  BASE_MATERIALS = {
+    'blacksmithing'  => ['metal'],
+	'armorsmithing'  => ['metal'],
+	'weaponsmithing' => ['metal'],
+	'tailoring'      => ['cloth', 'knitted', 'leather'],
+    'carving'        => ['stone', 'bone'],
+	'shaping'        => ['wood'],
+	'tinkering'      => ['wood'],
+  }.freeze
   DEFAULT_MATERIAL = {
     'metal'   => 'bronze',
     'cloth'   => 'burlap', 
+    'knitted' => 'wool',
     'leather' => 'rat-pelt',
-    'yarn'    => 'wool',
     'bone'    => 'deer',
     'stone'   => 'alabaster',
     'wood'    => 'maple'
-  }.freeze
-  
+  }.freeze  
   MATERIAL_UNIT = {
     'metal'   => ['ingot'],
     'cloth'   => ['cloth'],
+    'knitted' => ['yarn'],
     'leather' => ['leather', 'hide', 'skin'],
-    'yarn'    => ['yarn'],
     'bone'    => ['stack'],
     'stone'   => ['deed', 'pebble', 'stone', 'rock', 'rock', 'boulder'],
     'wood'    => ['lumber']
@@ -219,47 +239,11 @@ module Data
   BASE_STOCKS = BASE_CRAFTING.stock.dup.freeze
   BASE_PARTS = BASE_CRAFTING.recipe_parts.dup.freeze
 
-  BASE_SKILLS = {
-    'forging'     => ['blacksmithing', 'armorsmithing', 'weaponsmithing'],
-    'outfitting'  => ['tailoring', 'artistry', 'jewelry making'],
-    'engineering' => ['shaping', 'tinkering', 'carving'],
-    'alchemy'     => ['remedies', 'cooking', 'reactants'],
-    'enchanting'  => ['artificing', 'binding', 'invoking']
-  }
-  
-  ALCHEMY_BASE_MATERIALS = {
-    1  => 'water',
-    2  => 'grain alcohol',
-    3  => 'dried nemoih',
-    4  => 'dried plovik',
-    5  => 'dried jadice',
-    6  => 'dried nilos',
-    7  => 'dried georin',
-    8  => 'crushed riolur',
-    9  => 'crushed junliar',
-    10 => 'crushed aevaes',
-    11 => 'dried genich stem',
-    12 => 'crushed ojhenik',
-    13 => 'red flowers',
-    14 => 'ithor root',
-    15 => 'qun pollen'
-  }
-
-  BASE_MATERIALS = {
-    'blacksmithing'  => ['metal'],
-	'armorsmithing'  => ['metal'],
-	'weaponsmithing' => ['metal'],
-	'tailoring'      => ['cloth', 'leather', 'yarn'],
-    'carving'        => ['stone', 'bone'],
-	'shaping'        => ['wood'],
-	'tinkering'      => ['wood'],
-	'remedies'       => ALCHEMY_BASE_MATERIALS
-  }
 
   class BaseRecipe < Default
-    @@crafting_recipes = Data::BASE_RECIPES.crafting_recipes.freeze
-	@@crafting_skills = Data::BASE_SKILLS.freeze
-	@@crafting_materials = Data::BASE_MATERIALS.freeze
+    BASE_RECIPES = Data::BASE_RECIPES.crafting_recipes.freeze
+	BASE_SKILLS = Data::BASE_SKILLS.freeze
+	BASE_MATERIALS = Data::BASE_MATERIALS
     
     attr_reader :name, :noun, :volume, :type, :work_order, :chapter, :material # Mapped from @raw_recipe_data
 	attr_reader :skill_type, :discipline_type, :base_material # Determined by @raw_recipe_data
@@ -273,7 +257,7 @@ module Data
     def initialize(name)
 	  super()
 
-      @raw_recipe_data = @@crafting_recipes.find do |recipe| 
+      @raw_recipe_data = BASE_RECIPES.find do |recipe| 
         recipe['name'].to_s.downcase.strip == name.to_s.downcase.strip 
       end
       
@@ -302,7 +286,7 @@ module Data
       return unless @type
       
       @discipline_type = @type.downcase.strip
-      @@crafting_skills.each do |skill_group, disciplines|
+      BASE_SKILLS.each do |skill_group, disciplines|
         if disciplines.include?(@discipline_type)
           @skill_type = skill_group
           break
@@ -310,10 +294,58 @@ module Data
       end
       @skill_type
     end
+	
+	def new_class_base_material!
+	  @base_material = BaseMaterial.from_BaseRecipe(self)
+	end
 
-	def determine_base_material!
-	  @base_material = @raw_recipe_data['material'] || @@crafting_materials[@discipline_type][0]	  
-	end	
+    def determine_base_material!
+      mat_index = 0
+      non_default_index = false
+      recipe_name = @name.to_s
+
+      # Sets the @discipline_type materials, if it exists in @@crafting_materials.
+      material_types = BASE_MATERIALS[@discipline_type] || []
+
+      # First checks to see if the material name is present in the recipe name.
+      if ( !material_types.empty? && material_types.size > 1 )
+        material_types.each_with_index do |disc_material, type_index|
+          mat_string = "\s#{disc_material}\s"
+	      if recipe_name.include?(mat_string)
+	        mat_index = type_index
+	        non_default_index = true
+	        break
+	      end
+        end	
+      end
+
+      # Then checks to see if the first compare caught the correct base_material.
+      unless (non_default_index == true)
+        case @discipline_type
+        when 'tailoring'
+          if [1, 2, 3, 4].include?(@chapter)
+	        mat_index = 0 # Cloth
+	        non_default_index = true
+	      elsif (@chapter == 5)
+	        mat_index = 1 # Yarn
+	        non_default_index = true
+	      elsif [7, 8 , 9, 10].include?(@chapter)
+	        mat_index = 2 # Leather
+	        non_default_index = true
+	      end
+        when 'carving'
+	      if [1, 2, 3, 4].include?(@chapter)
+	        mat_index = 0 # Stone
+	        non_default_index = true
+	      elsif [6, 7, 8, 9, 10]
+	        mat_index = 1 # Bone
+	        non_default_index = true
+	      end		
+        end
+      end
+      @base_material = @raw_recipe_data['material'] || BASE_MATERIALS[@discipline_type][mat_index]
+      return self
+    end
 	 
     def determine_parts!
       @parts = []
@@ -659,7 +691,7 @@ module Data
   
     def self.get_volume_info(exact_stock_name, target_volume)
       target_keys = BaseStock.query_keys(exact_stock_name, false)
-    
+	  
       # Correctly mapping, sorting by volume descending, and freezing
       target_base_stocks = target_keys.map { |stock_key| send(:new, stock_key) }
                                       .sort_by(&:volume)
@@ -1363,7 +1395,7 @@ class CraftingMaterial < CraftingComponent
     
     material_info = {
 	  info_type: 'crafting_material',
-	  base_key: "[ #{@@material_name} #{@@base_material} ]",
+	  base_key: "[ #{@@base_material} crafting material ]",
       name: "#{@@material_name} #{material_unit}",
 	  volume: @@recipe_volume,
 	  required_quantity: 1,
@@ -1474,8 +1506,10 @@ class CraftingMaterial < CraftingComponent
 	vol_needed = __calculate_needed_volume
 	return volume_components unless vol_needed > 0
 	
+	stock_search = @@material_name
+	stock_search = 'yarn' if (@@base_material == 'knitted' && @@material_name == 'wool') # This is a specific override.
 	# get_volume_info should return an array of _info hashes with the base_stock.base_info combined with the quantity needed.
-	volume_stocks_info = Data::BaseStock.get_volume_info(@@material_name, vol_needed)
+	volume_stocks_info = Data::BaseStock.get_volume_info(stock_search, vol_needed)
 	
 	volume_stocks_info.each do |stock_info|
 	  volume_components << CraftingComponent.compose(stock_info)
@@ -1545,7 +1579,8 @@ class CraftingMaterial < CraftingComponent
   # Should return true if the first material component in the array meets the volume requirements.
   def __ready_condition_first_component?
     update!
-    @material_components[0].volume >= @required[:volume]
+    result = @material_components[0].on_hand[:volume] >= @required[:volume]
+	return result
   end
   
   def __stack_sort_condition_quantity?
@@ -1566,10 +1601,8 @@ class CraftingMaterial < CraftingComponent
   end
 
   def _resolution_stack_material!
-    
     update!
     return self if __ready_condition_first_component?  
-    	
 	# This should indirectly resolve ensuring the total volume on hand is needed.
 	unless __ready_condition_mat_comps?
 	  
@@ -1824,11 +1857,20 @@ module CraftingMethod
 
   class OutfittingProduct < CraftingProduct
     FINISH_TYPES = ['hold', 'stow', 'log', 'trash']
-    SEWING_TYPES = ['sewing', 'leather', 'knitting']
+    SEWING_TYPES = ['sewing', 'knitting', 'leather']
     LICH_SCRIPTS = ['sew']
+
     def self.set_config
+	  type_index = 0 # Defaults to sewing.
+	  
+	  case @@base_material
+	  when 'cloth' then type_index = 0
+	  when 'knitted' then type_index = 1
+	  when 'leather' then type_index = 2
+	  end
+	
       configs = { 
-        'sew' => [FINISH_TYPES[0], SEWING_TYPES[0], @@recipe_chapter, @@recipe_name, @@material_name, @@product_noun] 
+        'sew' => [FINISH_TYPES[0], SEWING_TYPES[type_index], @@recipe_chapter, @@recipe_name, @@material_name, @@product_noun] 
 	  }
       @script_name = LICH_SCRIPTS[0]
       @script_arguments = configs[@script_name]
@@ -1968,7 +2010,7 @@ class CraftingProject < CraftingSettings
 	_str << SOLID_LINE
     _str << "Recipe Name:  [ #{@@recipe_name} ]"
     _str << "Crafting Type:  [ #{@@skill_type.capitalize} - Book of #{@@discipline_type.capitalize}, Chapter #{@@recipe_chapter} ]"   
-    _str << "Material Base:  [ #{@@recipe_volume} units of #{@@base_material}, #{@@material_name} ]" if @@base_material 
+    _str << "Material Base:  [ #{@@recipe_volume} units of #{@@base_material} material, #{@@material_name} ]" if @@base_material 
 	_str << "Craft Product:  [ #{@@product_noun} ]"
 	_str << SOLID_LINE
     _str << "Crafting Inventory >>  #{@crafting_inventory.to_s}" if @crafting_inventory
@@ -2211,60 +2253,73 @@ class CraftingLibrary
   end
 end
 
-class LichCrafting
+class LichCraftingProject
   attr_reader :args, :project, :library, :report
   HELP_NOTE = "\n   - "
   
-  LIST_HELP = ( 
-    HELP_NOTE + "Example usage:" + HELP_NOTE +
-    "LIST 'recipes'                       ->  will list all the recipes in the database." + HELP_NOTE +
-    "LIST 'recipes' 'attribute'           ->  will list all the attribute keys for recipes." + HELP_NOTE +
-    "LIST 'recipes' 'type'                ->  will list all the different possible values for recipe type." + HELP_NOTE +
-    "LIST 'recipes' 'type' 'artificing'   ->  will list all the recipes whose type is artificing." + HELP_NOTE +
-    "LIST 'recipes' INDEX <index_number>  ->  will retrieve the database element values for recipe of index value <index_number>"
+  PRODUCE_HELP = (
+    HELP_NOTE + 'Full Execution of Crafting Project'
   )
   
+  PREPARE_HELP = (
+    HELP_NOTE + 'PREPARE is meant for users to check for, purchase, and PREPARE their own inventory for necessary Crafting Components.'  + 
+    HELP_NOTE + 'DOES RESOLVE missing components, DOES NOT CRAFT the project. '
+  )
+  
+  PLAN_HELP = (
+   HELP_NOTE + 'PLAN is meant for users to check their own inventory for necessary Crafting Components.' +
+   HELP_NOTE + 'DOES NOT RESOLVE missing components.'
+  )
+  
+  LIST_HELP = ( 
+    HELP_NOTE + "Example usage:" + 
+	HELP_NOTE + "LIST 'recipes'                       ->  will list all the recipes in the database." + 
+	HELP_NOTE + "LIST 'recipes' 'attribute'           ->  will list all the attribute keys for recipes." + 
+	HELP_NOTE + "LIST 'recipes' 'type'                ->  will list all the different possible values for recipe type." + 
+	HELP_NOTE + "LIST 'recipes' 'type' 'artificing'   ->  will list all the recipes whose type is artificing." + 
+	HELP_NOTE + "LIST 'recipes' INDEX <index_number>  ->  will retrieve the database element values for recipe of index value <index_number>"
+  )
+
   # Argument definition structure for parse_args (Lich.rb method)
   LICH_ARGS_DEF = [
+    [
+      { name: 'PRODUCE', regex: /PRODUCE/i, optional: false, variable: false, description: 'TIER 3 - Full Execution - PLAN, PREPARE and PRODUCE the full Crafting Project (Crafts the Product)'},
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes. ("some blister cream", "a metal chain hauberk", etc)' },
+      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' + PRODUCE_HELP }
+    ],
+	[
+      { name: 'PREPARE', regex: /PREPARE/i, optional: false, variable: false, description: 'TIER 2 - PLAN, purchase and PREPARE the components for the Crafting Project.'},
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes.("some blister cream", "a metal chain hauberk", etc)'},
+      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' + PREPARE_HELP }, 
+    ],
+	[
+      { name: 'PLAN', regex: /PLAN/i, optional: false, variable: false, description: 'TIER 1 - Determines necessary Crafting Components for a given recipe, checking to see which are already on hand.' },
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes. ("some blister cream", "a metal chain hauberk", etc)'},
+      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' + PLAN_HELP }
+    ],
     [
       { name: 'LIST', regex: /LIST/i, optional: false, variable: false, description: 'Query the crafting databases.'},
       { name: 'database', options: %w[recipes stocks parts], optional: false, variable: true, description: 'Which database to query.' },
       { name: 'attribute', regex: /\w+/i, optional: true, variable: true, description: 'Filter by <attribute> || INDEX.'},
       { name: 'value', regex: /\w+/i, optional: true, variable: true, description: 'attribute: <value> to match || INDEX <value> to retrieve'+ LIST_HELP}
-    ],
-    [
-      { name: 'PROJECT', regex: /PROJECT/i, optional: false, variable: false, description: 'PLAN, PREPARE and produce the full Crafting Project (Crafts the Product)' + HELP_NOTE + 'Full Execution of Crafting Project' },
-      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes. ("some blister cream", "a metal chain hauberk", etc)' },
-      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' }
-    ],
-	[
-      { name: 'PLAN', regex: /PLAN/i, optional: false, variable: false, description: 'Determines necessary Crafting Components for a given recipe, checking to see which are already on hand.' + HELP_NOTE + 'PLAN is meant for users to check their own inventory for necessary Crafting Components.'  + HELP_NOTE + 'DOES NOT RESOLVE missing components.' },
-      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes. ("some blister cream", "a metal chain hauberk", etc)'},
-      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' }
-    ],
-	[
-      { name: 'PREPARE', regex: /PREPARE/i, optional: false, variable: false, description: 'PLAN, purchase and PREPARE the components for the Crafting Project.' + HELP_NOTE + 'PREPARE is meant for users to check for, purchase, and PREPARE their own inventory for necessary Crafting Components.'  + HELP_NOTE + 'DOES RESOLVE missing components, DOES NOT CRAFT the project. '},
-      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-']+$/i, optional: false, variable: true, description: 'The exact name of the recipe, between double-quotes.("some blister cream", "a metal chain hauberk", etc)'},
-      { name: 'material', regex: /\w+/i, optional: true, variable: true, description: 'The specific material.' }, 
     ]
   ]
-  
   def initialize
     # parse_args is provided by Lich.rb environment
     @args = parse_args(LICH_ARGS_DEF)
 
-    plan_project!    if @args.PROJECT || @args.PREPARE || @args.PLAN	  
-	prepare_project! if @args.PROJECT || @args.PREPARE	  
-	produce_project! if @args.PROJECT
+    plan_project!    if @args.PRODUCE || @args.PREPARE || @args.PLAN	  
+	prepare_project! if @args.PRODUCE || @args.PREPARE	  
+	produce_project! if @args.PRODUCE
 
     determine_list!  if @args.LIST
 
-    DRC.message("No valid command provided. Use PROJECT, PLAN, PREPARE or LIST.") unless _executable_command?
+    DRC.message("No valid command provided. Use PRODUCE, PLAN, PREPARE or LIST.") unless _executable_command?
     DRC.message("...Done.")
   end
   
   def _executable_command?
-    !!(@args.PROJECT || @args.PREPARE || @args.PLAN || @args.LIST)
+    !!(@args.PRODUCE || @args.PREPARE || @args.PLAN || @args.LIST)
   end
 
   def prepped?
@@ -2305,4 +2360,4 @@ class LichCrafting
   end
 end
 
-LichCrafting.new
+LichCraftingProject.new
