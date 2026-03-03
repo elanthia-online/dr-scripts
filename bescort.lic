@@ -2176,7 +2176,7 @@ class Bescort
   end
 
   def crystal_cavern_of_eluned
-    unless [1192, 51789].include?(Room.current.id)
+    unless [1192, 51798].include?(Room.current.id)
       echo 'You are not at the Crystal Cavern of Eluned entrance'
       return
     end
