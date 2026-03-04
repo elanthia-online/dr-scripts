@@ -134,7 +134,7 @@ class Repair
     if repair_own
       DRCT.walk_to(current)
       DRCC.check_consumables('oil', @craft_data['finisher-room'], @craft_data['finisher-number'], @bag, @bag_items, nil, gear.size)
-      DRCC.check_consumables('wire brush', @craft_data['finisher-room'], 10, @bag, @bag_items, nil, gear.size)
+      DRCC.check_consumables('wire brush', @craft_data['finisher-room'], @craft_data['wire-brush-number'] || 10, @bag, @bag_items, nil, gear.size)
     end
   end
 

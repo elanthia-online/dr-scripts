@@ -702,7 +702,7 @@ class WorkOrders
       if remaining_volume < recipe['volume']
         DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
         DRCT.order_item(info['stock-room'], materials_info['stock-number'])
-        DRCI.stow_hands
+        DRCC.stow_crafting_item("#{materials_info['stock-name']} ingot", @bag, @belt)
         remaining_volume = materials_info['stock-volume']
       end
 
