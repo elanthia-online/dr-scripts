@@ -4,27 +4,98 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#forge
 =end
 
+# Blacksmithing, armorsmithing, and weaponsmithing automation.
+#
+# Handles the complete forging workflow including:
+# - Crafting new items from recipes (book or instructions)
+# - Tempering finished weapons/armor
+# - Enhancements: honing, balancing, lightening, reinforcing
+# - Automatic forge rental renewal
+# - Assembly of multi-part items (hilts, handles, padding)
+#
+# @example Craft a new item from a book recipe
+#   ;forge weaponsmithing 4 "steel throwing hammer" steel hammer
+#
+# @example Craft using instructions
+#   ;forge instructions steel sword
+#
+# @example Temper an existing weapon
+#   ;forge temper sword
+#
+# @example Hone a weapon for better damage
+#   ;forge hone sword
+#
+# @example Resume interrupted work
+#   ;forge resume weaponsmithing hammer
+#
+# @example Craft and log to engineering logbook
+#   ;forge log weaponsmithing 4 "steel throwing hammer" steel hammer
+#
+# @see https://elanthipedia.play.net/Lich_script_repository#forge
+#
+# @author Elanthia Online
+# @since 2025-12-29 Refactored with finish option and rental renewal
 class Forge
-  # Rental notice patterns
+  # @!group Rental Patterns
+
+  # Pattern to extract rental expiration time
+  # @return [Regexp]
   RENTAL_EXPIRE_PATTERN = /It will expire (?<expire_time>.+)\./
+
+  # Patterns indicating rental notice not found
+  # @return [Array<String>]
   RENTAL_NOT_FOUND_PATTERNS = ['I could not find', 'What were you referring to'].freeze
+
+  # Patterns indicating successful rental renewal
+  # @return [Array<String>]
   RENTAL_RENEW_SUCCESS_PATTERNS = ['You mark the notice', 'renewed your rental', 'extends your rental'].freeze
+
+  # Patterns indicating failed rental renewal
+  # @return [Array<String>]
   RENTAL_RENEW_FAILURE_PATTERNS = ["You don't have enough", 'I could not find'].freeze
 
-  # Tool-related patterns
+  # @!endgroup
+
+  # @!group Tool Patterns
+
+  # Patterns indicating tongs are required but missing
+  # @return [Array<String>]
   TONGS_ERROR_PATTERNS = ['You must be holding some metal tongs', 'That tool does not seem'].freeze
 
-  # Forge state patterns - temper
-  TEMPER_START_PATTERN = 'You glance down at the hot coals of the forge'
-  TEMPER_CONTINUE_PATTERN = 'ensure even heating in the forge'
-  TEMPER_ALREADY_DONE_PATTERN = 'has already been tempered'
-
-  # Fuel patterns
-  FUEL_NEEDED_PATTERNS = ['needs more fuel', 'need some more fuel', 'Almost all of the coal has been consumed'].freeze
-  BELLOWS_NEEDED_PATTERNS = ['fire dims and produces less heat', 'fire flickers and is unable to consume its fuel', 'The forge fire has died down'].freeze
+  # Pattern indicating tool is not suitable for current state
+  # @return [String]
   TOOL_NOT_SUITABLE_PATTERN = "doesn't appear suitable"
 
-  # Tongs turn patterns
+  # @!endgroup
+
+  # @!group Temper Patterns
+
+  # Pattern indicating tempering should begin
+  # @return [String]
+  TEMPER_START_PATTERN = 'You glance down at the hot coals of the forge'
+
+  # Pattern indicating tempering should continue with turning
+  # @return [String]
+  TEMPER_CONTINUE_PATTERN = 'ensure even heating in the forge'
+
+  # Pattern indicating item has already been tempered
+  # @return [String]
+  TEMPER_ALREADY_DONE_PATTERN = 'has already been tempered'
+
+  # @!endgroup
+
+  # @!group Forge State Patterns
+
+  # Patterns indicating forge needs more fuel (use shovel)
+  # @return [Array<String>]
+  FUEL_NEEDED_PATTERNS = ['needs more fuel', 'need some more fuel', 'Almost all of the coal has been consumed'].freeze
+
+  # Patterns indicating forge fire needs bellows
+  # @return [Array<String>]
+  BELLOWS_NEEDED_PATTERNS = ['fire dims and produces less heat', 'fire flickers and is unable to consume its fuel', 'The forge fire has died down'].freeze
+
+  # Patterns indicating item needs turning with tongs
+  # @return [Array<String>]
   TONGS_TURN_PATTERNS = [
     'straightening along the horn of the anvil',
     'would benefit from some soft reworking.',
@@ -34,13 +105,20 @@ class Forge
     'metal is in need of some gentle bending'
   ].freeze
 
-  # Cooling patterns
+  # Patterns indicating item needs cooling in slack tub
+  # @return [Array<String>]
   COOLING_PATTERNS = ['in the slack tub', 'The metal is ready to be cooled'].freeze
 
-  # Wire brush pattern
+  # @!endgroup
+
+  # @!group Finishing Patterns
+
+  # Pattern indicating wire brush is needed after grinding
+  # @return [String]
   WIRE_BRUSH_PATTERN = 'The grinding has left many nicks and burs'
 
-  # Pounding patterns
+  # Patterns indicating item needs pounding with hammer
+  # @return [Array<String>]
   POUND_PATTERNS = [
     'must be pounded free',
     'the armor now needs reassembly with a hammer',
@@ -50,7 +128,8 @@ class Forge
     'appears ready for pounding the assembled handle'
   ].freeze
 
-  # Grindstone patterns
+  # Patterns indicating grindstone work is needed
+  # @return [Array<String>]
   GRINDSTONE_PATTERNS = [
     'ready for grinding away of the excess metal',
     'now appears ready for grinding and polishing',
@@ -60,7 +139,8 @@ class Forge
     'You think adjusting the armor'
   ].freeze
 
-  # Pliers patterns
+  # Patterns indicating pliers work is needed
+  # @return [Array<String>]
   PLIERS_PATTERNS = [
     'Some pliers are now required',
     'appear ready to be woven',
@@ -69,7 +149,8 @@ class Forge
     'ready for more bending of links and plates'
   ].freeze
 
-  # Oil patterns
+  # Patterns indicating oil is needed to preserve metal
+  # @return [Array<String>]
   OIL_PATTERNS = [
     'in need of some oil to preserve',
     'protection by pouring oil on it',
@@ -77,56 +158,173 @@ class Forge
     'to be cleaned of the clay'
   ].freeze
 
-  # Assembly patterns
+  # @!endgroup
+
+  # @!group Assembly Patterns
+
+  # Pattern indicating handle assembly is needed
+  # @return [String]
   HANDLE_ASSEMBLY_PATTERN = 'now needs the handle assembled and pounded into place'
+
+  # Pattern indicating ingredients can be added
+  # @return [String]
   INGREDIENTS_PATTERN = 'Ingredients can be added'
 
-  # Error patterns
-  INGOT_TOO_SMALL_PATTERN = 'You need a larger volume of metal'
-  ITEM_NOT_FOUND_PATTERN = 'I could not find what you were referring to'
-  OIL_EMPTY_PATTERN = 'Pour what'
-
-  # Completion patterns
-  FINAL_TOUCHES_PATTERN = 'Applying the final touches'
-  ROUNDTIME_PATTERN = 'Roundtime'
-  GRINDSTONE_SLOW_PATTERN = 'not spinning fast enough'
-
-  # Grindstone spin patterns
-  SPIN_SUCCESS_PATTERNS = ['keeping it spinning fast', 'making it spin even faster'].freeze
-  SPIN_FAILURE_PATTERNS = ['not spinning fast enough', 'Roundtime'].freeze
-  SPIN_MISSING_PATTERN = 'Turn what'
-
-  # Get/put patterns
-  GET_SUCCESS_PATTERN = 'You get'
-  GET_FAILURE_PATTERN = 'What were you referring to?'
-  PUT_SUCCESS_PATTERN = 'You put'
+  # Patterns indicating successful assembly
+  # @return [Array<String>]
   ASSEMBLE_SUCCESS_PATTERNS = [
     'affix it securely in place',
     'and tighten the pommel to secure it',
     'carefully mark where it will attach when you continue crafting',
     'You layer the leather strips'
   ].freeze
+
+  # Pattern indicating assembly part is not required
+  # @return [String]
   ASSEMBLE_NOT_REQUIRED_PATTERN = 'is not required to continue crafting'
 
-  # Stamp patterns
+  # @!endgroup
+
+  # @!group Error Patterns
+
+  # Pattern indicating ingot is too small for recipe
+  # @return [String]
+  INGOT_TOO_SMALL_PATTERN = 'You need a larger volume of metal'
+
+  # Pattern indicating item was not found
+  # @return [String]
+  ITEM_NOT_FOUND_PATTERN = 'I could not find what you were referring to'
+
+  # Pattern indicating oil container is empty
+  # @return [String]
+  OIL_EMPTY_PATTERN = 'Pour what'
+
+  # @!endgroup
+
+  # @!group Completion Patterns
+
+  # Pattern indicating crafting is complete
+  # @return [String]
+  FINAL_TOUCHES_PATTERN = 'Applying the final touches'
+
+  # Pattern indicating roundtime occurred
+  # @return [String]
+  ROUNDTIME_PATTERN = 'Roundtime'
+
+  # Pattern indicating grindstone is too slow
+  # @return [String]
+  GRINDSTONE_SLOW_PATTERN = 'not spinning fast enough'
+
+  # @!endgroup
+
+  # @!group Grindstone Patterns
+
+  # Patterns indicating grindstone spin was successful
+  # @return [Array<String>]
+  SPIN_SUCCESS_PATTERNS = ['keeping it spinning fast', 'making it spin even faster'].freeze
+
+  # Patterns indicating grindstone needs more spinning
+  # @return [Array<String>]
+  SPIN_FAILURE_PATTERNS = ['not spinning fast enough', 'Roundtime'].freeze
+
+  # Pattern indicating grindstone is missing
+  # @return [String]
+  SPIN_MISSING_PATTERN = 'Turn what'
+
+  # @!endgroup
+
+  # @!group Item Manipulation Patterns
+
+  # Pattern indicating successful get
+  # @return [String]
+  GET_SUCCESS_PATTERN = 'You get'
+
+  # Pattern indicating failed get
+  # @return [String]
+  GET_FAILURE_PATTERN = 'What were you referring to?'
+
+  # Pattern indicating successful put
+  # @return [String]
+  PUT_SUCCESS_PATTERN = 'You put'
+
+  # Patterns for stamping finished items
+  # @return [Array<String>]
   STAMP_PATTERNS = ['carefully hammer the stamp', 'You cannot figure out how to do that', 'too badly damaged'].freeze
 
-  # Swap patterns
+  # Patterns for swapping items between hands
+  # @return [Array<String>]
   SWAP_PATTERNS = ['You move', 'You have nothing'].freeze
 
-  # Find item patterns
+  # @!endgroup
+
+  # @!group Location Patterns
+
+  # Pattern indicating anvil has an item on it
+  # @return [String]
   ANVIL_HAS_ITEM_PATTERN = 'anvil you see'
+
+  # Pattern indicating anvil is empty
+  # @return [String]
   ANVIL_EMPTY_PATTERN = 'clean and ready'
+
+  # Pattern indicating forge has an item on it
+  # @return [String]
   FORGE_HAS_ITEM_PATTERN = 'forge you see'
+
+  # Pattern indicating forge is empty
+  # @return [String]
   FORGE_EMPTY_PATTERN = 'There is nothing'
 
-  # Private forge defaults
-  DEFAULT_PRIVATE_FORGE_COST = 5000 # 5 plat in copper
+  # @!endgroup
 
-  # Patterns for entering private forge
+  # @!group Progress Patterns
+
+  # Pattern to extract completion percentage from analyze
+  # @return [Regexp]
+  ANALYZE_PROGRESS_PATTERN = /is in the final stage of completion|is approximately (?<percent>\d+)% complete|is practically finished/
+
+  # Pattern to extract quality assessment from analyze
+  # @return [Regexp]
+  ANALYZE_QUALITY_PATTERN = /shows signs of (?<quality>[\w\s]+) craftsmanship/
+
+  # @!endgroup
+
+  # @!group Private Forge Constants
+
+  # Default cost for private forge rental in copper
+  # @return [Integer]
+  DEFAULT_PRIVATE_FORGE_COST = 5000
+
+  # Patterns for successful private forge entry
+  # @return [Array<String>]
   PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
+
+  # Patterns for blocked private forge entry
+  # @return [Array<String>]
   PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
 
+  # @!endgroup
+
+  # Initialize and run the forge script.
+  #
+  # Parses command-line arguments, validates settings, and orchestrates
+  # the complete forging workflow from setup through completion.
+  #
+  # @note Exits on validation failures or missing required settings
+  #
+  # @example Argument pattern 1: Book recipe
+  #   ;forge [finish] <book_type> <chapter> <recipe_name> <metal> <noun> [skip] [debug]
+  #
+  # @example Argument pattern 2: Instructions
+  #   ;forge [finish] instructions <metal> <noun> [skip] [debug]
+  #
+  # @example Argument pattern 3: Enhancement
+  #   ;forge [finish] <enhancement> <noun> [skip] [debug]
+  #
+  # @example Argument pattern 4: Resume
+  #   ;forge resume <book_type> <noun> [debug]
+  #
+  # @return [void]
   def initialize
     arg_definitions = [
       [
@@ -162,11 +360,37 @@ class Forge
     ]
 
     args = parse_args(arg_definitions)
+    setup_flags
+    load_settings(args)
+    validate_setup(args)
+    execute_workflow(args)
+  end
+
+  private
+
+  # @!group Setup Methods
+
+  # Register Flags for async pattern matching during crafting.
+  #
+  # Sets up the following flags:
+  # - forge-assembly: Detects when assembly parts are needed
+  # - work-done: Detects crafting completion
+  # - ingot-restow: Handles leftover ingot metal
+  # - forge-rental-warning: Triggers auto-renewal
+  #
+  # @return [void]
+  def setup_flags
     Flags.add('forge-assembly', 'another finished \S+ shield (handle)', 'another finished wooden (hilt|haft)', 'another finished (long|short|small|large) leather (cord|backing)', 'another finished (small|large) cloth (padding)', 'another finished (long|short) wooden (pole)', 'appears ready to be reinforced with some (leather strips)')
     Flags.add('work-done', 'from the successful .* process', 'shows a slightly reduced weight', 'shows improved protection', 'Applying the final touches', /^The .* was successfully/)
     Flags.add('ingot-restow', /^You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
     Flags.add('forge-rental-warning', 'Your rental time is almost up')
+  end
 
+  # Load settings from YAML configuration and command-line arguments.
+  #
+  # @param args [OpenStruct] parsed command-line arguments
+  # @return [void]
+  def load_settings(args)
     settings = get_settings
     @hometown = settings.hometown
     @stamp = settings.mark_crafted_goods
@@ -175,10 +399,6 @@ class Forge
     @bag_items = settings.crafting_items_in_container
     @forging_belt = settings.forging_belt
     @hammer = settings.forging_tools.find { |item| /hammer|mallet/ =~ item }
-    unless @hammer
-      Lich::Messaging.msg('bold', 'Forge: No hammer or mallet found in forging_tools setting. Exiting.')
-      exit
-    end
     @book_type = args.book_type
     @chapter = args.chapter
     @resume = args.resume
@@ -192,46 +412,110 @@ class Forge
     @debug = args.debug || settings.debug_mode
     @use_private_forge = settings.forge_use_private_forge
     @private_forge_cost = settings.forge_private_forge_cost || DEFAULT_PRIVATE_FORGE_COST
-    debug_log("Recipe                                       :: #{@recipe_name}")
+    @show_progress = settings.forge_show_progress.nil? ? true : settings.forge_show_progress
+    @settings = settings
+  end
 
+  # Validate required settings and preconditions.
+  #
+  # Checks:
+  # - Crafting container is configured
+  # - Hammer/mallet exists in forging_tools
+  # - At least one hand is free (holding target item is OK)
+  # - Adjustable tongs setup if configured
+  #
+  # @param args [OpenStruct] parsed command-line arguments
+  # @return [void]
+  # @raise [SystemExit] if validation fails
+  def validate_setup(args)
+    validate_crafting_container
+    validate_hammer
     DRC.wait_for_script_to_complete('buff', ['forge'])
+    validate_free_hand
+    setup_adjustable_tongs if @settings.adjustable_tongs && @item != 'tongs'
+    find_item if args.resume
+  end
 
-    # Check at least one hand is free (holding the target item is OK)
+  # Validate that a crafting container is configured.
+  #
+  # @return [void]
+  # @raise [SystemExit] if no crafting container configured
+  def validate_crafting_container
+    return if @bag
+
+    cleanup_and_exit('No crafting_container configured in your YAML settings.')
+  end
+
+  # Validate that a hammer or mallet is configured in forging_tools.
+  #
+  # @return [void]
+  # @raise [SystemExit] if no hammer found
+  def validate_hammer
+    return if @hammer
+
+    cleanup_and_exit('No hammer or mallet found in forging_tools setting.')
+  end
+
+  # Validate that at least one hand is free for forging.
+  #
+  # Holding the target item is acceptable; other items must be stowed.
+  #
+  # @return [void]
+  # @raise [SystemExit] if both hands are occupied with non-target items
+  def validate_free_hand
     right = DRC.right_hand
     left = DRC.left_hand
     right_ok = right.nil? || right.include?(@item)
     left_ok = left.nil? || left.include?(@item)
     free_hand = right.nil? || left.nil?
 
-    unless free_hand && (right_ok && left_ok)
-      held_items = [right, left].compact.reject { |item| item.include?(@item) }
-      error_log("Need a free hand to forge. Currently holding: #{held_items.join(' and ')}")
-      error_log('Please stow extra items and try again. Exiting.')
-      exit
-    end
+    return if free_hand && right_ok && left_ok
 
-    if settings.adjustable_tongs && @item != 'tongs'
-      @adjustable_tongs = DRCC.get_adjust_tongs?('reset tongs', @bag, @bag_items, @forging_belt)
-      debug_log("Tongs adjustable?                            :: #{@adjustable_tongs}")
-      DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
-    end
-
-    find_item if args.resume
-    go_to_private_forge(settings) if @use_private_forge && !args.resume
-    check_rental_status
-    unless args.skip
-      DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
-      DRCC.check_consumables('wire brush', @info['finisher-room'], @info['wire-brush-number'], @bag, @bag_items, @forging_belt)
-    end
-    set_defaults
-    work(settings) if args.resume
-    prep(settings)
-    DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/) if @cube
-    work(settings)
+    held_items = [right, left].compact.reject { |item| item.include?(@item) }
+    error_log("Need a free hand to forge. Currently holding: #{held_items.join(' and ')}")
+    cleanup_and_exit('Please stow extra items and try again.')
   end
 
-  private
+  # Set up adjustable tongs if configured.
+  #
+  # Tests that tongs can be adjusted and stows them for later use.
+  #
+  # @return [void]
+  def setup_adjustable_tongs
+    @adjustable_tongs = DRCC.get_adjust_tongs?('reset tongs', @bag, @bag_items, @forging_belt)
+    debug_log("Tongs adjustable?                            :: #{@adjustable_tongs}")
+    DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
+  end
 
+  # Execute the main forging workflow.
+  #
+  # Handles navigation, consumable checks, and the prep/work cycle.
+  #
+  # @param args [OpenStruct] parsed command-line arguments
+  # @return [void]
+  def execute_workflow(args)
+    go_to_private_forge if @use_private_forge && !args.resume
+    check_rental_status
+    check_all_consumables unless args.skip
+    set_defaults
+    work if args.resume
+    prep
+    touch_cube if @cube
+    work
+  end
+
+  # @!endgroup
+
+  # @!group Helper Methods
+
+  # Resolve enhancement shortcut names to full recipe names.
+  #
+  # @param recipe_arg [String, nil] the recipe argument from command line
+  # @return [String, nil] the full recipe name
+  #
+  # @example
+  #   resolve_recipe_name('hone')  #=> 'metal weapon honing'
+  #   resolve_recipe_name('balance')  #=> 'metal weapon balancing'
   def resolve_recipe_name(recipe_arg)
     case recipe_arg
     when 'hone'
@@ -247,19 +531,59 @@ class Forge
     end
   end
 
+  # Log a debug message if debug mode is enabled.
+  #
+  # @param message [String] the message to log
+  # @return [void]
   def debug_log(message)
     Lich::Messaging.msg('plain', "Forge: #{message}") if @debug
   end
 
+  # Log an error message (always displayed).
+  #
+  # @param message [String] the message to log
+  # @return [void]
   def error_log(message)
     Lich::Messaging.msg('bold', "Forge: #{message}")
   end
 
+  # Stow whatever is in both hands.
+  #
+  # Uses DRCC.stow_crafting_item for proper tool/container handling.
+  #
+  # @return [void]
   def stow_both_hands
     DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
   end
 
+  # Stow hammer and tongs if they are currently held.
+  #
+  # Common cleanup before retrieving item from anvil/forge.
+  #
+  # @return [void]
+  def stow_hammer_and_tongs
+    DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
+    DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
+  end
+
+  # Ready hammer and tongs for pounding work.
+  #
+  # Swaps to hammer first, then to tongs (tongs in right hand, hammer accessible).
+  #
+  # @return [void]
+  def ready_hammer_with_tongs
+    swap_tool(@hammer)
+    swap_tool('tongs')
+  end
+
+  # Unified error handler that cleans up and exits.
+  #
+  # Logs the error, stows items in both hands, releases magic, and exits.
+  #
+  # @param message [String] the error message to display
+  # @return [void]
+  # @raise [SystemExit] always exits after cleanup
   def cleanup_and_exit(message)
     error_log(message)
     stow_both_hands
@@ -267,7 +591,72 @@ class Forge
     exit
   end
 
-  def go_to_private_forge(settings)
+  # Retrieve item from a location and ensure it's in the left hand.
+  #
+  # Stows hammer and tongs if held, gets item from specified location,
+  # and swaps to left hand if needed.
+  #
+  # @param location [String] where to get item from ('on anvil', 'on forge', etc.)
+  # @param context [String] description of why item is needed (for error messages)
+  # @return [Boolean] true if item is in left hand
+  def prepare_item_in_left_hand(location = 'on anvil', context = 'work')
+    return true if DRCI.in_left_hand?(@item)
+
+    stow_hammer_and_tongs
+    result = DRC.bput("get #{@item} #{location}", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
+    if result == GET_FAILURE_PATTERN
+      error_log("Failed to get #{@item} from #{location} for #{context}.")
+    end
+    ensure_item_in_left_hand
+    true
+  end
+
+  # Ensure item is in left hand, swapping or exiting as needed.
+  #
+  # If item is in right hand, swaps it to left. If item is not found
+  # in either hand, logs error and exits.
+  #
+  # @return [void]
+  # @raise [SystemExit] if item cannot be found
+  def ensure_item_in_left_hand
+    return if DRCI.in_left_hand?(@item)
+
+    if DRCI.in_right_hand?(@item)
+      DRC.bput('swap', *SWAP_PATTERNS)
+    else
+      cleanup_and_exit("MISSING #{@item}. Please find it and restart.")
+    end
+  end
+
+  # Touch the cube armor piece for crafting bonus.
+  #
+  # @return [void]
+  def touch_cube
+    DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/)
+  end
+
+  # Check all consumables (oil and wire brush).
+  #
+  # @return [void]
+  def check_all_consumables
+    DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
+    # Wire brush is always order #10 in all forging society tool stands
+    wire_brush_number = @info['wire-brush-number'] || 10
+    DRCC.check_consumables('wire brush', @info['finisher-room'], wire_brush_number, @bag, @bag_items, @forging_belt)
+  end
+
+  # @!endgroup
+
+  # @!group Navigation Methods
+
+  # Navigate to and enter the private forge.
+  #
+  # Ensures sufficient funds, walks to forge room, and attempts entry.
+  # Falls back to current location if entry fails.
+  #
+  # @return [void]
+  # @raise [SystemExit] if blocked from entering and no fallback available
+  def go_to_private_forge
     private_forge_room = @info['private_forge']
     unless private_forge_room
       error_log("No private forge defined for #{@hometown}. Using public forge.")
@@ -277,23 +666,27 @@ class Forge
     debug_log("Private forge room: #{private_forge_room}")
     debug_log("Private forge cost: #{@private_forge_cost} copper")
 
-    # Ensure we have enough money on hand for the rental
-    unless DRCM.ensure_copper_on_hand(@private_forge_cost, settings, @hometown)
+    unless DRCM.ensure_copper_on_hand(@private_forge_cost, @settings, @hometown)
       error_log("Unable to get #{@private_forge_cost} copper for private forge rental.")
-      error_log('Check your bank balance and try again. Exiting.')
-      exit
+      cleanup_and_exit('Check your bank balance and try again.')
     end
 
     debug_log('Navigating to private forge...')
     DRCT.walk_to(private_forge_room)
 
-    # Check if we made it into the private forge
     if Room.current.id == private_forge_room
       error_log('Arrived at private forge.')
       return
     end
 
-    # We didn't make it - try going through the door manually
+    attempt_private_forge_entry
+  end
+
+  # Attempt manual entry into private forge.
+  #
+  # @return [void]
+  # @raise [SystemExit] if blocked from entering
+  def attempt_private_forge_entry
     debug_log('Not in private forge room - trying to enter manually...')
     result = DRC.bput('go door', *PRIVATE_FORGE_ENTRY_SUCCESS, *PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
 
@@ -304,8 +697,7 @@ class Forge
       error_log('  - Not enough money on hand (need ~5 plat)')
       error_log('  - Forge is already rented by someone else')
       error_log('  - Other restriction')
-      error_log('Exiting. Use a public forge or resolve the issue.')
-      exit
+      cleanup_and_exit('Use a public forge or resolve the issue.')
     when 'What were you'
       error_log('No door found to enter private forge. Check room setup.')
       error_log('Falling back to current location.')
@@ -314,116 +706,159 @@ class Forge
     end
   end
 
-  def check_hand(item)
-    if DRCI.in_right_hand?(item)
-      DRC.bput('swap', *SWAP_PATTERNS)
+  # @!endgroup
+
+  # @!group Rental Management
+
+  # Check current rental status and renew if expiring soon.
+  #
+  # Reads the rental notice, parses expiration time, and triggers
+  # renewal if less than 10 minutes remain.
+  #
+  # @return [void]
+  def check_rental_status
+    result = DRC.bput('read notice', RENTAL_EXPIRE_PATTERN, *RENTAL_NOT_FOUND_PATTERNS)
+    match = result.match(RENTAL_EXPIRE_PATTERN)
+    return unless match
+
+    expire_str = match[:expire_time]
+    process_rental_expiration(expire_str)
+  end
+
+  # Process rental expiration time and renew if needed.
+  #
+  # @param expire_str [String] the expiration time string from game
+  # @return [void]
+  def process_rental_expiration(expire_str)
+    # Parse format: "Sun Dec 28 23:39:15 ET 2025"
+    # Convert ET to a timezone offset for parsing
+    expire_str_normalized = expire_str.sub(' ET ', ' -0500 ')
+    expire_time = Time.parse(expire_str_normalized)
+    minutes_remaining = ((expire_time - Time.now) / 60).to_i
+
+    debug_log("Rental expires: #{expire_str} (#{minutes_remaining} minutes remaining)")
+
+    if minutes_remaining < 10
+      error_log("RENTAL LOW (#{minutes_remaining} min) - PRE-EMPTIVELY RENEWING")
+      renew_forge_rental
+    elsif minutes_remaining < 20
+      error_log("Rental has #{minutes_remaining} minutes remaining")
+    end
+  rescue ArgumentError => e
+    debug_log("Could not parse rental time: #{expire_str} - #{e.message}")
+  end
+
+  # Renew the private forge rental.
+  #
+  # Marks the rental notice to extend the rental period.
+  #
+  # @return [void]
+  def renew_forge_rental
+    error_log('FORGE RENTAL EXPIRING - AUTO-RENEWING')
+    Flags.reset('forge-rental-warning')
+    result = DRC.bput('mark notice', *RENTAL_RENEW_SUCCESS_PATTERNS, *RENTAL_RENEW_FAILURE_PATTERNS)
+    case result
+    when "You don't have enough"
+      error_log('INSUFFICIENT FUNDS TO RENEW RENTAL')
+    when 'I could not find'
+      error_log('COULD NOT FIND NOTICE - CHECK LOCATION')
     else
-      error_log("MISSING #{item}. Please find it and restart.")
-      magic_cleanup
-      exit
+      error_log('RENTAL RENEWED')
     end
   end
 
+  # @!endgroup
+
+  # @!group Tool Management
+
+  # Set default tool and command based on recipe type.
+  #
+  # Configures @home_tool, @home_command, @location, and @chapter
+  # based on whether crafting, tempering, or enhancing.
+  #
+  # @return [void]
   def set_defaults
     case @recipe_name
     when 'temper'
-      @home_tool = 'tongs'
-      @home_command = "turn #{@item} on forge with my tongs"
-      @stamp = false
-      swap_tool('tongs')
-      check_hand('tongs') unless DRCI.in_left_hand?('tongs')
-      @location = 'on forge'
-      @command ||= "put my #{@item} on the forge"
+      setup_temper_defaults
     when 'metal weapon honing', 'metal weapon balancing'
-      @home_tool = 'wire brush'
-      @home_command = "push grindstone with my #{@item}"
-      check_hand(@item) unless DRCI.in_left_hand?(@item)
-      spin_grindstone unless @resume
-      @chapter = 10
-      @book_type = 'weaponsmithing'
-      @stamp = false
+      setup_weapon_enhancement_defaults
     when 'metal armor lightening', 'metal armor reinforcing'
-      @home_tool = 'pliers'
-      @home_command = "push grindstone with my #{@item}"
-      @command ||= "pull my #{@item} with my pliers"
-      check_hand(@item) unless DRCI.in_left_hand?(@item)
-      @chapter = 5
-      @book_type = 'armorsmithing'
-      @stamp = false
+      setup_armor_enhancement_defaults
     else
-      @location = 'on anvil'
-      @home_tool = @hammer
-      @home_command = "pound #{@item} on anvil with my #{@hammer}"
+      setup_crafting_defaults
     end
+    log_defaults
+  end
+
+  # Configure defaults for tempering.
+  #
+  # @return [void]
+  def setup_temper_defaults
+    @home_tool = 'tongs'
+    @home_command = "turn #{@item} on forge with my tongs"
+    @stamp = false
+    swap_tool('tongs')
+    ensure_item_in_left_hand unless DRCI.in_left_hand?('tongs')
+    @location = 'on forge'
+    @command ||= "put my #{@item} on the forge"
+  end
+
+  # Configure defaults for weapon honing/balancing.
+  #
+  # @return [void]
+  def setup_weapon_enhancement_defaults
+    @home_tool = 'wire brush'
+    @home_command = "push grindstone with my #{@item}"
+    ensure_item_in_left_hand unless DRCI.in_left_hand?(@item)
+    spin_grindstone unless @resume
+    @chapter = 10
+    @book_type = 'weaponsmithing'
+    @stamp = false
+  end
+
+  # Configure defaults for armor lightening/reinforcing.
+  #
+  # @return [void]
+  def setup_armor_enhancement_defaults
+    @home_tool = 'pliers'
+    @home_command = "push grindstone with my #{@item}"
+    @command ||= "pull my #{@item} with my pliers"
+    ensure_item_in_left_hand unless DRCI.in_left_hand?(@item)
+    @chapter = 5
+    @book_type = 'armorsmithing'
+    @stamp = false
+  end
+
+  # Configure defaults for crafting new items.
+  #
+  # @return [void]
+  def setup_crafting_defaults
+    @location = 'on anvil'
+    @home_tool = @hammer
+    @home_command = "pound #{@item} on anvil with my #{@hammer}"
+  end
+
+  # Log the configured defaults for debugging.
+  #
+  # @return [void]
+  def log_defaults
+    debug_log("Recipe                                       :: #{@recipe_name}")
     debug_log("Default tool for this routine                :: #{@home_tool}")
     debug_log("Default command for this routine             :: #{@home_command}")
     debug_log("Item is where? Empty if held                 :: #{@location}")
     debug_log("Item's name?                                 :: #{@item}")
   end
 
-  def prep(settings)
-    DRCA.crafting_magic_routine(settings)
-    if @instruction
-      DRCC.get_crafting_item("#{@item} instructions", @bag, @bag_items, @forging_belt)
-      unless DRCI.in_hands?('instructions')
-        error_log("Failed to get #{@item} instructions. Exiting.")
-        magic_cleanup
-        exit
-      end
-      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      end
-      DRCC.stow_crafting_item("#{@item} instructions", @bag, @forging_belt)
-    else
-      return if @recipe_name.include?('temper')
-
-      if settings.master_crafting_book
-        DRCC.find_recipe2(@chapter, @recipe_name, settings.master_crafting_book, @book_type)
-      else
-        DRCC.get_crafting_item("#{@book_type} book", @bag, @bag_items, @forging_belt)
-        unless DRCI.in_hands?('book')
-          error_log("Failed to get #{@book_type} book. Exiting.")
-          magic_cleanup
-          exit
-        end
-        if DRSkill.getrank('Forging') == 175
-          error_log('You will need to upgrade to a journeyman or master book before 176 ranks!')
-        end
-        DRCC.find_recipe2(@chapter, @recipe_name)
-        DRCC.stow_crafting_item('book', @bag, @forging_belt)
-      end
-    end
-    swap_tool(@home_tool)
-    return unless @metal
-
-    DRCC.get_crafting_item("#{@metal} ingot", @bag, @bag_items, @forging_belt, true)
-    unless DRCI.in_hands?('ingot')
-      error_log("Failed to get #{@metal} ingot. Exiting.")
-      magic_cleanup
-      exit
-    end
-    DRC.bput('put my ingot on anvil', PUT_SUCCESS_PATTERN)
-    swap_tool(@hammer)
-    swap_tool('tongs')
-    @command = "pound ingot on anvil with my #{@hammer}"
-  end
-
-  def spin_grindstone
-    waitrt? # Keep, makes it perform the time check AFTER rt.
-    return if Time.now <= @next_spin
-
-    result = DRC.bput('turn grind', *SPIN_SUCCESS_PATTERNS, *SPIN_FAILURE_PATTERNS, SPIN_MISSING_PATTERN)
-    case result
-    when *SPIN_FAILURE_PATTERNS
-      spin_grindstone
-    when SPIN_MISSING_PATTERN
-      DRCC.find_grindstone(@hometown)
-      spin_grindstone
-    else
-      @next_spin = Time.now + 20
-    end
-  end
-
+  # Swap current tool for the next required tool.
+  #
+  # Handles adjustable tongs that can become a shovel, stowing the
+  # current tool, and verifying the new tool is in hand.
+  #
+  # @param next_tool [String] the tool to swap to ('tongs', 'shovel', 'hammer', etc.)
+  # @param skip [Boolean] passed to get_crafting_item for optional tools (default: false)
+  # @return [void]
+  # @raise [SystemExit] if tool cannot be obtained
   def swap_tool(next_tool, skip = false)
     debug_log("What is the next tool?                       :: #{next_tool}")
     debug_log("Are we holding the next tool?                :: #{DRCI.in_hands?(next_tool)}")
@@ -438,24 +873,243 @@ class Forge
       debug_log('Making tongs shovel again                    :: NOW')
       DRCC.get_adjust_tongs?('shovel', @bag, @bag_items, @forging_belt, @adjustable_tongs)
     elsif !DRCI.in_hands?(next_tool)
-      if next_tool == 'tongs'
-        debug_log('Getting tongs (AjT false)                    :: NOW')
-        DRCC.get_crafting_item(next_tool, @bag, @bag_items, @forging_belt)
-      else
-        DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-        DRCC.get_crafting_item(next_tool, @bag, @bag_items, @forging_belt, skip)
-      end
+      get_tool(next_tool, skip)
     end
 
-    # Unified verification - for adjustable tongs as shovel, check for 'tongs'
+    verify_tool_in_hand(next_tool)
+  end
+
+  # Get a tool from storage.
+  #
+  # @param next_tool [String] the tool to get
+  # @param skip [Boolean] whether to skip if not found
+  # @return [void]
+  def get_tool(next_tool, skip)
+    if next_tool == 'tongs'
+      debug_log('Getting tongs (AjT false)                    :: NOW')
+      DRCC.get_crafting_item(next_tool, @bag, @bag_items, @forging_belt)
+    else
+      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
+      DRCC.get_crafting_item(next_tool, @bag, @bag_items, @forging_belt, skip)
+    end
+  end
+
+  # Verify that the expected tool is in hand after swap.
+  #
+  # For adjustable tongs as shovel, checks for 'tongs' since the
+  # physical item is still tongs.
+  #
+  # @param next_tool [String] the tool that should be in hand
+  # @return [void]
+  # @raise [SystemExit] if tool is not in hand
+  def verify_tool_in_hand(next_tool)
     tool_to_verify = (next_tool == 'shovel' && @adjustable_tongs) ? 'tongs' : next_tool
     return if DRCI.in_hands?(tool_to_verify)
 
-    error_log("Failed to get #{next_tool}. Exiting.")
-    magic_cleanup
-    exit
+    cleanup_and_exit("Failed to get #{next_tool}.")
   end
 
+  # @!endgroup
+
+  # @!group Preparation
+
+  # Prepare for crafting by studying recipe and getting materials.
+  #
+  # Studies instructions or finds recipe in book, then places ingot
+  # on anvil if crafting a new item.
+  #
+  # @return [void]
+  def prep
+    DRCA.crafting_magic_routine(@settings)
+    if @instruction
+      prep_with_instructions
+    else
+      prep_with_book unless @recipe_name.include?('temper')
+    end
+    swap_tool(@home_tool)
+    prep_ingot if @metal
+  end
+
+  # Prepare using instructions (loose paper).
+  #
+  # @return [void]
+  # @raise [SystemExit] if instructions cannot be found
+  def prep_with_instructions
+    DRCC.get_crafting_item("#{@item} instructions", @bag, @bag_items, @forging_belt)
+    unless DRCI.in_hands?('instructions')
+      cleanup_and_exit("Failed to get #{@item} instructions.")
+    end
+    study_instructions
+    DRCC.stow_crafting_item("#{@item} instructions", @bag, @forging_belt)
+  end
+
+  # Study instructions, repeating if needed.
+  #
+  # @return [void]
+  def study_instructions
+    if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+      DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+    end
+  end
+
+  # Prepare using a recipe book.
+  #
+  # @return [void]
+  # @raise [SystemExit] if book cannot be found
+  def prep_with_book
+    if @settings.master_crafting_book
+      DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, @book_type)
+    else
+      prep_with_individual_book
+    end
+  end
+
+  # Prepare using an individual (non-master) recipe book.
+  #
+  # @return [void]
+  # @raise [SystemExit] if book cannot be found
+  def prep_with_individual_book
+    DRCC.get_crafting_item("#{@book_type} book", @bag, @bag_items, @forging_belt)
+    unless DRCI.in_hands?('book')
+      cleanup_and_exit("Failed to get #{@book_type} book.")
+    end
+    warn_about_skill_cap
+    DRCC.find_recipe2(@chapter, @recipe_name)
+    DRCC.stow_crafting_item('book', @bag, @forging_belt)
+  end
+
+  # Warn if approaching skill cap for current book tier.
+  #
+  # @return [void]
+  def warn_about_skill_cap
+    return unless DRSkill.getrank('Forging') == 175
+
+    error_log('You will need to upgrade to a journeyman or master book before 176 ranks!')
+  end
+
+  # Prepare ingot by placing on anvil.
+  #
+  # @return [void]
+  # @raise [SystemExit] if ingot cannot be found
+  def prep_ingot
+    DRCC.get_crafting_item("#{@metal} ingot", @bag, @bag_items, @forging_belt, true)
+    unless DRCI.in_hands?('ingot')
+      cleanup_and_exit("Failed to get #{@metal} ingot.")
+    end
+    DRC.bput('put my ingot on anvil', PUT_SUCCESS_PATTERN)
+    ready_hammer_with_tongs
+    @command = "pound ingot on anvil with my #{@hammer}"
+  end
+
+  # @!endgroup
+
+  # @!group Progress Reporting
+
+  # Analyze item and report progress at a crafting milestone.
+  #
+  # Only reports if forge_show_progress setting is enabled.
+  # Called at natural pause points (cooling, grinding, pliers work)
+  # to minimize RT overhead.
+  #
+  # @param phase [String] description of current phase (e.g., "Cooling", "Grinding")
+  # @return [void]
+  def report_progress_milestone(phase)
+    return unless @show_progress
+
+    progress = analyze_progress
+    return unless progress
+
+    percent_str = progress[:percent] ? "#{progress[:percent]}%" : 'unknown'
+    quality_str = progress[:quality] || 'unknown'
+    error_log("[#{phase}] Progress: #{percent_str} | Quality: #{quality_str}")
+  end
+
+  # Analyze item to determine crafting progress and quality.
+  #
+  # Parses the analyze command output to extract completion percentage
+  # and quality assessment.
+  #
+  # @return [Hash, nil] progress info or nil if unavailable
+  #   - :percent [Integer, nil] completion percentage (0-100), nil if "final stage"
+  #   - :quality [String, nil] current quality assessment
+  def analyze_progress
+    location = DRCI.in_hands?(@item) ? "my #{@item}" : "#{@item} #{@location}"
+    result = DRC.bput("analyze #{location}",
+                      ANALYZE_PROGRESS_PATTERN,
+                      ANALYZE_QUALITY_PATTERN,
+                      'I could not find',
+                      'Roundtime')
+
+    progress = {}
+
+    # Check for percentage or final stage
+    if result =~ /practically finished|final stage/
+      progress[:percent] = 99
+    elsif (match = result.match(/approximately (?<percent>\d+)% complete/))
+      progress[:percent] = match[:percent].to_i
+    end
+
+    # Quality is often in the same response, try to capture it
+    # The bput only returns first match, so we may miss quality
+    # This is a limitation - could use issue_command for full capture
+    if (match = result.match(ANALYZE_QUALITY_PATTERN))
+      progress[:quality] = match[:quality]
+    end
+
+    return nil if progress.empty?
+
+    progress
+  end
+
+  # @!endgroup
+
+  # @!group Grindstone Management
+
+  # Maximum retry attempts for spinning grindstone
+  # @return [Integer]
+  SPIN_MAX_RETRIES = 10
+
+  # Spin the grindstone to maintain speed.
+  #
+  # Uses a 20-second cooldown timer to avoid excessive spinning.
+  # Retries if spin fails, with a maximum retry limit to prevent
+  # unbounded recursion.
+  #
+  # @param retries [Integer] current retry count (default: 0)
+  # @return [void]
+  # @raise [SystemExit] if max retries exceeded
+  def spin_grindstone(retries = 0)
+    if retries >= SPIN_MAX_RETRIES
+      cleanup_and_exit("Failed to spin grindstone after #{SPIN_MAX_RETRIES} attempts.")
+    end
+
+    waitrt?
+    return if Time.now <= @next_spin
+
+    result = DRC.bput('turn grind', *SPIN_SUCCESS_PATTERNS, *SPIN_FAILURE_PATTERNS, SPIN_MISSING_PATTERN)
+    case result
+    when *SPIN_FAILURE_PATTERNS
+      spin_grindstone(retries + 1)
+    when SPIN_MISSING_PATTERN
+      DRCC.find_grindstone(@hometown)
+      spin_grindstone(retries + 1)
+    else
+      @next_spin = Time.now + 20
+    end
+  end
+
+  # @!endgroup
+
+  # @!group Assembly
+
+  # Assemble parts when forge-assembly flag triggers.
+  #
+  # Handles multi-part items like hilts, handles, padding, etc.
+  # Gets each required part, assembles it, and continues until
+  # no more parts are needed.
+  #
+  # @return [void]
+  # @raise [SystemExit] if required part cannot be found
   def assemble_part
     while Flags['forge-assembly']
       tool = DRC.right_hand
@@ -464,52 +1118,92 @@ class Forge
       Flags.reset('forge-assembly')
 
       unless DRCI.get_item?(part)
-        error_log("Missing #{part}. Cannot continue assembly. Exiting.")
-        magic_cleanup
-        exit
+        cleanup_and_exit("Missing #{part}. Cannot continue assembly.")
       end
 
       result = DRC.bput("assemble my #{@item} with my #{part}", *ASSEMBLE_SUCCESS_PATTERNS, ASSEMBLE_NOT_REQUIRED_PATTERN)
-      if result == ASSEMBLE_NOT_REQUIRED_PATTERN
-        DRCI.put_away_item?(part, @bag)
-      end
+      DRCI.put_away_item?(part, @bag) if result == ASSEMBLE_NOT_REQUIRED_PATTERN
       swap_tool(tool) if tool
     end
   end
 
+  # @!endgroup
+
+  # @!group Item Location
+
+  # Find item when resuming interrupted work.
+  #
+  # Checks hands, anvil, and forge for the item and configures
+  # appropriate defaults based on where it's found.
+  #
+  # @return [void]
+  # @raise [SystemExit] if item cannot be found
   def find_item
-    if DRCI.in_hands?(@item)
-      # Item in hand - assume it's an enhancement in progress
-      @recipe_name = 'metal weapon balancing'
-      @command = "analyze my #{@item}"
-      return
-    end
+    return configure_held_item_resume if DRCI.in_hands?(@item)
+    return configure_anvil_resume if check_anvil_for_item
+    return configure_forge_resume if check_forge_for_item
 
-    result = DRC.bput('look on anvil', ANVIL_HAS_ITEM_PATTERN, ANVIL_EMPTY_PATTERN)
-    if result == ANVIL_HAS_ITEM_PATTERN
-      @home_tool = @hammer
-      @recipe_name = 'metal thing'
-      @home_command = "pound #{@item} on anvil with my #{@hammer}"
-      @command = "analyze #{@item} on anvil"
-      @location = 'on anvil'
-      return
-    end
-
-    result = DRC.bput('look on forge', FORGE_HAS_ITEM_PATTERN, FORGE_EMPTY_PATTERN)
-    if result == FORGE_HAS_ITEM_PATTERN
-      @recipe_name = 'temper'
-      @home_tool = 'tongs'
-      @home_command = "turn #{@item} on forge with my tongs"
-      @stamp = false
-      @command = "analyze #{@item} on forge"
-      @location = 'on forge'
-      return
-    end
-
-    error_log("#{@item} not found on anvil, forge, or in hands. Exiting.")
-    exit
+    cleanup_and_exit("#{@item} not found on anvil, forge, or in hands.")
   end
 
+  # Configure resume for item already in hand (enhancement).
+  #
+  # @return [void]
+  def configure_held_item_resume
+    @recipe_name = 'metal weapon balancing'
+    @command = "analyze my #{@item}"
+  end
+
+  # Check if item is on the anvil.
+  #
+  # @return [Boolean] true if item found on anvil
+  def check_anvil_for_item
+    result = DRC.bput('look on anvil', ANVIL_HAS_ITEM_PATTERN, ANVIL_EMPTY_PATTERN)
+    result == ANVIL_HAS_ITEM_PATTERN
+  end
+
+  # Configure resume for item on anvil.
+  #
+  # @return [void]
+  def configure_anvil_resume
+    @home_tool = @hammer
+    @recipe_name = 'metal thing'
+    @home_command = "pound #{@item} on anvil with my #{@hammer}"
+    @command = "analyze #{@item} on anvil"
+    @location = 'on anvil'
+  end
+
+  # Check if item is on the forge.
+  #
+  # @return [Boolean] true if item found on forge
+  def check_forge_for_item
+    result = DRC.bput('look on forge', FORGE_HAS_ITEM_PATTERN, FORGE_EMPTY_PATTERN)
+    result == FORGE_HAS_ITEM_PATTERN
+  end
+
+  # Configure resume for item on forge (tempering).
+  #
+  # @return [void]
+  def configure_forge_resume
+    @recipe_name = 'temper'
+    @home_tool = 'tongs'
+    @home_command = "turn #{@item} on forge with my tongs"
+    @stamp = false
+    @command = "analyze #{@item} on forge"
+    @location = 'on forge'
+  end
+
+  # @!endgroup
+
+  # @!group Ingot Management
+
+  # Restow leftover ingot metal to proper container.
+  #
+  # When crafting uses less metal than provided, the game
+  # automatically splits the ingot. This moves it to the
+  # configured crafting container.
+  #
+  # @return [void]
   def restow_ingot
     tool = DRC.right_hand
     match_data = Flags['ingot-restow']
@@ -528,120 +1222,94 @@ class Forge
     swap_tool(tool) if tool
   end
 
-  def check_rental_status
-    result = DRC.bput('read notice', RENTAL_EXPIRE_PATTERN, *RENTAL_NOT_FOUND_PATTERNS)
-    match = result.match(RENTAL_EXPIRE_PATTERN)
-    return unless match
+  # @!endgroup
 
-    expire_str = match[:expire_time]
-    begin
-      # Parse format: "Sun Dec 28 23:39:15 ET 2025"
-      # Convert ET to a timezone offset for parsing
-      expire_str_normalized = expire_str.sub(' ET ', ' -0500 ')
-      expire_time = Time.parse(expire_str_normalized)
-      minutes_remaining = ((expire_time - Time.now) / 60).to_i
+  # @!group Main Work Loop
 
-      debug_log("Rental expires: #{expire_str} (#{minutes_remaining} minutes remaining)")
-
-      if minutes_remaining < 10
-        error_log("RENTAL LOW (#{minutes_remaining} min) - PRE-EMPTIVELY RENEWING")
-        renew_forge_rental
-      elsif minutes_remaining < 20
-        error_log("Rental has #{minutes_remaining} minutes remaining")
-      end
-    rescue ArgumentError => e
-      debug_log("Could not parse rental time: #{expire_str} - #{e.message}")
-    end
-  end
-
-  def renew_forge_rental
-    error_log('FORGE RENTAL EXPIRING - AUTO-RENEWING')
-    Flags.reset('forge-rental-warning')
-    result = DRC.bput('mark notice', *RENTAL_RENEW_SUCCESS_PATTERNS, *RENTAL_RENEW_FAILURE_PATTERNS)
-    case result
-    when "You don't have enough"
-      error_log('INSUFFICIENT FUNDS TO RENEW RENTAL')
-    when 'I could not find'
-      error_log('COULD NOT FIND NOTICE - CHECK LOCATION')
-    else
-      error_log('RENTAL RENEWED')
-    end
-  end
-
-  def work(settings)
+  # Main crafting work loop.
+  #
+  # Continuously executes crafting commands until completion, handling:
+  # - Forge rental renewal via 'forge-rental-warning' Flag
+  # - Assembly parts via 'forge-assembly' Flag
+  # - Ingot restowing via 'ingot-restow' Flag
+  # - Completion via 'work-done' Flag
+  #
+  # Each iteration runs magic routine, checks flags, executes command,
+  # and dispatches to appropriate handler based on result.
+  #
+  # @return [void] (exits on completion via complete_crafting)
+  def work
     loop do
-      DRCA.crafting_magic_routine(settings)
+      DRCA.crafting_magic_routine(@settings)
       renew_forge_rental if Flags['forge-rental-warning']
       assemble_part
       @command ||= @home_command
       spin_grindstone if @command.include?('grindstone')
 
-      result = DRC.bput(@command,
-                        *TONGS_ERROR_PATTERNS,
-                        TOOL_NOT_SUITABLE_PATTERN,
-                        TEMPER_START_PATTERN,
-                        TEMPER_CONTINUE_PATTERN,
-                        TEMPER_ALREADY_DONE_PATTERN,
-                        *FUEL_NEEDED_PATTERNS,
-                        *BELLOWS_NEEDED_PATTERNS,
-                        *TONGS_TURN_PATTERNS,
-                        WIRE_BRUSH_PATTERN,
-                        GRINDSTONE_SLOW_PATTERN,
-                        *POUND_PATTERNS,
-                        *GRINDSTONE_PATTERNS,
-                        *COOLING_PATTERNS,
-                        *PLIERS_PATTERNS,
-                        *OIL_PATTERNS,
-                        HANDLE_ASSEMBLY_PATTERN,
-                        INGOT_TOO_SMALL_PATTERN,
-                        ITEM_NOT_FOUND_PATTERN,
-                        INGREDIENTS_PATTERN,
-                        OIL_EMPTY_PATTERN,
-                        FINAL_TOUCHES_PATTERN,
-                        ROUNDTIME_PATTERN)
+      result = execute_work_command
       debug_log("Match result                                 :: #{result}")
       debug_log("Assembly? Part string or false               :: #{Flags['forge-assembly']}")
       restow_ingot if Flags['ingot-restow']
 
-      handle_work_result(result, settings)
+      handle_work_result(result)
     end
   end
 
-  def handle_work_result(result, _settings)
+  # Execute the current work command and match against all patterns.
+  #
+  # @return [String] the matched pattern result
+  def execute_work_command
+    DRC.bput(@command,
+             *TONGS_ERROR_PATTERNS,
+             TOOL_NOT_SUITABLE_PATTERN,
+             TEMPER_START_PATTERN,
+             TEMPER_CONTINUE_PATTERN,
+             TEMPER_ALREADY_DONE_PATTERN,
+             *FUEL_NEEDED_PATTERNS,
+             *BELLOWS_NEEDED_PATTERNS,
+             *TONGS_TURN_PATTERNS,
+             WIRE_BRUSH_PATTERN,
+             GRINDSTONE_SLOW_PATTERN,
+             *POUND_PATTERNS,
+             *GRINDSTONE_PATTERNS,
+             *COOLING_PATTERNS,
+             *PLIERS_PATTERNS,
+             *OIL_PATTERNS,
+             HANDLE_ASSEMBLY_PATTERN,
+             INGOT_TOO_SMALL_PATTERN,
+             ITEM_NOT_FOUND_PATTERN,
+             INGREDIENTS_PATTERN,
+             OIL_EMPTY_PATTERN,
+             FINAL_TOUCHES_PATTERN,
+             ROUNDTIME_PATTERN)
+  end
+
+  # Dispatch work result to appropriate handler.
+  #
+  # @param result [String] the matched pattern from execute_work_command
+  # @return [void]
+  def handle_work_result(result)
     case result
     when *TONGS_ERROR_PATTERNS
       DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs)
     when TOOL_NOT_SUITABLE_PATTERN
-      # Tool not needed for current state (e.g., forge already hot enough for bellows)
-      # Return to home tool and continue main work
-      swap_tool(@home_tool)
-      @command = @home_command
+      handle_tool_not_suitable
     when TEMPER_START_PATTERN
       @command = "put my #{@item} on the forge"
     when TEMPER_CONTINUE_PATTERN
-      swap_tool('tongs')
-      @command = "turn #{@item} on forge with my tongs"
+      handle_temper_continue
     when TEMPER_ALREADY_DONE_PATTERN
-      error_log("#{@item} has already been tempered. Further heating would damage it.")
-      error_log('Nothing to do. Exiting.')
-      DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
-      magic_cleanup
-      exit
+      handle_temper_already_done
     when *FUEL_NEEDED_PATTERNS
       handle_fuel_needed
     when *BELLOWS_NEEDED_PATTERNS
-      swap_tool('bellows')
-      @command = 'push my bellows'
+      handle_bellows_needed
     when *TONGS_TURN_PATTERNS
-      swap_tool(@hammer)
-      swap_tool('tongs')
-      @command = "turn #{@item} on anvil with my tongs"
+      handle_tongs_turn
     when *COOLING_PATTERNS
-      stow_both_hands
-      @command = 'push tub'
+      handle_cooling
     when WIRE_BRUSH_PATTERN
-      swap_tool('wire brush')
-      @command = "rub my #{@item} with my brush"
+      handle_wire_brush
     when *POUND_PATTERNS
       handle_pounding
     when GRINDSTONE_SLOW_PATTERN
@@ -655,21 +1323,60 @@ class Forge
     when HANDLE_ASSEMBLY_PATTERN
       handle_handle_assembly
     when INGOT_TOO_SMALL_PATTERN
-      cleanup_and_exit('You need a larger ingot to forge this item. Exiting.')
+      cleanup_and_exit('You need a larger ingot to forge this item.')
     when OIL_EMPTY_PATTERN
-      DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
-      swap_tool('oil')
+      handle_oil_empty
     when ITEM_NOT_FOUND_PATTERN
-      cleanup_and_exit('Could not find item or tool. Check your setup. Exiting.')
+      cleanup_and_exit('Could not find item or tool. Check your setup.')
     when INGREDIENTS_PATTERN
       assemble_part
     when FINAL_TOUCHES_PATTERN
-      finish
+      complete_crafting
     when ROUNDTIME_PATTERN
       handle_roundtime
     end
   end
 
+  # @!endgroup
+
+  # @!group Work Result Handlers
+
+  # Handle tool not suitable for current state.
+  #
+  # Returns to home tool and continues main work (e.g., forge already
+  # hot enough for bellows).
+  #
+  # @return [void]
+  def handle_tool_not_suitable
+    swap_tool(@home_tool)
+    @command = @home_command
+  end
+
+  # Handle temper continue state.
+  #
+  # @return [void]
+  def handle_temper_continue
+    swap_tool('tongs')
+    @command = "turn #{@item} on forge with my tongs"
+  end
+
+  # Handle item already tempered.
+  #
+  # @return [void]
+  # @raise [SystemExit] exits since no work needed
+  def handle_temper_already_done
+    error_log("#{@item} has already been tempered. Further heating would damage it.")
+    error_log('Nothing to do.')
+    DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
+    magic_cleanup
+    exit
+  end
+
+  # Handle forge needs fuel.
+  #
+  # Swaps to shovel (or adjustable tongs as shovel) to add fuel.
+  #
+  # @return [void]
   def handle_fuel_needed
     shovel = @adjustable_tongs ? 'tongs' : 'shovel'
     debug_log("Tool selected for shovel (AjT #{@adjustable_tongs ? 'TRUE' : 'FALSE'})          :: #{shovel}")
@@ -677,42 +1384,86 @@ class Forge
     @command = "push fuel with my #{shovel}"
   end
 
+  # Handle forge fire needs bellows.
+  #
+  # @return [void]
+  def handle_bellows_needed
+    swap_tool('bellows')
+    @command = 'push my bellows'
+  end
+
+  # Handle item needs turning with tongs.
+  #
+  # @return [void]
+  def handle_tongs_turn
+    ready_hammer_with_tongs
+    @command = "turn #{@item} on anvil with my tongs"
+  end
+
+  # Handle item needs cooling in slack tub.
+  #
+  # Reports progress at this milestone before cooling.
+  #
+  # @return [void]
+  def handle_cooling
+    report_progress_milestone('Cooling')
+    stow_both_hands
+    @command = 'push tub'
+  end
+
+  # Handle wire brush needed after grinding.
+  #
+  # @return [void]
+  def handle_wire_brush
+    swap_tool('wire brush')
+    @command = "rub my #{@item} with my brush"
+  end
+
+  # Handle pounding needed.
+  #
+  # Places item on anvil if held, then readies hammer and tongs.
+  #
+  # @return [void]
   def handle_pounding
     DRC.bput("put my #{@item} on anvil", PUT_SUCCESS_PATTERN) if DRCI.in_hands?(@item)
-    swap_tool(@hammer)
-    swap_tool('tongs')
+    ready_hammer_with_tongs
     @command = "pound #{@item} on anvil with my #{@hammer}"
   end
 
+  # Handle grindstone work needed.
+  #
+  # Reports progress at this milestone, prepares item in left hand,
+  # and sets grindstone command.
+  #
+  # @return [void]
   def handle_grindstone
-    unless DRCI.in_left_hand?(@item)
-      DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
-      DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
-      result = DRC.bput("get #{@item} from anvil", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
-      if result == GET_FAILURE_PATTERN
-        error_log("Failed to get #{@item} from anvil for grindstone work.")
-      end
-      check_hand(@item) unless DRCI.in_left_hand?(@item)
-    end
+    report_progress_milestone('Grinding')
+    prepare_item_in_left_hand('from anvil', 'grindstone work')
     @home_tool = 'wire brush' if @resume
     @command = "push grindstone with my #{@item}"
   end
 
+  # Handle pliers work needed.
+  #
+  # Reports progress at this milestone, prepares item in left hand,
+  # swaps to pliers, and sets command.
+  #
+  # @return [void]
   def handle_pliers
-    unless DRCI.in_left_hand?(@item)
-      DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
-      DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
-      result = DRC.bput("get #{@item} from anvil", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
-      if result == GET_FAILURE_PATTERN
-        error_log("Failed to get #{@item} from anvil for pliers work.")
-      end
-      check_hand(@item) unless DRCI.in_left_hand?(@item)
-    end
+    report_progress_milestone('Pliers')
+    prepare_item_in_left_hand('from anvil', 'pliers work')
     swap_tool('pliers')
     @command = "pull my #{@item} with my pliers"
   end
 
+  # Handle oiling needed.
+  #
+  # Reports progress at this milestone, gets item from location,
+  # swaps to oil, and sets command.
+  #
+  # @return [void]
   def handle_oiling
+    report_progress_milestone('Oiling')
     if @home_tool == 'tongs' || !DRCI.in_left_hand?(@item)
       DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
       result = DRC.bput("get #{@item} #{@location}", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
@@ -720,41 +1471,82 @@ class Forge
         error_log("Failed to get #{@item} from #{@location} for oiling.")
       end
     end
-    check_hand(@item) unless DRCI.in_left_hand?(@item)
+    ensure_item_in_left_hand
     swap_tool('oil', true)
     @command = "pour my oil on my #{@item}"
   end
 
+  # Handle oil container empty.
+  #
+  # @return [void]
+  def handle_oil_empty
+    DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
+    swap_tool('oil')
+  end
+
+  # Handle handle assembly needed.
+  #
+  # Gets item from anvil, assembles parts, places back, and readies tools.
+  #
+  # @return [void]
   def handle_handle_assembly
     result = DRC.bput("get #{@item} from anvil", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
     if result == GET_FAILURE_PATTERN
       error_log("Failed to get #{@item} from anvil for handle assembly.")
     end
-    check_hand(@item) unless DRCI.in_left_hand?(@item)
+    ensure_item_in_left_hand
     assemble_part
     DRC.bput("put my #{@item} on anvil", PUT_SUCCESS_PATTERN)
-    swap_tool(@hammer)
-    swap_tool('tongs')
+    ready_hammer_with_tongs
     @command = "pound #{@item} on anvil with my #{@hammer}"
   end
 
+  # Handle roundtime with no specific action needed.
+  #
+  # Waits for RT, checks if work is done, then returns to home tool/command.
+  #
+  # @return [void]
   def handle_roundtime
     waitrt?
     debug_log("Work done?                                   :: #{Flags['work-done']}")
-    finish if Flags['work-done']
+    complete_crafting if Flags['work-done']
     swap_tool(@home_tool)
     DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs) if @home_tool == @hammer
     @command = @home_command
   end
 
-  def finish
-    DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-    if @stamp
-      swap_tool('stamp')
-      DRC.bput("mark my #{@item} with my stamp", *STAMP_PATTERNS)
-      DRCC.stow_crafting_item('stamp', @bag, @forging_belt)
-    end
+  # @!endgroup
 
+  # @!group Completion
+
+  # Complete crafting and handle finished item.
+  #
+  # Stows tools, stamps item if configured, then logs/stows/trashes/holds
+  # based on @finish setting.
+  #
+  # @return [void]
+  # @raise [SystemExit] exits after completion
+  def complete_crafting
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
+    stamp_item if @stamp
+    finalize_item
+    magic_cleanup
+    exit
+  end
+
+  # Stamp the finished item with maker's mark.
+  #
+  # @return [void]
+  def stamp_item
+    swap_tool('stamp')
+    DRC.bput("mark my #{@item} with my stamp", *STAMP_PATTERNS)
+    DRCC.stow_crafting_item('stamp', @bag, @forging_belt)
+  end
+
+  # Finalize item based on finish setting.
+  #
+  # @return [void]
+  def finalize_item
     case @finish
     when /log/
       DRCC.logbook_item('engineering', @item, @bag)
@@ -771,19 +1563,25 @@ class Forge
     else
       error_log("#{@item} complete. Holding in hand.")
     end
-    magic_cleanup
-    exit
   end
 
+  # Release all magic effects.
+  #
+  # Releases prepared spells, harnessed mana, and active symbols.
+  #
+  # @return [void]
   def magic_cleanup
     DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
     DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
     DRC.bput('release symb', "But you haven't", 'You release', 'Repeat this command')
   end
+
+  # @!endgroup
 end
 
 before_dying do
   Flags.delete('forge-assembly')
+  Flags.delete('work-done')
   Flags.delete('ingot-restow')
   Flags.delete('forge-rental-warning')
 end
