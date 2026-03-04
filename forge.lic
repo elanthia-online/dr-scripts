@@ -17,10 +17,12 @@ class Forge
   # Forge state patterns - temper
   TEMPER_START_PATTERN = 'You glance down at the hot coals of the forge'
   TEMPER_CONTINUE_PATTERN = 'ensure even heating in the forge'
+  TEMPER_ALREADY_DONE_PATTERN = 'has already been tempered'
 
   # Fuel patterns
   FUEL_NEEDED_PATTERNS = ['needs more fuel', 'need some more fuel', 'Almost all of the coal has been consumed'].freeze
   BELLOWS_NEEDED_PATTERNS = ['fire dims and produces less heat', 'fire flickers and is unable to consume its fuel', 'The forge fire has died down'].freeze
+  TOOL_NOT_SUITABLE_PATTERN = "doesn't appear suitable"
 
   # Tongs turn patterns
   TONGS_TURN_PATTERNS = [
@@ -173,6 +175,10 @@ class Forge
     @bag_items = settings.crafting_items_in_container
     @forging_belt = settings.forging_belt
     @hammer = settings.forging_tools.find { |item| /hammer|mallet/ =~ item }
+    unless @hammer
+      Lich::Messaging.msg('bold', 'Forge: No hammer or mallet found in forging_tools setting. Exiting.')
+      exit
+    end
     @book_type = args.book_type
     @chapter = args.chapter
     @resume = args.resume
@@ -189,6 +195,21 @@ class Forge
     debug_log("Recipe                                       :: #{@recipe_name}")
 
     DRC.wait_for_script_to_complete('buff', ['forge'])
+
+    # Check at least one hand is free (holding the target item is OK)
+    right = DRC.right_hand
+    left = DRC.left_hand
+    right_ok = right.nil? || right.include?(@item)
+    left_ok = left.nil? || left.include?(@item)
+    free_hand = right.nil? || left.nil?
+
+    unless free_hand && (right_ok && left_ok)
+      held_items = [right, left].compact.reject { |item| item.include?(@item) }
+      error_log("Need a free hand to forge. Currently holding: #{held_items.join(' and ')}")
+      error_log('Please stow extra items and try again. Exiting.')
+      exit
+    end
+
     if settings.adjustable_tongs && @item != 'tongs'
       @adjustable_tongs = DRCC.get_adjust_tongs?('reset tongs', @bag, @bag_items, @forging_belt)
       debug_log("Tongs adjustable?                            :: #{@adjustable_tongs}")
@@ -198,7 +219,10 @@ class Forge
     find_item if args.resume
     go_to_private_forge(settings) if @use_private_forge && !args.resume
     check_rental_status
-    DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt) unless args.skip
+    unless args.skip
+      DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
+      DRCC.check_consumables('wire brush', @info['finisher-room'], @info['wire-brush-number'], @bag, @bag_items, @forging_belt)
+    end
     set_defaults
     work(settings) if args.resume
     prep(settings)
@@ -229,6 +253,18 @@ class Forge
 
   def error_log(message)
     Lich::Messaging.msg('bold', "Forge: #{message}")
+  end
+
+  def stow_both_hands
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
+    DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+  end
+
+  def cleanup_and_exit(message)
+    error_log(message)
+    stow_both_hands
+    magic_cleanup
+    exit
   end
 
   def go_to_private_forge(settings)
@@ -329,6 +365,11 @@ class Forge
     DRCA.crafting_magic_routine(settings)
     if @instruction
       DRCC.get_crafting_item("#{@item} instructions", @bag, @bag_items, @forging_belt)
+      unless DRCI.in_hands?('instructions')
+        error_log("Failed to get #{@item} instructions. Exiting.")
+        magic_cleanup
+        exit
+      end
       if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
         DRC.bput('study my instructions', 'Roundtime', 'Study them again')
       end
@@ -340,6 +381,11 @@ class Forge
         DRCC.find_recipe2(@chapter, @recipe_name, settings.master_crafting_book, @book_type)
       else
         DRCC.get_crafting_item("#{@book_type} book", @bag, @bag_items, @forging_belt)
+        unless DRCI.in_hands?('book')
+          error_log("Failed to get #{@book_type} book. Exiting.")
+          magic_cleanup
+          exit
+        end
         if DRSkill.getrank('Forging') == 175
           error_log('You will need to upgrade to a journeyman or master book before 176 ranks!')
         end
@@ -384,6 +430,7 @@ class Forge
     debug_log("Is the next tool tongs?                      :: #{next_tool.include?('tongs')}")
     debug_log("Are we adjusting tongs (to tongs)?           :: #{(next_tool == 'tongs') && @adjustable_tongs}")
     debug_log("Are we adjusting tongs (to shovel)?          :: #{(next_tool == 'shovel') && @adjustable_tongs}")
+
     if next_tool.include?('tongs') && @adjustable_tongs
       debug_log('Making tongs tongs again                     :: NOW')
       DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs)
@@ -399,6 +446,14 @@ class Forge
         DRCC.get_crafting_item(next_tool, @bag, @bag_items, @forging_belt, skip)
       end
     end
+
+    # Unified verification - for adjustable tongs as shovel, check for 'tongs'
+    tool_to_verify = (next_tool == 'shovel' && @adjustable_tongs) ? 'tongs' : next_tool
+    return if DRCI.in_hands?(tool_to_verify)
+
+    error_log("Failed to get #{next_tool}. Exiting.")
+    magic_cleanup
+    exit
   end
 
   def assemble_part
@@ -457,8 +512,11 @@ class Forge
 
   def restow_ingot
     tool = DRC.right_hand
-    temp_bag = Flags['ingot-restow'][1].chop
+    match_data = Flags['ingot-restow']
     Flags.reset('ingot-restow')
+    return unless match_data && match_data[1]
+
+    temp_bag = match_data[1].chop
     return if /#{temp_bag}/ =~ @bag
 
     DRCC.stow_crafting_item(tool, @bag, @forging_belt)
@@ -515,13 +573,15 @@ class Forge
       DRCA.crafting_magic_routine(settings)
       renew_forge_rental if Flags['forge-rental-warning']
       assemble_part
+      @command ||= @home_command
       spin_grindstone if @command.include?('grindstone')
-      @command = @home_command unless @command
 
       result = DRC.bput(@command,
                         *TONGS_ERROR_PATTERNS,
+                        TOOL_NOT_SUITABLE_PATTERN,
                         TEMPER_START_PATTERN,
                         TEMPER_CONTINUE_PATTERN,
+                        TEMPER_ALREADY_DONE_PATTERN,
                         *FUEL_NEEDED_PATTERNS,
                         *BELLOWS_NEEDED_PATTERNS,
                         *TONGS_TURN_PATTERNS,
@@ -551,11 +611,22 @@ class Forge
     case result
     when *TONGS_ERROR_PATTERNS
       DRCC.get_adjust_tongs?('tongs', @bag, @bag_items, @forging_belt, @adjustable_tongs)
+    when TOOL_NOT_SUITABLE_PATTERN
+      # Tool not needed for current state (e.g., forge already hot enough for bellows)
+      # Return to home tool and continue main work
+      swap_tool(@home_tool)
+      @command = @home_command
     when TEMPER_START_PATTERN
       @command = "put my #{@item} on the forge"
     when TEMPER_CONTINUE_PATTERN
       swap_tool('tongs')
       @command = "turn #{@item} on forge with my tongs"
+    when TEMPER_ALREADY_DONE_PATTERN
+      error_log("#{@item} has already been tempered. Further heating would damage it.")
+      error_log('Nothing to do. Exiting.')
+      DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
+      magic_cleanup
+      exit
     when *FUEL_NEEDED_PATTERNS
       handle_fuel_needed
     when *BELLOWS_NEEDED_PATTERNS
@@ -566,8 +637,7 @@ class Forge
       swap_tool('tongs')
       @command = "turn #{@item} on anvil with my tongs"
     when *COOLING_PATTERNS
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+      stow_both_hands
       @command = 'push tub'
     when WIRE_BRUSH_PATTERN
       swap_tool('wire brush')
@@ -585,19 +655,12 @@ class Forge
     when HANDLE_ASSEMBLY_PATTERN
       handle_handle_assembly
     when INGOT_TOO_SMALL_PATTERN
-      error_log('You need a larger ingot to forge this item. Exiting.')
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-      magic_cleanup
-      exit
+      cleanup_and_exit('You need a larger ingot to forge this item. Exiting.')
     when OIL_EMPTY_PATTERN
       DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
       swap_tool('oil')
     when ITEM_NOT_FOUND_PATTERN
-      error_log('Could not find item or tool. Check your setup. Exiting.')
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @forging_belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
-      exit
+      cleanup_and_exit('Could not find item or tool. Check your setup. Exiting.')
     when INGREDIENTS_PATTERN
       assemble_part
     when FINAL_TOUCHES_PATTERN
@@ -721,7 +784,6 @@ end
 
 before_dying do
   Flags.delete('forge-assembly')
-  Flags.delete('hone-done')
   Flags.delete('ingot-restow')
   Flags.delete('forge-rental-warning')
 end
