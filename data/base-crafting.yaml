@@ -411,6 +411,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 8776
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 8776
     repair-npc: clerk
     stock-volume: 5
@@ -459,6 +460,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 19246
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 19246
     repair-npc: clerk
     stock-volume: 5
@@ -497,6 +499,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 11263
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 11267
     repair-npc: Rokumru
     stock-volume: 5
@@ -541,6 +544,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 8784
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 8783
     repair-npc: clerk
     stock-volume: 5
@@ -580,6 +584,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 4436
     finisher-number: 6
+    wire-brush-number: 10
     crucibles:
       - 9611
       - 9613
@@ -637,6 +642,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 16409
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 16409
     repair-npc: clerk
     stock-room: 16405
@@ -681,6 +687,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 10755
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 10755
     repair-npc: clerk
     stock-room: 10758
@@ -715,6 +722,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 17692
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 17692
     repair-npc: clerk
     stock-room: 17694
@@ -758,6 +766,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 8892
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 8887
     repair-npc: clerk
     stock-room: 8894
@@ -796,6 +805,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 14793
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 9143
     repair-npc: clerk
     stock-room: 9132
@@ -836,6 +846,7 @@ blacksmithing:
     finisher-full: flask of oil
     finisher-room: 8810
     finisher-number: 6
+    wire-brush-number: 10
     repair-room: 11807
     repair-npc: Diwitt
     stock-room: 8811
