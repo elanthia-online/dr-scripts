@@ -127,7 +127,7 @@ class Athletics
     Flags.add('climbing-finished', 'You finish practicing your climbing', 'The rope\'s will quickly fades away', 'Your focus diverts away from the rope')
     Flags.add('climbing-too-hard', 'This climb is too difficult')
     Flags.add('climbing-too-easy', 'This climb is no challenge at all, so you stop practicing')
-    Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.', '^You finish practicing your climbing skill just as your rope begins to slacken')
+    Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.')
     Flags.add('climbing-live-rope', '^You believe you haven\'t yet used it today')
 
     DRCI.stow_hands
@@ -140,6 +140,7 @@ class Athletics
     until done_training? || Flags['climbing-dead-rope']
       DRC.fix_standing
       Flags.reset('climbing-finished')
+      DRC.stop_playing
       break unless DRC.play_song?(@settings, @song_list, true, true, true)
 
       case DRC.bput("climb practice #{@settings.climbing_rope_adjective} rope", 'You begin to practice ', 'you mime a convincing climb while pulling the rope hand over hand', 'Directing your attention toward your rope', 'Allows you to climb various things like a tree', 'But you aren\'t holding', 'You should stop practicing')
@@ -163,7 +164,7 @@ class Athletics
             DRC.stop_playing
             offset_climbing_song(1)
             break
-          elsif Flags['dead-rope']
+          elsif Flags['climbing-dead-rope']
             break unless check_rope?
             break unless DRC.play_song?(@settings, @song_list, true, true, true)
           end
