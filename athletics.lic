@@ -127,7 +127,7 @@ class Athletics
     Flags.add('climbing-finished', 'You finish practicing your climbing', 'The rope\'s will quickly fades away', 'Your focus diverts away from the rope')
     Flags.add('climbing-too-hard', 'This climb is too difficult')
     Flags.add('climbing-too-easy', 'This climb is no challenge at all, so you stop practicing')
-    Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.', '^You finish practicing your climbing skill just as your rope begins to slacken')
+    Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.')
     Flags.add('climbing-live-rope', '^You believe you haven\'t yet used it today')
 
     DRCI.stow_hands
