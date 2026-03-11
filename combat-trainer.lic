@@ -987,7 +987,6 @@ class LootProcess
     type = @arrange_types[mob_noun] || 'skin'
     arrange_message = @arrange_all ? "arrange all for #{type}" : "arrange for #{type}"
     while arranges < @arrange_count
-      arranges += 1
       case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
       when 'You complete arranging', 'That has already been arranged', 'You make a serious mistake in the arranging process', 'Arrange what'
         break
@@ -5552,10 +5551,10 @@ class GameState
     return charge_num if @avtalia_cambrinth.empty?
 
     # unwrap the charges for the spell. Keep pulling in more cambrinth mana entries until it either hits the camb cap or gets all of it.
-    return avtalia_charge(charge_num + @charges.pop) if charge_num < [@avtalia_cambrinth.last['mana'], remaining_charge].min
+    return avtalia_charge(charge_num + @charges.pop) if charge_num < [@avtalia_cambrinth.last['mana'].to_i, remaining_charge].min
 
     # how much will be invoked from the camb, either all the charges of the spell, or the cambrinth cap
-    charge_avta = [charge_num, @avtalia_cambrinth.last['mana']].min
+    charge_avta = [charge_num, @avtalia_cambrinth.last['mana'].to_i].min
     DRCA.invoke_avtalia(@avtalia_cambrinth.first, @dedicated_camb_use, charge_avta)
     # charges_total subtracts what we got from avtalia array, and invokes the rest from normal cambrinth
     @charges_total -= charge_avta
