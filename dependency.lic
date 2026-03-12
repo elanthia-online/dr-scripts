@@ -1103,7 +1103,7 @@ class SetupFiles
              if cached_file.mtime != last_modified_date
                cache_put_by_filepath(filepath)
              end
-        end
+           end
       end
     end
   end
