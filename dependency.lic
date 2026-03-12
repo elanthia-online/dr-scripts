@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.1.3'
+$DEPENDENCY_VERSION = '2.2.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -230,7 +230,8 @@ class ScriptManager
     @paste_bin_token = 'dca351a27a8af501a8d3123e29af7981'
     @paste_bin_url = 'https://pastebin.com/api/api_post.php'
     @firebase_url = 'https://dr-scripts.firebaseio.com/'
-    @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main'
+    @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
+    @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
     # Gating setting lich_url on lich version
 
     UserVars.autostart_scripts ||= []
@@ -262,7 +263,7 @@ class ScriptManager
     @thievery_queue = []
     @shop_update_queue = []
 
-    @request_authorization = manage_github_token
+    @request_authorization = load_personal_github_token
     @versions = nil
   end
 
@@ -361,7 +362,7 @@ class ScriptManager
   end
 
   def repo_scripts
-    $manager.get_status['tree'].map { |element| element['path'] }.select { |file| file.include?('.lic') && !file.include?('-setup') }
+    $manager.get_status['tree'].map { |element| element['path'] }.select { |file| file =~ /^[^\/]+\.lic$/ && !file.include?('-setup') }
   end
 
   def start_scripts(force = false)
@@ -401,8 +402,10 @@ class ScriptManager
     end
 
     echo("info:#{info}") if @debug
-    blob = make_request(info['url'])
-    File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(Base64.decode64(blob['content'])) }
+    content = download_raw_file(filename)
+    return unless content
+
+    File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(content) }
 
     @self_updated = true if filename == 'dependency.lic'
   end
@@ -413,25 +416,30 @@ class ScriptManager
 
   def setup_profiles
     verify_or_make_dir File.join(SCRIPT_DIR, 'profiles')
-    profile_tree_url = get_status['tree'].find { |element| element['path'] == 'profiles' }['url']
-    make_request(profile_tree_url)['tree']
-      # Select only base.yaml and base-empty.yaml
-      .select { |data| /^base(?:-empty)?\.yaml/ =~ data['path'] }
+    get_status['tree']
+      .select { |data| data['path'] =~ %r{^profiles/base(?:-empty)?\.yaml$} }
       .each do |setup_file|
-        echo("downloading #{setup_file}") if @debug
-        blob = make_request(setup_file['url'])
-        File.open(File.join(SCRIPT_DIR, "profiles/#{setup_file['path']}"), 'w') { |file| file.print(Base64.decode64(blob['content'])) }
+        filename = File.basename(setup_file['path'])
+        echo("downloading #{filename}") if @debug
+        content = download_raw_file(setup_file['path'])
+        next unless content
+
+        File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'w') { |file| file.print(content) }
       end
   end
 
   def setup_data
     verify_or_make_dir File.join(SCRIPT_DIR, 'data')
-    data_tree_url = get_status['tree'].find { |element| element['path'] == 'data' }['url']
-    make_request(data_tree_url)['tree'].each do |setup_file|
-      echo("downloading #{setup_file}") if @debug
-      blob = make_request(setup_file['url'])
-      File.open(File.join(SCRIPT_DIR, "data/#{setup_file['path']}"), 'w') { |file| file.print(Base64.decode64(blob['content'])) }
-    end
+    get_status['tree']
+      .select { |data| data['path'] =~ %r{^data/} && data['type'] == 'blob' }
+      .each do |setup_file|
+        filename = File.basename(setup_file['path'])
+        echo("downloading #{filename}") if @debug
+        content = download_raw_file(setup_file['path'])
+        next unless content
+
+        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
+      end
   end
 
   def update_local_stealing_yaml(id, update, new_entry = false)
@@ -455,17 +463,20 @@ class ScriptManager
   def check_base_files
     start_time = Time.now
     verify_or_make_dir File.join(SCRIPT_DIR, 'profiles')
-    profile_tree_url = get_status['tree'].find { |element| element['path'] == 'profiles' }['url']
-    make_request(profile_tree_url)['tree']
-      # Select only base.yaml and base-empty.yaml
-      .select { |data| /^base(?:-empty)?\.yaml/ =~ data['path'] }
-      # Reject files that exist, and have the same shasum as those on the repo.
-      .reject { |setup_file| File.exist?(File.join(SCRIPT_DIR, 'profiles', setup_file['path'])) && setup_file['sha'] == Settings['base_versions'][setup_file['path']] }
+    get_status['tree']
+      .select { |data| data['path'] =~ %r{^profiles/base(?:-empty)?\.yaml$} }
+      .reject { |setup_file|
+        filename = File.basename(setup_file['path'])
+        File.exist?(File.join(SCRIPT_DIR, 'profiles', filename)) && setup_file['sha'] == Settings['base_versions'][filename]
+      }
       .each do |setup_file|
-        echo("downloading #{setup_file}") if @debug
-        blob = make_request(setup_file['url'])
-        File.open(File.join(SCRIPT_DIR, "profiles/#{setup_file['path']}"), 'w') { |file| file.print(Base64.decode64(blob['content'])) }
-        Settings['base_versions'][setup_file['path']] = setup_file['sha']
+        filename = File.basename(setup_file['path'])
+        echo("downloading #{filename}") if @debug
+        content = download_raw_file(setup_file['path'])
+        next unless content
+
+        File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'w') { |file| file.print(content) }
+        Settings['base_versions'][filename] = setup_file['sha']
       end
     Settings.save
     finish_time = Time.now
@@ -476,16 +487,20 @@ class ScriptManager
   def check_data_files
     start_time = Time.now
     verify_or_make_dir File.join(SCRIPT_DIR, 'data')
-    profile_tree_url = get_status['tree'].find { |element| element['path'] == 'data' }['url']
-    make_request(profile_tree_url)['tree']
-      .select { |data| /^base.+yaml/ =~ data['path'] }
-      # Reject files that exist, and have the same shasum as those on the repo.
-      .reject { |setup_file| File.exist?(File.join(SCRIPT_DIR, 'data', setup_file['path'])) && setup_file['sha'] == Settings['base_versions'][setup_file['path']] }
+    get_status['tree']
+      .select { |data| data['path'] =~ %r{^data/base.+yaml$} }
+      .reject { |setup_file|
+        filename = File.basename(setup_file['path'])
+        File.exist?(File.join(SCRIPT_DIR, 'data', filename)) && setup_file['sha'] == Settings['base_versions'][filename]
+      }
       .each do |setup_file|
-        echo("downloading #{setup_file}") if @debug
-        blob = make_request(setup_file['url'])
-        File.open(File.join(SCRIPT_DIR, "data/#{setup_file['path']}"), 'w') { |file| file.print(Base64.decode64(blob['content'])) }
-        Settings['base_versions'][setup_file['path']] = setup_file['sha']
+        filename = File.basename(setup_file['path'])
+        echo("downloading #{filename}") if @debug
+        content = download_raw_file(setup_file['path'])
+        next unless content
+
+        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
+        Settings['base_versions'][filename] = setup_file['sha']
       end
     Settings.save
     finish_time = Time.now
@@ -525,69 +540,70 @@ class ScriptManager
     http.verify_mode = OpenSSL::SSL::VERIFY_NONE
 
     request = Net::HTTP::Get.new(uri.request_uri)
-    request['Authorization'] = @request_authorization
+    request['Authorization'] = @request_authorization if @request_authorization
 
     response = http.request(request)
     JSON.parse(response.body)
   end
 
-  def manage_github_token
-    # This method manages some checking of the GitHub token we'll be using. We allow a personal
-    # GitHub token to be specified in the /data folder, or we can use the general Lich token.
-    # If using a personal GitHub token, we'll verify the token is valid, and we'll also do some
-    # checking of the rate limit for the token we're using. If the rate limit is above a certain
-    # threshold, we'll warn but won't fail, as Lich can still function when the rate limit is
-    # exceeded, albeit with some reduced functionality.
-    #  Returns: request['Authorization'] token string
+  def download_raw_file(path)
+    # Downloads file content directly from raw.githubusercontent.com.
+    # No authentication required, no rate limit, returns raw file content.
+    raw_url = "#{@raw_base_url}/#{path}"
+    echo "download_raw_file: #{raw_url}" if @debug
+    uri = URI.parse(raw_url)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = true
+    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
 
-    github_token = [
-      'Z2hwX21XN1',
-      'V0RkdORXdGYlpmVDF1S3AzM2I1TV',
-      'J5bHlTNjBXc09VNw==',
-      '\n'
-    ].join('')
+    request = Net::HTTP::Get.new(uri.request_uri)
+    response = http.request(request)
 
-    # Set up our rate limit check URL and items
+    unless response.code == '200'
+      echo "Failed to download #{path}: HTTP #{response.code}"
+      return nil
+    end
+
+    response.body
+  end
+
+  def load_personal_github_token
+    # Loads an optional personal GitHub token from the data directory.
+    # If no personal token is found, returns nil (unauthenticated).
+    # The dr-scripts repo is public, so unauthenticated access works fine
+    # with 60 requests/hour per IP. File downloads use raw.githubusercontent.com
+    # which has no rate limit, so the API is only used for tree listings (~1 call/hour).
+    token_path = "#{DATA_DIR}/githubtoken.txt"
+    return nil unless File.exist?(token_path)
+
+    token = File.read(token_path).strip
+    if token.empty?
+      echo "GitHub token file is empty. Using unauthenticated access."
+      return nil
+    end
+
+    echo "Using personal GitHub token."
+
+    # Verify the token is valid
     url = URI("https://api.github.com/rate_limit")
     http = Net::HTTP.new(url.host, url.port)
     http.use_ssl = true
     request = Net::HTTP::Get.new(url)
-
-    # Check if the user has a githubtoken.txt file and use the token in that file if so. If they
-    # do have a personal token specified, verify valid. Else, use general token. Note: the .strip
-    # is apparently necessary to have the File.read function in Linux.
-    if File.exist?("#{DATA_DIR}/githubtoken.txt")
-      echo "Using personal GitHub token."
-      request['Authorization'] = "token #{File.read("#{DATA_DIR}/githubtoken.txt").strip}"
-
-      # Verify the GitHub token is valid. If not, swap to the general token.
-      if http.request(request).body =~ /Bad credentials/
-        echo "Bad personal GitHub token. Reverting to Lich's general token."
-        echo "Please update /lich/data/githubtoken.txt"
-        request['Authorization'] = "token #{Base64.decode64(github_token)}"
-      end
-    else
-      echo "Using general GitHub token." if @debug
-      request['Authorization'] = "token #{Base64.decode64(github_token)}"
-    end
+    request['Authorization'] = "Bearer #{token}"
 
     response = http.request(request)
-    parsed_response = JSON.parse(response.body)
-
-    used = parsed_response["resources"]["core"]["used"].to_i
-    limit = parsed_response["resources"]["core"]["limit"].to_i
-
-    echo "Current token rate limit usage: #{used}/#{limit}" if @debug
-
-    # Warn if rate limit is currently above 80% usage.
-    if used.to_f / limit >= 0.8 && @debug
-      echo ""
-      echo "*** WARNING: GitHub rate currently #{used}/#{limit} ***"
-      echo "*** Please report in Discord or GitHub. ***"
-      echo ""
+    if response.body =~ /Bad credentials/
+      echo "Bad personal GitHub token. Falling back to unauthenticated access."
+      echo "Please update or remove #{token_path}"
+      return nil
     end
 
-    return request['Authorization']
+    parsed_response = JSON.parse(response.body)
+    used = parsed_response["resources"]["core"]["used"].to_i
+    limit = parsed_response["resources"]["core"]["limit"].to_i
+    echo "Personal token rate limit usage: #{used}/#{limit}" if @debug
+
+    "Bearer #{token}"
   end
 
   def submit_thieving_update(id, update)
