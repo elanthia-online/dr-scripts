@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.2.0'
+$DEPENDENCY_VERSION = '2.2.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -404,6 +404,14 @@ class ScriptManager
     echo("info:#{info}") if @debug
     content = download_raw_file(filename)
     return unless content
+
+    if filename == 'dependency.lic'
+      content_sha = Digest::SHA1.hexdigest('blob' + " #{content.bytesize}" + "\0" + content)
+      if content_sha == @versions[filename]
+        echo("dependency.lic content unchanged, skipping self-update") if @debug
+        return
+      end
+    end
 
     File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(content) }
 
