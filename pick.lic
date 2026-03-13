@@ -267,12 +267,19 @@ class Pick
 
   # TODO - Move to DRCA
   def stop_khris(spells)
-    spells.each_key { |name| DRC.bput("khri stop #{name}", "You attempt to relax your mind from some of its meditative states") }
+    # Handle both Array format (legacy) and Hash format (standard waggle_sets)
+    names = spells.is_a?(Hash) ? spells.keys : Array(spells)
+    names.each { |name| DRC.bput("khri stop #{name}", "You attempt to relax your mind from some of its meditative states") }
   end
 
   # TODO - Move to DRCA
   def release_spells(spells)
-    spells.each_value { |spell_data| DRC.bput("release #{spell_data['abbrev']}") if spell_data['abbrev'] }
+    # Handle both Array format (legacy) and Hash format (standard waggle_sets)
+    if spells.is_a?(Hash)
+      spells.each_value { |spell_data| DRC.bput("release #{spell_data['abbrev']}") if spell_data['abbrev'] }
+    else
+      Array(spells).each { |spell| DRC.bput("release #{spell.abbrev}") if spell.respond_to?(:abbrev) && spell.abbrev }
+    end
   end
 
   def refill_ring
