@@ -3088,6 +3088,9 @@ class TrainerProcess
     @have_telescope = settings.have_telescope
     echo("  @have_telescope: #{@have_telescope}") if $debug_mode_ct
 
+    @telescope_name = settings.telescope_name
+    echo("  @telescope_name: #{@telescope_name}") if $debug_mode_ct
+
     @astrology_prediction_skills_survival = settings.astrology_prediction_skills['survival']
     echo("  @astrology_prediction_skills_survival: #{@astrology_prediction_skills_survival}") if $debug_mode_ct
 
@@ -3493,14 +3496,7 @@ class TrainerProcess
   def check_heavens(game_state)
     @equipment_manager.stow_weapon(game_state.weapon_name)
     if @have_telescope
-      case DRCMM.get_telescope(@telescope_storage)
-      when 'You get a', 'You untie', 'You remove'
-        determine_time
-      when 'You need a free hand to pick that up.'
-        return
-      when 'You are already holding that.'
-        determine_time
-      end
+      determine_time if DRCMM.get_telescope?(@telescope_name, @telescope_storage)
     else
       determine_time
     end
@@ -3519,12 +3515,8 @@ class TrainerProcess
 
   def center(target)
     if @have_telescope
-      case DRCMM.center_telescope(target)
-      when "That's a bit tough to do when you can't see the sky", 'Your search for', "You must have both hands free"
-        DRCMM.store_telescope(@telescope_storage)
-      else
-        observe
-      end
+      DRCMM.center_telescope(target)
+      observe
     else
       fput("observe #{target}")
       check_predict
@@ -3544,18 +3536,13 @@ class TrainerProcess
       full_pool = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_full_messages)) }
       injured = result.any? { |line| line.match?(Regexp.union(get_data('constellations').observe_injured_messages)) }
     end
+    waitrt?
+    DRCMM.store_telescope?(@telescope_name, @telescope_storage)
     case
     when full_pool
-      waitrt?
-      DRCMM.store_telescope(@telescope_storage)
       check_predict
     when injured
-      waitrt?
-      DRCMM.store_telescope(@telescope_storage)
       @training_abilities.delete('Astro')
-    else
-      waitrt?
-      DRCMM.store_telescope(@telescope_storage)
     end
   end
 
