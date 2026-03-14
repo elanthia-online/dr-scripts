@@ -394,6 +394,77 @@ RSpec.describe Forge do
       end
     end
 
+    describe '#info_log' do
+      it 'calls Lich::Messaging.msg with plain styling' do
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: info message')
+        forge_instance.send(:info_log, 'info message')
+      end
+    end
+
+    describe '#eastern_utc_offset' do
+      it 'returns -0500 for EST dates (January)' do
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 1, 15, 12, 0, 0))
+        expect(forge_instance.send(:eastern_utc_offset)).to eq('-0500')
+      end
+
+      it 'returns -0400 for EDT dates (July)' do
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 7, 15, 12, 0, 0))
+        expect(forge_instance.send(:eastern_utc_offset)).to eq('-0400')
+      end
+
+      it 'returns -0500 for December (EST)' do
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 12, 1, 12, 0, 0))
+        expect(forge_instance.send(:eastern_utc_offset)).to eq('-0500')
+      end
+    end
+
+    describe '#validate_free_hand' do
+      it 'passes when both hands are empty' do
+        allow(DRC).to receive(:right_hand).and_return(nil)
+        allow(DRC).to receive(:left_hand).and_return(nil)
+        expect { forge_instance.send(:validate_free_hand) }.not_to raise_error
+      end
+
+      it 'passes when one hand has item and the other is free' do
+        allow(DRC).to receive(:right_hand).and_return('sword')
+        allow(DRC).to receive(:left_hand).and_return(nil)
+        expect { forge_instance.send(:validate_free_hand) }.not_to raise_error
+      end
+
+      it 'exits when both hands hold non-target items' do
+        allow(DRC).to receive(:right_hand).and_return('hammer')
+        allow(DRC).to receive(:left_hand).and_return('shield')
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Need a free hand/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Please stow extra items/)
+        expect { forge_instance.send(:validate_free_hand) }.to raise_error(SystemExit)
+      end
+    end
+
+    describe '#prepare_item_in_left_hand' do
+      it 'returns true immediately when item already in left hand' do
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(true)
+        expect(DRC).not_to receive(:bput)
+        expect(forge_instance.send(:prepare_item_in_left_hand)).to eq(true)
+      end
+
+      it 'gets item from anvil and ensures in left hand' do
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false, true)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        allow(DRCC).to receive(:stow_crafting_item)
+        expect(DRC).to receive(:bput).with('get sword on anvil', 'You get', 'What were you referring to?').and_return('You get')
+        expect(forge_instance.send(:prepare_item_in_left_hand)).to eq(true)
+      end
+
+      it 'logs error when get fails' do
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false, true)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRC).to receive(:bput).and_return('What were you referring to?')
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to get sword/)
+        forge_instance.send(:prepare_item_in_left_hand, 'on anvil', 'grindstone work')
+      end
+    end
+
     describe '#check_rental_status' do
       before { stub_flags_class }
 
@@ -429,13 +500,12 @@ RSpec.describe Forge do
         allow(Time).to receive(:parse).and_call_original
         allow(Lich::Messaging).to receive(:msg)
         forge_instance.send(:check_rental_status)
-        expect(Lich::Messaging).to have_received(:msg).with('bold', /Forge: Rental has \d+ minutes remaining/)
+        expect(Lich::Messaging).to have_received(:msg).with('plain', /Forge: Rental has \d+ minutes remaining/)
       end
 
       it 'handles ArgumentError from time parsing' do
-        forge_instance.instance_variable_set(:@debug, true)
         allow(DRC).to receive(:bput).and_return('It will expire invalid time format.')
-        expect(Lich::Messaging).to receive(:msg).with('plain', /Could not parse rental time/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Could not parse rental time/)
         forge_instance.send(:check_rental_status)
       end
     end
@@ -456,7 +526,7 @@ RSpec.describe Forge do
       it 'logs success message on renewal' do
         allow(DRC).to receive(:bput).and_return('You mark the notice')
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: RENTAL RENEWED')
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
         forge_instance.send(:renew_forge_rental)
       end
 
@@ -505,7 +575,9 @@ RSpec.describe Forge do
         allow(DRCI).to receive(:in_hands?).and_return(false)
         allow(DRC).to receive(:bput).with('look on anvil', anything, anything).and_return('clean and ready')
         allow(DRC).to receive(:bput).with('look on forge', anything, anything).and_return('There is nothing')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: sword not found on anvil, forge, or in hands. Exiting.')
+        allow(DRC).to receive(:bput) # Allow magic_cleanup bput calls
+        allow(DRCC).to receive(:stow_crafting_item)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: sword not found on anvil, forge, or in hands.')
         expect { forge_instance.send(:find_item) }.to raise_error(SystemExit)
       end
     end
@@ -580,23 +652,20 @@ RSpec.describe Forge do
     end
 
     describe '#handle_grindstone' do
-      it 'gets item from anvil when not in left hand' do
+      before do
+        forge_instance.instance_variable_set(:@show_progress, false)
+      end
+
+      it 'prepares item in left hand when not already there' do
         forge_instance.instance_variable_set(:@resume, false)
         allow(DRCI).to receive(:in_left_hand?).and_return(false)
         allow(DRCI).to receive(:in_hands?).and_return(false)
-        expect(DRC).to receive(:bput).with('get sword from anvil', 'You get', 'What were you referring to?').and_return('You get')
-        expect(forge_instance).to receive(:check_hand).with('sword')
+        allow(DRCI).to receive(:in_right_hand?).and_return(false)
+        allow(DRC).to receive(:bput).and_return('You get')
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(forge_instance).to receive(:ensure_item_in_left_hand)
         forge_instance.send(:handle_grindstone)
         expect(forge_instance.instance_variable_get(:@command)).to eq('push grindstone with my sword')
-      end
-
-      it 'logs error when get fails' do
-        allow(DRCI).to receive(:in_left_hand?).and_return(false)
-        allow(DRCI).to receive(:in_hands?).and_return(false)
-        expect(DRC).to receive(:bput).and_return('What were you referring to?')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to get sword from anvil for grindstone work.')
-        expect(forge_instance).to receive(:check_hand).with('sword')
-        forge_instance.send(:handle_grindstone)
       end
 
       it 'sets home_tool to wire brush when resuming' do
@@ -608,11 +677,12 @@ RSpec.describe Forge do
     end
 
     describe '#handle_pliers' do
-      it 'gets item from anvil when not in left hand' do
-        allow(DRCI).to receive(:in_left_hand?).and_return(false)
-        allow(DRCI).to receive(:in_hands?).and_return(false)
-        expect(DRC).to receive(:bput).with('get sword from anvil', 'You get', 'What were you referring to?').and_return('You get')
-        expect(forge_instance).to receive(:check_hand).with('sword')
+      before do
+        forge_instance.instance_variable_set(:@show_progress, false)
+      end
+
+      it 'prepares item in left hand and swaps to pliers' do
+        allow(DRCI).to receive(:in_left_hand?).and_return(true)
         expect(forge_instance).to receive(:swap_tool).with('pliers')
         forge_instance.send(:handle_pliers)
         expect(forge_instance.instance_variable_get(:@command)).to eq('pull my sword with my pliers')
@@ -623,13 +693,14 @@ RSpec.describe Forge do
       before do
         forge_instance.instance_variable_set(:@location, 'on anvil')
         forge_instance.instance_variable_set(:@home_tool, 'hammer')
+        forge_instance.instance_variable_set(:@show_progress, false)
       end
 
       it 'gets item when not in left hand' do
-        allow(DRCI).to receive(:in_left_hand?).and_return(false)
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false, true)
+        allow(DRCI).to receive(:in_right_hand?).and_return(false)
         expect(DRCC).to receive(:stow_crafting_item)
         expect(DRC).to receive(:bput).with('get sword on anvil', 'You get', 'What were you referring to?').and_return('You get')
-        expect(forge_instance).to receive(:check_hand).with('sword')
         expect(forge_instance).to receive(:swap_tool).with('oil', true)
         forge_instance.send(:handle_oiling)
         expect(forge_instance.instance_variable_get(:@command)).to eq('pour my oil on my sword')
@@ -638,9 +709,7 @@ RSpec.describe Forge do
       it 'always gets item when home_tool is tongs (temper)' do
         forge_instance.instance_variable_set(:@home_tool, 'tongs')
         forge_instance.instance_variable_set(:@location, 'on forge')
-        # When home_tool is tongs, it always enters the get block
-        # After getting item, it should be in left hand
-        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(true) # Item is in left hand after get
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(true)
         allow(DRCC).to receive(:stow_crafting_item)
         allow(DRC).to receive(:bput).with('get sword on forge', anything, anything).and_return('You get')
         allow(forge_instance).to receive(:swap_tool)
@@ -652,8 +721,8 @@ RSpec.describe Forge do
 
     describe '#handle_handle_assembly' do
       it 'gets item, assembles, puts back, and sets up pounding' do
+        allow(DRCI).to receive(:in_left_hand?).and_return(true)
         expect(DRC).to receive(:bput).with('get sword from anvil', 'You get', 'What were you referring to?').and_return('You get')
-        expect(forge_instance).to receive(:check_hand).with('sword')
         expect(forge_instance).to receive(:assemble_part)
         expect(DRC).to receive(:bput).with('put my sword on anvil', 'You put')
         expect(forge_instance).to receive(:swap_tool).with('forging hammer')
@@ -671,10 +740,10 @@ RSpec.describe Forge do
         forge_instance.instance_variable_set(:@home_command, 'pound sword on anvil with my forging hammer')
       end
 
-      it 'calls finish when work-done flag is set' do
+      it 'calls complete_crafting when work-done flag is set' do
         Flags['work-done'] = true
         expect(forge_instance).to receive(:waitrt?)
-        expect(forge_instance).to receive(:finish)
+        expect(forge_instance).to receive(:complete_crafting)
         expect(forge_instance).to receive(:swap_tool).with('forging hammer')
         forge_instance.send(:handle_roundtime)
       end
@@ -732,8 +801,7 @@ RSpec.describe Forge do
         Flags['forge-assembly'] = ['full match', 'wooden', 'hilt']
         $right_hand = nil
         allow(DRCI).to receive(:get_item?).with('wooden hilt').and_return(false)
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Missing wooden hilt. Cannot continue assembly. Exiting.')
-        expect(forge_instance).to receive(:magic_cleanup)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Missing wooden hilt. Cannot continue assembly.')
         expect { forge_instance.send(:assemble_part) }.to raise_error(SystemExit)
       end
     end
@@ -798,22 +866,37 @@ RSpec.describe Forge do
       end
     end
 
-    describe '#check_hand' do
+    describe '#ensure_item_in_left_hand' do
+      it 'returns immediately when item is in left hand' do
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(true)
+        expect(DRC).not_to receive(:bput)
+        forge_instance.send(:ensure_item_in_left_hand)
+      end
+
       it 'swaps hands when item in right hand' do
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false)
         allow(DRCI).to receive(:in_right_hand?).with('sword').and_return(true)
         expect(DRC).to receive(:bput).with('swap', 'You move', 'You have nothing')
-        forge_instance.send(:check_hand, 'sword')
+        forge_instance.send(:ensure_item_in_left_hand)
+      end
+
+      it 'accepts explicit item parameter' do
+        allow(DRCI).to receive(:in_left_hand?).with('tongs').and_return(false)
+        allow(DRCI).to receive(:in_right_hand?).with('tongs').and_return(true)
+        expect(DRC).to receive(:bput).with('swap', 'You move', 'You have nothing')
+        forge_instance.send(:ensure_item_in_left_hand, 'tongs')
       end
 
       it 'exits with error when item not in either hand' do
+        allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false)
         allow(DRCI).to receive(:in_right_hand?).with('sword').and_return(false)
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: MISSING sword. Please find it and restart.')
         expect(forge_instance).to receive(:magic_cleanup)
-        expect { forge_instance.send(:check_hand, 'sword') }.to raise_error(SystemExit)
+        expect { forge_instance.send(:ensure_item_in_left_hand) }.to raise_error(SystemExit)
       end
     end
 
-    describe '#finish' do
+    describe '#complete_crafting' do
       before do
         $right_hand = 'hammer'
         allow(DRCC).to receive(:stow_crafting_item)
@@ -823,35 +906,35 @@ RSpec.describe Forge do
       it 'logs item to engineering logbook when finish is log' do
         forge_instance.instance_variable_set(:@finish, 'log')
         expect(DRCC).to receive(:logbook_item).with('engineering', 'sword', 'backpack')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: sword logged to engineering logbook.')
-        expect { forge_instance.send(:finish) }.to raise_error(SystemExit)
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword logged to engineering logbook.')
+        expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
       it 'stows item when finish is stow' do
         forge_instance.instance_variable_set(:@finish, 'stow')
         expect(DRCC).to receive(:stow_crafting_item).with('sword', 'backpack', nil).and_return(true)
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: sword stowed in backpack.')
-        expect { forge_instance.send(:finish) }.to raise_error(SystemExit)
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword stowed in backpack.')
+        expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
       it 'logs failure when stow fails' do
         forge_instance.instance_variable_set(:@finish, 'stow')
         expect(DRCC).to receive(:stow_crafting_item).with('sword', 'backpack', nil).and_return(false)
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to stow sword. Item may still be in hand.')
-        expect { forge_instance.send(:finish) }.to raise_error(SystemExit)
+        expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
       it 'disposes item when finish is trash' do
         forge_instance.instance_variable_set(:@finish, 'trash')
         expect(DRCI).to receive(:dispose_trash).with('sword')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: sword disposed.')
-        expect { forge_instance.send(:finish) }.to raise_error(SystemExit)
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword disposed.')
+        expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
       it 'holds item in hand when finish is hold' do
         forge_instance.instance_variable_set(:@finish, 'hold')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: sword complete. Holding in hand.')
-        expect { forge_instance.send(:finish) }.to raise_error(SystemExit)
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword complete. Holding in hand.')
+        expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
       it 'stamps item when @stamp is true' do
@@ -860,7 +943,7 @@ RSpec.describe Forge do
         expect(forge_instance).to receive(:swap_tool).with('stamp')
         expect(DRC).to receive(:bput).with('mark my sword with my stamp', *Forge::STAMP_PATTERNS)
         expect(DRCC).to receive(:stow_crafting_item).with('stamp', 'backpack', nil)
-        expect { forge_instance.send(:finish) }.to raise_error(SystemExit)
+        expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
     end
 
@@ -874,43 +957,42 @@ RSpec.describe Forge do
     end
 
     describe '#go_to_private_forge' do
-      let(:settings) { OpenStruct.new(hometown: 'Crossing') }
-
       before do
         forge_instance.instance_variable_set(:@info, { 'private_forge' => 16_936 })
         forge_instance.instance_variable_set(:@private_forge_cost, 5000)
         forge_instance.instance_variable_set(:@hometown, 'Crossing')
+        forge_instance.instance_variable_set(:@settings, OpenStruct.new(hometown: 'Crossing'))
       end
 
       it 'returns early and logs when no private forge defined' do
         forge_instance.instance_variable_set(:@info, {})
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: No private forge defined for Crossing. Using public forge.')
         expect(DRCM).not_to receive(:ensure_copper_on_hand)
-        forge_instance.send(:go_to_private_forge, settings)
+        forge_instance.send(:go_to_private_forge)
       end
 
       it 'exits when unable to get money' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Unable to get 5000 copper/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Check your bank balance/)
-        expect { forge_instance.send(:go_to_private_forge, settings) }.to raise_error(SystemExit)
+        expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
       end
 
       it 'succeeds when already in private forge room after walk_to' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
         allow(Room).to receive(:current).and_return(MockRoom.new(16_936))
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Arrived at private forge.')
-        forge_instance.send(:go_to_private_forge, settings)
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: Arrived at private forge.')
+        forge_instance.send(:go_to_private_forge)
       end
 
       it 'tries go door when not in private forge room' do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
-        allow(Room).to receive(:current).and_return(MockRoom.new(12_345)) # Different room
+        allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
         expect(DRC).to receive(:bput).with('go door', *Forge::PRIVATE_FORGE_ENTRY_SUCCESS, *Forge::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Entered private forge.')
-        forge_instance.send(:go_to_private_forge, settings)
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: Entered private forge.')
+        forge_instance.send(:go_to_private_forge)
       end
 
       it 'exits with verbose error when blocked by sentry' do
@@ -924,7 +1006,7 @@ RSpec.describe Forge do
         expect(Lich::Messaging).to receive(:msg).with('bold', /Forge is already rented/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Other restriction/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Exiting/)
-        expect { forge_instance.send(:go_to_private_forge, settings) }.to raise_error(SystemExit)
+        expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
       end
 
       it 'falls back gracefully when no door found' do
@@ -934,17 +1016,11 @@ RSpec.describe Forge do
         expect(DRC).to receive(:bput).and_return('What were you')
         expect(Lich::Messaging).to receive(:msg).with('bold', /No door found/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Falling back/)
-        forge_instance.send(:go_to_private_forge, settings)
+        forge_instance.send(:go_to_private_forge)
       end
     end
 
     describe '#prep' do
-      let(:settings) do
-        OpenStruct.new(
-          master_crafting_book: false
-        )
-      end
-
       before do
         forge_instance.instance_variable_set(:@bag, 'backpack')
         forge_instance.instance_variable_set(:@bag_items, [])
@@ -955,6 +1031,7 @@ RSpec.describe Forge do
         forge_instance.instance_variable_set(:@book_type, 'weaponsmithing')
         forge_instance.instance_variable_set(:@home_tool, 'forging hammer')
         forge_instance.instance_variable_set(:@hammer, 'forging hammer')
+        forge_instance.instance_variable_set(:@settings, OpenStruct.new(master_crafting_book: false))
         allow(DRCA).to receive(:crafting_magic_routine)
         allow(DRSkill).to receive(:getrank).and_return(200)
       end
@@ -973,28 +1050,27 @@ RSpec.describe Forge do
           allow(DRC).to receive(:bput).with('put my ingot on anvil', Forge::PUT_SUCCESS_PATTERN).and_return('You put')
 
           expect(DRCC).to receive(:get_crafting_item).with('bronze ingot', 'backpack', [], nil, true)
-          forge_instance.send(:prep, settings)
+          forge_instance.send(:prep)
         end
 
         it 'exits when ingot not in hands after fetch attempt' do
           allow(DRCI).to receive(:in_hands?).with('ingot').and_return(false)
           allow(forge_instance).to receive(:magic_cleanup)
 
-          # error_log adds "Forge:" prefix
-          expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to get bronze ingot. Exiting.')
-          expect { forge_instance.send(:prep, settings) }.to raise_error(SystemExit)
+          expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to get bronze ingot.')
+          expect { forge_instance.send(:prep) }.to raise_error(SystemExit)
         end
 
         it 'places ingot on anvil when successfully fetched' do
           allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
           expect(DRC).to receive(:bput).with('put my ingot on anvil', Forge::PUT_SUCCESS_PATTERN)
-          forge_instance.send(:prep, settings)
+          forge_instance.send(:prep)
         end
 
         it 'sets up command for pounding after placing ingot' do
           allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
           allow(DRC).to receive(:bput).with('put my ingot on anvil', Forge::PUT_SUCCESS_PATTERN)
-          forge_instance.send(:prep, settings)
+          forge_instance.send(:prep)
           expect(forge_instance.instance_variable_get(:@command)).to eq('pound ingot on anvil with my forging hammer')
         end
       end
@@ -1011,7 +1087,7 @@ RSpec.describe Forge do
 
         it 'does not attempt to fetch ingot' do
           expect(DRCC).not_to receive(:get_crafting_item).with(/ingot/, anything, anything, anything, anything)
-          forge_instance.send(:prep, settings)
+          forge_instance.send(:prep)
         end
       end
     end

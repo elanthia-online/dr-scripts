@@ -289,6 +289,14 @@ class Forge
 
   # @!endgroup
 
+  # @!group Grindstone Constants
+
+  # Maximum retry attempts for spinning grindstone
+  # @return [Integer]
+  SPIN_MAX_RETRIES = 10
+
+  # @!endgroup
+
   # @!group Private Forge Constants
 
   # Default cost for private forge rental in copper
@@ -539,12 +547,22 @@ class Forge
     Lich::Messaging.msg('plain', "Forge: #{message}") if @debug
   end
 
-  # Log an error message (always displayed).
+  # Log an error message (always displayed, bold).
   #
   # @param message [String] the message to log
   # @return [void]
   def error_log(message)
     Lich::Messaging.msg('bold', "Forge: #{message}")
+  end
+
+  # Log an informational message (always displayed, plain).
+  #
+  # Use for success confirmations and status updates that aren't errors.
+  #
+  # @param message [String] the message to log
+  # @return [void]
+  def info_log(message)
+    Lich::Messaging.msg('plain', "Forge: #{message}")
   end
 
   # Stow whatever is in both hands.
@@ -616,15 +634,16 @@ class Forge
   # If item is in right hand, swaps it to left. If item is not found
   # in either hand, logs error and exits.
   #
+  # @param item [String] the item to check for (defaults to @item)
   # @return [void]
   # @raise [SystemExit] if item cannot be found
-  def ensure_item_in_left_hand
-    return if DRCI.in_left_hand?(@item)
+  def ensure_item_in_left_hand(item = @item)
+    return if DRCI.in_left_hand?(item)
 
-    if DRCI.in_right_hand?(@item)
+    if DRCI.in_right_hand?(item)
       DRC.bput('swap', *SWAP_PATTERNS)
     else
-      cleanup_and_exit("MISSING #{@item}. Please find it and restart.")
+      cleanup_and_exit("MISSING #{item}. Please find it and restart.")
     end
   end
 
@@ -675,7 +694,7 @@ class Forge
     DRCT.walk_to(private_forge_room)
 
     if Room.current.id == private_forge_room
-      error_log('Arrived at private forge.')
+      info_log('Arrived at private forge.')
       return
     end
 
@@ -702,7 +721,7 @@ class Forge
       error_log('No door found to enter private forge. Check room setup.')
       error_log('Falling back to current location.')
     else
-      error_log('Entered private forge.')
+      info_log('Entered private forge.')
     end
   end
 
@@ -731,8 +750,8 @@ class Forge
   # @return [void]
   def process_rental_expiration(expire_str)
     # Parse format: "Sun Dec 28 23:39:15 ET 2025"
-    # Convert ET to a timezone offset for parsing
-    expire_str_normalized = expire_str.sub(' ET ', ' -0500 ')
+    # Game always uses US Eastern Time — determine EST (-0500) vs EDT (-0400)
+    expire_str_normalized = expire_str.sub(' ET ', " #{eastern_utc_offset} ")
     expire_time = Time.parse(expire_str_normalized)
     minutes_remaining = ((expire_time - Time.now) / 60).to_i
 
@@ -742,10 +761,31 @@ class Forge
       error_log("RENTAL LOW (#{minutes_remaining} min) - PRE-EMPTIVELY RENEWING")
       renew_forge_rental
     elsif minutes_remaining < 20
-      error_log("Rental has #{minutes_remaining} minutes remaining")
+      info_log("Rental has #{minutes_remaining} minutes remaining")
     end
   rescue ArgumentError => e
-    debug_log("Could not parse rental time: #{expire_str} - #{e.message}")
+    error_log("Could not parse rental time: #{expire_str} - #{e.message}")
+  end
+
+  # Determine the current US Eastern timezone UTC offset.
+  #
+  # DragonRealms always uses US Eastern Time (ET). This method
+  # determines whether EST (-0500) or EDT (-0400) is currently
+  # in effect based on US DST rules (second Sunday of March
+  # to first Sunday of November).
+  #
+  # @return [String] UTC offset string ('-0500' or '-0400')
+  def eastern_utc_offset
+    now = Time.now.utc
+    year = now.year
+
+    march_day = (8..14).find { |d| Time.utc(year, 3, d).sunday? }
+    november_day = (1..7).find { |d| Time.utc(year, 11, d).sunday? }
+
+    dst_start = Time.utc(year, 3, march_day, 7) # 2am EST = 7:00 UTC
+    dst_end = Time.utc(year, 11, november_day, 6) # 2am EDT = 6:00 UTC
+
+    (now >= dst_start && now < dst_end) ? '-0400' : '-0500'
   end
 
   # Renew the private forge rental.
@@ -763,7 +803,7 @@ class Forge
     when 'I could not find'
       error_log('COULD NOT FIND NOTICE - CHECK LOCATION')
     else
-      error_log('RENTAL RENEWED')
+      info_log('RENTAL RENEWED')
     end
   end
 
@@ -799,7 +839,7 @@ class Forge
     @home_command = "turn #{@item} on forge with my tongs"
     @stamp = false
     swap_tool('tongs')
-    ensure_item_in_left_hand unless DRCI.in_left_hand?('tongs')
+    ensure_item_in_left_hand('tongs') unless DRCI.in_left_hand?('tongs')
     @location = 'on forge'
     @command ||= "put my #{@item} on the forge"
   end
@@ -1021,7 +1061,7 @@ class Forge
 
     percent_str = progress[:percent] ? "#{progress[:percent]}%" : 'unknown'
     quality_str = progress[:quality] || 'unknown'
-    error_log("[#{phase}] Progress: #{percent_str} | Quality: #{quality_str}")
+    info_log("[#{phase}] Progress: #{percent_str} | Quality: #{quality_str}")
   end
 
   # Analyze item to determine crafting progress and quality.
@@ -1030,7 +1070,7 @@ class Forge
   # and quality assessment.
   #
   # @return [Hash, nil] progress info or nil if unavailable
-  #   - :percent [Integer, nil] completion percentage (0-100), nil if "final stage"
+  #   - :percent [Integer] completion percentage (0-100), 99 for "final stage"
   #   - :quality [String, nil] current quality assessment
   def analyze_progress
     location = DRCI.in_hands?(@item) ? "my #{@item}" : "#{@item} #{@location}"
@@ -1065,21 +1105,17 @@ class Forge
 
   # @!group Grindstone Management
 
-  # Maximum retry attempts for spinning grindstone
-  # @return [Integer]
-  SPIN_MAX_RETRIES = 10
-
   # Spin the grindstone to maintain speed.
   #
   # Uses a 20-second cooldown timer to avoid excessive spinning.
   # Retries if spin fails, with a maximum retry limit to prevent
   # unbounded recursion.
   #
-  # @param retries [Integer] current retry count (default: 0)
+  # @param retries [Integer] remaining retry attempts (countdown)
   # @return [void]
   # @raise [SystemExit] if max retries exceeded
-  def spin_grindstone(retries = 0)
-    if retries >= SPIN_MAX_RETRIES
+  def spin_grindstone(retries: SPIN_MAX_RETRIES)
+    if retries <= 0
       cleanup_and_exit("Failed to spin grindstone after #{SPIN_MAX_RETRIES} attempts.")
     end
 
@@ -1089,10 +1125,10 @@ class Forge
     result = DRC.bput('turn grind', *SPIN_SUCCESS_PATTERNS, *SPIN_FAILURE_PATTERNS, SPIN_MISSING_PATTERN)
     case result
     when *SPIN_FAILURE_PATTERNS
-      spin_grindstone(retries + 1)
+      spin_grindstone(retries: retries - 1)
     when SPIN_MISSING_PATTERN
       DRCC.find_grindstone(@hometown)
-      spin_grindstone(retries + 1)
+      spin_grindstone(retries: retries - 1)
     else
       @next_spin = Time.now + 20
     end
@@ -1366,10 +1402,7 @@ class Forge
   # @raise [SystemExit] exits since no work needed
   def handle_temper_already_done
     error_log("#{@item} has already been tempered. Further heating would damage it.")
-    error_log('Nothing to do.')
-    DRCC.stow_crafting_item('tongs', @bag, @forging_belt)
-    magic_cleanup
-    exit
+    cleanup_and_exit('Nothing to do.')
   end
 
   # Handle forge needs fuel.
@@ -1550,18 +1583,18 @@ class Forge
     case @finish
     when /log/
       DRCC.logbook_item('engineering', @item, @bag)
-      error_log("#{@item} logged to engineering logbook.")
+      info_log("#{@item} logged to engineering logbook.")
     when /stow/
       if DRCC.stow_crafting_item(@item, @bag, @forging_belt)
-        error_log("#{@item} stowed in #{@bag}.")
+        info_log("#{@item} stowed in #{@bag}.")
       else
         error_log("Failed to stow #{@item}. Item may still be in hand.")
       end
     when /trash/
       DRCI.dispose_trash(@item)
-      error_log("#{@item} disposed.")
+      info_log("#{@item} disposed.")
     else
-      error_log("#{@item} complete. Holding in hand.")
+      info_log("#{@item} complete. Holding in hand.")
     end
   end
 
