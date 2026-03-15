@@ -14,8 +14,6 @@ class Athletics
     have_climbing_rope = get_settings.have_climbing_rope
     @outdoorsmanship_rooms = get_settings.athletics_outdoorsmanship_rooms
 
-    DRC.wait_for_script_to_complete('buff', ['athletics'])
-
     get_athletics_items
 
     start_exp = DRSkill.getxp('Athletics')
@@ -28,13 +26,16 @@ class Athletics
         { name: 'xalas', regex: /^xala.*/i, optional: true, description: 'Climb xalas in zoluren in instead of undergondola' },
         { name: 'stationary', regex: /^stat.*/i, optional: true, description: 'Stand still and use a climbing rope' },
         { name: 'cliffs', regex: /^cliff.*/i, optional: true, description: 'Climb undergondola without attempting branch' },
-        { name: 'max', regex: /^max/i, optional: true, description: 'Keep training until 32/34+' }
+        { name: 'max', regex: /^max/i, optional: true, description: 'Keep training until 32/34+' },
+        { name: 'skip_magic', regex: /skip_magic/i, optional: true, description: 'Skip buffing and pass skip_magic to outdoorsmanship' }
       ]
     ]
 
     args = parse_args(arg_definitions)
 
+    @skip_magic = args.skip_magic
     @end_exp = 32 if args.max
+    DRC.wait_for_script_to_complete('buff', ['athletics']) unless @skip_magic
     if args.wyvern || (@settings.climbing_target == 'wyvern')
       climb_wyvern
     elsif args.undergondola || (@settings.climbing_target == 'undergondola')
@@ -65,10 +66,11 @@ class Athletics
   end
 
   def outdoorsmanship_waiting(number)
+    skip_magic = @skip_magic ? 'skip_magic' : ''
     start = Time.now
     DRCT.walk_to(@outdoorsmanship_rooms.sample) unless @outdoorsmanship_rooms.empty?
     stow_athletics_items
-    DRC.wait_for_script_to_complete('outdoorsmanship', [number, "room=#{Room.current.id}", 'rock'])
+    DRC.wait_for_script_to_complete('outdoorsmanship', [number, "room=#{Room.current.id}", 'rock', skip_magic])
     remaining_pause = ((number * 15) - (Time.now - start))
     pause remaining_pause if remaining_pause > 0
     get_athletics_items
@@ -127,7 +129,7 @@ class Athletics
     Flags.add('climbing-finished', 'You finish practicing your climbing', 'The rope\'s will quickly fades away', 'Your focus diverts away from the rope')
     Flags.add('climbing-too-hard', 'This climb is too difficult')
     Flags.add('climbing-too-easy', 'This climb is no challenge at all, so you stop practicing')
-    Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.')
+    Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.', '^You finish practicing your climbing skill just as your rope begins to slacken')
     Flags.add('climbing-live-rope', '^You believe you haven\'t yet used it today')
 
     DRCI.stow_hands
@@ -140,7 +142,6 @@ class Athletics
     until done_training? || Flags['climbing-dead-rope']
       DRC.fix_standing
       Flags.reset('climbing-finished')
-      DRC.stop_playing
       break unless DRC.play_song?(@settings, @song_list, true, true, true)
 
       case DRC.bput("climb practice #{@settings.climbing_rope_adjective} rope", 'You begin to practice ', 'you mime a convincing climb while pulling the rope hand over hand', 'Directing your attention toward your rope', 'Allows you to climb various things like a tree', 'But you aren\'t holding', 'You should stop practicing')
