@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.2.1'
+$DEPENDENCY_VERSION = '2.2.2'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -1577,7 +1577,7 @@ def format_yaml_name(name)
 end
 
 DR_OBSOLETE_SCRIPTS = %w[
-  events slackbot spellmonitor
+  events slackbot spellmonitor exp-monitor
   common-travel common-validation common drinfomon equipmanager
   common-money common-moonmage common-summoning common-theurgy common-arcana
   bootstrap common-crafting common-healing-data common-healing common-items
