@@ -1,5 +1,76 @@
-#   Documentation: https://elanthipedia.play.net/Lich_script_repository#restock
-
+# Restocks consumable items from shops based on user YAML configuration
+# and base-consumables data.
+#
+# Compares current inventory counts against configured target quantities,
+# determines what needs restocking, withdraws sufficient coin including
+# Shard night-bribe padding, then purchases and stows each item.
+#
+# Items whose key matches a base-consumables entry only need to specify
+# overrides (e.g. quantity). Fully custom items must specify all required
+# fields: name, size, room, price, stackable, quantity.
+#
+# @note Required settings keys:
+#   - `restock` [Hash{String => Hash}] item key to restock config mapping
+#   - `hometown` [String] character's home town
+#   - `sell_loot_money_on_hand` [String] coin to keep after depositing (e.g. "3 silver")
+#   - `storage_containers` [Array<String>] containers to open before counting
+#
+# @note Optional settings keys:
+#   - `fang_cove_override_town` [String, nil] override hometown for Fang Cove
+#   - `runestone_storage` [String, nil] container for runestone storage
+#
+# @note Optional per-item fields:
+#   - `min_quantity` [Integer] only restock when count drops below this threshold
+#   - `countable_name` [String] alternate noun for counting (when buy name differs)
+#   - `clerk` [String] NPC name; triggers "ask <clerk> for <item>" instead of buy
+#   - `container` [String] specific container to stow into
+#   - `hometown` [String] buy from this town instead of your hometown
+#
+# @example CLI usage
+#   ;restock
+#   ;restock debug
+#
+# @example Base-consumables item (inherits shop/price/room from base-consumables.yaml)
+#   restock:
+#     arrow:
+#       quantity: 30
+#     bleeding_bolt:
+#       quantity: 20
+#       min_quantity: 5
+#
+# @example Fully custom item (all fields required)
+#   restock:
+#     lockpick:
+#       name: lockpick
+#       size: 1
+#       room: 1234
+#       price: 625
+#       stackable: false
+#       quantity: 10
+#       container: lockpick ring
+#       countable_name: pick
+#
+# @example Ask-for purchase flow (clerk field triggers ask instead of buy)
+#   restock:
+#     belt_pouch:
+#       name: pouch
+#       size: 1
+#       room: 5678
+#       price: 100
+#       stackable: false
+#       quantity: 3
+#       clerk: shopkeeper
+#
+# @example Custom hometown override
+#   restock:
+#     arrow:
+#       hometown: Shard
+#       name: arrow
+#       size: 10
+#       room: 5678
+#       price: 150
+#       stackable: false
+#       quantity: 30
 class Restock
   def initialize
     arg_definitions = [
@@ -22,6 +93,11 @@ class Restock
     start_restock
   end
 
+  # Orchestrates the restock process by separating items into
+  # default-hometown and custom-hometown groups, then restocking
+  # each group in its respective town.
+  #
+  # @return [void]
   def start_restock
     # Parse data from user's yaml and base-consumables
     items = parse_restockable_items
@@ -33,13 +109,16 @@ class Restock
     restock_items(items, @settings.hometown)
 
     # Restock items that have a custom location set
-    custom_loc_items.map { |k| k['hometown'] }.uniq
-                    .each do |_hometown|
-      custom_loc_items.group_by { |v| v['hometown'] }
-                      .each { |hometown, each_item| restock_items(each_item, hometown) }
-    end
+    custom_loc_items.group_by { |v| v['hometown'] }
+                    .each { |hometown, group| restock_items(group, hometown) }
   end
 
+  # Calculates quantities needed, withdraws coin, purchases, and stows
+  # items for a single town.
+  #
+  # @param item_list [Array<Hash>] items to potentially restock
+  # @param town [String] town to restock in
+  # @return [void]
   def restock_items(item_list, town)
     items_to_restock = []
     coin_needed = 0
@@ -50,6 +129,9 @@ class Restock
                   else
                     count_nonstackable_item(item)
                   end
+      if item['min_quantity']
+        next unless remaining < item['min_quantity']
+      end
       next unless remaining < item['quantity']
 
       num_needed = item['quantity'] - remaining
@@ -64,34 +146,69 @@ class Restock
     DRCI.stow_hands
 
     if coin_needed > 0
-      # The following line is for the bribe to the night attendant to let you in to shops in Shard.
-      # Since the total bribe amounts are paltry in comparison to a modern character's average
-      # wealth, we'll avoid complexity and just grab the highest bribe amount times the number
-      # of restock items, even if its daytime. We deposit excess coins at the end, anyway.
-      coin_needed += 2502 * item_list.length.to_i
+      # Pad for Shard night-bribe (2502 copper per shop visit).
+      # Over-estimates intentionally; excess deposited at end.
+      coin_needed += 2502 * items_to_restock.length
       echo "Coin needed is #{coin_needed}" if @debug
       DRCM.ensure_copper_on_hand(coin_needed, @settings, town)
     end
 
     items_to_restock.each do |item|
       item['buy_num'].times do
-        DRCT.buy_item(item['room'], item['name'])
-        if reget(3, 'Seeing that you are too encumbered')
-          bput("get #{item['name']} from counter", "You get a")
-        end
-
-        if item['container']
-          DRCI.put_away_item?(item['name'], item['container'])
-        elsif item['name'] =~ /runestone/i
-          DRCI.put_away_item?(item['name'], @runestone_storage)
-        else
-          DRCI.stow_hands
-        end
+        purchase_item(item)
+        handle_encumbrance(item)
+        stow_item(item)
       end
     end
     DRCM.deposit_coins(@keep_copper, @settings, "#{town}")
   end
 
+  private
+
+  # Purchases a single item. Uses ask-for flow when item specifies
+  # a clerk, otherwise uses standard buy.
+  #
+  # @param item [Hash] item configuration with 'name', 'room', optional 'clerk'
+  # @return [void]
+  def purchase_item(item)
+    if item['clerk']
+      DRCT.walk_to(item['room'])
+      fput("ask #{item['clerk']} for #{item['name']}")
+    else
+      DRCT.buy_item(item['room'], item['name'])
+    end
+  end
+
+  # Picks up item from counter when too encumbered to receive it.
+  #
+  # @param item [Hash] item configuration with 'name'
+  # @return [void]
+  def handle_encumbrance(item)
+    if reget(3, 'Seeing that you are too encumbered')
+      bput("get #{item['name']} from counter", "You get a")
+    end
+  end
+
+  # Stows a purchased item into its configured container,
+  # runestone storage, or default stow location.
+  #
+  # @param item [Hash] item configuration with 'name', optional 'container'
+  # @return [void]
+  def stow_item(item)
+    if item['container']
+      DRCI.put_away_item?(item['name'], item['container'])
+    elsif item['name'] =~ /runestone/i
+      DRCI.put_away_item?(item['name'], @runestone_storage)
+    else
+      DRCI.stow_hands
+    end
+  end
+
+  # Merges user YAML restock data with base-consumables data for
+  # the character's hometown. User-specified fields take precedence
+  # over base-consumables defaults.
+  #
+  # @return [Array<Hash>] fully populated restock item configurations
   def parse_restockable_items
     # Get the yaml restock hash
     item_list = @restock
@@ -128,6 +245,11 @@ class Restock
     items
   end
 
+  # Counts stackable items by iterating through ordinals and
+  # summing quantities from game output.
+  #
+  # @param item [Hash] item configuration with 'name'
+  # @return [Integer] total count across all stacks
   def count_stackable_item(item)
     echo "Counting stackable item: #{item}" if @debug
 
@@ -164,6 +286,11 @@ class Restock
     count
   end
 
+  # Counts non-stackable items in a container, falling back to
+  # tap-to-discover if no container is specified.
+  #
+  # @param item [Hash] item configuration with 'name', optional 'container', optional 'countable_name'
+  # @return [Integer] number of matching items in the container
   def count_nonstackable_item(item)
     echo "Counting nonstackable item: #{item}" if @debug
 
@@ -172,12 +299,16 @@ class Restock
       /inside your (.*).|I could not find/ =~ DRC.bput("tap my #{item['name']}", 'inside your (.*).', 'I could not find')
       tap_result = Regexp.last_match(1)
       return 0 if tap_result.nil?
-
       container = tap_result
     end
-    DRCI.count_items_in_container(item['name'], container)
+    count_name = item['countable_name'] || item['name']
+    DRCI.count_items_in_container(count_name, container)
   end
 
+  # Validates that custom restock item data contains all required fields.
+  #
+  # @param item_data [Hash] item configuration to validate
+  # @return [Boolean] true if all required fields are present
   def valid_item_data?(item_data)
     echo "Validating custom item data: #{item_data}" if @debug
 
