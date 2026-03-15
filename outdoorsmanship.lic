@@ -59,8 +59,10 @@ class Outdoorsmanship
         item = @forage_item
         DRCA.crafting_magic_routine(@settings) unless @skip_magic
         DRC.collect(item)
+        attempt += 1
         waitrt?
       end
+      break unless attempt < @targetxp
     end
     magic_cleanup unless @skip_magic
   end
