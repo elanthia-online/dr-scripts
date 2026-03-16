@@ -269,10 +269,9 @@ RSpec.describe Outdoorsmanship do
   end
 
   describe '#validate_settings' do
-    it 'exits with message when outdoors_room is nil' do
+    it 'does not exit when outdoors_room is nil' do
       obj = build_outdoorsmanship(outdoors_room: nil, forage_item: 'rock')
-      expect(DRC).to receive(:message).with(/outdoors_room/)
-      expect { obj.validate_settings }.to raise_error(SystemExit)
+      expect { obj.validate_settings }.not_to raise_error
     end
 
     it 'exits with message when forage_item is nil' do

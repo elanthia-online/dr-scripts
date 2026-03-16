@@ -10,10 +10,10 @@
 # from combat before each attempt.
 #
 # @note Required settings keys:
-#   - `outdoors_room` [Integer] room ID to train in
 #   - `forage_item` [String] item noun to collect (rank 20+)
 #
 # @note Optional settings keys:
+#   - `outdoors_room` [Integer] room ID to train in (trains in place if unset)
 #   - `crafting_training_spells` [Array<Hash>] spells to cycle during training
 #   - `outdoorsmanship_mindstate_goal` [Integer] mindstates to gain (default 3)
 #   - `outdoorsmanship_skip_magic` [Boolean] skip all magic routines
@@ -69,7 +69,11 @@ class Outdoorsmanship
     start_exp = DRSkill.getxp(@skill_name)
     @end_exp = [start_exp + @targetxp, MINDSTATE_CAP].min
     validate_settings
-    DRCT.walk_to(@outdoors_room)
+    if @outdoors_room
+      DRCT.walk_to(@outdoors_room)
+    else
+      DRC.message("outdoorsmanship: 'outdoors_room' not set. Training in current room.")
+    end
     DRC.wait_for_script_to_complete('buff', ['outdoorsmanship']) unless @skip_magic
     train_outdoorsmanship
   end
@@ -80,10 +84,6 @@ class Outdoorsmanship
   # @return [void]
   # @raise [SystemExit] if a required setting is missing or invalid
   def validate_settings
-    unless @outdoors_room
-      DRC.message("outdoorsmanship: 'outdoors_room' must be set in your YAML settings.")
-      exit
-    end
     unless @forage_item
       DRC.message("outdoorsmanship: 'forage_item' must be set in your YAML settings (rank 20+).")
       exit
