@@ -24,8 +24,11 @@ def _respond(msg)
   $respond_messages << msg
 end
 
-def respond(msg)
-  $respond_messages << msg
+# Mock DRC.message for handle_obsolete_autostart
+module DRC
+  def self.message(msg, _bold = true)
+    $respond_messages << msg
+  end
 end
 
 # Stub Script.current for dr_obsolete_script?
@@ -227,8 +230,8 @@ RSpec.describe 'Obsolete Scripts' do
 
       it 'wraps output in delimiters' do
         handle_obsolete_autostart(script_name)
-        expect($respond_messages.first).to eq("\n---")
-        expect($respond_messages.last).to eq("---\n")
+        expect($respond_messages.first).to eq("---")
+        expect($respond_messages.last).to eq("---")
       end
     end
 

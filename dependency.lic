@@ -1612,27 +1612,27 @@ def handle_obsolete_autostart(script)
   in_character = UserVars.autostart_scripts.to_a.include?(script)
   in_global = Settings['autostart'].include?(script)
 
-  respond "\n---"
-  respond "'#{script}' is obsolete and no longer needed."
+  DRC.message("---")
+  DRC.message("'#{script}' is obsolete and no longer needed.")
 
   if in_character
-    respond "Removing '#{script}' from character autostarts."
-    respond "If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')"
+    DRC.message("Removing '#{script}' from character autostarts.")
+    DRC.message("If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
     UserVars.autostart_scripts.delete(script)
   end
 
   if in_global
-    respond "Removing '#{script}' from global autostarts."
-    respond "If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')"
+    DRC.message("Removing '#{script}' from global autostarts.")
+    DRC.message("If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
     $manager.remove_global_auto(script)
   end
 
   unless in_character || in_global
-    respond "'#{script}' is configured in your YAML profile autostarts."
-    respond "Please remove '#{script}' from the 'autostarts' setting in your profile YAML."
+    DRC.message("'#{script}' is configured in your YAML profile autostarts.")
+    DRC.message("Please remove '#{script}' from the 'autostarts' setting in your profile YAML.")
   end
 
-  respond "---\n"
+  DRC.message("---")
   true
 end
 
