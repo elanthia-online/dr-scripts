@@ -264,6 +264,55 @@ RSpec.describe Pick do
       instance = build_instance
       expect(instance.instance_variable_get(:@max_disarm_attempts)).to eq(5)
     end
+
+    it 'defaults disarm_on_failed_identify to false' do
+      instance = build_instance
+      expect(instance.instance_variable_get(:@disarm_on_failed_identify)).to be false
+    end
+
+    it 'defaults failed_identify_container to nil' do
+      instance = build_instance
+      expect(instance.instance_variable_get(:@failed_identify_container)).to be_nil
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # difficulty_to_speed
+  # ---------------------------------------------------------------------------
+
+  describe '#difficulty_to_speed' do
+    let(:instance) { build_instance }
+
+    it 'returns blind for difficulty below quick threshold' do
+      speed = instance.send(:difficulty_to_speed, 0, 1, 3, 5)
+      expect(speed).to eq('blind')
+    end
+
+    it 'returns quick for difficulty at quick threshold' do
+      speed = instance.send(:difficulty_to_speed, 1, 1, 3, 5)
+      expect(speed).to eq('quick')
+    end
+
+    it 'returns empty string for difficulty at normal threshold' do
+      speed = instance.send(:difficulty_to_speed, 3, 1, 3, 5)
+      expect(speed).to eq('')
+    end
+
+    it 'returns careful for difficulty at careful threshold' do
+      speed = instance.send(:difficulty_to_speed, 5, 1, 3, 5)
+      expect(speed).to eq('careful')
+    end
+
+    it 'returns careful for difficulty well above careful threshold' do
+      speed = instance.send(:difficulty_to_speed, 99, 1, 3, 5)
+      expect(speed).to eq('careful')
+    end
+
+    it 'returns assumed_difficulty when set' do
+      instance = build_instance(assumed_difficulty: 'quick')
+      speed = instance.send(:difficulty_to_speed, 99, 1, 3, 5)
+      expect(speed).to eq('quick')
+    end
   end
 
   # ---------------------------------------------------------------------------

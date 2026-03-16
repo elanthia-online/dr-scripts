@@ -2,6 +2,39 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#pick
 =end
 
+# Automates lockpicking: identifies traps and locks, disarms, picks,
+# loots, and dismantles boxes from configured source containers.
+#
+# @note Required settings keys:
+#   - `picking_box_source` [String] or `pick.picking_box_sources` [Array<String>]
+#     container(s) holding boxes to pick
+#
+# @note Optional settings keys:
+#   - `pick.disarm_on_failed_identify` [Boolean] proceed with careful
+#     disarm/pick when identification fails (default: false — dispose box)
+#   - `pick.failed_identify_container` [String, nil] container to stow
+#     boxes when identification fails; trashed if nil
+#   - `pick.max_identify_attempts` [Integer] attempts before giving up (default: 5)
+#   - `pick.max_disarm_attempts` [Integer] disarm/pick retries (default: 5)
+#   - `pick.too_hard_container` [String, nil] container for too-hard boxes
+#   - `pick.trap_blacklist` [Array<String>] trap types to never attempt
+#   - `pick.harvest_traps` [Boolean] harvest trap components after disarm
+#   - `pick.trash_empty_boxes` [Boolean] trash instead of dismantle
+#   - `pick.debug` [Boolean] verbose debug output
+#
+# @example Basic usage
+#   ;pick
+#
+# @example Refill lockpick ring only
+#   ;pick refill
+#
+# @example Skip identification, assume careful difficulty
+#   ;pick careful
+#
+# @example Pick from a specific container
+#   ;pick source=sack
+#
+# @see https://elanthipedia.play.net/Lich_script_repository#pick
 class Pick
   def initialize
     arg_definitions = [
@@ -61,7 +94,7 @@ class Pick
 
     picking_data = get_data('picking').picking
 
-    @pick_identify_messages = picking_data['pick_messages_by_difficulty'];
+    @pick_identify_messages = picking_data['pick_messages_by_difficulty']
     @pick_retry = picking_data['pick_retry']
     @pick_quick_threshold = @settings.pick['pick_quick_threshold'] || 2
     @pick_normal_threshold = @settings.pick['pick_normal_threshold'] || 4
@@ -157,12 +190,16 @@ class Pick
     end
   end
 
+  # Opens all containers that may be accessed during the picking session.
+  #
+  # @return [void]
   def open_containers
     @sources.each do |source_container|
       DRCI.open_container?(source_container)
     end
     DRCI.open_container?(@too_hard_container) if @too_hard_container
     DRCI.open_container?(@blacklist_container) if @blacklist_container
+    DRCI.open_container?(@failed_identify_container) if @failed_identify_container
     DRCI.open_container?(@component_container) if @component_container
   end
 
@@ -305,6 +342,11 @@ class Pick
     DRCT.refill_lockpick_container(@settings.lockpick_type, refill_town, @lockpick_container, lockpicks_needed)
   end
 
+  # Orchestrates the full open sequence for a single box: identify trap,
+  # disarm, identify lock, pick, loot, and dispose.
+  #
+  # @param box_noun [String] noun of the box to open
+  # @return [void]
   def attempt_open(box_noun)
     echo "attempt_open(#{box_noun})" if @debug
 
@@ -457,6 +499,10 @@ class Pick
     box['locked'] = false if Flags['glance-no-locks']
   end
 
+  # Sends the disarm identify command and updates box trap state.
+  #
+  # @param box [Hash] mutable box state hash
+  # @return [void]
   def identify_trap(box)
     echo "identify_trap(#{box})" if @debug
 
@@ -489,7 +535,7 @@ class Pick
     when *@disarm_identify_failed
       echo "Failed to identify trap" if @debug
     when *@disarmed_trap_messages.values
-      echo "Identified already disarmed trap: #{disarm_identify_match}"
+      echo "Identified already disarmed trap: #{disarm_identify_match}" if @debug
       trap = @disarmed_trap_messages.key("#{disarm_identify_match}")
       trapped = false
       difficulty = 0
@@ -518,28 +564,33 @@ class Pick
     end
   end
 
+  # Maps a numeric difficulty level to a disarm/pick speed command.
+  #
+  # @param difficulty [Integer] numeric difficulty from identification
+  # @param quick_threshold [Integer] minimum difficulty for 'quick'
+  # @param normal_threshold [Integer] minimum difficulty for normal (no modifier)
+  # @param careful_threshold [Integer] minimum difficulty for 'careful'
+  # @return [String] speed modifier for the disarm/pick command
+  def difficulty_to_speed(difficulty, quick_threshold, normal_threshold, careful_threshold)
+    return @assumed_difficulty if @assumed_difficulty
+
+    case difficulty
+    when 0..(quick_threshold - 1) then 'blind'
+    when quick_threshold..(normal_threshold - 1) then 'quick'
+    when normal_threshold..(careful_threshold - 1) then ''
+    when careful_threshold..Float::INFINITY        then 'careful'
+    end
+  end
+
+  # Attempts to disarm the trap on a box at the appropriate speed.
+  #
+  # @param box [Hash] mutable box state hash
+  # @return [void]
   def disarm_trap(box)
     echo "disarm_trap(#{box})" if @debug
 
-    if @assumed_difficulty.nil?
-      case box['trap_difficulty']
-      when 0..(@disarm_quick_threshold - 1)
-        echo 'identified box trap as blind difficulty' if @debug
-        speed = 'blind'
-      when @disarm_quick_threshold..(@disarm_normal_threshold - 1)
-        echo 'identified box trap as quick difficulty' if @debug
-        speed = 'quick'
-      when @disarm_normal_threshold..(@disarm_careful_threshold - 1)
-        echo 'identified box trap as normal difficulty' if @debug
-        speed = ''
-      when @disarm_careful_threshold..Float::INFINITY
-        echo 'identified box trap as careful difficulty' if @debug
-        speed = 'careful'
-      end
-    else
-      echo "using assumed difficulty: #{@assumed_difficulty}" if @debug
-      speed = @assumed_difficulty if @assumed_difficulty
-    end
+    speed = difficulty_to_speed(box['trap_difficulty'], @disarm_quick_threshold, @disarm_normal_threshold, @disarm_careful_threshold)
+    echo "disarm speed: #{speed.inspect}" if @debug
 
     Flags.reset('more-traps')
     Flags.reset('disarm-shift')
@@ -611,6 +662,12 @@ class Pick
     echo "handle_trap_sprung: danger handled" if @debug
   end
 
+  # Stows a box in the given container, or trashes it if stowing fails
+  # or no container is configured.
+  #
+  # @param box [Hash] box state hash with 'noun' key
+  # @param container [String, nil] container to stow in; trashes if nil
+  # @return [void]
   def handle_trap_too_hard_or_blacklisted(box, container)
     if container
       return if DRCI.put_away_item?(box['noun'], container)
@@ -621,6 +678,10 @@ class Pick
     DRCI.dispose_trash(box['noun'], @worn_trashcan, @worn_trashcan_verb)
   end
 
+  # Sends the pick identify command and updates box lock state.
+  #
+  # @param box [Hash] mutable box state hash
+  # @return [void]
   def identify_lock(box)
     echo "identify_lock(#{box})" if @debug
 
@@ -653,26 +714,13 @@ class Pick
     end
   end
 
+  # Attempts to pick the lock on a box at the appropriate speed.
+  #
+  # @param box [Hash] mutable box state hash
+  # @return [void]
   def pick(box)
-    if @assumed_difficulty.nil?
-      case box['lock_difficulty']
-      when 0..(@pick_quick_threshold - 1)
-        echo 'identified box lock as blind difficulty' if @debug
-        speed = 'blind'
-      when @pick_quick_threshold..(@pick_normal_threshold - 1)
-        echo 'identified box lock as quick difficulty' if @debug
-        speed = 'quick'
-      when @pick_normal_threshold..(@pick_careful_threshold - 1)
-        echo 'identified box lock as normal difficulty' if @debug
-        speed = ''
-      when @pick_careful_threshold..Float::INFINITY
-        echo 'identified box lock as careful difficulty' if @debug
-        speed = 'careful'
-      end
-    else
-      echo "using assumed difficulty: #{@assumed_difficulty}" if @debug
-      speed = @assumed_difficulty if @assumed_difficulty
-    end
+    speed = difficulty_to_speed(box['lock_difficulty'], @pick_quick_threshold, @pick_normal_threshold, @pick_careful_threshold)
+    echo "pick speed: #{speed.inspect}" if @debug
 
     Flags.reset('more-locks')
     Flags.reset('more-traps')
