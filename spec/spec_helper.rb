@@ -1,8 +1,8 @@
 # Testing Conventions
 #
 # File organization:
-#   - One spec file per script (e.g. dependency_obsolete_scripts_spec.rb for dependency.lic)
-#   - Spec files live in spec/ and are named <script_name>_spec.rb
+#   - One spec file per script, named to match: <script-name>_spec.rb
+#     (e.g. dependency_spec.rb for dependency.lic, pick_spec.rb for pick.lic)
 #
 # Principles:
 #   - DAMP (Descriptive And Meaningful Phrases): favor readable, self-documenting
