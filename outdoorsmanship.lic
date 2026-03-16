@@ -2,7 +2,44 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#outdoorsmanship
 =end
 
+# Trains Outdoorsmanship (or Perception) by foraging or collecting
+# items until an XP goal is met or an attempt limit is reached.
+#
+# Characters below rank 20 forage rocks; at rank 20+ the script
+# uses the collect command with a configurable item. Retreats
+# from combat before each attempt.
+#
+# @note Required settings keys:
+#   - `outdoors_room` [Integer] room ID to train in
+#   - `forage_item` [String] item noun to collect (rank 20+)
+#
+# @note Optional settings keys:
+#   - `crafting_training_spells` [Array<Hash>] spells to cycle during training
+#   - `outdoorsmanship_mindstate_goal` [Integer] mindstates to gain (default 3)
+#   - `outdoorsmanship_skip_magic` [Boolean] skip all magic routines
+#   - `worn_trashcan` [String, nil] worn container for disposing foraged items
+#   - `worn_trashcan_verb` [String, nil] verb to use with worn trashcan
+#
+# @example Basic usage
+#   ;outdoorsmanship
+#
+# @example Train Perception instead
+#   ;outdoorsmanship perception
+#
+# @example Collect a specific item
+#   ;outdoorsmanship "blue flower"
+#
+# @example Limit to 5 attempts in a specific room
+#   ;outdoorsmanship 5 room=1234
+#
+# @see https://elanthipedia.play.net/Lich_script_repository#outdoorsmanship
 class Outdoorsmanship
+  # Maximum mindstate value (34/34 in DragonRealms).
+  MINDSTATE_CAP = 34
+
+  # Skill rank below which foraging rocks is used instead of collecting.
+  FORAGE_RANK_THRESHOLD = 20
+
   def initialize
     arg_definitions = [
       [
@@ -15,8 +52,8 @@ class Outdoorsmanship
     ]
     args = parse_args(arg_definitions)
     @settings = get_settings
-    @training_spells = @settings.crafting_training_spells
-    @targetxp = (args.mindstates || @settings.outdoorsmanship_mindstate_goal).to_i
+    @training_spells = @settings.crafting_training_spells || []
+    @targetxp = (args.mindstates || @settings.outdoorsmanship_mindstate_goal || 3).to_i
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
     @outdoors_room = @settings.outdoors_room
@@ -25,48 +62,67 @@ class Outdoorsmanship
       room = args.room.split('=')[1]
       @outdoors_room = room
     end
-    @train_method = if DRSkill.getrank('Outdoorsmanship') < 20
-                      'forage'
-                    else
-                      'collect'
-                    end
-    @forage_item = if DRSkill.getrank('Outdoorsmanship') < 20
-                     'rock'
-                   else
-                     args.collect_item || @settings.forage_item
-                   end
-    if args.perception
-      @skill_name = 'Perception'
-    else
-      @skill_name = 'Outdoorsmanship'
-    end
+    rank = DRSkill.getrank('Outdoorsmanship')
+    @train_method = rank < FORAGE_RANK_THRESHOLD ? 'forage' : 'collect'
+    @forage_item = rank < FORAGE_RANK_THRESHOLD ? 'rock' : (args.collect_item || @settings.forage_item)
+    @skill_name = args.perception ? 'Perception' : 'Outdoorsmanship'
     start_exp = DRSkill.getxp(@skill_name)
-    @end_exp = [start_exp + @targetxp, 34].min
+    @end_exp = [start_exp + @targetxp, MINDSTATE_CAP].min
+    validate_settings
     DRCT.walk_to(@outdoors_room)
     DRC.wait_for_script_to_complete('buff', ['outdoorsmanship']) unless @skip_magic
     train_outdoorsmanship
   end
 
+  # Validates that required settings are present and values are
+  # sensible before walking or buffing.
+  #
+  # @return [void]
+  # @raise [SystemExit] if a required setting is missing or invalid
+  def validate_settings
+    unless @outdoors_room
+      DRC.message("outdoorsmanship: 'outdoors_room' must be set in your YAML settings.")
+      exit
+    end
+    unless @forage_item
+      DRC.message("outdoorsmanship: 'forage_item' must be set in your YAML settings (rank 20+).")
+      exit
+    end
+    if @targetxp <= 0
+      DRC.message("outdoorsmanship: mindstate goal must be positive (got #{@targetxp}).")
+      exit
+    end
+    if DRSkill.getxp(@skill_name) >= @end_exp
+      DRC.message("outdoorsmanship: #{@skill_name} already at #{DRSkill.getxp(@skill_name)}/#{MINDSTATE_CAP} mindstates. Nothing to do.")
+      exit
+    end
+  end
+
+  # Loops forage or collect attempts, retreating from combat before
+  # each try, until the XP target is reached or the attempt limit
+  # is hit.
+  #
+  # @return [void]
   def train_outdoorsmanship
-    attempt = 0 # Failsafe counter to prevent an infinite loop if item isn't collectable in the room
+    attempt = 0
     while (DRSkill.getxp(@skill_name) < @end_exp) && (attempt < @targetxp)
+      DRC.retreat
+      DRCA.crafting_magic_routine(@settings) unless @skip_magic
       if @train_method == 'forage'
-        DRCA.crafting_magic_routine(@settings) unless @skip_magic
         DRC.forage?(@forage_item)
         DRCI.dispose_trash(@forage_item, @worn_trashcan, @worn_trashcan_verb) if DRCI.in_hands?(@forage_item)
-        attempt += 1
       else
-        item = @forage_item
-        DRCA.crafting_magic_routine(@settings) unless @skip_magic
-        DRC.collect(item)
-        attempt += 1
+        DRC.collect(@forage_item)
         waitrt?
       end
-      break unless attempt < @targetxp
+      attempt += 1
     end
     magic_cleanup unless @skip_magic
   end
 
+  # Releases any active spell preparation and harnessed mana.
+  #
+  # @return [void]
   def magic_cleanup
     return if @skip_magic
     return if @training_spells.empty?
