@@ -83,6 +83,9 @@ class Pick
     @max_identify_attempts = @settings.pick['max_identify_attempts'] || 5
     @max_disarm_attempts = @settings.pick['max_disarm_attempts'] || 5
 
+    @disarm_on_failed_identify = @settings.pick['disarm_on_failed_identify'] || false
+    @failed_identify_container = @settings.pick['failed_identify_container']
+
     @assumed_difficulty = args.assume || @settings.pick['assumed_difficulty']
 
     @trap_blacklist = @settings.pick['trap_blacklist'] || []
@@ -133,6 +136,8 @@ class Pick
       echo "- pick_normal: #{@pick_normal_threshold}"
       echo "- pick_careful: #{@pick_careful_threshold}"
       echo "- assumed_difficulty: #{@assumed_difficulty}"
+      echo "- disarm_on_failed_identify: #{@disarm_on_failed_identify}"
+      echo "- failed_identify_container: #{@failed_identify_container}"
     end
 
     if args.refill
@@ -327,9 +332,15 @@ class Pick
         while current_box['trap_difficulty'].nil?
           identify_attempts += 1
           if identify_attempts > @max_identify_attempts
-            DRC.message("Pick: Failed to identify trap after #{@max_identify_attempts} attempts. Proceeding with careful disarm.")
-            current_box['trap_difficulty'] = @disarm_careful_threshold
-            break
+            if @disarm_on_failed_identify
+              DRC.message("Pick: Failed to identify trap after #{@max_identify_attempts} attempts. Proceeding with careful disarm.")
+              current_box['trap_difficulty'] = @disarm_careful_threshold
+              break
+            else
+              DRC.message("Pick: Failed to identify trap after #{@max_identify_attempts} attempts. Disposing of box.")
+              handle_trap_too_hard_or_blacklisted(current_box, @failed_identify_container)
+              return
+            end
           end
           glance(current_box) if @use_glance
           identify_trap(current_box)
@@ -377,9 +388,15 @@ class Pick
         while current_box['lock_difficulty'].nil?
           lock_identify_attempts += 1
           if lock_identify_attempts > @max_identify_attempts
-            DRC.message("Pick: Failed to identify lock after #{@max_identify_attempts} attempts. Proceeding with careful pick.")
-            current_box['lock_difficulty'] = @pick_careful_threshold
-            break
+            if @disarm_on_failed_identify
+              DRC.message("Pick: Failed to identify lock after #{@max_identify_attempts} attempts. Proceeding with careful pick.")
+              current_box['lock_difficulty'] = @pick_careful_threshold
+              break
+            else
+              DRC.message("Pick: Failed to identify lock after #{@max_identify_attempts} attempts. Disposing of box.")
+              handle_trap_too_hard_or_blacklisted(current_box, @failed_identify_container)
+              return
+            end
           end
           glance(current_box) if @use_glance
           find_lockpick unless @use_lockpick_ring

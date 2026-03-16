@@ -226,6 +226,8 @@ RSpec.describe Pick do
     instance.instance_variable_set(:@trap_parts, ['wire', 'spring'])
     instance.instance_variable_set(:@picking_room_id, 1)
     instance.instance_variable_set(:@tend_own_wounds, false)
+    instance.instance_variable_set(:@disarm_on_failed_identify, false)
+    instance.instance_variable_set(:@failed_identify_container, nil)
     instance.instance_variable_set(:@equipment_manager, EquipmentManager.new)
 
     # Data from picking.yaml
@@ -744,9 +746,8 @@ RSpec.describe Pick do
       allow(Flags).to receive(:[]).and_return(nil)
     end
 
-    it 'proceeds with careful disarm when trap identification fails' do
-      instance = build_instance
-      instance.instance_variable_get(:@disarm_careful_threshold)
+    it 'proceeds with careful disarm when trap identification fails and disarm_on_failed_identify is true' do
+      instance = build_instance(disarm_on_failed_identify: true)
 
       identify_count = 0
       in_hands_count = 0
@@ -772,8 +773,8 @@ RSpec.describe Pick do
       expect(messages).to include('Pick: Failed to identify trap after 5 attempts. Proceeding with careful disarm.')
     end
 
-    it 'proceeds with careful pick when lock identification fails' do
-      instance = build_instance
+    it 'proceeds with careful pick when lock identification fails and disarm_on_failed_identify is true' do
+      instance = build_instance(disarm_on_failed_identify: true)
 
       identify_count = 0
       in_hands_count = 0
@@ -853,6 +854,152 @@ RSpec.describe Pick do
 
       expect(pick_count).to eq(5)
       expect(messages).to include('Pick: Failed to pick lock after 5 attempts. Stowing box.')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Failed identification disposal (disarm_on_failed_identify = false)
+  # ---------------------------------------------------------------------------
+
+  describe 'failed identification disposal' do
+    before(:each) do
+      allow(Flags).to receive(:reset)
+      allow(Flags).to receive(:[]).and_return(nil)
+    end
+
+    context 'when trap identification fails' do
+      it 'disposes box by default (disarm_on_failed_identify is false)' do
+        instance = build_instance
+
+        identify_count = 0
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRC).to receive(:bput) do |cmd, *_args|
+          if cmd.include?('disarm') && cmd.include?('identify')
+            identify_count += 1
+            'not make head or tails'
+          else
+            'Roundtime'
+          end
+        end
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(identify_count).to eq(5)
+        expect(messages).to include('Pick: Failed to identify trap after 5 attempts. Disposing of box.')
+        expect(disposed_items).to include('strongbox')
+      end
+
+      it 'stows box in failed_identify_container when set' do
+        instance = build_instance(failed_identify_container: 'sack')
+        stowed_items = []
+
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          stowed_items << { item: item, container: container }
+          true
+        end
+        allow(DRC).to receive(:bput) do |cmd, *_args|
+          if cmd.include?('disarm') && cmd.include?('identify')
+            'not make head or tails'
+          else
+            'Roundtime'
+          end
+        end
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(stowed_items).to include(item: 'strongbox', container: 'sack')
+        expect(disposed_items).to be_empty
+      end
+
+      it 'trashes box when failed_identify_container is nil' do
+        instance = build_instance(failed_identify_container: nil)
+
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRC).to receive(:bput) do |cmd, *_args|
+          if cmd.include?('disarm') && cmd.include?('identify')
+            'not make head or tails'
+          else
+            'Roundtime'
+          end
+        end
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(disposed_items).to include('strongbox')
+      end
+    end
+
+    context 'when lock identification fails' do
+      it 'disposes box by default (disarm_on_failed_identify is false)' do
+        instance = build_instance
+
+        lock_identify_count = 0
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRC).to receive(:bput) do |cmd, *_args|
+          if cmd.include?('disarm') && cmd.include?('identify')
+            'disarmed flame'
+          elsif cmd.include?('pick') && cmd.include?('ident')
+            lock_identify_count += 1
+            'unable to make progress'
+          else
+            'Roundtime'
+          end
+        end
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(lock_identify_count).to eq(5)
+        expect(messages).to include('Pick: Failed to identify lock after 5 attempts. Disposing of box.')
+        expect(disposed_items).to include('strongbox')
+      end
+
+      it 'stows box in failed_identify_container when set' do
+        instance = build_instance(failed_identify_container: 'trunk')
+        stowed_items = []
+
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          stowed_items << { item: item, container: container }
+          true
+        end
+        allow(DRC).to receive(:bput) do |cmd, *_args|
+          if cmd.include?('disarm') && cmd.include?('identify')
+            'disarmed flame'
+          elsif cmd.include?('pick') && cmd.include?('ident')
+            'unable to make progress'
+          else
+            'Roundtime'
+          end
+        end
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(stowed_items).to include(item: 'strongbox', container: 'trunk')
+        expect(disposed_items).to be_empty
+      end
+    end
+
+    context 'with custom max_identify_attempts' do
+      it 'respects custom max_identify_attempts before disposing' do
+        instance = build_instance(max_identify_attempts: 3)
+
+        identify_count = 0
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRC).to receive(:bput) do |cmd, *_args|
+          if cmd.include?('disarm') && cmd.include?('identify')
+            identify_count += 1
+            'not make head or tails'
+          else
+            'Roundtime'
+          end
+        end
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(identify_count).to eq(3)
+        expect(messages).to include('Pick: Failed to identify trap after 3 attempts. Disposing of box.')
+      end
     end
   end
 
