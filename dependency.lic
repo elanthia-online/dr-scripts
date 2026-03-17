@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.2.4'
+$DEPENDENCY_VERSION = '2.3.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -205,24 +205,20 @@ end
 
 arg_definitions = [
   [
-    { name: 'debug', regex: /debug/i, optional: true },
     { name: 'install', regex: /install/i, optional: true }
   ]
 ]
 
 args = parse_args(arg_definitions)
-
-debug = args.debug || UserVars.debug_dependency
 install = args.install
+
+debug = UserVars.debug_dependency
 
 class ScriptManager
   attr_reader :autostarts
 
   def initialize(debug)
     @debug = debug
-    @paste_bin_token = 'dca351a27a8af501a8d3123e29af7981'
-    @paste_bin_url = 'https://pastebin.com/api/api_post.php'
-    @firebase_url = 'https://dr-scripts.firebaseio.com/'
     @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
     @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
     # Gating setting lich_url on lich version
@@ -253,8 +249,6 @@ class ScriptManager
     @remove_autos = []
     update_autostarts
     @self_updated = false
-    @thievery_queue = []
-    @shop_update_queue = []
 
     @request_authorization = load_personal_github_token
     @versions = nil
@@ -297,14 +291,6 @@ class ScriptManager
     @add_autos.empty? && @remove_autos.empty?
   end
 
-  def queue_thieving_update(id, update)
-    @thievery_queue << [id, update]
-  end
-
-  def queue_shop_update(shop_data)
-    @shop_update_queue << shop_data
-  end
-
   def run_queue
     update = false
 
@@ -321,31 +307,7 @@ class ScriptManager
       @remove_autos = []
     end
 
-    submit_thieving_update(*@thievery_queue.pop) unless @thievery_queue.empty?
-    submit_shop_update(@shop_update_queue.pop) unless @shop_update_queue.empty?
     update_autostarts if update
-  end
-
-  def submit_shop_update(shop_data)
-    partial = shop_data[:surfaces].nil?
-
-    key = "#{shop_data[:root_room]}-#{shop_data[:entrance]}"
-
-    uri = URI.parse("#{@firebase_url}/shop-data/#{key}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    begin
-      request = partial ? Net::HTTP::Patch.new(uri.request_uri) : Net::HTTP::Put.new(uri.request_uri)
-      request['Content-Type'] = 'application/json'
-      request.body = shop_data.to_json
-      response = http.request(request)
-      response.body.chomp
-    rescue => e
-      echo(e)
-      echo('Error in submitting shop data')
-    end
   end
 
   def get_script(filename, force = false)
@@ -411,20 +373,6 @@ class ScriptManager
     Dir.mkdir(path) unless Dir.exist?(path)
   end
 
-  def setup_profiles
-    verify_or_make_dir File.join(SCRIPT_DIR, 'profiles')
-    get_status['tree']
-      .select { |data| data['path'] =~ %r{^profiles/base(?:-empty)?\.yaml$} }
-      .each do |setup_file|
-        filename = File.basename(setup_file['path'])
-        echo("downloading #{filename}") if @debug
-        content = download_raw_file(setup_file['path'])
-        next unless content
-
-        File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'w') { |file| file.print(content) }
-      end
-  end
-
   def setup_data
     verify_or_make_dir File.join(SCRIPT_DIR, 'data')
     get_status['tree']
@@ -437,24 +385,6 @@ class ScriptManager
 
         File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
       end
-  end
-
-  def update_local_stealing_yaml(id, update, new_entry = false)
-    stealing_path = File.join(SCRIPT_DIR, 'data/base-stealing.yaml')
-    stealing_data = $setupfiles.safe_load_yaml(stealing_path)
-    result = nil
-    if new_entry
-      stealing_data[:stealing_options].push(update)
-    else
-      stealing_data[:stealing_options].each do |data|
-        if data['id'] == id
-          result = data.dup
-          data.merge!(update)
-        end
-      end
-    end
-    File.open(stealing_path, 'w') { |file| file.print(stealing_data.to_yaml) }
-    result
   end
 
   def check_base_files
@@ -603,77 +533,6 @@ class ScriptManager
     "Bearer #{token}"
   end
 
-  def submit_thieving_update(id, update)
-    return submit_new_thieving_item(id, update) if update.delete('new')
-
-    old_data = update_local_stealing_yaml(id, update)
-
-    # return
-
-    data = get_current_stealing_data(id)
-
-    update.delete_if do |key, value|
-      echo("checking:#{data[key]}:#{old_data[key]}") if UserVars.crossing_trainer_debug
-      key =~ /_min$/ ? data[key] && data[key] != old_data[key] && value >= data[key] : data[key] && data[key] != old_data[key] && value <= data[key]
-    end
-
-    if update.empty?
-      echo('Nothing left to update') if UserVars.crossing_trainer_debug
-      return
-    end
-
-    echo("submitting:#{id}:#{update}") if UserVars.crossing_trainer_debug
-    uri = URI.parse("#{@firebase_url}/stealing-options/#{id}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Patch.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    request.body = update.to_json
-    response = http.request(request)
-    response.body.chomp
-  end
-
-  def submit_new_thieving_item(id, data)
-    id = (id.to_i + 1).to_s while get_current_stealing_data(id)
-
-    data['id'] = id
-
-    update_local_stealing_yaml(id, data, true)
-
-    echo("submittingNEW:#{id}:#{data}") if UserVars.crossing_trainer_debug
-
-    uri = URI.parse("#{@firebase_url}/stealing-options/#{id}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Put.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    request.body = data.to_json
-    response = http.request(request)
-    response.body.chomp
-  end
-
-  def get_current_stealing_data(id)
-    uri = URI.parse("#{@firebase_url}/stealing-options/#{id}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Get.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    response = http.request(request)
-    return nil if response.body.nil?
-
-    begin
-      JSON.parse(response.body.chomp)
-    rescue
-      return nil
-    end
-  end
-
   def make_map_edits
     echo("Applying personal map overrides")
     # Get base and personal wayto overrides
@@ -706,171 +565,6 @@ class ScriptManager
       custom_targets = (GameSettings['custom targets'] || Hash.new)
       custom_targets.merge!(personal_map_targets)
       GameSettings['custom targets'] = custom_targets
-    end
-  end
-end
-
-class BankbotManager
-  def initialize(debug)
-    @debug = debug
-    @save = false
-    @load = false
-    @transaction = ''
-    @ledger = {}
-  end
-
-  attr_reader :ledger
-
-  def loaded?
-    !@load
-  end
-
-  def run_queue
-    save_transaction
-    load_ledger
-  end
-
-  def save_bankbot_transaction(transaction, ledger)
-    @transaction = transaction
-    @ledger = ledger.to_yaml
-    @save = true
-  end
-
-  def load_bankbot_ledger
-    @load = true
-  end
-
-  private
-
-  def save_transaction
-    return unless @save
-
-    File.open(File.join(LICH_DIR, "#{checkname}-transactions.log"), 'a') do |file|
-      file.puts('----------')
-      file.puts(Time.now)
-      file.puts(@transaction)
-      file.puts(@ledger)
-      file.puts('----------')
-    end
-    File.open(File.join(LICH_DIR, "#{checkname}-ledger.yaml"), 'wb') { |file| file.puts(@ledger) }
-    @save = false
-  end
-
-  def load_ledger
-    return unless @load
-
-    @ledger = safe_load_yaml("./#{checkname}-ledger.yaml")
-    @load = false
-  end
-
-  def safe_load_yaml(path)
-    OpenStruct.new(YAML.unsafe_load_file(path)).to_h
-  rescue => e
-    echo('*** ERROR PARSING YAML FILE ***')
-    echo(e.message)
-    return {}
-  end
-end
-
-class ReportbotManager
-  def initialize(debug)
-    @debug = debug
-    @save = false
-    @load = false
-    @whitelist = []
-  end
-
-  attr_reader :whitelist
-
-  def loaded?
-    !@load
-  end
-
-  def run_queue
-    save_whitelist
-    load_whitelist
-  end
-
-  def save_reportbot_whitelist(whitelist)
-    @whitelist = whitelist.to_yaml
-    @save = true
-  end
-
-  def load_reportbot_whitelist
-    @load = true
-  end
-
-  private
-
-  def save_whitelist
-    return unless @save
-
-    File.open(File.join(LICH_DIR, 'reportbot-whitelist.yaml'), 'wb') { |file| file.puts(@whitelist) }
-    @save = false
-  end
-
-  def load_whitelist
-    return unless @load
-
-    @whitelist = safe_load_yaml('./reportbot-whitelist.yaml')
-    @load = false
-  end
-
-  def safe_load_yaml(path)
-    YAML.unsafe_load_file(path)
-  rescue => e
-    echo('*** ERROR PARSING YAML FILE ***')
-    echo(e.message)
-    return []
-  end
-end
-
-class SlackbotManager
-  def initialize(debug)
-    @debug = debug
-    @slackbot = nil
-    @username = nil
-    @messages = []
-  end
-
-  def run_queue
-    register_slackbot
-    send_messages
-  end
-
-  def register(username)
-    return if @slackbot
-
-    if username.nil? || username.to_s.strip.empty?
-      DRC.message("SlackbotManager: No slackbot_username configured. Slack messaging disabled.")
-      return
-    end
-
-    @username = username
-  end
-
-  def queue_message(message)
-    return unless message
-
-    @messages << message
-  end
-
-  private
-
-  def register_slackbot
-    return unless @username
-    return unless @slackbot.nil?
-
-    echo("Registering Slackbot")
-    @slackbot = SlackBot.new
-  end
-
-  def send_messages
-    return unless @slackbot
-
-    until @messages.empty?
-      message = @messages.shift
-      @slackbot.direct_message(@username, message)
     end
   end
 end
@@ -1426,100 +1120,8 @@ class SetupFiles
   end
 end
 
-class MoonWatch
-  attr_reader :moon_data
-
-  def initialize(debug)
-    @debug = debug
-    @moon_data = {}
-    UserVars.moons = { 'katamba' => {}, 'yavash' => {}, 'xibar' => {}, 'visible' => [] }
-    UserVars.sun = {}
-    @firebase_url = 'https://dr-scripts.firebaseio.com/'
-    @queue = []
-    load_moon_data
-  end
-
-  def debug
-    @debug = !@debug
-  end
-
-  def connections
-    return nil unless @debug
-
-    [@f, @moon_source]
-  end
-
-  def load_moon_data
-    @last_connect = Time.now
-    @data_delay = nil
-    echo("retrieving moon data") if @debug
-    uri = URI.parse("#{@firebase_url}/moon_data_v2.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Get.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    response = http.request(request)
-    @moon_data = nil if response.body.nil?
-    begin
-      @moon_data = JSON.parse(response.body.chomp)
-    rescue
-      @moon_data = nil
-    end
-  rescue => e
-    echo("error in moonwatch #{e.inspect}")
-  end
-
-  def queue_update(moon, data)
-    @queue << [moon, data]
-  end
-
-  def snapshot_seconds_until_load
-    return 60 unless UserVars.moons.reject { |m| m == 'visible' }.values.first['timer'] && UserVars.sun['timer']
-    return @data_delay if @data_delay
-
-    echo("calculating next moon data request") if @debug
-    all_timers = UserVars.moons.reject { |m| m == 'visible' }.values.map { |data| data['timer'] } + [UserVars.sun['timer']]
-    @data_delay = ([all_timers.min * 0.8, 1].max * 60).to_i
-    echo("Next request in #{@data_delay} seconds") if @debug
-    @data_delay
-  end
-
-  def run_queue
-    load_moon_data if Time.now - @last_connect > snapshot_seconds_until_load
-    return if @queue.empty?
-
-    item = @queue.shift
-    update_moon(item.first, item.last)
-  end
-
-  private
-
-  def update_moon(body_name, data)
-    echo("updating #{body_name} with #{data}") if @debug
-    uri = URI.parse("#{@firebase_url}/moon_data_v2/#{body_name}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Put.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    request.body = data.to_json
-    response = http.request(request)
-    response.body.chomp
-  end
-end
-
 $setupfiles = SetupFiles.new(debug)
 $manager = ScriptManager.new(debug)
-$bankbot = BankbotManager.new(debug)
-$reportbot = ReportbotManager.new(debug)
-$slackbot = SlackbotManager.new(debug)
-
-def enable_moon_connection
-  $turn_on_moon_watch = true
-end
 
 def get_settings(character_suffixes = [])
   $setupfiles.get_settings(character_suffixes)
@@ -1530,31 +1132,52 @@ def get_data(type)
 end
 
 def save_bankbot_transaction(transaction, ledger)
-  $bankbot.save_bankbot_transaction(transaction, ledger)
+  ledger_yaml = ledger.to_yaml
+  File.open(File.join(LICH_DIR, "#{checkname}-transactions.log"), 'a') do |file|
+    file.puts('----------')
+    file.puts(Time.now)
+    file.puts(transaction)
+    file.puts(ledger_yaml)
+    file.puts('----------')
+  end
+  File.open(File.join(LICH_DIR, "#{checkname}-ledger.yaml"), 'wb') { |file| file.puts(ledger_yaml) }
 end
 
 def load_bankbot_ledger
-  $bankbot.load_bankbot_ledger
-  pause 0.1 until $bankbot.loaded?
-  $bankbot.ledger
+  OpenStruct.new(YAML.unsafe_load_file(File.join(LICH_DIR, "#{checkname}-ledger.yaml"))).to_h
+rescue => e
+  echo('*** ERROR PARSING YAML FILE ***')
+  echo(e.message)
+  {}
 end
 
 def save_reportbot_whitelist(whitelist)
-  $reportbot.save_reportbot_whitelist(whitelist)
+  File.open(File.join(LICH_DIR, 'reportbot-whitelist.yaml'), 'wb') { |file| file.puts(whitelist.to_yaml) }
 end
 
 def load_reportbot_whitelist
-  $reportbot.load_reportbot_whitelist
-  pause 0.1 until $reportbot.loaded?
-  $reportbot.whitelist
+  YAML.unsafe_load_file(File.join(LICH_DIR, 'reportbot-whitelist.yaml'))
+rescue => e
+  echo('*** ERROR PARSING YAML FILE ***')
+  echo(e.message)
+  []
 end
 
 def send_slackbot_message(message)
-  $slackbot.queue_message(message)
+  return unless message
+
+  $slackbot_instance ||= nil
+  return unless $slackbot_instance
+
+  $slackbot_instance.direct_message($slackbot_username, message)
 end
 
 def register_slackbot(username)
-  $slackbot.register(username)
+  return if $slackbot_instance
+  return if username.nil? || username.to_s.strip.empty?
+
+  $slackbot_username = username
+  $slackbot_instance = SlackBot.new
 end
 
 def format_name(name)
@@ -1570,6 +1193,7 @@ DR_OBSOLETE_SCRIPTS = %w[
   common-travel common-validation common drinfomon equipmanager
   common-money common-moonmage common-summoning common-theurgy common-arcana
   bootstrap common-crafting common-healing-data common-healing common-items
+  update-shops
 ].freeze
 
 def dr_obsolete_script?(name)
@@ -1596,6 +1220,18 @@ def warn_obsolete_scripts
     next unless File.exist?(path)
 
     _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
+  end
+end
+
+DR_OBSOLETE_DATA_FILES = %w[].freeze
+
+def warn_obsolete_data_files
+  data_dir = File.join(SCRIPT_DIR, 'data')
+  DR_OBSOLETE_DATA_FILES.each do |filename|
+    path = File.join(data_dir, filename)
+    next unless File.exist?(path)
+
+    _respond Lich::Messaging.monsterbold("--- Lich: '#{filename}' is obsolete and can be safely deleted from #{data_dir}.")
   end
 end
 
@@ -1682,38 +1318,6 @@ def list_tracked_scripts
   $manager.get_versions.sort
 end
 
-def full_install
-  respond 'Performing setup for dr-scripts.  This will take some time.  Do not stop this script until finished.'
-  respond '(Step 1 of 5) Removing lich autostarts for existing scripts...'
-  remove_from_autostart(managed_scripts)
-  respond '(Step 2 of 5) Adding dependency.lic to lich autostart'
-  add_self_to_autostart
-  respond '(Step 3 of 5) Creating a /profiles directory and downloading default profiles (this will take a while)'
-  setup_profiles
-  respond '(Step 4 of 5) Creating a /data directory and downloading data files (this will take a while)'
-  setup_data
-  respond '(Step 5 of 5) Backing up existing scripts and replacing with latest versions (this will take a while)'
-  replace_all
-  respond 'Finished install!'
-end
-
-def replace_all
-  managed_scripts
-    .each do |script|
-      new_name = "#{script}.#{Time.now.to_i}.bak"
-      respond "Renaming existing script #{script} to #{new_name}"
-      File.rename(File.join(SCRIPT_DIR, "#{script}"), File.join(SCRIPT_DIR, "#{new_name}"))
-    end
-
-  respond "Downloading all scripts (This may take a few minutes. Please wait until you see \"Finished Install\" before doing anything else"
-  $manager.repo_scripts.each(&method(:get_script))
-end
-
-def managed_scripts
-  local_scripts = Dir[File.join(SCRIPT_DIR, '*.lic')].map { |item| File.basename(item) }
-  $manager.repo_scripts & local_scripts
-end
-
 def list_autostarts
   $manager.autostarts
 end
@@ -1741,31 +1345,9 @@ def stop_autostart(script_names)
   end
 end
 
-def setup_profiles
-  $manager.setup_profiles
-end
-
 def setup_data
   echo("Force checking scripts/data files.")
   $manager.setup_data
-end
-
-def remove_from_autostart(scripts)
-  return if Script.running?('autostart')
-
-  scripts.each do |script|
-    start_script('autostart', ['remove', '--global', File.basename(script, '.*')])
-    pause 0.1 while Script.running?('autostart')
-    start_script('autostart', ['remove', File.basename(script, '.*')])
-    pause 0.1 while Script.running?('autostart')
-  end
-end
-
-def add_self_to_autostart
-  return if Script.running?('autostart')
-
-  start_script('autostart', ['add', '--global', 'dependency'])
-  pause while Script.running?('autostart')
 end
 
 def update_d
@@ -1776,22 +1358,6 @@ def update_d
   end
   stop_script('drinfomon') if Script.running?('drinfomon')
   stop_script('dependency')
-end
-
-def submit_thieving_update(id, update)
-  $manager.queue_thieving_update(id, update)
-end
-
-def submit_shop_data(shop_data)
-  $manager.queue_shop_update(shop_data)
-end
-
-def get_all_moon_data
-  $moon_watch ? $moon_watch.moon_data : nil
-end
-
-def update_moon_data(moon, data)
-  $moon_watch.queue_update(moon, data)
 end
 
 def shift_hometown(town_name)
@@ -1817,8 +1383,6 @@ def warn_custom_scripts
   end
 end
 
-full_install if install
-
 # Populate initial game state (exp, info, played, ability).
 # Core lich handles this via DRInfomon.startup if available.
 # Fall back to issuing the commands ourselves for older lich versions.
@@ -1839,10 +1403,23 @@ else
   Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
 end
 
+if install
+  respond 'Performing setup for dr-scripts. This will take some time. Do not stop this script until finished.'
+end
+
+respond '(Step 1 of 4) Checking base profile files...' if install
 $manager.check_base_files
+
+respond '(Step 2 of 4) Checking data files...' if install
 $manager.check_data_files
+
+respond '(Step 3 of 4) Downloading and starting scripts...' if install
 $manager.start_scripts
+
+respond '(Step 4 of 4) Applying map edits...' if install
 $manager.make_map_edits
+
+respond 'Finished install!' if install
 
 if $manager.updated_dependency?
   echo('Update found for dependency.lic')
@@ -1850,7 +1427,6 @@ if $manager.updated_dependency?
 end
 
 before_dying do
-  $moon_watch = nil
   stop_script('drinfomon') if Script.running?('drinfomon')
 end
 
@@ -1859,20 +1435,12 @@ $setupfiles.reload
 # Remind user of curated scripts with a copy in custom folder
 warn_custom_scripts
 
-# Warn about obsolete scripts still present in SCRIPT_DIR
+# Warn about obsolete scripts and data files still present locally
 warn_obsolete_scripts
+warn_obsolete_data_files
 
 loop do
-  if $turn_on_moon_watch && $moon_watch.nil?
-    $moon_watch = MoonWatch.new(debug)
-    $turn_on_moon_watch = nil
-  end
-
   $manager.run_queue
-  $bankbot.run_queue
-  $reportbot.run_queue
-  $slackbot.run_queue
-  $moon_watch.run_queue if $moon_watch
   clear
   pause 0.1
 end

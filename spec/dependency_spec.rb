@@ -2,13 +2,16 @@
 
 require 'tmpdir'
 require 'ostruct'
+require 'yaml'
 
 # Test suite for dependency.lic
 #
-# Covers obsolete script detection, autostart handling, and cascading includes.
+# Covers obsolete script detection, autostart handling, cascading includes,
+# and inlined manager functions (bankbot, reportbot, slackbot).
 
 # Stub SCRIPT_DIR, _respond, respond, and Lich::Messaging before loading methods
 SCRIPT_DIR = Dir.mktmpdir('dr-scripts-test') unless defined?(SCRIPT_DIR)
+LICH_DIR = Dir.mktmpdir('lich-test') unless defined?(LICH_DIR)
 
 module Lich
   module Messaging
@@ -39,6 +42,14 @@ module Script
 end
 
 $clean_lich_char = ';'
+
+def checkname
+  'Testchar'
+end
+
+def echo(_msg)
+  # no-op in tests
+end
 
 # Mock UserVars with a mutable autostart_scripts array
 module UserVars
@@ -102,6 +113,26 @@ eval(dep_lines[wn_start..wn_start + 1 + wn_end].join, TOPLEVEL_BINDING, dep_path
 ha_start = dep_lines.index { |l| l =~ /^def handle_obsolete_autostart/ }
 ha_end = dep_lines[ha_start + 1..].index { |l| l =~ /^end\s*$/ }
 eval(dep_lines[ha_start..ha_start + 1 + ha_end].join, TOPLEVEL_BINDING, dep_path, ha_start + 1)
+
+# Extract inlined manager functions
+%w[
+  save_bankbot_transaction
+  load_bankbot_ledger
+  save_reportbot_whitelist
+  load_reportbot_whitelist
+  register_slackbot
+  send_slackbot_message
+  warn_obsolete_data_files
+].each do |fn_name|
+  fn_s = dep_lines.index { |l| l =~ /^def #{Regexp.escape(fn_name)}\b/ }
+  fn_e = dep_lines[fn_s + 1..].index { |l| l =~ /^end\s*$/ }
+  eval(dep_lines[fn_s..fn_s + 1 + fn_e].join, TOPLEVEL_BINDING, dep_path, fn_s + 1)
+end
+
+# Extract DR_OBSOLETE_DATA_FILES constant
+odf_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_DATA_FILES\s*=/ }
+odf_end = dep_lines[odf_start..].index { |l| l =~ /\.freeze$/ }
+eval(dep_lines[odf_start..odf_start + odf_end].join, TOPLEVEL_BINDING, dep_path, odf_start + 1)
 
 RSpec.describe 'Obsolete Scripts' do
   before { $respond_messages.clear }
@@ -205,6 +236,29 @@ RSpec.describe 'Obsolete Scripts' do
         warning = $respond_messages.find { |m| m.include?('exp-monitor') }
         expect(warning).to include('obsolete')
         expect(warning).to include('should be deleted')
+      end
+    end
+  end
+
+  describe 'DR_OBSOLETE_DATA_FILES' do
+    it 'is frozen' do
+      expect(DR_OBSOLETE_DATA_FILES).to be_frozen
+    end
+
+    it 'is empty (no data files are currently obsolete)' do
+      expect(DR_OBSOLETE_DATA_FILES).to be_empty
+    end
+  end
+
+  describe '#warn_obsolete_data_files' do
+    let(:data_dir) { File.join(SCRIPT_DIR, 'data') }
+
+    before { FileUtils.mkdir_p(data_dir) }
+
+    context 'when no obsolete data files exist' do
+      it 'produces no warnings' do
+        warn_obsolete_data_files
+        expect($respond_messages).to be_empty
       end
     end
   end
@@ -729,6 +783,188 @@ RSpec.describe 'Cascading Includes Algorithm' do
         expect(merged[:shared]).to eq('from_level1')
         expect(merged[:level1_only]).to eq('l1')
         expect(merged[:level2_only]).to eq('l2')
+      end
+    end
+  end
+end
+
+# --- Inlined Manager Functions ---
+
+RSpec.describe 'Bankbot Functions' do
+  let(:ledger_path) { File.join(LICH_DIR, 'Testchar-ledger.yaml') }
+  let(:transaction_log_path) { File.join(LICH_DIR, 'Testchar-transactions.log') }
+
+  after do
+    File.delete(ledger_path) if File.exist?(ledger_path)
+    File.delete(transaction_log_path) if File.exist?(transaction_log_path)
+  end
+
+  describe '#save_bankbot_transaction' do
+    let(:ledger) { { 'Testchar' => { 'kronars' => 500, 'lirums' => 200 } } }
+    let(:transaction) { 'Testchar, deposit, 100, kronars, tip' }
+
+    it 'writes the transaction to the log file' do
+      save_bankbot_transaction(transaction, ledger)
+
+      log_content = File.read(transaction_log_path)
+      expect(log_content).to include(transaction)
+      expect(log_content).to include('----------')
+    end
+
+    it 'writes the ledger to the YAML file' do
+      save_bankbot_transaction(transaction, ledger)
+
+      saved_ledger = YAML.unsafe_load_file(ledger_path)
+      expect(saved_ledger['Testchar']['kronars']).to eq(500)
+      expect(saved_ledger['Testchar']['lirums']).to eq(200)
+    end
+
+    it 'appends to the transaction log on successive calls' do
+      save_bankbot_transaction('first transaction', ledger)
+      save_bankbot_transaction('second transaction', ledger)
+
+      log_content = File.read(transaction_log_path)
+      expect(log_content).to include('first transaction')
+      expect(log_content).to include('second transaction')
+    end
+  end
+
+  describe '#load_bankbot_ledger' do
+    context 'when the ledger file exists' do
+      before do
+        ledger_data = { 'Testchar' => { 'kronars' => 1000 } }
+        File.open(ledger_path, 'w') { |f| f.puts(ledger_data.to_yaml) }
+      end
+
+      it 'returns the ledger as a hash' do
+        result = load_bankbot_ledger
+        expect(result).to be_a(Hash)
+        expect(result[:Testchar]['kronars']).to eq(1000)
+      end
+    end
+
+    context 'when the ledger file does not exist' do
+      it 'returns an empty hash' do
+        result = load_bankbot_ledger
+        expect(result).to eq({})
+      end
+    end
+  end
+end
+
+RSpec.describe 'Reportbot Functions' do
+  let(:whitelist_path) { File.join(LICH_DIR, 'reportbot-whitelist.yaml') }
+
+  after do
+    File.delete(whitelist_path) if File.exist?(whitelist_path)
+  end
+
+  describe '#save_reportbot_whitelist' do
+    it 'writes the whitelist to YAML' do
+      whitelist = %w[Player1 Player2 Player3]
+      save_reportbot_whitelist(whitelist)
+
+      saved = YAML.unsafe_load_file(whitelist_path)
+      expect(saved).to eq(whitelist)
+    end
+  end
+
+  describe '#load_reportbot_whitelist' do
+    context 'when the whitelist file exists' do
+      before do
+        File.open(whitelist_path, 'w') { |f| f.puts(%w[Alpha Beta].to_yaml) }
+      end
+
+      it 'returns the whitelist as an array' do
+        result = load_reportbot_whitelist
+        expect(result).to eq(%w[Alpha Beta])
+      end
+    end
+
+    context 'when the whitelist file does not exist' do
+      it 'returns an empty array' do
+        result = load_reportbot_whitelist
+        expect(result).to eq([])
+      end
+    end
+  end
+end
+
+RSpec.describe 'Slackbot Functions' do
+  before do
+    $slackbot_instance = nil
+    $slackbot_username = nil
+  end
+
+  describe '#register_slackbot' do
+    before do
+      stub_const('SlackBot', Class.new {
+        define_method(:initialize) {}
+        define_method(:direct_message) { |_user, _msg| }
+      })
+    end
+
+    context 'with a valid username' do
+      it 'sets the global slackbot instance' do
+        register_slackbot('myuser')
+        expect($slackbot_instance).not_to be_nil
+      end
+
+      it 'stores the username' do
+        register_slackbot('myuser')
+        expect($slackbot_username).to eq('myuser')
+      end
+    end
+
+    context 'with nil username' do
+      it 'does not create a slackbot instance' do
+        register_slackbot(nil)
+        expect($slackbot_instance).to be_nil
+      end
+    end
+
+    context 'with blank username' do
+      it 'does not create a slackbot instance' do
+        register_slackbot('  ')
+        expect($slackbot_instance).to be_nil
+      end
+    end
+
+    context 'when already registered' do
+      it 'does not replace the existing instance' do
+        register_slackbot('first_user')
+        original = $slackbot_instance
+        register_slackbot('second_user')
+        expect($slackbot_instance).to equal(original)
+        expect($slackbot_username).to eq('first_user')
+      end
+    end
+  end
+
+  describe '#send_slackbot_message' do
+    context 'when slackbot is not registered' do
+      it 'does nothing' do
+        expect { send_slackbot_message('hello') }.not_to raise_error
+      end
+    end
+
+    context 'with nil message' do
+      it 'returns early' do
+        expect { send_slackbot_message(nil) }.not_to raise_error
+      end
+    end
+
+    context 'when slackbot is registered' do
+      let(:mock_slackbot) { instance_double('SlackBot') }
+
+      before do
+        $slackbot_instance = mock_slackbot
+        $slackbot_username = 'testuser'
+      end
+
+      it 'sends the message via the slackbot instance' do
+        expect(mock_slackbot).to receive(:direct_message).with('testuser', 'hello world')
+        send_slackbot_message('hello world')
       end
     end
   end

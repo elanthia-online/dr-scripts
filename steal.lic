@@ -327,7 +327,6 @@ class Steal
     echo("update:#{update}") if UserVars.thievery_debug
 
     @stealing_options.each { |data| data.merge!(update) if data['id'] == target['id'] }
-    submit_thieving_update(target['id'], update)
   end
 
   def make_grab?(target, count)

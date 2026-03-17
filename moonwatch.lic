@@ -26,19 +26,53 @@ $debug_mode_mm = UserVars.moon_debug || args.debug
 
 correct = args.correct || UserVars.moonwatch_correct || get_settings.moonwatch_correct
 
-enable_moon_connection
+FIREBASE_URL = 'https://dr-scripts.firebaseio.com/'
 
 RISE = 1
 SET = 0
+
+def load_moon_data
+  uri = URI.parse("#{FIREBASE_URL}/moon_data_v2.json")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+
+  request = Net::HTTP::Get.new(uri.request_uri)
+  request['Content-Type'] = 'application/json'
+  response = http.request(request)
+  return nil if response.body.nil?
+
+  JSON.parse(response.body.chomp)
+rescue => e
+  echo("error loading moon data: #{e.inspect}")
+  nil
+end
+
+def push_moon_update(body_name, data)
+  echo("updating #{body_name} with #{data}") if $debug_mode_mm
+  uri = URI.parse("#{FIREBASE_URL}/moon_data_v2/#{body_name}.json")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+
+  request = Net::HTTP::Put.new(uri.request_uri)
+  request['Content-Type'] = 'application/json'
+  request.body = data.to_json
+  http.request(request)
+end
+
+UserVars.moons = { 'katamba' => {}, 'yavash' => {}, 'xibar' => {}, 'visible' => [] }
+UserVars.sun = {}
+
+$moon_data = load_moon_data
+$last_moon_fetch = Time.now
+$moon_data_delay = nil
 
 if args.alias
   UpstreamHook.run("<c>#{$clean_lich_char}alias add --global moon = #{$clean_lich_char}" + %{eq respond("#{UserVars.moons['katamba']['pretty']} : #{UserVars.moons['yavash']['pretty']} : #{UserVars.moons['xibar']['pretty']}")})
 end
 
 CharSettings['moon_window'] = !CharSettings['moon_window'] if args.window
-
-UserVars.moons = { 'katamba' => {}, 'yavash' => {}, 'xibar' => {}, 'visible' => [] }
-UserVars.sun = {}
 
 Settings['xibar'] ||= Time.now
 Settings['yavash'] ||= Time.now
@@ -92,7 +126,7 @@ def moon_change(moon, is_up)
   echo("moon_change #{moon}:#{is_up}") if $debug_mode_mm
   snapshot = Time.now
   snapshot = (snapshot - snapshot.sec)
-  update_moon_data(moon[0], 't' => snapshot.to_i, 'e' => is_up ? RISE : SET)
+  push_moon_update(moon[0], 't' => snapshot.to_i, 'e' => is_up ? RISE : SET)
 end
 
 def minutes_apart(first, second)
@@ -148,7 +182,25 @@ def update_moon_info(latest_data)
   end
 end
 
+def seconds_until_refetch
+  return 60 unless UserVars.moons.reject { |m| m == 'visible' }.values.first['timer'] && UserVars.sun['timer']
+  return $moon_data_delay if $moon_data_delay
+
+  echo("calculating next moon data request") if $debug_mode_mm
+  all_timers = UserVars.moons.reject { |m| m == 'visible' }.values.map { |d| d['timer'] } + [UserVars.sun['timer']]
+  $moon_data_delay = ([all_timers.min * 0.8, 1].max * 60).to_i
+  echo("Next request in #{$moon_data_delay} seconds") if $debug_mode_mm
+  $moon_data_delay
+end
+
 loop do
+  # Periodically refresh moon data from Firebase
+  if Time.now - $last_moon_fetch > seconds_until_refetch
+    $moon_data = load_moon_data
+    $last_moon_fetch = Time.now
+    $moon_data_delay = nil
+  end
+
   line = script.gets?
   case line
   when /^(Katamba|Xibar|Yavash) sets/
@@ -156,24 +208,25 @@ loop do
   when /^(Katamba|Xibar|Yavash) slowly rises/
     moon_change(Regexp.last_match(1).downcase, true)
   when /heralding another fine day|rises to create the new day|as the sun rises, hidden|as the sun rises behind it|faintest hint of the rising sun|The rising sun slowly|Night slowly turns into day as the horizon/
-    old = get_all_moon_data['s']
-    if old['s']
-      update_moon_data('s', 's' => old['s'], 'r' => Time.now.to_i)
+    old = $moon_data&.dig('s')
+    if old && old['s']
+      push_moon_update('s', 's' => old['s'], 'r' => Time.now.to_i)
     end
   when /The sun sinks below the horizon|night slowly drapes its starry banner|sun slowly sinks behind the scattered clouds and vanishes|grey light fades into a heavy mantle of black/
-    old = get_all_moon_data['s']
-    if old['r']
-      update_moon_data('s', 'r' => old['r'], 's' => Time.now.to_i)
+    old = $moon_data&.dig('s')
+    if old && old['r']
+      push_moon_update('s', 'r' => old['r'], 's' => Time.now.to_i)
     end
   end
 
-  if get_all_moon_data.nil?
-    enable_moon_connection
-    pause
+  if $moon_data.nil?
+    $moon_data = load_moon_data
+    $last_moon_fetch = Time.now
+    pause unless $moon_data
   end
 
-  update_moon_info(get_all_moon_data)
-  update_sun_info(get_all_moon_data)
+  update_moon_info($moon_data)
+  update_sun_info($moon_data)
   update_moon_window if CharSettings['moon_window']
   check_for_new_moons if correct
   pause 0.1 unless line

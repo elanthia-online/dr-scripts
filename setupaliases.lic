@@ -45,9 +45,6 @@ aliases_to_add = [
   # echos the full data of a specified remote room
   ['lfr', "#{$clean_lich_char}e echo Room[\\?].inspect"],
 
-  # echos every item in base-stealing for your current room so you know what missing stuff to add
-  ['liststeal', "#{$clean_lich_char}e echo get_data('stealing')['stealing_options'].select { |item| item['room'] == Room.current.id}.map { |item| item['item'] }"],
-
   ['ls', "look"],
   # these work as a pair, for recording room numbers (like setting up a hunting area); run cb, then rec in each room you want to record
   ['cb', "#{$clean_lich_char}e $temp = []"],
