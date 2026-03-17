@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.2.2'
+$DEPENDENCY_VERSION = '2.2.4'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -58,13 +58,6 @@ unless UserVars.dependency_setflags
     end
   end
   UserVars.dependency_setflags = Time.now
-end
-
-class Object
-  # IMPORT FUTURE LAWLZ
-  def itself
-    self
-  end
 end
 
 class ArgParser
@@ -370,11 +363,7 @@ class ScriptManager
     @versions = nil
     repo_scripts.each { |(name, _)| get_script(name, force) }
     autostarts.each do |script|
-      if script == 'drinfomon'
-        respond "\n---\ndrinfomon found in autostarts. This method is no longer used. Attempting to remove it now. If unsuccessful, it can be safely removed with `#{$clean_lich_char}e stop_autostart('drinfomon')`\n---\n"
-        stop_autostart('drinfomon')
-        next
-      end
+      next if handle_obsolete_autostart(script)
       custom_require.call(script)
       loop do
         pause 0.2
@@ -1608,6 +1597,36 @@ def warn_obsolete_scripts
 
     _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
   end
+end
+
+def handle_obsolete_autostart(script)
+  return false unless DR_OBSOLETE_SCRIPTS.include?(script)
+
+  in_character = UserVars.autostart_scripts.to_a.include?(script)
+  in_global = Settings['autostart'].include?(script)
+
+  DRC.message("---")
+  DRC.message("'#{script}' is obsolete and no longer needed.")
+
+  if in_character
+    DRC.message("Removing '#{script}' from character autostarts.")
+    DRC.message("If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
+    UserVars.autostart_scripts.delete(script)
+  end
+
+  if in_global
+    DRC.message("Removing '#{script}' from global autostarts.")
+    DRC.message("If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
+    $manager.remove_global_auto(script)
+  end
+
+  unless in_character || in_global
+    DRC.message("'#{script}' is configured in your YAML profile autostarts.")
+    DRC.message("Please remove '#{script}' from the 'autostarts' setting in your profile YAML.")
+  end
+
+  DRC.message("---")
+  true
 end
 
 def custom_require

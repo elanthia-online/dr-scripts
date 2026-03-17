@@ -1,3 +1,24 @@
+# Testing Conventions
+#
+# File organization:
+#   - One spec file per script, named to match: <script-name>_spec.rb
+#     (e.g. dependency_spec.rb for dependency.lic, pick_spec.rb for pick.lic)
+#
+# Principles:
+#   - DAMP (Descriptive And Meaningful Phrases): favor readable, self-documenting
+#     test names and setup over extreme DRYness. Each test should be understandable
+#     in isolation without chasing helper definitions.
+#   - SOLID: extract shared behavior into shared_examples when the same assertions
+#     apply across multiple contexts. Use let/before for setup, not deep inheritance.
+#     Keep each test focused on a single responsibility.
+#
+# Lich runtime isolation:
+#   - Scripts (.lic files) cannot be required directly — they depend on the full
+#     Lich runtime. Extract constants and methods via eval of specific line ranges
+#     (see dependency_obsolete_scripts_spec.rb for the pattern).
+#   - Mock only what you need: UserVars, Settings, Script.current, _respond, etc.
+#   - Use the test harness (test/test_harness.rb) for specs that need game objects.
+
 require 'ostruct'
 
 # Load the test harness which provides mock game objects:
