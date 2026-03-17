@@ -241,12 +241,12 @@ RSpec.describe 'Obsolete Scripts' do
   end
 
   describe 'DR_OBSOLETE_DATA_FILES' do
-    it 'includes base-stealing.yaml' do
-      expect(DR_OBSOLETE_DATA_FILES).to include('base-stealing.yaml')
-    end
-
     it 'is frozen' do
       expect(DR_OBSOLETE_DATA_FILES).to be_frozen
+    end
+
+    it 'is empty (no data files are currently obsolete)' do
+      expect(DR_OBSOLETE_DATA_FILES).to be_empty
     end
   end
 
@@ -259,23 +259,6 @@ RSpec.describe 'Obsolete Scripts' do
       it 'produces no warnings' do
         warn_obsolete_data_files
         expect($respond_messages).to be_empty
-      end
-    end
-
-    context 'when an obsolete data file exists' do
-      around do |example|
-        path = File.join(data_dir, 'base-stealing.yaml')
-        File.write(path, '# obsolete')
-        example.run
-      ensure
-        File.delete(path) if File.exist?(path)
-      end
-
-      it 'warns the user to delete it' do
-        warn_obsolete_data_files
-        warning = $respond_messages.find { |m| m.include?('base-stealing.yaml') }
-        expect(warning).to include('obsolete')
-        expect(warning).to include('safely deleted')
       end
     end
   end
