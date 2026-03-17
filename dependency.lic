@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.2.3'
+$DEPENDENCY_VERSION = '2.2.4'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -58,13 +58,6 @@ unless UserVars.dependency_setflags
     end
   end
   UserVars.dependency_setflags = Time.now
-end
-
-class Object
-  # IMPORT FUTURE LAWLZ
-  def itself
-    self
-  end
 end
 
 class ArgParser
