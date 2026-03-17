@@ -220,9 +220,6 @@ class ScriptManager
 
   def initialize(debug)
     @debug = debug
-    @paste_bin_token = 'dca351a27a8af501a8d3123e29af7981'
-    @paste_bin_url = 'https://pastebin.com/api/api_post.php'
-    @firebase_url = 'https://dr-scripts.firebaseio.com/'
     @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
     @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
     # Gating setting lich_url on lich version
@@ -253,8 +250,6 @@ class ScriptManager
     @remove_autos = []
     update_autostarts
     @self_updated = false
-    @thievery_queue = []
-    @shop_update_queue = []
 
     @request_authorization = load_personal_github_token
     @versions = nil
@@ -297,14 +292,6 @@ class ScriptManager
     @add_autos.empty? && @remove_autos.empty?
   end
 
-  def queue_thieving_update(id, update)
-    @thievery_queue << [id, update]
-  end
-
-  def queue_shop_update(shop_data)
-    @shop_update_queue << shop_data
-  end
-
   def run_queue
     update = false
 
@@ -321,31 +308,7 @@ class ScriptManager
       @remove_autos = []
     end
 
-    submit_thieving_update(*@thievery_queue.pop) unless @thievery_queue.empty?
-    submit_shop_update(@shop_update_queue.pop) unless @shop_update_queue.empty?
     update_autostarts if update
-  end
-
-  def submit_shop_update(shop_data)
-    partial = shop_data[:surfaces].nil?
-
-    key = "#{shop_data[:root_room]}-#{shop_data[:entrance]}"
-
-    uri = URI.parse("#{@firebase_url}/shop-data/#{key}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    begin
-      request = partial ? Net::HTTP::Patch.new(uri.request_uri) : Net::HTTP::Put.new(uri.request_uri)
-      request['Content-Type'] = 'application/json'
-      request.body = shop_data.to_json
-      response = http.request(request)
-      response.body.chomp
-    rescue => e
-      echo(e)
-      echo('Error in submitting shop data')
-    end
   end
 
   def get_script(filename, force = false)
@@ -437,24 +400,6 @@ class ScriptManager
 
         File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
       end
-  end
-
-  def update_local_stealing_yaml(id, update, new_entry = false)
-    stealing_path = File.join(SCRIPT_DIR, 'data/base-stealing.yaml')
-    stealing_data = $setupfiles.safe_load_yaml(stealing_path)
-    result = nil
-    if new_entry
-      stealing_data[:stealing_options].push(update)
-    else
-      stealing_data[:stealing_options].each do |data|
-        if data['id'] == id
-          result = data.dup
-          data.merge!(update)
-        end
-      end
-    end
-    File.open(stealing_path, 'w') { |file| file.print(stealing_data.to_yaml) }
-    result
   end
 
   def check_base_files
@@ -601,77 +546,6 @@ class ScriptManager
     echo "Personal token rate limit usage: #{used}/#{limit}" if @debug
 
     "Bearer #{token}"
-  end
-
-  def submit_thieving_update(id, update)
-    return submit_new_thieving_item(id, update) if update.delete('new')
-
-    old_data = update_local_stealing_yaml(id, update)
-
-    # return
-
-    data = get_current_stealing_data(id)
-
-    update.delete_if do |key, value|
-      echo("checking:#{data[key]}:#{old_data[key]}") if UserVars.crossing_trainer_debug
-      key =~ /_min$/ ? data[key] && data[key] != old_data[key] && value >= data[key] : data[key] && data[key] != old_data[key] && value <= data[key]
-    end
-
-    if update.empty?
-      echo('Nothing left to update') if UserVars.crossing_trainer_debug
-      return
-    end
-
-    echo("submitting:#{id}:#{update}") if UserVars.crossing_trainer_debug
-    uri = URI.parse("#{@firebase_url}/stealing-options/#{id}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Patch.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    request.body = update.to_json
-    response = http.request(request)
-    response.body.chomp
-  end
-
-  def submit_new_thieving_item(id, data)
-    id = (id.to_i + 1).to_s while get_current_stealing_data(id)
-
-    data['id'] = id
-
-    update_local_stealing_yaml(id, data, true)
-
-    echo("submittingNEW:#{id}:#{data}") if UserVars.crossing_trainer_debug
-
-    uri = URI.parse("#{@firebase_url}/stealing-options/#{id}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Put.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    request.body = data.to_json
-    response = http.request(request)
-    response.body.chomp
-  end
-
-  def get_current_stealing_data(id)
-    uri = URI.parse("#{@firebase_url}/stealing-options/#{id}.json")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Get.new(uri.request_uri)
-    request['Content-Type'] = 'application/json'
-    response = http.request(request)
-    return nil if response.body.nil?
-
-    begin
-      JSON.parse(response.body.chomp)
-    rescue
-      return nil
-    end
   end
 
   def make_map_edits
@@ -1423,6 +1297,7 @@ DR_OBSOLETE_SCRIPTS = %w[
   common-travel common-validation common drinfomon equipmanager
   common-money common-moonmage common-summoning common-theurgy common-arcana
   bootstrap common-crafting common-healing-data common-healing common-items
+  steal update-shops
 ].freeze
 
 def dr_obsolete_script?(name)
@@ -1449,6 +1324,20 @@ def warn_obsolete_scripts
     next unless File.exist?(path)
 
     _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
+  end
+end
+
+DR_OBSOLETE_DATA_FILES = %w[
+  base-stealing.yaml
+].freeze
+
+def warn_obsolete_data_files
+  data_dir = File.join(SCRIPT_DIR, 'data')
+  DR_OBSOLETE_DATA_FILES.each do |filename|
+    path = File.join(data_dir, filename)
+    next unless File.exist?(path)
+
+    _respond Lich::Messaging.monsterbold("--- Lich: '#{filename}' is obsolete and can be safely deleted from #{data_dir}.")
   end
 end
 
@@ -1631,14 +1520,6 @@ def update_d
   stop_script('dependency')
 end
 
-def submit_thieving_update(id, update)
-  $manager.queue_thieving_update(id, update)
-end
-
-def submit_shop_data(shop_data)
-  $manager.queue_shop_update(shop_data)
-end
-
 def get_all_moon_data
   $moon_watch ? $moon_watch.moon_data : nil
 end
@@ -1712,8 +1593,9 @@ $setupfiles.reload
 # Remind user of curated scripts with a copy in custom folder
 warn_custom_scripts
 
-# Warn about obsolete scripts still present in SCRIPT_DIR
+# Warn about obsolete scripts and data files still present locally
 warn_obsolete_scripts
+warn_obsolete_data_files
 
 loop do
   if $turn_on_moon_watch && $moon_watch.nil?

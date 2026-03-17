@@ -122,11 +122,17 @@ eval(dep_lines[ha_start..ha_start + 1 + ha_end].join, TOPLEVEL_BINDING, dep_path
   load_reportbot_whitelist
   register_slackbot
   send_slackbot_message
+  warn_obsolete_data_files
 ].each do |fn_name|
   fn_s = dep_lines.index { |l| l =~ /^def #{Regexp.escape(fn_name)}\b/ }
   fn_e = dep_lines[fn_s + 1..].index { |l| l =~ /^end\s*$/ }
   eval(dep_lines[fn_s..fn_s + 1 + fn_e].join, TOPLEVEL_BINDING, dep_path, fn_s + 1)
 end
+
+# Extract DR_OBSOLETE_DATA_FILES constant
+odf_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_DATA_FILES\s*=/ }
+odf_end = dep_lines[odf_start..].index { |l| l =~ /\.freeze$/ }
+eval(dep_lines[odf_start..odf_start + odf_end].join, TOPLEVEL_BINDING, dep_path, odf_start + 1)
 
 RSpec.describe 'Obsolete Scripts' do
   before { $respond_messages.clear }
@@ -230,6 +236,46 @@ RSpec.describe 'Obsolete Scripts' do
         warning = $respond_messages.find { |m| m.include?('exp-monitor') }
         expect(warning).to include('obsolete')
         expect(warning).to include('should be deleted')
+      end
+    end
+  end
+
+  describe 'DR_OBSOLETE_DATA_FILES' do
+    it 'includes base-stealing.yaml' do
+      expect(DR_OBSOLETE_DATA_FILES).to include('base-stealing.yaml')
+    end
+
+    it 'is frozen' do
+      expect(DR_OBSOLETE_DATA_FILES).to be_frozen
+    end
+  end
+
+  describe '#warn_obsolete_data_files' do
+    let(:data_dir) { File.join(SCRIPT_DIR, 'data') }
+
+    before { FileUtils.mkdir_p(data_dir) }
+
+    context 'when no obsolete data files exist' do
+      it 'produces no warnings' do
+        warn_obsolete_data_files
+        expect($respond_messages).to be_empty
+      end
+    end
+
+    context 'when an obsolete data file exists' do
+      around do |example|
+        path = File.join(data_dir, 'base-stealing.yaml')
+        File.write(path, '# obsolete')
+        example.run
+      ensure
+        File.delete(path) if File.exist?(path)
+      end
+
+      it 'warns the user to delete it' do
+        warn_obsolete_data_files
+        warning = $respond_messages.find { |m| m.include?('base-stealing.yaml') }
+        expect(warning).to include('obsolete')
+        expect(warning).to include('safely deleted')
       end
     end
   end
