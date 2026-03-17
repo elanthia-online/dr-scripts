@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.2.4'
+$DEPENDENCY_VERSION = '2.3.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -710,171 +710,6 @@ class ScriptManager
   end
 end
 
-class BankbotManager
-  def initialize(debug)
-    @debug = debug
-    @save = false
-    @load = false
-    @transaction = ''
-    @ledger = {}
-  end
-
-  attr_reader :ledger
-
-  def loaded?
-    !@load
-  end
-
-  def run_queue
-    save_transaction
-    load_ledger
-  end
-
-  def save_bankbot_transaction(transaction, ledger)
-    @transaction = transaction
-    @ledger = ledger.to_yaml
-    @save = true
-  end
-
-  def load_bankbot_ledger
-    @load = true
-  end
-
-  private
-
-  def save_transaction
-    return unless @save
-
-    File.open(File.join(LICH_DIR, "#{checkname}-transactions.log"), 'a') do |file|
-      file.puts('----------')
-      file.puts(Time.now)
-      file.puts(@transaction)
-      file.puts(@ledger)
-      file.puts('----------')
-    end
-    File.open(File.join(LICH_DIR, "#{checkname}-ledger.yaml"), 'wb') { |file| file.puts(@ledger) }
-    @save = false
-  end
-
-  def load_ledger
-    return unless @load
-
-    @ledger = safe_load_yaml("./#{checkname}-ledger.yaml")
-    @load = false
-  end
-
-  def safe_load_yaml(path)
-    OpenStruct.new(YAML.unsafe_load_file(path)).to_h
-  rescue => e
-    echo('*** ERROR PARSING YAML FILE ***')
-    echo(e.message)
-    return {}
-  end
-end
-
-class ReportbotManager
-  def initialize(debug)
-    @debug = debug
-    @save = false
-    @load = false
-    @whitelist = []
-  end
-
-  attr_reader :whitelist
-
-  def loaded?
-    !@load
-  end
-
-  def run_queue
-    save_whitelist
-    load_whitelist
-  end
-
-  def save_reportbot_whitelist(whitelist)
-    @whitelist = whitelist.to_yaml
-    @save = true
-  end
-
-  def load_reportbot_whitelist
-    @load = true
-  end
-
-  private
-
-  def save_whitelist
-    return unless @save
-
-    File.open(File.join(LICH_DIR, 'reportbot-whitelist.yaml'), 'wb') { |file| file.puts(@whitelist) }
-    @save = false
-  end
-
-  def load_whitelist
-    return unless @load
-
-    @whitelist = safe_load_yaml('./reportbot-whitelist.yaml')
-    @load = false
-  end
-
-  def safe_load_yaml(path)
-    YAML.unsafe_load_file(path)
-  rescue => e
-    echo('*** ERROR PARSING YAML FILE ***')
-    echo(e.message)
-    return []
-  end
-end
-
-class SlackbotManager
-  def initialize(debug)
-    @debug = debug
-    @slackbot = nil
-    @username = nil
-    @messages = []
-  end
-
-  def run_queue
-    register_slackbot
-    send_messages
-  end
-
-  def register(username)
-    return if @slackbot
-
-    if username.nil? || username.to_s.strip.empty?
-      DRC.message("SlackbotManager: No slackbot_username configured. Slack messaging disabled.")
-      return
-    end
-
-    @username = username
-  end
-
-  def queue_message(message)
-    return unless message
-
-    @messages << message
-  end
-
-  private
-
-  def register_slackbot
-    return unless @username
-    return unless @slackbot.nil?
-
-    echo("Registering Slackbot")
-    @slackbot = SlackBot.new
-  end
-
-  def send_messages
-    return unless @slackbot
-
-    until @messages.empty?
-      message = @messages.shift
-      @slackbot.direct_message(@username, message)
-    end
-  end
-end
-
 class SetupFiles
   # http://www.druby.org/sidruby/5-3-thread-safe-communication-using-locking-mutex-and-monitormixin.html#sec.monitormixin
   include MonitorMixin
@@ -1513,9 +1348,6 @@ end
 
 $setupfiles = SetupFiles.new(debug)
 $manager = ScriptManager.new(debug)
-$bankbot = BankbotManager.new(debug)
-$reportbot = ReportbotManager.new(debug)
-$slackbot = SlackbotManager.new(debug)
 
 def enable_moon_connection
   $turn_on_moon_watch = true
@@ -1530,31 +1362,52 @@ def get_data(type)
 end
 
 def save_bankbot_transaction(transaction, ledger)
-  $bankbot.save_bankbot_transaction(transaction, ledger)
+  ledger_yaml = ledger.to_yaml
+  File.open(File.join(LICH_DIR, "#{checkname}-transactions.log"), 'a') do |file|
+    file.puts('----------')
+    file.puts(Time.now)
+    file.puts(transaction)
+    file.puts(ledger_yaml)
+    file.puts('----------')
+  end
+  File.open(File.join(LICH_DIR, "#{checkname}-ledger.yaml"), 'wb') { |file| file.puts(ledger_yaml) }
 end
 
 def load_bankbot_ledger
-  $bankbot.load_bankbot_ledger
-  pause 0.1 until $bankbot.loaded?
-  $bankbot.ledger
+  OpenStruct.new(YAML.unsafe_load_file(File.join(LICH_DIR, "#{checkname}-ledger.yaml"))).to_h
+rescue => e
+  echo('*** ERROR PARSING YAML FILE ***')
+  echo(e.message)
+  {}
 end
 
 def save_reportbot_whitelist(whitelist)
-  $reportbot.save_reportbot_whitelist(whitelist)
+  File.open(File.join(LICH_DIR, 'reportbot-whitelist.yaml'), 'wb') { |file| file.puts(whitelist.to_yaml) }
 end
 
 def load_reportbot_whitelist
-  $reportbot.load_reportbot_whitelist
-  pause 0.1 until $reportbot.loaded?
-  $reportbot.whitelist
+  YAML.unsafe_load_file(File.join(LICH_DIR, 'reportbot-whitelist.yaml'))
+rescue => e
+  echo('*** ERROR PARSING YAML FILE ***')
+  echo(e.message)
+  []
 end
 
 def send_slackbot_message(message)
-  $slackbot.queue_message(message)
+  return unless message
+
+  $slackbot_instance ||= nil
+  return unless $slackbot_instance
+
+  $slackbot_instance.direct_message($slackbot_username, message)
 end
 
 def register_slackbot(username)
-  $slackbot.register(username)
+  return if $slackbot_instance
+  return if username.nil? || username.to_s.strip.empty?
+
+  $slackbot_username = username
+  $slackbot_instance = SlackBot.new
 end
 
 def format_name(name)
@@ -1869,9 +1722,6 @@ loop do
   end
 
   $manager.run_queue
-  $bankbot.run_queue
-  $reportbot.run_queue
-  $slackbot.run_queue
   $moon_watch.run_queue if $moon_watch
   clear
   pause 0.1
