@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.3.0'
+$DEPENDENCY_VERSION = '2.4.3'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -19,9 +19,6 @@ unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   end
   exit
 end
-
-no_pause_all
-no_kill_all
 
 unless XMLData.game =~ /^DR/
   echo("This script is not intended for usage with games other than Dragonrealms. Exiting now")
@@ -48,6 +45,20 @@ unless Settings['dependency_version'] == $DEPENDENCY_VERSION
   Settings.save
 end
 
+# One-time migration: move Settings['autostart'] into UserVars.autostart_scripts
+# Settings is script-scoped (only dependency can see it). UserVars is globally accessible.
+echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
+if Settings['autostart'] && !Settings['autostart'].empty?
+  echo("Migrating global autostarts to UserVars.autostart_scripts.")
+  echo("Before: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+  UserVars.autostart_scripts ||= []
+  UserVars.autostart_scripts = (UserVars.autostart_scripts + Settings['autostart']).uniq
+  UserVars.autostart_scripts -= ['dependency']
+  Settings['autostart'] = []
+  Settings.save
+  echo("After: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+end
+
 unless UserVars.dependency_setflags
   echo("Checking MonsterBold and ShowRoomID flags.")
   flags = Lich::Util.issue_command("flag", /^Usage/, /^For other setting options, see AVOID, SET, and TOGGLE/, quiet: true, timeout: 1, usexml: false)
@@ -60,52 +71,54 @@ unless UserVars.dependency_setflags
   UserVars.dependency_setflags = Time.now
 end
 
-class ArgParser
-  def parse_args(data, flex_args = false)
-    raw_args = variable.first
-    baselist = variable.drop(1).dup || Array.new
+if defined?(Lich::Common::ArgParser)
+  DRC.message("--- Dependency: ArgParser provided by core Lich. Skipping inline definition.")
+else
+  class ArgParser
+    def parse_args(data, flex_args = false)
+      raw_args = variable.first
+      baselist = variable.drop(1).dup || Array.new
 
-    unless baselist.size == 1 && baselist.grep(/^help$|^\?$|^h$/).any?
+      unless baselist.size == 1 && baselist.grep(/^help$|^\?$|^h$/).any?
 
-      result = data.map { |definition| check_match(definition, baselist.dup, flex_args) }.compact
+        result = data.map { |definition| check_match(definition, baselist.dup, flex_args) }.compact
 
-      return result.first if result.length == 1
+        return result.first if result.length == 1
 
-      if result.empty?
-        echo "***INVALID ARGUMENTS DON'T MATCH ANY PATTERN***"
-        respond "Provided Arguments: '#{raw_args}'"
-      elsif result.length > 1
-        echo '***INVALID ARGUMENTS MATCH MULTIPLE PATTERNS***'
-        respond "Provided Arguments: '#{raw_args}'"
+        if result.empty?
+          echo "***INVALID ARGUMENTS DON'T MATCH ANY PATTERN***"
+          respond "Provided Arguments: '#{raw_args}'"
+        elsif result.length > 1
+          echo '***INVALID ARGUMENTS MATCH MULTIPLE PATTERNS***'
+          respond "Provided Arguments: '#{raw_args}'"
+        end
+
       end
 
+      display_args(data)
+      exit
     end
 
-    display_args(data)
-    exit
-  end
-
-  def display_args(data)
-    # This section displays help output for a script. It recognizes when a script call has been given
-    # with the wrong number or incorrect arguments, or when a script has been called via
-    # ;script-name help. It outputs an example script call, including arguments, with optional
-    # arguments enclosed in brackets. If an optional script_summary argument has been specified within
-    # the script, it also outputs a summary of the script. Further, if yaml settings have been
-    # outlined in base-help.yaml, it will output help information for the yaml settings used.
-    # Example output when all help settings have been specified:
-    #
-    # >;circlecheck help
-    #   SCRIPT SUMMARY: Checks your circle and skills to next circle. Optionally checks skills for a target circle.
-    #
-    #   SCRIPT CALL FORMAT AND ARG DESCRIPTIONS (arguments in brackets are optional):
-    #    ;circlecheck [debug] [mode] [target] [script_summary]
-    #     debug        Runs the script with debug messages.
-    #     mode         Only display requirements you don't meet [brief, short, next]
-    #     target       See requirements for a specific circle
-    #
-    #   YAML SETTINGS USED:
-    #     circlecheck_prettyprint: Tells circlecheck to use the pretty print formatting for output. [Ex: true/false]
-    if Script.current.name != "bootstrap"
+    def display_args(data)
+      # This section displays help output for a script. It recognizes when a script call has been given
+      # with the wrong number or incorrect arguments, or when a script has been called via
+      # ;script-name help. It outputs an example script call, including arguments, with optional
+      # arguments enclosed in brackets. If an optional script_summary argument has been specified within
+      # the script, it also outputs a summary of the script. Further, if yaml settings have been
+      # outlined in base-help.yaml, it will output help information for the yaml settings used.
+      # Example output when all help settings have been specified:
+      #
+      # >;circlecheck help
+      #   SCRIPT SUMMARY: Checks your circle and skills to next circle. Optionally checks skills for a target circle.
+      #
+      #   SCRIPT CALL FORMAT AND ARG DESCRIPTIONS (arguments in brackets are optional):
+      #    ;circlecheck [debug] [mode] [target] [script_summary]
+      #     debug        Runs the script with debug messages.
+      #     mode         Only display requirements you don't meet [brief, short, next]
+      #     target       See requirements for a specific circle
+      #
+      #   YAML SETTINGS USED:
+      #     circlecheck_prettyprint: Tells circlecheck to use the pretty print formatting for output. [Ex: true/false]
       data.each do |def_set|
         def_set
           .select { |x| x[:name].to_s == "script_summary" }
@@ -133,67 +146,67 @@ class ArgParser
         respond ""
       end
     end
-  end
 
-  private
+    private
 
-  def matches_def(definition, item)
-    echo "#{definition}:#{item}" if UserVars.parse_args_debug
-    return true if definition[:regex] && definition[:regex] =~ item
-    return true if definition[:options] && definition[:options].find { |option| item =~ /^#{option}#{'$' if definition[:option_exact]}/i }
+    def matches_def(definition, item)
+      echo "#{definition}:#{item}" if UserVars.parse_args_debug
+      return true if definition[:regex] && definition[:regex] =~ item
+      return true if definition[:options] && definition[:options].find { |option| item =~ /^#{option}#{'$' if definition[:option_exact]}/i }
 
-    false
-  end
-
-  def check_match(defs, vars, flex)
-    args = OpenStruct.new
-
-    defs.reject { |x| x[:optional] }.each do |definition|
-      return nil unless matches_def(definition, vars.first)
-
-      args[definition[:name]] = vars.first.downcase
-      vars.shift
+      false
     end
 
-    defs.select { |x| x[:optional] }.each do |definition|
-      if (match = vars.find { |x| matches_def(definition, x) })
-        args[definition[:name]] = match.downcase
-        vars.delete(match)
+    def check_match(defs, vars, flex)
+      args = OpenStruct.new
+
+      defs.reject { |x| x[:optional] }.each do |definition|
+        return nil unless matches_def(definition, vars.first)
+
+        args[definition[:name]] = vars.first.downcase
+        vars.shift
       end
-    end
 
-    if flex
-      args.flex = vars
-
-      # Check to see if a yaml profile has same name as script arg. Only matters when we're flexing
-      # args and attempting to call a yaml profile with the flexed arg.
-      profiles = Dir[File.join(SCRIPT_DIR, 'profiles/*.*')]
-      profiles.each do |profile|
-        profile = profile[/.*#{checkname}-(\w*).yaml/, 1]
-        args.to_h.values.each do |arg|
-          if arg == profile
-            echo "WARNING: yaml profile '#{checkname}-#{arg}.yaml' matches script argument '#{arg}'."
-            echo "Favoring the script argument. Rename the file if you intend to call it as a flexed settings file."
-          end
+      defs.select { |x| x[:optional] }.each do |definition|
+        if (match = vars.find { |x| matches_def(definition, x) })
+          args[definition[:name]] = match.downcase
+          vars.delete(match)
         end
       end
-    else
-      return nil unless vars.empty?
+
+      if flex
+        args.flex = vars
+
+        # Check to see if a yaml profile has same name as script arg. Only matters when we're flexing
+        # args and attempting to call a yaml profile with the flexed arg.
+        profiles = Dir[File.join(SCRIPT_DIR, 'profiles/*.*')]
+        profiles.each do |profile|
+          profile = profile[/.*#{Regexp.escape(checkname)}-(\w*).yaml/, 1]
+          args.to_h.values.each do |arg|
+            if arg == profile
+              echo "WARNING: yaml profile '#{checkname}-#{arg}.yaml' matches script argument '#{arg}'."
+              echo "Favoring the script argument. Rename the file if you intend to call it as a flexed settings file."
+            end
+          end
+        end
+      else
+        return nil unless vars.empty?
+      end
+
+      args
     end
 
-    args
-  end
-
-  def format_item(definition)
-    item = definition[:display] || definition[:name]
-    if definition[:optional]
-      item = "[#{item}]"
-    elsif definition[:variable] || definition[:options]
-      item = "<#{item}>"
+    def format_item(definition)
+      item = definition[:display] || definition[:name]
+      if definition[:optional]
+        item = "[#{item}]"
+      elsif definition[:variable] || definition[:options]
+        item = "<#{item}>"
+      end
+      item
     end
-    item
   end
-end
+end # if/else defined?(Lich::Common::ArgParser)
 
 def parse_args(defn, flex_args = false)
   ArgParser.new.parse_args(defn, flex_args)
@@ -215,41 +228,18 @@ install = args.install
 debug = UserVars.debug_dependency
 
 class ScriptManager
-  attr_reader :autostarts
-
   def initialize(debug)
     @debug = debug
     @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
     @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
-    # Gating setting lich_url on lich version
 
     UserVars.autostart_scripts ||= []
     UserVars.autostart_scripts.uniq!
     UserVars.autostart_scripts -= ['dependency']
-    Settings['autostart'] ||= Array.new
-
-    unless Settings['autostart'] == Settings['autostart'].uniq
-      echo("Duplicate autostarts found.")
-      echo("Removing #{Settings['autostart'] - Settings['autostart'].uniq}")
-      Settings['autostart'].uniq!
-      Settings.save
-    end
-
-    if Settings['autostart'].include?('dependency')
-      echo("Dependency found in autostarts. It doesn't belong here. Removing it.")
-      Settings['autostart'] -= ['dependency']
-      Settings.save
-    end
-
-    # Setting Settings['lich_fork_sha'] to nil if using lich5. This setting isn't used anymore.
 
     Settings['base_versions'] ||= {}
 
-    @add_autos = []
-    @remove_autos = []
-    update_autostarts
     @self_updated = false
-
     @request_authorization = load_personal_github_token
     @versions = nil
   end
@@ -258,24 +248,12 @@ class ScriptManager
     @self_updated
   end
 
-  def update_autostarts
-    @autostarts = (UserVars.autostart_scripts.to_a + SetupFiles.new.get_settings.autostarts.to_a + Settings['autostart']).uniq
-  end
-
-  def add_global_auto(script)
-    @add_autos << script
-  end
-
-  def remove_global_auto(script)
-    @remove_autos << script
+  def autostarts
+    (UserVars.autostart_scripts.to_a + SetupFiles.new.get_settings.autostarts.to_a).uniq
   end
 
   def get_versions
-    if @versions
-      @versions
-    else
-      @versions = build_version_hash
-    end
+    @versions ||= build_version_hash
   end
 
   def build_version_hash
@@ -285,29 +263,6 @@ class ScriptManager
       sha = Digest::SHA1.hexdigest('blob' + " #{body.size}" + "\0" + body)
       versions[file] = sha
     end
-  end
-
-  def autos_proccessed?
-    @add_autos.empty? && @remove_autos.empty?
-  end
-
-  def run_queue
-    update = false
-
-    unless @add_autos.empty?
-      update = true
-      @add_autos.each { |script| Settings['autostart'] << script }
-      Settings.save
-      @add_autos = []
-    end
-    unless @remove_autos.empty?
-      update = true
-      @remove_autos.each { |script| Settings['autostart'].delete(script) }
-      Settings.save
-      @remove_autos = []
-    end
-
-    update_autostarts if update
   end
 
   def get_script(filename, force = false)
@@ -326,11 +281,8 @@ class ScriptManager
     repo_scripts.each { |(name, _)| get_script(name, force) }
     autostarts.each do |script|
       next if handle_obsolete_autostart(script)
+
       custom_require.call(script)
-      loop do
-        pause 0.2
-        break unless !Script.running.find_all { |s| s.name =~ /bootstrap/ }.empty?
-      end
     end
     finish_time = Time.now
     run_time = finish_time - start_time
@@ -348,7 +300,6 @@ class ScriptManager
     if filename == 'dependency.lic' && File.exist?(File.join(SCRIPT_DIR, filename))
       body = File.open(File.join(SCRIPT_DIR, filename), 'r').readlines.join('')
       @versions[filename] = Digest::SHA1.hexdigest('blob' + " #{body.size}" + "\0" + body)
-
       return if info['sha'] == @versions[filename]
     end
 
@@ -365,7 +316,6 @@ class ScriptManager
     end
 
     File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(content) }
-
     @self_updated = true if filename == 'dependency.lic'
   end
 
@@ -569,556 +519,564 @@ class ScriptManager
   end
 end
 
-class SetupFiles
-  # http://www.druby.org/sidruby/5-3-thread-safe-communication-using-locking-mutex-and-monitormixin.html#sec.monitormixin
-  include MonitorMixin
+if defined?(Lich::Common::SetupFiles)
+  DRC.message("--- Dependency: SetupFiles provided by core Lich. Skipping inline definition.")
+else
+  class SetupFiles
+    # http://www.druby.org/sidruby/5-3-thread-safe-communication-using-locking-mutex-and-monitormixin.html#sec.monitormixin
+    include MonitorMixin
 
-  class FileInfo
-    attr_reader :path, :name, :mtime
+    class FileInfo
+      attr_reader :path, :name, :mtime
 
-    def initialize(path:, name:, data:, mtime:)
-      @path = path
-      @name = name
-      @data = data
-      @mtime = mtime
-    end
+      def initialize(path:, name:, data:, mtime:)
+        @path = path
+        @name = name
+        @data = data
+        @mtime = mtime
+      end
 
-    def data
-      # Create deep clone of data to mitigate scripts changing settings in-memory
-      # because that leads to hard to track down bugs and unpredictable script behaviors.
-      Marshal.load(Marshal.dump(@data))
-    end
+      def data
+        # Create deep clone of data to mitigate scripts changing settings in-memory
+        # because that leads to hard to track down bugs and unpredictable script behaviors.
+        Marshal.load(Marshal.dump(@data))
+      end
 
-    def peek(property)
-      # An efficient and safe way to return a specific property
-      # from the yaml file without the risks of passing around shallow copies.
-      # This marshals the one property which is magnitudes faster than
-      # marshalling the entire file to access one property.
-      Marshal.load(Marshal.dump(@data[property.to_sym]))
-    end
+      def peek(property)
+        # An efficient and safe way to return a specific property
+        # from the yaml file without the risks of passing around shallow copies.
+        # This marshals the one property which is magnitudes faster than
+        # marshalling the entire file to access one property.
+        Marshal.load(Marshal.dump(@data[property.to_sym]))
+      end
 
-    def to_s
-      File.join(@path, @name)
-    end
+      def to_s
+        File.join(@path, @name)
+      end
 
-    def inspect
-      "#<SetupFiles::FileInfo @name=#{@name}, @path=#{@path}, @mtime=#{@mtime}>"
-    end
-  end
-
-  def initialize(debug = false)
-    super() # Must call super() to initialize the MonitorMixin
-    @files_cache = {} # map of filenames => FileInfo objects
-    @debug = debug
-  end
-
-  def safe_load_yaml(filepath)
-    OpenStruct.new(YAML.unsafe_load_file(filepath)).to_h
-  rescue => e
-    echo('*** ERROR PARSING YAML FILE ***')
-    echo(e.message)
-    return {}
-  end
-
-  # Returns your character's settings.
-  # base.yaml, base-empty.yaml, and MyChar-setup.yaml are always loaded.
-  # You can also provide an array of character yaml suffixes to load additionally.
-  # For example, ['hunt'] to load 'scripts/profiles/MyChar-hunt.yaml'.
-  # The suffixes feature is primarily used by hunting-buddy.
-  #
-  # Supports cascading includes: include files can themselves have an 'include:'
-  # property that references other include files. Resolution is depth-first
-  # with circular dependency protection.
-  def get_settings(character_suffixes = [])
-    character_suffixes = ['setup', character_suffixes].flatten.compact.uniq
-    character_filenames = character_suffixes_to_filenames(character_suffixes)
-    # Ensure latest profiles are loaded into cache
-    reload_profiles(character_filenames)
-    # Get initial 'include' suffixes from character files
-    initial_include_suffixes = character_filenames.reduce([]) do |result, filename|
-      result + (cache_get_by_filename(filename).peek('include') || [])
-    end
-    initial_include_filenames = initial_include_suffixes.map { |suffix| to_include_filename(suffix) }
-    # Recursively resolve all includes (cascading includes support)
-    include_filenames = resolve_includes_recursively(initial_include_filenames)
-    echo "#{self.class}::#{__callee__} resolved include_filenames=#{include_filenames}" if @debug
-    # Merge order: base.yaml -> base-empty.yaml -> includes (depth-first) -> character files
-    settings = [
-      'base.yaml',
-      'base-empty.yaml',
-      include_filenames,
-      character_filenames
-    ].flatten.reduce({}) do |result, filename|
-      result.merge(cache_get_by_filename(filename).data || {})
-    end
-    # Transform settings for quality of life improvements
-    transform_settings(settings)
-  end
-
-  # Returns the config in a 'scripts/data/base-{type}.yaml' file.
-  # For example, type could be 'spells' or 'town' to return base-spells.yaml or base-town.yaml.
-  def get_data(type)
-    filename = to_base_filename(type)
-    # Ensure latest data is loaded into cache
-    reload_data([filename])
-    # Transform data for quality of life improvements
-    transform_data(cache_get_by_filename(filename).data)
-  end
-
-  # Designed to be called once before dependency enters its run loop.
-  # Purpose is to check for file changes and reload them into cache.
-  def reload
-    reload_profiles(character_suffixes_to_filenames(['setup']))
-    reload_data
-  end
-
-  private
-
-  SCRIPTS_DATA_PATH = File.join(SCRIPT_DIR, 'data')
-
-  # use alternate location for settings to allow folks to use lich with
-  # alternate configurations in Test/Platinum/Fallen
-  if File.exist?(File.join(DATA_DIR, XMLData.game, "base.yaml")) && File.exist?(File.join(DATA_DIR, XMLData.game, "base-empty.yaml")) && File.exist?(File.join(DATA_DIR, XMLData.game, "#{checkname}-setup.yaml"))
-    echo("Detected game instance-specific files. Loading settings from #{File.join(DATA_DIR, XMLData.game)}")
-    SCRIPTS_PROFILES_PATH = File.join(DATA_DIR, XMLData.game)
-  else
-    SCRIPTS_PROFILES_PATH = File.join(SCRIPT_DIR, 'profiles')
-  end
-
-  # Reloads the base profiles plus any that match the filenames given.
-  def reload_profiles(filenames = [])
-    load_files(get_profiles_glob_patterns(filenames))
-  end
-
-  # Reloads the base data plus any that match the filenames given.
-  def reload_data(filenames = [])
-    load_files(get_data_glob_patterns(filenames))
-  end
-
-  # Gets glob patterns for the profiles directory.
-  # Includes base profiles plus any specified in the filenames argument.
-  def get_profiles_glob_patterns(filenames = [])
-    get_glob_patterns(SCRIPTS_PROFILES_PATH, filenames)
-  end
-
-  # Gets glob patterns for the data directory.
-  # Includes base data plus any specified in the filenames argument.
-  def get_data_glob_patterns(filenames = [])
-    get_glob_patterns(SCRIPTS_DATA_PATH, filenames)
-  end
-
-  # Generates an array of file glob patterns, one per filename in the given basepath.
-  # `base*.yaml` is automatically and always included in the glob pattern.
-  def get_glob_patterns(basepath = '.', filenames = [])
-    # base* yamls define initial setting defaults.
-    # include* yamls allow players to organize their settings into files
-    # and then reference them in their character specific setup yamls.
-    # The use of include yamls promotes reuse, which is a big win
-    # for players with several characters.
-    filenames = ["base*.yaml", "include*.yaml", filenames].flatten.compact.uniq
-    filenames.map { |filename| File.join(basepath, File.basename(filename)) }
-  end
-
-  # Given an array of suffixes like ['setup'] or ['setup', 'hunt'] then
-  # returns an array of those values mapped to filenames "{CharacterName}-{suffix}.yaml"
-  def character_suffixes_to_filenames(character_suffixes)
-    character_suffixes.map { |suffix| to_character_filename(suffix) }
-  end
-
-  # Returns the filename to a character yaml file for the given suffix.
-  # For example 'setup' returns '{character}-setup.yaml'.
-  def to_character_filename(suffix)
-    "#{checkname}-#{suffix}.yaml"
-  end
-
-  # Returns the filename to a base yaml file for the given suffix.
-  # For example 'spells' returns 'base-spells.yaml'.
-  def to_base_filename(suffix)
-    "base-#{suffix}.yaml"
-  end
-
-  # Returns the filename to an include yaml file for the given suffix.
-  # For example 'spells' returns 'include-spells.yaml'.
-  def to_include_filename(suffix)
-    "include-#{suffix}.yaml"
-  end
-
-  # Recursively resolves include files, supporting cascading includes.
-  # Include files can themselves have an 'include:' property that references
-  # other include files. Uses depth-first resolution with circular dependency protection.
-  #
-  # @param filenames [Array<String>] Initial include filenames to resolve
-  # @param visited [Set] Tracks visited files to prevent circular dependencies
-  # @param include_order [Array<String>] Accumulates the final ordered list of includes
-  # @return [Array<String>] Ordered list of include filenames (deepest dependencies first)
-  def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
-    filenames.each do |filename|
-      # Circular dependency protection - skip already visited files
-      next if visited.include?(filename)
-
-      visited << filename
-      # Load this include file into cache
-      reload_profiles([filename])
-      file_info = cache_get_by_filename(filename)
-      next unless file_info
-
-      # Get nested includes from this file
-      nested_suffixes = file_info.peek('include') || []
-      echo "#{self.class}::#{__callee__} #{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
-      nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
-
-      # Depth-first: resolve nested includes BEFORE adding this file
-      # This ensures dependencies are merged before dependents
-      resolve_includes_recursively(nested_filenames, visited, include_order)
-
-      include_order << filename
-    end
-    include_order
-  end
-
-  # Iterates the files matched by the glob pattern and for those that
-  # have been modified since the last time they were cached then those
-  # are read from disk and cached. Unchanged files are not read again.
-  def load_files(glob_patterns = [])
-    self.synchronize do
-      echo "#{self.class}::#{__callee__} glob_patterns=#{glob_patterns}" if @debug
-      glob_patterns.each do |glob_pattern|
-        Dir.glob(glob_pattern)
-           .uniq
-           .select { |filepath| File.file?(filepath) } # ignore directories
-           .each do |filepath|
-             filename = File.basename(filepath)
-             last_modified_date = File.mtime(filepath)
-             cached_file = cache_get_by_filename(filename)
-             echo "#{self.class}::#{__callee__} filepath=#{filepath}, last_modified_date=#{last_modified_date}, cached_file=#{cached_file.inspect}" if @debug
-             if cached_file.mtime != last_modified_date
-               cache_put_by_filepath(filepath)
-             end
-           end
+      def inspect
+        "#<SetupFiles::FileInfo @name=#{@name}, @path=#{@path}, @mtime=#{@mtime}>"
       end
     end
-  end
 
-  # Loads the yaml file contents into the file cache.
-  # Uses the filename as the cache key.
-  def cache_put_by_filepath(filepath)
-    self.synchronize do
-      echo "#{self.class}::#{__callee__} filepath=#{filepath}" if @debug
-      @files_cache[File.basename(filepath)] = SetupFiles::FileInfo.new(
-        path: File.dirname(filepath),
-        name: File.basename(filepath),
-        mtime: File.mtime(filepath),
-        data: safe_load_yaml(filepath)
-      )
-    end
-  end
-
-  # Returns the cached file info for the given filename.
-  # Uses the filename as the cache key.
-  def cache_get_by_filename(filename)
-    echo "#{self.class}::#{__callee__} filename=#{filename}" if @debug
-    @files_cache[filename]
-  end
-
-  # Enrich settings with base data (e.g. fill in gaps for spells),
-  # migrate legacy settings where appropriate, and other QOL tweaks.
-  def transform_settings(original_settings)
-    echo "#{self.class}::#{__callee__}" if @debug
-
-    # Enable dot access to top-level properties (e.g. settings.hometown)
-    settings = OpenStruct.new(original_settings)
-
-    # Get data to enrich settings
-    base_data_items = get_data('items')
-    base_data_spells = get_data('spells')
-    base_data_empty = get_data('empty')
-
-    battle_cries_data = base_data_spells.battle_cries
-    spells_data = base_data_spells.spell_data
-    empty_data = base_data_empty.empty_values
-
-    # Populate nil settings with default empty arrays/hashes
-    # to mitigate "can't convert NilClass to Array" errors.
-    # Note we don't merge to overwrite, we merge to assign if nil.
-    empty_data.each { |name, value| settings[name] ||= value }
-
-    # Find spell data by its name, case insensitive.
-    get_spell_data_by_name = lambda do |name_to_find|
-      # This creates a new map filtered to only the entries that match the spell name.
-      spell_matches = spells_data.select { |name, _data| name.casecmp?(name_to_find) }
-      # It's theoretically possible, though unlikely, that multiple
-      # entries were returned if base data had the same spell listed
-      # with different capitalization. Let's take the first entry we found.
-      spell_match = spell_matches.first
-      # We now have a map of spell name to map of spell properties.
-      # What we want to return is just the map of spell properties.
-      # Maps are treated as two-element arrays, first is the key, last is the value.
-      # So we grab the last element which leaves us with map of spell properties.
-      spell_data = spell_match.last
-      # Inject spell name into the spell properties.
-      # Some scripts check for either `abbrev` or `name`
-      # but our base spells data doesn't have name as a property, so we set it.
-      spell_data['name'] ||= spell_match.first
-
-      spell_data
+    def initialize(debug = false)
+      super() # Must call super() to initialize the MonitorMixin
+      @files_cache = {} # map of filenames => FileInfo objects
+      @debug = debug
     end
 
-    # Find spell data by its abbreviation, case insensitive.
-    get_spell_data_by_abbrev = lambda do |abbrev_to_find|
-      # This creates a new map filtered to only the entries that match the spell abbreviation.
-      spell_matches = spells_data.select { |_name, data| data['abbrev'].casecmp?(abbrev_to_find) }
-      # It's theoretically possible, though unlikely, that multiple
-      # entries were returned if base data had the same spell listed
-      # with different capitalization. Let's take the first entry we found.
-      spell_match = spell_matches.first
-      # We now have a map of spell name to map of spell properties.
-      # What we want to return is just the map of spell properties.
-      # Maps are treated as two-element arrays, first is the key, last is the value.
-      # So we grab the last element which leaves us with map of spell properties.
-      spell_data = spell_match.last
-      # Inject spell name into the spell properties.
-      # Some scripts check for either `abbrev` or `name`
-      # but our base spells data doesn't have name as a property, so we set it.
-      spell_data['name'] ||= spell_match.first
-
-      spell_data
+    def safe_load_yaml(filepath)
+      OpenStruct.new(YAML.unsafe_load_file(filepath)).to_h
+    rescue => e
+      echo('*** ERROR PARSING YAML FILE ***')
+      echo(e.message)
+      return {}
     end
 
-    # Given a hash for a single spell definition,
-    # populates unset properties with base spells data.
+    # Returns your character's settings.
+    # base.yaml, base-empty.yaml, and MyChar-setup.yaml are always loaded.
+    # You can also provide an array of character yaml suffixes to load additionally.
+    # For example, ['hunt'] to load 'scripts/profiles/MyChar-hunt.yaml'.
+    # The suffixes feature is primarily used by hunting-buddy.
     #
-    # For example:
-    # if spell data has:
-    #   { name: 'Death Monkey', abbrev: 'DM', mana: 5, skill: 'Targeted Magic' }
-    #
-    # and your spell setting in your yaml has:
-    #   { abbrev: 'DM', mana: 8 }
-    #
-    # then this method returns the enriched spell configuration as:
-    #   { name: 'Death Monkey', abbrev: 'DM', mana: 8, skill: 'Targeted Magic' }
-    #
-    enrich_spells_with_data_block = lambda do |spell_setting|
-      return spell_setting unless spell_setting.is_a?(Hash)
-
-      spell_data = get_spell_data_by_name.call(spell_setting['name']) ||
-                   get_spell_data_by_abbrev.call(spell_setting['abbrev'])
-      (spell_data || {}).merge(spell_setting)
+    # Supports cascading includes: include files can themselves have an 'include:'
+    # property that references other include files. Resolution is depth-first
+    # with circular dependency protection.
+    def get_settings(character_suffixes = [])
+      character_suffixes = ['setup', character_suffixes].flatten.compact.uniq
+      character_filenames = character_suffixes_to_filenames(character_suffixes)
+      # Ensure latest profiles are loaded into cache
+      reload_profiles(character_filenames)
+      # Get initial 'include' suffixes from character files
+      initial_include_suffixes = character_filenames.reduce([]) do |result, filename|
+        result + (cache_get_by_filename(filename).peek('include') || [])
+      end
+      initial_include_filenames = initial_include_suffixes.map { |suffix| to_include_filename(suffix) }
+      # Recursively resolve all includes (cascading includes support)
+      include_filenames = resolve_includes_recursively(initial_include_filenames)
+      echo "#{self.class}::#{__callee__} resolved include_filenames=#{include_filenames}" if @debug
+      # Merge order: base.yaml -> base-empty.yaml -> includes (depth-first) -> character files
+      settings = [
+        'base.yaml',
+        'base-empty.yaml',
+        include_filenames,
+        character_filenames
+      ].flatten.reduce({}) do |result, filename|
+        result.merge(cache_get_by_filename(filename).data || {})
+      end
+      # Transform settings for quality of life improvements
+      transform_settings(settings)
     end
 
-    # Given a hash of spell names to spell definitions,
-    # populates the `name:` property on the spell definition if it's missing.
+    # Returns the config in a 'scripts/data/base-{type}.yaml' file.
+    # For example, type could be 'spells' or 'town' to return base-spells.yaml or base-town.yaml.
+    def get_data(type)
+      filename = to_base_filename(type)
+      # Ensure latest data is loaded into cache
+      reload_data([filename])
+      # Transform data for quality of life improvements
+      transform_data(cache_get_by_filename(filename).data)
+    end
+
+    # Designed to be called once before dependency enters its run loop.
+    # Purpose is to check for file changes and reload them into cache.
+    def reload
+      reload_profiles(character_suffixes_to_filenames(['setup']))
+      reload_data
+    end
+
+    private
+
+    SCRIPTS_DATA_PATH = File.join(SCRIPT_DIR, 'data')
+
+    # use alternate location for settings to allow folks to use lich with
+    # alternate configurations in Test/Platinum/Fallen
+    if File.exist?(File.join(DATA_DIR, XMLData.game, "base.yaml")) && File.exist?(File.join(DATA_DIR, XMLData.game, "base-empty.yaml")) && File.exist?(File.join(DATA_DIR, XMLData.game, "#{checkname}-setup.yaml"))
+      echo("Detected game instance-specific files. Loading settings from #{File.join(DATA_DIR, XMLData.game)}")
+      SCRIPTS_PROFILES_PATH = File.join(DATA_DIR, XMLData.game)
+    else
+      SCRIPTS_PROFILES_PATH = File.join(SCRIPT_DIR, 'profiles')
+    end
+
+    # Reloads the base profiles plus any that match the filenames given.
+    def reload_profiles(filenames = [])
+      load_files(get_profiles_glob_patterns(filenames))
+    end
+
+    # Reloads the base data plus any that match the filenames given.
+    def reload_data(filenames = [])
+      load_files(get_data_glob_patterns(filenames))
+    end
+
+    # Gets glob patterns for the profiles directory.
+    # Includes base profiles plus any specified in the filenames argument.
+    def get_profiles_glob_patterns(filenames = [])
+      get_glob_patterns(SCRIPTS_PROFILES_PATH, filenames)
+    end
+
+    # Gets glob patterns for the data directory.
+    # Includes base data plus any specified in the filenames argument.
+    def get_data_glob_patterns(filenames = [])
+      get_glob_patterns(SCRIPTS_DATA_PATH, filenames)
+    end
+
+    # Generates an array of file glob patterns, one per filename in the given basepath.
+    # `base*.yaml` is automatically and always included in the glob pattern.
+    def get_glob_patterns(basepath = '.', filenames = [])
+      # base* yamls define initial setting defaults.
+      # include* yamls allow players to organize their settings into files
+      # and then reference them in their character specific setup yamls.
+      # The use of include yamls promotes reuse, which is a big win
+      # for players with several characters.
+      filenames = ["base*.yaml", "include*.yaml", filenames].flatten.compact.uniq
+      filenames.map { |filename| File.join(basepath, File.basename(filename)) }
+    end
+
+    # Given an array of suffixes like ['setup'] or ['setup', 'hunt'] then
+    # returns an array of those values mapped to filenames "{CharacterName}-{suffix}.yaml"
+    def character_suffixes_to_filenames(character_suffixes)
+      character_suffixes.map { |suffix| to_character_filename(suffix) }
+    end
+
+    # Returns the filename to a character yaml file for the given suffix.
+    # For example 'setup' returns '{character}-setup.yaml'.
+    def to_character_filename(suffix)
+      "#{checkname}-#{suffix}.yaml"
+    end
+
+    # Returns the filename to a base yaml file for the given suffix.
+    # For example 'spells' returns 'base-spells.yaml'.
+    def to_base_filename(suffix)
+      "base-#{suffix}.yaml"
+    end
+
+    # Returns the filename to an include yaml file for the given suffix.
+    # For example 'spells' returns 'include-spells.yaml'.
+    def to_include_filename(suffix)
+      "include-#{suffix}.yaml"
+    end
+
+    # Recursively resolves include files, supporting cascading includes.
+    # Include files can themselves have an 'include:' property that references
+    # other include files. Uses depth-first resolution with circular dependency protection.
     #
-    # Because the the map keys are themselves the spell names,
-    # some players don't repeat the `name:` or `abbrev:` property
-    # in the spell setting. However, we need that information
-    # in order to enrich the spell setting with base data.
-    #
-    # For example:
-    # if spells map has:
-    #   { 'Devour': { 'use_auto_mana': true }, 'wound_level_threshold': 2 }
-    #
-    # then this method returns the enriched spell configuration as:
-    #   { 'Devour': { 'name': 'Devour', 'use_auto_mana': true }, 'wound_level_threshold': 2 }
-    #
-    enrich_spells_with_name_block = lambda do |spells_map|
-      spells_map.each do |spell_name, spell_setting|
-        # Sometimes these maps support keys other than spell names,
-        # such as numeric thresholds or other related script settings.
-        # Check if this setting is a hash to avoid "no implicit conversion" errors
-        # when we try to access the `name` property.
-        if spell_setting.is_a?(Hash)
-          spell_setting['name'] ||= spell_name
+    # @param filenames [Array<String>] Initial include filenames to resolve
+    # @param visited [Set] Tracks visited files to prevent circular dependencies
+    # @param include_order [Array<String>] Accumulates the final ordered list of includes
+    # @return [Array<String>] Ordered list of include filenames (deepest dependencies first)
+    def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
+      filenames.each do |filename|
+        # Circular dependency protection - skip already visited files
+        next if visited.include?(filename)
+
+        visited << filename
+        # Load this include file into cache
+        reload_profiles([filename])
+        file_info = cache_get_by_filename(filename)
+        next unless file_info
+
+        # Get nested includes from this file
+        nested_suffixes = file_info.peek('include') || []
+        echo "#{self.class}::#{__callee__} #{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
+        nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
+
+        # Depth-first: resolve nested includes BEFORE adding this file
+        # This ensures dependencies are merged before dependents
+        resolve_includes_recursively(nested_filenames, visited, include_order)
+
+        include_order << filename
+      end
+      include_order
+    end
+
+    # Iterates the files matched by the glob pattern and for those that
+    # have been modified since the last time they were cached then those
+    # are read from disk and cached. Unchanged files are not read again.
+    def load_files(glob_patterns = [])
+      self.synchronize do
+        echo "#{self.class}::#{__callee__} glob_patterns=#{glob_patterns}" if @debug
+        glob_patterns.each do |glob_pattern|
+          Dir.glob(glob_pattern)
+             .uniq
+             .select { |filepath| File.file?(filepath) } # ignore directories
+             .each do |filepath|
+               filename = File.basename(filepath)
+               last_modified_date = File.mtime(filepath)
+               cached_file = cache_get_by_filename(filename)
+               echo "#{self.class}::#{__callee__} filepath=#{filepath}, last_modified_date=#{last_modified_date}, cached_file=#{cached_file.inspect}" if @debug
+               if cached_file.mtime != last_modified_date
+                 cache_put_by_filepath(filepath)
+               end
+             end
         end
       end
     end
 
-    # Waggle sets are maps of arbitrary names to map of spell names to map of spell properties.
-    # For example:
-    #   { 'burgle': { 'Refractive Field': { abbrev: 'RF' ... }, 'Death Monkey': { ... } } }
-    # Iterate each waggle's list of spells to enrich them.
-    # Enrich each's spell definition by merging base spell data with spell settings.
-    settings.waggle_sets.transform_values! do |spells_map|
-      # For non-magic users it's actually an array of ability names, not spells.
-      if spells_map.is_a?(Hash)
+    # Loads the yaml file contents into the file cache.
+    # Uses the filename as the cache key.
+    def cache_put_by_filepath(filepath)
+      self.synchronize do
+        echo "#{self.class}::#{__callee__} filepath=#{filepath}" if @debug
+        @files_cache[File.basename(filepath)] = SetupFiles::FileInfo.new(
+          path: File.dirname(filepath),
+          name: File.basename(filepath),
+          mtime: File.mtime(filepath),
+          data: safe_load_yaml(filepath)
+        )
+      end
+    end
+
+    # Returns the cached file info for the given filename.
+    # Uses the filename as the cache key.
+    def cache_get_by_filename(filename)
+      echo "#{self.class}::#{__callee__} filename=#{filename}" if @debug
+      @files_cache[filename]
+    end
+
+    # Enrich settings with base data (e.g. fill in gaps for spells),
+    # migrate legacy settings where appropriate, and other QOL tweaks.
+    def transform_settings(original_settings)
+      echo "#{self.class}::#{__callee__}" if @debug
+
+      # Enable dot access to top-level properties (e.g. settings.hometown)
+      settings = OpenStruct.new(original_settings)
+
+      # Get data to enrich settings
+      base_data_items = get_data('items')
+      base_data_spells = get_data('spells')
+      base_data_empty = get_data('empty')
+
+      battle_cries_data = base_data_spells.battle_cries
+      spells_data = base_data_spells.spell_data
+      empty_data = base_data_empty.empty_values
+
+      # Populate nil settings with default empty arrays/hashes
+      # to mitigate "can't convert NilClass to Array" errors.
+      # Note we don't merge to overwrite, we merge to assign if nil.
+      empty_data.each { |name, value| settings[name] ||= value }
+
+      # Find spell data by its name, case insensitive.
+      get_spell_data_by_name = lambda do |name_to_find|
+        # This creates a new map filtered to only the entries that match the spell name.
+        spell_matches = spells_data.select { |name, _data| name.casecmp?(name_to_find) }
+        # It's theoretically possible, though unlikely, that multiple
+        # entries were returned if base data had the same spell listed
+        # with different capitalization. Let's take the first entry we found.
+        spell_match = spell_matches.first
+        # We now have a map of spell name to map of spell properties.
+        # What we want to return is just the map of spell properties.
+        # Maps are treated as two-element arrays, first is the key, last is the value.
+        # So we grab the last element which leaves us with map of spell properties.
+        spell_data = spell_match.last
+        # Inject spell name into the spell properties.
+        # Some scripts check for either `abbrev` or `name`
+        # but our base spells data doesn't have name as a property, so we set it.
+        spell_data['name'] ||= spell_match.first
+
+        spell_data
+      end
+
+      # Find spell data by its abbreviation, case insensitive.
+      get_spell_data_by_abbrev = lambda do |abbrev_to_find|
+        # This creates a new map filtered to only the entries that match the spell abbreviation.
+        spell_matches = spells_data.select { |_name, data| data['abbrev'].casecmp?(abbrev_to_find) }
+        # It's theoretically possible, though unlikely, that multiple
+        # entries were returned if base data had the same spell listed
+        # with different capitalization. Let's take the first entry we found.
+        spell_match = spell_matches.first
+        # We now have a map of spell name to map of spell properties.
+        # What we want to return is just the map of spell properties.
+        # Maps are treated as two-element arrays, first is the key, last is the value.
+        # So we grab the last element which leaves us with map of spell properties.
+        spell_data = spell_match.last
+        # Inject spell name into the spell properties.
+        # Some scripts check for either `abbrev` or `name`
+        # but our base spells data doesn't have name as a property, so we set it.
+        spell_data['name'] ||= spell_match.first
+
+        spell_data
+      end
+
+      # Given a hash for a single spell definition,
+      # populates unset properties with base spells data.
+      #
+      # For example:
+      # if spell data has:
+      #   { name: 'Death Monkey', abbrev: 'DM', mana: 5, skill: 'Targeted Magic' }
+      #
+      # and your spell setting in your yaml has:
+      #   { abbrev: 'DM', mana: 8 }
+      #
+      # then this method returns the enriched spell configuration as:
+      #   { name: 'Death Monkey', abbrev: 'DM', mana: 8, skill: 'Targeted Magic' }
+      #
+      enrich_spells_with_data_block = lambda do |spell_setting|
+        return spell_setting unless spell_setting.is_a?(Hash)
+
+        spell_data = get_spell_data_by_name.call(spell_setting['name']) ||
+                     get_spell_data_by_abbrev.call(spell_setting['abbrev'])
+        (spell_data || {}).merge(spell_setting)
+      end
+
+      # Given a hash of spell names to spell definitions,
+      # populates the `name:` property on the spell definition if it's missing.
+      #
+      # Because the the map keys are themselves the spell names,
+      # some players don't repeat the `name:` or `abbrev:` property
+      # in the spell setting. However, we need that information
+      # in order to enrich the spell setting with base data.
+      #
+      # For example:
+      # if spells map has:
+      #   { 'Devour': { 'use_auto_mana': true }, 'wound_level_threshold': 2 }
+      #
+      # then this method returns the enriched spell configuration as:
+      #   { 'Devour': { 'name': 'Devour', 'use_auto_mana': true }, 'wound_level_threshold': 2 }
+      #
+      enrich_spells_with_name_block = lambda do |spells_map|
+        spells_map.each do |spell_name, spell_setting|
+          # Sometimes these maps support keys other than spell names,
+          # such as numeric thresholds or other related script settings.
+          # Check if this setting is a hash to avoid "no implicit conversion" errors
+          # when we try to access the `name` property.
+          if spell_setting.is_a?(Hash)
+            spell_setting['name'] ||= spell_name
+          end
+        end
+      end
+
+      # Waggle sets are maps of arbitrary names to map of spell names to map of spell properties.
+      # For example:
+      #   { 'burgle': { 'Refractive Field': { abbrev: 'RF' ... }, 'Death Monkey': { ... } } }
+      # Iterate each waggle's list of spells to enrich them.
+      # Enrich each's spell definition by merging base spell data with spell settings.
+      settings.waggle_sets.transform_values! do |spells_map|
+        # For non-magic users it's actually an array of ability names, not spells.
+        if spells_map.is_a?(Hash)
+          enrich_spells_with_name_block.call(spells_map)
+          spells_map.transform_values!(&enrich_spells_with_data_block)
+        else
+          spells_map
+        end
+      end
+
+      # Spell settings that are maps of spell names to map of spell properties.
+      # For example:
+      #   { 'Manifest Force': { abbrev: 'MAF', mana: 5 ... } }
+      # Enrich each's spell definition by merging base spell data with spell settings.
+      [
+        settings.buff_spells,
+        settings.necromancer_healing,
+      ].each do |spells_map|
         enrich_spells_with_name_block.call(spells_map)
         spells_map.transform_values!(&enrich_spells_with_data_block)
-      else
-        spells_map
       end
-    end
 
-    # Spell settings that are maps of spell names to map of spell properties.
-    # For example:
-    #   { 'Manifest Force': { abbrev: 'MAF', mana: 5 ... } }
-    # Enrich each's spell definition by merging base spell data with spell settings.
-    [
-      settings.buff_spells,
-      settings.necromancer_healing,
-    ].each do |spells_map|
-      enrich_spells_with_name_block.call(spells_map)
-      spells_map.transform_values!(&enrich_spells_with_data_block)
-    end
+      # Spell settings that are magic skill names to map of spell properties.
+      # For example, { 'Augmentation': { abbrev: 'MAF' ... } }
+      # Enrich each's spell definition by merging base spell data with spell settings.
+      [
+        settings.buff_spells,
+        settings.combat_spell_training,
+        settings.cyclic_training_spells,
+        settings.magic_training,
+        settings.training_spells,
+        settings.crafting_training_spells,
+        settings.necromancer_healing,
+      ].each do |spells_map|
+        # For non-magic users it's actually an array of ability names, not spells.
+        next unless spells_map.is_a?(Hash)
 
-    # Spell settings that are magic skill names to map of spell properties.
-    # For example, { 'Augmentation': { abbrev: 'MAF' ... } }
-    # Enrich each's spell definition by merging base spell data with spell settings.
-    [
-      settings.buff_spells,
-      settings.combat_spell_training,
-      settings.cyclic_training_spells,
-      settings.magic_training,
-      settings.training_spells,
-      settings.crafting_training_spells,
-      settings.necromancer_healing,
-    ].each do |spells_map|
-      # For non-magic users it's actually an array of ability names, not spells.
-      next unless spells_map.is_a?(Hash)
-
-      # Because the map keys are skill names, not spell names,
-      # we have to assume the spell name or abbrev are defined in the setting.
-      spells_map.transform_values!(&enrich_spells_with_data_block)
-    end
-
-    # Spell settings that are configured as a list whose values are maps of spell properties.
-    # Enrich each's spell definition by merging base spell data with spell settings.
-    [
-      settings.offensive_spells
-    ].each do |spells_list|
-      # Because there is no other context to know which spell the setting is for
-      # we have to assume the spell name or abbrev are defined in the setting.
-      spells_list.map!(&enrich_spells_with_data_block)
-    end
-
-    # Spell settings that are configured as a map of a single spell's properties.
-    # Enrich each's spell definition by merging base spell data with spell settings.
-    [
-      'crossing_training_sorcery',
-    ].each do |key|
-      settings[key] = enrich_spells_with_data_block.call(settings[key])
-    end
-
-    # For TM spells, default their 'prep' command to 'target'
-    # unless a custom 'prep' command is already specified.
-    settings.offensive_spells.each do |spell_setting|
-      spell_data = spells_data[spell_setting['name']]
-      is_native_tm = spell_setting['skill'] == 'Targeted Magic'
-      is_sorcery_tm = spell_setting['skill'] == 'Sorcery' && spell_data['skill'] == 'Targeted Magic'
-      if is_native_tm || is_sorcery_tm
-        spell_setting['prep'] ||= 'target'
+        # Because the map keys are skill names, not spell names,
+        # we have to assume the spell name or abbrev are defined in the setting.
+        spells_map.transform_values!(&enrich_spells_with_data_block)
       end
-    end
 
-    # Battle Cries
-    settings.battle_cries.map! do |battle_cry_setting|
-      battle_cry_data = battle_cries_data[battle_cry_setting['name']]
-      (battle_cry_data || {}).merge(battle_cry_setting)
-    end
-
-    # Lootables
-    settings.lootables = (
-      base_data_items.lootables +
-      base_data_items.box_nouns +
-      base_data_items.gem_nouns +
-      base_data_items.scroll_nouns +
-      settings.loot_additions -
-      settings.loot_subtractions
-    ).uniq
-
-    # Pull sensitive settings from UserVars.
-    # This is legacy from when people would commit and share their
-    # yaml files on GitHub so that specific rooms and names were not exposed.
-    settings.crossing_training_sorcery_room ||= UserVars.crossing_training_sorcery_room
-    settings.compost_room ||= UserVars.compost_room
-    settings.engineering_room ||= UserVars.engineering_room
-    settings.outfitting_room ||= UserVars.outfitting_room
-    settings.alchemy_room ||= UserVars.alchemy_room
-    settings.safe_room ||= UserVars.safe_room
-    settings.safe_room_id ||= UserVars.safe_room_id
-    settings.safe_room_empath ||= UserVars.safe_room_empath
-    settings.safe_room_empaths += (UserVars.safe_room_empaths || [])
-    settings.slack_username ||= UserVars.slack_username
-    settings.bankbot_name ||= UserVars.bankbot_name
-    settings.bankbot_room_id ||= UserVars.bankbot_room_id
-    settings.prehunt_buffs ||= UserVars.prehunt_buffs
-    settings.hometown ||= UserVars.hometown
-    settings.hometown = $HOMETOWN if $HOMETOWN
-
-    # Denylist for rooms we don't support being used as safe_rooms
-    disallowed_safe_rooms = [5713]
-    if disallowed_safe_rooms.include?(settings.safe_room) || disallowed_safe_rooms.include?(settings.safe_room_id)
-      _respond("<pushBold/>#{settings.safe_room} is not a valid safe room setting.<popBold/>")
-      _respond("<pushBold/>Exiting.<popBold/>")
-      _respond("<pushBold/>Please edit your yaml to use a different safe room.<popBold/>")
-      exit
-    end
-
-    # If these room settings are defined as maps with a
-    # room id configured per town, then grab the hometown room id
-    # and assign it directly to the setting.
-    [
-      'alchemy_room',
-      'bankbot_room_id',
-      'compost_room',
-      'crossing_training_sorcery_room',
-      'enchanting_room',
-      'engineering_room',
-      'feed_cloak_room',
-      'forage_override_room',
-      'lockpick_room_id',
-      'outdoor_room',
-      'outfitting_room',
-      'prehunt_buffing_room',
-      'safe_room',
-      'safe_room_id',
-      'theurgy_prayer_mat_room'
-    ].each do |setting_name|
-      if settings[setting_name].is_a?(Hash)
-        hometown_value = settings[setting_name][settings.hometown]
-        settings[setting_name] = hometown_value if hometown_value
+      # Spell settings that are configured as a list whose values are maps of spell properties.
+      # Enrich each's spell definition by merging base spell data with spell settings.
+      [
+        settings.offensive_spells
+      ].each do |spells_list|
+        # Because there is no other context to know which spell the setting is for
+        # we have to assume the spell name or abbrev are defined in the setting.
+        spells_list.map!(&enrich_spells_with_data_block)
       end
+
+      # Spell settings that are configured as a map of a single spell's properties.
+      # Enrich each's spell definition by merging base spell data with spell settings.
+      [
+        'crossing_training_sorcery',
+      ].each do |key|
+        settings[key] = enrich_spells_with_data_block.call(settings[key])
+      end
+
+      # For TM spells, default their 'prep' command to 'target'
+      # unless a custom 'prep' command is already specified.
+      settings.offensive_spells.each do |spell_setting|
+        next unless spell_setting.is_a?(Hash)
+
+        spell_data = spells_data[spell_setting['name']]
+        is_native_tm = spell_setting['skill'] == 'Targeted Magic'
+        is_sorcery_tm = spell_setting['skill'] == 'Sorcery' && spell_data['skill'] == 'Targeted Magic'
+        if is_native_tm || is_sorcery_tm
+          spell_setting['prep'] ||= 'target'
+        end
+      end
+
+      # Battle Cries
+      settings.battle_cries.map! do |battle_cry_setting|
+        next battle_cry_setting unless battle_cry_setting.is_a?(Hash)
+
+        battle_cry_data = battle_cries_data[battle_cry_setting['name']]
+        (battle_cry_data || {}).merge(battle_cry_setting)
+      end
+
+      # Lootables
+      settings.lootables = (
+        base_data_items.lootables +
+        base_data_items.box_nouns +
+        base_data_items.gem_nouns +
+        base_data_items.scroll_nouns +
+        settings.loot_additions -
+        settings.loot_subtractions
+      ).uniq
+
+      # Pull sensitive settings from UserVars.
+      # This is legacy from when people would commit and share their
+      # yaml files on GitHub so that specific rooms and names were not exposed.
+      settings.crossing_training_sorcery_room ||= UserVars.crossing_training_sorcery_room
+      settings.compost_room ||= UserVars.compost_room
+      settings.engineering_room ||= UserVars.engineering_room
+      settings.outfitting_room ||= UserVars.outfitting_room
+      settings.alchemy_room ||= UserVars.alchemy_room
+      settings.safe_room ||= UserVars.safe_room
+      settings.safe_room_id ||= UserVars.safe_room_id
+      settings.safe_room_empath ||= UserVars.safe_room_empath
+      settings.safe_room_empaths += (UserVars.safe_room_empaths || [])
+      settings.slack_username ||= UserVars.slack_username
+      settings.bankbot_name ||= UserVars.bankbot_name
+      settings.bankbot_room_id ||= UserVars.bankbot_room_id
+      settings.prehunt_buffs ||= UserVars.prehunt_buffs
+      settings.hometown ||= UserVars.hometown
+      settings.hometown = $HOMETOWN if $HOMETOWN
+
+      # Denylist for rooms we don't support being used as safe_rooms
+      disallowed_safe_rooms = [5713]
+      if disallowed_safe_rooms.include?(settings.safe_room) || disallowed_safe_rooms.include?(settings.safe_room_id)
+        _respond("<pushBold/>#{settings.safe_room} is not a valid safe room setting.<popBold/>")
+        _respond("<pushBold/>Exiting.<popBold/>")
+        _respond("<pushBold/>Please edit your yaml to use a different safe room.<popBold/>")
+        exit
+      end
+
+      # If these room settings are defined as maps with a
+      # room id configured per town, then grab the hometown room id
+      # and assign it directly to the setting.
+      [
+        'alchemy_room',
+        'bankbot_room_id',
+        'compost_room',
+        'crossing_training_sorcery_room',
+        'enchanting_room',
+        'engineering_room',
+        'feed_cloak_room',
+        'forage_override_room',
+        'lockpick_room_id',
+        'outdoor_room',
+        'outfitting_room',
+        'prehunt_buffing_room',
+        'safe_room',
+        'safe_room_id',
+        'theurgy_prayer_mat_room'
+      ].each do |setting_name|
+        if settings[setting_name].is_a?(Hash)
+          hometown_value = settings[setting_name][settings.hometown]
+          settings[setting_name] = hometown_value if hometown_value
+        end
+      end
+
+      # Merge legacy appraisal settings into target appraisal settings
+      if !settings.appraisal_training.include?('pouches') && settings.train_appraisal_with_pouches
+        settings.appraisal_training.append('pouches')
+      end
+      if !settings.appraisal_training.include?('gear') && settings.train_appraisal_with_gear
+        settings.appraisal_training.append('gear')
+      end
+
+      # Merge legacy astrology training settings into target training settings
+      if !settings.astrology_training.include?('events') && settings.predict_event
+        settings.astrology_training.append('events')
+      end
+      if !settings.astrology_training.include?('ways') && settings.astral_plane_training['train_in_ap']
+        settings.astrology_training.append('ways')
+      end
+
+      return settings
+    rescue => e
+      echo "*** ERROR TRANSFORMING SETTINGS IN DEPENDENCY ***"
+      echo "*** Commonly this due to malformed config in your yaml file ***"
+      echo e.message
+      e.backtrace.each { |msg| echo msg }
+      OpenStruct.new
     end
 
-    # Merge legacy appraisal settings into target appraisal settings
-    if !settings.appraisal_training.include?('pouches') && settings.train_appraisal_with_pouches
-      settings.appraisal_training.append('pouches')
-    end
-    if !settings.appraisal_training.include?('gear') && settings.train_appraisal_with_gear
-      settings.appraisal_training.append('gear')
-    end
+    def transform_data(original_data)
+      echo "#{self.class}::#{__callee__}" if @debug
 
-    # Merge legacy astrology training settings into target training settings
-    if !settings.astrology_training.include?('events') && settings.predict_event
-      settings.astrology_training.append('events')
-    end
-    if !settings.astrology_training.include?('ways') && settings.astral_plane_training['train_in_ap']
-      settings.astrology_training.append('ways')
-    end
+      # Enable dot access to top-level properties (e.g. data.cast_messages)
+      data = OpenStruct.new(original_data)
 
-    return settings
-  rescue => e
-    echo "*** ERROR TRANSFORMING SETTINGS IN DEPENDENCY ***"
-    echo "*** Commonly this due to malformed config in your yaml file ***"
-    echo e.message
-    e.backtrace.each { |msg| echo msg }
-    OpenStruct.new
+      # ... reserved for future needs ...
+
+      return data
+    rescue => e
+      echo "*** ERROR MODIFYING DATA IN DEPENDENCY ***"
+      echo e.message
+      e.backtrace.each { |msg| echo msg }
+      OpenStruct.new
+    end
   end
-
-  def transform_data(original_data)
-    echo "#{self.class}::#{__callee__}" if @debug
-
-    # Enable dot access to top-level properties (e.g. data.cast_messages)
-    data = OpenStruct.new(original_data)
-
-    # ... reserved for future needs ...
-
-    return data
-  rescue => e
-    echo "*** ERROR MODIFYING DATA IN DEPENDENCY ***"
-    echo e.message
-    e.backtrace.each { |msg| echo msg }
-    OpenStruct.new
-  end
-end
+end # if/else defined?(Lich::Common::SetupFiles)
 
 $setupfiles = SetupFiles.new(debug)
 $manager = ScriptManager.new(debug)
@@ -1238,30 +1196,14 @@ end
 def handle_obsolete_autostart(script)
   return false unless DR_OBSOLETE_SCRIPTS.include?(script)
 
-  in_character = UserVars.autostart_scripts.to_a.include?(script)
-  in_global = Settings['autostart'].include?(script)
-
-  DRC.message("---")
-  DRC.message("'#{script}' is obsolete and no longer needed.")
-
-  if in_character
-    DRC.message("Removing '#{script}' from character autostarts.")
-    DRC.message("If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
+  if UserVars.autostart_scripts.to_a.include?(script)
+    _respond Lich::Messaging.monsterbold("--- Lich: Removing obsolete '#{script}' from autostarts.")
+    _respond Lich::Messaging.monsterbold("--- Lich: If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
     UserVars.autostart_scripts.delete(script)
+  else
+    _respond Lich::Messaging.monsterbold("--- Lich: '#{script}' is obsolete. Please remove it from the 'autostarts' setting in your profile YAML.")
   end
 
-  if in_global
-    DRC.message("Removing '#{script}' from global autostarts.")
-    DRC.message("If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
-    $manager.remove_global_auto(script)
-  end
-
-  unless in_character || in_global
-    DRC.message("'#{script}' is configured in your YAML profile autostarts.")
-    DRC.message("Please remove '#{script}' from the 'autostarts' setting in your profile YAML.")
-  end
-
-  DRC.message("---")
   true
 end
 
@@ -1271,7 +1213,6 @@ def custom_require
 
     return if script_names.empty?
 
-    # Inline loading - replaces bootstrap.lic
     script_names.each do |script_name|
       next if dr_obsolete_script?(script_name)
       next if Script.running?(script_name)
@@ -1318,31 +1259,26 @@ def list_tracked_scripts
   $manager.get_versions.sort
 end
 
-def list_autostarts
-  $manager.autostarts
-end
-
-def autostart(script_names, global = true)
+def autostart(script_names, _global = true)
   script_names = [script_names] unless script_names.is_a?(Array)
   script_names.map!(&method(:format_name))
-  if global
-    script_names.each { |script| $manager.add_global_auto(script) }
-  else
-    script_names.each { |script| UserVars.autostart_scripts.push(script) unless UserVars.autostart_scripts.include?(script) }
-  end
+  UserVars.autostart_scripts ||= []
+  script_names.each { |script| UserVars.autostart_scripts.push(script) unless UserVars.autostart_scripts.include?(script) }
   script_names.each { |script| $manager.run_script(script) }
 end
 
 def stop_autostart(script_names)
   script_names = [script_names] unless script_names.is_a?(Array)
+  UserVars.autostart_scripts ||= []
+  script_names.each { |script| UserVars.autostart_scripts.delete(script) }
+end
 
-  script_names.each do |script|
-    if UserVars.autostart_scripts.include?(script)
-      UserVars.autostart_scripts.delete(script)
-    else
-      $manager.remove_global_auto(script)
-    end
-  end
+def dependency_status
+  echo("Dependency version: #{$DEPENDENCY_VERSION}")
+  echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
+  echo("UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+  echo("Resolved autostarts = #{$manager.autostarts.inspect}")
+  nil
 end
 
 def setup_data
@@ -1356,7 +1292,6 @@ def update_d
     sleep 2
     force_start_script('dependency')
   end
-  stop_script('drinfomon') if Script.running?('drinfomon')
   stop_script('dependency')
 end
 
@@ -1383,26 +1318,6 @@ def warn_custom_scripts
   end
 end
 
-# Populate initial game state (exp, info, played, ability).
-# Core lich handles this via DRInfomon.startup if available.
-# Fall back to issuing the commands ourselves for older lich versions.
-if defined?(Lich::DragonRealms::DRInfomon) && Lich::DragonRealms::DRInfomon.respond_to?(:startup_complete?)
-  # Wait for core startup to finish (it runs async via ExecScript)
-  300.times { break if Lich::DragonRealms::DRInfomon.startup_complete?; pause 0.1 }
-  unless Lich::DragonRealms::DRInfomon.startup_complete?
-    echo "WARNING: Core DRInfomon startup did not complete in time, sending commands ourselves"
-    Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
-    Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
-    Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
-    Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
-  end
-else
-  Lich::Util.issue_command("exp all 0", /^Circle: \d+/, /^EXP HELP/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("info", /^Name/, /^<output class=""/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("played", /^Account Info for/, quiet: true, timeout: 1)
-  Lich::Util.issue_command("ability", /^You (?:know the Berserks|recall the spells you have learned from your training)|^From (?:your apprenticeship you remember practicing|the \w+ tree)/, /^You (?:recall that you have \d+ training sessions|can use SPELL STANCE \[HELP\]|have \d+ available slot)/, quiet: true, timeout: 1)
-end
-
 if install
   respond 'Performing setup for dr-scripts. This will take some time. Do not stop this script until finished.'
 end
@@ -1426,10 +1341,6 @@ if $manager.updated_dependency?
   update_d
 end
 
-before_dying do
-  stop_script('drinfomon') if Script.running?('drinfomon')
-end
-
 $setupfiles.reload
 
 # Remind user of curated scripts with a copy in custom folder
@@ -1438,9 +1349,3 @@ warn_custom_scripts
 # Warn about obsolete scripts and data files still present locally
 warn_obsolete_scripts
 warn_obsolete_data_files
-
-loop do
-  $manager.run_queue
-  clear
-  pause 0.1
-end

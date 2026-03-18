@@ -27,13 +27,6 @@ def _respond(msg)
   $respond_messages << msg
 end
 
-# Mock DRC.message for handle_obsolete_autostart
-module DRC
-  def self.message(msg, _bold = true)
-    $respond_messages << msg
-  end
-end
-
 # Stub Script.current for dr_obsolete_script?
 module Script
   def self.current
@@ -76,19 +69,6 @@ module Settings
   end
 end unless defined?(Settings)
 
-# Mock $manager for remove_global_auto tracking
-class MockManager
-  attr_reader :removed
-
-  def initialize
-    @removed = []
-  end
-
-  def remove_global_auto(script)
-    @removed << script
-  end
-end
-
 # --- Extract the constant and methods from dependency.lic ---
 # We eval only the relevant sections to avoid all Lich runtime dependencies.
 dep_path = File.join(File.dirname(__FILE__), '..', 'dependency.lic')
@@ -113,6 +93,11 @@ eval(dep_lines[wn_start..wn_start + 1 + wn_end].join, TOPLEVEL_BINDING, dep_path
 ha_start = dep_lines.index { |l| l =~ /^def handle_obsolete_autostart/ }
 ha_end = dep_lines[ha_start + 1..].index { |l| l =~ /^end\s*$/ }
 eval(dep_lines[ha_start..ha_start + 1 + ha_end].join, TOPLEVEL_BINDING, dep_path, ha_start + 1)
+
+# Extract stop_autostart method
+sa_start = dep_lines.index { |l| l =~ /^def stop_autostart/ }
+sa_end = dep_lines[sa_start + 1..].index { |l| l =~ /^end\s*$/ }
+eval(dep_lines[sa_start..sa_start + 1 + sa_end].join, TOPLEVEL_BINDING, dep_path, sa_start + 1)
 
 # Extract inlined manager functions
 %w[
@@ -264,29 +249,8 @@ RSpec.describe 'Obsolete Scripts' do
   end
 
   describe '#handle_obsolete_autostart' do
-    let(:manager) { MockManager.new }
-
     before do
       UserVars.autostart_scripts = []
-      Settings.reset!
-      $manager = manager
-    end
-
-    shared_examples 'skips the script' do
-      it 'returns true' do
-        expect(handle_obsolete_autostart(script_name)).to be true
-      end
-
-      it 'announces the script is obsolete' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/obsolete and no longer needed/))
-      end
-
-      it 'wraps output in delimiters' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages.first).to eq("---")
-        expect($respond_messages.last).to eq("---")
-      end
     end
 
     context 'with a non-obsolete script' do
@@ -298,141 +262,39 @@ RSpec.describe 'Obsolete Scripts' do
         handle_obsolete_autostart('crossing-training')
         expect($respond_messages).to be_empty
       end
-
-      it 'does not modify UserVars' do
-        UserVars.autostart_scripts = ['crossing-training']
-        handle_obsolete_autostart('crossing-training')
-        expect(UserVars.autostart_scripts).to eq(['crossing-training'])
-      end
-
-      it 'does not queue global removal' do
-        handle_obsolete_autostart('crossing-training')
-        expect(manager.removed).to be_empty
-      end
     end
 
-    context 'when script is in character autostarts' do
-      let(:script_name) { 'exp-monitor' }
-
+    context 'when script is in UserVars autostarts' do
       before { UserVars.autostart_scripts = ['exp-monitor', 'hunting-buddy'] }
 
-      include_examples 'skips the script'
-
-      it 'mentions character autostarts' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/character autostarts/))
+      it 'returns true' do
+        expect(handle_obsolete_autostart('exp-monitor')).to be true
       end
 
       it 'removes from UserVars.autostart_scripts' do
-        handle_obsolete_autostart(script_name)
+        handle_obsolete_autostart('exp-monitor')
         expect(UserVars.autostart_scripts).to eq(['hunting-buddy'])
       end
 
-      it 'includes the manual removal command' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/;e stop_autostart\('exp-monitor'\)/))
-      end
-
-      it 'does not mention YAML profile' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages.join).not_to include('YAML profile')
-      end
-
-      it 'does not queue global removal' do
-        handle_obsolete_autostart(script_name)
-        expect(manager.removed).to be_empty
-      end
-    end
-
-    context 'when script is in global autostarts' do
-      let(:script_name) { 'drinfomon' }
-
-      before { Settings['autostart'] = ['drinfomon', 'other-script'] }
-
-      include_examples 'skips the script'
-
-      it 'mentions global autostarts' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/global autostarts/))
-      end
-
-      it 'queues removal via $manager.remove_global_auto' do
-        handle_obsolete_autostart(script_name)
-        expect(manager.removed).to eq(['drinfomon'])
+      it 'warns about removal' do
+        handle_obsolete_autostart('exp-monitor')
+        expect($respond_messages.join).to include('Removing obsolete')
       end
 
       it 'includes the manual removal command' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/;e stop_autostart\('drinfomon'\)/))
-      end
-
-      it 'does not modify UserVars.autostart_scripts' do
-        handle_obsolete_autostart(script_name)
-        expect(UserVars.autostart_scripts).to be_empty
-      end
-
-      it 'does not mention YAML profile' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages.join).not_to include('YAML profile')
+        handle_obsolete_autostart('exp-monitor')
+        expect($respond_messages.join).to include("stop_autostart('exp-monitor')")
       end
     end
 
     context 'when script is in YAML profile autostarts only' do
-      let(:script_name) { 'spellmonitor' }
-
-      include_examples 'skips the script'
-
-      it 'mentions YAML profile autostarts' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/YAML profile autostarts/))
+      it 'returns true' do
+        expect(handle_obsolete_autostart('spellmonitor')).to be true
       end
 
       it 'tells user to edit their YAML' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages).to include(match(/remove 'spellmonitor' from the 'autostarts' setting/))
-      end
-
-      it 'does not modify UserVars.autostart_scripts' do
-        handle_obsolete_autostart(script_name)
-        expect(UserVars.autostart_scripts).to be_empty
-      end
-
-      it 'does not queue global removal' do
-        handle_obsolete_autostart(script_name)
-        expect(manager.removed).to be_empty
-      end
-    end
-
-    context 'when script is in both character and global autostarts' do
-      let(:script_name) { 'common' }
-
-      before do
-        UserVars.autostart_scripts = ['common']
-        Settings['autostart'] = ['common']
-      end
-
-      include_examples 'skips the script'
-
-      it 'removes from character autostarts' do
-        handle_obsolete_autostart(script_name)
-        expect(UserVars.autostart_scripts).not_to include('common')
-      end
-
-      it 'queues removal from global autostarts' do
-        handle_obsolete_autostart(script_name)
-        expect(manager.removed).to eq(['common'])
-      end
-
-      it 'mentions both sources' do
-        handle_obsolete_autostart(script_name)
-        messages = $respond_messages.join("\n")
-        expect(messages).to include('character autostarts')
-        expect(messages).to include('global autostarts')
-      end
-
-      it 'does not mention YAML profile' do
-        handle_obsolete_autostart(script_name)
-        expect($respond_messages.join).not_to include('YAML profile')
+        handle_obsolete_autostart('spellmonitor')
+        expect($respond_messages.join).to include('profile YAML')
       end
     end
 
