@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.4.7'
+$DEPENDENCY_VERSION = '2.4.8'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -78,7 +78,7 @@ unless UserVars.dependency_setflags
   UserVars.dependency_setflags = Time.now
 end
 
-if Lich::Common.const_defined?(:ArgParser, false)
+if Lich::Common.const_defined?(:CORE_ARGPARSER, false)
   DRC.message("--- Dependency: ArgParser provided by core Lich. Skipping inline definition.")
 else
   class ArgParser
@@ -213,7 +213,7 @@ else
       item
     end
   end
-end # if/else Lich::Common.const_defined?(:ArgParser, false)
+end # if/else CORE_ARGPARSER
 
 def parse_args(defn, flex_args = false)
   ArgParser.new.parse_args(defn, flex_args)
@@ -543,7 +543,7 @@ class ScriptManager
   end
 end
 
-if Lich::Common.const_defined?(:SetupFiles, false)
+if Lich::Common.const_defined?(:CORE_SETUPFILES, false)
   DRC.message("--- Dependency: SetupFiles provided by core Lich. Skipping inline definition.")
 else
   class SetupFiles
@@ -1100,7 +1100,7 @@ else
       OpenStruct.new
     end
   end
-end # if/else Lich::Common.const_defined?(:SetupFiles, false)
+end # if/else CORE_SETUPFILES
 
 $setupfiles = SetupFiles.new(debug)
 $manager = ScriptManager.new(debug)
