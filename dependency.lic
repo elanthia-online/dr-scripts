@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.4.9'
+$DEPENDENCY_VERSION = '2.5.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -620,13 +620,25 @@ else
       include_filenames = resolve_includes_recursively(initial_include_filenames)
       echo "#{self.class}::#{__callee__} resolved include_filenames=#{include_filenames}" if @debug
       # Merge order: base.yaml -> base-empty.yaml -> includes (depth-first) -> character files
-      settings = [
-        'base.yaml',
-        'base-empty.yaml',
-        include_filenames,
-        character_filenames
-      ].flatten.reduce({}) do |result, filename|
-        result.merge(cache_get_by_filename(filename).data || {})
+      all_files = ['base.yaml', 'base-empty.yaml', include_filenames, character_filenames].flatten
+
+      # Peek pass: collect union_keys from all files (always unioned across files).
+      # Keys listed in union_keys get array union instead of overwrite during merge,
+      # allowing includes and character files to contribute to shared lists.
+      union_keys = all_files.reduce([]) do |keys, filename|
+        file_keys = cache_get_by_filename(filename)&.peek('union_keys') || []
+        (keys + file_keys).uniq
+      end
+
+      # Merge pass: union specified keys, overwrite everything else
+      settings = all_files.reduce({}) do |result, filename|
+        result.merge(cache_get_by_filename(filename).data || {}) do |key, old_val, new_val|
+          if union_keys.include?(key) && old_val.is_a?(Array) && new_val.is_a?(Array)
+            (old_val + new_val).uniq
+          else
+            new_val
+          end
+        end
       end
       # Transform settings for quality of life improvements
       transform_settings(settings)

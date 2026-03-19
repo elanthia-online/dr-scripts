@@ -889,4 +889,137 @@ RSpec.describe 'SHA computation' do
   ensure
     File.delete(path) if File.exist?(path)
   end
+
+  it 'round-trip: write with wb then read with binread produces SHA matching original content' do
+    # This is the critical regression test: if we write with 'wb' and read
+    # with binread, the SHA of the round-tripped content must match the SHA
+    # of the original content (as GitHub would compute it).
+    # The regression in 2.4.7 was: writes used text mode ('w') which added
+    # CRLF on Windows, but reads used binread which preserved CRLF,
+    # producing a SHA that never matched GitHub's LF-based SHA.
+    original_content = content_lf # simulates what download_raw_file returns
+    path = File.join(SCRIPT_DIR, 'test-roundtrip.lic')
+
+    # Write the way dependency does (wb mode)
+    File.open(path, 'wb') { |file| file.print(original_content) }
+
+    # Read the way build_version_hash does (binread)
+    read_back = File.binread(path)
+
+    # SHA must match the original content's SHA
+    expect(git_blob_sha(read_back)).to eq(git_blob_sha(original_content))
+  ensure
+    File.delete(path) if File.exist?(path)
+  end
+
+  it 'round-trip: write with wb preserves LF line endings (no CRLF conversion)' do
+    path = File.join(SCRIPT_DIR, 'test-roundtrip-endings.lic')
+    File.open(path, 'wb') { |file| file.print(content_lf) }
+    read_back = File.binread(path)
+
+    # Content must be byte-identical - no line ending translation
+    expect(read_back).to eq(content_lf)
+    expect(read_back).not_to include("\r\n")
+  ensure
+    File.delete(path) if File.exist?(path)
+  end
+end
+
+RSpec.describe 'union_keys merge behavior' do
+  # Simulates the merge logic from SetupFiles#get_settings
+  def merge_with_union_keys(file_data_list)
+    # Peek pass: collect union_keys from all files
+    union_keys = file_data_list.reduce([]) do |keys, data|
+      file_keys = data['union_keys'] || []
+      (keys + file_keys).uniq
+    end
+
+    # Merge pass
+    file_data_list.reduce({}) do |result, data|
+      result.merge(data) do |key, old_val, new_val|
+        if union_keys.include?(key) && old_val.is_a?(Array) && new_val.is_a?(Array)
+          (old_val + new_val).uniq
+        else
+          new_val
+        end
+      end
+    end
+  end
+
+  context 'when no union_keys defined' do
+    it 'overwrites arrays (existing behavior)' do
+      base = { 'autostarts' => %w[esp afk] }
+      char = { 'autostarts' => %w[healer] }
+      result = merge_with_union_keys([base, char])
+      expect(result['autostarts']).to eq(%w[healer])
+    end
+  end
+
+  context 'when union_keys includes autostarts' do
+    it 'unions arrays from include and character files' do
+      include_file = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp afk textsubs] }
+      char_file = { 'autostarts' => %w[healer moonwatch] }
+      result = merge_with_union_keys([include_file, char_file])
+      expect(result['autostarts']).to match_array(%w[esp afk textsubs healer moonwatch])
+    end
+  end
+
+  context 'when union_keys defined in multiple files' do
+    it 'unions the union_keys themselves' do
+      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp], 'gear' => %w[backpack] }
+      include_file = { 'union_keys' => ['gear'], 'autostarts' => %w[afk], 'gear' => %w[sword] }
+      char = { 'autostarts' => %w[healer], 'gear' => %w[shield] }
+      result = merge_with_union_keys([base, include_file, char])
+      expect(result['autostarts']).to match_array(%w[esp afk healer])
+      expect(result['gear']).to match_array(%w[backpack sword shield])
+    end
+  end
+
+  context 'when union key value is not an array' do
+    it 'falls through to overwrite' do
+      base = { 'union_keys' => ['hometown'], 'hometown' => 'Crossing' }
+      char = { 'hometown' => 'Shard' }
+      result = merge_with_union_keys([base, char])
+      expect(result['hometown']).to eq('Shard')
+    end
+  end
+
+  context 'when union key only defined in one file' do
+    it 'keeps the value as-is' do
+      base = { 'union_keys' => ['autostarts'] }
+      char = { 'autostarts' => %w[healer moonwatch] }
+      result = merge_with_union_keys([base, char])
+      expect(result['autostarts']).to eq(%w[healer moonwatch])
+    end
+  end
+
+  context 'when union produces duplicates' do
+    it 'deduplicates the result' do
+      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp afk] }
+      char = { 'autostarts' => %w[afk healer] }
+      result = merge_with_union_keys([base, char])
+      expect(result['autostarts']).to match_array(%w[esp afk healer])
+      expect(result['autostarts'].length).to eq(3)
+    end
+  end
+
+  context 'with three-file cascade (base, include, character)' do
+    it 'unions across all three files' do
+      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp] }
+      include_file = { 'autostarts' => %w[afk textsubs] }
+      char = { 'autostarts' => %w[healer] }
+      result = merge_with_union_keys([base, include_file, char])
+      expect(result['autostarts']).to match_array(%w[esp afk textsubs healer])
+    end
+  end
+
+  context 'non-union keys remain unaffected' do
+    it 'overwrites non-union keys normally' do
+      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp], 'hometown' => 'Crossing' }
+      char = { 'autostarts' => %w[healer], 'hometown' => 'Shard' }
+      result = merge_with_union_keys([base, char])
+      expect(result['autostarts']).to match_array(%w[esp healer])
+      expect(result['hometown']).to eq('Shard')
+    end
+  end
 end
