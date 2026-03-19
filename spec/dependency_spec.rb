@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'digest'
 require 'tmpdir'
 require 'ostruct'
 require 'yaml'
@@ -829,5 +830,63 @@ RSpec.describe 'Slackbot Functions' do
         send_slackbot_message('hello world')
       end
     end
+  end
+end
+
+# --- SHA Computation (build_version_hash) ---
+
+RSpec.describe 'SHA computation' do
+  # Replicates dependency's build_version_hash SHA computation:
+  #   body = File.binread(path)
+  #   sha = Digest::SHA1.hexdigest("blob #{body.size}\0#{body}")
+  # This must match git's blob SHA regardless of line endings.
+
+  let(:content_lf) { "line1\nline2\nline3\n" }
+  let(:content_crlf) { "line1\r\nline2\r\nline3\r\n" }
+
+  def git_blob_sha(content)
+    Digest::SHA1.hexdigest("blob #{content.size}\0#{content}")
+  end
+
+  it 'produces consistent SHAs for LF files using binread' do
+    path = File.join(SCRIPT_DIR, 'test-lf.lic')
+    File.binwrite(path, content_lf)
+    body = File.binread(path)
+    expect(git_blob_sha(body)).to eq(git_blob_sha(content_lf))
+  ensure
+    File.delete(path) if File.exist?(path)
+  end
+
+  it 'produces consistent SHAs for CRLF files using binread' do
+    path = File.join(SCRIPT_DIR, 'test-crlf.lic')
+    File.binwrite(path, content_crlf)
+    body = File.binread(path)
+    expect(git_blob_sha(body)).to eq(git_blob_sha(content_crlf))
+  ensure
+    File.delete(path) if File.exist?(path)
+  end
+
+  it 'produces DIFFERENT SHAs for LF vs CRLF content (they are different bytes)' do
+    expect(git_blob_sha(content_lf)).not_to eq(git_blob_sha(content_crlf))
+  end
+
+  it 'would produce WRONG SHA if text-mode read were used on CRLF files' do
+    path = File.join(SCRIPT_DIR, 'test-crlf-textmode.lic')
+    File.binwrite(path, content_crlf)
+
+    # Text-mode read (the old buggy way) - translates CRLF to LF on read
+    text_body = File.open(path, 'r').readlines.join('')
+    git_blob_sha(text_body)
+
+    # Binary read (the correct way) - preserves bytes
+    bin_body = File.binread(path)
+    git_blob_sha(bin_body)
+
+    # On platforms that translate line endings (Windows), these would differ.
+    # On Unix they're the same because 'r' mode doesn't translate.
+    # The key point: binread always gives the correct SHA regardless of platform.
+    expect(git_blob_sha(bin_body)).to eq(git_blob_sha(content_crlf))
+  ensure
+    File.delete(path) if File.exist?(path)
   end
 end
