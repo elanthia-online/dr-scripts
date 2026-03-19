@@ -171,9 +171,15 @@ class SetupProcess
       # check if all weapons are maxed exp to prevent rapid cycling
       if weapon_training.reject { |skill, _| DRSkill.getxp(skill) == 34 }.empty?
         echo 'all weapons locked, not switching' if $debug_mode_ct
+        unless game_state.all_weapons_locked
+          game_state.all_weapons_locked = true
+          echo '*** All weapon skills are at 34/34 mindstate -- no weapon will be equipped.'
+          echo '*** Attacks are disabled. Set combat_trainer_ignore_weapon_mindstate: true if any skills are permanently capped.'
+        end
         return
       end
     end
+    game_state.all_weapons_locked = false
     game_state.skip_all_weapon_max_check = false
 
     echo('new skill needed for training') if $debug_mode_ct
@@ -3690,7 +3696,7 @@ class AttackProcess
       game_state.no_stab_current_mob = false
     end
 
-    if game_state.dancing? || game_state.weapon_skill == 'Targeted Magic' || !game_state.is_offense_allowed?
+    if game_state.dancing? || game_state.all_weapons_locked || game_state.weapon_skill == 'Targeted Magic' || !game_state.is_offense_allowed?
       if game_state.finish_killing?
         echo('AttackProcess::clean_up') if $debug_mode_ct
         game_state.next_clean_up_step
@@ -4351,7 +4357,7 @@ class GameState
                 :clean_up_step, :constructs, :cooldown_timers, :current_weapon_skill,
                 :currently_whirlwinding, :dance_queue, :dancing, :danger, :focus_threshold_active, :hide_on_cast, :last_action_count, :last_exp, :last_offhand_skill,
                 :last_regalia_type, :last_weapon_skill, :loaded, :mob_died, :need_bundle,
-                :no_loot, :no_skins, :no_stab_current_mob, :no_stab_mobs, :offhand_last_exp, :parrying, :prepare_cfb, :prepare_cfw, :prepare_nr,
+                :all_weapons_locked, :no_loot, :no_skins, :no_stab_current_mob, :no_stab_mobs, :offhand_last_exp, :parrying, :prepare_cfb, :prepare_cfw, :prepare_nr,
                 :prepare_consume, :regalia_cancel, :reset_stance, :retreating, :skip_all_weapon_max_check, :starlight_values,
                 :swap_regalia_type, :target_weapon_skill, :use_charged_maneuvers,
                 :whirlwind_trainables, :wounds
@@ -4409,6 +4415,7 @@ class GameState
     @constructs = []
     @no_stab_mobs = []
     @no_loot = []
+    @all_weapons_locked = false
     @dancing = false
     @retreating = false
     @action_count = 0
