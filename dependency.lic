@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.4.3'
+$DEPENDENCY_VERSION = '2.4.4'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -45,18 +45,20 @@ unless Settings['dependency_version'] == $DEPENDENCY_VERSION
   Settings.save
 end
 
-# One-time migration: move Settings['autostart'] into UserVars.autostart_scripts
-# Settings is script-scoped (only dependency can see it). UserVars is globally accessible.
-echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
+# Merge Settings['autostart'] (per-game global) into UserVars.autostart_scripts (per-character).
+# Settings is script-scoped and per-game — shared across all characters but only dependency can see it.
+# We merge on every login so the global list acts as a baseline for all characters.
+# We do NOT clear Settings['autostart'] because it needs to persist for other characters.
+UserVars.autostart_scripts ||= []
 if Settings['autostart'] && !Settings['autostart'].empty?
-  echo("Migrating global autostarts to UserVars.autostart_scripts.")
-  echo("Before: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-  UserVars.autostart_scripts ||= []
-  UserVars.autostart_scripts = (UserVars.autostart_scripts + Settings['autostart']).uniq
-  UserVars.autostart_scripts -= ['dependency']
-  Settings['autostart'] = []
-  Settings.save
-  echo("After: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+  merged = (UserVars.autostart_scripts + Settings['autostart']).uniq - ['dependency']
+  if merged != UserVars.autostart_scripts
+    echo("Merging global autostarts into character autostarts.")
+    echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
+    echo("Before: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+    UserVars.autostart_scripts = merged
+    echo("After: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+  end
 end
 
 unless UserVars.dependency_setflags
