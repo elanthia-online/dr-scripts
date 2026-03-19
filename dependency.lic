@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.4.8'
+$DEPENDENCY_VERSION = '2.4.9'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -319,7 +319,7 @@ class ScriptManager
     content = download_raw_file(filename)
     return false unless content
 
-    File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(content) }
+    File.open(File.join(SCRIPT_DIR, "#{filename}"), 'wb') { |file| file.print(content) }
     @downloads_occurred = true
     @dependency_updated = true if filename == 'dependency.lic'
     echo("Downloaded #{filename}")
@@ -340,7 +340,7 @@ class ScriptManager
         content = download_raw_file(setup_file['path'])
         next unless content
 
-        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
+        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'wb') { |file| file.print(content) }
       end
   end
 
@@ -362,7 +362,7 @@ class ScriptManager
         content = download_raw_file(setup_file['path'])
         next unless content
 
-        File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'w') { |file| file.print(content) }
+        File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'wb') { |file| file.print(content) }
         Settings['base_versions'][filename] = setup_file['sha']
         echo("Downloaded #{filename}")
       end
@@ -391,7 +391,7 @@ class ScriptManager
         content = download_raw_file(setup_file['path'])
         next unless content
 
-        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
+        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'wb') { |file| file.print(content) }
         Settings['base_versions'][filename] = setup_file['sha']
         echo("Downloaded #{filename}")
       end
