@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.4.3'
+$DEPENDENCY_VERSION = '2.5.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -227,11 +227,106 @@ install = args.install
 
 debug = UserVars.debug_dependency
 
+if defined?(Lich::Common::RepositoryRegistry)
+  DRC.message("--- Dependency: RepositoryRegistry provided by core Lich. Skipping inline definition.")
+else
+  class RepositoryRegistry
+    Repo = Struct.new(:name, :api_url, :raw_base_url, :script_path, :mode, :default_scripts, keyword_init: true)
+
+    # mode: :all — download every .lic at root
+    # mode: :explicit — only download scripts on the tracked list
+
+    def initialize
+      @repos = {}
+    end
+
+    def register(repo)
+      @repos[repo.name] = repo
+    end
+
+    def repos
+      @repos.values
+    end
+
+    def find(name)
+      @repos[name]
+    end
+
+    def tracked_scripts(repo_name)
+      repo = @repos[repo_name]
+      return [] unless repo
+
+      if repo.mode == :all
+        nil # signals "download everything" to ScriptManager
+      else
+        user_additions = UserVars.tracked_scripts&.dig(repo_name) || []
+        (repo.default_scripts + user_additions).uniq
+      end
+    end
+
+    def add_tracked_script(repo_name, script_name)
+      repo = @repos[repo_name]
+      return unless repo && repo.mode == :explicit
+
+      UserVars.tracked_scripts ||= {}
+      UserVars.tracked_scripts[repo_name] ||= []
+      script_name = format_lic(script_name)
+      unless UserVars.tracked_scripts[repo_name].include?(script_name)
+        UserVars.tracked_scripts[repo_name] << script_name
+      end
+    end
+
+    def remove_tracked_script(repo_name, script_name)
+      repo = @repos[repo_name]
+      return unless repo && repo.mode == :explicit
+
+      script_name = format_lic(script_name)
+      if repo.default_scripts.include?(script_name)
+        echo("Cannot remove '#{script_name}' — it is a default tracked script.")
+        return false
+      end
+
+      UserVars.tracked_scripts ||= {}
+      UserVars.tracked_scripts[repo_name]&.delete(script_name)
+      true
+    end
+
+    private
+
+    def format_lic(name)
+      name =~ /\.lic$/ ? name : "#{name}.lic"
+    end
+  end
+end # if/else defined?(Lich::Common::RepositoryRegistry)
+
+EO_SCRIPTS_DEFAULTS = %w[
+  alias.lic autostart.lic ewaggle.lic go2.lic jinx.lic
+  lich5-update.lic log.lic map.lic repository.lic vars.lic version.lic
+].freeze
+
+$repo_registry = RepositoryRegistry.new
+
+$repo_registry.register(RepositoryRegistry::Repo.new(
+                          name: 'dr-scripts',
+                          api_url: 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1',
+                          raw_base_url: 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main',
+                          script_path: '',
+                          mode: :all,
+                          default_scripts: []
+                        ))
+
+$repo_registry.register(RepositoryRegistry::Repo.new(
+                          name: 'eo-scripts',
+                          api_url: 'https://api.github.com/repos/elanthia-online/scripts/git/trees/main?recursive=1',
+                          raw_base_url: 'https://raw.githubusercontent.com/elanthia-online/scripts/main',
+                          script_path: 'scripts/',
+                          mode: :explicit,
+                          default_scripts: EO_SCRIPTS_DEFAULTS
+                        ))
+
 class ScriptManager
   def initialize(debug)
     @debug = debug
-    @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
-    @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
 
     UserVars.autostart_scripts ||= []
     UserVars.autostart_scripts.uniq!
@@ -259,26 +354,43 @@ class ScriptManager
   def build_version_hash
     Dir[File.join(SCRIPT_DIR, '*.lic')].each_with_object({}) do |path, versions|
       file = File.basename(path)
-      body = File.open(File.join(SCRIPT_DIR, "#{file}"), 'r').readlines.join('')
+      body = File.open(File.join(SCRIPT_DIR, file.to_s), 'r').readlines.join('')
       sha = Digest::SHA1.hexdigest('blob' + " #{body.size}" + "\0" + body)
       versions[file] = sha
     end
   end
 
-  def get_script(filename, force = false)
+  def get_script(filename, repo, force = false)
     filename = filename.dup
-    echo("checking:#{filename} force:#{force}") if @debug
-    download_script(filename, force)
+    echo("checking:#{filename} from #{repo.name} force:#{force}") if @debug
+    download_script(filename, repo, force)
   end
 
-  def repo_scripts
-    $manager.get_status['tree'].map { |element| element['path'] }.select { |file| file =~ /^[^\/]+\.lic$/ && !file.include?('-setup') }
+  # Returns the list of .lic scripts to download from a given repo.
+  # For :all repos, returns every .lic at root from the tree API.
+  # For :explicit repos, returns the tracked script list.
+  def repo_scripts(repo)
+    tracked = $repo_registry.tracked_scripts(repo.name)
+    if tracked.nil?
+      # :all mode — get every .lic from repo tree
+      get_repo_status(repo)['tree']
+        .map { |element| element['path'] }
+        .select { |file| file =~ /^#{Regexp.escape(repo.script_path)}[^\/]+\.lic$/ && !file.include?('-setup') }
+        .map { |file| File.basename(file) }
+    else
+      tracked
+    end
   end
 
   def start_scripts(force = false)
     start_time = Time.now
     @versions = nil
-    repo_scripts.each { |(name, _)| get_script(name, force) }
+
+    $repo_registry.repos.each do |repo|
+      echo("Downloading scripts from #{repo.name}...") if @debug
+      repo_scripts(repo).each { |name| get_script(name, repo, force) }
+    end
+
     autostarts.each do |script|
       next if handle_obsolete_autostart(script)
 
@@ -289,11 +401,11 @@ class ScriptManager
     echo("Time spent in start_scripts is #{run_time}") if @debug
   end
 
-  def download_script(filename, force = false)
+  def download_script(filename, repo, force = false)
     return if filename.nil? || filename.empty?
 
-    echo("downloading:#{filename}") if @debug
-    info = get_file_status(filename)
+    echo("downloading:#{filename} from #{repo.name}") if @debug
+    info = get_file_status(filename, repo)
     return unless info
     return if get_versions[filename] == info['sha'] && !force
 
@@ -304,7 +416,7 @@ class ScriptManager
     end
 
     echo("info:#{info}") if @debug
-    content = download_raw_file(filename)
+    content = download_raw_file("#{repo.script_path}#{filename}", repo)
     return unless content
 
     if filename == 'dependency.lic'
@@ -315,7 +427,7 @@ class ScriptManager
       end
     end
 
-    File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(content) }
+    File.open(File.join(SCRIPT_DIR, filename.to_s), 'w') { |file| file.print(content) }
     @self_updated = true if filename == 'dependency.lic'
   end
 
@@ -324,13 +436,14 @@ class ScriptManager
   end
 
   def setup_data
+    dr_repo = $repo_registry.find('dr-scripts')
     verify_or_make_dir File.join(SCRIPT_DIR, 'data')
-    get_status['tree']
+    get_repo_status(dr_repo)['tree']
       .select { |data| data['path'] =~ %r{^data/} && data['type'] == 'blob' }
       .each do |setup_file|
         filename = File.basename(setup_file['path'])
         echo("downloading #{filename}") if @debug
-        content = download_raw_file(setup_file['path'])
+        content = download_raw_file(setup_file['path'], dr_repo)
         next unless content
 
         File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
@@ -338,9 +451,10 @@ class ScriptManager
   end
 
   def check_base_files
+    dr_repo = $repo_registry.find('dr-scripts')
     start_time = Time.now
     verify_or_make_dir File.join(SCRIPT_DIR, 'profiles')
-    get_status['tree']
+    get_repo_status(dr_repo)['tree']
       .select { |data| data['path'] =~ %r{^profiles/base(?:-empty)?\.yaml$} }
       .reject { |setup_file|
         filename = File.basename(setup_file['path'])
@@ -349,7 +463,7 @@ class ScriptManager
       .each do |setup_file|
         filename = File.basename(setup_file['path'])
         echo("downloading #{filename}") if @debug
-        content = download_raw_file(setup_file['path'])
+        content = download_raw_file(setup_file['path'], dr_repo)
         next unless content
 
         File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'w') { |file| file.print(content) }
@@ -362,9 +476,10 @@ class ScriptManager
   end
 
   def check_data_files
+    dr_repo = $repo_registry.find('dr-scripts')
     start_time = Time.now
     verify_or_make_dir File.join(SCRIPT_DIR, 'data')
-    get_status['tree']
+    get_repo_status(dr_repo)['tree']
       .select { |data| data['path'] =~ %r{^data/base.+yaml$} }
       .reject { |setup_file|
         filename = File.basename(setup_file['path'])
@@ -373,7 +488,7 @@ class ScriptManager
       .each do |setup_file|
         filename = File.basename(setup_file['path'])
         echo("downloading #{filename}") if @debug
-        content = download_raw_file(setup_file['path'])
+        content = download_raw_file(setup_file['path'], dr_repo)
         next unless content
 
         File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'w') { |file| file.print(content) }
@@ -393,20 +508,26 @@ class ScriptManager
     start_script(filename)
   end
 
-  def get_file_status(filename)
-    get_status['tree'].find { |element| element['path'] == filename }
+  def get_file_status(filename, repo)
+    tree = get_repo_status(repo)['tree']
+    # For repos with a script_path prefix, match with prefix
+    path_to_find = "#{repo.script_path}#{filename}"
+    tree.find { |element| element['path'] == path_to_find }
   end
 
-  def get_status
-    if Settings['status'] && Time.now - Settings['status_time'] <= 3600
-      echo("Returning cached status response") if @debug
-      return Settings['status']
+  def get_repo_status(repo)
+    cache_key = "status_#{repo.name}"
+    time_key = "status_time_#{repo.name}"
+
+    if Settings[cache_key] && Time.now - Settings[time_key] <= 3600
+      echo("Returning cached status for #{repo.name}") if @debug
+      return Settings[cache_key]
     end
 
-    Settings['status_time'] = Time.now
-    Settings['status'] = make_request(@status_url)
+    Settings[time_key] = Time.now
+    Settings[cache_key] = make_request(repo.api_url)
     Settings.save
-    return Settings['status']
+    Settings[cache_key]
   end
 
   def make_request(raw_uri)
@@ -423,10 +544,8 @@ class ScriptManager
     JSON.parse(response.body)
   end
 
-  def download_raw_file(path)
-    # Downloads file content directly from raw.githubusercontent.com.
-    # No authentication required, no rate limit, returns raw file content.
-    raw_url = "#{@raw_base_url}/#{path}"
+  def download_raw_file(path, repo)
+    raw_url = "#{repo.raw_base_url}/#{path}"
     echo "download_raw_file: #{raw_url}" if @debug
     uri = URI.parse(raw_url)
     http = Net::HTTP.new(uri.host, uri.port)
@@ -1245,9 +1364,14 @@ def make_map_edits
   $manager.make_map_edits
 end
 
-def get_script(script_name)
-  echo("Force downloading #{script_name}")
-  $manager.get_script(format_name(script_name), true)
+def get_script(script_name, repo_name = 'dr-scripts')
+  repo = $repo_registry.find(repo_name)
+  unless repo
+    echo("Unknown repository '#{repo_name}'. Available: #{$repo_registry.repos.map(&:name).join(', ')}")
+    return
+  end
+  echo("Force downloading #{script_name} from #{repo_name}")
+  $manager.get_script(format_name(script_name), repo, true)
 end
 
 def force_refresh_scripts
@@ -1255,8 +1379,29 @@ def force_refresh_scripts
   $manager.start_scripts
 end
 
-def list_tracked_scripts
-  $manager.get_versions.sort
+def list_tracked_scripts(repo_name = nil)
+  if repo_name
+    $repo_registry.tracked_scripts(repo_name)
+  else
+    $repo_registry.repos.each do |repo|
+      scripts = $repo_registry.tracked_scripts(repo.name)
+      echo("--- #{repo.name} (#{repo.mode}) ---")
+      if scripts.nil?
+        echo("  Tracking: all scripts in repository")
+      else
+        scripts.sort.each { |s| echo("  #{s}") }
+      end
+    end
+    nil
+  end
+end
+
+def track_script(script_name, repo_name = 'eo-scripts')
+  $repo_registry.add_tracked_script(repo_name, script_name)
+end
+
+def untrack_script(script_name, repo_name = 'eo-scripts')
+  $repo_registry.remove_tracked_script(repo_name, script_name)
 end
 
 def autostart(script_names, _global = true)
@@ -1278,6 +1423,8 @@ def dependency_status
   echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
   echo("UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
   echo("Resolved autostarts = #{$manager.autostarts.inspect}")
+  echo("Registered repos: #{$repo_registry.repos.map(&:name).join(', ')}")
+  echo("UserVars.tracked_scripts = #{UserVars.tracked_scripts.inspect}")
   nil
 end
 

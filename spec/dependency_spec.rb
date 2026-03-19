@@ -44,12 +44,13 @@ def echo(_msg)
   # no-op in tests
 end
 
-# Mock UserVars with a mutable autostart_scripts array
+# Mock UserVars with mutable autostart_scripts and tracked_scripts
 module UserVars
   class << self
-    attr_accessor :autostart_scripts
+    attr_accessor :autostart_scripts, :tracked_scripts
   end
   self.autostart_scripts = []
+  self.tracked_scripts = nil
 end unless defined?(UserVars)
 
 # Mock Settings as a hash-like store
@@ -73,6 +74,23 @@ end unless defined?(Settings)
 # We eval only the relevant sections to avoid all Lich runtime dependencies.
 dep_path = File.join(File.dirname(__FILE__), '..', 'dependency.lic')
 dep_lines = File.readlines(dep_path)
+
+# Extract RepositoryRegistry class
+rr_start = dep_lines.index { |l| l =~ /^\s*class RepositoryRegistry/ }
+rr_end = dep_lines[rr_start..].index { |l| l =~ /^end # if\/else defined\?\(Lich::Common::RepositoryRegistry\)/ }
+eval(dep_lines[rr_start..rr_start + rr_end - 1].join, TOPLEVEL_BINDING, dep_path, rr_start + 1)
+
+# Extract EO_SCRIPTS_DEFAULTS constant
+eo_start = dep_lines.index { |l| l =~ /^EO_SCRIPTS_DEFAULTS\s*=/ }
+eo_end = dep_lines[eo_start..].index { |l| l =~ /\.freeze$/ }
+eval(dep_lines[eo_start..eo_start + eo_end].join, TOPLEVEL_BINDING, dep_path, eo_start + 1)
+
+# Extract track/untrack global functions
+%w[track_script untrack_script].each do |fn_name|
+  fn_s = dep_lines.index { |l| l =~ /^def #{Regexp.escape(fn_name)}\b/ }
+  fn_e = dep_lines[fn_s + 1..].index { |l| l =~ /^end\s*$/ }
+  eval(dep_lines[fn_s..fn_s + 1 + fn_e].join, TOPLEVEL_BINDING, dep_path, fn_s + 1)
+end
 
 # Extract DR_OBSOLETE_SCRIPTS constant
 obs_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_SCRIPTS\s*=/ }
@@ -828,6 +846,173 @@ RSpec.describe 'Slackbot Functions' do
         expect(mock_slackbot).to receive(:direct_message).with('testuser', 'hello world')
         send_slackbot_message('hello world')
       end
+    end
+  end
+end
+
+# --- RepositoryRegistry ---
+
+RSpec.describe 'RepositoryRegistry' do
+  let(:registry) { RepositoryRegistry.new }
+  let(:dr_repo) do
+    RepositoryRegistry::Repo.new(
+      name: 'dr-scripts',
+      api_url: 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1',
+      raw_base_url: 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main',
+      script_path: '',
+      mode: :all,
+      default_scripts: []
+    )
+  end
+  let(:eo_repo) do
+    RepositoryRegistry::Repo.new(
+      name: 'eo-scripts',
+      api_url: 'https://api.github.com/repos/elanthia-online/scripts/git/trees/main?recursive=1',
+      raw_base_url: 'https://raw.githubusercontent.com/elanthia-online/scripts/main',
+      script_path: 'scripts/',
+      mode: :explicit,
+      default_scripts: %w[alias.lic go2.lic map.lic].freeze
+    )
+  end
+
+  before do
+    UserVars.tracked_scripts = nil
+    registry.register(dr_repo)
+    registry.register(eo_repo)
+  end
+
+  describe '#register and #find' do
+    it 'registers and finds repos by name' do
+      expect(registry.find('dr-scripts')).to eq(dr_repo)
+      expect(registry.find('eo-scripts')).to eq(eo_repo)
+    end
+
+    it 'returns nil for unknown repo' do
+      expect(registry.find('nonexistent')).to be_nil
+    end
+  end
+
+  describe '#repos' do
+    it 'returns all registered repos' do
+      expect(registry.repos.map(&:name)).to contain_exactly('dr-scripts', 'eo-scripts')
+    end
+  end
+
+  describe '#tracked_scripts' do
+    it 'returns nil for :all mode repos (download everything)' do
+      expect(registry.tracked_scripts('dr-scripts')).to be_nil
+    end
+
+    it 'returns default scripts for :explicit mode repos' do
+      expect(registry.tracked_scripts('eo-scripts')).to eq(%w[alias.lic go2.lic map.lic])
+    end
+
+    it 'includes user additions for :explicit repos' do
+      UserVars.tracked_scripts = { 'eo-scripts' => ['bigshot.lic'] }
+      expect(registry.tracked_scripts('eo-scripts')).to include('bigshot.lic')
+      expect(registry.tracked_scripts('eo-scripts')).to include('alias.lic')
+    end
+
+    it 'deduplicates user additions that match defaults' do
+      UserVars.tracked_scripts = { 'eo-scripts' => ['alias.lic'] }
+      scripts = registry.tracked_scripts('eo-scripts')
+      expect(scripts.count('alias.lic')).to eq(1)
+    end
+
+    it 'returns empty array for unknown repo' do
+      expect(registry.tracked_scripts('nonexistent')).to eq([])
+    end
+  end
+
+  describe '#add_tracked_script' do
+    it 'adds a script to the tracked list' do
+      registry.add_tracked_script('eo-scripts', 'bigshot')
+      expect(UserVars.tracked_scripts['eo-scripts']).to include('bigshot.lic')
+    end
+
+    it 'appends .lic if missing' do
+      registry.add_tracked_script('eo-scripts', 'bigshot')
+      expect(UserVars.tracked_scripts['eo-scripts']).to include('bigshot.lic')
+    end
+
+    it 'does not duplicate' do
+      registry.add_tracked_script('eo-scripts', 'bigshot.lic')
+      registry.add_tracked_script('eo-scripts', 'bigshot.lic')
+      expect(UserVars.tracked_scripts['eo-scripts'].count('bigshot.lic')).to eq(1)
+    end
+
+    it 'does nothing for :all mode repos' do
+      registry.add_tracked_script('dr-scripts', 'somescript')
+      expect(UserVars.tracked_scripts).to be_nil
+    end
+  end
+
+  describe '#remove_tracked_script' do
+    it 'removes a user-added script' do
+      UserVars.tracked_scripts = { 'eo-scripts' => ['bigshot.lic'] }
+      result = registry.remove_tracked_script('eo-scripts', 'bigshot.lic')
+      expect(result).to be true
+      expect(UserVars.tracked_scripts['eo-scripts']).not_to include('bigshot.lic')
+    end
+
+    it 'blocks removal of default scripts' do
+      result = registry.remove_tracked_script('eo-scripts', 'alias.lic')
+      expect(result).to be false
+    end
+
+    it 'does nothing for :all mode repos' do
+      result = registry.remove_tracked_script('dr-scripts', 'somescript')
+      expect(result).to be_nil
+    end
+  end
+
+  describe 'EO_SCRIPTS_DEFAULTS' do
+    it 'includes expected core scripts' do
+      %w[alias.lic go2.lic map.lic vars.lic version.lic autostart.lic].each do |script|
+        expect(EO_SCRIPTS_DEFAULTS).to include(script)
+      end
+    end
+
+    it 'is frozen' do
+      expect(EO_SCRIPTS_DEFAULTS).to be_frozen
+    end
+  end
+end
+
+# --- Global track/untrack functions ---
+
+RSpec.describe 'Track/Untrack Functions' do
+  before do
+    UserVars.tracked_scripts = nil
+    $repo_registry = RepositoryRegistry.new
+    $repo_registry.register(RepositoryRegistry::Repo.new(
+                              name: 'eo-scripts',
+                              api_url: '',
+                              raw_base_url: '',
+                              script_path: 'scripts/',
+                              mode: :explicit,
+                              default_scripts: %w[alias.lic go2.lic].freeze
+                            ))
+  end
+
+  describe '#track_script' do
+    it 'adds a script to eo-scripts by default' do
+      track_script('bigshot')
+      expect(UserVars.tracked_scripts['eo-scripts']).to include('bigshot.lic')
+    end
+  end
+
+  describe '#untrack_script' do
+    it 'removes a user-added script' do
+      track_script('bigshot')
+      result = untrack_script('bigshot')
+      expect(result).to be true
+      expect(UserVars.tracked_scripts['eo-scripts']).not_to include('bigshot.lic')
+    end
+
+    it 'blocks removal of default scripts' do
+      result = untrack_script('alias')
+      expect(result).to be false
     end
   end
 end
