@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.5.0'
+$DEPENDENCY_VERSION = '2.5.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.15.0'
 
@@ -633,7 +633,7 @@ else
       # Merge pass: union specified keys, overwrite everything else
       settings = all_files.reduce({}) do |result, filename|
         result.merge(cache_get_by_filename(filename).data || {}) do |key, old_val, new_val|
-          if union_keys.include?(key) && old_val.is_a?(Array) && new_val.is_a?(Array)
+          if union_keys.include?(key.to_s) && old_val.is_a?(Array) && new_val.is_a?(Array)
             (old_val + new_val).uniq
           else
             new_val
