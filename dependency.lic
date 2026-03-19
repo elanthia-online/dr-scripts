@@ -46,7 +46,7 @@ unless Settings['dependency_version'] == $DEPENDENCY_VERSION
 end
 
 # Merge Settings['autostart'] (per-game global) into UserVars.autostart_scripts (per-character).
-# Settings is script-scoped and per-game — shared across all characters but only dependency can see it.
+# Settings is script-scoped and per-game - shared across all characters but only dependency can see it.
 # We merge on every login so the global list acts as a baseline for all characters.
 # We do NOT clear Settings['autostart'] because it needs to persist for other characters.
 UserVars.autostart_scripts ||= []
@@ -73,7 +73,7 @@ unless UserVars.dependency_setflags
   UserVars.dependency_setflags = Time.now
 end
 
-if defined?(Lich::Common::ArgParser)
+if Lich::Common.const_defined?(:ArgParser, false)
   DRC.message("--- Dependency: ArgParser provided by core Lich. Skipping inline definition.")
 else
   class ArgParser
@@ -208,7 +208,7 @@ else
       item
     end
   end
-end # if/else defined?(Lich::Common::ArgParser)
+end # if/else Lich::Common.const_defined?(:ArgParser, false)
 
 def parse_args(defn, flex_args = false)
   ArgParser.new.parse_args(defn, flex_args)
@@ -244,6 +244,7 @@ class ScriptManager
     @request_authorization = load_personal_github_token
     @versions = nil
     @dependency_updated = false
+    @downloads_occurred = false
   end
 
   def dependency_updated?
@@ -281,6 +282,7 @@ class ScriptManager
     start_time = Time.now
     @versions = nil
     repo_scripts.each { |(name, _)| get_script(name, force) }
+    invalidate_status_cache if @downloads_occurred
     autostarts.each do |script|
       next if handle_obsolete_autostart(script)
 
@@ -304,6 +306,7 @@ class ScriptManager
     return unless content
 
     File.open(File.join(SCRIPT_DIR, "#{filename}"), 'w') { |file| file.print(content) }
+    @downloads_occurred = true
     @dependency_updated = true if filename == 'dependency.lic'
   end
 
@@ -383,6 +386,13 @@ class ScriptManager
 
   def get_file_status(filename)
     get_status['tree'].find { |element| element['path'] == filename }
+  end
+
+  def invalidate_status_cache
+    echo("Invalidating cached status (files were downloaded)") if @debug
+    Settings['status'] = nil
+    Settings['status_time'] = nil
+    Settings.save
   end
 
   def get_status
@@ -507,7 +517,7 @@ class ScriptManager
   end
 end
 
-if defined?(Lich::Common::SetupFiles)
+if Lich::Common.const_defined?(:SetupFiles, false)
   DRC.message("--- Dependency: SetupFiles provided by core Lich. Skipping inline definition.")
 else
   class SetupFiles
@@ -1064,7 +1074,7 @@ else
       OpenStruct.new
     end
   end
-end # if/else defined?(Lich::Common::SetupFiles)
+end # if/else Lich::Common.const_defined?(:SetupFiles, false)
 
 $setupfiles = SetupFiles.new(debug)
 $manager = ScriptManager.new(debug)
