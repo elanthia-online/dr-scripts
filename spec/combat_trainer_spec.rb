@@ -752,5 +752,97 @@ RSpec.describe SetupProcess do
         expect(game_state).not_to have_received(:update_weapon_info)
       end
     end
+
+    # =========================================================================
+    # Blank/nil weapon_training guard
+    # =========================================================================
+    shared_examples 'returns without selecting a weapon' do
+      it 'does not call skill_done? or update_weapon_info' do
+        expect(game_state).not_to have_received(:skill_done?)
+        expect(game_state).not_to have_received(:update_weapon_info)
+      end
+
+      it 'warns the user with a DRC.message' do
+        expect(DRC).to have_received(:message).with(/No weapons configured/).at_least(:once)
+      end
+    end
+
+    context 'when weapon_training is empty' do
+      let(:game_state) { build_game_state_double(weapon_skill: nil) }
+
+      before(:each) do
+        allow(DRC).to receive(:message)
+        setup = build_setup_process
+        setup.send(:determine_next_to_train, game_state, {}, false)
+      end
+
+      include_examples 'returns without selecting a weapon'
+    end
+
+    context 'when weapon_training is nil' do
+      let(:game_state) { build_game_state_double(weapon_skill: nil) }
+
+      before(:each) do
+        allow(DRC).to receive(:message)
+        setup = build_setup_process
+        setup.send(:determine_next_to_train, game_state, nil, false)
+      end
+
+      include_examples 'returns without selecting a weapon'
+    end
+
+    # =========================================================================
+    # User-facing messaging
+    # =========================================================================
+    context 'messaging for 5a (all at 34, weapon equipped)' do
+      it 'warns the user once about continuing with current weapon' do
+        allow(DRC).to receive(:message)
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).to have_received(:message).with(/Continuing to attack with Bow/).once
+      end
+    end
+
+    context 'messaging for 5b (all at 34, no weapon equipped)' do
+      it 'warns the user once about selecting initial weapon' do
+        allow(DRC).to receive(:message)
+        game_state = build_game_state_double(weapon_skill: nil)
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).to have_received(:message).with(/Selecting initial weapon/).once
+      end
+    end
+
+    context 'messaging for ignore_weapon_mindstate when all at 34' do
+      it 'warns the user once about cycling by action count' do
+        allow(DRC).to receive(:message)
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process(ignore_weapon_mindstate: true)
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).to have_received(:message).with(/Cycling weapons by combat_trainer_action_count/).once
+      end
+    end
+
+    context 'messaging for ignore_weapon_mindstate when not all at 34' do
+      it 'does not warn about action count cycling' do
+        allow(DRC).to receive(:message)
+        allow(DRSkill).to receive(:getxp).and_return(17)
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process(ignore_weapon_mindstate: true)
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).not_to have_received(:message).with(/Cycling weapons by combat_trainer_action_count/)
+      end
+    end
   end
 end
