@@ -251,7 +251,10 @@ class SetupProcess
   end
 
   def last_stance
-    Flags['last-stance'][0] =~ /(\d+)%.* (\d+)%.* (\d+)%.* (\d+)/
+    flag_result = Flags['last-stance']
+    return { 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 } unless flag_result
+
+    flag_result[0] =~ /(\d+)%.* (\d+)%.* (\d+)%.* (\d+)/
     { 'EVASION' => Regexp.last_match(1).to_i, 'PARRY' => Regexp.last_match(2).to_i, 'SHIELD' => Regexp.last_match(3).to_i, 'SPARE' => Regexp.last_match(4).to_i }
   end
 
@@ -1365,7 +1368,7 @@ class SpellProcess
     @training_spells_wait = settings.combat_spell_timer
     echo("  @training_spells_wait: #{@training_spells_wait}") if $debug_mode_ct
 
-    @magic_exp_training_max_threshold = settings.magic_exp_training_max_threshold
+    @magic_exp_training_max_threshold = settings.magic_exp_training_max_threshold || 32
     echo("  @magic_exp_training_max_threshold: #{@magic_exp_training_max_threshold}") if $debug_mode_ct
 
     @offensive_spell_cycle = settings.offensive_spell_cycle
@@ -1522,6 +1525,7 @@ class SpellProcess
 
   def drop_tkt_ammo
     return unless @tk_ammo
+    return unless @tk_spell
 
     fput("get my #{@tk_ammo}")
     fput("drop #{@tk_ammo}")
@@ -2968,16 +2972,21 @@ class ManipulateProcess
     DRC.bput('manipulate stop all', /^You relax your will/, /^But you aren't manipulating anything/)
 
     manipulate_count = 0
+    npc_occurrences = Hash.new(0)
 
     @filtered_npcs.each do |npc|
       next if game_state.construct?(npc)
       break if manipulate_count >= @threshold
 
-      case DRC.bput("manipulate friendship #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what')
+      index = npc_occurrences[npc]
+      ordinal_string = $ORDINALS[index]
+
+      case DRC.bput("manipulate friendship #{ordinal_string} #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what')
       when 'does not seem to have a life essence' then
         game_state.construct(npc)
       else
         manipulate_count += 1
+        npc_occurrences[npc] += 1
       end
     end
 
@@ -5958,6 +5967,7 @@ before_dying do
   DRCA.release_cyclics(get_settings.cyclic_no_release)
   DRCA.shatter_regalia?
   fput('close fissure') if DRStats.warrior_mage? && DRRoom.room_objs.any? { |x| /fissure/ =~x }
+  fput("release spell") if XMLData.prepared_spell
   Flags.delete('using-corpse')
   Flags.delete('pouch-full')
   Flags.delete('container-full')
