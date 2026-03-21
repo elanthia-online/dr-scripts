@@ -688,23 +688,19 @@ class LootProcess
       game_state.unlootable(item)
       return
     end
-    DRC.bput("remove my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You remove')
-    if @full_pouch_container
-      case DRC.bput("put my #{@gem_pouch_adjective} #{@gem_pouch_noun} in my #{@full_pouch_container}", 'You put', 'too heavy to go in there')
-      when 'too heavy to go in there'
-        DRC.bput("stow my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You put')
-      end
-    else
-      DRC.bput("stow my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You put')
+    unless DRCI.swap_out_full_gempouch?(
+      @gem_pouch_adjective,
+      @gem_pouch_noun,
+      @full_pouch_container,
+      @spare_gem_pouch_container,
+      @tie_pouch
+    )
+      game_state.unlootable(item)
+      return
     end
-    DRC.bput("get #{@gem_pouch_adjective} #{@gem_pouch_noun} from my #{@spare_gem_pouch_container}", 'You get a')
-    DRC.bput("wear my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You attach')
-    DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory')
-    if @tie_pouch
-      DRC.bput("tie my #{@gem_pouch_noun}", 'You tie')
-    else
-      DRC.bput("close my #{@gem_pouch_noun}", 'You close')
-    end
+
+    # Pick up the dropped gem
+    DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
   end
 
   def stow_lootables(game_state)
