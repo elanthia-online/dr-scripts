@@ -1205,14 +1205,39 @@ class SafetyProcess
     @equipment_manager = equipment_manager
     @health_threshold = settings.health_threshold
     @stop_on_bleeding = settings.stop_hunting_if_bleeding
+    @safety_untendable_threshold = settings.safety_untendable_threshold || 3
+    @safety_exit_on_bleeding = settings.safety_exit_on_bleeding || false
+    @safety_concentration_minimum = settings.safety_concentration_minimum
+    @safety_escape_health_threshold = settings.safety_escape_health_threshold
     echo("  @health_threshold: #{@health_threshold}") if $debug_mode_ct
+    echo("  @safety_untendable_threshold: #{@safety_untendable_threshold}") if $debug_mode_ct
+    echo("  @safety_exit_on_bleeding: #{@safety_exit_on_bleeding}") if $debug_mode_ct
+    echo("  @safety_concentration_minimum: #{@safety_concentration_minimum}") if $debug_mode_ct
+    echo("  @safety_escape_health_threshold: #{@safety_escape_health_threshold}") if $debug_mode_ct
     @untendable_counter = 0
   end
 
   def execute(game_state)
-    if @untendable_counter >= 3 && @stop_on_bleeding
+    if @untendable_counter >= @safety_untendable_threshold && @stop_on_bleeding
       echo('Skipping tendme check due to untendable backoff') if $debug_mode_ct
-      echo("Couldn't tend bleeders after trying three times. Stopping hunt. Get healed!")
+      echo("Couldn't tend bleeders after trying #{@safety_untendable_threshold} time(s). Stopping hunt. Get healed!")
+      $HUNTING_BUDDY.stop_hunting
+      $COMBAT_TRAINER.stop
+    elsif @safety_concentration_minimum && DRStats.concentration < @safety_concentration_minimum
+      echo("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
+      $HUNTING_BUDDY.stop_hunting
+      $COMBAT_TRAINER.stop
+    elsif @safety_escape_health_threshold && DRStats.thief? && DRSpells.known_spells['Vanish'] && (bleeding? || stunned? || DRStats.health < @safety_escape_health_threshold)
+      pause 0.1 while stunned?
+      echo("Bleeding. Activating Vanish and stopping hunt.") if bleeding?
+      echo("Stunned. Activating Vanish and stopping hunt.") if stunned?
+      echo("Health below #{@safety_escape_health_threshold}. Activating Vanish and stopping hunt.") if DRStats.health < @safety_escape_health_threshold
+      DRCA.activate_khri?(false, "Vanish")
+      $HUNTING_BUDDY.stop_hunting
+      $COMBAT_TRAINER.stop
+    elsif @safety_exit_on_bleeding && (bleeding? || (stunned? && DRStats.health < (@safety_escape_health_threshold || 80)))
+      echo("Bleeding. Stopping hunt.") if bleeding?
+      echo("Stunned with low health. Stopping hunt.") if stunned?
       $HUNTING_BUDDY.stop_hunting
       $COMBAT_TRAINER.stop
     # If no heal-over-time spells are active then attempt to tend bleeders using ;tendme
