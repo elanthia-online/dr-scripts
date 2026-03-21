@@ -3270,6 +3270,8 @@ class TrainerProcess
   private
 
   def hide_action(game_state)
+    return if DRSkill.getxp('Stealth') >= 34
+
     if DRC.hide?(@hide_type) && !@dont_stalk && !game_state.npcs.empty? && @hide_type == 'hide'
       stalked = DRC.bput('stalk', 'Stalk what',
                          'Try being out of sight',
