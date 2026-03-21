@@ -5411,6 +5411,8 @@ class GameState
       # we'll wait another 15 seconds and retry.
       @cooldown_timers[maneuver] += 15
       return false
+    when *maneuver_failure_messages
+      return false
     when *maneuver_retreat_retry_messages
       if maneuver.casecmp?('rush')
         if @rush_retreat_skip
