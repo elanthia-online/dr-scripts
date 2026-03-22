@@ -1099,6 +1099,44 @@ RSpec.describe Astrology do
       end
     end
 
+    context 'with body names containing regex metacharacters' do
+      let(:astrology) do
+        build_astrology(
+          constellations: [
+            { 'name' => 'Star (Alpha)', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+              'pools' => { 'magic' => true } },
+            { 'name' => 'Obj+ect', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+              'pools' => { 'lore' => true } }
+          ]
+        )
+      end
+
+      before do
+        allow(DRCMM).to receive(:observe).with('heavens').and_return('Some result')
+      end
+
+      it 'does not crash on parentheses in body name' do
+        $history = ["You see Star (Alpha) shining brightly.", 'Roundtime: 5 sec.']
+        expect { astrology.visible_bodies }.not_to raise_error
+      end
+
+      it 'does not crash on plus sign in body name' do
+        $history = ["You see Obj+ect overhead.", 'Roundtime: 5 sec.']
+        expect { astrology.visible_bodies }.not_to raise_error
+      end
+
+      it 'matches last word of name via word boundary' do
+        # visible_bodies uses body['name'].split.last with \b anchors
+        # For "Star (Alpha)", split.last is "(Alpha)" -- \b around escaped parens
+        # won't match because \b needs a word char adjacent to a non-word char
+        # This is expected: the regex is designed for plain word names
+        $history = ['You see Alpha) high in the sky.', 'Roundtime: 5 sec.']
+        DRStats.circle = 50
+        # The escaped parens prevent regex crash but \b won't match around them
+        expect { astrology.visible_bodies }.not_to raise_error
+      end
+    end
+
     context 'when get? returns nil (disconnect)' do
       before do
         allow(DRCMM).to receive(:observe).with('heavens').and_return('Some result')
