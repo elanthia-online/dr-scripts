@@ -423,6 +423,18 @@ RSpec.describe Astrology do
         expect(described_class::MAX_HEAVENS_RETRIES).to eq(3)
       end
     end
+
+    describe 'MAX_OBSERVE_RETRIES' do
+      it 'is defined' do
+        expect(described_class::MAX_OBSERVE_RETRIES).to eq(5)
+      end
+    end
+
+    describe 'MAX_OBSERVE_ITERATIONS' do
+      it 'is defined' do
+        expect(described_class::MAX_OBSERVE_ITERATIONS).to eq(20)
+      end
+    end
   end
 
   describe '#initialize' do
@@ -665,6 +677,12 @@ RSpec.describe Astrology do
       it 'returns false for non-finished message' do
         expect(astrology.check_observation_finished?('You learned something useful')).to be false
       end
+
+      # Adversarial: string path must use substring matching, not exact match
+      it 'returns true when string CONTAINS a finished message (not exact match)' do
+        full_message = "You've learned all that you can from this observation of Katamba."
+        expect(astrology.check_observation_finished?(full_message)).to be true
+      end
     end
 
     it 'returns false for nil' do
@@ -700,6 +718,12 @@ RSpec.describe Astrology do
 
       it 'returns false for non-success message' do
         expect(astrology.check_observation_success?('Random text')).to be false
+      end
+
+      # Adversarial: string path must use substring matching, not exact match
+      it 'returns true when string CONTAINS a success message (not exact match)' do
+        full_message = 'You learned something useful from your observation of Katamba.'
+        expect(astrology.check_observation_success?(full_message)).to be true
       end
     end
 
@@ -968,6 +992,24 @@ RSpec.describe Astrology do
         allow(DRCMM).to receive(:peer_telescope).and_return(['You learned something useful'])
         astrology.observe_routine('Heart')
       end
+
+      # Adversarial: observe_routine used to recurse infinitely on persistent errors
+      it 'aborts after MAX_OBSERVE_RETRIES when telescope keeps failing' do
+        # center_telescope keeps returning "Center what" (telescope falls out of hands)
+        allow(DRCMM).to receive(:center_telescope).with('Heart').and_return('Center what?')
+        allow(DRCMM).to receive(:get_telescope?).and_return(true)
+        result = astrology.observe_routine('Heart')
+        expect(result).to be_nil
+        expect(messages).to include('Astrology: Max observe retries reached. Aborting observation.')
+      end
+
+      it 'aborts after MAX_OBSERVE_RETRIES when injuries persist' do
+        allow(DRCMM).to receive(:center_telescope).with('Heart').and_return('The pain is too much')
+        allow(DRC).to receive(:wait_for_script_to_complete)
+        result = astrology.observe_routine('Heart')
+        expect(result).to be_nil
+        expect(messages).to include('Astrology: Max observe retries reached. Aborting observation.')
+      end
     end
   end
 
@@ -1197,6 +1239,27 @@ RSpec.describe Astrology do
       allow(DRCMM).to receive(:study_sky).and_return('You fail to detect any portents')
       expect(DRCMM).not_to receive(:predict)
       astrology.check_events({ 'future events' => 0 })
+    end
+  end
+
+  # Adversarial: observe_without_telescope must not loop forever
+  describe '#observe_without_telescope (via check_heavens)' do
+    let(:astrology) { build_astrology }
+
+    it 'stops after MAX_OBSERVE_ITERATIONS when observe never succeeds' do
+      # Make visible_bodies return something valid
+      allow(astrology).to receive(:visible_bodies).and_return(
+        [{ 'name' => 'Katamba', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+           'pools' => { 'magic' => true } }]
+      )
+      # observe always returns unrecognized output, bad-search never set
+      allow(DRCMM).to receive(:observe).and_return('Some unexpected game output')
+
+      # This should NOT hang -- it should exit after MAX_OBSERVE_ITERATIONS
+      astrology.check_heavens
+
+      # Verify observe was called exactly MAX_OBSERVE_ITERATIONS times
+      expect(DRCMM).to have_received(:observe).exactly(described_class::MAX_OBSERVE_ITERATIONS).times
     end
   end
 

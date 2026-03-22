@@ -89,6 +89,12 @@ class Astrology
   # Maximum recursion depth for check_heavens retries on daylight/bad-search.
   MAX_HEAVENS_RETRIES = 3
 
+  # Maximum recursion depth for observe_routine error recovery (telescope).
+  MAX_OBSERVE_RETRIES = 5
+
+  # Maximum iterations for non-telescope observation before giving up.
+  MAX_OBSERVE_ITERATIONS = 20
+
   # Loads settings, parses arguments, and sets up instance variables.
   # Does not run training -- call {#run} to start.
   #
@@ -438,20 +444,23 @@ class Astrology
   end
 
   # Checks if an observation result indicates completion.
+  # Uses substring matching for both array and string results.
   #
   # @param result [Array<String>, String, nil] observation result
   # @return [Boolean] true if observation is finished
   def check_observation_finished?(result)
     return false unless result
 
+    finished_pattern = Regexp.union(@finished_messages)
     if result.is_a?(Array)
-      result.any? { |line| line.match?(Regexp.union(@finished_messages)) }
+      result.any? { |line| line.match?(finished_pattern) }
     else
-      @finished_messages.include?(result)
+      result.match?(finished_pattern)
     end
   end
 
   # Checks if an observation result indicates success.
+  # Uses substring matching for both array and string results.
   #
   # @param result [Array<String>, String, nil] observation result
   # @return [Boolean] true if observation was successful
@@ -461,7 +470,7 @@ class Astrology
     if result.is_a?(Array)
       result.any? { |line| @success_messages.any? { |msg| line.include?(msg) } }
     else
-      @success_messages.include?(result)
+      @success_messages.any? { |msg| result.include?(msg) }
     end
   end
 
@@ -480,8 +489,14 @@ class Astrology
   # Observes a celestial body, handling telescope and error recovery.
   #
   # @param body [String] celestial body name
+  # @param depth [Integer] recursion depth for telescope error recovery
   # @return [String, Array<String>, nil] raw game output from the observation
-  def observe_routine(body)
+  def observe_routine(body, depth: 0)
+    if depth > MAX_OBSERVE_RETRIES
+      Lich::Messaging.msg('bold', 'Astrology: Max observe retries reached. Aborting observation.')
+      return nil
+    end
+
     Flags.add('bad-search', 'is foiled by the (daylight|darkness)', 'turns up fruitless')
 
     begin
@@ -489,22 +504,22 @@ class Astrology
         case DRCMM.center_telescope(body)
         when /Center what/
           get_telescope
-          return observe_routine(body)
+          return observe_routine(body, depth: depth + 1)
         when /open it/
           DRC.bput('open my telescope', 'extend your telescope')
-          return observe_routine(body)
+          return observe_routine(body, depth: depth + 1)
         when /The pain is too much/, /Your vision is too fuzzy/
           get_healed
-          return observe_routine(body)
+          return observe_routine(body, depth: depth + 1)
         end
         result = DRCMM.peer_telescope
         injuries, closed = check_telescope_result(result)
         if injuries
           get_healed
-          return observe_routine(body)
+          return observe_routine(body, depth: depth + 1)
         elsif closed
           DRC.bput('open my telescope', 'extend your telescope')
-          return observe_routine(body)
+          return observe_routine(body, depth: depth + 1)
         end
 
         result
@@ -702,7 +717,7 @@ class Astrology
   # @param depth [Integer] current recursion depth
   # @return [void]
   def observe_without_telescope(best_eye_data, depth)
-    loop do
+    MAX_OBSERVE_ITERATIONS.times do
       result = observe_routine(best_eye_data['name'])
       break if observe_success?(result)
 
