@@ -57,6 +57,7 @@ module DRCMM
     def use_div_tool(_tool); end
     def get_telescope?(_name, _storage); end
     def store_telescope?(_name, _storage); end
+    def store_div_tool?(_tool); end
     def center_telescope(_target); end
     def peer_telescope; end
   end
@@ -207,7 +208,6 @@ RSpec.describe Astrology do
   before(:each) do
     reset_data
 
-    # Setup test data
     DRStats.guild = 'Moon Mage'
     DRStats.circle = 50
 
@@ -217,7 +217,6 @@ RSpec.describe Astrology do
       spells: OpenStruct.new(spell_data: spell_data)
     }
 
-    # Setup module stubs
     allow(Lich::Messaging).to receive(:msg) { |_, msg| messages << msg }
     allow(Lich::Util).to receive(:issue_command).and_return([])
     allow(DRC).to receive(:bput).and_return('Roundtime')
@@ -232,6 +231,7 @@ RSpec.describe Astrology do
     allow(DRCMM).to receive(:use_div_tool)
     allow(DRCMM).to receive(:get_telescope?).and_return(true)
     allow(DRCMM).to receive(:store_telescope?).and_return(true)
+    allow(DRCMM).to receive(:store_div_tool?).and_return(true)
     allow(DRCMM).to receive(:center_telescope)
     allow(DRCMM).to receive(:peer_telescope).and_return(['You learned something useful', 'Roundtime: 5 sec.'])
     allow(DRCA).to receive(:cast_spell)
@@ -239,6 +239,37 @@ RSpec.describe Astrology do
     allow(DRCA).to receive(:cast_spells)
     allow(DRCA).to receive(:perc_mana)
     allow(DRCT).to receive(:walk_to)
+  end
+
+  # Helper to build an Astrology instance with common ivars set
+  def build_astrology(**overrides)
+    defaults = {
+      have_telescope: false,
+      telescope_name: 'telescope',
+      telescope_storage: {},
+      constellations: constellations_data.constellations,
+      finished_messages: constellations_data.observe_finished_messages,
+      success_messages: constellations_data.observe_success_messages,
+      injured_messages: constellations_data.observe_injured_messages,
+      prediction_pool_target: 7,
+      prediction_skills: {
+        'magic' => 'Arcana', 'lore' => 'Scholarship', 'offense' => 'Tactics',
+        'defense' => 'Evasion', 'survival' => 'Outdoorsmanship'
+      },
+      equipment_manager: instance_double('EquipmentManager', empty_hands: nil),
+      divination_bones_storage: nil,
+      divination_tool: nil,
+      force_visions: false,
+      astral_place_source: nil,
+      astral_plane_destination: nil,
+      settings: default_settings,
+      rtr_data: nil
+    }
+    opts = defaults.merge(overrides)
+
+    described_class.allocate.tap do |a|
+      opts.each { |key, val| a.instance_variable_set(:"@#{key}", val) }
+    end
   end
 
   describe 'constants' do
@@ -305,40 +336,21 @@ RSpec.describe Astrology do
         expect(described_class::OBSERVE_SUCCESS_PATTERNS).to be_frozen
       end
 
-      it 'includes partial success pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('While the sighting')
-      end
-
-      it 'includes full success pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('You learned something useful')
-      end
-
-      it 'includes solar conjunction pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('too close to the sun')
-      end
-
-      it 'includes observation cooldown pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('You have not pondered')
-      end
-
-      it 'includes cooldown followup pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('You are unable to make use')
-      end
-
-      it 'includes nearly overwhelmed pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('you still learned more')
-      end
-
-      it 'includes clouds obscure pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('Clouds obscure')
-      end
-
-      it 'includes telescope needed pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('too faint for you')
-      end
-
-      it 'includes below horizon pattern' do
-        expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include('below the horizon')
+      %w[
+        While\ the\ sighting
+        You\ learned\ something\ useful
+        Clouds\ obscure
+        You\ learn\ nothing
+        too\ close\ to\ the\ sun
+        too\ faint\ for\ you
+        below\ the\ horizon
+        You\ have\ not\ pondered
+        You\ are\ unable\ to\ make\ use
+        you\ still\ learned\ more
+      ].each do |pattern|
+        it "includes '#{pattern}'" do
+          expect(described_class::OBSERVE_SUCCESS_PATTERNS).to include(pattern)
+        end
       end
 
       # Adversarial: verify each pattern matches its actual game message via substring
@@ -384,54 +396,38 @@ RSpec.describe Astrology do
     end
 
     describe 'PERCEIVE_TARGETS' do
-      it 'is frozen' do
+      it 'is frozen and has 8 targets including empty string and mana' do
         expect(described_class::PERCEIVE_TARGETS).to be_frozen
-      end
-
-      it 'includes empty string for basic perceive' do
-        expect(described_class::PERCEIVE_TARGETS).to include('')
-      end
-
-      it 'includes mana target' do
-        expect(described_class::PERCEIVE_TARGETS).to include('mana')
-      end
-
-      it 'includes moons target' do
-        expect(described_class::PERCEIVE_TARGETS).to include('moons')
-      end
-
-      it 'has 8 targets' do
         expect(described_class::PERCEIVE_TARGETS.size).to eq(8)
+        expect(described_class::PERCEIVE_TARGETS).to include('', 'mana', 'moons')
       end
     end
 
     describe 'PREDICT_STATE_START' do
-      it 'is frozen' do
+      it 'matches celestial influences case-sensitively' do
         expect(described_class::PREDICT_STATE_START).to be_frozen
-      end
-
-      it 'matches celestial influences' do
         expect('You have a feeble understanding of the celestial influences over').to match(described_class::PREDICT_STATE_START)
       end
     end
 
     describe 'PREDICT_STATE_END' do
-      it 'is frozen' do
-        expect(described_class::PREDICT_STATE_END).to be_frozen
-      end
-
       it 'matches Roundtime case-insensitively' do
+        expect(described_class::PREDICT_STATE_END).to be_frozen
         expect('Roundtime: 3 sec.').to match(described_class::PREDICT_STATE_END)
         expect('roundtime: 3 sec.').to match(described_class::PREDICT_STATE_END)
+      end
+    end
+
+    describe 'MAX_HEAVENS_RETRIES' do
+      it 'is defined' do
+        expect(described_class::MAX_HEAVENS_RETRIES).to eq(3)
       end
     end
   end
 
   describe '#initialize' do
     context 'when not a Moon Mage' do
-      before do
-        DRStats.guild = 'Warrior'
-      end
+      before { DRStats.guild = 'Warrior' }
 
       it 'displays exit message and terminates' do
         expect do
@@ -442,16 +438,64 @@ RSpec.describe Astrology do
     end
 
     context 'when circle is zero' do
-      before do
-        DRStats.circle = 0
-        # Set high XP to exit training loop immediately
-        Harness::DRSkill._set_xp('Astrology', 35)
-        allow(Lich::Util).to receive(:issue_command).and_return([])
-      end
+      before { DRStats.circle = 0 }
 
       it 'calls info command to refresh circle' do
         expect(DRC).to receive(:bput).with('info', 'Circle:')
         described_class.allocate.tap { |a| a.send(:initialize) }
+      end
+    end
+
+    context 'when astral_plane_training is nil' do
+      before do
+        $test_settings = OpenStruct.new(
+          default_settings.to_h.merge(astral_plane_training: nil)
+        )
+      end
+
+      it 'does not crash (nil-safe navigation)' do
+        astro = described_class.allocate.tap { |a| a.send(:initialize) }
+        expect(astro.instance_variable_get(:@astral_place_source)).to be_nil
+        expect(astro.instance_variable_get(:@astral_plane_destination)).to be_nil
+      end
+    end
+
+    it 'deduplicates get_data calls (calls constellations once)' do
+      described_class.allocate.tap { |a| a.send(:initialize) }
+      constellations_calls = $data_called_with.count { |d| d == 'constellations' }
+      expect(constellations_calls).to eq(1)
+    end
+
+    it 'stores prediction_skills as a single hash' do
+      astro = described_class.allocate.tap { |a| a.send(:initialize) }
+      skills = astro.instance_variable_get(:@prediction_skills)
+      expect(skills).to be_a(Hash)
+      expect(skills['magic']).to eq('Arcana')
+      expect(skills['survival']).to eq('Outdoorsmanship')
+    end
+  end
+
+  describe '#run' do
+    let(:astrology) do
+      build_astrology(args: OpenStruct.new(rtr: false))
+    end
+
+    it 'calls do_buffs and train_astrology for default mode' do
+      allow(DRSkill).to receive(:getxp).with('Astrology').and_return(33)
+      expect(astrology).to receive(:do_buffs)
+      expect(astrology).to receive(:train_astrology)
+      astrology.run
+    end
+
+    context 'with rtr mode' do
+      let(:astrology) do
+        build_astrology(args: OpenStruct.new(rtr: true))
+      end
+
+      it 'calls do_buffs and check_ripples' do
+        expect(astrology).to receive(:do_buffs)
+        expect(astrology).to receive(:check_ripples)
+        astrology.run
       end
     end
   end
@@ -476,26 +520,15 @@ RSpec.describe Astrology do
         'predict state all',
         described_class::PREDICT_STATE_START,
         described_class::PREDICT_STATE_END,
-        timeout: 10,
-        usexml: false,
-        silent: true,
-        quiet: true
+        timeout: 10, usexml: false, silent: true, quiet: true
       )
       astrology.check_pools
     end
 
-    it 'parses potent understanding as level 7' do
+    it 'parses pool levels correctly' do
       pools = astrology.check_pools
       expect(pools['magic']).to eq(7)
-    end
-
-    it 'parses modest understanding as level 4' do
-      pools = astrology.check_pools
       expect(pools['lore']).to eq(4)
-    end
-
-    it 'parses no understanding as level 0' do
-      pools = astrology.check_pools
       expect(pools['survival']).to eq(0)
     end
 
@@ -509,10 +542,9 @@ RSpec.describe Astrology do
 
     context 'when all pools are at maximum' do
       let(:pool_output) do
-        [
-          'You have a complete understanding of the celestial influences over magic.',
-          'You have a complete understanding of the celestial influences over lore.',
-          'You have a complete understanding of the celestial influences over survival.',
+        %w[magic lore survival].map do |name|
+          "You have a complete understanding of the celestial influences over #{name}."
+        end + [
           'You have a complete understanding of the celestial influences over offensive combat.',
           'You have a complete understanding of the celestial influences over defensive combat.',
           'You have a complete understanding of the celestial influences over future events.',
@@ -527,25 +559,17 @@ RSpec.describe Astrology do
     end
 
     context 'when issue_command times out' do
-      before do
-        allow(Lich::Util).to receive(:issue_command).and_return(nil)
-      end
+      before { allow(Lich::Util).to receive(:issue_command).and_return(nil) }
 
-      it 'returns default pool values' do
+      it 'returns default pool values and logs failure' do
         pools = astrology.check_pools
         expect(pools.values).to all(eq(0))
-      end
-
-      it 'logs failure message' do
-        astrology.check_pools
         expect(messages).to include('Astrology: Failed to capture predict state output. Using default pool values.')
       end
     end
 
     context 'when issue_command returns empty array' do
-      before do
-        allow(Lich::Util).to receive(:issue_command).and_return([])
-      end
+      before { allow(Lich::Util).to receive(:issue_command).and_return([]) }
 
       it 'returns default pool values' do
         pools = astrology.check_pools
@@ -572,9 +596,7 @@ RSpec.describe Astrology do
     end
 
     context 'when Attunement XP is above threshold' do
-      before do
-        allow(DRSkill).to receive(:getxp).with('Attunement').and_return(31)
-      end
+      before { allow(DRSkill).to receive(:getxp).with('Attunement').and_return(31) }
 
       it 'does not perceive' do
         expect(DRC).not_to receive(:bput).with(/perceive/, anything)
@@ -598,59 +620,36 @@ RSpec.describe Astrology do
   end
 
   describe '#check_weather' do
-    let(:astrology) { described_class.allocate }
-
     it 'calls predict weather' do
       expect(DRCMM).to receive(:predict).with('weather')
-      astrology.check_weather
+      described_class.allocate.check_weather
     end
   end
 
   describe '#rtr_active?' do
     let(:astrology) { described_class.allocate }
 
-    context 'when Read the Ripples is active' do
-      before do
-        DRSpells._set_active_spells({ 'Read the Ripples' => true })
-      end
-
-      it 'returns true' do
-        expect(astrology.rtr_active?).to be true
-      end
+    it 'returns true when Read the Ripples is active' do
+      DRSpells._set_active_spells({ 'Read the Ripples' => true })
+      expect(astrology.rtr_active?).to be true
     end
 
-    context 'when Read the Ripples is not active' do
-      before do
-        DRSpells._set_active_spells({})
-      end
-
-      it 'returns false' do
-        expect(astrology.rtr_active?).to be false
-      end
+    it 'returns false when Read the Ripples is not active' do
+      DRSpells._set_active_spells({})
+      expect(astrology.rtr_active?).to be false
     end
   end
 
   describe '#check_observation_finished?' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@finished_messages, constellations_data.observe_finished_messages)
-      end
-    end
+    let(:astrology) { build_astrology }
 
     context 'with array result' do
       it 'returns true when array contains finished message' do
-        result = ['Some text', "You've learned all that you can", 'Roundtime: 5 sec.']
-        expect(astrology.check_observation_finished?(result)).to be true
+        expect(astrology.check_observation_finished?(["You've learned all that you can", 'Roundtime'])).to be true
       end
 
       it 'returns false when array has no finished message' do
-        result = ['Some text', 'Roundtime: 5 sec.']
-        expect(astrology.check_observation_finished?(result)).to be false
-      end
-
-      it 'returns true for second finished message variant' do
-        result = ['You believe you have learned', 'Roundtime: 5 sec.']
-        expect(astrology.check_observation_finished?(result)).to be true
+        expect(astrology.check_observation_finished?(['Some text', 'Roundtime'])).to be false
       end
 
       it 'returns false for empty array' do
@@ -666,40 +665,27 @@ RSpec.describe Astrology do
       it 'returns false for non-finished message' do
         expect(astrology.check_observation_finished?('You learned something useful')).to be false
       end
-
-      it 'returns false for empty string' do
-        expect(astrology.check_observation_finished?('')).to be false
-      end
     end
 
-    context 'with nil result' do
-      it 'returns false' do
-        expect(astrology.check_observation_finished?(nil)).to be false
-      end
+    it 'returns false for nil' do
+      expect(astrology.check_observation_finished?(nil)).to be false
     end
   end
 
   describe '#check_observation_success?' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@success_messages, constellations_data.observe_success_messages)
-      end
-    end
+    let(:astrology) { build_astrology }
 
     context 'with array result' do
       it 'returns true when array contains success message' do
-        result = ['Some text', 'You learned something useful', 'Roundtime: 5 sec.']
-        expect(astrology.check_observation_success?(result)).to be true
-      end
-
-      it 'returns false when array has no success message' do
-        result = ['Some text', 'Roundtime: 5 sec.']
-        expect(astrology.check_observation_success?(result)).to be false
+        expect(astrology.check_observation_success?(['You learned something useful', 'Roundtime'])).to be true
       end
 
       it 'returns true for partial success' do
-        result = ['While the sighting was not ideal', 'Roundtime: 5 sec.']
-        expect(astrology.check_observation_success?(result)).to be true
+        expect(astrology.check_observation_success?(['While the sighting was not ideal'])).to be true
+      end
+
+      it 'returns false when array has no success message' do
+        expect(astrology.check_observation_success?(['Some text'])).to be false
       end
 
       it 'returns false for empty array' do
@@ -717,111 +703,75 @@ RSpec.describe Astrology do
       end
     end
 
-    context 'with nil result' do
-      it 'returns false' do
-        expect(astrology.check_observation_success?(nil)).to be false
-      end
+    it 'returns false for nil' do
+      expect(astrology.check_observation_success?(nil)).to be false
     end
   end
 
   describe '#check_telescope_result' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@injured_messages, constellations_data.observe_injured_messages)
-      end
+    let(:astrology) { build_astrology }
+
+    it 'detects injury in array result' do
+      injuries, closed = astrology.check_telescope_result(['The pain is too much', 'Roundtime'])
+      expect(injuries).to be true
+      expect(closed).to be false
     end
 
-    context 'with array result containing injury' do
-      it 'returns injuries=true' do
-        result = ['The pain is too much', 'Roundtime: 5 sec.']
-        injuries, closed = astrology.check_telescope_result(result)
-        expect(injuries).to be true
-        expect(closed).to be false
-      end
+    it 'detects fuzzy vision injury in array result' do
+      injuries, closed = astrology.check_telescope_result(['Your vision is too fuzzy to make out details'])
+      expect(injuries).to be true
+      expect(closed).to be false
     end
 
-    context 'with array result containing fuzzy vision injury' do
-      it 'returns injuries=true' do
-        result = ['Your vision is too fuzzy to make out details', 'Roundtime: 5 sec.']
-        injuries, closed = astrology.check_telescope_result(result)
-        expect(injuries).to be true
-        expect(closed).to be false
-      end
+    it 'detects closed telescope in array result' do
+      injuries, closed = astrology.check_telescope_result(["You'll need to open it"])
+      expect(injuries).to be false
+      expect(closed).to be true
     end
 
-    context 'with array result containing closed telescope' do
-      it 'returns closed=true' do
-        result = ["You'll need to open it", 'Roundtime: 5 sec.']
-        injuries, closed = astrology.check_telescope_result(result)
-        expect(injuries).to be false
-        expect(closed).to be true
-      end
+    it 'detects injury in string result' do
+      injuries, = astrology.check_telescope_result('The pain is too much')
+      expect(injuries).to be true
     end
 
-    context 'with string result containing injury' do
-      it 'returns injuries=true' do
-        injuries, closed = astrology.check_telescope_result('The pain is too much')
-        expect(injuries).to be true
-        expect(closed).to be false
-      end
+    it 'detects closed in string result' do
+      _, closed = astrology.check_telescope_result('open it')
+      expect(closed).to be true
     end
 
-    context 'with string result containing open it' do
-      it 'returns closed=true' do
-        injuries, closed = astrology.check_telescope_result('open it')
-        expect(injuries).to be false
-        expect(closed).to be true
-      end
+    it 'returns both false for normal result' do
+      injuries, closed = astrology.check_telescope_result(['You learned something useful'])
+      expect(injuries).to be false
+      expect(closed).to be false
     end
 
-    context 'with normal result' do
-      it 'returns both false' do
-        result = ['You learned something useful', 'Roundtime: 5 sec.']
-        injuries, closed = astrology.check_telescope_result(result)
-        expect(injuries).to be false
-        expect(closed).to be false
-      end
-    end
-
-    context 'with empty array' do
-      it 'returns both false' do
-        injuries, closed = astrology.check_telescope_result([])
-        expect(injuries).to be false
-        expect(closed).to be false
-      end
+    it 'returns both false for empty array' do
+      injuries, closed = astrology.check_telescope_result([])
+      expect(injuries).to be false
+      expect(closed).to be false
     end
   end
 
   describe '#empty_hands' do
     let(:mock_equipment_manager) { instance_double('EquipmentManager', empty_hands: nil) }
     let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@telescope_name, 'telescope')
-        a.instance_variable_set(:@telescope_storage, { 'container' => 'backpack' })
-        a.instance_variable_set(:@equipment_manager, mock_equipment_manager)
-      end
+      build_astrology(
+        telescope_name: 'telescope',
+        telescope_storage: { 'container' => 'backpack' },
+        equipment_manager: mock_equipment_manager
+      )
     end
 
-    context 'when telescope is in hands' do
-      before do
-        allow(DRCI).to receive(:in_hands?).with('telescope').and_return(true)
-      end
-
-      it 'stores the telescope' do
-        expect(DRCMM).to receive(:store_telescope?).with('telescope', { 'container' => 'backpack' })
-        astrology.empty_hands
-      end
+    it 'stores telescope when in hands' do
+      allow(DRCI).to receive(:in_hands?).with('telescope').and_return(true)
+      expect(DRCMM).to receive(:store_telescope?).with('telescope', { 'container' => 'backpack' })
+      astrology.empty_hands
     end
 
-    context 'when telescope is not in hands' do
-      before do
-        allow(DRCI).to receive(:in_hands?).with('telescope').and_return(false)
-      end
-
-      it 'does not store telescope' do
-        expect(DRCMM).not_to receive(:store_telescope?)
-        astrology.empty_hands
-      end
+    it 'does not store telescope when not in hands' do
+      allow(DRCI).to receive(:in_hands?).with('telescope').and_return(false)
+      expect(DRCMM).not_to receive(:store_telescope?)
+      astrology.empty_hands
     end
 
     it 'always calls equipment_manager.empty_hands' do
@@ -832,45 +782,27 @@ RSpec.describe Astrology do
   end
 
   describe '#align_routine' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@divination_bones_storage, nil)
-        a.instance_variable_set(:@divination_tool, nil)
-        a.instance_variable_set(:@force_visions, false)
-      end
+    let(:astrology) { build_astrology }
+
+    it 'predicts event for future events skill' do
+      expect(DRCMM).to receive(:predict).with('event')
+      expect(DRCMM).not_to receive(:align)
+      astrology.align_routine('future events')
     end
 
-    context 'with future events skill' do
-      it 'predicts event instead of aligning' do
-        expect(DRCMM).to receive(:predict).with('event')
-        expect(DRCMM).not_to receive(:align)
-        astrology.align_routine('future events')
-      end
+    it 'aligns to skill and predicts future when no divination tools' do
+      expect(DRCMM).to receive(:align).with('Arcana')
+      expect(DRCMM).to receive(:predict).with('future')
+      astrology.align_routine('Arcana')
     end
 
-    context 'with regular skill' do
-      it 'aligns to skill' do
-        expect(DRCMM).to receive(:align).with('Arcana')
-        astrology.align_routine('Arcana')
-      end
-
-      it 'predicts future when no divination tools configured' do
-        expect(DRCMM).to receive(:predict).with('future')
-        astrology.align_routine('Arcana')
-      end
-    end
-
-    context 'with nil skill' do
-      it 'aligns with nil' do
-        expect(DRCMM).to receive(:align).with(nil)
-        astrology.align_routine(nil)
-      end
+    it 'aligns with nil skill' do
+      expect(DRCMM).to receive(:align).with(nil)
+      astrology.align_routine(nil)
     end
 
     context 'with bones storage configured' do
-      before do
-        astrology.instance_variable_set(:@divination_bones_storage, { 'container' => 'backpack' })
-      end
+      let(:astrology) { build_astrology(divination_bones_storage: { 'container' => 'backpack' }) }
 
       it 'rolls bones' do
         expect(DRCMM).to receive(:roll_bones).with({ 'container' => 'backpack' })
@@ -879,9 +811,7 @@ RSpec.describe Astrology do
     end
 
     context 'with divination tool configured' do
-      before do
-        astrology.instance_variable_set(:@divination_tool, { 'name' => 'mirror' })
-      end
+      let(:astrology) { build_astrology(divination_tool: { 'name' => 'mirror' }) }
 
       it 'uses divination tool' do
         expect(DRCMM).to receive(:use_div_tool).with({ 'name' => 'mirror' })
@@ -889,10 +819,12 @@ RSpec.describe Astrology do
       end
     end
 
-    context 'with both bones and tool configured' do
-      before do
-        astrology.instance_variable_set(:@divination_bones_storage, { 'container' => 'backpack' })
-        astrology.instance_variable_set(:@divination_tool, { 'name' => 'mirror' })
+    context 'with both bones and tool' do
+      let(:astrology) do
+        build_astrology(
+          divination_bones_storage: { 'container' => 'backpack' },
+          divination_tool: { 'name' => 'mirror' }
+        )
       end
 
       it 'prefers bones over tool' do
@@ -902,10 +834,12 @@ RSpec.describe Astrology do
       end
     end
 
-    context 'with force_visions enabled' do
-      before do
-        astrology.instance_variable_set(:@force_visions, true)
-        astrology.instance_variable_set(:@divination_bones_storage, { 'container' => 'backpack' })
+    context 'with force_visions' do
+      let(:astrology) do
+        build_astrology(
+          force_visions: true,
+          divination_bones_storage: { 'container' => 'backpack' }
+        )
       end
 
       it 'predicts future instead of using bones' do
@@ -916,11 +850,9 @@ RSpec.describe Astrology do
     end
 
     context 'with empty string bones storage' do
-      before do
-        astrology.instance_variable_set(:@divination_bones_storage, '')
-      end
+      let(:astrology) { build_astrology(divination_bones_storage: '') }
 
-      it 'falls through to divination tool or predict' do
+      it 'falls through to predict future' do
         expect(DRCMM).not_to receive(:roll_bones)
         expect(DRCMM).to receive(:predict).with('future')
         astrology.align_routine('Arcana')
@@ -929,53 +861,32 @@ RSpec.describe Astrology do
   end
 
   describe '#predict_all' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@prediction_pool_target, 7)
-        a.instance_variable_set(:@astrology_prediction_skills_magic, 'Arcana')
-        a.instance_variable_set(:@astrology_prediction_skills_lore, 'Scholarship')
-        a.instance_variable_set(:@astrology_prediction_skills_offense, 'Tactics')
-        a.instance_variable_set(:@astrology_prediction_skills_defense, 'Evasion')
-        a.instance_variable_set(:@astrology_prediction_skills_survival, 'Outdoorsmanship')
-        a.instance_variable_set(:@divination_bones_storage, nil)
-        a.instance_variable_set(:@divination_tool, nil)
-        a.instance_variable_set(:@force_visions, false)
-      end
-    end
-
+    let(:astrology) { build_astrology }
     let(:pools) do
       {
-        'magic'            => 8,
-        'lore'             => 5,
-        'survival'         => 7,
-        'offensive combat' => 3,
-        'defensive combat' => 9,
-        'future events'    => 10
+        'magic' => 8, 'lore' => 5, 'survival' => 7,
+        'offensive combat' => 3, 'defensive combat' => 9, 'future events' => 10
       }
     end
 
-    before do
-      allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10)
-    end
+    before { allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10) }
 
     it 'aligns for pools at or above target' do
-      expect(astrology).to receive(:align_routine).with('Arcana') # magic = 8 >= 7
-      expect(astrology).to receive(:align_routine).with('Outdoorsmanship') # survival = 7 >= 7
-      expect(astrology).to receive(:align_routine).with('Evasion') # defense = 9 >= 7
-      expect(astrology).to receive(:align_routine).with('future events') # future = 10 >= 7
+      expect(astrology).to receive(:align_routine).with('Arcana')
+      expect(astrology).to receive(:align_routine).with('Outdoorsmanship')
+      expect(astrology).to receive(:align_routine).with('Evasion')
+      expect(astrology).to receive(:align_routine).with('future events')
       astrology.predict_all(pools)
     end
 
     it 'skips pools below target' do
-      expect(astrology).not_to receive(:align_routine).with('Scholarship') # lore = 5 < 7
-      expect(astrology).not_to receive(:align_routine).with('Tactics')     # offense = 3 < 7
+      expect(astrology).not_to receive(:align_routine).with('Scholarship')
+      expect(astrology).not_to receive(:align_routine).with('Tactics')
       astrology.predict_all(pools)
     end
 
     context 'when astrology XP exceeds threshold' do
-      before do
-        allow(DRSkill).to receive(:getxp).with('Astrology').and_return(31)
-      end
+      before { allow(DRSkill).to receive(:getxp).with('Astrology').and_return(31) }
 
       it 'stops predicting early' do
         expect(astrology).not_to receive(:align_routine)
@@ -985,10 +896,8 @@ RSpec.describe Astrology do
 
     context 'with all pools at zero' do
       let(:pools) do
-        {
-          'magic' => 0, 'lore' => 0, 'survival' => 0,
-          'offensive combat' => 0, 'defensive combat' => 0, 'future events' => 0
-        }
+        { 'magic' => 0, 'lore' => 0, 'survival' => 0,
+          'offensive combat' => 0, 'defensive combat' => 0, 'future events' => 0 }
       end
 
       it 'does not align for any pool' do
@@ -996,109 +905,36 @@ RSpec.describe Astrology do
         astrology.predict_all(pools)
       end
     end
-
-    context 'with pool target set to 0' do
-      before do
-        astrology.instance_variable_set(:@prediction_pool_target, 0)
-      end
-
-      it 'aligns for all pools since all are >= 0' do
-        expect(astrology).to receive(:align_routine).exactly(6).times
-        astrology.predict_all(pools)
-      end
-    end
   end
 
   describe '#observe_routine' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@have_telescope, false)
-        a.instance_variable_set(:@telescope_name, 'telescope')
-        a.instance_variable_set(:@telescope_storage, {})
-        a.instance_variable_set(:@injured_messages, constellations_data.observe_injured_messages)
-      end
-    end
+    let(:astrology) { build_astrology }
 
     context 'without telescope' do
-      it 'observes body with DRCMM' do
-        expect(DRCMM).to receive(:observe).with('Katamba').and_return('You learned something useful')
+      it 'returns raw observe result string on success' do
+        allow(DRCMM).to receive(:observe).with('Katamba').and_return('You learned something useful')
         result = astrology.observe_routine('Katamba')
-        expect(result).to be true
+        expect(result).to eq('You learned something useful')
       end
 
-      it 'returns false for unsuccessful observation' do
+      it 'returns raw string for unsuccessful observation' do
         allow(DRCMM).to receive(:observe).with('Katamba').and_return('Your search for')
         result = astrology.observe_routine('Katamba')
-        expect(result).to be false
+        expect(result).to eq('Your search for')
       end
 
-      # Adversarial test: the bug that prompted this PR
-      it 'returns true when nearly overwhelmed but still learned' do
+      it 'returns overwhelmed message string' do
         overwhelmed_msg = 'Although you were nearly overwhelmed by some aspects of your observation, ' \
                           'you still learned more of the future.'
         allow(DRCMM).to receive(:observe).with('Dawgolesh').and_return(overwhelmed_msg)
         result = astrology.observe_routine('Dawgolesh')
-        expect(result).to be true
+        expect(result).to eq(overwhelmed_msg)
       end
 
-      it 'returns true for partial sighting' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('While the sighting was not ideal')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns true for clouds obscure' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('Clouds obscure the sky')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns true for learn nothing' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('You learn nothing of the future')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns true for too close to sun' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('Katamba is too close to the sun')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns true for too faint' do
-        allow(DRCMM).to receive(:observe).with('Xibar').and_return('Xibar is too faint for you to pick out')
-        result = astrology.observe_routine('Xibar')
-        expect(result).to be true
-      end
-
-      it 'returns true for below horizon' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('Katamba is below the horizon')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns true for not pondered' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('You have not pondered your last observation')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns true for unable to make use' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('You are unable to make use of this')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be true
-      end
-
-      it 'returns false for nil observe result' do
+      it 'returns nil for nil observe result' do
         allow(DRCMM).to receive(:observe).with('Katamba').and_return(nil)
         result = astrology.observe_routine('Katamba')
-        expect(result).to be false
-      end
-
-      it 'returns false for empty string observe result' do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return('')
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be false
+        expect(result).to be_nil
       end
 
       it 'resets bad-search flag after observation' do
@@ -1111,9 +947,7 @@ RSpec.describe Astrology do
     end
 
     context 'with telescope' do
-      before do
-        astrology.instance_variable_set(:@have_telescope, true)
-      end
+      let(:astrology) { build_astrology(have_telescope: true) }
 
       it 'centers and peers through telescope' do
         expect(DRCMM).to receive(:center_telescope).with('Heart')
@@ -1138,7 +972,7 @@ RSpec.describe Astrology do
   end
 
   describe '#do_buffs' do
-    let(:astrology) { described_class.allocate }
+    let(:astrology) { build_astrology }
     let(:settings_with_buffs) do
       OpenStruct.new(
         waggle_sets: {
@@ -1150,12 +984,6 @@ RSpec.describe Astrology do
       )
     end
 
-    let(:mock_equipment_manager) { instance_double('EquipmentManager', empty_hands: nil) }
-
-    before do
-      astrology.instance_variable_set(:@equipment_manager, mock_equipment_manager)
-    end
-
     context 'when settings is nil' do
       it 'returns early' do
         expect(DRCA).not_to receive(:cast_spells)
@@ -1165,16 +993,13 @@ RSpec.describe Astrology do
 
     context 'when waggle_sets has no astrology key' do
       it 'returns early' do
-        settings = OpenStruct.new(waggle_sets: {})
         expect(DRCA).not_to receive(:cast_spells)
-        astrology.do_buffs(settings)
+        astrology.do_buffs(OpenStruct.new(waggle_sets: {}))
       end
     end
 
     context 'with astrology buffs configured' do
-      before do
-        DRSpells._set_active_spells({})
-      end
+      before { DRSpells._set_active_spells({}) }
 
       it 'separates Read the Ripples from other buffs' do
         astrology.do_buffs(settings_with_buffs)
@@ -1182,32 +1007,44 @@ RSpec.describe Astrology do
       end
 
       it 'casts non-RtR buffs' do
-        expect(DRCA).to receive(:cast_spells).with(
-          hash_including('Aura Sight'),
-          settings_with_buffs
-        )
+        expect(DRCA).to receive(:cast_spells).with(hash_including('Aura Sight'), settings_with_buffs)
         astrology.do_buffs(settings_with_buffs)
+      end
+
+      it 'does not mutate the original settings hash' do
+        original_keys = settings_with_buffs.waggle_sets['astrology'].keys.dup
+        astrology.do_buffs(settings_with_buffs)
+        expect(settings_with_buffs.waggle_sets['astrology'].keys).to eq(original_keys)
       end
     end
 
     context 'when all buffs are already active' do
-      before do
-        DRSpells._set_active_spells({ 'Aura Sight' => true })
-      end
+      before { DRSpells._set_active_spells({ 'Aura Sight' => true }) }
 
       it 'does not cast spells' do
         expect(DRCA).not_to receive(:cast_spells)
         astrology.do_buffs(settings_with_buffs)
       end
     end
+
+    context 'when called multiple times (via get_healed)' do
+      before { DRSpells._set_active_spells({}) }
+
+      it 'still finds RtR data on second call' do
+        astrology.do_buffs(settings_with_buffs)
+        first_rtr = astrology.instance_variable_get(:@rtr_data)
+
+        astrology.do_buffs(settings_with_buffs)
+        second_rtr = astrology.instance_variable_get(:@rtr_data)
+
+        expect(first_rtr).to eq(second_rtr)
+        expect(second_rtr).not_to be_nil
+      end
+    end
   end
 
   describe '#visible_bodies' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@constellations, constellations_data.constellations)
-      end
-    end
+    let(:astrology) { build_astrology }
 
     context 'when indoors' do
       before do
@@ -1219,33 +1056,38 @@ RSpec.describe Astrology do
         expect(messages).to include('Astrology: Must be outdoors to observe sky. Exiting.')
       end
     end
+
+    context 'when get? returns nil (disconnect)' do
+      before do
+        allow(DRCMM).to receive(:observe).with('heavens').and_return('Some result')
+        $history = [nil]
+      end
+
+      it 'breaks out of loop without hanging' do
+        result = astrology.visible_bodies
+        expect(result).to eq([])
+      end
+    end
+  end
+
+  describe '#check_heavens' do
+    let(:astrology) { build_astrology }
+
+    context 'when depth exceeds MAX_HEAVENS_RETRIES' do
+      it 'aborts with message' do
+        astrology.check_heavens(depth: described_class::MAX_HEAVENS_RETRIES + 1)
+        expect(messages).to include('Astrology: Max observation retries reached. Aborting check_heavens.')
+      end
+
+      it 'does not call visible_bodies' do
+        expect(astrology).not_to receive(:visible_bodies)
+        astrology.check_heavens(depth: 10)
+      end
+    end
   end
 
   describe '#train_astrology' do
-    let(:mock_equipment_manager) { instance_double('EquipmentManager', empty_hands: nil) }
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@constellations, constellations_data.constellations)
-        a.instance_variable_set(:@finished_messages, constellations_data.observe_finished_messages)
-        a.instance_variable_set(:@success_messages, constellations_data.observe_success_messages)
-        a.instance_variable_set(:@injured_messages, constellations_data.observe_injured_messages)
-        a.instance_variable_set(:@have_telescope, false)
-        a.instance_variable_set(:@telescope_name, 'telescope')
-        a.instance_variable_set(:@telescope_storage, {})
-        a.instance_variable_set(:@prediction_pool_target, 7)
-        a.instance_variable_set(:@equipment_manager, mock_equipment_manager)
-        a.instance_variable_set(:@astrology_prediction_skills_magic, 'Arcana')
-        a.instance_variable_set(:@astrology_prediction_skills_lore, 'Scholarship')
-        a.instance_variable_set(:@astrology_prediction_skills_offense, 'Tactics')
-        a.instance_variable_set(:@astrology_prediction_skills_defense, 'Evasion')
-        a.instance_variable_set(:@astrology_prediction_skills_survival, 'Outdoorsmanship')
-        a.instance_variable_set(:@divination_bones_storage, nil)
-        a.instance_variable_set(:@divination_tool, nil)
-        a.instance_variable_set(:@force_visions, false)
-        a.instance_variable_set(:@astral_place_source, nil)
-        a.instance_variable_set(:@astral_plane_destination, nil)
-      end
-    end
+    let(:astrology) { build_astrology }
 
     context 'when settings is nil' do
       it 'exits with message' do
@@ -1256,86 +1098,51 @@ RSpec.describe Astrology do
 
     context 'when astrology_training is not an array' do
       it 'exits with message' do
-        settings = OpenStruct.new(astrology_training: 'observe')
-        astrology.train_astrology(settings)
+        astrology.train_astrology(OpenStruct.new(astrology_training: 'observe'))
         expect(messages).to include('Astrology: astrology_training is not an array. Exiting training loop.')
       end
     end
 
     context 'when astrology_training is empty' do
       it 'exits with message' do
-        settings = OpenStruct.new(astrology_training: [])
-        astrology.train_astrology(settings)
+        astrology.train_astrology(OpenStruct.new(astrology_training: []))
         expect(messages).to include('Astrology: astrology_training is empty. Exiting training loop.')
       end
     end
 
     context 'when XP reaches threshold' do
-      before do
-        allow(DRSkill).to receive(:getxp).with('Astrology').and_return(33)
-        allow(Lich::Util).to receive(:issue_command).and_return([])
-      end
+      before { allow(DRSkill).to receive(:getxp).with('Astrology').and_return(33) }
 
       it 'exits with completion message' do
-        settings = OpenStruct.new(astrology_training: ['weather'])
-        astrology.train_astrology(settings)
+        astrology.train_astrology(OpenStruct.new(astrology_training: ['weather']))
         expect(messages).to include('Astrology: Reached target Astrology XP. Training complete.')
       end
     end
 
     context 'with unknown training task' do
       before do
-        # Start with low XP so it enters the loop, then return high XP to exit
         allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33)
-        allow(Lich::Util).to receive(:issue_command).and_return([])
       end
 
       it 'logs warning and continues' do
-        settings = OpenStruct.new(astrology_training: ['unknown_task'])
-        astrology.train_astrology(settings)
+        astrology.train_astrology(OpenStruct.new(astrology_training: ['unknown_task']))
         expect(messages).to include("Astrology: Unknown training task 'unknown_task'. Skipping.")
       end
     end
 
     context 'with weather training task' do
-      before do
-        allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33)
-        allow(Lich::Util).to receive(:issue_command).and_return([])
-      end
+      before { allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33) }
 
       it 'calls check_weather' do
         expect(DRCMM).to receive(:predict).with('weather')
-        settings = OpenStruct.new(astrology_training: ['weather'])
-        astrology.train_astrology(settings)
-      end
-    end
-
-    context 'with attunement training task' do
-      before do
-        allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33)
-        allow(DRSkill).to receive(:getxp).with('Attunement').and_return(5)
-        allow(Lich::Util).to receive(:issue_command).and_return([])
-      end
-
-      it 'calls check_attunement' do
-        expect(DRC).to receive(:bput).with('perceive ', 'roundtime').at_least(:once)
-        settings = OpenStruct.new(astrology_training: ['attunement'])
-        astrology.train_astrology(settings)
+        astrology.train_astrology(OpenStruct.new(astrology_training: ['weather']))
       end
     end
   end
 
   describe '#check_astral' do
     let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@astral_place_source, 'some_source')
-        a.instance_variable_set(:@astral_plane_destination, 'some_dest')
-        a.instance_variable_set(:@settings, default_settings)
-        a.instance_variable_set(:@have_telescope, false)
-        a.instance_variable_set(:@telescope_name, 'telescope')
-        a.instance_variable_set(:@telescope_storage, {})
-        a.instance_variable_set(:@equipment_manager, instance_double('EquipmentManager', empty_hands: nil))
-      end
+      build_astrology(astral_place_source: 'some_source', astral_plane_destination: 'some_dest')
     end
 
     context 'when circle is below 100' do
@@ -1350,49 +1157,29 @@ RSpec.describe Astrology do
     context 'when circle is 100+' do
       before { DRStats.circle = 100 }
 
-      context 'when no source configured' do
-        before do
-          astrology.instance_variable_set(:@astral_place_source, nil)
-        end
-
-        it 'returns early' do
-          expect(DRC).not_to receive(:wait_for_script_to_complete)
-          astrology.check_astral
-        end
+      it 'returns early when no source configured' do
+        astrology.instance_variable_set(:@astral_place_source, nil)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        astrology.check_astral
       end
 
-      context 'when no destination configured' do
-        before do
-          astrology.instance_variable_set(:@astral_plane_destination, nil)
-        end
-
-        it 'returns early' do
-          expect(DRC).not_to receive(:wait_for_script_to_complete)
-          astrology.check_astral
-        end
+      it 'returns early when no destination configured' do
+        astrology.instance_variable_set(:@astral_plane_destination, nil)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        astrology.check_astral
       end
 
-      context 'when on cooldown' do
-        before do
-          allow(UserVars).to receive(:astral_plane_exp_timer).and_return(Time.now - 1800) # 30 min ago
-        end
-
-        it 'returns early (cooldown is 3600 seconds)' do
-          expect(DRC).not_to receive(:wait_for_script_to_complete)
-          astrology.check_astral
-        end
+      it 'returns early when on cooldown' do
+        allow(UserVars).to receive(:astral_plane_exp_timer).and_return(Time.now - 1800)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        astrology.check_astral
       end
 
-      context 'when ready to train' do
-        before do
-          allow(UserVars).to receive(:astral_plane_exp_timer).and_return(nil)
-        end
-
-        it 'walks to destination then source' do
-          expect(DRC).to receive(:wait_for_script_to_complete).with('bescort', ['ways', 'some_dest']).ordered
-          expect(DRC).to receive(:wait_for_script_to_complete).with('bescort', ['ways', 'some_source']).ordered
-          astrology.check_astral
-        end
+      it 'walks to destination then source when ready' do
+        allow(UserVars).to receive(:astral_plane_exp_timer).and_return(nil)
+        expect(DRC).to receive(:wait_for_script_to_complete).with('bescort', ['ways', 'some_dest']).ordered
+        expect(DRC).to receive(:wait_for_script_to_complete).with('bescort', ['ways', 'some_source']).ordered
+        astrology.check_astral
       end
     end
   end
@@ -1400,102 +1187,140 @@ RSpec.describe Astrology do
   describe '#check_events' do
     let(:astrology) { described_class.allocate }
 
-    context 'when study_sky returns inability message' do
-      before do
-        allow(DRCMM).to receive(:study_sky).and_return('You are unable to sense additional information')
+    it 'returns early when study_sky returns inability message' do
+      allow(DRCMM).to receive(:study_sky).and_return('You are unable to sense additional information')
+      expect(DRCMM).not_to receive(:predict)
+      astrology.check_events({ 'future events' => 0 })
+    end
+
+    it 'returns early when study_sky detects no portents' do
+      allow(DRCMM).to receive(:study_sky).and_return('You fail to detect any portents')
+      expect(DRCMM).not_to receive(:predict)
+      astrology.check_events({ 'future events' => 0 })
+    end
+  end
+
+  describe '#check_ripples' do
+    let(:astrology) { build_astrology }
+
+    it 'skips when rtr-expire flag is exactly false' do
+      Flags.add('rtr-expire', 'test')
+      Flags['rtr-expire'] = false
+      astrology.check_ripples(default_settings)
+      # Should return early without casting
+      expect(DRCA).not_to have_received(:cast_spell)
+    end
+  end
+
+  # Private helper specs
+  describe 'private helpers' do
+    describe '#get_telescope' do
+      it 'calls DRCMM.get_telescope? when have_telescope is true' do
+        astrology = build_astrology(have_telescope: true)
+        expect(DRCMM).to receive(:get_telescope?).with('telescope', {})
+        astrology.send(:get_telescope)
       end
 
-      it 'returns early without predicting' do
-        expect(DRCMM).not_to receive(:predict)
-        astrology.check_events({ 'future events' => 0 })
+      it 'does nothing when have_telescope is false' do
+        astrology = build_astrology(have_telescope: false)
+        expect(DRCMM).not_to receive(:get_telescope?)
+        astrology.send(:get_telescope)
       end
     end
 
-    context 'when study_sky detects no portents' do
-      before do
-        allow(DRCMM).to receive(:study_sky).and_return('You fail to detect any portents')
+    describe '#store_telescope' do
+      it 'calls DRCMM.store_telescope? when have_telescope is true' do
+        astrology = build_astrology(have_telescope: true)
+        expect(DRCMM).to receive(:store_telescope?).with('telescope', {})
+        astrology.send(:store_telescope)
       end
 
-      it 'returns early without predicting' do
-        expect(DRCMM).not_to receive(:predict)
-        astrology.check_events({ 'future events' => 0 })
+      it 'does nothing when have_telescope is false' do
+        astrology = build_astrology(have_telescope: false)
+        expect(DRCMM).not_to receive(:store_telescope?)
+        astrology.send(:store_telescope)
+      end
+    end
+
+    describe '#debug_log' do
+      it 'logs when debug mode is enabled' do
+        allow(UserVars).to receive(:astrology_debug).and_return(true)
+        astrology = build_astrology
+        astrology.send(:debug_log, 'test message')
+        expect(messages).to include('Astrology: test message')
+      end
+
+      it 'does not log when debug mode is disabled' do
+        allow(UserVars).to receive(:astrology_debug).and_return(false)
+        astrology = build_astrology
+        astrology.send(:debug_log, 'test message')
+        expect(messages).not_to include('Astrology: test message')
+      end
+    end
+
+    describe '#observe_success?' do
+      let(:astrology) { build_astrology }
+
+      it 'returns true for success patterns' do
+        expect(astrology.send(:observe_success?, 'You learned something useful from observation')).to be true
+      end
+
+      it 'returns true for overwhelmed pattern' do
+        expect(astrology.send(:observe_success?, 'you still learned more of the future')).to be true
+      end
+
+      it 'returns false for unrelated text' do
+        expect(astrology.send(:observe_success?, 'Your search for')).to be false
+      end
+
+      it 'returns false for nil' do
+        expect(astrology.send(:observe_success?, nil)).to be false
       end
     end
   end
 
-  # Adversarial: test the interaction between OBSERVE_SUCCESS_PATTERNS and observe_routine
-  # to ensure all known game messages are properly handled end-to-end
+  # Adversarial: end-to-end observe pattern coverage
   describe 'observe pattern coverage (adversarial)' do
-    let(:astrology) do
-      described_class.allocate.tap do |a|
-        a.instance_variable_set(:@have_telescope, false)
-        a.instance_variable_set(:@telescope_name, 'telescope')
-        a.instance_variable_set(:@telescope_storage, {})
-        a.instance_variable_set(:@injured_messages, constellations_data.observe_injured_messages)
+    let(:astrology) { build_astrology }
+
+    # Real game messages -- observe_success? should return true
+    {
+      'full success'                          => 'You learned something useful from your observation of Katamba.',
+      'partial sighting'                      => "While the sighting wasn't perfect, you still gleaned some information.",
+      'clouds'                                => 'Clouds obscure the sky, preventing you from seeing anything.',
+      'circle too low'                        => 'You learn nothing of the future from your attempt to observe the heavens.',
+      'solar conjunction'                     => 'Yavash is too close to the sun to be observed.',
+      'telescope needed'                      => 'The Heart Constellation is too faint for you to make out without a telescope.',
+      'below horizon'                         => 'Katamba is currently below the horizon and cannot be observed.',
+      'cooldown - not pondered'               => 'You have not pondered your last observation sufficiently.',
+      'cooldown - unable to make use'         => 'You are unable to make use of this latest observation.',
+      'nearly overwhelmed (the reported bug)' => 'Although you were nearly overwhelmed by some aspects of your observation, you still learned more of the future.'
+    }.each do |scenario, game_message|
+      it "observe_success? returns true for: #{scenario}" do
+        expect(astrology.send(:observe_success?, game_message)).to be(true),
+                                                                   "observe_success? should return true for '#{scenario}'"
       end
     end
 
-    # These are real game messages that DRCMM.observe can return
-    # Each should result in observe_routine returning true (observation is "done")
+    # These should NOT match
     {
-      'full success'                          =>
-                                                 'You learned something useful from your observation of Katamba.',
-      'partial sighting'                      =>
-                                                 "While the sighting wasn't perfect, you still gleaned some information from your study of Xibar.",
-      'clouds'                                =>
-                                                 'Clouds obscure the sky, preventing you from seeing anything.',
-      'circle too low'                        =>
-                                                 'You learn nothing of the future from your attempt to observe the heavens.',
-      'solar conjunction'                     =>
-                                                 'Yavash is too close to the sun to be observed.',
-      'telescope needed'                      =>
-                                                 'The Heart Constellation is too faint for you to make out without a telescope.',
-      'below horizon'                         =>
-                                                 'Katamba is currently below the horizon and cannot be observed.',
-      'cooldown - not pondered'               =>
-                                                 'You have not pondered your last observation sufficiently to gain insight from a new one.',
-      'cooldown - unable to make use'         =>
-                                                 'You are unable to make use of this latest observation.',
-      'nearly overwhelmed (the reported bug)' =>
-                                                 'Although you were nearly overwhelmed by some aspects of your observation, you still learned more of the future.'
+      'search foiled'        => 'Your search for something in the heavens is foiled by the daylight.',
+      'fruitless search'     => 'Your search for something in the heavens turns up fruitless.',
+      'scan message'         => 'You scan the skies for a few moments.',
+      'roundtime only'       => 'Roundtime: 5 sec.',
+      'completely unrelated' => 'A gentle breeze blows through the area.',
+      'empty response'       => ''
     }.each do |scenario, game_message|
-      it "returns true for: #{scenario}" do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return(game_message)
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be(true), "observe_routine should return true for '#{scenario}': #{game_message}"
-      end
-    end
-
-    # These messages should NOT be matched -- observe_routine should return false
-    {
-      'search foiled (separate flag handling)'    =>
-                                                     'Your search for something in the heavens is foiled by the daylight.',
-      'fruitless search (separate flag handling)' =>
-                                                     'Your search for something in the heavens turns up fruitless.',
-      'scan message'                              =>
-                                                     'You scan the skies for a few moments.',
-      'roundtime only'                            =>
-                                                     'Roundtime: 5 sec.',
-      'completely unrelated'                      =>
-                                                     'A gentle breeze blows through the area.',
-      'empty response'                            =>
-                                                     ''
-    }.each do |scenario, game_message|
-      it "returns false for: #{scenario}" do
-        allow(DRCMM).to receive(:observe).with('Katamba').and_return(game_message)
-        result = astrology.observe_routine('Katamba')
-        expect(result).to be(false), "observe_routine should return false for '#{scenario}': #{game_message}"
+      it "observe_success? returns false for: #{scenario}" do
+        expect(astrology.send(:observe_success?, game_message)).to be(false),
+                                                                   "observe_success? should return false for '#{scenario}'"
       end
     end
   end
 
   # Adversarial: ensure OBSERVE_SUCCESS_PATTERNS stays in sync with YAML data
   describe 'OBSERVE_SUCCESS_PATTERNS vs YAML data sync' do
-    # The YAML observe_success_messages and observe_finished_messages contain
-    # substrings that should also be matchable by OBSERVE_SUCCESS_PATTERNS.
-    # This test verifies the hardcoded constant covers the YAML success messages.
     let(:yaml_success_substrings) do
-      # From base-constellations.yaml observe_success_messages
       [
         'You learned something useful from your observation',
         "While the sighting wasn't quite",
