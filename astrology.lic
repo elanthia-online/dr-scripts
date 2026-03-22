@@ -202,7 +202,7 @@ class Astrology
       break unless line
       break if line =~ /^Roundtime/i
 
-      result << all_bodies.find { |body| /\b#{body['name'].split.last}\b/i =~ line && line !~ /below the horizon/ }
+      result << all_bodies.find { |body| /\b#{Regexp.escape(body['name'].split.last)}\b/i =~ line && line !~ /below the horizon/ }
     end
     result.compact.select { |data| data['circle'] <= DRStats.circle }
   end
@@ -250,7 +250,7 @@ class Astrology
 
     lines.select! { |line| line =~ /celestial influences/ }
     pools.each_key do |name|
-      matching_line = lines.find { |line| line =~ /#{name}/ }
+      matching_line = lines.find { |line| line =~ /#{Regexp.escape(name)}/ }
       next unless matching_line
 
       POOL_PATTERNS.each do |pattern, value|
@@ -340,7 +340,7 @@ class Astrology
         DRCA.perc_mana
         perc_time = Time.now
       end
-      res = @constellations.find { |body| /As your consciousness drifts amongst the currents of Fate, .* #{body['name']}/i =~ line }
+      res = @constellations.find { |body| /As your consciousness drifts amongst the currents of Fate, .* #{Regexp.escape(body['name'])}/i =~ line }
       observe_routine(res['name']) unless res.nil?
     end
     store_telescope
