@@ -46,6 +46,7 @@ $debug_mode_ct = false
 
 load_lic_class('combat-trainer.lic', 'SetupProcess')
 load_lic_class('combat-trainer.lic', 'ManipulateProcess')
+load_lic_class('combat-trainer.lic', 'GameState')
 
 RSpec.configure do |config|
   config.before(:each) do
@@ -212,6 +213,48 @@ RSpec.describe ManipulateProcess do
         expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, anything, anything, anything, anything, anything, anything)
         expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, anything, anything, anything, anything, anything, anything)
         expect(DRC).not_to have_received(:bput).with(/manipulate friendship third rat/, anything, anything, anything, anything, anything, anything)
+      end
+    end
+  end
+end
+
+# ===========================================================================
+# GameState doublestrike_trainables nil guard
+# ===========================================================================
+RSpec.describe GameState do
+  def build_game_state_via_allocate(**ivars)
+    instance = GameState.allocate
+    ivars.each { |k, v| instance.instance_variable_set(:"@#{k}", v) }
+    instance
+  end
+
+  describe 'doublestrike_trainables nil guard' do
+    let(:weapon_keys) { ['Small Edged', 'Bow'] }
+
+    context 'when doublestrike_trainables setting is nil' do
+      let(:doublestrike_trainables) { nil }
+
+      it 'treats nil as empty array and does not raise' do
+        result = (doublestrike_trainables || []) & weapon_keys
+        expect(result).to eq([])
+      end
+    end
+
+    context 'when doublestrike_trainables has values matching weapon_training' do
+      let(:doublestrike_trainables) { ['Bow', 'Small Edged', 'Staves'] }
+
+      it 'returns the intersection of trainables and weapon keys' do
+        result = (doublestrike_trainables || []) & weapon_keys
+        expect(result).to eq(['Bow', 'Small Edged'])
+      end
+    end
+
+    context 'when doublestrike_trainables is an empty array' do
+      let(:doublestrike_trainables) { [] }
+
+      it 'returns an empty array' do
+        result = (doublestrike_trainables || []) & weapon_keys
+        expect(result).to eq([])
       end
     end
   end

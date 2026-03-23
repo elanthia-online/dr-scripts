@@ -4585,7 +4585,7 @@ class GameState
     @prioritize_maneuver_doublestrike = settings.prioritize_maneuver_doublestrike
     echo("  @prioritize_maneuver_doublestrike: #{@prioritize_maneuver_doublestrike}") if $debug_mode_ct
 
-    @doublestrike_trainables = settings.doublestrike_trainables & settings.weapon_training.keys # Intersection of the arrays to make sure weapons are available in the hunt
+    @doublestrike_trainables = (settings.doublestrike_trainables || []) & settings.weapon_training.keys # Intersection of the arrays to make sure weapons are available in the hunt
     echo("  @doublestrike_trainables: #{@doublestrike_trainables}") if $debug_mode_ct
 
     @fatigue_regen_threshold = settings.fatigue_regen_threshold
