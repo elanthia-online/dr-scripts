@@ -125,7 +125,7 @@ class PlantHeal
   # Display a message indicating the script's operating mode.
   def display_mode_message
     if @waggle_healing
-      DRC.message("** Healing via Heal/Regenerate (waggle) — healme will not be used. **")
+      DRC.message("** Healing via Heal/Regenerate (waggle) -- healme will not be used. **")
     else
       DRC.message("** Healing via healme script (HW/HS). **")
     end
@@ -200,7 +200,7 @@ class PlantHeal
         exit
       end
     else
-      # healme path — warn about missing HW/HS
+      # healme path -- warn about missing HW/HS
       unless DRSpells.known_spells['Heal Wounds']
         DRC.message("**WARNING: You don't know Heal Wounds (HW)!** healme may not work properly.")
       end
@@ -292,7 +292,7 @@ class PlantHeal
                        when :no_plant
                          "**No plant found in room after EV recast.** Check your plant_room setting or cast EV manually."
                        when :fully_healed
-                         "**Plant fully healed** — no wounds to transfer. Cast a new EV or wait for plant to accumulate wounds."
+                         "**Plant fully healed** -- no wounds to transfer. Cast a new EV or wait for plant to accumulate wounds."
                        when :stopped_early
                          "**Stopped before hugging** (bleeding, threshold, hug_count, or plant disappeared). Check logs above for details."
                        else
@@ -575,7 +575,7 @@ class PlantHeal
   # retries: internal counter for EV recast retries (prevents infinite recursion)
   def hug_plant_once(retries = MAX_HUG_RETRIES)
     if retries <= 0
-      DRC.message("**Max hug retries reached** — stopping to prevent infinite loop.")
+      DRC.message("**Max hug retries reached** -- stopping to prevent infinite loop.")
       return HugResult.new(0, :stopped_early)
     end
 
@@ -584,13 +584,13 @@ class PlantHeal
     unless noun
       # If EV is active, do a LOOK to refresh DRRoom.room_objs before assuming plant is missing
       if DRSpells.active_spells.include?(EV_SPELL_KEY)
-        DRC.message("Plant not visible in room objects — refreshing with LOOK...")
+        DRC.message("Plant not visible in room objects -- refreshing with LOOK...")
         fput('look')
         pause 0.5
         noun = plant_noun_in_room
       end
 
-      # Still no plant? Then EV is either not active or the bond is broken — recast
+      # Still no plant? Then EV is either not active or the bond is broken -- recast
       unless noun
         DRC.message("*** No plant found in room! Re-casting EV.")
         release_and_recast_ev
@@ -615,12 +615,12 @@ class PlantHeal
       DRC.message("**Plant fully healed.**")
       HugResult.new(0, :fully_healed)
     when /you have no empathic bond/i
-      DRC.message("Lost empathic bond — releasing and recasting EV.")
+      DRC.message("Lost empathic bond -- releasing and recasting EV.")
       release_and_recast_ev
       # Fresh EV should restore the bond - retry the hug
       return hug_plant_once(retries - 1)
     when HUG_APPRECIATES
-      DRC.message("Hug returned 'appreciates the sentiment' — **releasing and recasting EV**.")
+      DRC.message("Hug returned 'appreciates the sentiment' -- **releasing and recasting EV**.")
       release_and_recast_ev
       # Fresh plant should have wounds now - retry the hug
       return hug_plant_once(retries - 1)

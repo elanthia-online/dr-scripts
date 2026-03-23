@@ -11,7 +11,7 @@
 #
 # @note Optional settings keys:
 #   - `pick.disarm_on_failed_identify` [Boolean] proceed with careful
-#     disarm/pick when identification fails (default: false — dispose box)
+#     disarm/pick when identification fails (default: false -- dispose box)
 #   - `pick.failed_identify_container` [String, nil] container to stow
 #     boxes when identification fails; trashed if nil
 #   - `pick.max_identify_attempts` [Integer] attempts before giving up (default: 5)

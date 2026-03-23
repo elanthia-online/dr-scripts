@@ -114,9 +114,9 @@ jobs:
               if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
                 ensure_latest_for_repo "$owner_repo"
                 if [[ -n "${latest_sha[$owner_repo]}" && "$ref" == "${latest_sha[$owner_repo]}" ]]; then
-                  list_sha_current+=("• $f:$lineno uses: $uses — current at ${latest_tag[$owner_repo]}")
+                  list_sha_current+=("• $f:$lineno uses: $uses -- current at ${latest_tag[$owner_repo]}")
                 else
-                  list_sha_new+=("• $f:$lineno uses: $uses — new at ${latest_tag[$owner_repo]:-(no-tags)}")
+                  list_sha_new+=("• $f:$lineno uses: $uses -- new at ${latest_tag[$owner_repo]:-(no-tags)}")
                 fi
               fi
             done < <(grep -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^#]+' "$f" || true)

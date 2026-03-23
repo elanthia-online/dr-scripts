@@ -1,6 +1,6 @@
 ### 10/27/24 - New and Reorganized Categories. Regex condensed entries. New items added.
 ### Note: The categories that have the '_nouns' suffix populate same-named categories without the suffix.
-### So “clothing” and “clothing_nouns” will overlap and both populate the “clothing" list.
+### So "clothing" and "clothing_nouns" will overlap and both populate the "clothing" list.
 ### The '_nouns' sections are the end of the file.
 ###
 ### Items not caught in the _nouns categories correctly can be added into their counterparts. 

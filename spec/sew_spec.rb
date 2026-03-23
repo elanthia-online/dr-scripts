@@ -135,7 +135,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #swap_tool — nil guards and tool swapping
+  # #swap_tool -- nil guards and tool swapping
   # ===========================================================================
   describe '#swap_tool' do
     context 'when right hand is nil (empty)' do
@@ -227,7 +227,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #finish — stow guards, logbook bundling, messaging
+  # #finish -- stow guards, logbook bundling, messaging
   # ===========================================================================
   describe '#finish' do
     before(:each) do
@@ -347,7 +347,7 @@ RSpec.describe Sew do
 
       it 'sends a hold completion message' do
         allow(DRCC).to receive(:stow_crafting_item)
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'small.rucksack complete — holding in hand.')
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'small.rucksack complete -- holding in hand.')
         allow(Lich::Messaging).to receive(:msg).with('plain', anything)
 
         sew.send(:finish)
@@ -637,7 +637,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #lift_or_stow_feet — handling items at feet with dot notation
+  # #lift_or_stow_feet -- handling items at feet with dot notation
   # ===========================================================================
   describe '#lift_or_stow_feet' do
     context 'when items at feet and lift succeeds' do
@@ -760,7 +760,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #check_hand — item position verification
+  # #check_hand -- item position verification
   # ===========================================================================
   describe '#check_hand' do
     before do
@@ -827,7 +827,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #magic_cleanup — spell release (now instance method)
+  # #magic_cleanup -- spell release (now instance method)
   # ===========================================================================
   describe '#magic_cleanup' do
     context 'with no training spells configured' do
@@ -858,7 +858,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #list_at_feet — diagnostic output
+  # #list_at_feet -- diagnostic output
   # ===========================================================================
   describe '#list_at_feet' do
     context 'when items are at feet' do
@@ -890,7 +890,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #check_rental_status — private rental expiry detection
+  # #check_rental_status -- private rental expiry detection
   # ===========================================================================
   describe '#check_rental_status' do
     # Helper: format a future time as the game would display it (ET timezone)
@@ -956,7 +956,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #renew_rental — auto-renewal of private crafting room
+  # #renew_rental -- auto-renewal of private crafting room
   # ===========================================================================
   describe '#renew_rental' do
     before do
@@ -981,7 +981,7 @@ RSpec.describe Sew do
       it 'marks the notice and reports success' do
         allow(DRC).to receive(:bput).and_return('renewed your rental')
 
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING — AUTO-RENEWING ***')
+        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
         expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL RENEWED ***')
 
         sew.send(:renew_rental)
@@ -1002,7 +1002,7 @@ RSpec.describe Sew do
       it 'warns about insufficient funds' do
         allow(DRC).to receive(:bput).and_return("You don't have enough")
 
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING — AUTO-RENEWING ***')
+        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
         expect(Lich::Messaging).to receive(:msg).with('bold', '*** INSUFFICIENT FUNDS TO RENEW RENTAL ***')
 
         sew.send(:renew_rental)
@@ -1013,8 +1013,8 @@ RSpec.describe Sew do
       it 'warns about missing notice' do
         allow(DRC).to receive(:bput).and_return('I could not find')
 
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING — AUTO-RENEWING ***')
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** COULD NOT FIND NOTICE — CHECK LOCATION ***')
+        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
+        expect(Lich::Messaging).to receive(:msg).with('bold', '*** COULD NOT FIND NOTICE -- CHECK LOCATION ***')
 
         sew.send(:renew_rental)
       end
@@ -1024,7 +1024,7 @@ RSpec.describe Sew do
       it 'treats extends as success' do
         allow(DRC).to receive(:bput).and_return('extends your rental')
 
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING — AUTO-RENEWING ***')
+        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
         expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL RENEWED ***')
 
         sew.send(:renew_rental)
@@ -1033,7 +1033,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #assemble_part — nil hand safety
+  # #assemble_part -- nil hand safety
   # ===========================================================================
   describe '#assemble_part' do
     # Stub Flags as a hash-like object for testing
@@ -1191,7 +1191,7 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # #prep — recipe/instruction lookup and material setup
+  # #prep -- recipe/instruction lookup and material setup
   # ===========================================================================
   describe '#prep' do
     before(:each) do
@@ -1233,7 +1233,7 @@ RSpec.describe Sew do
 
       it 'studies instructions twice if prompted to study again' do
         allow(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again')
-                    .and_return('Study them again', 'Roundtime')
+                                    .and_return('Study them again', 'Roundtime')
         expect(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again').twice
 
         sew.send(:prep)
@@ -1241,7 +1241,7 @@ RSpec.describe Sew do
 
       it 'studies instructions only once if no re-study prompt' do
         allow(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again')
-                    .and_return('Roundtime')
+                                    .and_return('Roundtime')
         expect(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again').once
 
         sew.send(:prep)
@@ -1258,9 +1258,9 @@ RSpec.describe Sew do
     context 'master crafting book path' do
       before do
         sew.instance_variable_set(:@settings, OpenStruct.new(
-          crafting_training_spells: [],
-          master_crafting_book: 'master tailoring book'
-        ))
+                                                crafting_training_spells: [],
+                                                master_crafting_book: 'master tailoring book'
+                                              ))
       end
 
       it 'calls find_recipe2 with master book and tailoring discipline' do
@@ -1280,9 +1280,9 @@ RSpec.describe Sew do
     context 'basic tailoring book path' do
       before do
         sew.instance_variable_set(:@settings, OpenStruct.new(
-          crafting_training_spells: [],
-          master_crafting_book: nil
-        ))
+                                                crafting_training_spells: [],
+                                                master_crafting_book: nil
+                                              ))
       end
 
       it 'gets the tailoring book from bag' do
@@ -1389,7 +1389,7 @@ RSpec.describe Sew do
       end
     end
 
-    context 'enhancement — seal' do
+    context 'enhancement -- seal' do
       before do
         sew.instance_variable_set(:@recipe_name, 'tailored armor sealing')
         sew.instance_variable_set(:@noun, 'shirt')
@@ -1437,7 +1437,7 @@ RSpec.describe Sew do
       end
     end
 
-    context 'enhancement — reinforce' do
+    context 'enhancement -- reinforce' do
       before do
         sew.instance_variable_set(:@recipe_name, 'tailored armor reinforcing')
         sew.instance_variable_set(:@noun, 'shirt')
@@ -1580,8 +1580,8 @@ RSpec.describe Sew do
   describe 'finish default for resume' do
     it 'defaults @finish to hold when args.finish is nil' do
       # The @finish default is set in initialize, but we can verify the
-      # pattern: args.finish || 'hold' means nil args.finish → 'hold'
-      sew.instance_variable_set(:@finish, nil || 'hold')
+      # pattern: args.finish || 'hold' means nil args.finish -> 'hold'
+      sew.instance_variable_set(:@finish, 'hold')
       expect(sew.instance_variable_get(:@finish)).to eq('hold')
     end
   end
@@ -1670,7 +1670,7 @@ RSpec.describe Sew do
       $right_hand = nil
       $left_hand = nil
 
-      expect(Lich::Messaging).to receive(:msg).with('bold', 'rucksack complete — holding in hand.')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'rucksack complete -- holding in hand.')
       allow(Lich::Messaging).to receive(:msg).with('plain', anything)
 
       sew.send(:finish)

@@ -40,7 +40,7 @@ class RegGear
     end
 
     if tap_output =~ /^The faces on your stick pause/
-      echo "[reggear: Cannot tap #{item_name} — skipping (locked/animated)]"
+      echo "[reggear: Cannot tap #{item_name} -- skipping (locked/animated)]"
       return
     end
 

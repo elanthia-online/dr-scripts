@@ -13,7 +13,7 @@
 #     Keep each test focused on a single responsibility.
 #
 # Lich runtime isolation:
-#   - Scripts (.lic files) cannot be required directly — they depend on the full
+#   - Scripts (.lic files) cannot be required directly -- they depend on the full
 #     Lich runtime. Extract constants and methods via eval of specific line ranges
 #     (see dependency_obsolete_scripts_spec.rb for the pattern).
 #   - Mock only what you need: UserVars, Settings, Script.current, _respond, etc.

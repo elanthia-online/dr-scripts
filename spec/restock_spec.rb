@@ -115,7 +115,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #start_restock — duplicate purchase bug regression test
+  # #start_restock -- duplicate purchase bug regression test
   # ===========================================================================
   describe '#start_restock' do
     context 'with items from multiple custom hometowns' do
@@ -140,7 +140,7 @@ RSpec.describe Restock do
         expect(default_calls.length).to eq(1)
         expect(default_calls.first[:items]).to be_empty
 
-        # Each custom hometown called exactly once — not duplicated
+        # Each custom hometown called exactly once -- not duplicated
         crossing_calls = call_log.select { |c| c[:town] == 'Crossing' }
         expect(crossing_calls.length).to eq(1)
         expect(crossing_calls.first[:items]).to eq(['arrow'])
@@ -175,7 +175,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #restock_items — min_quantity, coin calc, buy quantity
+  # #restock_items -- min_quantity, coin calc, buy quantity
   # ===========================================================================
   describe '#restock_items' do
     context 'min_quantity threshold' do
@@ -188,7 +188,7 @@ RSpec.describe Restock do
 
         instance.send(:restock_items, [item], 'Crossing')
 
-        # items_to_restock is empty so method returns early — no purchase attempted
+        # items_to_restock is empty so method returns early -- no purchase attempted
         expect(DRCT).not_to have_received(:buy_item)
       end
 
@@ -312,7 +312,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #purchase_item — clerk vs buy flow (foot gun fix)
+  # #purchase_item -- clerk vs buy flow (foot gun fix)
   # ===========================================================================
   describe '#purchase_item' do
     it 'uses ask-for flow when item has a clerk' do
@@ -343,7 +343,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #stow_item — container, runestone, and default stow
+  # #stow_item -- container, runestone, and default stow
   # ===========================================================================
   describe '#stow_item' do
     it 'uses item container when specified' do
@@ -404,7 +404,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #count_nonstackable_item — countable_name and container discovery
+  # #count_nonstackable_item -- countable_name and container discovery
   # ===========================================================================
   describe '#count_nonstackable_item' do
     it 'uses countable_name when present' do
@@ -463,7 +463,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #parse_restockable_items — data merging and validation
+  # #parse_restockable_items -- data merging and validation
   # ===========================================================================
   describe '#parse_restockable_items' do
     let(:consumables) do
@@ -571,7 +571,7 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #valid_item_data? — required field validation
+  # #valid_item_data? -- required field validation
   # ===========================================================================
   describe '#valid_item_data?' do
     it 'returns true when all required fields are present' do
