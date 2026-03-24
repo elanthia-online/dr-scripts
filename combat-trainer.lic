@@ -3009,9 +3009,13 @@ class ManipulateProcess
       index = npc_occurrences[npc]
       ordinal_string = $ORDINALS[index]
 
-      case DRC.bput("manipulate friendship #{ordinal_string} #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what')
+      case DRC.bput("manipulate friendship #{ordinal_string} #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what', 'deep sense of loss')
       when 'does not seem to have a life essence' then
         game_state.construct(npc)
+      when 'deep sense of loss'
+        DRC.message("***WARNING*** Too shocked to manipulate -- disabling manipulation for this hunt")
+        @threshold = nil
+        break
       else
         manipulate_count += 1
         npc_occurrences[npc] += 1
