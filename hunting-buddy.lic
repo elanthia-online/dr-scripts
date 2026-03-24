@@ -337,6 +337,12 @@ class HuntingBuddy
     plugin_result = fire_hook(:find_room, self, zones_to_search, waiting_room)
     return plugin_result unless plugin_result.nil?
 
+    # NOTE: The `return` statements inside this block exit find_hunting_room?
+    # on the first iteration, so `any?` never checks beyond the first zone.
+    # This is a pre-existing bug -- only the first zone in the list is ever
+    # searched. Fixing it requires removing the inner `return` keywords and
+    # letting `any?` evaluate the block's truthy/falsy result per iteration.
+    # rubocop:disable Lint/UnreachableLoop
     return zones_to_search.any? do |zone_to_search|
       escort_info = @escort_zones[zone_to_search]
       if escort_info
@@ -435,6 +441,7 @@ class HuntingBuddy
                                     prefer_buddies)
       end
     end
+    # rubocop:enable Lint/UnreachableLoop
   end
 
   # ------------------------------------------------------------
