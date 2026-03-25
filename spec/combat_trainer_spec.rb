@@ -97,6 +97,8 @@ end
 $debug_mode_ct = false
 
 load_lic_class('combat-trainer.lic', 'LootProcess')
+load_lic_class('combat-trainer.lic', 'GameState')
+load_lic_class('combat-trainer.lic', 'SetupProcess')
 
 RSpec.configure do |config|
   config.before(:each) do
@@ -104,6 +106,9 @@ RSpec.configure do |config|
   end
 end
 
+# ===========================================================================
+# LootProcess specs
+# ===========================================================================
 RSpec.describe LootProcess do
   # Build a LootProcess instance without calling initialize (avoids game I/O).
   def build_loot_process(**overrides)
@@ -147,7 +152,7 @@ RSpec.describe LootProcess do
   end
 
   # ===========================================================================
-  # Shared examples — SOLID: extract common assertions for hand-freeing
+  # Shared examples -- SOLID: extract common assertions for hand-freeing
   # ===========================================================================
   shared_examples 'frees a hand before tying the bundle' do
     it 'lowers the left hand item before attempting to tie' do
@@ -176,7 +181,7 @@ RSpec.describe LootProcess do
   end
 
   # ===========================================================================
-  # #execute — bundle tying in the clean_up path (line ~598)
+  # #execute -- bundle tying in the clean_up path (line ~598)
   # The execute method checks game_state.need_bundle && Flags['ct-successful-skin']
   # and attempts to tie/adjust a worn bundle. When both hands are full, it must
   # lower an item first to free a hand for the tie command.
@@ -315,7 +320,7 @@ RSpec.describe LootProcess do
   end
 
   # ===========================================================================
-  # #check_skinning — bundle tying before skinning (line ~1099)
+  # #check_skinning -- bundle tying before skinning (line ~1099)
   # When game_state.need_bundle is true and the player has a lumpy bundle,
   # check_skinning ties it off before skinning. When both hands are full,
   # it must lower an item to free a hand for the tie command.
@@ -465,6 +470,378 @@ RSpec.describe LootProcess do
 
       it 'does not tap the bundle' do
         expect(DRC).not_to have_received(:bput).with('tap my bundle', anything, anything, anything)
+      end
+    end
+  end
+end
+
+# ===========================================================================
+# GameState#skill_done? specs
+#
+# Validates that ignore_weapon_mindstate controls whether weapon switching
+# is driven by mindstate (exp) or purely by action count.
+# ===========================================================================
+RSpec.describe GameState do
+  # Build a GameState via allocate to bypass initialize (avoids settings/game I/O).
+  # Sets only the instance variables relevant to skill_done?.
+  def build_game_state_instance(**overrides)
+    instance = GameState.allocate
+    defaults = {
+      ignore_weapon_mindstate: false,
+      current_weapon_skill: 'Bow',
+      action_count: 0,
+      target_action_count: 25,
+      target_weapon_skill: 20,
+      gain_check: 5,
+      focus_threshold: 0,
+      focus_threshold_active: false,
+      last_exp: 10,
+      last_action_count: 0,
+      no_gain_list: Hash.new(0),
+      weapons_to_train: { 'Bow' => 'longbow', 'Slings' => 'sling' }
+    }
+    defaults.merge(overrides).each do |k, v|
+      instance.instance_variable_set(:"@#{k}", v)
+    end
+    instance
+  end
+
+  before(:each) do
+    allow(DRSkill).to receive(:getxp).and_return(0)
+    allow(DRSkill).to receive(:getrank).and_return(100)
+  end
+
+  describe '#skill_done?' do
+    # =========================================================================
+    # Shared examples -- DRY assertions for the two decision modes
+    # =========================================================================
+    shared_examples 'switches only on action count' do |exp_value|
+      it 'returns false when action count is below target' do
+        allow(DRSkill).to receive(:getxp).and_return(exp_value)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: true,
+          action_count: 5,
+          target_action_count: 25
+        )
+        expect(gs.skill_done?).to be false
+      end
+
+      it 'returns true when action count meets target' do
+        allow(DRSkill).to receive(:getxp).and_return(exp_value)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: true,
+          action_count: 25,
+          target_action_count: 25
+        )
+        expect(gs.skill_done?).to be true
+      end
+
+      it 'returns true when action count exceeds target' do
+        allow(DRSkill).to receive(:getxp).and_return(exp_value)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: true,
+          action_count: 30,
+          target_action_count: 25
+        )
+        expect(gs.skill_done?).to be true
+      end
+    end
+
+    context 'with ignore_weapon_mindstate true' do
+      context 'when exp is 0 (fresh skill)' do
+        include_examples 'switches only on action count', 0
+      end
+
+      context 'when exp is 17 (mid-training)' do
+        include_examples 'switches only on action count', 17
+      end
+
+      context 'when exp is 34 (capped)' do
+        include_examples 'switches only on action count', 34
+      end
+    end
+
+    context 'with ignore_weapon_mindstate false' do
+      it 'returns true when exp is 34 regardless of action count' do
+        allow(DRSkill).to receive(:getxp).and_return(34)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: false,
+          action_count: 0,
+          target_action_count: 25
+        )
+        expect(gs.skill_done?).to be true
+      end
+
+      it 'returns true when action count meets target with exp at 0' do
+        allow(DRSkill).to receive(:getxp).and_return(0)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: false,
+          action_count: 25,
+          target_action_count: 25,
+          target_weapon_skill: 34
+        )
+        expect(gs.skill_done?).to be true
+      end
+
+      it 'returns true when exp meets target_weapon_skill with low action count' do
+        allow(DRSkill).to receive(:getxp).and_return(20)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: false,
+          action_count: 3,
+          target_action_count: 25,
+          target_weapon_skill: 20
+        )
+        expect(gs.skill_done?).to be true
+      end
+
+      it 'returns false when exp is 17 and action count is below target' do
+        allow(DRSkill).to receive(:getxp).and_return(17)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: false,
+          action_count: 5,
+          target_action_count: 25,
+          target_weapon_skill: 20
+        )
+        expect(gs.skill_done?).to be false
+      end
+
+      it 'returns false when exp is 0 and action count is below target' do
+        allow(DRSkill).to receive(:getxp).and_return(0)
+        gs = build_game_state_instance(
+          ignore_weapon_mindstate: false,
+          action_count: 0,
+          target_action_count: 25,
+          target_weapon_skill: 20
+        )
+        expect(gs.skill_done?).to be false
+      end
+    end
+  end
+end
+
+# ===========================================================================
+# SetupProcess#determine_next_to_train specs
+#
+# Validates the all-weapons-locked guard: when all weapons are at 34/34,
+# stay on the current weapon (5a) or select one if none equipped (5b).
+# ===========================================================================
+RSpec.describe SetupProcess do
+  def build_setup_process(**overrides)
+    instance = SetupProcess.allocate
+    defaults = {
+      ignore_weapon_mindstate: false,
+      offhand_trainables: false,
+      priority_weapons: []
+    }
+    defaults.merge(overrides).each do |k, v|
+      instance.instance_variable_set(:"@#{k}", v)
+    end
+    instance
+  end
+
+  before(:each) do
+    allow(DRSkill).to receive(:getxp).and_return(34)
+    allow(DRSkill).to receive(:getrank).and_return(100)
+  end
+
+  describe '#determine_next_to_train' do
+    let(:weapon_training) { { 'Bow' => 'longbow', 'Slings' => 'sling', 'Crossbow' => 'latchbow' } }
+
+    # Build a game_state double for determine_next_to_train tests.
+    # SRP: isolate the game_state interface from test setup details.
+    def build_game_state_double(weapon_skill:, skill_done: true)
+      state = double('GameState')
+      allow(state).to receive(:skill_done?).and_return(skill_done)
+      allow(state).to receive(:weapon_skill).and_return(weapon_skill)
+      allow(state).to receive(:skip_all_weapon_max_check).and_return(false)
+      allow(state).to receive(:skip_all_weapon_max_check=)
+      allow(state).to receive(:reset_action_count)
+      allow(state).to receive(:last_exp=)
+      allow(state).to receive(:last_action_count=)
+      allow(state).to receive(:update_weapon_info)
+      allow(state).to receive(:update_target_weapon_skill)
+      allow(state).to receive(:sort_by_rate_then_rank) { |skills, _| skills }
+      allow(state).to receive(:summoned_weapons).and_return([])
+      allow(state).to receive(:summoned_info).and_return(nil)
+      allow(state).to receive(:focus_threshold_active).and_return(false)
+      allow(state).to receive(:aiming_trainables).and_return([])
+      state
+    end
+
+    context 'when all weapons at 34 and weapon is equipped (5a)' do
+      it 'returns without switching weapons' do
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).not_to have_received(:update_weapon_info)
+      end
+    end
+
+    context 'when all weapons at 34 and no weapon equipped (5b)' do
+      it 'falls through to weapon selection' do
+        game_state = build_game_state_double(weapon_skill: nil)
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).to have_received(:update_weapon_info)
+      end
+    end
+
+    context 'when some weapons below 34' do
+      it 'proceeds to weapon selection' do
+        allow(DRSkill).to receive(:getxp).and_return(34)
+        allow(DRSkill).to receive(:getxp).with('Slings').and_return(17)
+
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).to have_received(:update_weapon_info)
+      end
+    end
+
+    context 'when all weapons at 0 (fresh start)' do
+      it 'proceeds to weapon selection' do
+        allow(DRSkill).to receive(:getxp).and_return(0)
+
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).to have_received(:update_weapon_info)
+      end
+    end
+
+    context 'with ignore_weapon_mindstate true and all weapons at 34' do
+      it 'skips the all-locked guard and proceeds to weapon selection' do
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process(ignore_weapon_mindstate: true)
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).to have_received(:update_weapon_info)
+      end
+    end
+
+    context 'with ignore_weapon_mindstate true and all weapons at 0' do
+      it 'proceeds to weapon selection' do
+        allow(DRSkill).to receive(:getxp).and_return(0)
+
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process(ignore_weapon_mindstate: true)
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).to have_received(:update_weapon_info)
+      end
+    end
+
+    context 'when skill_done? returns false' do
+      it 'returns early without any weapon switching' do
+        game_state = build_game_state_double(weapon_skill: 'Bow', skill_done: false)
+        # weapon_training includes current weapon so !weapon_training[weapon_skill] is false
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(game_state).not_to have_received(:update_weapon_info)
+      end
+    end
+
+    # =========================================================================
+    # Blank/nil weapon_training guard
+    # =========================================================================
+    shared_examples 'returns without selecting a weapon' do
+      it 'does not call skill_done? or update_weapon_info' do
+        expect(game_state).not_to have_received(:skill_done?)
+        expect(game_state).not_to have_received(:update_weapon_info)
+      end
+
+      it 'warns the user with a DRC.message' do
+        expect(DRC).to have_received(:message).with(/No weapons configured/).at_least(:once)
+      end
+    end
+
+    context 'when weapon_training is empty' do
+      let(:game_state) { build_game_state_double(weapon_skill: nil) }
+
+      before(:each) do
+        allow(DRC).to receive(:message)
+        setup = build_setup_process
+        setup.send(:determine_next_to_train, game_state, {}, false)
+      end
+
+      include_examples 'returns without selecting a weapon'
+    end
+
+    context 'when weapon_training is nil' do
+      let(:game_state) { build_game_state_double(weapon_skill: nil) }
+
+      before(:each) do
+        allow(DRC).to receive(:message)
+        setup = build_setup_process
+        setup.send(:determine_next_to_train, game_state, nil, false)
+      end
+
+      include_examples 'returns without selecting a weapon'
+    end
+
+    # =========================================================================
+    # User-facing messaging
+    # =========================================================================
+    context 'messaging for 5a (all at 34, weapon equipped)' do
+      it 'warns the user once about continuing with current weapon' do
+        allow(DRC).to receive(:message)
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).to have_received(:message).with(/Continuing to attack with Bow/).once
+      end
+    end
+
+    context 'messaging for 5b (all at 34, no weapon equipped)' do
+      it 'warns the user once about selecting initial weapon' do
+        allow(DRC).to receive(:message)
+        game_state = build_game_state_double(weapon_skill: nil)
+        setup = build_setup_process
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).to have_received(:message).with(/Selecting initial weapon/).once
+      end
+    end
+
+    context 'messaging for ignore_weapon_mindstate when all at 34' do
+      it 'warns the user once about cycling by action count' do
+        allow(DRC).to receive(:message)
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process(ignore_weapon_mindstate: true)
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).to have_received(:message).with(/Cycling weapons by combat_trainer_action_count/).once
+      end
+    end
+
+    context 'messaging for ignore_weapon_mindstate when not all at 34' do
+      it 'does not warn about action count cycling' do
+        allow(DRC).to receive(:message)
+        allow(DRSkill).to receive(:getxp).and_return(17)
+        game_state = build_game_state_double(weapon_skill: 'Bow')
+        setup = build_setup_process(ignore_weapon_mindstate: true)
+
+        setup.send(:determine_next_to_train, game_state, weapon_training, false)
+
+        expect(DRC).not_to have_received(:message).with(/Cycling weapons by combat_trainer_action_count/)
       end
     end
   end

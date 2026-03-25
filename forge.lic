@@ -750,7 +750,7 @@ class Forge
   # @return [void]
   def process_rental_expiration(expire_str)
     # Parse format: "Sun Dec 28 23:39:15 ET 2025"
-    # Game always uses US Eastern Time — determine EST (-0500) vs EDT (-0400)
+    # Game always uses US Eastern Time -- determine EST (-0500) vs EDT (-0400)
     expire_str_normalized = expire_str.sub(' ET ', " #{eastern_utc_offset} ")
     expire_time = Time.parse(expire_str_normalized)
     minutes_remaining = ((expire_time - Time.now) / 60).to_i

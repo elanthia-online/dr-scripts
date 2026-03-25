@@ -4,36 +4,36 @@
 
 class SigilHarvest
   VERSION = '2.0.0'
-  # === Experiment History (v1.2.0 → v1.5.27) ===
-  # Retrospective simulation: 100% decision agreement (15/15). Net: v1.2.0 2.9% → v1.5.27 3.0%.
+  # === Experiment History (v1.2.0 -> v1.5.27) ===
+  # Retrospective simulation: 100% decision agreement (15/15). Net: v1.2.0 2.9% -> v1.5.27 3.0%.
   #
-  # v1.5.27 KEPT: EXP-18 — Min difficulty threshold. Skip trivial-difficulty (1) precision actions,
-  #   forcing refresh. Avg gain 7.18→8.54 (+1.36), trivial 25.8%→3.6%, 60+ rate +6.9pp. Best since EXP-6.
-  # v1.5.26 INFRA: D7 fix — Unconditional repair logging. Repairs=0 in 2606 iters. Phase 3/4 CLOSED.
-  # v1.5.25 KEPT: EXP-17 — Resource-aware tiebreaker. On tied difficulty+cost, prefer most-available
+  # v1.5.27 KEPT: EXP-18 -- Min difficulty threshold. Skip trivial-difficulty (1) precision actions,
+  #   forcing refresh. Avg gain 7.18->8.54 (+1.36), trivial 25.8%->3.6%, 60+ rate +6.9pp. Best since EXP-6.
+  # v1.5.26 INFRA: D7 fix -- Unconditional repair logging. Repairs=0 in 2606 iters. Phase 3/4 CLOSED.
+  # v1.5.25 KEPT: EXP-17 -- Resource-aware tiebreaker. On tied difficulty+cost, prefer most-available
   #   resource. Fires 9.4% of iters. Mishap -5.3pp (n.s. p=0.21), resource_exhausted -1.6pp.
-  # v1.5.24 KEPT: EXP-14r — Cost equalization clean retest ({1,2,3}→{1,1,1}). Neutral (-1.6pp n.s.).
-  # v1.5.23 REVERTED: EXP-16 — Resource coeff 1.75→1.5. Mathematically impossible (need prec>=18).
-  # v1.5.22 REVERTED: EXP-15 — Move budget 14→15. Mishap +11.7pp, 0 scribes, sim scribe -0.2%.
+  # v1.5.24 KEPT: EXP-14r -- Cost equalization clean retest ({1,2,3}->{1,1,1}). Neutral (-1.6pp n.s.).
+  # v1.5.23 REVERTED: EXP-16 -- Resource coeff 1.75->1.5. Mathematically impossible (need prec>=18).
+  # v1.5.22 REVERTED: EXP-15 -- Move budget 14->15. Mishap +11.7pp, 0 scribes, sim scribe -0.2%.
   # v1.5.21 BASELINE: Corrected baseline. Restores EXP-9 resource exhaustion check.
   # v1.5.20 INFRA: Baseline restore + C1 fix. Reverts to v1.5.17 algorithm, adds @actually_scribed.
-  # v1.5.19 REVERTED: EXP-14 — Cost equalization (confounded with EXP-13 cap removal). Mishap +11.4pp.
-  # v1.5.18 REVERTED: EXP-13 — Remove iteration cap + move budget. Mishap +21.4pp (p=0.008).
+  # v1.5.19 REVERTED: EXP-14 -- Cost equalization (confounded with EXP-13 cap removal). Mishap +11.4pp.
+  # v1.5.18 REVERTED: EXP-13 -- Remove iteration cap + move budget. Mishap +21.4pp (p=0.008).
   # v1.5.17 KEPT: Awakened technique. Avg gain +0.23, 80+ rate +2.1pp, sim scribe +0.4%.
-  # v1.5.16 REVERTED: EXP-12r — Loosen viability margin retest. Confirmed first test was noise.
-  # v1.5.15 KEPT: EXP-9 — Resource exhaustion coeff 2.25→1.75. Neutral (sim -0.1%).
-  # v1.5.14 REVERTED: EXP-12 — Loosen viability margin (margin=0 for challenging+). Mishap +6.6pp.
-  # v1.5.13 KEPT: EXP-7 — Difficulty-based action selection (decouple risk from cost). Neutral.
-  # v1.5.12 KEPT: EXP-10 — Skip threshold <13 (standalone retest of v1.5.11). Neutral.
-  # v1.5.11 REVERTED: EXP-10+11 — Skip+velocity bundled. EffGain collapsed (-14.1), avg iters 7.0.
-  # v1.5.10 KEPT: EXP-6 — Fix difficulty ordering + filter ACTION verb. Mishap -0.79pp/iter (p=0.02).
+  # v1.5.16 REVERTED: EXP-12r -- Loosen viability margin retest. Confirmed first test was noise.
+  # v1.5.15 KEPT: EXP-9 -- Resource exhaustion coeff 2.25->1.75. Neutral (sim -0.1%).
+  # v1.5.14 REVERTED: EXP-12 -- Loosen viability margin (margin=0 for challenging+). Mishap +6.6pp.
+  # v1.5.13 KEPT: EXP-7 -- Difficulty-based action selection (decouple risk from cost). Neutral.
+  # v1.5.12 KEPT: EXP-10 -- Skip threshold <13 (standalone retest of v1.5.11). Neutral.
+  # v1.5.11 REVERTED: EXP-10+11 -- Skip+velocity bundled. EffGain collapsed (-14.1), avg iters 7.0.
+  # v1.5.10 KEPT: EXP-6 -- Fix difficulty ordering + filter ACTION verb. Mishap -0.79pp/iter (p=0.02).
   # v1.5.9 NEUTRAL: Illuminated technique test. No algorithm change.
-  # v1.5.8 KEPT: EXP-5 — Tighten move budget formula (15→13 precision/move). Sim scribe +0.3%.
+  # v1.5.8 KEPT: EXP-5 -- Tighten move budget formula (15->13 precision/move). Sim scribe +0.3%.
   # v1.5.7 INFRA: Baseline restore (EXP-4 reverted).
-  # v1.5.6 REVERTED: EXP-4 — Composite resource health guard. Skipped too many sigils.
-  # v1.5.5 REVERTED: EXP-3 — Prefer repair over trivial/straightforward precision actions.
-  # v1.5.4 KEPT: EXP-2 — Accept trivial actions + burin validate_tools fix.
-  # v1.5.0–v1.5.3: Algorithm rewrite, patches, baseline establishment.
+  # v1.5.6 REVERTED: EXP-4 -- Composite resource health guard. Skipped too many sigils.
+  # v1.5.5 REVERTED: EXP-3 -- Prefer repair over trivial/straightforward precision actions.
+  # v1.5.4 KEPT: EXP-2 -- Accept trivial actions + burin validate_tools fix.
+  # v1.5.0-v1.5.3: Algorithm rewrite, patches, baseline establishment.
   # v1.2.0: Original baseline (Matt). Risk-based selection. Sim scribe 2.9%.
 
   def initialize
@@ -257,7 +257,7 @@ class SigilHarvest
       # Select a precision upgrade action.
       # Conditions: stat must have enough margin over difficulty, and difficulty must be non-trivial
       # (unless danger is high or precision is close to target).
-      # Skip ACTION verb — 24.8% zero-gain rate (EXP-6).
+      # Skip ACTION verb -- 24.8% zero-gain rate (EXP-6).
       if x['aspect'] == 'precision' && x['verb'].upcase != 'ACTION' && precision_action_viable?(x, contest_stat, precision)
         DRC.message("Potential precision upgrade found... ") if @debug
 
@@ -270,7 +270,7 @@ class SigilHarvest
           elsif x['difficulty'].to_i == sigil_action['difficulty'].to_i && x['impact'].to_i < sigil_action['impact'].to_i
             sigil_action = x
           elsif x['difficulty'].to_i == sigil_action['difficulty'].to_i && x['impact'].to_i == sigil_action['impact'].to_i
-            # EXP-17 (v1.5.25): Resource-aware tiebreaker — when difficulty and cost are equal,
+            # EXP-17 (v1.5.25): Resource-aware tiebreaker -- when difficulty and cost are equal,
             # prefer the action that drains the most-available resource. This preserves scarce
             # resources for future iterations. Fires in ~9.4% of iterations (all ties have
             # heterogeneous cost profiles, so every tie offers a meaningful resource choice).
@@ -320,7 +320,7 @@ class SigilHarvest
     # Move budget check: estimate whether remaining iterations can plausibly reach target.
     # Formula: (max_useful_iters - used) * precision_per_move < remaining_gap
     # 14 = max useful iterations, 13 = precision/move coefficient (EXP-5), 5 = scribe buffer
-    # v1.5.17 guardrail restored in v1.5.20. EXP-15 (14→15) reverted — harmful.
+    # v1.5.17 guardrail restored in v1.5.20. EXP-15 (14->15) reverted -- harmful.
     if (14 - @num_iterations) * 13 < (precision - @sigil_precision - 5)
       DRC.message("Exiting: insufficient moves to reach target")
       DRC.message("Final precision: #{@sigil_precision}")
@@ -574,7 +574,7 @@ class SigilHarvest
       return
     end
 
-    # Attempt 3: Plain 'burin' — may be in bag or redirect to belt untie
+    # Attempt 3: Plain 'burin' -- may be in bag or redirect to belt untie
     result = DRC.bput('get my burin',
                       /You get/, /You pick/, /What were you/, /You are already/,
                       /You should untie .+ from .+ first/)
@@ -705,7 +705,7 @@ class SigilHarvest
 
   # Determines whether a precision action is viable given the current contest stat and danger level.
   # Actions require sufficient stat margin over difficulty. Trivial actions (difficulty=1) are
-  # accepted when margin allows — a trivial action (+2 avg) beats a refresh (+0).
+  # accepted when margin allows -- a trivial action (+2 avg) beats a refresh (+0).
   def precision_action_viable?(action, contest_stat, _precision)
     difficulty = action['difficulty'].to_i
     margin = contest_stat - difficulty
@@ -715,7 +715,7 @@ class SigilHarvest
     # +EV: P(non-trivial)*avg_gain = 74%*8.0=5.9 >> 2.3. See gain optimization analysis.
     return false if difficulty < 2
 
-    # Path 1: comfortable margin (>1) — accept straightforward+ difficulty
+    # Path 1: comfortable margin (>1) -- accept straightforward+ difficulty
     return true if margin > 1
 
     # Path 2: margin (>0) AND challenging+ difficulty

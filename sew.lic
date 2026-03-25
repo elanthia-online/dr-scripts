@@ -345,7 +345,7 @@ class Sew
     when /trash/
       DRCI.dispose_trash(@noun, @worn_trashcan, @worn_trashcan_verb)
     when /hold/
-      Lich::Messaging.msg('bold', "#{@noun} complete — holding in hand.")
+      Lich::Messaging.msg('bold', "#{@noun} complete -- holding in hand.")
     end
 
     lift_or_stow_feet
@@ -376,7 +376,7 @@ class Sew
     minutes_remaining = ((expire_time - Time.now) / 60).to_i
 
     if minutes_remaining < 10
-      Lich::Messaging.msg('bold', "*** RENTAL LOW (#{minutes_remaining} min) — AUTO-RENEWING ***")
+      Lich::Messaging.msg('bold', "*** RENTAL LOW (#{minutes_remaining} min) -- AUTO-RENEWING ***")
       renew_rental
     elsif minutes_remaining < 20
       Lich::Messaging.msg('bold', "*** Rental has #{minutes_remaining} minutes remaining ***")
@@ -386,7 +386,7 @@ class Sew
   end
 
   def renew_rental
-    Lich::Messaging.msg('bold', '*** RENTAL EXPIRING — AUTO-RENEWING ***')
+    Lich::Messaging.msg('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
     Flags.reset('sew-rental-warning')
     case DRC.bput('mark notice',
                   'You mark the notice',
@@ -397,7 +397,7 @@ class Sew
     when "You don't have enough"
       Lich::Messaging.msg('bold', '*** INSUFFICIENT FUNDS TO RENEW RENTAL ***')
     when 'I could not find'
-      Lich::Messaging.msg('bold', '*** COULD NOT FIND NOTICE — CHECK LOCATION ***')
+      Lich::Messaging.msg('bold', '*** COULD NOT FIND NOTICE -- CHECK LOCATION ***')
     else
       Lich::Messaging.msg('bold', '*** RENTAL RENEWED ***')
     end

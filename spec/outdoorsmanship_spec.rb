@@ -298,7 +298,7 @@ RSpec.describe Outdoorsmanship do
     end
   end
 
-  describe '#validate_settings — already at cap' do
+  describe '#validate_settings -- already at cap' do
     it 'exits with message when skill XP already at end_exp' do
       Harness::DRSkill._set_xp('Outdoorsmanship', 34)
       obj = build_outdoorsmanship(end_exp: 34, outdoors_room: 1234, forage_item: 'rock')

@@ -163,23 +163,60 @@ class SetupProcess
   end
 
   def determine_next_to_train(game_state, weapon_training, ending_ranged)
+    # No weapons configured: nothing to equip or train. The character will
+    # dance (bob/weave/circle) for defensive skills only.
+    unless weapon_training&.any?
+      unless @no_weapons_warned
+        @no_weapons_warned = true
+        DRC.message('*** combat-trainer: No weapons configured in weapon_training.')
+        DRC.message('*** combat-trainer: Attacks are disabled. Only defensive dance actions (bob/weave/circle) will be used.')
+        DRC.message('*** combat-trainer: Add entries to weapon_training in your YAML if you want to train weapon skills.')
+      end
+      return
+    end
+
     return unless game_state.skill_done? || !weapon_training[game_state.weapon_skill] || ending_ranged
 
     # skip_all_weapon_max_check is a kludge for a transient condition from blacklisting a skill with
     # all remaining skills at 34
     unless @ignore_weapon_mindstate || game_state.skip_all_weapon_max_check
-      # check if all weapons are maxed exp to prevent rapid cycling
+      # All weapons at 34: stay on current weapon to prevent rapid cycling.
+      # If no weapon is equipped yet (script startup with all capped), fall
+      # through to weapon selection so one gets picked (5b becomes 5a).
       if weapon_training.reject { |skill, _| DRSkill.getxp(skill) == 34 }.empty?
-        echo 'all weapons locked, not switching' if $debug_mode_ct
-        unless game_state.all_weapons_locked
-          game_state.all_weapons_locked = true
-          echo '*** All weapon skills are at 34/34 mindstate -- no weapon will be equipped.'
-          echo '*** Attacks are disabled. Set combat_trainer_ignore_weapon_mindstate: true if any skills are permanently capped.'
+        locked_skills = weapon_training.keys.join(', ')
+        if game_state.weapon_skill
+          unless @all_locked_warned
+            @all_locked_warned = true
+            DRC.message("*** combat-trainer: All weapon_training skills mindlocked (#{weapon_training.size}): #{locked_skills}")
+            if weapon_training.size > 1
+              DRC.message('*** combat-trainer: Set combat_trainer_ignore_weapon_mindstate: true to cycle weapons by action count instead.')
+            end
+          end
+          return
+        else
+          unless @all_locked_selecting_warned
+            @all_locked_selecting_warned = true
+            DRC.message("*** combat-trainer: All weapon_training skills mindlocked (#{weapon_training.size}): #{locked_skills}")
+            DRC.message('*** combat-trainer: Selecting initial weapon to begin attacking.')
+            if weapon_training.size > 1
+              DRC.message('*** combat-trainer: Set combat_trainer_ignore_weapon_mindstate: true to cycle weapons by action count instead.')
+            end
+          end
         end
-        return
       end
     end
-    game_state.all_weapons_locked = false
+
+    # With ignore_weapon_mindstate, skill_done? only triggers on action count.
+    # Notify the user once when all weapons reach 34 that cycling continues by action count.
+    if @ignore_weapon_mindstate && !@ignore_mindstate_warned
+      if weapon_training.reject { |skill, _| DRSkill.getxp(skill) == 34 }.empty?
+        @ignore_mindstate_warned = true
+        locked_skills = weapon_training.keys.join(', ')
+        DRC.message("*** combat-trainer: All weapon_training skills mindlocked (#{weapon_training.size}): #{locked_skills} -- ignore_weapon_mindstate is active.")
+        DRC.message('*** combat-trainer: Cycling weapons by combat_trainer_action_count only.')
+      end
+    end
     game_state.skip_all_weapon_max_check = false
 
     echo('new skill needed for training') if $debug_mode_ct
@@ -251,7 +288,10 @@ class SetupProcess
   end
 
   def last_stance
-    Flags['last-stance'][0] =~ /(\d+)%.* (\d+)%.* (\d+)%.* (\d+)/
+    flag_result = Flags['last-stance']
+    return { 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 } unless flag_result
+
+    flag_result[0] =~ /(\d+)%.* (\d+)%.* (\d+)%.* (\d+)/
     { 'EVASION' => Regexp.last_match(1).to_i, 'PARRY' => Regexp.last_match(2).to_i, 'SHIELD' => Regexp.last_match(3).to_i, 'SPARE' => Regexp.last_match(4).to_i }
   end
 
@@ -688,23 +728,19 @@ class LootProcess
       game_state.unlootable(item)
       return
     end
-    DRC.bput("remove my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You remove')
-    if @full_pouch_container
-      case DRC.bput("put my #{@gem_pouch_adjective} #{@gem_pouch_noun} in my #{@full_pouch_container}", 'You put', 'too heavy to go in there')
-      when 'too heavy to go in there'
-        DRC.bput("stow my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You put')
-      end
-    else
-      DRC.bput("stow my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You put')
+    unless DRCI.swap_out_full_gempouch?(
+      @gem_pouch_adjective,
+      @gem_pouch_noun,
+      @full_pouch_container,
+      @spare_gem_pouch_container,
+      @tie_pouch
+    )
+      game_state.unlootable(item)
+      return
     end
-    DRC.bput("get #{@gem_pouch_adjective} #{@gem_pouch_noun} from my #{@spare_gem_pouch_container}", 'You get a')
-    DRC.bput("wear my #{@gem_pouch_adjective} #{@gem_pouch_noun}", 'You attach')
-    DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory')
-    if @tie_pouch
-      DRC.bput("tie my #{@gem_pouch_noun}", 'You tie')
-    else
-      DRC.bput("close my #{@gem_pouch_noun}", 'You close')
-    end
+
+    # Pick up the dropped gem
+    DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
   end
 
   def stow_lootables(game_state)
@@ -1205,14 +1241,39 @@ class SafetyProcess
     @equipment_manager = equipment_manager
     @health_threshold = settings.health_threshold
     @stop_on_bleeding = settings.stop_hunting_if_bleeding
+    @safety_untendable_threshold = settings.safety_untendable_threshold || 3
+    @safety_exit_on_bleeding = settings.safety_exit_on_bleeding || false
+    @safety_concentration_minimum = settings.safety_concentration_minimum
+    @safety_escape_health_threshold = settings.safety_escape_health_threshold
     echo("  @health_threshold: #{@health_threshold}") if $debug_mode_ct
+    echo("  @safety_untendable_threshold: #{@safety_untendable_threshold}") if $debug_mode_ct
+    echo("  @safety_exit_on_bleeding: #{@safety_exit_on_bleeding}") if $debug_mode_ct
+    echo("  @safety_concentration_minimum: #{@safety_concentration_minimum}") if $debug_mode_ct
+    echo("  @safety_escape_health_threshold: #{@safety_escape_health_threshold}") if $debug_mode_ct
     @untendable_counter = 0
   end
 
   def execute(game_state)
-    if @untendable_counter >= 3 && @stop_on_bleeding
+    if @untendable_counter >= @safety_untendable_threshold && @stop_on_bleeding
       echo('Skipping tendme check due to untendable backoff') if $debug_mode_ct
-      echo("Couldn't tend bleeders after trying three times. Stopping hunt. Get healed!")
+      echo("Couldn't tend bleeders after trying #{@safety_untendable_threshold} time(s). Stopping hunt. Get healed!")
+      $HUNTING_BUDDY.stop_hunting
+      $COMBAT_TRAINER.stop
+    elsif @safety_concentration_minimum && DRStats.concentration < @safety_concentration_minimum
+      echo("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
+      $HUNTING_BUDDY.stop_hunting
+      $COMBAT_TRAINER.stop
+    elsif @safety_escape_health_threshold && DRStats.thief? && DRSpells.known_spells['Vanish'] && (bleeding? || stunned? || DRStats.health < @safety_escape_health_threshold)
+      pause 0.1 while stunned?
+      echo("Bleeding. Activating Vanish and stopping hunt.") if bleeding?
+      echo("Stunned. Activating Vanish and stopping hunt.") if stunned?
+      echo("Health below #{@safety_escape_health_threshold}. Activating Vanish and stopping hunt.") if DRStats.health < @safety_escape_health_threshold
+      DRCA.activate_khri?(false, "Vanish")
+      $HUNTING_BUDDY.stop_hunting
+      $COMBAT_TRAINER.stop
+    elsif @safety_exit_on_bleeding && (bleeding? || (stunned? && DRStats.health < (@safety_escape_health_threshold || 80)))
+      echo("Bleeding. Stopping hunt.") if bleeding?
+      echo("Stunned with low health. Stopping hunt.") if stunned?
       $HUNTING_BUDDY.stop_hunting
       $COMBAT_TRAINER.stop
     # If no heal-over-time spells are active then attempt to tend bleeders using ;tendme
@@ -1365,7 +1426,7 @@ class SpellProcess
     @training_spells_wait = settings.combat_spell_timer
     echo("  @training_spells_wait: #{@training_spells_wait}") if $debug_mode_ct
 
-    @magic_exp_training_max_threshold = settings.magic_exp_training_max_threshold
+    @magic_exp_training_max_threshold = settings.magic_exp_training_max_threshold || 32
     echo("  @magic_exp_training_max_threshold: #{@magic_exp_training_max_threshold}") if $debug_mode_ct
 
     @offensive_spell_cycle = settings.offensive_spell_cycle
@@ -1522,6 +1583,7 @@ class SpellProcess
 
   def drop_tkt_ammo
     return unless @tk_ammo
+    return unless @tk_spell
 
     fput("get my #{@tk_ammo}")
     fput("drop #{@tk_ammo}")
@@ -1608,74 +1670,49 @@ class SpellProcess
 
   private
 
-  def slivers_exist?
-    line = dothistimeout('perc self', 15, /slivers/i)
-
-    if line
-      echo "Matched sliver line: #{line.inspect}" if $debug_mode_ct
-      return
-    else
-      echo "No sliver line matched." if $debug_mode_ct
-      false
-    end
-  end
-
   def check_slivers(game_state)
+    return unless DRSpells.known_spells.include?('Moonblade')
     return unless DRStats.moon_mage?
     return unless @tk_spell
-    return if @checking_slivers
     return if game_state.casting
-    return if slivers_exist?
+    return if DRSpells.slivers
 
-    if @last_sliver_cast_time
-      elapsed  = Time.now - @last_sliver_cast_time
-      cooldown = @settings.sliver_duration.to_i.nonzero? || 100
+    unless UserVars.moons['visible'].any?
+      DRC.message "There are NO moons available and you have NO TK_AMMO set! You need to fix this!" if !@tk_ammo && $debug_mode_ct
+      return
+    end
 
-      if elapsed < cooldown
-        remaining = (cooldown - elapsed).round
-        echo "Sliver cooldown: #{remaining} seconds remaining." if $debug_mode_ct
-        return
+    # With low skill you may fail to create the slivers
+    # when breaking your moonblade. If so, keep retrying.
+    retry_count = 0
+    max_retries = 3
+    created_slivers = false
+    # We don't need to cast the spell a fancy way
+    # so rather than asking users to define a new waggle
+    # then simply cast the spell at minimum prep.
+    moonblade_spell = get_data('spells').spell_data['Moonblade'].dup
+    # Minimally prepare the spell so we can cast it quickly.
+    moonblade_spell['mana'] = 1
+    # Try, try, try to break moonblade into slivers.
+    # For novices, this may fail a couple times.
+    while !created_slivers && retry_count < max_retries
+      # For skilled mages, try to snap cast
+      # unless we failed the first time.
+      if retry_count == 0
+        lunar_magic_rank = DRSkill.getrank('Lunar Magic')
+        if lunar_magic_rank >= 400
+          moonblade_spell['prep_time'] = 1
+        elsif lunar_magic_rank >= 300
+          moonblade_spell['prep_time'] = 2
+        elsif lunar_magic_rank >= 200
+          moonblade_spell['prep_time'] = 3
+        end
       end
-    end
-
-    DRC.message("Last sliver cast: #{@last_sliver_cast_time.inspect}") if $debug_mode_ct
-
-    @checking_slivers = true
-    begin
-      moonblade_spell = get_data('spells').spell_data['Moonblade'].dup
-      moonblade_spell['mana'] = 1
-
-      lunar_magic_rank = DRSkill.getrank('Lunar Magic')
-      prep_time = case lunar_magic_rank
-                  when 200..299 then 3
-                  when 300..399 then 2
-                  when 400..Float::INFINITY then 1
-                  else 4
-                  end
-      moonblade_spell['prep_time'] = prep_time
-
       DRCA.cast_spell(moonblade_spell, @settings)
-
-      DRC.message('Waiting for moonblade cast message...') if $debug_mode_ct
-
-      DRC.bput('tap moon', nil, 15,
-               /A shaft of intense/i,
-               /You are aided by the strength/i,
-               /diamond-hard metal/i,
-               /moonblade.*fiery.*liquid/i,
-               /moonblade.*substance/i,
-               /coalesces into a long narrow moonblade.*?/i,
-               /oozes into existence.*moonblade/i,
-               /moonblade of glossy blue-white diamond-hard metal/i,
-               /You are already holding a moonblade/i,
-               /a shadow coalesces/i)
-
-      DRC.bput('break moonblade', nil, 5)
-
-      @last_sliver_cast_time = Time.now
-    ensure
-      @checking_slivers = false
+      created_slivers = DRC.bput("break moonblade", "The slivers drift about", "dissipate without any benefit", "Break what?") == "The slivers drift about"
+      retry_count = retry_count + 1
     end
+    DRC.message("Failed to create slivers for telekinetic ammo after #{retry_count} attempts") unless created_slivers
   end
 
   def check_osrel(game_state)
@@ -2968,16 +3005,25 @@ class ManipulateProcess
     DRC.bput('manipulate stop all', /^You relax your will/, /^But you aren't manipulating anything/)
 
     manipulate_count = 0
+    npc_occurrences = Hash.new(0)
 
     @filtered_npcs.each do |npc|
       next if game_state.construct?(npc)
       break if manipulate_count >= @threshold
 
-      case DRC.bput("manipulate friendship #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what')
+      index = npc_occurrences[npc]
+      ordinal_string = $ORDINALS[index]
+
+      case DRC.bput("manipulate friendship #{ordinal_string} #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what', 'deep sense of loss')
       when 'does not seem to have a life essence' then
         game_state.construct(npc)
+      when 'deep sense of loss'
+        DRC.message("***WARNING*** Too shocked to manipulate -- disabling manipulation for this hunt")
+        @threshold = nil
+        break
       else
         manipulate_count += 1
+        npc_occurrences[npc] += 1
       end
     end
 
@@ -3261,6 +3307,8 @@ class TrainerProcess
   private
 
   def hide_action(game_state)
+    return if DRSkill.getxp('Stealth') >= 34
+
     if DRC.hide?(@hide_type) && !@dont_stalk && !game_state.npcs.empty? && @hide_type == 'hide'
       stalked = DRC.bput('stalk', 'Stalk what',
                          'Try being out of sight',
@@ -3408,7 +3456,7 @@ class TrainerProcess
     end
 
     if DRC.hide?
-      DRC.bput('ambush stun', 'Wouldn\'t it be better if you used a melee weapon?', 'You must be hidden or invisible to ambush', 'You aren\'t close enough to attack', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'Roundtime', 'is already out cold')
+      DRC.bput('ambush stun', { 'timeout' => 0, 'suppress_no_match' => true }, 'Wouldn\'t it be better if you used a melee weapon?', 'You must be hidden or invisible to ambush', 'You aren\'t close enough to attack', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'Roundtime', 'is already out cold')
       pause
       waitrt?
     end
@@ -3696,7 +3744,7 @@ class AttackProcess
       game_state.no_stab_current_mob = false
     end
 
-    if game_state.dancing? || game_state.all_weapons_locked || game_state.weapon_skill == 'Targeted Magic' || !game_state.is_offense_allowed?
+    if game_state.dancing? || game_state.weapon_skill.nil? || game_state.weapon_skill == 'Targeted Magic' || !game_state.is_offense_allowed?
       if game_state.finish_killing?
         echo('AttackProcess::clean_up') if $debug_mode_ct
         game_state.next_clean_up_step
@@ -3779,7 +3827,7 @@ class AttackProcess
         end
       end
 
-      DRC.bput(command, 'Wouldn\'t it be better if you used a melee weapon?', 'You need two hands to wield this weapon', 'You turn to face', 'Face What?', 'Roundtime', "You aren't close enough to attack", 'It would help if you were closer', 'There is nothing else to face!', 'You must be hidden', 'flying too high for you to attack', 'You can\'t coldcock', 'while it is flying', 'Novel idea, but it\'s a ghost!', 'Bumbling, you slip', 'You can not slam with that', 'You must be hidden or invisible to ambush', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'is already out cold')
+      DRC.bput(command, { 'timeout' => 0, 'suppress_no_match' => true }, 'Wouldn\'t it be better if you used a melee weapon?', 'You need two hands to wield this weapon', 'You turn to face', 'Face What?', 'Roundtime', "You aren't close enough to attack", 'It would help if you were closer', 'There is nothing else to face!', 'You must be hidden', 'flying too high for you to attack', 'You can\'t coldcock', 'while it is flying', 'Novel idea, but it\'s a ghost!', 'Bumbling, you slip', 'You can not slam with that', 'You must be hidden or invisible to ambush', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'is already out cold')
     end
 
     pause
@@ -4357,7 +4405,7 @@ class GameState
                 :clean_up_step, :constructs, :cooldown_timers, :current_weapon_skill,
                 :currently_whirlwinding, :dance_queue, :dancing, :danger, :focus_threshold_active, :hide_on_cast, :last_action_count, :last_exp, :last_offhand_skill,
                 :last_regalia_type, :last_weapon_skill, :loaded, :mob_died, :need_bundle,
-                :all_weapons_locked, :no_loot, :no_skins, :no_stab_current_mob, :no_stab_mobs, :offhand_last_exp, :parrying, :prepare_cfb, :prepare_cfw, :prepare_nr,
+                :no_loot, :no_skins, :no_stab_current_mob, :no_stab_mobs, :offhand_last_exp, :parrying, :prepare_cfb, :prepare_cfw, :prepare_nr,
                 :prepare_consume, :regalia_cancel, :reset_stance, :retreating, :skip_all_weapon_max_check, :starlight_values,
                 :swap_regalia_type, :target_weapon_skill, :use_charged_maneuvers,
                 :whirlwind_trainables, :wounds
@@ -4415,7 +4463,6 @@ class GameState
     @constructs = []
     @no_stab_mobs = []
     @no_loot = []
-    @all_weapons_locked = false
     @dancing = false
     @retreating = false
     @action_count = 0
@@ -4467,6 +4514,9 @@ class GameState
     @target_increment = settings.combat_trainer_target_increment
     echo("  @target_increment: #{@target_increment}") if $debug_mode_ct
     @target_increment_original = @target_increment
+
+    @ignore_weapon_mindstate = settings.combat_trainer_ignore_weapon_mindstate
+    echo("  @ignore_weapon_mindstate: #{@ignore_weapon_mindstate}") if $debug_mode_ct
 
     @gain_check = settings.combat_trainer_gain_check
     echo("  @gain_check: #{@gain_check}") if $debug_mode_ct
@@ -5101,6 +5151,13 @@ class GameState
     echo("last_exp: #{@last_exp}") if $debug_mode_ct
     echo("last_action_count: #{@last_action_count}") if $debug_mode_ct
 
+    # When ignoring weapon mindstate, cycle weapons purely by action count.
+    # Skip all mindstate-driven logic: gain_check, exp==34, focus_threshold,
+    # and target_increment comparison.
+    if @ignore_weapon_mindstate
+      return @action_count >= @target_action_count
+    end
+
     # gain_check code: logic to account for a skill that is not gaining any MS at all
     if (@gain_check > 0) && !weapon_skill.nil?
       # only check for mindstate movement if there was actually some action in the last CT cycle
@@ -5399,6 +5456,8 @@ class GameState
       # We optimistically assumed 45 seconds. If that wasn't enough then
       # we'll wait another 15 seconds and retry.
       @cooldown_timers[maneuver] += 15
+      return false
+    when *maneuver_failure_messages
       return false
     when *maneuver_retreat_retry_messages
       if maneuver.casecmp?('rush')
@@ -5958,6 +6017,7 @@ before_dying do
   DRCA.release_cyclics(get_settings.cyclic_no_release)
   DRCA.shatter_regalia?
   fput('close fissure') if DRStats.warrior_mage? && DRRoom.room_objs.any? { |x| /fissure/ =~x }
+  fput("release spell") if XMLData.prepared_spell
   Flags.delete('using-corpse')
   Flags.delete('pouch-full')
   Flags.delete('container-full')

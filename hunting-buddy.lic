@@ -3,6 +3,57 @@
 =end
 
 class HuntingBuddy
+  # Plugin system -- plugins register to receive lifecycle hooks.
+  # Plugins are loaded from scripts/custom/hunting-buddy-plugin-*.rb
+  # and register via HuntingBuddy.register_plugin(instance).
+  # Plugins implement hook methods (after_initialize, find_room, etc.)
+  # which are called at key points in the hunting lifecycle.
+  @registered_plugins = []
+
+  class << self
+    attr_reader :registered_plugins
+
+    def register_plugin(plugin)
+      @registered_plugins << plugin
+    end
+  end
+
+  attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
+  attr_accessor :my_room_claim, :need_relocation, :stopped_for_bleeding
+
+  private
+
+  # Fire a hook on all registered plugins.
+  # Returns the first non-nil result (for decision hooks like :find_room).
+  # Plugins that don't implement a hook are silently skipped.
+  def fire_hook(hook_name, *args, **kwargs)
+    self.class.registered_plugins.each do |plugin|
+      next unless plugin.respond_to?(hook_name)
+      begin
+        result = plugin.send(hook_name, *args, **kwargs)
+        return result unless result.nil?
+      rescue => e
+        echo "Plugin #{plugin.class.name} error in #{hook_name}: #{e.message}" if $debug_mode_hunting
+      end
+    end
+    nil
+  end
+
+  # Fire a hook but don't use return values (for notification hooks).
+  # All plugins get called; errors in one don't break others.
+  def notify_hook(hook_name, *args, **kwargs)
+    self.class.registered_plugins.each do |plugin|
+      next unless plugin.respond_to?(hook_name)
+      begin
+        plugin.send(hook_name, *args, **kwargs)
+      rescue => e
+        echo "Plugin #{plugin.class.name} error in #{hook_name}: #{e.message}" if $debug_mode_hunting
+      end
+    end
+  end
+
+  public
+
   def initialize
     arg_definitions = [[]]
     args = parse_args(arg_definitions, true)
@@ -67,6 +118,8 @@ class HuntingBuddy
       end
       @hunting_info += infos
     end
+
+    notify_hook(:after_initialize, self)
   end
 
   def main
@@ -280,6 +333,16 @@ class HuntingBuddy
     UserVars.friends = @settings.hunting_buddies || []
     UserVars.hunting_nemesis = @settings.hunting_nemesis || []
 
+    # Let plugins handle room finding first
+    plugin_result = fire_hook(:find_room, self, zones_to_search, waiting_room)
+    return plugin_result unless plugin_result.nil?
+
+    # NOTE: The `return` statements inside this block exit find_hunting_room?
+    # on the first iteration, so `any?` never checks beyond the first zone.
+    # This is a pre-existing bug -- only the first zone in the list is ever
+    # searched. Fixing it requires removing the inner `return` keywords and
+    # letting `any?` evaluate the block's truthy/falsy result per iteration.
+    # rubocop:disable Lint/UnreachableLoop
     return zones_to_search.any? do |zone_to_search|
       escort_info = @escort_zones[zone_to_search]
       if escort_info
@@ -378,6 +441,7 @@ class HuntingBuddy
                                     prefer_buddies)
       end
     end
+    # rubocop:enable Lint/UnreachableLoop
   end
 
   # ------------------------------------------------------------
@@ -484,6 +548,11 @@ class HuntingBuddy
   def hunt(args, duration, stop_on_high_skills, stop_on_low_skills, stop_on_boxes, stop_on_no_moons, stop_on_encumbrance, stop_on_burgle_cooldown)
     $COMBAT_TRAINER = nil
     hunting_room = Room.current.id
+
+    notify_hook(:before_hunt, self, hunting_room: hunting_room)
+    hunting_room = Room.current.id # Update in case a plugin relocated us
+    return if @stop_hunting
+
     Flags.add('hunting-buddy-familiar-drag', /^Your .+ grabs ahold of you and drags you .+, out of combat.+$/)
     Flags.add('hunting-buddy-stop-to-burgle', /^A tingling on the back of your neck draws attention to itself by disappearing, making you believe the heat is off from your last break in/)
     DRC.message("***STATUS*** Beginning hunt '#{args}' for '#{duration}' minutes")
@@ -500,6 +569,11 @@ class HuntingBuddy
     counter = 0
     loop do
       clear
+
+      # Let plugins inject checks into the hunt loop
+      plugin_break = fire_hook(:hunt_tick, self, counter: counter)
+      break if plugin_break == :break
+
       if DRStats.health < @settings.health_threshold
         DRC.message("***STATUS*** Exiting because low health: #{DRStats.health} < #{@settings.health_threshold}")
         fput('avoid all')
@@ -553,6 +627,7 @@ class HuntingBuddy
         Flags.reset('hunting-buddy-familiar-drag')
       end
       if (counter % 60).zero?
+        notify_hook(:hunt_status, self, counter: counter, duration: duration)
         # To avoid spamming encumbrance checks, this logic is inside
         # the one minute status update section so it's done only periodically.
         if encumbered?(stop_on_encumbrance)
@@ -576,8 +651,19 @@ class HuntingBuddy
       counter += 1
       pause 1
     end
+
+    notify_hook(:after_hunt, self, hunting_room: hunting_room, counter: counter)
+
     $COMBAT_TRAINER.stop
-    pause 1 while $COMBAT_TRAINER.running || Script.running?('combat-trainer')
+    ct_stop_timer = Time.now
+    while Script.running?('combat-trainer') && $COMBAT_TRAINER.running
+      if Time.now - ct_stop_timer > 30
+        DRC.message("***WARNING*** combat-trainer did not stop gracefully after 30s, force-killing")
+        stop_script('combat-trainer') if Script.running?('combat-trainer')
+        break
+      end
+      pause 1
+    end
     DRC.retreat
   end
 
@@ -587,6 +673,22 @@ class HuntingBuddy
 
   def next_hunt
     @next_hunt = true
+  end
+
+  # Forward method calls to plugins that implement them.
+  # Allows external scripts to call plugin methods via $HUNTING_BUDDY.
+  # Example: $HUNTING_BUDDY.force_relocation!(room_id)
+  def method_missing(method_name, *args, **kwargs, &block)
+    self.class.registered_plugins.each do |plugin|
+      if plugin.respond_to?(method_name)
+        return plugin.send(method_name, *args, **kwargs, &block)
+      end
+    end
+    super
+  end
+
+  def respond_to_missing?(method_name, include_private = false)
+    self.class.registered_plugins.any? { |p| p.respond_to?(method_name) } || super
   end
 end
 
@@ -598,6 +700,17 @@ before_dying do
   Flags.flags.keys
        .select { |flag_name| flag_name.start_with?('hunting-buddy-') }
        .each   { |flag_name| Flags.delete(flag_name) }
+  # Let plugins clean up
+  $HUNTING_BUDDY&.send(:notify_hook, :cleanup, $HUNTING_BUDDY) rescue nil
+end
+
+# Load plugins from custom directory
+Dir.glob(File.join(SCRIPT_DIR, 'custom', 'hunting-buddy-plugin-*.rb')).sort.each do |plugin_file|
+  begin
+    load plugin_file
+  rescue => e
+    echo "Failed to load hunting-buddy plugin #{File.basename(plugin_file)}: #{e.message}"
+  end
 end
 
 $HUNTING_BUDDY = HuntingBuddy.new
