@@ -184,20 +184,24 @@ class SetupProcess
       # If no weapon is equipped yet (script startup with all capped), fall
       # through to weapon selection so one gets picked (5b becomes 5a).
       if weapon_training.reject { |skill, _| DRSkill.getxp(skill) == 34 }.empty?
+        locked_skills = weapon_training.keys.join(', ')
         if game_state.weapon_skill
           unless @all_locked_warned
             @all_locked_warned = true
-            DRC.message('*** combat-trainer: All weapon skills are at 34/34 mindstate.')
-            DRC.message("*** combat-trainer: Continuing to attack with #{game_state.weapon_skill} for FA/skinning training.")
-            DRC.message('*** combat-trainer: Set combat_trainer_ignore_weapon_mindstate: true to cycle weapons by action count instead.')
+            DRC.message("*** combat-trainer: All weapon_training skills mindlocked (#{weapon_training.size}): #{locked_skills}")
+            if weapon_training.size > 1
+              DRC.message('*** combat-trainer: Set combat_trainer_ignore_weapon_mindstate: true to cycle weapons by action count instead.')
+            end
           end
           return
         else
           unless @all_locked_selecting_warned
             @all_locked_selecting_warned = true
-            DRC.message('*** combat-trainer: All weapon skills are at 34/34 mindstate.')
+            DRC.message("*** combat-trainer: All weapon_training skills mindlocked (#{weapon_training.size}): #{locked_skills}")
             DRC.message('*** combat-trainer: Selecting initial weapon to begin attacking.')
-            DRC.message('*** combat-trainer: Set combat_trainer_ignore_weapon_mindstate: true to cycle weapons by action count instead.')
+            if weapon_training.size > 1
+              DRC.message('*** combat-trainer: Set combat_trainer_ignore_weapon_mindstate: true to cycle weapons by action count instead.')
+            end
           end
         end
       end
@@ -208,7 +212,8 @@ class SetupProcess
     if @ignore_weapon_mindstate && !@ignore_mindstate_warned
       if weapon_training.reject { |skill, _| DRSkill.getxp(skill) == 34 }.empty?
         @ignore_mindstate_warned = true
-        DRC.message('*** combat-trainer: All weapon skills at 34/34 mindstate -- ignore_weapon_mindstate is active.')
+        locked_skills = weapon_training.keys.join(', ')
+        DRC.message("*** combat-trainer: All weapon_training skills mindlocked (#{weapon_training.size}): #{locked_skills} -- ignore_weapon_mindstate is active.")
         DRC.message('*** combat-trainer: Cycling weapons by combat_trainer_action_count only.')
       end
     end
