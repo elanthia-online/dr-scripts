@@ -726,7 +726,9 @@ class LootProcess
     # Pouch just needs tying -- tie it and re-stow the gem
     if Flags['pouch-needs-tie']
       DRCI.tie_gem_pouch?(@gem_pouch_adjective, @gem_pouch_noun)
-      DRC.bput('stow gem', 'You pick up', 'You put', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
+      in_hand = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand&.noun == item.split.last }
+      stow_target = in_hand ? "my #{in_hand.noun}" : item
+      DRC.bput("stow #{stow_target}", 'You pick up', 'You put', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
       return
     end
 
