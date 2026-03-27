@@ -655,15 +655,7 @@ class HuntingBuddy
     notify_hook(:after_hunt, self, hunting_room: hunting_room, counter: counter)
 
     $COMBAT_TRAINER.stop
-    ct_stop_timer = Time.now
-    while Script.running?('combat-trainer') && $COMBAT_TRAINER.running
-      if Time.now - ct_stop_timer > 30
-        DRC.message("***WARNING*** combat-trainer did not stop gracefully after 30s, force-killing")
-        stop_script('combat-trainer') if Script.running?('combat-trainer')
-        break
-      end
-      pause 1
-    end
+    pause 1 while $COMBAT_TRAINER.running || Script.running?('combat-trainer')
     DRC.retreat
   end
 
