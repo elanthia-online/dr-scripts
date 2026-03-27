@@ -606,7 +606,8 @@ class LootProcess
     end
 
     Flags.add('using-corpse', 'begins arranging', 'completes arranging', 'kneels down briefly and draws a knife', 'cruelly into the body and carving out a chunk', 'makes additional cuts, purposeful but seemingly at random')
-    Flags.add('pouch-full', 'You think the .* is too full to fit another gem into', /You'd better tie it up before putting/)
+    Flags.add('pouch-full', 'You think the .* is too full to fit another gem into')
+    Flags.add('pouch-needs-tie', /You'd better tie it up before putting/)
     Flags.add('container-full', 'There isn\'t any more room')
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
   end
@@ -695,6 +696,7 @@ class LootProcess
 
   def stow_loot(item, game_state)
     Flags.reset('pouch-full')
+    Flags.reset('pouch-needs-tie')
     Flags.reset('container-full')
 
     special = @loot_specials.find { |x| x['name'] == item }
@@ -719,6 +721,15 @@ class LootProcess
     if Flags['container-full']
       DRC.bput("drop #{item}", 'You drop')
       game_state.unlootable(item)
+    end
+
+    # Pouch just needs tying -- tie it and re-stow the gem
+    if Flags['pouch-needs-tie']
+      DRCI.tie_gem_pouch?(@gem_pouch_adjective, @gem_pouch_noun)
+      in_hand = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand&.noun == item.split.last }
+      stow_target = in_hand ? "my #{in_hand.noun}" : item
+      DRC.bput("stow #{stow_target}", 'You pick up', 'You put', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
+      return
     end
 
     return unless Flags['pouch-full']
@@ -6020,6 +6031,7 @@ before_dying do
   fput("release spell") if XMLData.prepared_spell
   Flags.delete('using-corpse')
   Flags.delete('pouch-full')
+  Flags.delete('pouch-needs-tie')
   Flags.delete('container-full')
   Flags.delete('ct-successful-skin')
   Flags.delete('ct-lodged')
