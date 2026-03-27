@@ -704,7 +704,7 @@ class LootProcess
       return if DRCI.put_away_item?(item, special['bag'])
     end
 
-    case DRC.bput("stow #{item}", 'You pick up', 'You put', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
+    case DRC.bput("stow #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
     when 'already in your inventory'
       if @gem_nouns.include?(item)
         DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory')
@@ -712,7 +712,7 @@ class LootProcess
         item_reg = item.split.join('.*')
         return stow_loot(DRRoom.room_objs.grep(/\b#{item_reg}$/).first.split.last(2).join(' '), game_state)
       else
-        DRC.bput("stow other #{item}", 'You pick up', 'You put', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
+        DRC.bput("stow other #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
       end
     when 'You pick up', 'You get'
       @current_box_count += 1 if @box_loot_limit && @box_nouns.include?(item)
@@ -728,7 +728,7 @@ class LootProcess
       DRCI.tie_gem_pouch?(@gem_pouch_adjective, @gem_pouch_noun)
       in_hand = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand&.noun == item.split.last }
       stow_target = in_hand ? "my #{in_hand.noun}" : item
-      DRC.bput("stow #{stow_target}", 'You pick up', 'You put', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
+      DRC.bput("stow #{stow_target}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
       return
     end
 
