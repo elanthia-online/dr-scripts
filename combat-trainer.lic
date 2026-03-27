@@ -4372,9 +4372,14 @@ class CombatTrainer
         stop_script('tendme') if Script.running?('tendme')
         break
       end
+      if @game_state.finish_killing? && @kill_phase_start && Time.now - @kill_phase_start > 120
+        echo('Kill phase timed out after 120s, forcing cleanup') if $debug_mode_ct
+        @game_state.force_cleanup
+      end
       next unless @stop && !@game_state.cleaning_up?
 
       @game_state.next_clean_up_step
+      @kill_phase_start = Time.now if @game_state.finish_killing?
       @game_state.stop_weak_attacks
       @game_state.stop_analyze_combo
     end
@@ -4811,6 +4816,12 @@ class GameState
 
   def finish_killing?
     @clean_up_step == 'kill'
+  end
+
+  def force_cleanup
+    if @clean_up_step == 'kill'
+      @clean_up_step = 'clear_magic'
+    end
   end
 
   def finish_spell_casting?
