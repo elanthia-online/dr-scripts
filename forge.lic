@@ -420,7 +420,7 @@ class Forge
     @debug = args.debug || settings.debug_mode
     @use_private_forge = settings.forge_use_private_forge
     @private_forge_cost = settings.forge_private_forge_cost || DEFAULT_PRIVATE_FORGE_COST
-    @show_progress = settings.forge_show_progress.nil? ? true : settings.forge_show_progress
+    @show_progress = settings.forge_show_progress
     @settings = settings
   end
 
