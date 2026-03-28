@@ -704,7 +704,7 @@ class LootProcess
       return if DRCI.put_away_item?(item, special['bag'])
     end
 
-    case DRC.bput("stow #{item}", 'You pick up', 'You put', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
+    case DRC.bput("stow #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
     when 'already in your inventory'
       if @gem_nouns.include?(item)
         DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory')
@@ -712,7 +712,7 @@ class LootProcess
         item_reg = item.split.join('.*')
         return stow_loot(DRRoom.room_objs.grep(/\b#{item_reg}$/).first.split.last(2).join(' '), game_state)
       else
-        DRC.bput("stow other #{item}", 'You pick up', 'You put', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
+        DRC.bput("stow other #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
       end
     when 'You pick up', 'You get'
       @current_box_count += 1 if @box_loot_limit && @box_nouns.include?(item)
@@ -728,7 +728,7 @@ class LootProcess
       DRCI.tie_gem_pouch?(@gem_pouch_adjective, @gem_pouch_noun)
       in_hand = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand&.noun == item.split.last }
       stow_target = in_hand ? "my #{in_hand.noun}" : item
-      DRC.bput("stow #{stow_target}", 'You pick up', 'You put', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
+      DRC.bput("stow #{stow_target}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', "You just can't", 'push you over the item limit', 'Stow what', 'already in your inventory')
       return
     end
 
@@ -3366,7 +3366,10 @@ class TrainerProcess
 
     if Script.running?('almanac') && !$ALMANAC.nil?
       echo "Almanac process is already running as script, using it's exposed method to invoke almanac usage." if $debug_mode_ct
-      $ALMANAC.use_almanac
+      if $ALMANAC.use_almanac == :not_found
+        echo "Almanac not found, disabling almanac usage for this session."
+        @almanac = nil
+      end
       game_state.wield_whirlwind_offhand if game_state.currently_whirlwinding
       return
     end
@@ -4387,9 +4390,14 @@ class CombatTrainer
         stop_script('tendme') if Script.running?('tendme')
         break
       end
+      if @game_state.finish_killing? && @kill_phase_start && Time.now - @kill_phase_start > 120
+        echo('Kill phase timed out after 120s, forcing cleanup') if $debug_mode_ct
+        @game_state.force_cleanup
+      end
       next unless @stop && !@game_state.cleaning_up?
 
       @game_state.next_clean_up_step
+      @kill_phase_start = Time.now if @game_state.finish_killing?
       @game_state.stop_weak_attacks
       @game_state.stop_analyze_combo
     end
@@ -4826,6 +4834,12 @@ class GameState
 
   def finish_killing?
     @clean_up_step == 'kill'
+  end
+
+  def force_cleanup
+    if @clean_up_step == 'kill'
+      @clean_up_step = 'clear_magic'
+    end
   end
 
   def finish_spell_casting?

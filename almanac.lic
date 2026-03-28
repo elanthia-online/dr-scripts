@@ -36,7 +36,11 @@ class Almanac
 
   def run
     loop do
-      use_almanac unless should_not_use_almanac?
+      result = use_almanac unless should_not_use_almanac?
+      if result == :not_found
+        DRC.message('Almanac not found, exiting')
+        exit
+      end
       pause
     end
   end
@@ -72,9 +76,9 @@ class Almanac
         DRC.safe_unpause_list(scripts_to_unpause)
         return
       else
-        DRC.message('Almanac not found, exiting')
+        DRC.message('Almanac not found')
         DRC.safe_unpause_list(scripts_to_unpause)
-        exit
+        return :not_found
       end
     end
 
