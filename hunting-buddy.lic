@@ -19,7 +19,7 @@ class HuntingBuddy
   end
 
   attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
-  attr_accessor :my_room_claim, :need_relocation, :stopped_for_bleeding
+  attr_accessor :my_room_claim, :need_relocation, :stopped_for_bleeding, :hunt_stop_reason
 
   private
 
@@ -566,6 +566,7 @@ class HuntingBuddy
     start = Time.now
     pause until Time.now - start > 30 || $COMBAT_TRAINER.running
 
+    @hunt_stop_reason = nil
     counter = 0
     loop do
       clear
@@ -582,41 +583,50 @@ class HuntingBuddy
       if @settings.stop_hunting_if_bleeding && bleeding?
         DRC.message("***STATUS*** Stopping because bleeding")
         @stopped_for_bleeding = true
+        @hunt_stop_reason = :bleeding
         break
       end
       if stop_on_boxes && over_box_limit?
         DRC.message("***STATUS*** Stopping hunt because have enough boxes")
+        @hunt_stop_reason = :boxes_full
         break
       end
       if stop_on_no_moons && !DRCMM.moons_visible?
         DRC.message("***STATUS*** Stopping because no moons")
+        @hunt_stop_reason = :no_moons
         break
       end
       if should_stop_for_high_skills?(stop_on_high_skills) && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because skills reached learning threshold: #{stop_on_high_skills}")
+        @hunt_stop_reason = :high_skills
         break
       end
       if should_stop_for_low_skills?(stop_on_low_skills) && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{stop_on_low_skills}")
+        @hunt_stop_reason = :low_skills
         break
       end
       if @stop_hunting || @next_hunt
         DRC.message("***STATUS*** Stopping because manual intervention")
         @next_hunt = false
+        @hunt_stop_reason = :manual_stop
         break
       end
       if (duration && (counter / 60) >= duration) && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because time")
+        @hunt_stop_reason = :duration
         break
       end
       if Flags['hunting-buddy-stop-to-burgle'] && (@stop_to_burgle || stop_on_burgle_cooldown) && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because it's burgle time!")
         Flags.reset('hunting-buddy-stop-to-burgle')
+        @hunt_stop_reason = :burgle_time
         break
       end
       if Flags['hunting-buddy-familiar-drag'] && @stop_on_familiar_drag
         DRC.message("***STATUS*** Stopping because familiar drug while stunned")
         Flags.reset('hunting-buddy-familiar-drag')
+        @hunt_stop_reason = :familiar_drag
         break
       end
       if Flags['hunting-buddy-familiar-drag'] && !@stop_on_familiar_drag
@@ -632,6 +642,7 @@ class HuntingBuddy
         # the one minute status update section so it's done only periodically.
         if encumbered?(stop_on_encumbrance)
           DRC.message("***STATUS*** Stopping because encumbrance: #{DRStats.encumbrance}, threshold: #{stop_on_encumbrance}")
+          @hunt_stop_reason = :encumbrance
           break
         end
         if duration
