@@ -48,6 +48,14 @@ class MagicTraining
     echo "Max training time: #{max_time} seconds"
     echo "Training skills: #{training_skills}"
 
+    settings = get_settings
+    before_startup = settings.magic_training_before_startup
+    if before_startup
+      before_startup.each do |script_name|
+        DRC.wait_for_script_to_complete(script_name)
+      end
+    end
+
     loop do
       if (Time.now - @@time_in) > max_time
         echo "Max time alloted for Magic Training reached. Now exiting..."
