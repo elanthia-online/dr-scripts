@@ -168,8 +168,7 @@ class Shape
                         'You fumble around but', 'Roundtime', 'You need more pieces',
                         'ASSEMBLE Ingredient1', 'You need another', 'You must assemble',
                         'I could not find what you were',
-                        /^You cannot do that while engaged!/
-                        )
+                        /^You cannot do that while engaged!/)
       case result
       when 'carved with a carving knife', 'further carving with a knife', 'continued knife carving', 'require carving with a knife', 'trimmed with a carving knife', 'carved with a knife'
         waitrt?
