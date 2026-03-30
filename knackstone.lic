@@ -35,6 +35,8 @@ class Knackstone
     @knackstone_worn = settings.knackstone_worn || false
     @knackstone_preferences = settings.knackstone_preferences || DEFAULT_PREFERENCES
     @debug = settings.knackstone_debug || false
+    @slack_username = settings.slack_username
+    register_slackbot(@slack_username) if @slack_username
   end
 
   # Main execution method. Checks conditions, gets the knackstone, and uses it.
@@ -157,11 +159,21 @@ class Knackstone
     # Issue the command. If confirmation is needed, issue it again.
     needs_confirmation = whisper_command(cmd)
     whisper_command(cmd) if needs_confirmation
+
+    # Send Slack notification after successful vote
+    notify_slack(choice, options) if @slack_username
   end
 
   # Issues a whisper command and returns true if confirmation is needed.
   def whisper_command(cmd)
     Lich::Util.issue_command(cmd, /You whisper the fate/, /Roundtime|You have cast your lot to fate/, usexml: false).any?(CONFIRMATION_REGEX)
+  end
+
+  # Sends a Slack notification with the vote details.
+  def notify_slack(choice, options)
+    character_name = XMLData.name || "Unknown"
+    message = "[#{character_name}] Knackstone voted for: #{choice}\nAvailable options: #{options.join(', ')}"
+    send_slackbot_message(message)
   end
 end
 
