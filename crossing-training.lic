@@ -546,7 +546,8 @@ class CrossingTraining
 
     DRCA.release_cyclics if data['cyclic']
 
-    return unless DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'])
+    custom_prep = data['custom_prep'] || @settings['custom_spell_prep']
+    return unless DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], 'prepare', false, nil, false, custom_prep)
 
     unless @settings.cambrinth_items[0]['name']
       @settings.cambrinth_items = [{
