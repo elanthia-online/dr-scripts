@@ -228,7 +228,8 @@ class Sew
                         /You need a larger amount of material to continue crafting/,
                         /^Roundtime/,
                         /^You need a free hand to do that/,
-                        /^You realize that cannot be repaired, and stop/)
+                        /^You realize that cannot be repaired, and stop/,
+                        /^You cannot do that while engaged!/)
       case result
       when /You need a larger amount of material to continue crafting/
         Lich::Messaging.msg('bold', "Not enough material to continue crafting #{@noun}. Exiting.")
@@ -314,6 +315,9 @@ class Sew
         finish if Flags['sew-done']
         swap_tool(@home_tool) unless @home_tool.nil?
         command = @home_command.nil? ? command : @home_command
+      when /^You cannot do that while engaged!/
+        DRC.retreat
+        pause 10
       end
     end
   end

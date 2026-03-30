@@ -167,7 +167,8 @@ class Shape
                         'Some wood stain', 'application of stain',
                         'You fumble around but', 'Roundtime', 'You need more pieces',
                         'ASSEMBLE Ingredient1', 'You need another', 'You must assemble',
-                        'I could not find what you were')
+                        'I could not find what you were',
+                        /^You cannot do that while engaged!/)
       case result
       when 'carved with a carving knife', 'further carving with a knife', 'continued knife carving', 'require carving with a knife', 'trimmed with a carving knife', 'carved with a knife'
         waitrt?
@@ -218,6 +219,9 @@ class Shape
         finish if Flags['shaping-done']
         swap_tool('shaper')
         command = "shape my #{@noun} with my shaper"
+      when /^You cannot do that while engaged!/
+        DRC.retreat
+        pause 10
       end
     end
   end

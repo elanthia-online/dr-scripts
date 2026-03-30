@@ -169,6 +169,10 @@ class Bescort
         { name: 'mode', options: %w[nomads westanuryn slavers exit], description: 'Where to?' }
       ],
       [
+        { name: 'velaka_dunes', regex: /velaka_dunes/i, description: "Wander the velaka dune maze between the oasis, sandbarge, yeehars (canyon) and desert maze to hvaral (valley)" },
+        { name: 'mode', options: %w[oasis barge canyon valley], description: "Which part of the maze?" }
+      ],
+      [
         { name: 'ferry', regex: /ferry/i, description: 'Ferry between Leth Deriel and the Crossing' },
         { name: 'mode', options: %w[leth crossing], description: 'Which town are you going to?' }
       ],
@@ -293,6 +297,8 @@ class Bescort
       desert(args.mode)
     elsif args.velaka
       velaka_desert(args.mode)
+    elsif args.velaka_dunes
+      velaka_dunes(args.mode)
     elsif args.ferry
       take_xing_ferry(args.mode)
     elsif args.ferry1
@@ -1032,6 +1038,60 @@ class Bescort
       else
         wander_maze_until('rocky trail', 'go trail')
       end
+    end
+  end
+
+  def velaka_dunes(mode)
+    # 7524 oasis side of the dunes
+    # 7527 barge side of the dunes
+    # 7580 slot canyon side of the dunes (Cadaverous Yeehar)
+    # 7546 broad valley side of the dunes (path to Hvaral)
+
+    case Room.current.id
+    when 7524
+      if mode =~ /oasis/
+        echo "You're already there silly!"
+        exit
+      else
+        move 'go trail'
+      end
+    when 7527
+      if mode =~ /barge/
+        echo "You're already there silly!"
+        exit
+      else
+        move 'go path'
+      end
+    when 7580
+      if mode =~ /canyon/
+        echo "You're already there silly!"
+        exit
+      else
+        move 'go narrow opening'
+      end
+    when 7546
+      if mode =~ /valley/
+        echo "You're already there silly!"
+        exit
+      else
+        move 'go broad valley'
+      end
+    else
+      if XMLData.room_title != "[[Velaka, Dunes]]"
+        echo "You must start in one of the rooms outside of the desert or in the desert itself."
+        exit
+      end
+    end
+
+    case mode
+    when /oasis/
+      wander_maze_until('twisting trail marked by weathered granite boulders', 'go twisting trail')
+    when /barge/
+      wander_maze_until('path leading across a shallow slip face', 'go path')
+    when /canyon/
+      wander_maze_until('the entrance to a slot canyon', 'go slot canyon')
+    when /valley/
+      wander_maze_until('broad valley between two large rocks', 'go broad valley')
     end
   end
 

@@ -4,7 +4,7 @@
 
 class RiverhavenThieves
   def initialize
-    pass = UserVars.riverhaven_password
+    pass = UserVars.riverhaven_password || get_settings.riverhaven_password
 
     data = [
       { start: 372, path_in: ['search', 'knock door', "whisper door #{pass}", 'search shadow', 'go open', 'go corner'], path_out: ['out', 'out', 'go door'] },
