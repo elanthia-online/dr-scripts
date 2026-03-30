@@ -18,6 +18,7 @@ class SanowretCrystal
     @no_use_rooms = settings.sanowret_no_use_rooms
     @force_exhale = args.exhale || settings.sanowret_force_exhale
     @ephemeron = settings.ephemeron
+    exit unless DRSkill.getrank('Arcana') < 1750
     UserVars.ephemera_last_use = Time.now() - 7200 if UserVars.ephemera_last_use.nil? && @ephemeron
     check_ephemera if args.run
     check_crystal if args.run
