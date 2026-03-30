@@ -58,6 +58,7 @@ class Sew
     @info = get_data('crafting')['tailoring'][@hometown]
     @instructions = args.instructions
     @cloth = %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne]
+    @pin_pokes = 0
 
     DRC.wait_for_script_to_complete('buff', ['sew'])
 
@@ -229,10 +230,15 @@ class Sew
                         /^Roundtime/,
                         /^You need a free hand to do that/,
                         /^You realize that cannot be repaired, and stop/,
+                        /^You must be holding the .* to do that/,
                         /^You cannot do that while engaged!/)
       case result
       when /You need a larger amount of material to continue crafting/
-        Lich::Messaging.msg('bold', "Not enough material to continue crafting #{@noun}. Exiting.")
+        Lich::Messaging.msg('bold', "sew: Not enough material to continue crafting #{@noun}. Exiting.")
+        magic_cleanup
+        exit
+      when /^You must be holding the .* to do that/
+        Lich::Messaging.msg('bold', "sew: Required tool not in hand. Cannot continue crafting #{@noun}.")
         magic_cleanup
         exit
       when 'dimensions appear to have shifted and could benefit from some remeasuring', 'dimensions changed while working on it'
@@ -244,6 +250,7 @@ class Sew
         swap_tool('scissors')
         command = "cut my #{@noun} with my scissors"
       when 'and could use some pins to', 'is in need of pinning to help arrange the material for further sewing'
+        @pin_pokes += 1
         swap_tool('pins', true)
         command = "poke my #{@noun} with my pins"
       when 'deep crease develops along', 'wrinkles from all the handling and could use', 'Deep creases and wrinkles in the fabric'
@@ -327,6 +334,12 @@ class Sew
 
     DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
     DRCC.get_crafting_item(next_tool, @bag, @bag_items, @belt, skip)
+
+    return if DRCI.in_hands?(next_tool)
+
+    Lich::Messaging.msg('bold', "sew: Failed to get '#{next_tool}'. Cannot continue crafting.")
+    magic_cleanup
+    exit
   end
 
   def finish
@@ -355,7 +368,7 @@ class Sew
     lift_or_stow_feet
     magic_cleanup
 
-    Lich::Messaging.msg('plain', "Sew script finished (#{@noun}, finish: #{@finish}).")
+    Lich::Messaging.msg('plain', "sew: Completed #{@recipe_name} (chapter #{@chapter}, #{@noun}) - #{@pin_pokes} pin pokes, finish: #{@finish}")
     exit
   end
 
