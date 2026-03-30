@@ -2,7 +2,11 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smith
 =end
 
+require 'time'
+
 class Smith
+  MONTH_ABBREVS = %w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].freeze
+  RENEWAL_THRESHOLD_MINUTES = 15
   def initialize
     arg_definitions = [
       [
@@ -32,9 +36,22 @@ class Smith
     @container = get_settings.crafting_container
     recipes = get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /blacksmithing|weaponsmithing|armorsmithing/i }
     recipe = DRCC.recipe_lookup(recipes, args.item_name)
+    # Private forge setting - defaults to false
+    blacksmithing_data = get_data('crafting')['blacksmithing']
+    @private_forge = blacksmithing_data[@hometown]['private_forge']
+    @use_private_forge = @settings.use_private_forge || false
+
+    if @use_private_forge && !@private_forge
+      towns_with_forges = blacksmithing_data.select { |_town, data| data['private_forge'] }.keys
+      Lich::Messaging.msg('bold', "smith: use_private_forge is enabled, but '#{@hometown}' has no private forge.")
+      Lich::Messaging.msg('bold', "smith: Towns with private forges: #{towns_with_forges.join(', ')}")
+      Lich::Messaging.msg('bold', "smith: Either set use_private_forge: false, or change hometown/force_crafting_town.")
+      exit
+    end
     return unless recipe
 
     DRCM.ensure_copper_on_hand(3000, @settings, @hometown) unless args.here
+    DRCM.ensure_copper_on_hand(50_000, @settings, @hometown) if @use_private_forge
 
     parts = recipe['part'] || []
     parts << "leather strip" if args.reinforce # adds part to the list for reinforce
@@ -51,7 +68,14 @@ class Smith
 
     buy_parts(parts) unless stay
     buy_ingot(discipline) if buy
-    DRCC.find_anvil(@hometown) unless stay
+    if @use_private_forge && !stay
+      DRCT.walk_to(@private_forge)
+      check_and_renew_forge_rental
+    elsif @use_private_forge && stay
+      Lich::Messaging.msg('plain', "smith: Using 'here' -- skipping private forge walk and rental check.")
+    else
+      DRCC.find_anvil(@hometown) unless stay
+    end
     DRC.wait_for_script_to_complete('buff', ['smith'])
     DRC.wait_for_script_to_complete('forge', [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], stay ? 'skip' : nil])
     stamp_item(recipe['noun']) if stamp
@@ -97,6 +121,69 @@ class Smith
   def dispose_parts(discipline, parts)
     parts.each do |part|
       DRCT.dispose(part, discipline['trash-room'])
+    end
+  end
+
+  # Check forge rental status and auto-renew if less than RENEWAL_THRESHOLD_MINUTES remaining
+  def check_and_renew_forge_rental
+    Lich::Messaging.msg('plain', 'smith: Checking forge rental status...')
+
+    result = DRC.bput('read notice',
+                      /\[It will expire ([^\]]+)\.\]/,
+                      /could not find/i)
+
+    unless result =~ /\[It will expire/
+      Lich::Messaging.msg('bold', 'smith: Could not determine rental expiration.')
+      return
+    end
+
+    match = result.match(/\[It will expire (?<timestamp>[^\]]+)\.\]/)
+    return unless match
+
+    expiration_str = match[:timestamp]
+
+    # Determine EST vs EDT based on month (DST roughly March-November in US)
+    month_match = expiration_str.match(/\b(#{MONTH_ABBREVS.join('|')})\b/)
+
+    if month_match
+      month_num = MONTH_ABBREVS.index(month_match[1]) + 1
+      offset = month_num >= 3 && month_num <= 10 ? '-0400' : '-0500'
+    else
+      offset = '-0500'
+    end
+
+    begin
+      expiration_str_cleaned = expiration_str.sub(' ET ', " #{offset} ")
+      expiration_time = Time.parse(expiration_str_cleaned)
+
+      remaining_seconds = expiration_time - Time.now
+      remaining_minutes = remaining_seconds / 60.0
+
+      if remaining_minutes < RENEWAL_THRESHOLD_MINUTES
+        Lich::Messaging.msg('bold', "smith: Forge rental expires in #{remaining_minutes.round} minutes -- renewing...")
+
+        renew_result = DRC.bput('mark prominent notice',
+                                /You reach to make your mark/i,
+                                /has been extended/i,
+                                /You've got more time/i,
+                                /don't have enough|insufficient/i,
+                                /could not find/i)
+
+        case renew_result
+        when /don't have enough|insufficient/i
+          Lich::Messaging.msg('bold', 'smith: Insufficient funds to renew forge rental!')
+        when /could not find/i
+          Lich::Messaging.msg('bold', 'smith: Could not find notice to mark!')
+        when /make your mark|extended|more time/i
+          Lich::Messaging.msg('bold', 'smith: Forge rental renewed successfully.')
+        else
+          Lich::Messaging.msg('bold', 'smith: Forge rental renewal status unclear -- check manually.')
+        end
+      else
+        Lich::Messaging.msg('plain', "smith: Forge rental has #{remaining_minutes.round} minutes remaining -- no renewal needed.")
+      end
+    rescue StandardError => e
+      Lich::Messaging.msg('bold', "smith: Error parsing expiration time '#{expiration_str}': #{e.message}")
     end
   end
 end
