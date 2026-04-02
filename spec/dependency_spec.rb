@@ -1198,14 +1198,16 @@ RSpec.describe 'Sentinel Gating Structure' do
   end
 
   describe 'pre-existing gates' do
-    it 'CORE_ARGPARSER gate exists' do
+    it 'CORE_ARGPARSER gate exists with top-level alias' do
       expect(DEP_SOURCE).to match(/const_defined\?\(:CORE_ARGPARSER/)
       expect(DEP_SOURCE).to include('class ArgParser')
+      expect(DEP_SOURCE).to include('ArgParser = Lich::Common::ArgParser unless defined?(::ArgParser)')
     end
 
-    it 'CORE_SETUPFILES gate exists' do
+    it 'CORE_SETUPFILES gate exists with top-level alias' do
       expect(DEP_SOURCE).to match(/const_defined\?\(:CORE_SETUPFILES/)
       expect(DEP_SOURCE).to include('class SetupFiles')
+      expect(DEP_SOURCE).to include('SetupFiles = Lich::Common::SetupFiles unless defined?(::SetupFiles)')
     end
   end
 

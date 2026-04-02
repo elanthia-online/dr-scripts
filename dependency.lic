@@ -31,7 +31,8 @@ debug = UserVars.debug_dependency
 
 # --- CORE_ARGPARSER gate ---
 if Lich::Common.const_defined?(:CORE_ARGPARSER, false)
-  DRC.message("--- Dependency: ArgParser provided by core Lich. Skipping inline definition.")
+  # Core defines Lich::Common::ArgParser; alias to top level for scripts using bare ArgParser
+  ArgParser = Lich::Common::ArgParser unless defined?(::ArgParser)
 else
   class ArgParser
     def parse_args(data, flex_args = false)
@@ -155,7 +156,8 @@ end
 
 # --- CORE_SETUPFILES gate ---
 if Lich::Common.const_defined?(:CORE_SETUPFILES, false)
-  DRC.message("--- Dependency: SetupFiles provided by core Lich. Skipping inline definition.")
+  # Core defines Lich::Common::SetupFiles; alias to top level for scripts using bare SetupFiles
+  SetupFiles = Lich::Common::SetupFiles unless defined?(::SetupFiles)
 else
   class SetupFiles
     include MonitorMixin
