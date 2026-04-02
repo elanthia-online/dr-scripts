@@ -104,8 +104,12 @@ class Moongate
     unless (moon = UserVars.moons.find { |moon_name, moon_data| UserVars.moons['visible'].include?(moon_name) && moon_data['timer'] >= 8 }.first)
       unless Script.running? 'moonwatch'
         echo 'moonwatch is not running. Starting it now'
-        custom_require.call('moonwatch')
-        echo "Run `;e autostart('moonwatch')` to avoid this in the future"
+        if respond_to?(:start_scripts_if_available)
+          start_scripts_if_available('moonwatch')
+        else
+          custom_require.call('moonwatch')
+        end
+        echo "Run `;autostart add moonwatch` to avoid this in the future"
       end
 
       unless (moon = UserVars.moons.find { |moon_name, moon_data| UserVars.moons['visible'].include?(moon_name) && moon_data['timer'] >= 8 }.first)
