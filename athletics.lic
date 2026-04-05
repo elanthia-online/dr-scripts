@@ -53,7 +53,7 @@ class Athletics
     elsif athletics_location == 'Crossing'
       crossing_athletics
     elsif athletics_location == 'Riverhaven'
-      crossing_athletics if DRSkill.getrank('Athletics') > 140
+      riverhaven_athletics
     elsif athletics_location == 'Shard'
       shard_athletics
     elsif athletics_location == 'Hibarnhvidar'
@@ -231,6 +231,48 @@ class Athletics
       DRC.message("The xalas argument will train faster at 650+ athletics.  Be aware that it's potentially dangerous.") if DRSkill.getmodrank('Athletics') > 650
       override_location_and_practice('arthelun_rocks')
       DRC.message("The xalas argument will train faster at 650+ athletics.  Be aware that it's potentially dangerous.") if DRSkill.getmodrank('Athletics') > 650
+    end
+  end
+
+  def riverhaven_athletics
+    until done_training?
+      if DRSkill.getmodrank('Athletics') <= 300
+        DRCT.walk_to(12821)
+        move('climb stair')
+        move('climb stair')
+        DRCT.walk_to(13755)
+        DRCT.walk_to(14723)
+        DRCT.walk_to(451)
+        DRCT.walk_to(13805)
+        DRCT.walk_to(13810)
+        DRCT.walk_to(394)
+        move('climb ladder')
+        move('climb ladder')
+        if DRSkill.getmodrank('Athletics') >= 10
+          DRCT.walk_to(51158)
+          DRCT.walk_to(491)
+          move('climb tree')
+          move('climb trunk')
+          DRCT.walk_to(7839)
+        end
+        DRCT.walk_to(7842)
+        DRCT.walk_to(7822)
+        DRCT.walk_to(577)
+        DRCT.walk_to(602)
+        move('climb bank')
+        move('climb bank')
+        break if done_training?
+        DRCT.walk_to(306)
+        DRCT.walk_to(309)
+        break if done_training?
+
+        if DRSkill.getmodrank('Athletics') >= 140
+          DRCT.walk_to(11440)
+          DRCT.walk_to(7640)
+        end
+      else
+        crossing_athletics
+      end
     end
   end
 
