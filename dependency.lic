@@ -31,8 +31,7 @@ debug = UserVars.debug_dependency
 
 # --- CORE_ARGPARSER gate ---
 if Lich::Common.const_defined?(:CORE_ARGPARSER, false)
-  # Core defines Lich::Common::ArgParser; alias to top level for scripts using bare ArgParser
-  ArgParser = Lich::Common::ArgParser unless defined?(::ArgParser)
+  # Core provides ArgParser via Lich::Common; include Lich::Common (lich.rbw) makes it top-level
 else
   class ArgParser
     def parse_args(data, flex_args = false)
@@ -156,8 +155,7 @@ end
 
 # --- CORE_SETUPFILES gate ---
 if Lich::Common.const_defined?(:CORE_SETUPFILES, false)
-  # Core defines Lich::Common::SetupFiles; alias to top level for scripts using bare SetupFiles
-  SetupFiles = Lich::Common::SetupFiles unless defined?(::SetupFiles)
+  # Core provides SetupFiles via Lich::Common; include Lich::Common (lich.rbw) makes it top-level
 else
   class SetupFiles
     include MonitorMixin
