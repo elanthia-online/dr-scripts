@@ -1153,7 +1153,7 @@ class LootProcess
     return unless game_state.skinnable?(mob_noun)
 
     if game_state.need_bundle
-      case DRC.bput('tap my bundle', 'You tap a \w+ bundle that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
+      case DRC.bput('tap my bundle', 'You tap a \w+ bundle\b.*that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
       when /lumpy/
         if @tie_bundle
           lowered_item = nil
