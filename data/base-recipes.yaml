@@ -2360,7 +2360,7 @@ crafting_recipes:
   volume: 10
   type: blacksmithing
   work_order: false
-  chapter: 6  
+  chapter: 6
 # Weaponsmithing Chapter 1 recipes
 - name: a metal briquet
   noun: briquet
