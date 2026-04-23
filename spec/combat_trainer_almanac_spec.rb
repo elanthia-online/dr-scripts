@@ -67,7 +67,7 @@ module DRCI
   end
 end
 
-module UserVars
+class UserVars
   @data = {}
 
   class << self
@@ -87,7 +87,7 @@ module UserVars
       @data = {}
     end
   end
-end
+end unless defined?(UserVars)
 
 $debug_mode_ct = false
 
