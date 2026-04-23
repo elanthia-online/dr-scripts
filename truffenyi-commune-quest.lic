@@ -124,7 +124,7 @@ class TruffenyiCommuneQuest
                              'kerenhappuch'
                            when /a small desert village ravaged by a sand storm, the well in the center almost completely covered over/i
                              'dergati'
-                           when /a riotous party. Wine sloshes out of full cups held by people around the table, while other figures are slumped over in their chairs, dark pools around their feet/i
+                           when /a riotous party.\s+Wine sloshes out of full cups held by people around the table, while other figures are slumped over in their chairs, dark pools around their feet/i
                              'trothfang'
                            when /a tithe box sitting outside of a small chapel, the tail of a snake disappearing into the slot/i
                              'huldah'

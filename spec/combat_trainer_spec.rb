@@ -403,6 +403,38 @@ RSpec.describe LootProcess do
       end
     end
 
+    context 'when need_bundle is true, bundle is lumpy with bundling rope, and both hands are full' do
+      let(:game_state) { build_game_state(need_bundle: true) }
+
+      before(:each) do
+        $right_hand = 'bastard sword'
+        $left_hand = 'javelin'
+
+        # tap: lumpy bundle with extra description from bundling rope
+        allow(DRC).to receive(:bput)
+          .with('tap my bundle', anything, anything, anything)
+          .and_return('You tap a lumpy bundle bound by a braided bundling rope that you are wearing')
+        allow(DRC).to receive(:bput)
+          .with('tie my bundle', 'TIE the bundle again', 'But this bundle has already been tied off')
+          .and_return('TIE the bundle again')
+        allow(DRC).to receive(:bput)
+          .with('tie my bundle', 'you tie the bundle', 'But this bundle has already been tied off', "You don't seem to be able to do that right now")
+          .and_return('you tie the bundle')
+        allow(DRC).to receive(:bput)
+          .with('adjust my bundle', /^You adjust your .*/, /You'll need a free hand for that/)
+          .and_return('You adjust your lumpy bundle so that you can more easily')
+        allow(DRC).to receive(:bput)
+          .with('skin', anything, anything, anything, anything, anything, anything, anything)
+          .and_return('roundtime')
+
+        instance = build_loot_process(tie_bundle: true, skin: true)
+        instance.send(:check_skinning, 'kobold', game_state)
+      end
+
+      include_examples 'frees a hand before tying the bundle'
+      include_examples 'clears need_bundle on game_state'
+    end
+
     context 'when need_bundle is true and bundle is tight (already tied)' do
       let(:game_state) { build_game_state(need_bundle: true) }
 

@@ -1541,7 +1541,7 @@ spell_data:
     skill: Debilitation
     harmless: true
     abbrev: COMPEL
-    mana: 15
+    mana: 5
     mana_type: life
     prep: prepare
     guild: Empath

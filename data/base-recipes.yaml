@@ -1454,17 +1454,17 @@ crafting_recipes:
 - name: a diagonal-peen mallet
   noun: mallet
   volume: 12
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - short pole
 - name: a curved metal shovel
   noun: shovel
   volume: 8
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - long pole
 - name: a diagonal-peen hammer
@@ -1486,15 +1486,15 @@ crafting_recipes:
 - name: some straight metal tongs
   noun: tongs
   volume: 10
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
 - name: a metal cross-peen hammer
   noun: hammer
   volume: 12
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - short pole
 - name: a narrow metal pickaxe
@@ -1508,9 +1508,9 @@ crafting_recipes:
 - name: a square metal shovel
   noun: shovel
   volume: 8
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - long pole
 - name: some curved metal tongs
@@ -1522,15 +1522,15 @@ crafting_recipes:
 - name: some flat-bladed tongs
   noun: tongs
   volume: 10
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
 - name: a tapered metal shovel
   noun: shovel
   volume: 8
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - long pole
 - name: some angular metal tongs
@@ -1542,9 +1542,9 @@ crafting_recipes:
 - name: a straight-peen hammer
   noun: hammer
   volume: 12
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - short pole
 - name: a straight-peen mallet
@@ -1566,9 +1566,9 @@ crafting_recipes:
 - name: some metal bolt tongs
   noun: tongs
   volume: 10
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
 - name: a flat-headed metal pickaxe
   noun: pickaxe
   volume: 10
@@ -1588,9 +1588,9 @@ crafting_recipes:
 - name: a ball-peen hammer
   noun: hammer
   volume: 12
-  chapter: 2
   type: blacksmithing
   work_order: false
+  chapter: 2
   part:
   - short pole
 - name: a wide metal shovel
@@ -1723,9 +1723,9 @@ crafting_recipes:
 - name: a rough metal wood shaper
   noun: shaper
   volume: 4
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: a sturdy metal drawknife
   noun: drawknife
   volume: 5
@@ -1749,9 +1749,9 @@ crafting_recipes:
 - name: some curved metal pliers
   noun: pliers
   volume: 5
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: a coarse metal rasp
   noun: rasp
   volume: 8
@@ -1811,9 +1811,9 @@ crafting_recipes:
 - name: some rough metal pliers
   noun: pliers
   volume: 5
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: a textured metal rasp
   noun: rasp
   volume: 8
@@ -1823,15 +1823,15 @@ crafting_recipes:
 - name: a metal beveled wood shaper
   noun: shaper
   volume: 4
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: some thick metal pliers
   noun: pliers
   volume: 5
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: a flat metal rasp
   noun: rasp
   volume: 8
@@ -1875,9 +1875,9 @@ crafting_recipes:
 - name: some hooked metal pliers
   noun: pliers
   volume: 5
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: a tapered metal rasp
   noun: rasp
   volume: 8
@@ -1887,9 +1887,9 @@ crafting_recipes:
 - name: a metal jagged wood shaper
   noun: shaper
   volume: 4
-  chapter: 3
   type: blacksmithing
   work_order: true
+  chapter: 3
 - name: a metal serrated wood saw
   noun: saw
   volume: 8
@@ -1912,9 +1912,9 @@ crafting_recipes:
 - name: a stout metal yardstick
   noun: yardstick
   volume: 6
-  chapter: 4
   type: blacksmithing
   work_order: false
+  chapter: 4
 - name: some smooth knitting needles
   noun: needles
   volume: 4
@@ -1948,9 +1948,9 @@ crafting_recipes:
 - name: a flat metal yardstick
   noun: yardstick
   volume: 6
-  chapter: 4
   type: blacksmithing
   work_order: false
+  chapter: 4
 - name: some tapered knitting needles
   noun: needles
   volume: 4
@@ -2008,9 +2008,9 @@ crafting_recipes:
 - name: some polished knitting needles
   noun: needles
   volume: 4
-  chapter: 4
   type: blacksmithing
   work_order: true
+  chapter: 4
 - name: a compact metal awl
   noun: awl
   volume: 4
@@ -2102,6 +2102,12 @@ crafting_recipes:
   type: blacksmithing
   work_order: true
   chapter: 5
+- name: a thick metal mixing bowl
+  noun: bowl
+  volume: 8
+  type: blacksmithing
+  work_order: false
+  chapter: 5
 - name: a round pestle
   noun: pestle
   volume: 1
@@ -2126,6 +2132,12 @@ crafting_recipes:
   type: blacksmithing
   work_order: false
   chapter: 5
+- name: a sleek metal mixing bowl
+  noun: bowl
+  volume: 6
+  type: blacksmithing
+  work_order: false
+  chapter: 5
 - name: a trapezoidal wire sieve
   noun: sieve
   volume: 3
@@ -2133,6 +2145,18 @@ crafting_recipes:
   work_order: true
   chapter: 5
 # Blacksmithing Chapter 6 recipes
+- name: a metal band
+  noun: band
+  volume: 1
+  type: blacksmithing
+  work_order: true
+  chapter: 6
+- name: a metal ring
+  noun: ring
+  volume: 1
+  type: blacksmithing
+  work_order: true
+  chapter: 6
 - name: a metal rod
   noun: rod
   volume: 1
@@ -4118,6 +4142,13 @@ crafting_recipes:
   - long cord
   - long pole
 # Carving Chapter 4 recipes
+- name: a stone ring
+  noun: ring
+  work_order: true
+  type: carving
+  chapter: 4
+  volume: 1
+  material: stone
 - name: a stone band
   noun: band
   work_order: true
@@ -4634,6 +4665,13 @@ crafting_recipes:
   volume: 11
   material: bone
 # Carving Chapter 9 recipes
+- name: a bone ring
+  noun: ring
+  work_order: true
+  type: carving
+  chapter: 9
+  volume: 1
+  material: bone
 - name: a bone band
   noun: band
   work_order: true
@@ -5523,6 +5561,12 @@ crafting_recipes:
   chapter: 6
   volume: 4
 # Shaping Chapter 7 recipes
+- name: a wood ring
+  noun: ring
+  volume: 1
+  type: shaping
+  work_order: true
+  chapter: 7
 - name: a wood band
   noun: band
   volume: 1
