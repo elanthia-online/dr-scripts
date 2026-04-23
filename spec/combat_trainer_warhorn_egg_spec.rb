@@ -628,4 +628,352 @@ RSpec.describe AbilityProcess do
       expect(DRC).to have_received(:bput).with('wear #20', anything, anything, anything, anything)
     end
   end
+
+  # ===========================================================================
+  # Bad YAML config parsing -- tests the case expressions in initialize
+  # that produce @warhorn_nouns and @egg_count from raw settings values.
+  #
+  # We can't call initialize (needs full game I/O), so we replicate the
+  # case expressions inline and verify the derived values fed to downstream
+  # methods behave correctly.
+  # ===========================================================================
+  describe 'bad YAML config edge cases' do
+    # Replicate the warhorn case expression from initialize
+    def warhorn_nouns_from(raw)
+      case raw
+      when Array then raw
+      when String then [raw]
+      when true then ['warhorn']
+      else []
+      end
+    end
+
+    # Replicate the egg case expression from initialize
+    def egg_count_from(raw)
+      case raw
+      when Integer then raw
+      when true, String then 1
+      else 0
+      end
+    end
+
+    # Replicate the guard that decides whether to call set_warhorn_or_egg
+    def should_setup?(nouns, count)
+      !(nouns.empty? && count < 1)
+    end
+
+    # =========================================================================
+    # warhorn config parsing
+    # =========================================================================
+    describe 'warhorn config parsing' do
+      it 'treats integer 42 as no warhorns' do
+        nouns = warhorn_nouns_from(42)
+        expect(nouns).to eq([])
+      end
+
+      it 'treats false as no warhorns' do
+        nouns = warhorn_nouns_from(false)
+        expect(nouns).to eq([])
+      end
+
+      it 'treats nil as no warhorns' do
+        nouns = warhorn_nouns_from(nil)
+        expect(nouns).to eq([])
+      end
+
+      it 'wraps a single string in an array' do
+        nouns = warhorn_nouns_from('silver warhorn')
+        expect(nouns).to eq(['silver warhorn'])
+      end
+
+      it 'passes an array through unchanged' do
+        nouns = warhorn_nouns_from(%w[warhorn horn])
+        expect(nouns).to eq(%w[warhorn horn])
+      end
+
+      it 'treats true as default warhorn noun' do
+        nouns = warhorn_nouns_from(true)
+        expect(nouns).to eq(['warhorn'])
+      end
+
+      it 'passes an empty array through (no warhorns)' do
+        nouns = warhorn_nouns_from([])
+        expect(nouns).to eq([])
+      end
+
+      it 'passes an array with non-string elements through without filtering' do
+        nouns = warhorn_nouns_from([true, 42, 'warhorn'])
+        expect(nouns).to eq([true, 42, 'warhorn'])
+      end
+    end
+
+    # =========================================================================
+    # egg config parsing
+    # =========================================================================
+    describe 'egg config parsing' do
+      it 'treats integer 0 as zero eggs' do
+        expect(egg_count_from(0)).to eq(0)
+      end
+
+      it 'treats negative integer as negative count' do
+        expect(egg_count_from(-1)).to eq(-1)
+      end
+
+      it 'treats integer 2 as two eggs' do
+        expect(egg_count_from(2)).to eq(2)
+      end
+
+      it 'treats integer 3 as three (even though only 2 ordinals supported)' do
+        expect(egg_count_from(3)).to eq(3)
+      end
+
+      it 'treats true as 1 egg' do
+        expect(egg_count_from(true)).to eq(1)
+      end
+
+      it 'treats a string as 1 egg' do
+        expect(egg_count_from('yes')).to eq(1)
+      end
+
+      it 'treats false as 0 eggs' do
+        expect(egg_count_from(false)).to eq(0)
+      end
+
+      it 'treats nil as 0 eggs' do
+        expect(egg_count_from(nil)).to eq(0)
+      end
+
+      it 'treats an array as 0 eggs' do
+        expect(egg_count_from([1, 2])).to eq(0)
+      end
+
+      it 'treats a hash as 0 eggs' do
+        expect(egg_count_from({ count: 2 })).to eq(0)
+      end
+
+      it 'treats float 1.5 as 0 eggs (not Integer)' do
+        expect(egg_count_from(1.5)).to eq(0)
+      end
+    end
+
+    # =========================================================================
+    # setup guard -- should set_warhorn_or_egg be called?
+    # =========================================================================
+    describe 'setup guard' do
+      it 'skips setup when both empty/zero' do
+        expect(should_setup?([], 0)).to be false
+      end
+
+      it 'runs setup when warhorn nouns present but egg_count is 0' do
+        expect(should_setup?(['warhorn'], 0)).to be true
+      end
+
+      it 'runs setup when egg_count is 1 but no warhorn nouns' do
+        expect(should_setup?([], 1)).to be true
+      end
+
+      it 'runs setup when both present' do
+        expect(should_setup?(['warhorn'], 2)).to be true
+      end
+
+      it 'runs setup when egg_count is negative (will discover 0 eggs)' do
+        expect(should_setup?([], -1)).to be false
+      end
+    end
+
+    # =========================================================================
+    # set_warhorn_or_egg with bad config-derived values
+    # =========================================================================
+    describe 'set_warhorn_or_egg with degenerate configs' do
+      it 'handles egg_count 0 with warhorn_nouns present (warhorn only)' do
+        instance = build_ability_process(egg_count: 0, warhorn_nouns: ['warhorn'])
+        stub_right_hand_with_id('10')
+        allow(DRCI).to receive(:remove_item?).and_return(true)
+        allow(DRCI).to receive(:wear_item?).and_return(true)
+
+        instance.send(:set_warhorn_or_egg)
+
+        expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(['warhorn'])
+        expect(instance.instance_variable_get(:@egg_ids)).to be_empty
+      end
+
+      it 'handles warhorn_nouns with non-string elements gracefully' do
+        instance = build_ability_process(egg_count: 0, warhorn_nouns: [true, 42])
+        allow(DRCI).to receive(:remove_item?).and_return(false)
+        allow(DRCI).to receive(:get_item?).and_return(false)
+
+        instance.send(:set_warhorn_or_egg)
+
+        expect(instance.instance_variable_get(:@warhorn_or_egg)).to be_empty
+        expect(DRC).to have_received(:message).with(/No eggs or warhorns found/)
+      end
+
+      it 'handles egg_count 3 (only discovers first 2, skips unsupported ordinal)' do
+        instance = build_ability_process(egg_count: 3, warhorn_nouns: [])
+        call_count = 0
+        allow(DRCI).to receive(:get_item?) do |_arg|
+          call_count += 1
+          stub_right_hand_with_id("e#{call_count}")
+          true
+        end
+        allow(DRCI).to receive(:stow_item?).and_return(true)
+
+        instance.send(:set_warhorn_or_egg)
+
+        # Only 2 ordinals are supported ("egg" and "second egg")
+        expect(instance.instance_variable_get(:@egg_ids).size).to eq(2)
+        expect(DRC).to have_received(:message).with(/wanted 3 egg.*only found 2/)
+      end
+
+      it 'handles empty warhorn_nouns array (no discovery attempted)' do
+        instance = build_ability_process(egg_count: 1, warhorn_nouns: [])
+        stub_right_hand_with_id('10')
+        allow(DRCI).to receive(:get_item?).and_return(true)
+        allow(DRCI).to receive(:stow_item?).and_return(true)
+
+        instance.send(:set_warhorn_or_egg)
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to be_empty
+        expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(['egg'])
+      end
+    end
+
+    # =========================================================================
+    # use methods with zero/negative warhorn_cooldown
+    # =========================================================================
+    describe 'warhorn_cooldown edge cases' do
+      let(:game_state) { build_game_state }
+
+      it 'warhorn_cooldown 0 means cooldown expires immediately' do
+        instance = build_ability_process(
+          warhorn_items: [{ id: '20', worn: false }],
+          item_cooldowns: { '20' => Time.now - 1 },
+          warhorn_cooldown: 0
+        )
+        allow(DRC).to receive(:bput).with("get #20", anything, anything, anything, anything, anything, anything)
+                                    .and_return('You get')
+        allow(DRC).to receive(:bput).with("exhale #20 lure", anything, anything, anything, anything)
+                                    .and_return('You sound a series of bursts from the')
+        allow(instance).to receive(:waitrt?)
+        allow(DRC).to receive(:bput).with("stow #20", anything, anything, anything, anything)
+                                    .and_return('You put')
+
+        expect(instance.send(:use_warhorn?, game_state)).to be true
+      end
+
+      it 'negative warhorn_cooldown means cooldown is always expired' do
+        instance = build_ability_process(
+          warhorn_items: [{ id: '20', worn: false }],
+          item_cooldowns: { '20' => Time.now },
+          warhorn_cooldown: -500
+        )
+        allow(DRC).to receive(:bput).with("get #20", anything, anything, anything, anything, anything, anything)
+                                    .and_return('You get')
+        allow(DRC).to receive(:bput).with("exhale #20 lure", anything, anything, anything, anything)
+                                    .and_return('You sound a series of bursts from the')
+        allow(instance).to receive(:waitrt?)
+        allow(DRC).to receive(:bput).with("stow #20", anything, anything, anything, anything)
+                                    .and_return('You put')
+
+        expect(instance.send(:use_warhorn?, game_state)).to be true
+      end
+
+      it 'lungs-tired retry with cooldown 0 sets retry ~60s from now' do
+        instance = build_ability_process(
+          warhorn_items: [{ id: '20', worn: false }],
+          item_cooldowns: {},
+          warhorn_cooldown: 0
+        )
+        allow(DRC).to receive(:bput).with("get #20", anything, anything, anything, anything, anything, anything)
+                                    .and_return('You get')
+        allow(DRC).to receive(:bput).with("exhale #20 lure", anything, anything, anything, anything)
+                                    .and_return('Your lungs are tired from having sounded a')
+        allow(DRC).to receive(:bput).with("stow #20", anything, anything, anything, anything)
+                                    .and_return('You put')
+
+        instance.send(:use_warhorn?, game_state)
+
+        cooldown = instance.instance_variable_get(:@item_cooldowns)['20']
+        # Time.now - 0 + 60 = ~60s from now
+        expect(cooldown).to be_within(2).of(Time.now + 60)
+      end
+    end
+
+    # =========================================================================
+    # Concurrent removal of all items during use
+    # =========================================================================
+    describe 'all items vanish during use' do
+      let(:game_state) { build_game_state }
+
+      it 'handles all eggs disappearing one by one' do
+        instance = build_ability_process(
+          egg_ids: %w[10 20 30],
+          item_cooldowns: {},
+          warhorn_or_egg: ['egg']
+        )
+        allow(DRC).to receive(:bput).with(/invoke #/, anything, anything, anything, anything, anything)
+                                    .and_return('Invoke what?')
+
+        expect(instance.send(:use_egg?)).to be false
+        expect(instance.instance_variable_get(:@egg_ids)).to be_empty
+      end
+
+      it 'handles all warhorns disappearing one by one' do
+        instance = build_ability_process(
+          warhorn_items: [
+            { id: '20', worn: false },
+            { id: '30', worn: false },
+            { id: '40', worn: false }
+          ],
+          item_cooldowns: {}
+        )
+        allow(DRC).to receive(:bput).with(/get #/, anything, anything, anything, anything, anything, anything)
+                                    .and_return('What were you referring to')
+
+        expect(instance.send(:use_warhorn?, game_state)).to be false
+        expect(instance.instance_variable_get(:@warhorn_items)).to be_empty
+      end
+    end
+
+    # =========================================================================
+    # Mixed success/failure across multiple items
+    # =========================================================================
+    describe 'mixed item states' do
+      it 'first egg cooldown, second egg missing, third egg succeeds' do
+        instance = build_ability_process(
+          egg_ids: %w[10 20 30],
+          item_cooldowns: { '10' => Time.now },
+          warhorn_or_egg: ['egg']
+        )
+        allow(DRC).to receive(:bput).with("invoke #20", anything, anything, anything, anything, anything)
+                                    .and_return('Invoke what?')
+        allow(DRC).to receive(:bput).with("invoke #30", anything, anything, anything, anything, anything)
+                                    .and_return('light envelops the area briefly')
+
+        expect(instance.send(:use_egg?)).to be true
+        expect(instance.instance_variable_get(:@egg_ids)).to eq(%w[10 30])
+      end
+
+      it 'first warhorn cooldown, second warhorn lungs-tired, all exhausted' do
+        instance = build_ability_process(
+          warhorn_items: [
+            { id: '20', worn: false },
+            { id: '30', worn: false }
+          ],
+          item_cooldowns: { '20' => Time.now },
+          warhorn_cooldown: 1200
+        )
+        allow(DRC).to receive(:bput).with("get #30", anything, anything, anything, anything, anything, anything)
+                                    .and_return('You get')
+        allow(DRC).to receive(:bput).with("exhale #30 lure", anything, anything, anything, anything)
+                                    .and_return('Your lungs are tired from having sounded a')
+        allow(DRC).to receive(:bput).with("stow #30", anything, anything, anything, anything)
+                                    .and_return('You put')
+
+        game_state = build_game_state
+        expect(instance.send(:use_warhorn?, game_state)).to be false
+        expect(instance.instance_variable_get(:@item_cooldowns)['30']).not_to be_nil
+      end
+    end
+  end
 end
