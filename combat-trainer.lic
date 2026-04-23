@@ -2607,9 +2607,16 @@ class AbilityProcess
       echo 'Added glyph of mana expiration flag.' if $debug_mode_ct
     end
 
-    # Warhorn setting, could be legacy egg or warhorn
+    # Warhorn setting -- string, array of strings, or true/false
     @warhorn = settings.warhorn
     echo("  @warhorn: #{@warhorn}") if $debug_mode_ct
+    @warhorn_nouns = case @warhorn
+                     when Array then @warhorn
+                     when String then [@warhorn]
+                     when true then ['warhorn']
+                     else []
+                     end
+    echo("  @warhorn_nouns: #{@warhorn_nouns}") if $debug_mode_ct
 
     # Allows user to set the warhorn cooldown
     @warhorn_cooldown = settings.warhorn_cooldown.to_i || 1200
@@ -2624,11 +2631,17 @@ class AbilityProcess
     @yiamura_exists = settings.combat_trainer_use_yiamura
     echo("  @yiamura_exists: #{@yiamura_exists}") if $debug_mode_ct
 
-    # Egg settings, for egg only
+    # Egg setting -- integer count or truthy for 1 (eggs are always identical nouns, use ordinals)
     @egg = settings.egg
     echo("  @egg: #{@egg}") if $debug_mode_ct
+    @egg_count = case @egg
+                 when Integer then @egg
+                 when true, String then 1
+                 else 0
+                 end
+    echo("  @egg_count: #{@egg_count}") if $debug_mode_ct
 
-    set_warhorn_or_egg if @warhorn || @egg
+    set_warhorn_or_egg unless @warhorn_nouns.empty? && @egg_count < 1
 
     return unless @paladin_use_badge
 
@@ -2671,140 +2684,215 @@ class AbilityProcess
     DRC.wait_for_script_to_complete('yiamura', ['raise'])
   end
 
-  # Sets up our warhorn and/or egg use. Sets timers. Allows legacy use of warhorn: egg. Checks to
-  # see if we're using a wearable warhorn or have it in a bag.
+  # Discovers warhorn and egg items by game ID at startup for reliable targeting.
+  # Supports multiple eggs and/or warhorns for near-100% room effect uptime.
+  # @return [void]
   def set_warhorn_or_egg
-    # Helps us rotate horn/egg use
-    @warhorn_or_egg = [@warhorn, @egg].compact
+    @egg_ids = []
+    if @egg_count >= 1
+      discover_egg('egg')
+      discover_egg('second egg') if @egg_count >= 2
+    end
 
-    # Store timestamps in UserVars
+    @warhorn_items = []
+    @warhorn_nouns.each { |noun| discover_warhorn(noun) }
+
+    @warhorn_or_egg = []
+    @warhorn_or_egg << 'egg' unless @egg_ids.empty?
+    @warhorn_or_egg << 'warhorn' unless @warhorn_items.empty?
+
+    if @warhorn_or_egg.empty?
+      DRC.message("No eggs or warhorns found in inventory!")
+      return
+    end
+
+    DRC.message("WARNING: wanted #{@egg_count} egg(s) but only found #{@egg_ids.size}!") if @egg_ids.size < @egg_count
+    DRC.message("WARNING: wanted #{@warhorn_nouns.size} warhorn(s) but only found #{@warhorn_items.size}!") if @warhorn_items.size < @warhorn_nouns.size
+
+    echo "Rotation: #{@warhorn_or_egg.inspect}" if $debug_mode_ct
+    echo "Egg IDs: #{@egg_ids.inspect}" if $debug_mode_ct
+    echo "Warhorn items: #{@warhorn_items.inspect}" if $debug_mode_ct
+
     UserVars.warhorn = {} unless UserVars.warhorn
-    UserVars.warhorn["last_warhorn"] = (Time.now - @warhorn_cooldown) unless UserVars.warhorn["last_warhorn"]
-    UserVars.warhorn["last_egg"] = (Time.now - 900) unless UserVars.warhorn["last_egg"]
     UserVars.warhorn["last_warhorn_or_egg"] = (Time.now - 600) unless UserVars.warhorn["last_warhorn_or_egg"]
+    @item_cooldowns = {}
+  end
 
-    # If user has defined both a warhorn and egg, we'll rotate, and since cooldowns are persistent in UserVars,
-    # do a one-time check to see which has lower time left, and put that first.
-    if @warhorn_or_egg.count > 1
-      if (Time.now - UserVars.warhorn["last_egg"]) > (Time.now - UserVars.warhorn["last_warhorn"])
-        @warhorn_or_egg.rotate!
-      end
-    end
-
-    # This is how an egg was specified prior to this warhorn/egg rotation code. We'll still support.
-    if @warhorn =~ /egg/
-      echo "Legacy use of warhorn: egg. Handling." if $debug_mode_ct
-      @warhorn_activation_command = "invoke my #{@warhorn}"
+  # Discovers an egg by ordinal and records its game ID.
+  # Eggs share the same noun, so ordinals ("egg", "second egg") are used.
+  # @param ordinal [String] the ordinal noun to get (e.g. "egg", "second egg")
+  # @return [void]
+  def discover_egg(ordinal)
+    if DRCI.get_item?(ordinal)
+      id = GameObj.right_hand.id
+      @egg_ids << id
+      echo "Discovered #{ordinal} ##{id}" if $debug_mode_ct
+      DRCI.stow_item?("##{id}")
     else
-      echo "Warhorn is actually a warhorn, not legacy use of : egg." if $debug_mode_ct
-      @warhorn_activation_command = "exhale #{@warhorn} lure"
-    end
-
-    # Set our warhorn verbs depending on whether a worn or stowed warhorn.
-    if DRCI.wearing?(@warhorn)
-      echo "We're wearing the warhorn, remove/wear are the verbs." if $debug_mode_ct
-      @warhorn_get_verb = 'remove'
-      @warhorn_store_verb = 'wear'
-    else
-      echo "Not wearing warhorn, get/stow are the verbs." if $debug_mode_ct
-      @warhorn_get_verb = 'get'
-      @warhorn_store_verb = 'stow'
+      DRC.message("Could not find '#{ordinal}' in inventory.")
     end
   end
 
-  # Controller method for warhorn and/or egg use
-  def use_warhorn_or_egg(game_state)
-    DRC.message("Time since last warhorn room effect: #{(Time.now - UserVars.warhorn["last_warhorn_or_egg"]) / 60}") if $debug_mode_ct
-    DRC.message("Time since last warhorn use: #{(Time.now - UserVars.warhorn["last_warhorn"]) / 60}") if $debug_mode_ct
-    DRC.message("Time since last egg use: #{(Time.now - UserVars.warhorn["last_egg"]) / 60}") if $debug_mode_ct
+  # Discovers a warhorn by noun and records its game ID and worn/stowed state.
+  # Warhorns have distinct adjectives, so each is found by its noun directly.
+  # @param noun [String] the warhorn noun to find (e.g. "warhorn", "horn")
+  # @return [void]
+  def discover_warhorn(noun)
+    if DRCI.remove_item?(noun)
+      id = GameObj.right_hand.id
+      @warhorn_items << { id: id, worn: true }
+      echo "Discovered warhorn '#{noun}' ##{id} (worn)" if $debug_mode_ct
+      DRCI.wear_item?("##{id}")
+    elsif DRCI.get_item?(noun)
+      id = GameObj.right_hand.id
+      @warhorn_items << { id: id, worn: false }
+      echo "Discovered warhorn '#{noun}' ##{id} (stowed)" if $debug_mode_ct
+      DRCI.stow_item?("##{id}")
+    else
+      DRC.message("Could not find warhorn '#{noun}' in inventory.")
+    end
+  end
 
-    # Return if it hasn't been 10 minutes since last warhorn. Room effect lasts 10 minutes.
+  # Rotates through egg and warhorn types, using whichever is off cooldown.
+  # The 10-minute room effect gate prevents wasted attempts.
+  # @param game_state [GameState] current combat game state
+  # @return [void]
+  def use_warhorn_or_egg(game_state)
+    DRC.message("Time since last room effect: #{(Time.now - UserVars.warhorn["last_warhorn_or_egg"]) / 60} min") if $debug_mode_ct
+
     return unless Time.now > (UserVars.warhorn["last_warhorn_or_egg"] + 600)
 
-    noun = @warhorn_or_egg[0]
+    type = @warhorn_or_egg[0]
 
-    # Check timers. Egg is always 15 minutes. Warhorn is 20 minutes, or configurable.
-    if noun =~ /egg/i
-      return unless Time.now > UserVars.warhorn["last_egg"] + 900
-
+    if type == 'egg'
       if use_egg?
         DRC.message("SUCCESSFUL egg use") if $debug_mode_ct
-        UserVars.warhorn["last_egg"] = Time.now
         UserVars.warhorn["last_warhorn_or_egg"] = Time.now
       end
-    else
-      return unless Time.now > (UserVars.warhorn["last_warhorn"] + @warhorn_cooldown)
-
+    elsif type == 'warhorn'
       if use_warhorn?(game_state)
         DRC.message("SUCCESSFUL horn use") if $debug_mode_ct
-        UserVars.warhorn["last_warhorn"] = Time.now
         UserVars.warhorn["last_warhorn_or_egg"] = Time.now
       end
     end
 
-    # Rotate array to rotate warhorn/egg use. If we only have one, this still works fine.
     @warhorn_or_egg.rotate!
   end
 
+  # Iterates through discovered eggs, skipping those on cooldown, and invokes
+  # the first available one by game ID.
+  # @return [Boolean] true if an egg was successfully used
   def use_egg?
-    use_egg = DRC.bput('invoke my egg', 'light envelops the area briefly',
-                       'The red light within the egg is dim and moves about sluggishly',
-                       'Something about the area inhibits', 'Invoke what?', 'You cannot stay hidden while using the egg.')
+    @egg_ids.dup.each do |id|
+      last_used = @item_cooldowns[id]
+      if last_used && Time.now < (last_used + 900)
+        echo "Egg ##{id} on cooldown, skipping" if $debug_mode_ct
+        next
+      end
 
-    case use_egg
-    when /The red light within the egg is dim and moves about sluggishly/
-      return false
-    when /Something about the area inhibits/
-      DRC.message("Egg can't be used in this area. Removing from hunt.")
-      @warhorn_or_egg.delete('egg')
-      return false
-    when /^What were you referring to/, /Invoke what?/
-      DRC.message("Can't find egg, removing from hunt.")
-      @warhorn_or_egg.delete('egg')
-      return false
-    end
+      result = DRC.bput("invoke ##{id}",
+                        'light envelops the area briefly',
+                        'The red light within the egg is dim and moves about sluggishly',
+                        'Something about the area inhibits',
+                        'Invoke what?',
+                        'You cannot stay hidden while using the egg.')
 
-    return true
-  end
-
-  def use_warhorn?(game_state)
-    game_state.sheath_whirlwind_offhand
-    use_warhorn = DRC.bput("#{@warhorn_get_verb} my #{@warhorn}", /^You get.*(?:warhorn).*\.$/,
-                           /^You remove.*(?:warhorn).*\.$/, /^You take.*(?:warhorn).*\.$/, /^What were you referring to/,
-                           /^You need a free hand/, /^Remove what/)
-
-    case use_warhorn
-    when /^You get.*(?:warhorn).*\.$/, /^You remove.*(?:warhorn).*\.$/, /^You take.*(?:warhorn).*\.$/
-      warhorn_activation = DRC.bput(@warhorn_activation_command, 'Something about the area inhibits',
-                                    'You sound a series of bursts from the', 'Your lungs are tired from having sounded a', 'not accomplishing much and looking rather silly')
-      if /Your lungs are tired from having sounded a/ =~ warhorn_activation
-        stow_warhorn(game_state)
+      case result
+      when /light envelops/
+        @item_cooldowns[id] = Time.now
         return true
-      elsif /Something about the area inhibits/ =~ warhorn_activation
-        DRC.message "Can't use #{@warhorn} in this area. Removing from hunt."
-        stow_warhorn(game_state)
-        @warhorn_or_egg.delete(@warhorn)
+      when /dim and moves about sluggishly/
+        @item_cooldowns[id] = Time.now - 900 + 60
+        next
+      when /Something about the area inhibits/
+        DRC.message("Egg can't be used in this area. Removing from hunt.")
+        @warhorn_or_egg.delete('egg')
         return false
-      elsif /not accomplishing much and looking rather silly/ =~ warhorn_activation
-        DRC.message "You can't use a warhorn. Removing from hunt."
-        stow_warhorn(game_state)
-        @warhorn_or_egg.delete(@warhorn)
+      when /Invoke what/
+        DRC.message("Can't find egg ##{id}, removing from list.")
+        @egg_ids.delete(id)
+        next
+      when /You cannot stay hidden/
         return false
       end
-      waitrt?
-      stow_warhorn(game_state)
-    when /^What were you referring to/
-      DRC.message "#{@warhorn} NOT FOUND! Removing from hunt."
-      @warhorn_or_egg.delete(@warhorn)
-      return false
     end
-
-    return true
+    false
   end
 
-  def stow_warhorn(game_state)
-    DRC.bput("#{@warhorn_store_verb} my #{@warhorn}", 'You put', 'You attach')
+  # Iterates through discovered warhorns, skipping those on cooldown, and
+  # exhales the first available one by game ID.
+  # @param game_state [GameState] current combat game state
+  # @return [Boolean] true if a warhorn was successfully used
+  def use_warhorn?(game_state)
+    game_state.sheath_whirlwind_offhand
+
+    @warhorn_items.dup.each do |item|
+      id = item[:id]
+
+      last_used = @item_cooldowns[id]
+      if last_used && Time.now < (last_used + @warhorn_cooldown)
+        echo "Warhorn ##{id} on cooldown, skipping" if $debug_mode_ct
+        next
+      end
+
+      get_verb = item[:worn] ? 'remove' : 'get'
+      result = DRC.bput("#{get_verb} ##{id}",
+                        /^You get/, /^You remove/, /^You take/,
+                        /^What were you referring to/,
+                        /^You need a free hand/, /^Remove what/)
+
+      case result
+      when /^You get/, /^You remove/, /^You take/
+        activation = DRC.bput("exhale ##{id} lure",
+                              'Something about the area inhibits',
+                              'You sound a series of bursts from the',
+                              'Your lungs are tired from having sounded a',
+                              'not accomplishing much and looking rather silly')
+
+        if /Your lungs are tired/ =~ activation
+          stow_warhorn_item(item)
+          @item_cooldowns[id] = Time.now - @warhorn_cooldown + 60
+          next
+        elsif /Something about the area inhibits/ =~ activation
+          DRC.message "Can't use warhorn in this area. Removing from hunt."
+          stow_warhorn_item(item)
+          @warhorn_or_egg.delete('warhorn')
+          game_state.wield_whirlwind_offhand
+          return false
+        elsif /not accomplishing much/ =~ activation
+          DRC.message "You can't use a warhorn. Removing from hunt."
+          stow_warhorn_item(item)
+          @warhorn_or_egg.delete('warhorn')
+          game_state.wield_whirlwind_offhand
+          return false
+        end
+
+        waitrt?
+        @item_cooldowns[id] = Time.now
+        stow_warhorn_item(item)
+        game_state.wield_whirlwind_offhand
+        return true
+
+      when /^What were you referring to/
+        DRC.message "Warhorn ##{id} NOT FOUND! Removing from list."
+        @warhorn_items.delete(item)
+        next
+      when /^You need a free hand/, /^Remove what/
+        game_state.wield_whirlwind_offhand
+        return false
+      end
+    end
+
     game_state.wield_whirlwind_offhand
+    false
+  end
+
+  # Stows or re-wears a warhorn item based on how it was originally equipped.
+  # @param item [Hash] warhorn item with :id and :worn keys
+  # @return [void]
+  def stow_warhorn_item(item)
+    store_verb = item[:worn] ? 'wear' : 'stow'
+    DRC.bput("#{store_verb} ##{item[:id]}", 'You put', 'You attach', 'You slide', 'You are already')
   end
 
   def check_paladin_skills
