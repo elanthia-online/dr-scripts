@@ -104,11 +104,9 @@ module DRCS
   end
 end
 
-module UserVars
-  @moons = {}
-
+class UserVars
   class << self
-    attr_accessor :moons
+    attr_accessor :moons unless method_defined?(:moons)
   end
 end
 
