@@ -91,6 +91,24 @@ end
 module DRCS
   class << self
     def break_summoned_weapon(*_args); end
+
+    def summon_weapon(*_args); end
+
+    def shape_summoned_weapon(*_args); end
+
+    def turn_summoned_weapon(*_args); end
+
+    def push_summoned_weapon(*_args); end
+
+    def pull_summoned_weapon(*_args); end
+  end
+end
+
+module UserVars
+  @moons = {}
+
+  class << self
+    attr_accessor :moons
   end
 end
 
@@ -646,6 +664,145 @@ RSpec.describe GameState do
           target_weapon_skill: 20
         )
         expect(gs.skill_done?).to be false
+      end
+    end
+  end
+
+  # ===========================================================================
+  # #prepare_summoned_weapon specs
+  #
+  # Validates that summoned_weapons_adjective is passed to
+  # DRCS.shape_summoned_weapon via an OpenStruct, and that summon/shape/turn/
+  # push/pull are called according to flags and guild.
+  # ===========================================================================
+  describe '#prepare_summoned_weapon' do
+    def build_summoned_game_state(**overrides)
+      instance = GameState.allocate
+      defaults = {
+        summoned_weapons_adjective: nil,
+        summoned_weapons_element: 'fire',
+        summoned_weapons_ingot: 'animite',
+        summoned_weapons: [{ 'name' => 'Large Edged', 'turn' => false, 'push' => false, 'pull' => false }],
+        current_weapon_skill: 'Large Edged'
+      }
+      defaults.merge(overrides).each do |k, v|
+        instance.instance_variable_set(:"@#{k}", v)
+      end
+      instance
+    end
+
+    before(:each) do
+      allow(DRCS).to receive(:summon_weapon)
+      allow(DRCS).to receive(:shape_summoned_weapon)
+      allow(DRCS).to receive(:turn_summoned_weapon)
+      allow(DRCS).to receive(:push_summoned_weapon)
+      allow(DRCS).to receive(:pull_summoned_weapon)
+      UserVars.moons = { 'visible' => ['Katamba'] }
+    end
+
+    context 'when weapon is already summoned' do
+      it 'passes an OpenStruct with summoned_weapons_adjective to shape_summoned_weapon' do
+        gs = build_summoned_game_state(summoned_weapons_adjective: 'blazing')
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).to have_received(:shape_summoned_weapon) do |skill, ingot, adj|
+          expect(skill).to eq('Large Edged')
+          expect(ingot).to eq('animite')
+          expect(adj).to be_a(OpenStruct)
+          expect(adj.summoned_weapons_adjective).to eq('blazing')
+        end
+      end
+
+      it 'does not call summon_weapon' do
+        gs = build_summoned_game_state
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).not_to have_received(:summon_weapon)
+      end
+    end
+
+    context 'when weapon is not yet summoned' do
+      it 'calls summon_weapon before shaping' do
+        allow(DRStats).to receive(:moon_mage?).and_return(true)
+        gs = build_summoned_game_state
+
+        gs.prepare_summoned_weapon(false)
+
+        expect(DRCS).to have_received(:summon_weapon).with('Katamba', 'fire', 'animite', 'Large Edged')
+        expect(DRCS).to have_received(:shape_summoned_weapon)
+      end
+
+      it 'does not shape when not a moon mage' do
+        allow(DRStats).to receive(:moon_mage?).and_return(false)
+        gs = build_summoned_game_state
+
+        gs.prepare_summoned_weapon(false)
+
+        expect(DRCS).to have_received(:summon_weapon)
+        expect(DRCS).not_to have_received(:shape_summoned_weapon)
+      end
+    end
+
+    context 'with nil summoned_weapons_adjective' do
+      it 'passes OpenStruct with nil adjective' do
+        gs = build_summoned_game_state(summoned_weapons_adjective: nil)
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).to have_received(:shape_summoned_weapon) do |_skill, _ingot, adj|
+          expect(adj).to be_a(OpenStruct)
+          expect(adj.summoned_weapons_adjective).to be_nil
+        end
+      end
+    end
+
+    context 'with empty string summoned_weapons_adjective' do
+      it 'passes OpenStruct with empty adjective' do
+        gs = build_summoned_game_state(summoned_weapons_adjective: '')
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).to have_received(:shape_summoned_weapon) do |_skill, _ingot, adj|
+          expect(adj.summoned_weapons_adjective).to eq('')
+        end
+      end
+    end
+
+    context 'with turn/push/pull flags' do
+      it 'calls turn, push, and pull when all flags are set' do
+        gs = build_summoned_game_state(
+          summoned_weapons: [{ 'name' => 'Large Edged', 'turn' => true, 'push' => true, 'pull' => true }]
+        )
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).to have_received(:turn_summoned_weapon)
+        expect(DRCS).to have_received(:push_summoned_weapon)
+        expect(DRCS).to have_received(:pull_summoned_weapon)
+      end
+
+      it 'skips turn, push, and pull when flags are false' do
+        gs = build_summoned_game_state
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).not_to have_received(:turn_summoned_weapon)
+        expect(DRCS).not_to have_received(:push_summoned_weapon)
+        expect(DRCS).not_to have_received(:pull_summoned_weapon)
+      end
+    end
+
+    context 'OpenStruct compatibility with shape_summoned_weapon' do
+      it 'creates an object that responds to .summoned_weapons_adjective' do
+        gs = build_summoned_game_state(summoned_weapons_adjective: 'blazing')
+
+        gs.prepare_summoned_weapon(true)
+
+        expect(DRCS).to have_received(:shape_summoned_weapon) do |_skill, _ingot, adj|
+          expect(adj).to respond_to(:summoned_weapons_adjective)
+        end
       end
     end
   end
