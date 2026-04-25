@@ -46,15 +46,22 @@ Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[
 Harness::DRSkill.define_singleton_method(:_reset_xp) { @_xp_store = {} }
 Harness::DRSkill.define_singleton_method(:getxp) { |skillname| _xp_store[skillname] || 0 }
 
+Harness::DRSkill.define_singleton_method(:_modrank_store) { @_modrank_store ||= {} }
+Harness::DRSkill.define_singleton_method(:_set_modrank) { |skillname, val| _modrank_store[skillname] = val }
+Harness::DRSkill.define_singleton_method(:_reset_modrank) { @_modrank_store = {} }
+Harness::DRSkill.define_singleton_method(:getmodrank) { |skillname| _modrank_store[skillname] || 0 }
+
 load_lic_class('athletics.lic', 'Athletics')
 
 RSpec.describe Athletics do
   before(:each) do
     reset_data
     Harness::DRSkill._reset_xp
+    Harness::DRSkill._reset_modrank
 
     allow(DRC).to receive(:wait_for_script_to_complete)
     allow(DRC).to receive(:bput)
+    allow(DRC).to receive(:message)
     allow(DRCT).to receive(:walk_to)
   end
 
@@ -147,6 +154,99 @@ RSpec.describe Athletics do
 
       it 'returns true' do
         expect(athletics.done_training?).to be true
+      end
+    end
+  end
+
+  # ===========================================================================
+  # #riverhaven_athletics specs
+  #
+  # Validates the Riverhaven climbing route: room visits, rank-gated
+  # sections, and that it never falls back to crossing_athletics.
+  # ===========================================================================
+  describe '#riverhaven_athletics' do
+    let(:athletics) do
+      described_class.allocate.tap do |a|
+        a.instance_variable_set(:@end_exp, 29)
+      end
+    end
+
+    before(:each) do
+      allow(athletics).to receive(:move)
+    end
+
+    context 'at low rank (below 10)' do
+      before do
+        call_count = 0
+        Harness::DRSkill._set_modrank('Athletics', 5)
+        allow(athletics).to receive(:done_training?) { (call_count += 1) > 1 }
+      end
+
+      it 'walks the base route without the tree climb' do
+        athletics.riverhaven_athletics
+
+        expect(DRCT).to have_received(:walk_to).with(12821)
+        expect(DRCT).to have_received(:walk_to).with(394)
+        expect(DRCT).to have_received(:walk_to).with(602)
+      end
+
+      it 'skips the tree climb section' do
+        athletics.riverhaven_athletics
+
+        expect(DRCT).not_to have_received(:walk_to).with(51158)
+        expect(DRCT).not_to have_received(:walk_to).with(491)
+      end
+    end
+
+    context 'at rank 10 or above' do
+      before do
+        call_count = 0
+        Harness::DRSkill._set_modrank('Athletics', 50)
+        allow(athletics).to receive(:done_training?) { (call_count += 1) > 1 }
+      end
+
+      it 'includes the tree climb section' do
+        athletics.riverhaven_athletics
+
+        expect(DRCT).to have_received(:walk_to).with(51158)
+        expect(DRCT).to have_received(:walk_to).with(491)
+        expect(DRCT).to have_received(:walk_to).with(7839)
+      end
+    end
+
+    context 'at rank 140 or above' do
+      before do
+        call_count = 0
+        Harness::DRSkill._set_modrank('Athletics', 200)
+        allow(athletics).to receive(:done_training?) { (call_count += 1) > 3 }
+      end
+
+      it 'includes the extended route' do
+        athletics.riverhaven_athletics
+
+        expect(DRCT).to have_received(:walk_to).with(11440)
+        expect(DRCT).to have_received(:walk_to).with(7640)
+      end
+    end
+
+    context 'at rank above 300' do
+      before do
+        call_count = 0
+        Harness::DRSkill._set_modrank('Athletics', 400)
+        allow(athletics).to receive(:done_training?) { (call_count += 1) > 1 }
+        allow(athletics).to receive(:crossing_athletics)
+      end
+
+      it 'falls back to crossing_athletics for harder obstacles' do
+        athletics.riverhaven_athletics
+
+        expect(athletics).to have_received(:crossing_athletics)
+      end
+
+      it 'does not walk the Riverhaven route' do
+        athletics.riverhaven_athletics
+
+        expect(DRCT).not_to have_received(:walk_to).with(12821)
       end
     end
   end

@@ -152,7 +152,7 @@ practice_options:
   coriks_wall:
       id: 8905
       target: wall
-      hide: false
+      hide: true
 ####################################
 ##########                ##########
 ##########  THERENGIA     ##########
