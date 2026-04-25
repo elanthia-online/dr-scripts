@@ -76,7 +76,7 @@ class Smith
     else
       DRCC.find_anvil(@hometown) unless stay
     end
-    check_oil_for_craft(discipline)
+    DRCC.check_consumables('oil', discipline['finisher-room'], discipline['finisher-number'], @bag, @bag_items, @belt)
     DRC.wait_for_script_to_complete('buff', ['smith'])
     DRC.wait_for_script_to_complete('forge', [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], stay ? 'skip' : nil])
     stamp_item(recipe['noun']) if stamp
@@ -85,10 +85,6 @@ class Smith
     end
     dispose_scrap(discipline, recipe) if buy
     dispose_parts(discipline, parts) unless stay
-  end
-
-  def check_oil_for_craft(discipline)
-    return if Script.running?('craft')
   end
 
   def buy_parts(parts)
