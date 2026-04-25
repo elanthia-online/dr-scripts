@@ -234,19 +234,19 @@ RSpec.describe Athletics do
         call_count = 0
         Harness::DRSkill._set_modrank('Athletics', 400)
         allow(athletics).to receive(:done_training?) { (call_count += 1) > 1 }
+        allow(athletics).to receive(:crossing_athletics)
       end
 
-      it 'continues the Riverhaven route instead of falling back to Crossing' do
+      it 'falls back to crossing_athletics for harder obstacles' do
         athletics.riverhaven_athletics
 
-        expect(DRCT).to have_received(:walk_to).with(12821)
-        expect(DRCT).to have_received(:walk_to).with(602)
+        expect(athletics).to have_received(:crossing_athletics)
       end
 
-      it 'does not call crossing_athletics' do
-        expect(athletics).not_to receive(:crossing_athletics)
-
+      it 'does not walk the Riverhaven route' do
         athletics.riverhaven_athletics
+
+        expect(DRCT).not_to have_received(:walk_to).with(12821)
       end
     end
   end
