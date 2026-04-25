@@ -125,7 +125,6 @@ class Craft
     rank = DRSkill.getrank('Forging')
     info = @overrides['Forging']
 
-    DRCC.check_consumables('oil', discipline['finisher-room'], discipline['finisher-number'], @bag, @bag_items, @belt)
     if info
       smith(info['item'])
     elsif rank <= 25 # Tier 1 - Extremely Easy
