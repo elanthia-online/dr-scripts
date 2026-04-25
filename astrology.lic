@@ -526,8 +526,6 @@ class Astrology
       else
         DRCMM.observe(body)
       end
-    ensure
-      Flags.reset('bad-search') if Flags['bad-search']
     end
   end
 
@@ -684,10 +682,11 @@ class Astrology
 
     begin
       things_to_try.find do |data|
+        result = nil
         finished = nil
         get_telescope
 
-        until finished
+        MAX_OBSERVE_ITERATIONS.times do
           if Flags['bad-search'] == 'is foiled by the daylight'
             return check_heavens(depth: depth + 1)
           end
@@ -697,11 +696,14 @@ class Astrology
           end
 
           result = observe_routine(data['name'])
+          break if result.nil?
+
           finished = check_observation_finished?(result)
 
           debug_log("result: #{result}")
           debug_log("finished_messages: #{Regexp.union(@finished_messages)}")
           debug_log("finished: #{finished}")
+          break if finished
         end
 
         check_observation_success?(result)

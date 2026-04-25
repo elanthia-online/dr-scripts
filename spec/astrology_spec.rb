@@ -805,6 +805,33 @@ RSpec.describe Astrology do
     end
   end
 
+  describe '#get_healed' do
+    let(:astrology) do
+      build_astrology(
+        have_telescope: true,
+        telescope_name: 'telescope',
+        telescope_storage: { 'container' => 'backpack' }
+      )
+    end
+
+    it 'executes operations in correct order' do
+      expect(DRCMM).to receive(:store_telescope?).with('telescope', { 'container' => 'backpack' }).ordered
+      expect(DRC).to receive(:wait_for_script_to_complete).with('safe-room', ['force']).ordered
+      expect(DRCT).to receive(:walk_to).with(1).ordered
+      astrology.get_healed
+    end
+
+    it 're-buffs after healing' do
+      expect(astrology).to receive(:do_buffs).with(astrology.instance_variable_get(:@settings))
+      astrology.get_healed
+    end
+
+    it 'retrieves telescope after healing' do
+      expect(DRCMM).to receive(:get_telescope?).with('telescope', { 'container' => 'backpack' })
+      astrology.get_healed
+    end
+  end
+
   describe '#align_routine' do
     let(:astrology) { build_astrology }
 
@@ -961,12 +988,13 @@ RSpec.describe Astrology do
         expect(result).to be_nil
       end
 
-      it 'resets bad-search flag after observation' do
-        allow(DRCMM).to receive(:observe).and_return('You learned something useful')
-        Flags.add('bad-search', 'test')
-        Flags['bad-search'] = 'turns up fruitless'
+      it 'preserves bad-search flag for caller to check' do
+        allow(DRCMM).to receive(:observe) do |_body|
+          Flags['bad-search'] = 'turns up fruitless'
+          'You learned something useful'
+        end
         astrology.observe_routine('Katamba')
-        expect(Flags['bad-search']).to be false
+        expect(Flags['bad-search']).to eq('turns up fruitless')
       end
     end
 
@@ -1164,6 +1192,50 @@ RSpec.describe Astrology do
         astrology.check_heavens(depth: 10)
       end
     end
+
+    context 'when visible_bodies returns empty array' do
+      it 'aborts with no observable bodies message' do
+        allow(astrology).to receive(:visible_bodies).and_return([])
+        astrology.check_heavens
+        expect(messages).to include('Astrology: No observable celestial bodies found. Aborting check_heavens.')
+      end
+    end
+
+    context 'without telescope (happy path)' do
+      let(:astrology) { build_astrology }
+
+      it 'observes the best body by pool count' do
+        allow(astrology).to receive(:visible_bodies).and_return(
+          [
+            { 'name' => 'Xibar', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+              'pools' => { 'lore' => true } },
+            { 'name' => 'Katamba', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+              'pools' => { 'magic' => true, 'survival' => true } }
+          ]
+        )
+        allow(DRCMM).to receive(:observe).and_return('You learned something useful')
+        astrology.check_heavens
+        expect(DRCMM).to have_received(:observe).with('Katamba')
+      end
+    end
+
+    context 'with telescope (happy path)' do
+      let(:astrology) { build_astrology(have_telescope: true) }
+
+      it 'dispatches to telescope path and stores telescope in ensure' do
+        allow(astrology).to receive(:visible_bodies).and_return(
+          [{ 'name' => 'Katamba', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+             'pools' => { 'magic' => true } }]
+        )
+        allow(DRCMM).to receive(:center_telescope).and_return(nil)
+        allow(DRCMM).to receive(:peer_telescope).and_return(
+          ["You've learned all that you can", 'You learned something useful', 'Roundtime: 5 sec.']
+        )
+        astrology.check_heavens
+        expect(DRCMM).to have_received(:center_telescope)
+        expect(DRCMM).to have_received(:store_telescope?)
+      end
+    end
   end
 
   describe '#train_astrology' do
@@ -1216,6 +1288,42 @@ RSpec.describe Astrology do
       it 'calls check_weather' do
         expect(DRCMM).to receive(:predict).with('weather')
         astrology.train_astrology(OpenStruct.new(astrology_training: ['weather']))
+      end
+    end
+
+    context 'with observe training task' do
+      before { allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33) }
+
+      it 'calls check_heavens which observes a body' do
+        allow(astrology).to receive(:visible_bodies).and_return(
+          [{ 'name' => 'Katamba', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+             'pools' => { 'magic' => true } }]
+        )
+        allow(DRCMM).to receive(:observe).and_return('You learned something useful')
+        astrology.train_astrology(OpenStruct.new(astrology_training: ['observe']))
+        expect(DRCMM).to have_received(:observe).with('Katamba')
+      end
+    end
+
+    context 'with events training task' do
+      before { allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33) }
+
+      it 'calls check_events via study_sky' do
+        allow(DRCMM).to receive(:study_sky).and_return('You fail to detect any portents')
+        astrology.train_astrology(OpenStruct.new(astrology_training: ['events']))
+        expect(DRCMM).to have_received(:study_sky)
+      end
+    end
+
+    context 'with attunement training task' do
+      before do
+        allow(DRSkill).to receive(:getxp).with('Astrology').and_return(10, 33)
+        allow(DRSkill).to receive(:getxp).with('Attunement').and_return(10)
+      end
+
+      it 'calls check_attunement (perceive targets)' do
+        astrology.train_astrology(OpenStruct.new(astrology_training: ['attunement']))
+        expect(DRC).to have_received(:bput).with('perceive ', 'roundtime')
       end
     end
   end
@@ -1278,6 +1386,17 @@ RSpec.describe Astrology do
       expect(DRCMM).not_to receive(:predict)
       astrology.check_events({ 'future events' => 0 })
     end
+
+    context 'when pool stabilizes (happy path)' do
+      it 'calls predict event after study_sky completes' do
+        allow(DRCMM).to receive(:study_sky).and_return('Roundtime: 5 sec.')
+        allow(Lich::Util).to receive(:issue_command).and_return(
+          ['You have no understanding of the celestial influences over future events.', 'Roundtime: 3 sec.']
+        )
+        expect(DRCMM).to receive(:predict).with('event')
+        astrology.check_events({ 'future events' => 0 })
+      end
+    end
   end
 
   # Adversarial: observe_without_telescope must not loop forever
@@ -1298,6 +1417,50 @@ RSpec.describe Astrology do
 
       # Verify observe was called exactly MAX_OBSERVE_ITERATIONS times
       expect(DRCMM).to have_received(:observe).exactly(described_class::MAX_OBSERVE_ITERATIONS).times
+    end
+  end
+
+  describe '#observe_with_telescope (via check_heavens)' do
+    let(:astrology) { build_astrology(have_telescope: true) }
+    let(:body_data) do
+      [{ 'name' => 'Katamba', 'circle' => 1, 'constellation' => false, 'telescope' => false,
+         'pools' => { 'magic' => true } }]
+    end
+
+    before do
+      allow(astrology).to receive(:visible_bodies).and_return(body_data)
+    end
+
+    it 'terminates when observe_routine returns nil (exhausted retries)' do
+      allow(DRCMM).to receive(:center_telescope).and_return('Center what?')
+      allow(DRCMM).to receive(:get_telescope?).and_return(true)
+      astrology.check_heavens
+      expect(messages).to include('Astrology: Max observe retries reached. Aborting observation.')
+    end
+
+    it 'caps iterations at MAX_OBSERVE_ITERATIONS when never finished' do
+      allow(DRCMM).to receive(:center_telescope).and_return(nil)
+      allow(DRCMM).to receive(:peer_telescope).and_return(['Some unfinished output', 'Roundtime: 5 sec.'])
+      astrology.check_heavens
+      expect(DRCMM).to have_received(:peer_telescope).exactly(described_class::MAX_OBSERVE_ITERATIONS).times
+    end
+
+    it 'completes on first try when observation finishes and succeeds' do
+      allow(DRCMM).to receive(:center_telescope).and_return(nil)
+      allow(DRCMM).to receive(:peer_telescope).and_return(
+        ["You've learned all that you can", 'You learned something useful', 'Roundtime: 5 sec.']
+      )
+      astrology.check_heavens
+      expect(DRCMM).to have_received(:peer_telescope).once
+    end
+
+    it 'stores telescope in ensure block even when observation fails' do
+      allow(DRCMM).to receive(:center_telescope).and_return(nil)
+      allow(DRCMM).to receive(:peer_telescope).and_return(
+        ["You've learned all that you can", 'You learned something useful']
+      )
+      astrology.check_heavens
+      expect(DRCMM).to have_received(:store_telescope?)
     end
   end
 
