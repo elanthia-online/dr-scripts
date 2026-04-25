@@ -88,9 +88,7 @@ class Smith
   end
 
   def check_oil_for_craft(discipline)
-    return unless Script.running?('craft')
-
-    DRCC.check_consumables('oil', discipline['finisher-room'], discipline['finisher-number'], @bag, @bag_items, @belt)
+    return if Script.running?('craft')
   end
 
   def buy_parts(parts)
