@@ -65,6 +65,9 @@ module DRCI
     def lower_item?(_item); end
     def remove_item?(_item); end
     def wear_item?(_item); end
+    def tie_gem_pouch?(*_args); end
+    def swap_out_full_gempouch?(*_args); end
+    def fill_gem_pouch_with_container(*_args); end
   end
 end unless defined?(DRCI)
 
@@ -150,6 +153,9 @@ RSpec.describe Pick do
     allow(DRCI).to receive(:lower_item?).and_return(true)
     allow(DRCI).to receive(:remove_item?).and_return(true)
     allow(DRCI).to receive(:wear_item?).and_return(true)
+    allow(DRCI).to receive(:tie_gem_pouch?).and_return(true)
+    allow(DRCI).to receive(:swap_out_full_gempouch?).and_return(true)
+    allow(DRCI).to receive(:fill_gem_pouch_with_container)
 
     # Setup DRCH stubs
     allow(DRCH).to receive(:check_health).and_return({
@@ -225,6 +231,12 @@ RSpec.describe Pick do
     instance.instance_variable_set(:@trash_nouns, ['rock', 'pebble'])
     instance.instance_variable_set(:@trap_parts, ['wire', 'spring'])
     instance.instance_variable_set(:@picking_room_id, 1)
+    instance.instance_variable_set(:@gem_pouch_adjective, 'small')
+    instance.instance_variable_set(:@gem_pouch_noun, 'pouch')
+    instance.instance_variable_set(:@tie_gem_pouches, false)
+    instance.instance_variable_set(:@first_fill, true)
+    instance.instance_variable_set(:@full_pouch_container, nil)
+    instance.instance_variable_set(:@spare_gem_pouch_container, 'trunk')
     instance.instance_variable_set(:@tend_own_wounds, false)
     instance.instance_variable_set(:@disarm_on_failed_identify, false)
     instance.instance_variable_set(:@failed_identify_container, nil)
@@ -766,21 +778,182 @@ RSpec.describe Pick do
   end
 
   # ---------------------------------------------------------------------------
-  # swap_out_full_gempouch
+  # stow_gem
   # ---------------------------------------------------------------------------
 
-  describe '#swap_out_full_gempouch' do
-    it 'shows message when spare_gem_pouch_container not set' do
+  describe '#stow_gem' do
+    it 'stows successfully on first attempt' do
+      instance = build_instance
+      allow(DRC).to receive(:bput)
+        .with('stow my gem', /You put/, /You open/,
+              /You'd better tie it up before putting/,
+              /is too full to fit another gem/)
+        .and_return('You put your gem in your pouch')
+
+      instance.send(:stow_gem, 'gem')
+
+      expect(DRCI).not_to have_received(:tie_gem_pouch?)
+      expect(DRCI).not_to have_received(:swap_out_full_gempouch?)
+    end
+
+    context 'when pouch needs tying (70 gems)' do
+      before(:each) do
+        allow(DRC).to receive(:bput)
+          .with('stow my gem', /You put/, /You open/,
+                /You'd better tie it up before putting/,
+                /is too full to fit another gem/)
+          .and_return("You'd better tie it up before putting more in")
+      end
+
+      it 'ties pouch then stows' do
+        instance = build_instance(tie_gem_pouches: true)
+
+        instance.send(:stow_gem, 'gem')
+
+        expect(DRCI).to have_received(:tie_gem_pouch?).with('small', 'pouch')
+        expect(DRCI).to have_received(:stow_item?).with('gem')
+      end
+
+      it 'does not swap the pouch' do
+        instance = build_instance
+
+        instance.send(:stow_gem, 'gem')
+
+        expect(DRCI).not_to have_received(:swap_out_full_gempouch?)
+      end
+    end
+
+    context 'when pouch is full (500 gems)' do
+      before(:each) do
+        allow(DRC).to receive(:bput)
+          .with('stow my gem', /You put/, /You open/,
+                /You'd better tie it up before putting/,
+                /is too full to fit another gem/)
+          .and_return('is too full to fit another gem')
+      end
+
+      it 'lowers gem, swaps pouch, retrieves and stows gem' do
+        instance = build_instance(
+          full_pouch_container: 'backpack',
+          spare_gem_pouch_container: 'trunk',
+          tie_gem_pouches: true
+        )
+
+        instance.send(:stow_gem, 'gem')
+
+        expect(DRCI).to have_received(:lower_item?).with('gem').ordered
+        expect(DRCI).to have_received(:swap_out_full_gempouch?)
+          .with('small', 'pouch', 'backpack', 'trunk', true).ordered
+        expect(DRCI).to have_received(:get_item?).with('gem').ordered
+        expect(DRCI).to have_received(:stow_item?).with('gem').ordered
+      end
+
+      it 'passes nil containers when not configured' do
+        instance = build_instance(
+          full_pouch_container: nil,
+          spare_gem_pouch_container: nil,
+          tie_gem_pouches: false
+        )
+
+        instance.send(:stow_gem, 'gem')
+
+        expect(DRCI).to have_received(:swap_out_full_gempouch?)
+          .with('small', 'pouch', nil, nil, false)
+      end
+
+      it 'still attempts to retrieve gem even when swap fails' do
+        allow(DRCI).to receive(:swap_out_full_gempouch?).and_return(false)
+        instance = build_instance
+
+        instance.send(:stow_gem, 'gem')
+
+        expect(DRCI).to have_received(:get_item?).with('gem')
+        expect(DRCI).to have_received(:stow_item?).with('gem')
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # loot (fill delegation)
+  # ---------------------------------------------------------------------------
+
+  describe '#loot' do
+    before(:each) do
+      allow(DRC).to receive(:bput)
+        .with(/^open my/, anything, anything, anything)
+        .and_return('That is already open')
+      allow(DRCI).to receive(:get_item_list).and_return([])
+    end
+
+    it 'ties on first fill when tie_gem_pouches is true' do
+      instance = build_instance(tie_gem_pouches: true)
+
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', true)
+    end
+
+    it 'does not tie on subsequent fills' do
+      instance = build_instance(tie_gem_pouches: true)
+
+      instance.send(:loot, 'chest')
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', true).once
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', false).once
+    end
+
+    it 'never ties when tie_gem_pouches is false' do
+      instance = build_instance(tie_gem_pouches: false)
+
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', false)
+    end
+
+    it 'passes pouch settings through to fill method' do
+      instance = build_instance(
+        gem_pouch_adjective: 'black',
+        gem_pouch_noun: 'sack',
+        full_pouch_container: 'backpack',
+        spare_gem_pouch_container: 'locker',
+        tie_gem_pouches: true
+      )
+
+      instance.send(:loot, 'strongbox')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('black', 'sack', 'strongbox', 'backpack', 'locker', true)
+    end
+
+    it 'skips fill when fill_pouch_with_box is false and loot_specials exist' do
       settings = OpenStruct.new(
-        spare_gem_pouch_container: nil,
+        fill_pouch_with_box: false,
+        loot_specials: [{ 'name' => 'diamond', 'bag' => 'sack' }],
         gem_pouch_adjective: 'small',
         gem_pouch_noun: 'pouch'
       )
       instance = build_instance(settings: settings)
 
-      instance.send(:swap_out_full_gempouch)
+      instance.send(:loot, 'chest')
 
-      expect(messages.last).to include('spare_gem_pouch_container not set')
+      expect(DRCI).not_to have_received(:fill_gem_pouch_with_container)
+    end
+
+    it 'skips looting when box is locked' do
+      allow(DRC).to receive(:bput)
+        .with(/^open my/, anything, anything, anything)
+        .and_return('It is locked')
+      instance = build_instance
+
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).not_to have_received(:fill_gem_pouch_with_container)
+      expect(messages.last).to include('Bug')
     end
   end
 

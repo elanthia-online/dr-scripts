@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#safe-room
 =end
@@ -79,10 +81,9 @@ class SafeRoom
 
       DRCM.ensure_copper_on_hand(@withdraw_amount, settings, hometown_name)
       wait_at_empath(hometown['npc_empath']['id'])
-      stop_script('performance')  if Script.running?('performance') && @stop_performance_after_heal
-      stop_script('tome')         if Script.running?('tome')        && @stop_tome_after_heal
+      stop_idle_activities
       DRC.fix_standing
-      if (settings.hometown != hometown_name)
+      if settings.hometown != hometown_name
         bank_amount, _ = DRCM.deposit_coins(0, settings, hometown_name)
         if @keep_bank_amount && bank_amount > @keep_bank_amount
           DRCM.minimize_coins(bank_amount - @keep_bank_amount).each { |amount|
@@ -114,6 +115,22 @@ class SafeRoom
     echo "***STATUS*** Current health score is #{score}, threshold is #{@health_threshold}"
 
     score > @health_threshold
+  end
+
+  def start_idle_activities
+    if @performance_while_healing && !(Script.running?('performance') || Script.running?('play'))
+      start_script('performance', ['noclean'])
+      @stop_performance_after_heal = true
+    end
+    if @tome_while_healing && !Script.running?('tome')
+      start_script('tome', ['active'])
+      @stop_tome_after_heal = true
+    end
+  end
+
+  def stop_idle_activities
+    stop_script('performance') if Script.running?('performance') && @stop_performance_after_heal
+    stop_script('tome')        if Script.running?('tome')        && @stop_tome_after_heal
   end
 
   def devour_healing(settings, skip = false)
@@ -219,15 +236,7 @@ class SafeRoom
       fput("touch #{plant_type}") if @plant_nouns.include?(plant_type)
     end
 
-    # check for safe-room idle thing to do
-    if @performance_while_healing && !(Script.running?('performance') || Script.running?('play'))
-      start_script('performance', ['noclean'])
-      @stop_performance_after_heal = true
-    end
-    if @tome_while_healing && !Script.running?('tome')
-      start_script('tome', ['active'])
-      @stop_tome_after_heal = true
-    end
+    start_idle_activities
 
     if DRRoom.pcs.empty? || DRRoom.pcs_prone.empty? || Room.current.id == 8393
       wait_for_healing
@@ -270,12 +279,11 @@ class SafeRoom
   def use_pc_empaths?(pc_empaths, settings)
     return false if pc_empaths.empty?
 
-    # Sort pc empaths list by nearest first
     DRCT.sort_destinations(pc_empaths.map { |empath| empath['id'] })
         .map { |room| pc_empaths.select { |empath| empath['id'] == room } }
         .flatten
         .each do |empath|
-      next unless empath['name'].upcase == 'EV' || DRRoom.pcs.include?(empath['name'].capitalize!) || @validator.in_game?(empath['name'])
+      next unless empath['name'].upcase == 'EV' || DRRoom.pcs.include?(empath['name'].capitalize) || @validator.in_game?(empath['name'])
       next unless use_pc_empath?(empath)
 
       DRCM.ensure_copper_on_hand(settings.safe_room_tip_threshold || 0, settings)
@@ -291,37 +299,35 @@ class SafeRoom
 
     DRCT.walk_to empath['id']
 
-    if !DRRoom.pcs.include?(empath) && /.*vela.tohr (\w+)/ =~ DRRoom.room_objs.grep(@plant_regex).to_s
+    if !DRRoom.pcs.include?(empath['name']) && /.*vela.tohr (\w+)/ =~ DRRoom.room_objs.grep(@plant_regex).to_s
       Flags.add('doneheal', /You sense that this particular .* has healed all that it can.$/, /^You no longer feel the warmth from the touch of the/, /^The last of your wounds knit shut/)
       while /.*vela.tohr (\w+)/ =~ DRRoom.room_objs.grep(@plant_regex).to_s
         fput("touch #{Regexp.last_match(1)}")
 
-        if @performance_while_healing && !(Script.running?('performance') || Script.running?('play'))
-          start_script('performance', ['noclean'])
-          @stop_performance_after_heal = true
-        end
-        if @tome_while_healing && !Script.running?('tome')
-          start_script('tome', ['active'])
-          @stop_tome_after_heal = true
-        end
+        start_idle_activities
 
         120.times do
           pause 5
           break if Flags['doneheal']
+          break unless need_healing?
         end
+
+        # Stop trying plants if healing is no longer needed
+        break unless need_healing?
 
         if !Flags['doneheal'] || Flags['doneheal'].to_s =~ /You sense that this particular .* has healed all that it can|You no longer feel the warmth from the touch of the/
           Flags.reset('doneheal')
           next
         end
 
-        stop_script('performance')  if Script.running?('performance') && @stop_performance_after_heal
-        stop_script('tome')         if Script.running?('tome')        && @stop_tome_after_heal
+        stop_idle_activities
 
         Flags.delete('doneheal')
         return !need_healing?
       end
     elsif DRRoom.pcs.include?(empath['name'])
+      return true unless need_healing?
+
       if empath['start_heal_action']
         fput(empath['start_heal_action'])
       else
@@ -337,6 +343,7 @@ class SafeRoom
       24.times do
         pause 5
         break if Flags['doneheal']
+        break unless need_healing?
       end
       Flags.delete('doneheal')
     else
@@ -351,8 +358,8 @@ class SafeRoom
     return unless give_items || take_items
 
     DRCT.walk_to room_id
-    give(give_items)
-    take(take_items)
+    give(give_items) if give_items
+    take(take_items) if take_items
   end
 
   def tip(tip_threshold, tip_amount, empath, hometown)

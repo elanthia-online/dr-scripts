@@ -72,7 +72,12 @@ class Pick
     @lockpick_container = @settings.lockpick_container
     @balance_lockpick_container = @settings.pick['balance_lockpick_container']
 
+    @gem_pouch_adjective = @settings.gem_pouch_adjective
+    @gem_pouch_noun = @settings.gem_pouch_noun
     @tie_gem_pouches = @settings.tie_gem_pouches
+    @first_fill = true
+    @full_pouch_container = @settings.full_pouch_container
+    @spare_gem_pouch_container = @settings.spare_gem_pouch_container
     @stop_pick_on_mindlock = args.all ? false : @settings.stop_pick_on_mindlock
 
     @loot_nouns = @settings.lootables
@@ -811,6 +816,13 @@ class Pick
     end
   end
 
+  # Opens a box and transfers its contents to the appropriate containers.
+  #
+  # Bulk-fills gems via {DRCI.fill_gem_pouch_with_container}, then
+  # individually loots remaining items (specials, trash, coins).
+  #
+  # @param box_noun [String] noun of the box to loot (must be in hand)
+  # @return [void]
   def loot(box_noun)
     echo "Looting #{box_noun}..." if @debug
     if DRC.bput("open my #{box_noun}", /^In the .* you see .*\./, 'That is already open', 'It is locked') == 'It is locked'
@@ -820,9 +832,13 @@ class Pick
 
     loot_specials = @settings.loot_specials || []
     if @settings.fill_pouch_with_box || loot_specials.empty?
-      # Don't handle full pouches here, cause if we do, we can't tie them (when they're empty)
-      DRC.bput("fill my #{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun} with my #{box_noun}",
-               'You fill your', 'You open your', 'What were you referring to', /any gems/, /too full to fit/)
+      should_tie = @first_fill && @tie_gem_pouches
+      @first_fill = false
+      DRCI.fill_gem_pouch_with_container(
+        @gem_pouch_adjective, @gem_pouch_noun,
+        box_noun, @full_pouch_container,
+        @spare_gem_pouch_container, should_tie
+      )
     end
 
     # Loop to handle very full boxes that show "stuff" instead of all items
@@ -846,6 +862,40 @@ class Pick
     end
   end
 
+  # Stows a gem into the worn pouch, tying or swapping as needed.
+  #
+  # At 70 gems an untied pouch refuses more gems until tied. At 500
+  # gems a tied pouch is truly full and must be swapped for a spare.
+  #
+  # @param item [String] noun of the gem to stow
+  # @return [void]
+  def stow_gem(item)
+    case DRC.bput("stow my #{item}", /You put/, /You open/,
+                  /You'd better tie it up before putting/,
+                  /is too full to fit another gem/)
+    when /You put/, /You open/
+      return
+    when /You'd better tie it up/
+      DRCI.tie_gem_pouch?(@gem_pouch_adjective, @gem_pouch_noun)
+      DRCI.stow_item?(item)
+    when /is too full to fit another gem/
+      DRCI.lower_item?(item)
+      DRCI.swap_out_full_gempouch?(
+        @gem_pouch_adjective, @gem_pouch_noun,
+        @full_pouch_container, @spare_gem_pouch_container,
+        @tie_gem_pouches
+      )
+      DRCI.get_item?(item)
+      DRCI.stow_item?(item)
+    end
+  end
+
+  # Retrieves a single item from a box and routes it to the correct
+  # destination: loot_specials bag, gem pouch, trash, or dispose.
+  #
+  # @param item [String] noun of the item to retrieve
+  # @param box [String] noun of the box containing the item
+  # @return [void]
   def loot_item(item, box)
     # We don't touch glowing fragments, since we took off all our armor...
     return if item =~ /fragment/i
@@ -877,12 +927,7 @@ class Pick
 
     loot_nouns = @loot_nouns || []
     if loot_nouns.find { |thing| item_long.to_s.include?(thing) && !item_long.to_s.include?('sunstone runestone') }
-      case DRC.bput("stow my #{item}", /You put/, /You open/, /is too full to fit another gem/, /You'd better tie it up before putting/)
-      when /You put/, /You open/
-        return
-      when /You'd better tie it up/, /is too full to fit another gem/
-        swap_out_full_gempouch
-      end
+      stow_gem(item)
       return
     end
 
@@ -893,30 +938,6 @@ class Pick
       DRC.message("Pick: Unrecognized item '#{item_long}' - trashing it.")
       DRCI.dispose_trash(item, @worn_trashcan, @worn_trashcan_verb)
     end
-  end
-
-  def swap_out_full_gempouch
-    if @settings.spare_gem_pouch_container.nil?
-      DRC.message('Pick: spare_gem_pouch_container not set. Cannot swap out full gem pouch.')
-      pause 10
-      return
-    end
-
-    lowered_item = DRC.left_hand
-    DRCI.lower_item?(DRC.left_hand) if lowered_item
-
-    DRCI.remove_item?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
-    if @settings.full_pouch_container
-      DRCI.put_away_item?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}", @settings.full_pouch_container)
-    else
-      DRCI.stow_item?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
-    end
-
-    DRCI.get_item?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}", @settings.spare_gem_pouch_container)
-    DRCI.wear_item?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
-    DRCI.get_item?(lowered_item) if lowered_item
-    DRCI.stow_item?(lowered_item) if lowered_item
-    DRC.bput("tie my #{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}", 'You tie', "it's empty?", 'has already been tied off') if @tie_gem_pouches
   end
 
   def find_lockpick

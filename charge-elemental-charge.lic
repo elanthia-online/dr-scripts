@@ -1,0 +1,31 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#charge-elemental-charge
+=end
+
+class ChargeElementalCharge
+  def initialize
+    @settings = get_settings
+    @ec_minimum_level = @settings.elemental_charge_minimum_level || 6
+    @charging_room = @settings.elemental_charge_room
+
+    unless @charging_room
+      DRC.message('charge-elemental-charge: elemental_charge_room is not set in your YAML profile.')
+      return
+    end
+
+    DRCT.walk_to(@charging_room)
+    charge_elemental_charge
+  end
+
+  def done_charging?
+    DRCA.check_elemental_charge >= @ec_minimum_level
+  end
+
+  def charge_elemental_charge
+    until done_charging?
+      DRCS.summon_admittance
+    end
+  end
+end
+
+ChargeElementalCharge.new
