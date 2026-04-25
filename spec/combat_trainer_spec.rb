@@ -984,7 +984,7 @@ RSpec.describe SetupProcess do
     # User-facing messaging
     # =========================================================================
     context 'messaging for 5a (all at 34, weapon equipped)' do
-      it 'warns the user once about continuing with current weapon' do
+      it 'warns the user once about all skills being mindlocked' do
         allow(DRC).to receive(:message)
         game_state = build_game_state_double(weapon_skill: 'Bow')
         setup = build_setup_process
@@ -992,7 +992,7 @@ RSpec.describe SetupProcess do
         setup.send(:determine_next_to_train, game_state, weapon_training, false)
         setup.send(:determine_next_to_train, game_state, weapon_training, false)
 
-        expect(DRC).to have_received(:message).with(/Continuing to attack with Bow/).once
+        expect(DRC).to have_received(:message).with(/All weapon_training skills mindlocked/).once
       end
     end
 
