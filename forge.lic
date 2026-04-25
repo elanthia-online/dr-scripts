@@ -658,7 +658,7 @@ class Forge
   #
   # @return [void]
   def check_all_consumables
-    DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt)
+    DRCC.check_consumables('oil', @info['finisher-room'], @info['finisher-number'], @bag, @bag_items, @forging_belt) unless Script.running?('smith')
     # Wire brush is always order #10 in all forging society tool stands
     wire_brush_number = @info['wire-brush-number'] || 10
     DRCC.check_consumables('wire brush', @info['finisher-room'], wire_brush_number, @bag, @bag_items, @forging_belt)
