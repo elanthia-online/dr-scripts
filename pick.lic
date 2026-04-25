@@ -75,6 +75,7 @@ class Pick
     @gem_pouch_adjective = @settings.gem_pouch_adjective
     @gem_pouch_noun = @settings.gem_pouch_noun
     @tie_gem_pouches = @settings.tie_gem_pouches
+    @first_fill = true
     @full_pouch_container = @settings.full_pouch_container
     @spare_gem_pouch_container = @settings.spare_gem_pouch_container
     @stop_pick_on_mindlock = args.all ? false : @settings.stop_pick_on_mindlock
@@ -831,10 +832,12 @@ class Pick
 
     loot_specials = @settings.loot_specials || []
     if @settings.fill_pouch_with_box || loot_specials.empty?
+      should_tie = @first_fill && @tie_gem_pouches
+      @first_fill = false
       DRCI.fill_gem_pouch_with_container(
         @gem_pouch_adjective, @gem_pouch_noun,
         box_noun, @full_pouch_container,
-        @spare_gem_pouch_container, @tie_gem_pouches
+        @spare_gem_pouch_container, should_tie
       )
     end
 

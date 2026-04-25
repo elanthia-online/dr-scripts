@@ -234,6 +234,7 @@ RSpec.describe Pick do
     instance.instance_variable_set(:@gem_pouch_adjective, 'small')
     instance.instance_variable_set(:@gem_pouch_noun, 'pouch')
     instance.instance_variable_set(:@tie_gem_pouches, false)
+    instance.instance_variable_set(:@first_fill, true)
     instance.instance_variable_set(:@full_pouch_container, nil)
     instance.instance_variable_set(:@spare_gem_pouch_container, 'trunk')
     instance.instance_variable_set(:@tend_own_wounds, false)
@@ -884,8 +885,29 @@ RSpec.describe Pick do
       allow(DRCI).to receive(:get_item_list).and_return([])
     end
 
-    it 'delegates bulk gem fill to DRCI.fill_gem_pouch_with_container' do
-      instance = build_instance
+    it 'ties on first fill when tie_gem_pouches is true' do
+      instance = build_instance(tie_gem_pouches: true)
+
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', true)
+    end
+
+    it 'does not tie on subsequent fills' do
+      instance = build_instance(tie_gem_pouches: true)
+
+      instance.send(:loot, 'chest')
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', true).once
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+        .with('small', 'pouch', 'chest', nil, 'trunk', false).once
+    end
+
+    it 'never ties when tie_gem_pouches is false' do
+      instance = build_instance(tie_gem_pouches: false)
 
       instance.send(:loot, 'chest')
 
