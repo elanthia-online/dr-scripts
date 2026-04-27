@@ -23,6 +23,7 @@
 #   - `min_quantity` [Integer] only restock when count drops below this threshold
 #   - `countable_name` [String] alternate noun for counting (when buy name differs)
 #   - `clerk` [String] NPC name; triggers "ask <clerk> for <item>" instead of buy
+#   - `order_number` [Integer] catalog number; triggers two-step ORDER confirmation flow
 #   - `container` [String] specific container to stow into
 #   - `hometown` [String] buy from this town instead of your hometown
 #
@@ -61,6 +62,31 @@
 #       quantity: 3
 #       clerk: shopkeeper
 #
+# @example Two-step order confirmation flow (society/catalog shops)
+#   restock:
+#     bone_totem:
+#       name: totem
+#       size: 1
+#       room: 14753
+#       order_number: 16
+#       price: 125
+#       stackable: false
+#       quantity: 20
+#       min_quantity: 5
+#       container: doeskin satchel
+#
+# @example Sigil books (nested under restock key)
+#   restock:
+#     sigil_books:
+#       platinum-hued book:
+#         container: doeskin satchel
+#         congruence:
+#           quantity: 20
+#           min_quantity: 5
+#           room: 14753
+#           order_number: 3
+#           price: 312
+#
 # @example Custom hometown override
 #   restock:
 #     arrow:
@@ -93,28 +119,91 @@ class Restock
     start_restock
   end
 
-  # Orchestrates the restock process by separating items into
-  # default-hometown and custom-hometown groups, then restocking
-  # each group in its respective town.
+  # Orchestrates the restock process. Default-hometown regular items and sigil
+  # books are handled together in one bank trip. Custom-hometown items each
+  # get their own separate trip.
   #
   # @return [void]
   def start_restock
-    # Parse data from user's yaml and base-consumables
     items = parse_restockable_items
-    # If user has specified a custom location to restock a specific item, grab that here
     custom_loc_items = items.select { |k| k['hometown'] }
-    # Remove those custom location items from the primary restock items list
-    items -= custom_loc_items
-    # Call the restock_items method on restock items that don't have custom location set
-    restock_items(items, @settings.hometown)
+    default_items = items - custom_loc_items
 
-    # Restock items that have a custom location set
+    # Default hometown: regular items + sigil books in one bank trip
+    restock_default(default_items, @settings.hometown)
+
+    # Custom hometown items each get their own trip (different bank)
     custom_loc_items.group_by { |v| v['hometown'] }
                     .each { |hometown, group| restock_items(group, hometown) }
   end
 
+  # Counts all default-hometown regular items and sigil book scrolls, makes a
+  # single bank withdrawal, purchases everything, then deposits.
+  #
+  # @param item_list [Array<Hash>] regular items to potentially restock
+  # @param town [String] town to use for banking
+  # @return [void]
+  def restock_default(item_list, town)
+    # Count regular items
+    items_to_restock = []
+    coin_needed = 0
+
+    item_list.each do |item|
+      remaining = if item['stackable']
+                    count_stackable_item(item)
+                  else
+                    count_nonstackable_item(item)
+                  end
+      if item['min_quantity']
+        next unless remaining < item['min_quantity']
+      end
+      next unless remaining < item['quantity']
+
+      num_needed = item['quantity'] - remaining
+      buy_num = (num_needed / item['size'].to_f).ceil
+      coin_needed += buy_num * item['price']
+      item['buy_num'] = buy_num
+      items_to_restock.push(item)
+    end
+    coin_needed += 2502 * items_to_restock.length
+
+    # Count sigil book scrolls
+    sigil_purchases = collect_sigil_purchases
+    coin_needed += sigil_purchases.sum { |p| p['needed'] * p['price'] }
+    coin_needed += 2502 * sigil_purchases.map { |p| p['room'] }.uniq.length
+
+    return if items_to_restock.empty? && sigil_purchases.empty?
+
+    DRCI.stow_hands
+    echo "Total coin needed: #{coin_needed}" if @debug
+    DRCM.ensure_copper_on_hand(coin_needed, @settings, town)
+
+    # Purchase regular items
+    items_to_restock.each do |item|
+      item['buy_num'].times do
+        purchase_item(item)
+        handle_encumbrance(item)
+        stow_item(item)
+      end
+    end
+
+    # Purchase sigil book scrolls grouped by shop room
+    sigil_purchases.group_by { |p| p['room'] }.each do |room, room_purchases|
+      DRCT.walk_to(room)
+      room_purchases.each do |purchase|
+        purchase['needed'].times do
+          purchase_via_order(purchase['order_number'])
+          DRC.bput("put my #{purchase['sigil_type']} sigil-scroll in my #{purchase['book']}", /You add/)
+        end
+      end
+    end
+
+    DRCI.stow_hands
+    DRCM.deposit_coins(@keep_copper, @settings, town)
+  end
+
   # Calculates quantities needed, withdraws coin, purchases, and stows
-  # items for a single town.
+  # items for a single town. Used only for custom-hometown items.
   #
   # @param item_list [Array<Hash>] items to potentially restock
   # @param town [String] town to restock in
@@ -165,15 +254,19 @@ class Restock
 
   private
 
-  # Purchases a single item. Uses ask-for flow when item specifies
-  # a clerk, otherwise uses standard buy.
+  # Purchases a single item. Uses ask-for flow when item specifies a clerk,
+  # two-step order confirmation when item specifies an order_number,
+  # otherwise uses standard buy.
   #
-  # @param item [Hash] item configuration with 'name', 'room', optional 'clerk'
+  # @param item [Hash] item configuration with 'name', 'room', optional 'clerk', optional 'order_number'
   # @return [void]
   def purchase_item(item)
     if item['clerk']
       DRCT.walk_to(item['room'])
       fput("ask #{item['clerk']} for #{item['name']}")
+    elsif item['order_number']
+      DRCT.walk_to(item['room'])
+      purchase_via_order(item['order_number'])
     else
       DRCT.buy_item(item['room'], item['name'])
     end
@@ -210,37 +303,24 @@ class Restock
   #
   # @return [Array<Hash>] fully populated restock item configurations
   def parse_restockable_items
-    # Get the yaml restock hash
     item_list = @restock
-    # Get the hometown consumables from base-consumables
     hometown_data = get_data('consumables')[@hometown]
     items = []
 
-    # Iterate through the yaml restock hash
     item_list.each do |key, value|
+      next if key == 'sigil_books'
       echo "Restock Item: #{key} - #{value}" if @debug
 
-      # If any restock key exists as a key in hometown consumables
-      # AND a custom town specification doesn't exist in this restock item,
-      # then we'll restock this item using the data in base-consumables for our hometown.
       if hometown_data.key?(key) && !value.key?('hometown')
-        # Get hash from base-consumables for the specific restock item (e.g. 'arrow')
         ht_data = hometown_data[key]
-
-        # Iterate through the base-consumables hash. Use consumable data from base-consumables
-        # _unless_ specific data is specified in user's yaml.
         ht_data.each_key { |k| value[k] = ht_data[k] unless value.key?(k) }
         items.push(value)
-      # Otherwise, the user has specified a custom restock. This custom set needs to specify
-      # ALL data for restocking, since we're not doing a base-consumables lookup.
       elsif valid_item_data?(value)
         items.push(value)
       else
         echo "No hometown of explicit data for '#{key}'"
       end
     end
-    # Return the full set of populated restock data, either full custom user-provided or from
-    # base-consumables or a combination thereof.
     echo "Items are: #{items}" if @debug
     items
   end
@@ -313,6 +393,88 @@ class Restock
     echo "Validating custom item data: #{item_data}" if @debug
 
     %w[name size room price stackable quantity].all? { |x| item_data.key?(x) }
+  end
+
+  # Checks all configured sigil books and returns a list of scrolls that need
+  # to be purchased, with quantity and shop info for each.
+  #
+  # @return [Array<Hash>] purchases needed across all books
+  def collect_sigil_purchases
+    return [] unless @restock['sigil_books']
+
+    purchases = []
+    @restock['sigil_books'].each do |book, book_config|
+      container = book_config['container']
+      book_config.each do |sigil_type, config|
+        next if sigil_type == 'container'
+        current = count_sigils_in_book(book, sigil_type, container)
+        next if current.nil?
+        next if config['min_quantity'] && current >= config['min_quantity']
+        needed = config['quantity'] - current
+        next if needed <= 0
+        echo "#{book} / #{sigil_type}: need #{needed} (have #{current} of #{config['quantity']})" if @debug
+        purchases << {
+          'book'         => book,
+          'sigil_type'   => sigil_type,
+          'order_number' => config['order_number'],
+          'price'        => config['price'],
+          'room'         => config['room'],
+          'needed'       => needed
+        }
+      end
+    end
+    purchases
+  end
+
+  # Turns the book to its contents page, reads it, and counts entries matching
+  # the given sigil type.
+  #
+  # @param book [String] identifying noun of the sigil book
+  # @param sigil_type [String] sigil type name to count
+  # @param container [String, nil] container the book lives in
+  # @return [Integer, nil] number of matching scrolls in the book, or nil if book not found
+  def count_sigils_in_book(book, sigil_type, container = nil)
+    DRCI.stow_hands
+    unless DRCI.get_item?(book, container)
+      echo "Sigil book '#{book}' not found in inventory."
+      return nil
+    end
+    DRC.bput("turn my #{book} to contents", /You turn|already/)
+    result = DRC.bput("read my #{book}", /no scrolls inside/, /Page -- Sigil Type/)
+    if result =~ /no scrolls inside/
+      stow_book(book, container)
+      return 0
+    end
+    lines = []
+    loop do
+      line = get
+      lines << line
+      break if line =~ /You can turn/
+    end
+    stow_book(book, container)
+    lines.count { |l| l =~ /\d+ -- #{Regexp.escape(sigil_type)}/i }
+  end
+
+  # Stows the sigil book into its configured container or default location.
+  #
+  # @param book [String] book noun
+  # @param container [String, nil] target container, or nil for default stow
+  # @return [void]
+  def stow_book(book, container)
+    if container
+      DRCI.put_away_item?(book, container)
+    else
+      DRCI.stow_hands
+    end
+  end
+
+  # Purchases an item using the two-step order confirmation flow.
+  #
+  # @param order_number [Integer] catalog number from the shop's ORDER list
+  # @return [void]
+  def purchase_via_order(order_number)
+    DRC.bput("order #{order_number}", /Just order it again/)
+    DRC.bput("order #{order_number}", /hands you/)
   end
 end
 
