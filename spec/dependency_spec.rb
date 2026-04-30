@@ -72,36 +72,43 @@ end unless defined?(Settings)
 
 # --- Extract the constant and methods from dependency.lic ---
 # We eval only the relevant sections to avoid all Lich runtime dependencies.
+# Methods/constants may be at column 0 or indented inside sentinel gate blocks.
 dep_path = File.join(File.dirname(__FILE__), '..', 'dependency.lic')
 dep_lines = File.readlines(dep_path)
 
-# Extract DR_OBSOLETE_SCRIPTS constant
-obs_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_SCRIPTS\s*=/ }
-obs_end = dep_lines[obs_start..].index { |l| l =~ /\.freeze$/ }
-eval(dep_lines[obs_start..obs_start + obs_end].join, TOPLEVEL_BINDING, dep_path, obs_start + 1)
+# Helper: extract a constant assignment (possibly indented) through .freeze
+def extract_constant(lines, path, const_name)
+  start = lines.index { |l| l =~ /^\s*#{Regexp.escape(const_name)}\s*=/ }
+  raise "Could not find #{const_name} in #{path}" unless start
 
-# Extract dr_obsolete_script? method
-fn_start = dep_lines.index { |l| l =~ /^def dr_obsolete_script\?/ }
-fn_end = dep_lines[fn_start + 1..].index { |l| l =~ /^end\s*$/ }
-eval(dep_lines[fn_start..fn_start + 1 + fn_end].join, TOPLEVEL_BINDING, dep_path, fn_start + 1)
+  freeze_offset = lines[start..].index { |l| l =~ /\.freeze$/ }
+  raise "Could not find .freeze for #{const_name}" unless freeze_offset
 
-# Extract warn_obsolete_scripts method
-wn_start = dep_lines.index { |l| l =~ /^def warn_obsolete_scripts/ }
-wn_end = dep_lines[wn_start + 1..].index { |l| l =~ /^end\s*$/ }
-eval(dep_lines[wn_start..wn_start + 1 + wn_end].join, TOPLEVEL_BINDING, dep_path, wn_start + 1)
+  source = lines[start..start + freeze_offset].map(&:lstrip).join
+  eval(source, TOPLEVEL_BINDING, path, start + 1)
+end
 
-# Extract handle_obsolete_autostart method
-ha_start = dep_lines.index { |l| l =~ /^def handle_obsolete_autostart/ }
-ha_end = dep_lines[ha_start + 1..].index { |l| l =~ /^end\s*$/ }
-eval(dep_lines[ha_start..ha_start + 1 + ha_end].join, TOPLEVEL_BINDING, dep_path, ha_start + 1)
+# Helper: extract a method definition (possibly indented) through its matching end
+def extract_method(lines, path, method_name)
+  start = lines.index { |l| l =~ /^\s*def #{Regexp.escape(method_name)}[\s(]?/ }
+  raise "Could not find def #{method_name} in #{path}" unless start
 
-# Extract stop_autostart method
-sa_start = dep_lines.index { |l| l =~ /^def stop_autostart/ }
-sa_end = dep_lines[sa_start + 1..].index { |l| l =~ /^end\s*$/ }
-eval(dep_lines[sa_start..sa_start + 1 + sa_end].join, TOPLEVEL_BINDING, dep_path, sa_start + 1)
+  indent = lines[start][/^(\s*)/, 1]
+  end_offset = lines[start + 1..].index { |l| l =~ /^#{indent}end\s*$/ }
+  raise "Could not find matching end for #{method_name}" unless end_offset
 
-# Extract inlined manager functions
+  source = lines[start..start + 1 + end_offset].map { |l| l.sub(/^#{indent}/, '') }.join
+  eval(source, TOPLEVEL_BINDING, path, start + 1)
+end
+
+extract_constant(dep_lines, dep_path, 'DR_OBSOLETE_SCRIPTS')
+extract_constant(dep_lines, dep_path, 'DR_OBSOLETE_DATA_FILES')
+
 %w[
+  dr_obsolete_script?
+  warn_obsolete_scripts
+  handle_obsolete_autostart
+  stop_autostart
   save_bankbot_transaction
   load_bankbot_ledger
   save_reportbot_whitelist
@@ -109,16 +116,7 @@ eval(dep_lines[sa_start..sa_start + 1 + sa_end].join, TOPLEVEL_BINDING, dep_path
   register_slackbot
   send_slackbot_message
   warn_obsolete_data_files
-].each do |fn_name|
-  fn_s = dep_lines.index { |l| l =~ /^def #{Regexp.escape(fn_name)}\b/ }
-  fn_e = dep_lines[fn_s + 1..].index { |l| l =~ /^end\s*$/ }
-  eval(dep_lines[fn_s..fn_s + 1 + fn_e].join, TOPLEVEL_BINDING, dep_path, fn_s + 1)
-end
-
-# Extract DR_OBSOLETE_DATA_FILES constant
-odf_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_DATA_FILES\s*=/ }
-odf_end = dep_lines[odf_start..].index { |l| l =~ /\.freeze$/ }
-eval(dep_lines[odf_start..odf_start + odf_end].join, TOPLEVEL_BINDING, dep_path, odf_start + 1)
+].each { |fn| extract_method(dep_lines, dep_path, fn) }
 
 RSpec.describe 'Obsolete Scripts' do
   before { $respond_messages.clear }
@@ -1020,6 +1018,254 @@ RSpec.describe 'union_keys merge behavior' do
       result = merge_with_union_keys([base, char])
       expect(result['autostarts']).to match_array(%w[esp healer])
       expect(result['hometown']).to eq('Shard')
+    end
+  end
+end
+
+# --- Sentinel Gating ---
+# Validates structural integrity of the gated dependency.lic:
+# - Each sentinel gates an independent block
+# - No gate block nests another sentinel check
+# - Functions land in the correct gate (or outside all gates)
+# - Version string has been ticked
+
+DEP_SOURCE = File.read(dep_path)
+
+# Extracts the body of an `unless Lich::Common.const_defined?(:SENTINEL, false)` block.
+# Returns the indented content between the unless and its closing end.
+# Extracts all `unless Lich::Common.const_defined?(:SENTINEL, false)` blocks
+# that reference the given sentinel. Returns their bodies concatenated.
+# A single sentinel may gate multiple blocks (e.g. CORE_GET_SETTINGS gates
+# both the get_settings/get_data functions and the ScriptManager class).
+def extract_gate_block(source, sentinel_name)
+  opening = "unless Lich::Common.const_defined?(:#{sentinel_name}, false)\n"
+  bodies = []
+  pos = 0
+  while (idx = source.index(opening, pos))
+    rest = source[idx + opening.length..]
+    end_match = rest.match(/^end\s*#.*gate/)
+    raise "Could not find closing end for #{sentinel_name} gate at position #{idx}" unless end_match
+
+    bodies << rest[0...end_match.begin(0)]
+    pos = idx + opening.length + end_match.end(0)
+  end
+  raise "Could not find any gate block for #{sentinel_name}" if bodies.empty?
+
+  bodies.join("\n")
+end
+
+RSpec.describe 'Sentinel Gating Structure' do
+  describe 'gate block extraction' do
+    %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP CORE_AUTOSTART].each do |sentinel|
+      it "#{sentinel} gate block exists and is extractable" do
+        expect { extract_gate_block(DEP_SOURCE, sentinel) }.not_to raise_error
+      end
+    end
+  end
+
+  describe 'gate independence' do
+    let(:sentinels) { %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP CORE_AUTOSTART] }
+
+    it 'no gate block contains another sentinel check' do
+      sentinels.each do |sentinel|
+        block = extract_gate_block(DEP_SOURCE, sentinel)
+        other_sentinels = sentinels - [sentinel]
+        other_sentinels.each do |other|
+          expect(block).not_to include("const_defined?(:#{other}"),
+                               "#{sentinel} gate must not check #{other} -- gates must be independent"
+        end
+      end
+    end
+  end
+
+  describe 'CORE_GET_SETTINGS gate contents' do
+    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_GET_SETTINGS') }
+
+    it 'defines $setupfiles global' do
+      expect(block).to include('$setupfiles = SetupFiles.new')
+    end
+
+    it 'defines get_settings method' do
+      expect(block).to include('def get_settings')
+    end
+
+    it 'defines get_data method' do
+      expect(block).to include('def get_data')
+    end
+
+    it 'defines ScriptManager class (also gated by CORE_GET_SETTINGS)' do
+      expect(block).to include('class ScriptManager')
+    end
+
+    it 'defines $manager global' do
+      expect(block).to include('$manager = ScriptManager.new')
+    end
+
+    it 'defines ScriptManager-dependent helpers' do
+      expect(block).to include('def get_script(')
+      expect(block).to include('def force_refresh_scripts')
+      expect(block).to include('def list_tracked_scripts')
+      expect(block).to include('def setup_data')
+    end
+  end
+
+  describe 'CORE_SCRIPT_LOADER gate contents' do
+    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_SCRIPT_LOADER') }
+
+    it 'defines custom_require method returning a lambda' do
+      expect(block).to include('def custom_require')
+      expect(block).to include('lambda do')
+    end
+  end
+
+  describe 'CORE_MAP_OVERRIDES gate contents' do
+    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_MAP_OVERRIDES') }
+
+    it 'defines make_map_edits method' do
+      expect(block).to include('def make_map_edits')
+    end
+
+    it 'handles wayto overrides' do
+      expect(block).to include('base_wayto_overrides')
+      expect(block).to include('personal_wayto_overrides')
+    end
+
+    it 'handles personal map targets' do
+      expect(block).to include('personal_map_targets')
+    end
+  end
+
+  describe 'CORE_DR_STARTUP gate contents' do
+    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_DR_STARTUP') }
+
+    it 'checks ShowRoomID and MonsterBold flags' do
+      expect(block).to include('ShowRoomID')
+      expect(block).to include('MonsterBold')
+    end
+
+    it 'guards flag setup with UserVars.dependency_setflags' do
+      expect(block).to include('dependency_setflags')
+    end
+
+    it 'defines DR_OBSOLETE_SCRIPTS constant' do
+      expect(block).to include('DR_OBSOLETE_SCRIPTS')
+    end
+
+    it 'defines DR_OBSOLETE_DATA_FILES constant' do
+      expect(block).to include('DR_OBSOLETE_DATA_FILES')
+    end
+
+    it 'defines warn_obsolete_scripts method' do
+      expect(block).to include('def warn_obsolete_scripts')
+    end
+
+    it 'defines warn_obsolete_data_files method' do
+      expect(block).to include('def warn_obsolete_data_files')
+    end
+
+    it 'defines warn_custom_scripts method' do
+      expect(block).to include('def warn_custom_scripts')
+    end
+  end
+
+  describe 'CORE_AUTOSTART gate contents' do
+    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_AUTOSTART') }
+
+    it 'defines handle_obsolete_autostart method' do
+      expect(block).to include('def handle_obsolete_autostart')
+    end
+
+    it 'defines dr_obsolete_script? method' do
+      expect(block).to include('def dr_obsolete_script?')
+    end
+
+    it 'defines autostart method' do
+      expect(block).to include('def autostart(')
+    end
+
+    it 'defines stop_autostart method' do
+      expect(block).to include('def stop_autostart(')
+    end
+
+    it 'defines dependency_status method' do
+      expect(block).to include('def dependency_status')
+    end
+
+    it 'merges Settings autostart into UserVars' do
+      expect(block).to include("Settings['autostart']")
+      expect(block).to include('UserVars.autostart_scripts')
+    end
+  end
+
+  describe 'pre-existing gates' do
+    it 'CORE_ARGPARSER gate exists with inline fallback' do
+      expect(DEP_SOURCE).to match(/const_defined\?\(:CORE_ARGPARSER/)
+      expect(DEP_SOURCE).to include('class ArgParser')
+    end
+
+    it 'CORE_SETUPFILES gate exists with inline fallback' do
+      expect(DEP_SOURCE).to match(/const_defined\?\(:CORE_SETUPFILES/)
+      expect(DEP_SOURCE).to include('class SetupFiles')
+    end
+
+    it 'does not define redundant top-level aliases (include Lich::Common handles it)' do
+      expect(DEP_SOURCE).not_to include('ArgParser = Lich::Common::ArgParser')
+      expect(DEP_SOURCE).not_to include('SetupFiles = Lich::Common::SetupFiles')
+    end
+  end
+
+  describe 'ungated runtime helpers' do
+    let(:runtime_marker) { DEP_SOURCE.index('# --- Runtime helpers') }
+
+    %w[
+      save_bankbot_transaction
+      load_bankbot_ledger
+      save_reportbot_whitelist
+      load_reportbot_whitelist
+      send_slackbot_message
+      register_slackbot
+      format_name
+      format_yaml_name
+      verify_script
+      shift_hometown
+      clear_hometown
+    ].each do |fn_name|
+      it "#{fn_name} is defined outside all gate blocks" do
+        fn_pos = DEP_SOURCE.index(/^def #{Regexp.escape(fn_name)}[\s(]?/)
+        expect(fn_pos).not_to be_nil, "Expected to find def #{fn_name}"
+        expect(fn_pos).to be > runtime_marker,
+                          "#{fn_name} should be after the runtime helpers section marker"
+      end
+    end
+  end
+
+  describe 'version' do
+    it 'has been ticked to 3.0.0' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '3.0.0'")
+    end
+
+    it 'requires minimum lich version 5.16.2' do
+      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.16.2'")
+    end
+  end
+
+  describe 'boot sequence' do
+    it 'conditionally runs legacy ScriptManager boot' do
+      expect(DEP_SOURCE).to include('if defined?($manager)')
+    end
+
+    it 'calls map overrides in non-legacy path' do
+      expect(DEP_SOURCE).to match(/make_map_edits if/)
+    end
+
+    it 'reloads setupfiles cache' do
+      expect(DEP_SOURCE).to include('$setupfiles.reload if')
+    end
+
+    it 'calls warning functions conditionally' do
+      expect(DEP_SOURCE).to match(/warn_custom_scripts if/)
+      expect(DEP_SOURCE).to match(/warn_obsolete_scripts if/)
+      expect(DEP_SOURCE).to match(/warn_obsolete_data_files if/)
     end
   end
 end

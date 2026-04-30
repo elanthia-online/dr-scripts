@@ -2,15 +2,15 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '2.5.1'
+$DEPENDENCY_VERSION = '3.0.1'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
-$MIN_LICH_VERSION = '5.15.0'
+$MIN_LICH_VERSION = '5.17.0'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   10.times do
     border = "*" * 107
     _respond("<pushBold/>#{border}<popBold/>")
-    _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} were deprecated on Tuesday 28 January 2026.".ljust(103)} *<popBold/>")
+    _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} are no longer supported.".ljust(103)} *<popBold/>")
     _respond("<pushBold/>* #{"See https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich".ljust(103)} *<popBold/>")
     _respond("<pushBold/>* #{"For update instructions.".ljust(103)} *<popBold/>")
     _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(103)} *<popBold/>")
@@ -27,59 +27,11 @@ end
 
 echo("Dependency version #{$DEPENDENCY_VERSION}")
 
-while Script.running?('repository')
-  echo("Repository is running, pausing for 10 seconds.")
-  pause 10
-end
+debug = UserVars.debug_dependency
 
-unless Settings['dependency_version'] == $DEPENDENCY_VERSION
-  echo("New dependency version detected. Resetting repository auto-update settings.")
-  Script.start("repository", "reset-update-settings")
-  if XMLData.game == "DRX" || XMLData.game == "DRF"
-    if XMLData.game == "DRX"
-      echo("DR Plat instance detected. Setting map to not auto-update.")
-    elsif XMLData.game == "DRF"
-      echo("DR Fallen instance detected. Setting map to not auto-update.")
-    end
-    Script.start("repository", "unset-mapdb-updatable")
-  end
-  # Invalidate cached GitHub tree status so we get fresh SHAs
-  Settings['status'] = nil
-  Settings['status_time'] = nil
-  Settings['dependency_version'] = $DEPENDENCY_VERSION
-  Settings.save
-end
-
-# Merge Settings['autostart'] (per-game global) into UserVars.autostart_scripts (per-character).
-# Settings is script-scoped and per-game - shared across all characters but only dependency can see it.
-# We merge on every login so the global list acts as a baseline for all characters.
-# We do NOT clear Settings['autostart'] because it needs to persist for other characters.
-UserVars.autostart_scripts ||= []
-if Settings['autostart'] && !Settings['autostart'].empty?
-  merged = (UserVars.autostart_scripts + Settings['autostart']).uniq - ['dependency']
-  if merged != UserVars.autostart_scripts
-    echo("Merging global autostarts into character autostarts.")
-    echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
-    echo("Before: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-    UserVars.autostart_scripts = merged
-    echo("After: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-  end
-end
-
-unless UserVars.dependency_setflags
-  echo("Checking MonsterBold and ShowRoomID flags.")
-  flags = Lich::Util.issue_command("flag", /^Usage/, /^For other setting options, see AVOID, SET, and TOGGLE/, quiet: true, timeout: 1, usexml: false)
-  mandatory_flags = ["ShowRoomID", "MonsterBold"]
-  mandatory_flags.each do |flag|
-    unless flags.any? { |f| f.match?(/#{flag}\s+ON/) }
-      fput("flag #{flag} on")
-    end
-  end
-  UserVars.dependency_setflags = Time.now
-end
-
+# --- CORE_ARGPARSER gate ---
 if Lich::Common.const_defined?(:CORE_ARGPARSER, false)
-  DRC.message("--- Dependency: ArgParser provided by core Lich. Skipping inline definition.")
+  # Core provides ArgParser via Lich::Common; include Lich::Common (lich.rbw) makes it top-level
 else
   class ArgParser
     def parse_args(data, flex_args = false)
@@ -107,25 +59,6 @@ else
     end
 
     def display_args(data)
-      # This section displays help output for a script. It recognizes when a script call has been given
-      # with the wrong number or incorrect arguments, or when a script has been called via
-      # ;script-name help. It outputs an example script call, including arguments, with optional
-      # arguments enclosed in brackets. If an optional script_summary argument has been specified within
-      # the script, it also outputs a summary of the script. Further, if yaml settings have been
-      # outlined in base-help.yaml, it will output help information for the yaml settings used.
-      # Example output when all help settings have been specified:
-      #
-      # >;circlecheck help
-      #   SCRIPT SUMMARY: Checks your circle and skills to next circle. Optionally checks skills for a target circle.
-      #
-      #   SCRIPT CALL FORMAT AND ARG DESCRIPTIONS (arguments in brackets are optional):
-      #    ;circlecheck [debug] [mode] [target] [script_summary]
-      #     debug        Runs the script with debug messages.
-      #     mode         Only display requirements you don't meet [brief, short, next]
-      #     target       See requirements for a specific circle
-      #
-      #   YAML SETTINGS USED:
-      #     circlecheck_prettyprint: Tells circlecheck to use the pretty print formatting for output. [Ex: true/false]
       data.each do |def_set|
         def_set
           .select { |x| x[:name].to_s == "script_summary" }
@@ -138,7 +71,6 @@ else
           .each { |x| respond "   #{(x[:display] || x[:name]).ljust(12)} #{x[:description]} #{x[:options] ? '[' + x[:options].join(', ') + ']' : ''}" }
       end
 
-      # Display help output for settings used in the script. Relies on base-help.yaml.
       yaml_data = get_data('help').to_h
       yaml_settings = yaml_data.select { |_field, info| info["referenced_by"].include?(Script.current.name) }
 
@@ -184,8 +116,6 @@ else
       if flex
         args.flex = vars
 
-        # Check to see if a yaml profile has same name as script arg. Only matters when we're flexing
-        # args and attempting to call a yaml profile with the flexed arg.
         profiles = Dir[File.join(SCRIPT_DIR, 'profiles/*.*')]
         profiles.each do |profile|
           profile = profile[/.*#{Regexp.escape(checkname)}-(\w*).yaml/, 1]
@@ -213,7 +143,7 @@ else
       item
     end
   end
-end # if/else CORE_ARGPARSER
+end # CORE_ARGPARSER gate
 
 def parse_args(defn, flex_args = false)
   ArgParser.new.parse_args(defn, flex_args)
@@ -223,331 +153,11 @@ def display_args(defn)
   ArgParser.new.display_args(defn)
 end
 
-arg_definitions = [
-  [
-    { name: 'install', regex: /install/i, optional: true }
-  ]
-]
-
-args = parse_args(arg_definitions)
-install = args.install
-
-debug = UserVars.debug_dependency
-
-class ScriptManager
-  def initialize(debug)
-    @debug = debug
-    @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
-    @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
-
-    UserVars.autostart_scripts ||= []
-    UserVars.autostart_scripts.uniq!
-    UserVars.autostart_scripts -= ['dependency']
-
-    Settings['base_versions'] ||= {}
-
-    @request_authorization = load_personal_github_token
-    @versions = nil
-    @dependency_updated = false
-    @downloads_occurred = false
-  end
-
-  def dependency_updated?
-    @dependency_updated
-  end
-
-  def autostarts
-    (UserVars.autostart_scripts.to_a + SetupFiles.new.get_settings.autostarts.to_a).uniq
-  end
-
-  def get_versions
-    @versions ||= build_version_hash
-  end
-
-  def build_version_hash
-    Dir[File.join(SCRIPT_DIR, '*.lic')].each_with_object({}) do |path, versions|
-      file = File.basename(path)
-      body = File.binread(File.join(SCRIPT_DIR, file))
-      sha = Digest::SHA1.hexdigest('blob' + " #{body.size}" + "\0" + body)
-      versions[file] = sha
-    end
-  end
-
-  def get_script(filename, force = false)
-    filename = filename.dup
-    download_script(filename, force)
-  end
-
-  def repo_scripts
-    $manager.get_status['tree'].map { |element| element['path'] }.select { |file| file =~ /^[^\/]+\.lic$/ && !file.include?('-setup') }
-  end
-
-  def start_scripts(force = false)
-    start_time = Time.now
-    @versions = nil
-    scripts = repo_scripts
-    echo("Checking #{scripts.length} scripts for updates...")
-    updated = 0
-    scripts.each do |(name, _)|
-      updated += 1 if get_script(name, force)
-    end
-    if updated > 0
-      echo("Updated #{updated} script#{updated == 1 ? '' : 's'}.")
-      invalidate_status_cache
-    else
-      echo("All scripts are up to date.")
-    end
-    autostarts.each do |script|
-      next if handle_obsolete_autostart(script)
-
-      custom_require.call(script)
-    end
-    finish_time = Time.now
-    run_time = finish_time - start_time
-    echo("Time spent in start_scripts is #{run_time}") if @debug
-  end
-
-  def download_script(filename, force = false)
-    return false if filename.nil? || filename.empty?
-
-    echo("downloading:#{filename}") if @debug
-    info = get_file_status(filename)
-    return false unless info
-    return false if get_versions[filename] == info['sha'] && !force
-
-    echo("info:#{info}") if @debug
-    content = download_raw_file(filename)
-    return false unless content
-
-    File.open(File.join(SCRIPT_DIR, "#{filename}"), 'wb') { |file| file.print(content) }
-    @downloads_occurred = true
-    @dependency_updated = true if filename == 'dependency.lic'
-    echo("Downloaded #{filename}")
-    true
-  end
-
-  def verify_or_make_dir(path)
-    Dir.mkdir(path) unless Dir.exist?(path)
-  end
-
-  def setup_data
-    verify_or_make_dir File.join(SCRIPT_DIR, 'data')
-    get_status['tree']
-      .select { |data| data['path'] =~ %r{^data/} && data['type'] == 'blob' }
-      .each do |setup_file|
-        filename = File.basename(setup_file['path'])
-        echo("downloading #{filename}") if @debug
-        content = download_raw_file(setup_file['path'])
-        next unless content
-
-        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'wb') { |file| file.print(content) }
-      end
-  end
-
-  def check_base_files
-    start_time = Time.now
-    verify_or_make_dir File.join(SCRIPT_DIR, 'profiles')
-    to_update = get_status['tree']
-                .select { |data| data['path'] =~ %r{^profiles/base(?:-empty)?\.yaml$} }
-                .reject { |setup_file|
-                  filename = File.basename(setup_file['path'])
-                  File.exist?(File.join(SCRIPT_DIR, 'profiles', filename)) && setup_file['sha'] == Settings['base_versions'][filename]
-                }
-    if to_update.empty?
-      echo("Base profile files are up to date.")
-    else
-      echo("Updating #{to_update.length} base profile file#{to_update.length == 1 ? '' : 's'}...")
-      to_update.each do |setup_file|
-        filename = File.basename(setup_file['path'])
-        content = download_raw_file(setup_file['path'])
-        next unless content
-
-        File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'wb') { |file| file.print(content) }
-        Settings['base_versions'][filename] = setup_file['sha']
-        echo("Downloaded #{filename}")
-      end
-    end
-    Settings.save
-    finish_time = Time.now
-    run_time = finish_time - start_time
-    echo("Time spent in check_base_files is #{run_time}") if @debug
-  end
-
-  def check_data_files
-    start_time = Time.now
-    verify_or_make_dir File.join(SCRIPT_DIR, 'data')
-    to_update = get_status['tree']
-                .select { |data| data['path'] =~ %r{^data/base.+yaml$} }
-                .reject { |setup_file|
-                  filename = File.basename(setup_file['path'])
-                  File.exist?(File.join(SCRIPT_DIR, 'data', filename)) && setup_file['sha'] == Settings['base_versions'][filename]
-                }
-    if to_update.empty?
-      echo("Data files are up to date.")
-    else
-      echo("Updating #{to_update.length} data file#{to_update.length == 1 ? '' : 's'}...")
-      to_update.each do |setup_file|
-        filename = File.basename(setup_file['path'])
-        content = download_raw_file(setup_file['path'])
-        next unless content
-
-        File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'wb') { |file| file.print(content) }
-        Settings['base_versions'][filename] = setup_file['sha']
-        echo("Downloaded #{filename}")
-      end
-    end
-    Settings.save
-    finish_time = Time.now
-    run_time = finish_time - start_time
-    echo("Time spent in check_data_files is #{run_time}") if @debug
-  end
-
-  def run_script(filename)
-    filename.sub!(/\.lic$/, '')
-    echo("refresh:#{filename}") if @debug
-    stop_script(filename) if Script.running?(filename)
-    pause 0.1 while Script.running?(filename)
-    start_script(filename)
-  end
-
-  def get_file_status(filename)
-    get_status['tree'].find { |element| element['path'] == filename }
-  end
-
-  def invalidate_status_cache
-    echo("Invalidating cached status (files were downloaded)") if @debug
-    Settings['status'] = nil
-    Settings['status_time'] = nil
-    Settings.save
-  end
-
-  def get_status
-    if Settings['status'] && Time.now - Settings['status_time'] <= 120
-      echo("Returning cached status response") if @debug
-      return Settings['status']
-    end
-
-    Settings['status_time'] = Time.now
-    Settings['status'] = make_request(@status_url)
-    Settings.save
-    return Settings['status']
-  end
-
-  def make_request(raw_uri)
-    echo "make_request:raw_uri = #{raw_uri}" if @debug
-    uri = URI.parse(raw_uri)
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Get.new(uri.request_uri)
-    request['Authorization'] = @request_authorization if @request_authorization
-
-    response = http.request(request)
-    JSON.parse(response.body)
-  end
-
-  def download_raw_file(path)
-    # Downloads file content directly from raw.githubusercontent.com.
-    # No authentication required, no rate limit, returns raw file content.
-    raw_url = "#{@raw_base_url}/#{path}"
-    echo "download_raw_file: #{raw_url}" if @debug
-    uri = URI.parse(raw_url)
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    request = Net::HTTP::Get.new(uri.request_uri)
-    response = http.request(request)
-
-    unless response.code == '200'
-      echo "Failed to download #{path}: HTTP #{response.code}"
-      return nil
-    end
-
-    response.body
-  end
-
-  def load_personal_github_token
-    # Loads an optional personal GitHub token from the data directory.
-    # If no personal token is found, returns nil (unauthenticated).
-    # The dr-scripts repo is public, so unauthenticated access works fine
-    # with 60 requests/hour per IP. File downloads use raw.githubusercontent.com
-    # which has no rate limit, so the API is only used for tree listings (~1 call/hour).
-    token_path = "#{DATA_DIR}/githubtoken.txt"
-    return nil unless File.exist?(token_path)
-
-    token = File.read(token_path).strip
-    if token.empty?
-      echo "GitHub token file is empty. Using unauthenticated access."
-      return nil
-    end
-
-    echo "Using personal GitHub token."
-
-    # Verify the token is valid
-    url = URI("https://api.github.com/rate_limit")
-    http = Net::HTTP.new(url.host, url.port)
-    http.use_ssl = true
-    request = Net::HTTP::Get.new(url)
-    request['Authorization'] = "Bearer #{token}"
-
-    response = http.request(request)
-    if response.body =~ /Bad credentials/
-      echo "Bad personal GitHub token. Falling back to unauthenticated access."
-      echo "Please update or remove #{token_path}"
-      return nil
-    end
-
-    parsed_response = JSON.parse(response.body)
-    used = parsed_response["resources"]["core"]["used"].to_i
-    limit = parsed_response["resources"]["core"]["limit"].to_i
-    echo "Personal token rate limit usage: #{used}/#{limit}" if @debug
-
-    "Bearer #{token}"
-  end
-
-  def make_map_edits
-    echo("Applying personal map overrides")
-    # Get base and personal wayto overrides
-    base_wayto_overrides = get_settings.base_wayto_overrides
-    personal_wayto_overrides = get_settings.personal_wayto_overrides
-    # Merge the two hashes into a single hash, favoring personal overrides for duplicate keys.
-    wayto_overrides = base_wayto_overrides.merge(personal_wayto_overrides)
-    # Iterate through the aggregated map wayto overrides from above and set new stringprocs
-    wayto_overrides.each do |_key, values|
-      start_room_id = values['start_room'].to_i
-      end_room_id = values['end_room'].to_i
-      start_room = Map.list[start_room_id]
-      old_wayto = start_room.wayto["#{end_room_id}"]
-      old_timeto = start_room.timeto["#{end_room_id}"]
-      new_wayto = old_wayto
-      new_timeto = old_timeto
-      if values['str_proc']
-        new_wayto = StringProc.new("#{values['str_proc']}")
-      end
-      if values['travel_time']
-        new_timeto = Float(values['travel_time'], exception: false)
-        new_timeto ||= StringProc.new("#{values['travel_time']}")
-      end
-      start_room.wayto["#{end_room_id}"] = new_wayto
-      start_room.timeto["#{end_room_id}"] = new_timeto
-    end
-    # Pull personal map custom targets, if any
-    personal_map_targets = get_settings.personal_map_targets
-    if personal_map_targets
-      custom_targets = (GameSettings['custom targets'] || Hash.new)
-      custom_targets.merge!(personal_map_targets)
-      GameSettings['custom targets'] = custom_targets
-    end
-  end
-end
-
+# --- CORE_SETUPFILES gate ---
 if Lich::Common.const_defined?(:CORE_SETUPFILES, false)
-  DRC.message("--- Dependency: SetupFiles provided by core Lich. Skipping inline definition.")
+  # Core provides SetupFiles via Lich::Common; include Lich::Common (lich.rbw) makes it top-level
 else
   class SetupFiles
-    # http://www.druby.org/sidruby/5-3-thread-safe-communication-using-locking-mutex-and-monitormixin.html#sec.monitormixin
     include MonitorMixin
 
     class FileInfo
@@ -561,16 +171,10 @@ else
       end
 
       def data
-        # Create deep clone of data to mitigate scripts changing settings in-memory
-        # because that leads to hard to track down bugs and unpredictable script behaviors.
         Marshal.load(Marshal.dump(@data))
       end
 
       def peek(property)
-        # An efficient and safe way to return a specific property
-        # from the yaml file without the risks of passing around shallow copies.
-        # This marshals the one property which is magnitudes faster than
-        # marshalling the entire file to access one property.
         Marshal.load(Marshal.dump(@data[property.to_sym]))
       end
 
@@ -584,8 +188,8 @@ else
     end
 
     def initialize(debug = false)
-      super() # Must call super() to initialize the MonitorMixin
-      @files_cache = {} # map of filenames => FileInfo objects
+      super()
+      @files_cache = {}
       @debug = debug
     end
 
@@ -597,40 +201,23 @@ else
       return {}
     end
 
-    # Returns your character's settings.
-    # base.yaml, base-empty.yaml, and MyChar-setup.yaml are always loaded.
-    # You can also provide an array of character yaml suffixes to load additionally.
-    # For example, ['hunt'] to load 'scripts/profiles/MyChar-hunt.yaml'.
-    # The suffixes feature is primarily used by hunting-buddy.
-    #
-    # Supports cascading includes: include files can themselves have an 'include:'
-    # property that references other include files. Resolution is depth-first
-    # with circular dependency protection.
     def get_settings(character_suffixes = [])
       character_suffixes = ['setup', character_suffixes].flatten.compact.uniq
       character_filenames = character_suffixes_to_filenames(character_suffixes)
-      # Ensure latest profiles are loaded into cache
       reload_profiles(character_filenames)
-      # Get initial 'include' suffixes from character files
       initial_include_suffixes = character_filenames.reduce([]) do |result, filename|
         result + (cache_get_by_filename(filename).peek('include') || [])
       end
       initial_include_filenames = initial_include_suffixes.map { |suffix| to_include_filename(suffix) }
-      # Recursively resolve all includes (cascading includes support)
       include_filenames = resolve_includes_recursively(initial_include_filenames)
       echo "#{self.class}::#{__callee__} resolved include_filenames=#{include_filenames}" if @debug
-      # Merge order: base.yaml -> base-empty.yaml -> includes (depth-first) -> character files
       all_files = ['base.yaml', 'base-empty.yaml', include_filenames, character_filenames].flatten
 
-      # Peek pass: collect union_keys from all files (always unioned across files).
-      # Keys listed in union_keys get array union instead of overwrite during merge,
-      # allowing includes and character files to contribute to shared lists.
       union_keys = all_files.reduce([]) do |keys, filename|
         file_keys = cache_get_by_filename(filename)&.peek('union_keys') || []
         (keys + file_keys).uniq
       end
 
-      # Merge pass: union specified keys, overwrite everything else
       settings = all_files.reduce({}) do |result, filename|
         result.merge(cache_get_by_filename(filename).data || {}) do |key, old_val, new_val|
           if union_keys.include?(key.to_s) && old_val.is_a?(Array) && new_val.is_a?(Array)
@@ -640,22 +227,15 @@ else
           end
         end
       end
-      # Transform settings for quality of life improvements
       transform_settings(settings)
     end
 
-    # Returns the config in a 'scripts/data/base-{type}.yaml' file.
-    # For example, type could be 'spells' or 'town' to return base-spells.yaml or base-town.yaml.
     def get_data(type)
       filename = to_base_filename(type)
-      # Ensure latest data is loaded into cache
       reload_data([filename])
-      # Transform data for quality of life improvements
       transform_data(cache_get_by_filename(filename).data)
     end
 
-    # Designed to be called once before dependency enters its run loop.
-    # Purpose is to check for file changes and reload them into cache.
     def reload
       reload_profiles(character_suffixes_to_filenames(['setup']))
       reload_data
@@ -665,8 +245,6 @@ else
 
     SCRIPTS_DATA_PATH = File.join(SCRIPT_DIR, 'data')
 
-    # use alternate location for settings to allow folks to use lich with
-    # alternate configurations in Test/Platinum/Fallen
     if File.exist?(File.join(DATA_DIR, XMLData.game, "base.yaml")) && File.exist?(File.join(DATA_DIR, XMLData.game, "base-empty.yaml")) && File.exist?(File.join(DATA_DIR, XMLData.game, "#{checkname}-setup.yaml"))
       echo("Detected game instance-specific files. Loading settings from #{File.join(DATA_DIR, XMLData.game)}")
       SCRIPTS_PROFILES_PATH = File.join(DATA_DIR, XMLData.game)
@@ -674,90 +252,56 @@ else
       SCRIPTS_PROFILES_PATH = File.join(SCRIPT_DIR, 'profiles')
     end
 
-    # Reloads the base profiles plus any that match the filenames given.
     def reload_profiles(filenames = [])
       load_files(get_profiles_glob_patterns(filenames))
     end
 
-    # Reloads the base data plus any that match the filenames given.
     def reload_data(filenames = [])
       load_files(get_data_glob_patterns(filenames))
     end
 
-    # Gets glob patterns for the profiles directory.
-    # Includes base profiles plus any specified in the filenames argument.
     def get_profiles_glob_patterns(filenames = [])
       get_glob_patterns(SCRIPTS_PROFILES_PATH, filenames)
     end
 
-    # Gets glob patterns for the data directory.
-    # Includes base data plus any specified in the filenames argument.
     def get_data_glob_patterns(filenames = [])
       get_glob_patterns(SCRIPTS_DATA_PATH, filenames)
     end
 
-    # Generates an array of file glob patterns, one per filename in the given basepath.
-    # `base*.yaml` is automatically and always included in the glob pattern.
     def get_glob_patterns(basepath = '.', filenames = [])
-      # base* yamls define initial setting defaults.
-      # include* yamls allow players to organize their settings into files
-      # and then reference them in their character specific setup yamls.
-      # The use of include yamls promotes reuse, which is a big win
-      # for players with several characters.
       filenames = ["base*.yaml", "include*.yaml", filenames].flatten.compact.uniq
       filenames.map { |filename| File.join(basepath, File.basename(filename)) }
     end
 
-    # Given an array of suffixes like ['setup'] or ['setup', 'hunt'] then
-    # returns an array of those values mapped to filenames "{CharacterName}-{suffix}.yaml"
     def character_suffixes_to_filenames(character_suffixes)
       character_suffixes.map { |suffix| to_character_filename(suffix) }
     end
 
-    # Returns the filename to a character yaml file for the given suffix.
-    # For example 'setup' returns '{character}-setup.yaml'.
     def to_character_filename(suffix)
       "#{checkname}-#{suffix}.yaml"
     end
 
-    # Returns the filename to a base yaml file for the given suffix.
-    # For example 'spells' returns 'base-spells.yaml'.
     def to_base_filename(suffix)
       "base-#{suffix}.yaml"
     end
 
-    # Returns the filename to an include yaml file for the given suffix.
-    # For example 'spells' returns 'include-spells.yaml'.
     def to_include_filename(suffix)
       "include-#{suffix}.yaml"
     end
 
-    # Recursively resolves include files, supporting cascading includes.
-    # Include files can themselves have an 'include:' property that references
-    # other include files. Uses depth-first resolution with circular dependency protection.
-    #
-    # @param filenames [Array<String>] Initial include filenames to resolve
-    # @param visited [Set] Tracks visited files to prevent circular dependencies
-    # @param include_order [Array<String>] Accumulates the final ordered list of includes
-    # @return [Array<String>] Ordered list of include filenames (deepest dependencies first)
     def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
       filenames.each do |filename|
-        # Circular dependency protection - skip already visited files
         next if visited.include?(filename)
 
         visited << filename
-        # Load this include file into cache
         reload_profiles([filename])
         file_info = cache_get_by_filename(filename)
         next unless file_info
 
-        # Get nested includes from this file
         nested_suffixes = file_info.peek('include') || []
         echo "#{self.class}::#{__callee__} #{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
         nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
 
-        # Depth-first: resolve nested includes BEFORE adding this file
-        # This ensures dependencies are merged before dependents
         resolve_includes_recursively(nested_filenames, visited, include_order)
 
         include_order << filename
@@ -765,16 +309,13 @@ else
       include_order
     end
 
-    # Iterates the files matched by the glob pattern and for those that
-    # have been modified since the last time they were cached then those
-    # are read from disk and cached. Unchanged files are not read again.
     def load_files(glob_patterns = [])
       self.synchronize do
         echo "#{self.class}::#{__callee__} glob_patterns=#{glob_patterns}" if @debug
         glob_patterns.each do |glob_pattern|
           Dir.glob(glob_pattern)
              .uniq
-             .select { |filepath| File.file?(filepath) } # ignore directories
+             .select { |filepath| File.file?(filepath) }
              .each do |filepath|
                filename = File.basename(filepath)
                last_modified_date = File.mtime(filepath)
@@ -788,8 +329,6 @@ else
       end
     end
 
-    # Loads the yaml file contents into the file cache.
-    # Uses the filename as the cache key.
     def cache_put_by_filepath(filepath)
       self.synchronize do
         echo "#{self.class}::#{__callee__} filepath=#{filepath}" if @debug
@@ -802,22 +341,16 @@ else
       end
     end
 
-    # Returns the cached file info for the given filename.
-    # Uses the filename as the cache key.
     def cache_get_by_filename(filename)
       echo "#{self.class}::#{__callee__} filename=#{filename}" if @debug
       @files_cache[filename]
     end
 
-    # Enrich settings with base data (e.g. fill in gaps for spells),
-    # migrate legacy settings where appropriate, and other QOL tweaks.
     def transform_settings(original_settings)
       echo "#{self.class}::#{__callee__}" if @debug
 
-      # Enable dot access to top-level properties (e.g. settings.hometown)
       settings = OpenStruct.new(original_settings)
 
-      # Get data to enrich settings
       base_data_items = get_data('items')
       base_data_spells = get_data('spells')
       base_data_empty = get_data('empty')
@@ -826,66 +359,24 @@ else
       spells_data = base_data_spells.spell_data
       empty_data = base_data_empty.empty_values
 
-      # Populate nil settings with default empty arrays/hashes
-      # to mitigate "can't convert NilClass to Array" errors.
-      # Note we don't merge to overwrite, we merge to assign if nil.
       empty_data.each { |name, value| settings[name] ||= value }
 
-      # Find spell data by its name, case insensitive.
       get_spell_data_by_name = lambda do |name_to_find|
-        # This creates a new map filtered to only the entries that match the spell name.
         spell_matches = spells_data.select { |name, _data| name.casecmp?(name_to_find) }
-        # It's theoretically possible, though unlikely, that multiple
-        # entries were returned if base data had the same spell listed
-        # with different capitalization. Let's take the first entry we found.
         spell_match = spell_matches.first
-        # We now have a map of spell name to map of spell properties.
-        # What we want to return is just the map of spell properties.
-        # Maps are treated as two-element arrays, first is the key, last is the value.
-        # So we grab the last element which leaves us with map of spell properties.
         spell_data = spell_match.last
-        # Inject spell name into the spell properties.
-        # Some scripts check for either `abbrev` or `name`
-        # but our base spells data doesn't have name as a property, so we set it.
         spell_data['name'] ||= spell_match.first
-
         spell_data
       end
 
-      # Find spell data by its abbreviation, case insensitive.
       get_spell_data_by_abbrev = lambda do |abbrev_to_find|
-        # This creates a new map filtered to only the entries that match the spell abbreviation.
         spell_matches = spells_data.select { |_name, data| data['abbrev'].casecmp?(abbrev_to_find) }
-        # It's theoretically possible, though unlikely, that multiple
-        # entries were returned if base data had the same spell listed
-        # with different capitalization. Let's take the first entry we found.
         spell_match = spell_matches.first
-        # We now have a map of spell name to map of spell properties.
-        # What we want to return is just the map of spell properties.
-        # Maps are treated as two-element arrays, first is the key, last is the value.
-        # So we grab the last element which leaves us with map of spell properties.
         spell_data = spell_match.last
-        # Inject spell name into the spell properties.
-        # Some scripts check for either `abbrev` or `name`
-        # but our base spells data doesn't have name as a property, so we set it.
         spell_data['name'] ||= spell_match.first
-
         spell_data
       end
 
-      # Given a hash for a single spell definition,
-      # populates unset properties with base spells data.
-      #
-      # For example:
-      # if spell data has:
-      #   { name: 'Death Monkey', abbrev: 'DM', mana: 5, skill: 'Targeted Magic' }
-      #
-      # and your spell setting in your yaml has:
-      #   { abbrev: 'DM', mana: 8 }
-      #
-      # then this method returns the enriched spell configuration as:
-      #   { name: 'Death Monkey', abbrev: 'DM', mana: 8, skill: 'Targeted Magic' }
-      #
       enrich_spells_with_data_block = lambda do |spell_setting|
         return spell_setting unless spell_setting.is_a?(Hash)
 
@@ -894,40 +385,15 @@ else
         (spell_data || {}).merge(spell_setting)
       end
 
-      # Given a hash of spell names to spell definitions,
-      # populates the `name:` property on the spell definition if it's missing.
-      #
-      # Because the the map keys are themselves the spell names,
-      # some players don't repeat the `name:` or `abbrev:` property
-      # in the spell setting. However, we need that information
-      # in order to enrich the spell setting with base data.
-      #
-      # For example:
-      # if spells map has:
-      #   { 'Devour': { 'use_auto_mana': true }, 'wound_level_threshold': 2 }
-      #
-      # then this method returns the enriched spell configuration as:
-      #   { 'Devour': { 'name': 'Devour', 'use_auto_mana': true }, 'wound_level_threshold': 2 }
-      #
       enrich_spells_with_name_block = lambda do |spells_map|
         spells_map.each do |spell_name, spell_setting|
-          # Sometimes these maps support keys other than spell names,
-          # such as numeric thresholds or other related script settings.
-          # Check if this setting is a hash to avoid "no implicit conversion" errors
-          # when we try to access the `name` property.
           if spell_setting.is_a?(Hash)
             spell_setting['name'] ||= spell_name
           end
         end
       end
 
-      # Waggle sets are maps of arbitrary names to map of spell names to map of spell properties.
-      # For example:
-      #   { 'burgle': { 'Refractive Field': { abbrev: 'RF' ... }, 'Death Monkey': { ... } } }
-      # Iterate each waggle's list of spells to enrich them.
-      # Enrich each's spell definition by merging base spell data with spell settings.
       settings.waggle_sets.transform_values! do |spells_map|
-        # For non-magic users it's actually an array of ability names, not spells.
         if spells_map.is_a?(Hash)
           enrich_spells_with_name_block.call(spells_map)
           spells_map.transform_values!(&enrich_spells_with_data_block)
@@ -936,10 +402,6 @@ else
         end
       end
 
-      # Spell settings that are maps of spell names to map of spell properties.
-      # For example:
-      #   { 'Manifest Force': { abbrev: 'MAF', mana: 5 ... } }
-      # Enrich each's spell definition by merging base spell data with spell settings.
       [
         settings.buff_spells,
         settings.necromancer_healing,
@@ -948,9 +410,6 @@ else
         spells_map.transform_values!(&enrich_spells_with_data_block)
       end
 
-      # Spell settings that are magic skill names to map of spell properties.
-      # For example, { 'Augmentation': { abbrev: 'MAF' ... } }
-      # Enrich each's spell definition by merging base spell data with spell settings.
       [
         settings.buff_spells,
         settings.combat_spell_training,
@@ -960,34 +419,23 @@ else
         settings.crafting_training_spells,
         settings.necromancer_healing,
       ].each do |spells_map|
-        # For non-magic users it's actually an array of ability names, not spells.
         next unless spells_map.is_a?(Hash)
 
-        # Because the map keys are skill names, not spell names,
-        # we have to assume the spell name or abbrev are defined in the setting.
         spells_map.transform_values!(&enrich_spells_with_data_block)
       end
 
-      # Spell settings that are configured as a list whose values are maps of spell properties.
-      # Enrich each's spell definition by merging base spell data with spell settings.
       [
         settings.offensive_spells
       ].each do |spells_list|
-        # Because there is no other context to know which spell the setting is for
-        # we have to assume the spell name or abbrev are defined in the setting.
         spells_list.map!(&enrich_spells_with_data_block)
       end
 
-      # Spell settings that are configured as a map of a single spell's properties.
-      # Enrich each's spell definition by merging base spell data with spell settings.
       [
         'crossing_training_sorcery',
       ].each do |key|
         settings[key] = enrich_spells_with_data_block.call(settings[key])
       end
 
-      # For TM spells, default their 'prep' command to 'target'
-      # unless a custom 'prep' command is already specified.
       settings.offensive_spells.each do |spell_setting|
         next unless spell_setting.is_a?(Hash)
 
@@ -999,7 +447,6 @@ else
         end
       end
 
-      # Battle Cries
       settings.battle_cries.map! do |battle_cry_setting|
         next battle_cry_setting unless battle_cry_setting.is_a?(Hash)
 
@@ -1007,7 +454,6 @@ else
         (battle_cry_data || {}).merge(battle_cry_setting)
       end
 
-      # Lootables
       settings.lootables = (
         base_data_items.lootables +
         base_data_items.box_nouns +
@@ -1017,9 +463,6 @@ else
         settings.loot_subtractions
       ).uniq
 
-      # Pull sensitive settings from UserVars.
-      # This is legacy from when people would commit and share their
-      # yaml files on GitHub so that specific rooms and names were not exposed.
       settings.crossing_training_sorcery_room ||= UserVars.crossing_training_sorcery_room
       settings.compost_room ||= UserVars.compost_room
       settings.engineering_room ||= UserVars.engineering_room
@@ -1036,7 +479,6 @@ else
       settings.hometown ||= UserVars.hometown
       settings.hometown = $HOMETOWN if $HOMETOWN
 
-      # Denylist for rooms we don't support being used as safe_rooms
       disallowed_safe_rooms = [5713]
       if disallowed_safe_rooms.include?(settings.safe_room) || disallowed_safe_rooms.include?(settings.safe_room_id)
         _respond("<pushBold/>#{settings.safe_room} is not a valid safe room setting.<popBold/>")
@@ -1045,9 +487,6 @@ else
         exit
       end
 
-      # If these room settings are defined as maps with a
-      # room id configured per town, then grab the hometown room id
-      # and assign it directly to the setting.
       [
         'alchemy_room',
         'bankbot_room_id',
@@ -1071,7 +510,6 @@ else
         end
       end
 
-      # Merge legacy appraisal settings into target appraisal settings
       if !settings.appraisal_training.include?('pouches') && settings.train_appraisal_with_pouches
         settings.appraisal_training.append('pouches')
       end
@@ -1079,7 +517,6 @@ else
         settings.appraisal_training.append('gear')
       end
 
-      # Merge legacy astrology training settings into target training settings
       if !settings.astrology_training.include?('events') && settings.predict_event
         settings.astrology_training.append('events')
       end
@@ -1099,10 +536,7 @@ else
     def transform_data(original_data)
       echo "#{self.class}::#{__callee__}" if @debug
 
-      # Enable dot access to top-level properties (e.g. data.cast_messages)
       data = OpenStruct.new(original_data)
-
-      # ... reserved for future needs ...
 
       return data
     rescue => e
@@ -1112,18 +546,532 @@ else
       OpenStruct.new
     end
   end
-end # if/else CORE_SETUPFILES
+end # CORE_SETUPFILES gate
 
-$setupfiles = SetupFiles.new(debug)
-$manager = ScriptManager.new(debug)
+# --- CORE_GET_SETTINGS gate ---
+unless Lich::Common.const_defined?(:CORE_GET_SETTINGS, false)
+  $setupfiles = SetupFiles.new(debug)
 
-def get_settings(character_suffixes = [])
-  $setupfiles.get_settings(character_suffixes)
-end
+  def get_settings(character_suffixes = [])
+    $setupfiles.get_settings(character_suffixes)
+  end
 
-def get_data(type)
-  $setupfiles.get_data(type)
-end
+  def get_data(type)
+    $setupfiles.get_data(type)
+  end
+end # CORE_GET_SETTINGS gate
+
+# --- CORE_SCRIPT_LOADER gate ---
+unless Lich::Common.const_defined?(:CORE_SCRIPT_LOADER, false)
+  def custom_require
+    lambda do |script_names|
+      script_names = [script_names] unless script_names.is_a?(Array)
+
+      return if script_names.empty?
+
+      script_names.each do |script_name|
+        next if Script.running?(script_name)
+        next unless Script.exists?(script_name)
+        start_script(script_name)
+        pause 0.05
+        snapshot = Time.now
+        until !Script.running?(script_name) || Time.now - snapshot > 0.25
+          pause 0.05
+        end
+      end
+    end
+  end
+end # CORE_SCRIPT_LOADER gate
+
+# --- CORE_MAP_OVERRIDES gate ---
+unless Lich::Common.const_defined?(:CORE_MAP_OVERRIDES, false)
+  def make_map_edits
+    echo("Applying personal map overrides")
+    base_wayto_overrides = get_settings.base_wayto_overrides
+    personal_wayto_overrides = get_settings.personal_wayto_overrides
+    wayto_overrides = base_wayto_overrides.merge(personal_wayto_overrides)
+    wayto_overrides.each do |_key, values|
+      start_room_id = values['start_room'].to_i
+      end_room_id = values['end_room'].to_i
+      start_room = Map.list[start_room_id]
+      old_wayto = start_room.wayto["#{end_room_id}"]
+      old_timeto = start_room.timeto["#{end_room_id}"]
+      new_wayto = old_wayto
+      new_timeto = old_timeto
+      if values['str_proc']
+        new_wayto = StringProc.new("#{values['str_proc']}")
+      end
+      if values['travel_time']
+        new_timeto = Float(values['travel_time'], exception: false)
+        new_timeto ||= StringProc.new("#{values['travel_time']}")
+      end
+      start_room.wayto["#{end_room_id}"] = new_wayto
+      start_room.timeto["#{end_room_id}"] = new_timeto
+    end
+    personal_map_targets = get_settings.personal_map_targets
+    if personal_map_targets
+      custom_targets = (GameSettings['custom targets'] || Hash.new)
+      custom_targets.merge!(personal_map_targets)
+      GameSettings['custom targets'] = custom_targets
+    end
+  end
+end # CORE_MAP_OVERRIDES gate
+
+# --- ScriptManager gate (replaced by ScriptSync in core) ---
+unless Lich::Common.const_defined?(:CORE_GET_SETTINGS, false)
+  class ScriptManager
+    def initialize(debug)
+      @debug = debug
+      @status_url = 'https://api.github.com/repos/elanthia-online/dr-scripts/git/trees/main?recursive=1'
+      @raw_base_url = 'https://raw.githubusercontent.com/elanthia-online/dr-scripts/main'
+
+      UserVars.autostart_scripts ||= []
+      UserVars.autostart_scripts.uniq!
+      UserVars.autostart_scripts -= ['dependency']
+
+      Settings['base_versions'] ||= {}
+
+      @request_authorization = load_personal_github_token
+      @versions = nil
+      @dependency_updated = false
+      @downloads_occurred = false
+    end
+
+    def dependency_updated?
+      @dependency_updated
+    end
+
+    def autostarts
+      (UserVars.autostart_scripts.to_a + SetupFiles.new.get_settings.autostarts.to_a).uniq
+    end
+
+    def get_versions
+      @versions ||= build_version_hash
+    end
+
+    def build_version_hash
+      Dir[File.join(SCRIPT_DIR, '*.lic')].each_with_object({}) do |path, versions|
+        file = File.basename(path)
+        body = File.binread(File.join(SCRIPT_DIR, file))
+        sha = Digest::SHA1.hexdigest('blob' + " #{body.size}" + "\0" + body)
+        versions[file] = sha
+      end
+    end
+
+    def get_script(filename, force = false)
+      filename = filename.dup
+      download_script(filename, force)
+    end
+
+    def repo_scripts
+      $manager.get_status['tree'].map { |element| element['path'] }.select { |file| file =~ /^[^\/]+\.lic$/ && !file.include?('-setup') }
+    end
+
+    def start_scripts(force = false)
+      start_time = Time.now
+      @versions = nil
+      scripts = repo_scripts
+      echo("Checking #{scripts.length} scripts for updates...")
+      updated = 0
+      scripts.each do |(name, _)|
+        updated += 1 if get_script(name, force)
+      end
+      if updated > 0
+        echo("Updated #{updated} script#{updated == 1 ? '' : 's'}.")
+        invalidate_status_cache
+      else
+        echo("All scripts are up to date.")
+      end
+      autostarts.each do |script|
+        next if handle_obsolete_autostart(script)
+
+        custom_require.call(script)
+      end
+      finish_time = Time.now
+      run_time = finish_time - start_time
+      echo("Time spent in start_scripts is #{run_time}") if @debug
+    end
+
+    def download_script(filename, force = false)
+      return false if filename.nil? || filename.empty?
+
+      echo("downloading:#{filename}") if @debug
+      info = get_file_status(filename)
+      return false unless info
+      return false if get_versions[filename] == info['sha'] && !force
+
+      echo("info:#{info}") if @debug
+      content = download_raw_file(filename)
+      return false unless content
+
+      File.open(File.join(SCRIPT_DIR, "#{filename}"), 'wb') { |file| file.print(content) }
+      @downloads_occurred = true
+      @dependency_updated = true if filename == 'dependency.lic'
+      echo("Downloaded #{filename}")
+      true
+    end
+
+    def verify_or_make_dir(path)
+      Dir.mkdir(path) unless Dir.exist?(path)
+    end
+
+    def setup_data
+      verify_or_make_dir File.join(SCRIPT_DIR, 'data')
+      get_status['tree']
+        .select { |data| data['path'] =~ %r{^data/} && data['type'] == 'blob' }
+        .each do |setup_file|
+          filename = File.basename(setup_file['path'])
+          echo("downloading #{filename}") if @debug
+          content = download_raw_file(setup_file['path'])
+          next unless content
+
+          File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'wb') { |file| file.print(content) }
+        end
+    end
+
+    def check_base_files
+      start_time = Time.now
+      verify_or_make_dir File.join(SCRIPT_DIR, 'profiles')
+      to_update = get_status['tree']
+                  .select { |data| data['path'] =~ %r{^profiles/base(?:-empty)?\.yaml$} }
+                  .reject { |setup_file|
+                    filename = File.basename(setup_file['path'])
+                    File.exist?(File.join(SCRIPT_DIR, 'profiles', filename)) && setup_file['sha'] == Settings['base_versions'][filename]
+                  }
+      if to_update.empty?
+        echo("Base profile files are up to date.")
+      else
+        echo("Updating #{to_update.length} base profile file#{to_update.length == 1 ? '' : 's'}...")
+        to_update.each do |setup_file|
+          filename = File.basename(setup_file['path'])
+          content = download_raw_file(setup_file['path'])
+          next unless content
+
+          File.open(File.join(SCRIPT_DIR, "profiles/#{filename}"), 'wb') { |file| file.print(content) }
+          Settings['base_versions'][filename] = setup_file['sha']
+          echo("Downloaded #{filename}")
+        end
+      end
+      Settings.save
+      finish_time = Time.now
+      run_time = finish_time - start_time
+      echo("Time spent in check_base_files is #{run_time}") if @debug
+    end
+
+    def check_data_files
+      start_time = Time.now
+      verify_or_make_dir File.join(SCRIPT_DIR, 'data')
+      to_update = get_status['tree']
+                  .select { |data| data['path'] =~ %r{^data/base.+yaml$} }
+                  .reject { |setup_file|
+                    filename = File.basename(setup_file['path'])
+                    File.exist?(File.join(SCRIPT_DIR, 'data', filename)) && setup_file['sha'] == Settings['base_versions'][filename]
+                  }
+      if to_update.empty?
+        echo("Data files are up to date.")
+      else
+        echo("Updating #{to_update.length} data file#{to_update.length == 1 ? '' : 's'}...")
+        to_update.each do |setup_file|
+          filename = File.basename(setup_file['path'])
+          content = download_raw_file(setup_file['path'])
+          next unless content
+
+          File.open(File.join(SCRIPT_DIR, "data/#{filename}"), 'wb') { |file| file.print(content) }
+          Settings['base_versions'][filename] = setup_file['sha']
+          echo("Downloaded #{filename}")
+        end
+      end
+      Settings.save
+      finish_time = Time.now
+      run_time = finish_time - start_time
+      echo("Time spent in check_data_files is #{run_time}") if @debug
+    end
+
+    def run_script(filename)
+      filename.sub!(/\.lic$/, '')
+      echo("refresh:#{filename}") if @debug
+      stop_script(filename) if Script.running?(filename)
+      pause 0.1 while Script.running?(filename)
+      start_script(filename)
+    end
+
+    def get_file_status(filename)
+      get_status['tree'].find { |element| element['path'] == filename }
+    end
+
+    def invalidate_status_cache
+      echo("Invalidating cached status (files were downloaded)") if @debug
+      Settings['status'] = nil
+      Settings['status_time'] = nil
+      Settings.save
+    end
+
+    def get_status
+      if Settings['status'] && Time.now - Settings['status_time'] <= 120
+        echo("Returning cached status response") if @debug
+        return Settings['status']
+      end
+
+      Settings['status_time'] = Time.now
+      Settings['status'] = make_request(@status_url)
+      Settings.save
+      return Settings['status']
+    end
+
+    def make_request(raw_uri)
+      echo "make_request:raw_uri = #{raw_uri}" if @debug
+      uri = URI.parse(raw_uri)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+
+      request = Net::HTTP::Get.new(uri.request_uri)
+      request['Authorization'] = @request_authorization if @request_authorization
+
+      response = http.request(request)
+      JSON.parse(response.body)
+    end
+
+    def download_raw_file(path)
+      raw_url = "#{@raw_base_url}/#{path}"
+      echo "download_raw_file: #{raw_url}" if @debug
+      uri = URI.parse(raw_url)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+
+      request = Net::HTTP::Get.new(uri.request_uri)
+      response = http.request(request)
+
+      unless response.code == '200'
+        echo "Failed to download #{path}: HTTP #{response.code}"
+        return nil
+      end
+
+      response.body
+    end
+
+    def load_personal_github_token
+      token_path = "#{DATA_DIR}/githubtoken.txt"
+      return nil unless File.exist?(token_path)
+
+      token = File.read(token_path).strip
+      if token.empty?
+        echo "GitHub token file is empty. Using unauthenticated access."
+        return nil
+      end
+
+      echo "Using personal GitHub token."
+
+      url = URI("https://api.github.com/rate_limit")
+      http = Net::HTTP.new(url.host, url.port)
+      http.use_ssl = true
+      request = Net::HTTP::Get.new(url)
+      request['Authorization'] = "Bearer #{token}"
+
+      response = http.request(request)
+      if response.body =~ /Bad credentials/
+        echo "Bad personal GitHub token. Falling back to unauthenticated access."
+        echo "Please update or remove #{token_path}"
+        return nil
+      end
+
+      parsed_response = JSON.parse(response.body)
+      used = parsed_response["resources"]["core"]["used"].to_i
+      limit = parsed_response["resources"]["core"]["limit"].to_i
+      echo "Personal token rate limit usage: #{used}/#{limit}" if @debug
+
+      "Bearer #{token}"
+    end
+
+    def make_map_edits
+      echo("Applying personal map overrides")
+      base_wayto_overrides = get_settings.base_wayto_overrides
+      personal_wayto_overrides = get_settings.personal_wayto_overrides
+      wayto_overrides = base_wayto_overrides.merge(personal_wayto_overrides)
+      wayto_overrides.each do |_key, values|
+        start_room_id = values['start_room'].to_i
+        end_room_id = values['end_room'].to_i
+        start_room = Map.list[start_room_id]
+        old_wayto = start_room.wayto["#{end_room_id}"]
+        old_timeto = start_room.timeto["#{end_room_id}"]
+        new_wayto = old_wayto
+        new_timeto = old_timeto
+        if values['str_proc']
+          new_wayto = StringProc.new("#{values['str_proc']}")
+        end
+        if values['travel_time']
+          new_timeto = Float(values['travel_time'], exception: false)
+          new_timeto ||= StringProc.new("#{values['travel_time']}")
+        end
+        start_room.wayto["#{end_room_id}"] = new_wayto
+        start_room.timeto["#{end_room_id}"] = new_timeto
+      end
+      personal_map_targets = get_settings.personal_map_targets
+      if personal_map_targets
+        custom_targets = (GameSettings['custom targets'] || Hash.new)
+        custom_targets.merge!(personal_map_targets)
+        GameSettings['custom targets'] = custom_targets
+      end
+    end
+  end
+
+  $manager = ScriptManager.new(debug)
+
+  def get_script(script_name)
+    filename = format_name(script_name)
+    if $manager.get_script(filename, true)
+      echo("#{filename} has been updated.")
+    else
+      echo("#{filename} could not be found in the repository.")
+    end
+  end
+
+  def force_refresh_scripts
+    echo("Force refreshing all scripts.")
+    $manager.start_scripts
+  end
+
+  def list_tracked_scripts
+    $manager.get_versions.sort
+  end
+
+  def setup_data
+    echo("Force checking scripts/data files.")
+    $manager.setup_data
+  end
+end # ScriptManager gate
+
+# --- Autostart helpers gate (moving to autostart.lic) ---
+unless Lich::Common.const_defined?(:CORE_AUTOSTART, false)
+  # Merge Settings['autostart'] (per-game global) into UserVars.autostart_scripts (per-character).
+  UserVars.autostart_scripts ||= []
+  if Settings['autostart'] && !Settings['autostart'].empty?
+    merged = (UserVars.autostart_scripts + Settings['autostart']).uniq - ['dependency']
+    if merged != UserVars.autostart_scripts
+      echo("Merging global autostarts into character autostarts.")
+      echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
+      echo("Before: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+      UserVars.autostart_scripts = merged
+      echo("After: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+    end
+  end
+
+  def handle_obsolete_autostart(script)
+    return false unless defined?(DR_OBSOLETE_SCRIPTS) && DR_OBSOLETE_SCRIPTS.include?(script)
+
+    if UserVars.autostart_scripts.to_a.include?(script)
+      _respond Lich::Messaging.monsterbold("--- Lich: Removing obsolete '#{script}' from autostarts.")
+      _respond Lich::Messaging.monsterbold("--- Lich: If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
+      UserVars.autostart_scripts.delete(script)
+    else
+      _respond Lich::Messaging.monsterbold("--- Lich: '#{script}' is obsolete. Please remove it from the 'autostarts' setting in your profile YAML.")
+    end
+
+    true
+  end
+
+  def dr_obsolete_script?(name)
+    script_name = name.to_s.sub(/\.lic$/, '')
+    return false unless defined?(DR_OBSOLETE_SCRIPTS) && DR_OBSOLETE_SCRIPTS.include?(script_name)
+
+    custom_path = File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")
+    scripts_path = File.join(SCRIPT_DIR, "#{script_name}.lic")
+
+    if File.exist?(custom_path)
+      _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from scripts/custom. It is no longer needed and may cause problems.")
+    elsif File.exist?(scripts_path)
+      _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
+    end
+
+    caller_name = Script.current.name rescue 'unknown'
+    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{caller_name}' references obsolete script '#{script_name}'. The calling script should be updated to remove this dependency.")
+    false
+  end
+
+  def autostart(script_names, _global = true)
+    script_names = [script_names] unless script_names.is_a?(Array)
+    script_names.map!(&method(:format_name))
+    UserVars.autostart_scripts ||= []
+    script_names.each { |script| UserVars.autostart_scripts.push(script) unless UserVars.autostart_scripts.include?(script) }
+    script_names.each { |script| $manager.run_script(script) } if defined?($manager)
+  end
+
+  def stop_autostart(script_names)
+    script_names = [script_names] unless script_names.is_a?(Array)
+    UserVars.autostart_scripts ||= []
+    script_names.each { |script| UserVars.autostart_scripts.delete(script) }
+  end
+
+  def dependency_status
+    echo("Dependency version: #{$DEPENDENCY_VERSION}")
+    echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
+    echo("UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
+    echo("Resolved autostarts = #{$manager.autostarts.inspect}") if defined?($manager)
+    nil
+  end
+end # Autostart helpers gate
+
+# --- CORE_DR_STARTUP gate ---
+unless Lich::Common.const_defined?(:CORE_DR_STARTUP, false)
+  unless UserVars.dependency_setflags
+    echo("Checking MonsterBold and ShowRoomID flags.")
+    flags = Lich::Util.issue_command("flag", /^Usage/, /^For other setting options, see AVOID, SET, and TOGGLE/, quiet: true, timeout: 1, usexml: false)
+    mandatory_flags = ["ShowRoomID", "MonsterBold"]
+    mandatory_flags.each do |flag|
+      unless flags.any? { |f| f.match?(/#{flag}\s+ON/) }
+        fput("flag #{flag} on")
+      end
+    end
+    UserVars.dependency_setflags = Time.now
+  end
+
+  DR_OBSOLETE_SCRIPTS = %w[
+    events slackbot spellmonitor exp-monitor
+    common-travel common-validation common drinfomon equipmanager
+    common-money common-moonmage common-summoning common-theurgy common-arcana
+    bootstrap common-crafting common-healing-data common-healing common-items
+    update-shops
+  ].freeze
+
+  DR_OBSOLETE_DATA_FILES = %w[].freeze
+
+  def warn_obsolete_scripts
+    DR_OBSOLETE_SCRIPTS.each do |script_name|
+      path = File.join(SCRIPT_DIR, "#{script_name}.lic")
+      next unless File.exist?(path)
+
+      _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
+    end
+  end
+
+  def warn_obsolete_data_files
+    data_dir = File.join(SCRIPT_DIR, 'data')
+    DR_OBSOLETE_DATA_FILES.each do |filename|
+      path = File.join(data_dir, filename)
+      next unless File.exist?(path)
+
+      _respond Lich::Messaging.monsterbold("--- Lich: '#{filename}' is obsolete and can be safely deleted from #{data_dir}.")
+    end
+  end
+
+  def warn_custom_scripts
+    custom_scripts = Dir.entries(File.join(SCRIPT_DIR, 'custom')).reject { |f| File.directory?(f) || File.basename(f).start_with?(".") }
+    curated_scripts = Dir.entries(SCRIPT_DIR).reject { |f| File.directory?(f) || File.basename(f).start_with?(".") }
+    include_list = []
+
+    custom_scripts.each do |script|
+      include_list.push(script) if curated_scripts.include?(script)
+    end
+
+    unless include_list.empty?
+      echo "NOTE: The following curated scripts are in your custom folder and will not receive updates"
+      echo "#{include_list}" unless include_list.empty?
+    end
+  end
+end # CORE_DR_STARTUP gate
+
+# --- Runtime helpers (not gated, always defined) ---
 
 def save_bankbot_transaction(transaction, ledger)
   ledger_yaml = ledger.to_yaml
@@ -1182,87 +1130,6 @@ def format_yaml_name(name)
   name =~ /\.yaml$/ ? name : "#{name}.yaml"
 end
 
-DR_OBSOLETE_SCRIPTS = %w[
-  events slackbot spellmonitor exp-monitor
-  common-travel common-validation common drinfomon equipmanager
-  common-money common-moonmage common-summoning common-theurgy common-arcana
-  bootstrap common-crafting common-healing-data common-healing common-items
-  update-shops
-].freeze
-
-def dr_obsolete_script?(name)
-  script_name = name.to_s.sub(/\.lic$/, '')
-  return false unless DR_OBSOLETE_SCRIPTS.include?(script_name)
-
-  custom_path = File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")
-  scripts_path = File.join(SCRIPT_DIR, "#{script_name}.lic")
-
-  if File.exist?(custom_path)
-    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from scripts/custom. It is no longer needed and may cause problems.")
-  elsif File.exist?(scripts_path)
-    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
-  end
-
-  caller_name = Script.current.name rescue 'unknown'
-  _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{caller_name}' references obsolete script '#{script_name}'. The calling script should be updated to remove this dependency.")
-  false
-end
-
-def warn_obsolete_scripts
-  DR_OBSOLETE_SCRIPTS.each do |script_name|
-    path = File.join(SCRIPT_DIR, "#{script_name}.lic")
-    next unless File.exist?(path)
-
-    _respond Lich::Messaging.monsterbold("--- Lich: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
-  end
-end
-
-DR_OBSOLETE_DATA_FILES = %w[].freeze
-
-def warn_obsolete_data_files
-  data_dir = File.join(SCRIPT_DIR, 'data')
-  DR_OBSOLETE_DATA_FILES.each do |filename|
-    path = File.join(data_dir, filename)
-    next unless File.exist?(path)
-
-    _respond Lich::Messaging.monsterbold("--- Lich: '#{filename}' is obsolete and can be safely deleted from #{data_dir}.")
-  end
-end
-
-def handle_obsolete_autostart(script)
-  return false unless DR_OBSOLETE_SCRIPTS.include?(script)
-
-  if UserVars.autostart_scripts.to_a.include?(script)
-    _respond Lich::Messaging.monsterbold("--- Lich: Removing obsolete '#{script}' from autostarts.")
-    _respond Lich::Messaging.monsterbold("--- Lich: If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
-    UserVars.autostart_scripts.delete(script)
-  else
-    _respond Lich::Messaging.monsterbold("--- Lich: '#{script}' is obsolete. Please remove it from the 'autostarts' setting in your profile YAML.")
-  end
-
-  true
-end
-
-def custom_require
-  lambda do |script_names|
-    script_names = [script_names] unless script_names.is_a?(Array)
-
-    return if script_names.empty?
-
-    script_names.each do |script_name|
-      next if dr_obsolete_script?(script_name)
-      next if Script.running?(script_name)
-      next unless Script.exists?(script_name)
-      start_script(script_name)
-      pause 0.05
-      snapshot = Time.now
-      until !Script.running?(script_name) || Time.now - snapshot > 0.25
-        pause 0.05
-      end
-    end
-  end
-end
-
 def verify_script(script_names)
   script_names = [script_names] unless script_names.is_a?(Array)
   state = true
@@ -1277,55 +1144,6 @@ def verify_script(script_names)
   state
 end
 
-def make_map_edits
-  $manager.make_map_edits
-end
-
-def get_script(script_name)
-  filename = format_name(script_name)
-  if $manager.get_script(filename, true)
-    echo("#{filename} has been updated.")
-  else
-    echo("#{filename} could not be found in the repository.")
-  end
-end
-
-def force_refresh_scripts
-  echo("Force refreshing all scripts.")
-  $manager.start_scripts
-end
-
-def list_tracked_scripts
-  $manager.get_versions.sort
-end
-
-def autostart(script_names, _global = true)
-  script_names = [script_names] unless script_names.is_a?(Array)
-  script_names.map!(&method(:format_name))
-  UserVars.autostart_scripts ||= []
-  script_names.each { |script| UserVars.autostart_scripts.push(script) unless UserVars.autostart_scripts.include?(script) }
-  script_names.each { |script| $manager.run_script(script) }
-end
-
-def stop_autostart(script_names)
-  script_names = [script_names] unless script_names.is_a?(Array)
-  UserVars.autostart_scripts ||= []
-  script_names.each { |script| UserVars.autostart_scripts.delete(script) }
-end
-
-def dependency_status
-  echo("Dependency version: #{$DEPENDENCY_VERSION}")
-  echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
-  echo("UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-  echo("Resolved autostarts = #{$manager.autostarts.inspect}")
-  nil
-end
-
-def setup_data
-  echo("Force checking scripts/data files.")
-  $manager.setup_data
-end
-
 def shift_hometown(town_name)
   $HOMETOWN = town_name
 end
@@ -1334,49 +1152,71 @@ def clear_hometown
   $HOMETOWN = nil
 end
 
-def warn_custom_scripts
-  custom_scripts = Dir.entries(File.join(SCRIPT_DIR, 'custom')).reject { |f| File.directory?(f) || File.basename(f).start_with?(".") }
-  curated_scripts = Dir.entries(SCRIPT_DIR).reject { |f| File.directory?(f) || File.basename(f).start_with?(".") }
-  include_list = []
+# --- Boot sequence ---
 
-  custom_scripts.each do |script|
-    include_list.push(script) if curated_scripts.include?(script)
+# Legacy ScriptManager boot (skipped when core provides ScriptSync)
+if defined?($manager)
+  arg_definitions = [
+    [
+      { name: 'install', regex: /install/i, optional: true }
+    ]
+  ]
+  args = parse_args(arg_definitions)
+  install = args.install
+
+  while Script.running?('repository')
+    echo("Repository is running, pausing for 10 seconds.")
+    pause 10
   end
 
-  unless include_list.empty?
-    echo "NOTE: The following curated scripts are in your custom folder and will not receive updates"
-    echo "#{include_list}" unless include_list.empty?
+  unless Settings['dependency_version'] == $DEPENDENCY_VERSION
+    echo("New dependency version detected. Resetting repository auto-update settings.")
+    Script.start("repository", "reset-update-settings")
+    if XMLData.game == "DRX" || XMLData.game == "DRF"
+      if XMLData.game == "DRX"
+        echo("DR Plat instance detected. Setting map to not auto-update.")
+      elsif XMLData.game == "DRF"
+        echo("DR Fallen instance detected. Setting map to not auto-update.")
+      end
+      Script.start("repository", "unset-mapdb-updatable")
+    end
+    Settings['status'] = nil
+    Settings['status_time'] = nil
+    Settings['dependency_version'] = $DEPENDENCY_VERSION
+    Settings.save
   end
+
+  if install
+    respond 'Performing setup for dr-scripts. This will take some time. Do not stop this script until finished.'
+  end
+
+  respond '(Step 1 of 4) Checking base profile files...' if install
+  $manager.check_base_files
+
+  respond '(Step 2 of 4) Checking data files...' if install
+  $manager.check_data_files
+
+  respond '(Step 3 of 4) Downloading and starting scripts...' if install
+  $manager.start_scripts
+
+  respond '(Step 4 of 4) Applying map edits...' if install
+  $manager.make_map_edits
+
+  respond 'Finished install!' if install
+
+  if $manager.dependency_updated?
+    DRC.message("--- Dependency: A new version of dependency.lic was downloaded.")
+    DRC.message("--- Dependency: Run ;dependency to pick up the new version.")
+  end
+else
+  # Core provides ScriptSync -- just apply map overrides
+  make_map_edits if respond_to?(:make_map_edits, true)
 end
 
-if install
-  respond 'Performing setup for dr-scripts. This will take some time. Do not stop this script until finished.'
-end
+# Reload settings cache
+$setupfiles.reload if defined?($setupfiles) && $setupfiles
 
-respond '(Step 1 of 4) Checking base profile files...' if install
-$manager.check_base_files
-
-respond '(Step 2 of 4) Checking data files...' if install
-$manager.check_data_files
-
-respond '(Step 3 of 4) Downloading and starting scripts...' if install
-$manager.start_scripts
-
-respond '(Step 4 of 4) Applying map edits...' if install
-$manager.make_map_edits
-
-respond 'Finished install!' if install
-
-$setupfiles.reload
-
-# Remind user of curated scripts with a copy in custom folder
-warn_custom_scripts
-
-# Warn about obsolete scripts and data files still present locally
-warn_obsolete_scripts
-warn_obsolete_data_files
-
-if $manager.dependency_updated?
-  DRC.message("--- Dependency: A new version of dependency.lic was downloaded.")
-  DRC.message("--- Dependency: Run ;dependency to pick up the new version.")
-end
+# Run startup warnings (gated functions handle core vs inline)
+warn_custom_scripts if respond_to?(:warn_custom_scripts, true)
+warn_obsolete_scripts if respond_to?(:warn_obsolete_scripts, true)
+warn_obsolete_data_files if respond_to?(:warn_obsolete_data_files, true)
