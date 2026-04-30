@@ -181,6 +181,8 @@ class Healer
   # Exits immediately if not an empath or Unity not available.
   # @return [void]
   def validate_link_unity
+    waitrt?
+    waitcastrt?
     lines = Lich::Util.issue_command(
       'link',
       /LINK options|You don't seem to be able to do that/,
@@ -384,13 +386,13 @@ class Healer
     wounds = health.wounds
     return HEAL_LOCATIONS.dup unless wounds&.any?
 
-    available = HEAL_LOCATIONS.select do |location|
-      location_wounds = wounds[location] || []
-      severity_sum = location_wounds.sum { |w| w.respond_to?(:severity) ? w.severity : 0 }
-      severity_sum.zero?
-    end
+    wounded_parts = wounds.values.flatten.select { |w|
+      w.respond_to?(:body_part) && w.respond_to?(:severity) && w.severity > 0
+    }.map(&:body_part)
 
-    log("Available redirect locations: #{available.join(', ')}") if debug?
+    available = HEAL_LOCATIONS.reject { |loc| wounded_parts.include?(loc) }
+
+    log("Available redirect locations: #{available.join(', ')} (wounded: #{wounded_parts.to_a.join(', ')})") if debug?
 
     available
   end
@@ -421,10 +423,9 @@ class Healer
   def has_healable_wounds?(health)
     return false unless health&.wounds
 
-    health.wounds.any? do |location, wound_list|
-      next false unless HEAL_LOCATIONS.include?(location)
-
-      wound_list&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
+    health.wounds.values.flatten.any? do |w|
+      w.respond_to?(:body_part) && w.respond_to?(:severity) &&
+        w.severity > 0 && HEAL_LOCATIONS.include?(w.body_part)
     end
   end
 
@@ -500,7 +501,7 @@ class Healer
   # ============================================================
 
   # Checks if the healer is ready to transfer wounds (healthy enough).
-  # Spell slot processing is NOT gated by this — only wound transfers.
+  # Spell slot processing is NOT gated by this -- only wound transfers.
   # @return [Boolean] true if ready to transfer wounds from patients
   def ready_to_heal_wounds?
     return @last_ready_result if @last_health_check && (Time.now - @last_health_check) < 10
@@ -514,9 +515,7 @@ class Healer
       return false
     end
 
-    has_wounds = health.wounds&.any? do |_location, wound_list|
-      wound_list&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
-    end
+    has_wounds = health.wounds&.values&.flatten&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
 
     ready = !(
       health.diseased ||
@@ -547,9 +546,7 @@ class Healer
     # If vitality is low but no wounds, cast VH on self
     if DRStats.health < 70 && @vh_available && !spell_conflict?
       health = DRCH.check_health
-      has_wounds = health&.wounds&.any? do |_location, wound_list|
-        wound_list&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
-      end
+      has_wounds = health&.wounds&.values&.flatten&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
       unless has_wounds || health&.poisoned || health&.diseased
         heal_own_vitality
         return
@@ -880,7 +877,7 @@ class Healer
     end
 
     update_patient(victim, touched: true, timer: Time.now, body_part: body_part)
-    @last_health_check = nil # Invalidate cache — we just took wounds
+    @last_health_check = nil # Invalidate cache -- we just took wounds
     heal_self
   end
 
@@ -1102,7 +1099,7 @@ class Healer
   # ============================================================
 
   # Checks if health has dropped dangerously low and breaks all links via fall.
-  # Unity links cause ongoing wound flow from linked patients — fall is the
+  # Unity links cause ongoing wound flow from linked patients -- fall is the
   # only way to stop incoming damage immediately. Patients stay in queue and
   # are re-linked when we recover.
   # @return [void]
@@ -1115,13 +1112,13 @@ class Healer
     fput('fall')
 
     # Reset all patients to untouched so they get re-linked when we recover.
-    # Don't remove them from queue — we'll resume healing after recovery.
+    # Don't remove them from queue -- we'll resume healing after recovery.
     @patients.each_value do |p|
       p[:touched] = false
       p[:body_part] = nil
     end
 
-    # Clear spell slot — any in-progress FP/CD/VH is invalidated by the fall
+    # Clear spell slot -- any in-progress FP/CD/VH is invalidated by the fall
     @spell_task = nil
     @spell_queue.clear
 
@@ -1142,10 +1139,10 @@ class Healer
   #   2. Wound/patient processing (gated by ready_to_heal_wounds?)
   # @return [void]
   def process_queue
-    # Emergency check — break all links if health is critically low
+    # Emergency check -- break all links if health is critically low
     check_emergency_fall
 
-    # Emergency recovery — only heal self until healthy enough to resume
+    # Emergency recovery -- only heal self until healthy enough to resume
     if @emergency_recovery
       heal_self unless spell_conflict?
       if ready_to_heal_wounds?

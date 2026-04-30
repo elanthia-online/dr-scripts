@@ -350,7 +350,7 @@ RSpec.describe Healer do
       dead_with_wounds = health_result(
         dead: true,
         score: 9,
-        wounds: { 'RIGHT LEG' => [wound(body_part: 'RIGHT LEG', severity: 2)] }
+        wounds: { 2 => [wound(body_part: 'right leg', severity: 2)] }
       )
       allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(dead_with_wounds)
 
@@ -408,13 +408,15 @@ RSpec.describe Healer do
   # Wound Healing Body Part Selection (Open-Closed: new parts can be added)
   # ============================================================
 
+  # HealthResult.wounds is keyed by severity (integer), not body part.
+  # These tests use severity-keyed hashes to match production DRCH output.
   describe '#has_healable_wounds?' do
     let(:healer) { build_healer }
 
     shared_examples 'detects healable wounds' do |body_part|
       it "recognizes wounds on #{body_part}" do
         health = health_result(
-          wounds: { body_part => [wound(body_part: body_part, severity: 2)] }
+          wounds: { 2 => [wound(body_part: body_part, severity: 2)] }
         )
         expect(healer.send(:has_healable_wounds?, health)).to be true
       end
@@ -430,14 +432,14 @@ RSpec.describe Healer do
 
     it 'returns false when patient only has hand wounds' do
       health = health_result(
-        wounds: { 'right hand' => [wound(body_part: 'right hand', severity: 3)] }
+        wounds: { 3 => [wound(body_part: 'right hand', severity: 3)] }
       )
       expect(healer.send(:has_healable_wounds?, health)).to be false
     end
 
     it 'returns false when patient only has leg wounds' do
       health = health_result(
-        wounds: { 'left leg' => [wound(body_part: 'left leg', severity: 2)] }
+        wounds: { 2 => [wound(body_part: 'left leg', severity: 2)] }
       )
       expect(healer.send(:has_healable_wounds?, health)).to be false
     end
@@ -445,6 +447,78 @@ RSpec.describe Healer do
     it 'returns false when patient has no wounds' do
       health = health_result(wounds: {})
       expect(healer.send(:has_healable_wounds?, health)).to be false
+    end
+
+    it 'finds healable wounds among mixed severity keys' do
+      health = health_result(
+        wounds: {
+          1 => [wound(body_part: 'left leg', severity: 1)],
+          3 => [wound(body_part: 'chest', severity: 3)]
+        }
+      )
+      expect(healer.send(:has_healable_wounds?, health)).to be true
+    end
+
+    it 'returns false when all healable-location wounds have severity 0' do
+      health = health_result(
+        wounds: { 0 => [wound(body_part: 'chest', severity: 0)] }
+      )
+      expect(healer.send(:has_healable_wounds?, health)).to be false
+    end
+  end
+
+  # ============================================================
+  # Body Part Rotation (available_heal_locations)
+  # ============================================================
+
+  describe '#available_heal_locations' do
+    let(:healer) { build_healer }
+
+    it 'returns all heal locations when healer has no wounds' do
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+
+      result = healer.send(:available_heal_locations)
+      expect(result).to eq(Healer::HEAL_LOCATIONS)
+    end
+
+    it 'excludes wounded body parts from available locations' do
+      wounded_health = health_result(
+        wounds: { 2 => [wound(body_part: 'left arm', severity: 2)] },
+        score: 4
+      )
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+
+      result = healer.send(:available_heal_locations)
+      expect(result).not_to include('left arm')
+      expect(result).to include('right arm', 'head', 'chest')
+    end
+
+    it 'excludes multiple wounded parts across severity levels' do
+      wounded_health = health_result(
+        wounds: {
+          2 => [wound(body_part: 'left arm', severity: 2)],
+          3 => [wound(body_part: 'chest', severity: 3)]
+        },
+        score: 13
+      )
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+
+      result = healer.send(:available_heal_locations)
+      expect(result).not_to include('left arm')
+      expect(result).not_to include('chest')
+      expect(result).to include('right arm', 'head', 'abdomen', 'back')
+    end
+
+    it 'returns empty when all heal locations are wounded' do
+      all_wounded = Healer::HEAL_LOCATIONS.map.with_index do |part, i|
+        wound(body_part: part, severity: (i % 3) + 1)
+      end
+      wounds_by_severity = all_wounded.group_by(&:severity)
+      wounded_health = health_result(wounds: wounds_by_severity, score: 99)
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+
+      result = healer.send(:available_heal_locations)
+      expect(result).to be_empty
     end
   end
 
@@ -693,7 +767,7 @@ RSpec.describe Healer do
 
     it 'returns false when healer has wounds' do
       wounded = health_result(
-        wounds: { 'chest' => [wound(body_part: 'chest', severity: 2)] },
+        wounds: { 2 => [wound(body_part: 'chest', severity: 2)] },
         score: 4
       )
       allow(DRCH).to receive(:check_health).and_return(wounded)
