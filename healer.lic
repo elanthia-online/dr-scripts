@@ -321,7 +321,8 @@ class Healer
       timer: Time.now,
       touched: false,
       vh_attempted: false,
-      needs_teach: true
+      needs_teach: true,
+      dead: false
     }
 
     log("Added patient: #{name}")
@@ -363,6 +364,7 @@ class Healer
     patient = get_patient(name)
     return false unless patient
     return true unless patient[:touched]
+    return true if patient[:dead]
 
     (Time.now - patient[:timer]) >= COOLDOWN_SECONDS
   end
@@ -739,6 +741,12 @@ class Healer
       return
     end
 
+    # Resurrected: was dead, now alive -- clear dead flag and return to normal flow
+    if patient_data[:dead] && !victim_health.dead
+      update_patient(victim, dead: false, touched: false)
+      log("#{victim} resurrected, returning to normal healing flow")
+    end
+
     # Dead patient: no Unity link, no vitality transfer.
     # Wounds/poison/disease are handled through the normal interleaved flow.
     if victim_health.dead
@@ -754,9 +762,8 @@ class Healer
         return
       end
 
-      # Mark touched (no Unity link for dead patients) and fall through
-      # to wound/poison/disease handling below
-      update_patient(victim, touched: true, timer: Time.now) unless patient_data[:touched]
+      # Mark touched + dead (bypasses cooldown so corpse is processed every cycle)
+      update_patient(victim, touched: true, timer: Time.now, dead: true) unless patient_data[:touched]
     end
 
     # First encounter (living patients): upgrade to Unity link if patient has healable wounds
@@ -1027,10 +1034,16 @@ class Healer
         return
       end
 
-      # Send vit transfer and wait for the drain to land via DownstreamHook.
-      # Non-blocking: returns immediately so wound/disease healing can continue.
+      # Send vit transfer and check result before advancing.
       @drain_landed = false
-      fput("transfer #{task[:patient]} vit quick")
+      result = DRC.bput("transfer #{task[:patient]} vit quick", *TRANSFER_RESPONSES)
+
+      if result =~ TRANSFER_NOT_FOUND_PATTERN
+        Lich::Messaging.msg('bold', "Healer: #{task[:patient]} not found during vit transfer")
+        remove_patient(task[:patient], reason: :not_found)
+        return
+      end
+
       log("Transferred vitality from #{task[:patient]}, waiting for drain to land")
       DRC.log_window("Healer: Transferring vitality from #{task[:patient]}", "familiar")
       @spell_task[:phase] = :awaiting_drain
