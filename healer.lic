@@ -168,7 +168,7 @@ class Healer
     @passive_healing_available = validate_healing_spells
     @vh_available = validate_vh_spell
 
-    Lich::Messaging.msg('bold', "Healer: Allowed friends: #{@settings.friends&.join(', ') || 'none configured'}")
+    Lich::Messaging.msg('bold', "Healer: Allowed friends: #{@settings.friends&.sort_by { |f| f.downcase }&.join(', ') || 'none configured'}")
     log("Healer initialized")
   end
 
