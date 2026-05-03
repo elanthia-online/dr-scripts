@@ -1,138 +1,1317 @@
+# frozen_string_literal: true
+
 =begin
-  Documentation: https://elanthipedia.play.net/Lich_script_development#healer
+  Healer - Empath healing automation with parallel patient processing
+
+  Architecture:
+  - Two independent processing paths run each cycle:
+    1. Spell slot (always runs): FP/CD/VH state machines, not gated by wound readiness
+    2. Wound transfers (gated by ready_to_heal_wounds?): interleaved across patients
+  - Spell slot mutex: only one of FP/CD/VH can be active at a time; others queue
+  - Dead patients block all processing (massive wounds, no Unity link allowed)
+  - Emergency fall: if own vitality drops below 30%, fall to break all Unity links
+
+  Features:
+  - Parallel patient processing (interleaved wound transfers with cooldowns)
+  - Smart body part selection (only redirect to unwounded parts)
+  - Passive self-healing via Heal/Regenerate (falls back to healme, 30s max wait)
+  - Vitality healing via VH spell (non-blocking state machine, spams stacked transfers)
+  - Poison/disease curing via spell slot mutex (FP/CD via buff script)
+  - Leech/parasite tending (no spell needed, interleaves freely)
+  - Dead patient detection (blocking heal via basic empathic link, no Unity)
+  - Emergency fall safety (breaks all links if vitality critically low)
+  - Handles whispers, leans, offers, arrivals, and gestures
+  - Friends-only filtering via settings
+  - Scholarship teaching when friends arrive
+  - Familiar window logging
+
+  Safety thresholds:
+  - SELF_VIT_FLOOR (60%): won't take vitality from patients if own health below this
+  - EMERGENCY_VIT_THRESHOLD (30%): fall to break all links, enter recovery mode
+  - PATIENT_VIT_THRESHOLD (80%): only transfer vit if patient below this %
+
+  Settings (in your yaml):
+    friends: [list of allowed character names]
+    healer_waggle_set: healme  # waggle_set with Heal or Regenerate (default: 'healme')
+    cambrinth: cambrinth ring  # your cambrinth item name (for VH charging)
+    waggle_sets:
+      vh:
+        Vitality Healing:
+          mana: 5
+          cambrinth:
+            - 5
+          prep_time: 3
+
+  Commands:
+    ;healer          - Start healing (runs persistently)
+    ;healer status   - Show config/spell status (one-shot, doesn't start loop)
+    ;healer help     - Show help
+
+  While running (use ;eq since you can't run a second instance):
+    ;eq $healer.show_status          - Show queue/spell slot status
+    ;eq $healer.clear_queue          - Clear patient queue
+    ;eq $healer.clear_spell_slot     - Clear stuck spell slot
+    ;eq $healer.add_patient("Name")  - Add patient manually
+    ;eq $healer.patients             - Inspect queue hash
+    ;e $healer_debug = true          - Enable debug logging
 =end
 no_pause_all
 
+# Global debug flag - toggle with: ;e $healer_debug = true
+$healer_debug ||= false
+
 class Healer
-  def empty_hands
-    echo 'Emptying hands' if debug?
-    @left = checkleft
-    echo "@left: #{@left}" if debug?
-    @right = checkright
-    echo "@right: #{@right}" if debug?
-    DRCI.stow_hands
+  # Cooldown between transfer cycles per patient (seconds)
+  COOLDOWN_SECONDS = 10
+
+  # Passive healing timing (seconds)
+  PASSIVE_HEAL_POLL_INTERVAL = 5
+  PASSIVE_HEAL_MAX_WAIT = 30
+
+  # Vitality safety thresholds
+  SELF_VIT_FLOOR = 60 # Never take vit if own health below this %
+  EMERGENCY_VIT_THRESHOLD = 30 # Fall to break all links if health drops below this %
+  PATIENT_VIT_THRESHOLD = 80   # Only transfer vit if patient below this % (100 = always)
+
+  # Spell slot timeout (seconds) - prevents permanent lock on stuck tasks
+  SPELL_SLOT_TIMEOUT = 45
+
+  # VH spell abbreviation (game command)
+  VH_ABBREVIATION = 'VH'
+
+  # Body parts for wound redirection (all valid except hands/legs)
+  HEAL_LOCATIONS = [
+    'left arm', 'right arm',
+    'left eye', 'right eye',
+    'head', 'neck',
+    'chest', 'abdomen', 'back'
+  ].freeze
+
+  # Affliction config for spell slot processing
+  AFFLICTION_CONFIG = {
+    poison: { command: 'poison', spell: 'Flush Poisons', buff_arg: 'fp' },
+    disease: { command: 'disease', spell: 'Cure Disease', buff_arg: 'cd' }
+  }.freeze
+
+  # Patterns for healing request triggers
+  WHISPER_HEAL_PATTERN = /^(?:.+ )?(?<character>\w+) whispers, "heal"$/i.freeze
+  LEAN_OFFER_PATTERN = /^(?:.+ )?(?<character>\w+) (?:leans on|offers) you/i.freeze
+  GESTURE_PATTERN = /^(?:.+ )?(?<character>\w+) gestures\.$/i.freeze
+  MOONGATE_ARRIVAL_PATTERN = /As your eyes slowly recover, you notice a dazed-looking (?<character>\w+)/i.freeze
+  ARRIVAL_PATTERN = /^(?:.+ )?(?<character>\w+) just arrived\.$/i.freeze
+
+  # Patterns for teaching responses
+  TEACH_RESPONSES = [
+    'You begin to', 'is already listening to you', 'is listening to someone else',
+    'I could not find', 'You have already offered', 'That person is too busy',
+    'You are already teaching', 'You cannot teach two different classes',
+    'is not paying attention', 'You cannot listen to a teacher and teach',
+    'already trying to teach', 'trying to teach someone else'
+  ].freeze
+
+  # Patterns for link responses
+  LINK_SUCCESS_PATTERN = /Stretching your senses/.freeze
+  LINK_STRAIN_PATTERN = /You strain/.freeze
+  LINK_NOT_FOUND_PATTERN = /could not find/.freeze
+  LINK_RESPONSES = [LINK_SUCCESS_PATTERN, LINK_STRAIN_PATTERN, LINK_NOT_FOUND_PATTERN].freeze
+
+  # Patterns for redirect responses
+  REDIRECT_SUCCESS_PATTERN = /You are now redirecting/.freeze
+  REDIRECT_FAILURE_PATTERN = /not a valid option/.freeze
+  REDIRECT_RESPONSES = [REDIRECT_SUCCESS_PATTERN, REDIRECT_FAILURE_PATTERN].freeze
+
+  # Patterns for transfer responses
+  TRANSFER_SUCCESS_PATTERN = /You (?:reluctantly )?(?:touch|rest your hand on)/.freeze
+  TRANSFER_NOT_FOUND_PATTERN = /What do you want to get/.freeze
+  TRANSFER_RESPONSES = [TRANSFER_SUCCESS_PATTERN, TRANSFER_NOT_FOUND_PATTERN].freeze
+
+  # Patterns for whisper responses
+  WHISPER_RESPONSES = [
+    /^You whisper/i,
+    /could not find/i,
+    /You are unable to whisper/i
+  ].freeze
+
+  # All trigger patterns for healing requests (order matters - first match wins)
+  TRIGGER_PATTERNS = [
+    WHISPER_HEAL_PATTERN,
+    LEAN_OFFER_PATTERN,
+    GESTURE_PATTERN,
+    MOONGATE_ARRIVAL_PATTERN
+  ].freeze
+
+  # Initializes the healer with settings and empty patient queue.
+  def initialize
+    @settings = get_settings
+
+    # Build case-insensitive regex for friend matching
+    friends = @settings.friends || []
+    @allowed_characters = if friends.empty?
+                            /(?!)/ # Never matches
+                          else
+                            Regexp.new("\\A(?:#{friends.map { |f| Regexp.escape(f) }.join('|')})\\z", Regexp::IGNORECASE)
+                          end
+
+    @patients = {} # name_key => { name:, body_part:, timer:, touched:, vh_attempted: }
+    @spell_task = nil   # { patient:, type:, phase:, timer:, ... }
+    @spell_queue = []   # [{ patient:, type: }, ...]
+
+    @last_health_check = nil
+    @last_ready_result = false
+    @emergency_recovery = false
+    @drain_landed = false
+    @healing_waggle_set = @settings.healer_waggle_set || 'healme'
+    @cambrinth_item = Array(@settings.cambrinth).first
+
+    # Startup validations
+    validate_link_unity
+    @passive_healing_available = validate_healing_spells
+    @vh_available = validate_vh_spell
+
+    Lich::Messaging.msg('bold', "Healer: Allowed friends: #{@settings.friends&.sort_by { |f| f.downcase }&.join(', ') || 'none configured'}")
+    log("Healer initialized")
   end
 
-  def stop_training
-    until (@scripts_to_unpause = DRC.safe_pause_list)
-      echo("Cannot pause, trying again in 5 seconds.")
-      pause 5
+  # ============================================================
+  # STARTUP VALIDATION
+  # ============================================================
+
+  # Validates that the empath has Link Unity by checking `link` command output.
+  # Uses silent issue_command to avoid polluting the game window.
+  # Exits immediately if not an empath or Unity not available.
+  # @return [void]
+  def validate_link_unity
+    waitrt?
+    waitcastrt?
+    lines = Lich::Util.issue_command(
+      'link',
+      /LINK options|You don't seem to be able to do that/,
+      /<prompt/,
+      usexml: true,
+      quiet: true,
+      include_end: false,
+      timeout: 5
+    )
+
+    unless lines
+      Lich::Messaging.msg('bold', 'Healer: ERROR - Could not check link abilities (timeout).')
+      exit
+    end
+
+    output = lines.map { |l| l.gsub(/<[^>]*>/, '') }.join("\n")
+
+    if output.include?("You don't seem")
+      Lich::Messaging.msg('bold', 'Healer: ERROR - Not an empath. Cannot heal others.')
+      exit
+    end
+
+    unless output.include?('UNITY')
+      Lich::Messaging.msg('bold', 'Healer: ERROR - Link Unity not available. Cannot transfer wounds.')
+      Lich::Messaging.msg('bold', 'Healer: You need to learn the Unity manifestation of Empathic Link.')
+      exit
+    end
+
+    Lich::Messaging.msg('bold', 'Healer: Link Unity verified')
+  end
+
+  # Checks if character knows Heal + Adaptive Curing for passive healing.
+  # @return [Boolean] true if passive healing is available
+  def validate_healing_spells
+    knows_heal = DRSpells.known_spells['Heal']
+    knows_adc = DRSpells.known_spells['Adaptive Curing']
+
+    if knows_heal && knows_adc
+      spell = active_healing_spell
+      if spell
+        Lich::Messaging.msg('bold', "Healer: Using passive healing (#{spell})")
+      else
+        Lich::Messaging.msg('bold', 'Healer: Passive healing available (rebuff needed)')
+      end
+      true
+    else
+      missing = []
+      missing << 'Heal' unless knows_heal
+      missing << 'Adaptive Curing' unless knows_adc
+      Lich::Messaging.msg('bold', "Healer: Using healme script (missing: #{missing.join(', ')})")
+      false
     end
   end
 
-  def start_training
-    return if running?('healme')
+  # Validates VH waggle_set for vitality healing. Prints example YAML if missing.
+  # @return [Boolean] true if VH is configured and available
+  def validate_vh_spell
+    vh_waggle = @settings.waggle_sets&.dig('vh')
 
-    fput("get my #{@right}") if @right
-    fput("get my #{@left}") if @left
-    @left = nil
-    @right = nil
-    DRC.safe_unpause_list(@scripts_to_unpause)
+    if vh_waggle.nil? || vh_waggle.empty?
+      Lich::Messaging.msg('bold', 'Healer: Vitality healing DISABLED (no "vh" waggle_set found)')
+      Lich::Messaging.msg('bold', 'Healer: To enable, add to your YAML:')
+      Lich::Messaging.msg('bold', '  waggle_sets:')
+      Lich::Messaging.msg('bold', '    vh:')
+      Lich::Messaging.msg('bold', '      Vitality Healing:')
+      Lich::Messaging.msg('bold', '        mana: 5')
+      Lich::Messaging.msg('bold', '        cambrinth:')
+      Lich::Messaging.msg('bold', '          - 5')
+      Lich::Messaging.msg('bold', '        prep_time: 3')
+      false
+    else
+      spell_name = vh_waggle.keys.first
+      spell_data = vh_waggle[spell_name]
+      @vh_spell = {
+        name: spell_name,
+        mana: spell_data['mana'] || 5,
+        cambrinth: spell_data['cambrinth'] || [],
+        prep_time: spell_data['prep_time'] || 3
+      }
+      Lich::Messaging.msg('bold', "Healer: Vitality healing enabled (#{spell_name}, mana: #{@vh_spell[:mana]})")
+      true
+    end
   end
 
-  def ready_for_patient
-    # return false if Script.running?('healme')
-    return false if @last_heal_check && Time.now - @last_heal_check < 10
+  # ============================================================
+  # HELPERS
+  # ============================================================
 
+  # @return [Boolean] true if debug mode is enabled
+  def debug?
+    $healer_debug
+  end
+
+  # Checks if spell casting would conflict with the current state.
+  # True when the spell slot is active (FP/CD/VH mid-cast) or buff script is running.
+  # @return [Boolean] true if spell casting would conflict
+  def spell_conflict?
+    @spell_task || Script.running?('buff')
+  end
+
+  # Exposes the patients hash for runtime inspection via ;eq $healer.patients.
+  # @return [Hash<Symbol, Hash>] name_key => patient data hash
+  attr_reader :patients
+
+  # Returns the currently active healing spell name (Regenerate preferred over Heal).
+  # @return [String, nil] spell name or nil if neither active
+  def active_healing_spell
+    if DRSpells.active_spells['Regenerate']
+      'Regenerate'
+    elsif DRSpells.active_spells['Heal']
+      'Heal'
+    end
+  end
+
+  # Converts a patient name to a normalized symbol key.
+  # @param name [String] the patient's character name
+  # @return [Symbol] normalized key
+  def name_key(name)
+    name.to_s.downcase.to_sym
+  end
+
+  # ============================================================
+  # QUEUE MANAGEMENT
+  # ============================================================
+
+  # Adds a patient to the healing queue.
+  # @param name [String] the patient's character name
+  # @return [void]
+  def add_patient(name)
+    key = name_key(name)
+    return if @patients.key?(key)
+
+    @patients[key] = {
+      name: name,
+      body_part: nil,
+      timer: Time.now,
+      touched: false,
+      vh_attempted: false,
+      needs_teach: true,
+      dead: false
+    }
+
+    log("Added patient: #{name}")
+  end
+
+  # Removes a patient from the queue and cleans up spell slot/queue references.
+  # @param name [String] the patient's character name
+  # @param reason [Symbol] reason for removal
+  # @return [void]
+  def remove_patient(name, reason: :healed)
+    return unless @patients.delete(name_key(name))
+
+    clear_spell_slot_for(name)
+    log("Removed patient: #{name} (#{reason})")
+  end
+
+  # Updates a patient's data.
+  # @param name [String] the patient's character name
+  # @param updates [Hash] data to merge into patient record
+  # @return [void]
+  def update_patient(name, updates)
+    key = name_key(name)
+    return unless @patients[key]
+
+    @patients[key].merge!(updates)
+  end
+
+  # Gets a patient's data.
+  # @param name [String] the patient's character name
+  # @return [Hash, nil] patient data or nil if not found
+  def get_patient(name)
+    @patients[name_key(name)]
+  end
+
+  # Checks if a patient is ready for the next healing cycle (cooldown passed).
+  # @param name [String] the patient's character name
+  # @return [Boolean] true if ready for healing, false if not found or on cooldown
+  def patient_ready?(name)
+    patient = get_patient(name)
+    return false unless patient
+    return true unless patient[:touched]
+    return true if patient[:dead]
+
+    (Time.now - patient[:timer]) >= COOLDOWN_SECONDS
+  end
+
+  # Gets the best body part to redirect wounds to (must have zero wounds).
+  # @return [String, nil] body part name or nil if none available
+  def next_heal_location
+    available = available_heal_locations
+    return available.first if available.any?
+
+    log("No unwounded body parts available for redirect!")
+    nil
+  end
+
+  # Finds all body parts with zero wounds that can be used for redirect.
+  # @return [Array<String>] body parts with no wounds
+  def available_heal_locations
     health = DRCH.check_health
-    @last_heal_check = Time.now
-    return false if health['diseased']
-    return false if health['poisoned']
-    return false if DRStats.health < 70
-    return false unless health['wounds'].empty?
+    return [] unless health
 
-    true
+    wounds = health.wounds
+    return HEAL_LOCATIONS.dup unless wounds&.any?
+
+    wounded_parts = wounds.values.flatten.select { |w|
+      w.respond_to?(:body_part) && w.respond_to?(:severity) && w.severity > 0
+    }.map(&:body_part)
+
+    available = HEAL_LOCATIONS.reject { |loc| wounded_parts.include?(loc) }
+
+    log("Available redirect locations: #{available.join(', ')} (wounded: #{wounded_parts.to_a.join(', ')})") if debug?
+
+    available
   end
 
+  # Checks if a character is in the current room.
+  # @param name [String] character name to check
+  # @return [Boolean] true if character is present
+  def patient_in_room?(name)
+    DRRoom.pcs.any? { |pc| pc.downcase == name.downcase }
+  end
+
+  # Scans DRRoom.pcs for friends not already in the queue.
+  # Compensates for arrival lines consumed by blocking bput/fput calls
+  # during patient processing -- those lines never reach process_line.
+  # @return [void]
+  def scan_room_for_patients
+    DRRoom.pcs.each do |pc|
+      next unless pc.match?(@allowed_characters)
+      next if @patients.key?(name_key(pc))
+
+      add_patient(pc)
+    end
+  end
+
+  # Checks if a HealthResult has wounds on healable body parts (not hands/legs).
+  # @param health [HealthResult] patient's health status
+  # @return [Boolean] true if patient has wounds we can actually transfer
+  def has_healable_wounds?(health)
+    return false unless health&.wounds
+
+    health.wounds.values.flatten.any? do |w|
+      w.respond_to?(:body_part) && w.respond_to?(:severity) &&
+        w.severity > 0 && HEAL_LOCATIONS.include?(w.body_part)
+    end
+  end
+
+  # ============================================================
+  # SPELL SLOT MUTEX
+  # ============================================================
+
+  # Claims the spell slot for a patient and spell type.
+  # If already claimed by another patient, queues this request.
+  # @param patient [String] patient name
+  # @param type [Symbol] :poison, :disease, or :vitality
+  # @return [Boolean] true if slot was claimed (or already owned)
+  def claim_spell_slot(patient, type)
+    patient_key = patient.downcase
+    if @spell_task.nil?
+      @spell_task = { patient: patient, type: type, phase: :start, timer: Time.now }
+      log("Spell slot claimed: #{patient} (#{type})")
+      true
+    elsif @spell_task[:patient].downcase == patient_key && @spell_task[:type] == type
+      true # Already owns it
+    else
+      entry = { patient: patient, type: type }
+      unless @spell_queue.any? { |e| e[:patient].downcase == patient_key && e[:type] == type }
+        @spell_queue << entry
+        log("Spell slot busy, queued: #{patient} (#{type})")
+      end
+      false
+    end
+  end
+
+  # Releases the spell slot and auto-pops the next queued task.
+  # Skips queued tasks for patients that have left.
+  # @return [void]
+  def release_spell_slot
+    old = @spell_task
+    log("Spell slot released: #{old[:patient]} (#{old[:type]})") if old
+
+    @spell_task = nil
+
+    while (next_task = @spell_queue.shift)
+      if @patients[name_key(next_task[:patient])]
+        @spell_task = next_task.merge(phase: :start, timer: Time.now)
+        log("Spell slot auto-claimed from queue: #{@spell_task[:patient]} (#{@spell_task[:type]})")
+        break
+      end
+    end
+  end
+
+  # Removes a specific patient from the spell slot and queue.
+  # @param patient_name [String] patient name to clear
+  # @return [void]
+  def clear_spell_slot_for(patient_name)
+    if @spell_task && @spell_task[:patient].downcase == patient_name.downcase
+      release_spell_slot
+    end
+    @spell_queue.reject! { |e| e[:patient].downcase == patient_name.downcase }
+  end
+
+  # Manually clears the spell slot (for $healer.clear_spell_slot).
+  # @return [void]
+  def clear_spell_slot
+    if @spell_task
+      Lich::Messaging.msg('bold', "Healer: Manually cleared spell slot (was: #{@spell_task[:patient]} #{@spell_task[:type]})")
+      @spell_task = nil
+      @spell_queue.clear
+    else
+      Lich::Messaging.msg('bold', 'Healer: Spell slot already free')
+    end
+  end
+
+  # ============================================================
+  # HEALTH CHECKS & SELF-HEALING
+  # ============================================================
+
+  # Checks if the healer is ready to transfer wounds (healthy enough).
+  # Spell slot processing is NOT gated by this -- only wound transfers.
+  # @return [Boolean] true if ready to transfer wounds from patients
+  def ready_to_heal_wounds?
+    return @last_ready_result if @last_health_check && (Time.now - @last_health_check) < 10
+
+    @last_health_check = Time.now
+    health = DRCH.check_health
+
+    unless health
+      log('Could not check own health')
+      @last_ready_result = false
+      return false
+    end
+
+    has_wounds = health.wounds&.values&.flatten&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
+
+    ready = !(
+      health.diseased ||
+      health.poisoned ||
+      DRStats.health < 70 ||
+      has_wounds
+    )
+
+    unless ready
+      reasons = []
+      reasons << "diseased" if health.diseased
+      reasons << "poisoned" if health.poisoned
+      reasons << "vitality #{DRStats.health}%" if DRStats.health < 70
+      reasons << "wounded" if has_wounds
+      log("Not ready for wounds: #{reasons.join(', ')}")
+    end
+
+    @last_ready_result = ready
+  end
+
+  # Heals self using passive healing or healme script.
+  # Also handles vitality recovery via VH when health is low but no wounds present.
+  # Avoids conflicting with spell slot (won't rebuff or run healme if slot active).
+  # @return [void]
   def heal_self
     return if Script.running?('healme')
 
-    start_script('healme')
-  end
-
-  def heal_person
-    name = @queue.first
-    echo "Healing #{name}" if debug?
-    @patient = name
-    return if @touched && @touched >= Time.now
-
-    unless @touched
-      @touched = Time.now + 12
-      pause 1
-      waitrt?
-      fput("touch #{name}")
-      put("transfer #{name} vit quick")
-      put("transfer #{name} vit quick")
-      put("transfer #{name} vit quick")
-      pause
-      fput("transfer #{name} quick poison")
-      fput("transfer #{name} quick disease")
-      fput("transfer #{name} quick all")
-      heal_self
+    # If vitality is low but no wounds, cast VH on self
+    if DRStats.health < 70 && @vh_available && !spell_conflict?
+      health = DRCH.check_health
+      has_wounds = health&.wounds&.values&.flatten&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
+      unless has_wounds || health&.poisoned || health&.diseased
+        heal_own_vitality
+        return
+      end
     end
 
-    case DRC.bput("touch #{name}", 'no injuries to speak of', 'leech on \w+ (right|left)?\s*\w+', 'vitality', 'Touch what')
-    when /injuries/
-      @queue.shift
-      @touched = false
-      @patient = false
-      fput("whisper #{name} Done!")
-      heal_self
-    when /leech on \w+ ((right|left)?\s*\w+)/
-      fput("tend #{name} #{Regexp.last_match(1)}")
-      pause
-    when /touch what/i
-      @queue.shift
-      @touched = false
-      @patient = false
+    if @passive_healing_available
+      # Don't rebuff if spell slot is active or buff is running (would conflict)
+      ensure_healing_spells unless spell_conflict?
+
+      # Only wait for passive healing if a healing spell is actually active
+      if active_healing_spell
+        wait_for_passive_healing
+      elsif !@spell_task && !Script.running?('buff')
+        DRC.wait_for_script_to_complete('healme')
+      end
+      # If spell slot active and no passive healing: skip, will retry next cycle
     else
-      @touched = Time.now + 12
+      unless spell_conflict?
+        DRC.wait_for_script_to_complete('healme')
+      end
     end
   end
 
-  def debug?
-    UserVars.healer_debug
+  # Ensures at least one of Heal or Regenerate is active.
+  # @return [void]
+  def ensure_healing_spells
+    return unless @passive_healing_available
+    return if DRSpells.active_spells['Heal'] || DRSpells.active_spells['Regenerate']
+    return if spell_conflict?
+
+    log("Neither Heal nor Regenerate active, rebuffing via #{@healing_waggle_set}...")
+    DRC.wait_for_script_to_complete('buff', [@healing_waggle_set])
   end
 
-  def initialize
-    @right = nil
-    echo "@right: #{@right}" if debug?
-    @left = nil
-    echo "@left: #{@left}" if debug?
-    @queue = []
+  # Waits for passive healing to resolve wounds, with timeout fallback.
+  # @return [void]
+  def wait_for_passive_healing
+    elapsed = 0
+    health = DRCH.check_health
+    initial_score = health&.score || 0
+
+    return if initial_score.zero?
+
+    log("Waiting for passive healing (score: #{initial_score})")
+
+    loop do
+      health = DRCH.check_health
+      current_score = health&.score || 0
+
+      break if current_score.zero?
+
+      if elapsed >= PASSIVE_HEAL_MAX_WAIT
+        Lich::Messaging.msg('bold', 'Healer: Passive healing timeout, falling back to healme')
+        unless spell_conflict? || Script.running?('healme')
+          DRC.wait_for_script_to_complete('healme')
+        end
+        return
+      end
+
+      pause PASSIVE_HEAL_POLL_INTERVAL
+      elapsed += PASSIVE_HEAL_POLL_INTERVAL
+
+      log("Passive healing progress: #{current_score} (#{elapsed}s)") if debug?
+    end
+
+    log('Passive healing complete')
   end
 
-  def run(line)
-    DRC.fix_standing
+  # Casts VH on self to recover vitality when low but unwounded.
+  # Blocking -- we can't heal patients with low vitality anyway.
+  # @return [void]
+  def heal_own_vitality
+    return unless @vh_available
 
-    unless line
-      pause 0.5
+    log("Own vitality low (#{DRStats.health}%), casting VH on self")
+    Lich::Messaging.msg('bold', "Healer: Healing own vitality (#{DRStats.health}%)")
+    prep_vh_spell
+    pause @vh_spell[:prep_time] || 3
+    waitrt?
+    waitcastrt?
+    fput('cast')
+    log("Self VH cast, health now #{DRStats.health}%")
+  end
+
+  # ============================================================
+  # LINE MONITORING (DownstreamHook -- never blocks)
+  # ============================================================
+
+  # Starts a DownstreamHook that monitors game lines for healing triggers.
+  # Hooks fire for every line BEFORE it reaches the script buffer, so triggers
+  # are never consumed by blocking bput/fput calls in process_queue.
+  # The hook only adds patients to queue -- no fput/bput allowed in hooks.
+  # Teaching is deferred to heal_patient via the :needs_teach flag.
+  # @return [void]
+  def start_line_monitor
+    @hook_id = "healer_#{Script.current.object_id}"
+
+    DownstreamHook.add(@hook_id, proc { |line|
+      begin
+        clean = line.gsub(/<[^>]*>/, '').strip
+        unless clean.empty?
+          @drain_landed = true if clean.include?('You feel your vitality transferring')
+          queue_from_line(clean)
+        end
+      rescue StandardError => e
+        log("Hook error in #{@hook_id}: #{e.message}") if debug?
+      end
+      line # Pass through unchanged
+    })
+
+    before_dying { DownstreamHook.remove(@hook_id) }
+    log("Line monitor started (hook: #{@hook_id})")
+  end
+
+  # Non-blocking line processing for the DownstreamHook.
+  # Only adds patients to queue -- must not call fput/bput/get.
+  # @param line [String] XML-stripped game line
+  # @return [void]
+  def queue_from_line(line)
+    character = extract_character_from_triggers(line)
+
+    if character
+      if character.match?(@allowed_characters)
+        add_patient(character)
+      end
       return
     end
 
-    if @queue.first && ready_for_patient
-      heal_person
-    elsif @patient
-      heal_person
-    elsif (@patient || @queue.first) && !ready_for_patient
-      heal_self
-    elsif @queue.empty? && !Script.running?('healme')
-      start_training
+    if (match = line.match(ARRIVAL_PATTERN))
+      character = match[:character]
+      add_patient(character) if character.match?(@allowed_characters)
+    end
+  end
+
+  # Extracts character name from healing trigger patterns.
+  # @param line [String] game line to check
+  # @return [String, nil] character name or nil if no match
+  def extract_character_from_triggers(line)
+    TRIGGER_PATTERNS.each do |pattern|
+      match = line.match(pattern)
+      return match[:character] if match
+    end
+    nil
+  end
+
+  # Teaches scholarship to a character.
+  # @param character [String] character name to teach
+  # @return [void]
+  def teach_character(character)
+    DRC.bput("teach scholarship to #{character}", *TEACH_RESPONSES)
+  end
+
+  # ============================================================
+  # PATIENT HEALING
+  # ============================================================
+
+  # Heals a patient through one cycle.
+  # Handles: dead check, parasites, poison/disease (spell slot), wounds, vitality.
+  # @param patient_data [Hash] patient data from queue
+  # @return [void]
+  def heal_patient(patient_data)
+    victim = patient_data[:name]
+
+    log("Processing #{victim} (touched: #{patient_data[:touched]})")
+
+    # Check if patient still in room
+    unless patient_in_room?(victim)
+      log("#{victim} left room")
+      Lich::Messaging.msg("bold", "Healer: #{victim} left room, removing from queue")
+      remove_patient(victim, reason: :left_room)
+      return
     end
 
-    return if line !~ /^(\w+) whispers, "heal"$/
+    # Teach on first encounter (deferred from hook -- hook can't fput)
+    if patient_data[:needs_teach]
+      teach_character(victim)
+      update_patient(victim, needs_teach: false)
+    end
 
-    if @temp == Regexp.last_match(1)
-      @queue << Regexp.last_match(1)
-      @temp = nil
+    # Touch once to perceive health (also establishes empathic link)
+    log("Perceiving health of #{victim}...")
+    victim_health = DRCH.perceive_health_other(victim)
+    log("Perceived #{victim}: score=#{victim_health&.score}, poisoned=#{victim_health&.poisoned}, diseased=#{victim_health&.diseased}, dead=#{victim_health&.dead}, vit=#{victim_health&.vitality}")
+
+    unless victim_health
+      log("Could not perceive #{victim}")
+      Lich::Messaging.msg("bold", "Healer: Could not perceive health of #{victim}")
+      remove_patient(victim, reason: :perceive_failed)
+      return
+    end
+
+    # Resurrected: was dead, now alive -- clear dead flag and return to normal flow
+    if patient_data[:dead] && !victim_health.dead
+      update_patient(victim, dead: false, touched: false)
+      log("#{victim} resurrected, returning to normal healing flow")
+    end
+
+    # Dead patient: no Unity link, no vitality transfer.
+    # Wounds/poison/disease are handled through the normal interleaved flow.
+    if victim_health.dead
+      DRC.log_window("Healer: #{victim} is DEAD", "familiar") unless patient_data[:touched]
+
+      # Fully clear -- whisper and remove
+      if victim_health.score == 0 && !victim_health.poisoned && !victim_health.diseased
+        heal_self
+        DRC.bput("whisper #{victim} You're dead -- get a cleric!", *WHISPER_RESPONSES)
+        Lich::Messaging.msg("bold", "Healer: Dead patient #{victim} cleared")
+        DRC.log_window("Healer: Dead #{victim} cleared", "familiar")
+        remove_patient(victim, reason: :dead_healed)
+        return
+      end
+
+      # Mark touched + dead (bypasses cooldown so corpse is processed every cycle)
+      update_patient(victim, touched: true, timer: Time.now, dead: true) unless patient_data[:touched]
+    end
+
+    # First encounter (living patients): upgrade to Unity link if patient has healable wounds
+    # Unity is for wound transfer only -- not for poison/disease/vitality (those use basic empathic link from touch)
+    unless patient_data[:touched] || victim_health.dead
+      if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
+        DRC.log_window("Healer: New patient: #{victim}", "familiar")
+        if has_healable_wounds?(victim_health)
+          log("Upgrading to Unity link with #{victim} for wound transfer")
+          link_result = DRC.bput("link #{victim} unity", *LINK_RESPONSES)
+          if link_result =~ LINK_NOT_FOUND_PATTERN
+            Lich::Messaging.msg("bold", "Healer: Could not link with #{victim}")
+            remove_patient(victim, reason: :not_found)
+            return
+          end
+        else
+          log("#{victim} only has hands/legs wounds, skipping unity link")
+        end
+      end
+    end
+
+    # Handle parasites (no spell needed, interleaves freely with wounds)
+    handle_parasites(victim, victim_health)
+
+    # Handle poison -> needs spell slot (priority over VH)
+    if victim_health&.poisoned
+      claim_spell_slot(victim, :poison)
+      update_patient(victim, touched: true, timer: Time.now)
+      return
+    end
+
+    # Handle disease -> needs spell slot (priority over VH)
+    if victim_health&.diseased
+      claim_spell_slot(victim, :disease)
+      update_patient(victim, touched: true, timer: Time.now)
+      return
+    end
+
+    # Check if patient needs vitality healing (only relevant once wounds are clear)
+    needs_vit = !victim_health.dead &&
+                victim_health.vitality &&
+                victim_health.vitality < PATIENT_VIT_THRESHOLD
+
+    # Handle wounds FIRST -- bleeding causes vitality loss, so healing wounds
+    # is always higher priority than vitality transfer.
+    if victim_health.score > 0
+      transfer_wounds(victim, victim_health.score)
+      return
+    end
+
+    # Wounds clear - now check vitality
+    if patient_data[:touched]
+      if needs_vit && @vh_available && !patient_data[:vh_attempted]
+        log("#{victim} wounds clear, needs vitality healing (#{victim_health.vitality}% vit)")
+        DRC.log_window("Healer: #{victim} needs vitality healing (#{victim_health.vitality}% vit)", "familiar")
+        claim_spell_slot(victim, :vitality)
+        return
+      end
+      complete_healing(victim)
     else
-      @temp = Regexp.last_match(1)
+      # First touch, no wounds/afflictions - check vit before removing
+      if needs_vit && @vh_available
+        update_patient(victim, touched: true, timer: Time.now)
+        claim_spell_slot(victim, :vitality)
+        return
+      end
+      log("#{victim} has no wounds, removing from queue")
+      remove_patient(victim, reason: :no_wounds)
     end
+  end
+
+  # Tends parasites/leeches found on a patient.
+  # No spell required - interleaves freely with wound transfers.
+  # @param victim [String] patient name
+  # @param victim_health [HealthResult] patient health data
+  # @return [void]
+  def handle_parasites(victim, victim_health)
+    return unless victim_health&.parasites&.any?
+
+    victim_health.parasites.each_value do |parasite_list|
+      parasite_list.each do |parasite|
+        next unless parasite.respond_to?(:body_part) && parasite.body_part
+
+        body_part = parasite.body_part.strip
+        next if body_part.empty?
+
+        fput("tend #{victim} #{body_part}")
+        log("Tended parasite on #{victim}'s #{body_part}")
+      end
+    end
+  end
+
+  # Transfers wounds from a patient.
+  # Dynamically picks an unwounded body part each transfer.
+  # @param victim [String] patient name
+  # @param wound_score [Integer] patient's current wound score
+  # @return [void]
+  def transfer_wounds(victim, wound_score)
+    body_part = next_heal_location
+
+    unless body_part
+      Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
+      heal_self
+      return # Will retry on next cycle after self-healing
+    end
+
+    log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
+    DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
+
+    DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
+
+    result = DRC.bput("transfer #{victim} quick all", *TRANSFER_RESPONSES)
+
+    if result =~ TRANSFER_NOT_FOUND_PATTERN
+      Lich::Messaging.msg("bold", "Healer: #{victim} not found during wound transfer")
+      remove_patient(victim, reason: :not_found)
+      return
+    end
+
+    update_patient(victim, touched: true, timer: Time.now, body_part: body_part)
+    @last_health_check = nil # Invalidate cache -- we just took wounds
+    heal_self
+  end
+
+  # Completes healing for a patient and removes them from queue.
+  # @param victim [String] patient name
+  # @return [void]
+  def complete_healing(victim)
+    log("Finished healing #{victim}")
+    DRC.bput("whisper #{victim} Done!", *WHISPER_RESPONSES)
+    DRC.log_window("Healer: Healed #{victim}", "familiar")
+    Lich::Messaging.msg("bold", "Healer: Completed healing #{victim}")
+    remove_patient(victim, reason: :healed)
+  end
+
+  # ============================================================
+  # SPELL SLOT PROCESSING (non-blocking state machines)
+  # ============================================================
+
+  # Processes the current spell slot task (FP/CD/VH).
+  # Called every cycle regardless of wound readiness.
+  # @return [void]
+  def process_spell_slot
+    return unless @spell_task
+
+    # Timeout check
+    if Time.now - @spell_task[:timer] > SPELL_SLOT_TIMEOUT
+      log("Spell slot timeout: #{@spell_task[:patient]} (#{@spell_task[:type]}, phase: #{@spell_task[:phase]})")
+      Lich::Messaging.msg('bold', "Healer: Spell slot timeout for #{@spell_task[:patient]} (#{@spell_task[:type]})")
+      release_spell_slot
+      return
+    end
+
+    # Check patient still in room
+    unless patient_in_room?(@spell_task[:patient])
+      log("#{@spell_task[:patient]} left room during spell slot processing")
+      remove_patient(@spell_task[:patient], reason: :left_room)
+      return
+    end
+
+    case @spell_task[:type]
+    when :poison, :disease
+      process_affliction_slot
+    when :vitality
+      process_vitality_slot
+    end
+  end
+
+  # State machine for poison/disease curing via buff script.
+  # Phases: :start -> :cure_self -> :casting
+  # @return [void]
+  def process_affliction_slot
+    task = @spell_task
+    config = AFFLICTION_CONFIG[task[:type]]
+
+    case task[:phase]
+    when :start
+      # Transfer the affliction from patient
+      result = DRC.bput("transfer #{task[:patient]} quick #{config[:command]}", *TRANSFER_RESPONSES)
+
+      if result =~ TRANSFER_NOT_FOUND_PATTERN
+        Lich::Messaging.msg("bold", "Healer: #{task[:patient]} not found during #{task[:type]} transfer")
+        remove_patient(task[:patient], reason: :not_found)
+        return
+      end
+
+      update_patient(task[:patient], touched: true, timer: Time.now)
+      log("Transferred #{task[:type]} from #{task[:patient]}")
+      @spell_task[:phase] = :cure_self
+      @spell_task[:timer] = Time.now
+
+    when :cure_self
+      # Check if cure spell is already active (from a previous cast)
+      if DRSpells.active_spells[config[:spell]]
+        log("#{config[:spell]} already active")
+        release_spell_slot
+        return
+      end
+
+      # Start buff script non-blocking
+      unless Script.running?('buff')
+        unless start_script('buff', [config[:buff_arg]])
+          Lich::Messaging.msg('bold', "Healer: Failed to start buff script for #{config[:spell]}")
+          release_spell_slot
+          return
+        end
+      end
+      @spell_task[:phase] = :casting
+      @spell_task[:timer] = Time.now
+
+    when :casting
+      # Check if buff finished
+      unless Script.running?('buff')
+        # Buff finished - check if we're cured
+        health = DRCH.check_health
+        still_afflicted = (task[:type] == :poison && health&.poisoned) ||
+                          (task[:type] == :disease && health&.diseased)
+
+        if still_afflicted
+          log("Still #{task[:type]} after buff, will retry on next perceive")
+        else
+          log("#{config[:spell]} cured successfully")
+        end
+        release_spell_slot
+      end
+      # If buff still running, just return (non-blocking)
+    end
+  end
+
+  # State machine for vitality healing via VH spell.
+  # Prep-first approach: preps VH before transferring so it can cast immediately
+  # when damage lands. Single transfer per round to prevent runaway drain.
+  # Phases: :start -> :prepping -> :awaiting_drain -> :recovering (loops)
+  # @return [void]
+  def process_vitality_slot
+    task = @spell_task
+
+    case task[:phase]
+    when :start
+      # Safety: don't take vit if our own is low
+      if DRStats.health < SELF_VIT_FLOOR
+        log("Own vitality #{DRStats.health}% < #{SELF_VIT_FLOOR}% floor, skipping vit transfer for #{task[:patient]}")
+        Lich::Messaging.msg('bold', "Healer: Own vitality too low (#{DRStats.health}%), skipping vit for #{task[:patient]}")
+        update_patient(task[:patient], vh_attempted: true)
+        release_spell_slot
+        return
+      end
+
+      # Prep VH FIRST -- it will be ready to cast by the time damage lands
+      log("Prepping VH before vit transfer for #{task[:patient]}")
+      DRC.log_window("Healer: Preparing vitality healing for #{task[:patient]}", "familiar")
+      prep_vh_spell
+      @spell_task[:prep_start] = Time.now
+      @spell_task[:phase] = :prepping
+      @spell_task[:timer] = Time.now
+
+    when :prepping
+      # Wait for prep time to elapse before transferring
+      prep_elapsed = Time.now - (@spell_task[:prep_start] || Time.now)
+      return unless prep_elapsed >= (@vh_spell[:prep_time] || 3)
+
+      # Re-check health before transferring (may have taken wounds since :start)
+      if DRStats.health < SELF_VIT_FLOOR
+        log("Own vitality #{DRStats.health}% dropped below floor before vit transfer, bailing")
+        Lich::Messaging.msg('bold', "Healer: Own vitality too low (#{DRStats.health}%), skipping vit for #{task[:patient]}")
+        update_patient(task[:patient], vh_attempted: true)
+        release_spell_slot
+        return
+      end
+
+      # Send vit transfer and check result before advancing.
+      @drain_landed = false
+      result = DRC.bput("transfer #{task[:patient]} vit quick", *TRANSFER_RESPONSES)
+
+      if result =~ TRANSFER_NOT_FOUND_PATTERN
+        Lich::Messaging.msg('bold', "Healer: #{task[:patient]} not found during vit transfer")
+        remove_patient(task[:patient], reason: :not_found)
+        return
+      end
+
+      log("Transferred vitality from #{task[:patient]}, waiting for drain to land")
+      DRC.log_window("Healer: Transferring vitality from #{task[:patient]}", "familiar")
+      @spell_task[:phase] = :awaiting_drain
+      @spell_task[:drain_sent_at] = Time.now
+      @spell_task[:timer] = Time.now
+
+    when :awaiting_drain
+      if @drain_landed || Time.now - (task[:drain_sent_at] || Time.now) > 8
+        waitrt?
+        waitcastrt?
+        fput('cast')
+        log("Cast VH (drain_landed=#{@drain_landed}), health now #{DRStats.health}%")
+        @spell_task[:phase] = :recovering
+        @spell_task[:timer] = Time.now
+      end
+
+    when :recovering
+      if DRStats.health >= 90
+        # Stable -- check if patient needs more vitality
+        victim_health = DRCH.perceive_health_other(task[:patient])
+        needs_more = victim_health &&
+                     victim_health.vitality &&
+                     victim_health.vitality < PATIENT_VIT_THRESHOLD
+
+        if needs_more && DRStats.health >= SELF_VIT_FLOOR
+          # Another controlled round -- prep VH first again
+          log("Patient #{task[:patient]} still needs vit (#{victim_health.vitality}%), another round")
+          prep_vh_spell
+          @spell_task[:prep_start] = Time.now
+          @spell_task[:phase] = :prepping
+          @spell_task[:timer] = Time.now
+        else
+          log("Vitality healing complete for #{task[:patient]} (our health: #{DRStats.health}%)")
+          update_patient(task[:patient], vh_attempted: true)
+          release_spell_slot
+        end
+      elsif DRStats.health < SELF_VIT_FLOOR
+        # Our health is too low to continue -- bail
+        log("Own vitality dropped to #{DRStats.health}% during recovery, stopping vit for #{task[:patient]}")
+        Lich::Messaging.msg('bold', "Healer: Own vitality too low (#{DRStats.health}%), stopping vit for #{task[:patient]}")
+        update_patient(task[:patient], vh_attempted: true)
+        release_spell_slot
+      end
+      # else: waiting for VH to restore health, return (non-blocking)
+    end
+  end
+
+  # Preps the VH spell with mana and cambrinth charges.
+  # Uses fput for each step (brief blocking per command, not full-cycle blocking).
+  # @return [void]
+  def prep_vh_spell
+    return unless @vh_spell
+
+    fput("prep #{VH_ABBREVIATION} #{@vh_spell[:mana]}")
+
+    if @vh_spell[:cambrinth]&.any? && @cambrinth_item
+      @vh_spell[:cambrinth].each do |charge|
+        fput("charge my #{@cambrinth_item} #{charge}")
+      end
+      fput("invoke my #{@cambrinth_item}")
+    end
+  end
+
+  # ============================================================
+  # EMERGENCY SAFETY
+  # ============================================================
+
+  # Checks if health has dropped dangerously low and breaks all links via fall.
+  # Unity links cause ongoing wound flow from linked patients -- fall is the
+  # only way to stop incoming damage immediately. Patients stay in queue and
+  # are re-linked when we recover.
+  # @return [void]
+  def check_emergency_fall
+    return if @emergency_recovery
+    return if DRStats.health >= EMERGENCY_VIT_THRESHOLD
+
+    Lich::Messaging.msg('bold', "Healer: EMERGENCY - vitality #{DRStats.health}% below #{EMERGENCY_VIT_THRESHOLD}%, falling to break all links!")
+    DRC.log_window("Healer: EMERGENCY FALL at #{DRStats.health}% vitality", "familiar")
+    fput('fall')
+
+    # Reset all patients to untouched so they get re-linked when we recover.
+    # Don't remove them from queue -- we'll resume healing after recovery.
+    @patients.each_value do |p|
+      p[:touched] = false
+      p[:body_part] = nil
+    end
+
+    # Clear spell slot -- any in-progress FP/CD/VH is invalidated by the fall
+    @spell_task = nil
+    @spell_queue.clear
+
+    # Force fresh health check on next cycle
+    @last_health_check = nil
+
+    @emergency_recovery = true
+  end
+
+  # ============================================================
+  # QUEUE PROCESSING
+  # ============================================================
+
+  # Processes all patients in the queue.
+  # Three phases:
+  #   0. Emergency check: fall if health critically low
+  #   1. Spell slot processing (always runs - not gated by wound readiness)
+  #   2. Wound/patient processing (gated by ready_to_heal_wounds?)
+  # @return [void]
+  def process_queue
+    # Emergency check -- break all links if health is critically low
+    check_emergency_fall
+
+    # Emergency recovery -- only heal self until healthy enough to resume
+    if @emergency_recovery
+      heal_self unless spell_conflict?
+      if ready_to_heal_wounds?
+        DRC.fix_standing
+        @emergency_recovery = false
+        Lich::Messaging.msg('bold', 'Healer: Recovered from emergency, resuming healing')
+        DRC.log_window('Healer: Recovered, resuming', 'familiar')
+      end
+      return
+    end
+
+    return if @patients.empty? && !@spell_task
+
+    DRC.fix_standing
+
+    # Path 1: Always process spell slot (FP/CD/VH state machines)
+    process_spell_slot if @spell_task
+
+    return if @patients.empty?
+
+    # Path 2: Wound/patient processing (gated by wound readiness)
+    unless ready_to_heal_wounds?
+      log("Not ready for wound transfers") if debug?
+      # Try to heal self even if not ready (unless spell slot would conflict)
+      heal_self unless spell_conflict?
+      return
+    end
+
+    # Process each patient that's ready (cooldown passed)
+    @patients.values.each do |patient_data|
+      next unless patient_ready?(patient_data[:name])
+
+      # Skip patients being handled by the spell slot
+      next if @spell_task && @spell_task[:patient].downcase == patient_data[:name].downcase
+
+      log("Processing patient: #{patient_data[:name]}") if debug?
+      heal_patient(patient_data)
+      pause 0.3 # Small pause between patients
+    end
+
+    # Process spell slot again (handles tasks claimed during patient loop)
+    process_spell_slot if @spell_task
+  end
+
+  # ============================================================
+  # STATUS & COMMANDS
+  # ============================================================
+
+  # Shows the current queue and spell slot status.
+  # @return [void]
+  def show_status
+    available = available_heal_locations
+
+    Lich::Messaging.msg("bold", "=== Healer Status ===")
+    Lich::Messaging.msg("bold", "Patients: #{@patients.size}")
+    @patients.each_value do |p|
+      status = p[:touched] ? "healing" : "waiting"
+      cooldown = p[:touched] ? " (#{[0, COOLDOWN_SECONDS - (Time.now - p[:timer]).to_i].max}s)" : ""
+      last_part = p[:body_part] ? " last: #{p[:body_part]}" : ""
+      vh_flag = p[:vh_attempted] ? " [vh done]" : ""
+      Lich::Messaging.msg("bold", "  - #{p[:name]} (#{status}#{cooldown}#{last_part}#{vh_flag})")
+    end
+
+    if @spell_task
+      Lich::Messaging.msg("bold", "Spell slot: #{@spell_task[:patient]} (#{@spell_task[:type]}, phase: #{@spell_task[:phase]})")
+    else
+      Lich::Messaging.msg("bold", "Spell slot: free")
+    end
+
+    if @spell_queue.any?
+      queue_str = @spell_queue.map { |e| "#{e[:patient]}(#{e[:type]})" }.join(', ')
+      Lich::Messaging.msg("bold", "Spell queue: #{queue_str}")
+    end
+
+    Lich::Messaging.msg("bold", "Own vitality: #{DRStats.health}%")
+    Lich::Messaging.msg("bold", "EMERGENCY RECOVERY MODE") if @emergency_recovery
+    Lich::Messaging.msg("bold", "Ready for wounds: #{ready_to_heal_wounds?}")
+
+    healing_mode = if @passive_healing_available
+                     spell = active_healing_spell
+                     spell ? "Passive (#{spell})" : 'Passive (rebuff needed)'
+                   else
+                     'healme script'
+                   end
+    Lich::Messaging.msg("bold", "Healing mode: #{healing_mode}")
+    Lich::Messaging.msg("bold", "Waggle set: #{@healing_waggle_set}") if @passive_healing_available
+    Lich::Messaging.msg("bold", "Vitality healing: #{@vh_available ? "enabled (#{@vh_spell[:name]})" : 'disabled'}")
+    Lich::Messaging.msg("bold", "Available redirect parts: #{available.any? ? available.join(', ') : 'NONE'}")
+  end
+
+  # Clears all patients from the queue.
+  # @return [void]
+  def clear_queue
+    count = @patients.size
+    @patients.clear
+    @spell_task = nil
+    @spell_queue.clear
+    Lich::Messaging.msg("bold", "Healer: Cleared #{count} patients from queue")
+  end
+
+  # ============================================================
+  # MAIN LOOP
+  # ============================================================
+
+  # Main run loop.
+  # Line monitoring runs via DownstreamHook (never blocks, never misses triggers).
+  # This loop only drains the script buffer and processes the healing queue.
+  # @return [void]
+  def run
+    # Catch anyone already in the room before the hook starts
+    scan_room_for_patients
+    start_line_monitor
+
+    loop do
+      # Drain script buffer -- triggers already handled by DownstreamHook.
+      # Without this, the buffer grows unbounded since we never call get/gets?.
+      nil while Script.current.gets?
+
+      process_queue
+      pause 0.5
+    end
+  end
+
+  private
+
+  # Logs a debug message.
+  # @param message [String] message to log
+  # @return [void]
+  def log(message)
+    Lich::Messaging.msg("bold", "[Healer] #{message}") if debug?
   end
 end
 
-healer = Healer.new
+# Handle command-line arguments
+command = Script.current.vars[1]&.downcase
 
-loop do
-  healer.run(script.gets?)
+case command
+when 'status'
+  # One-shot status check (config/spells, not queue - queue requires running instance)
+  healer = Healer.new
+  healer.show_status
+when 'help'
+  Lich::Messaging.msg('bold', '=== Healer Commands ===')
+  Lich::Messaging.msg('bold', ';healer        - Start healing (runs persistently)')
+  Lich::Messaging.msg('bold', ';healer status - Show config/spell status (one-shot)')
+  Lich::Messaging.msg('bold', ';healer help   - Show this help')
+  Lich::Messaging.msg('bold', '')
+  Lich::Messaging.msg('bold', 'While running (use ;eq since you cannot run a second instance):')
+  Lich::Messaging.msg('bold', '  ;eq $healer.show_status          - Show queue/spell slot status')
+  Lich::Messaging.msg('bold', '  ;eq $healer.clear_queue          - Clear patient queue')
+  Lich::Messaging.msg('bold', '  ;eq $healer.clear_spell_slot     - Clear stuck spell slot')
+  Lich::Messaging.msg('bold', '  ;eq $healer.add_patient("Name")  - Add patient manually')
+  Lich::Messaging.msg('bold', '  ;eq $healer.patients             - Inspect queue hash')
+  Lich::Messaging.msg('bold', '  ;e $healer_debug = true          - Enable debug logging')
+else
+  # Default: start main healing loop
+  $healer = Healer.new
+  $healer.run
 end
