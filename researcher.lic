@@ -1,0 +1,201 @@
+=begin
+original author: Crannach
+refactored by: EO/dr-scripts
+game: dr
+version: 1.0.0
+
+Summary -- Researches a single topic. Type ';researcher help' for usage and options.
+
+=end
+
+VALID_RESEARCH_TOPICS = %w[fundamental stream augmentation utility warding sorcery energy field spell plane planes road wild].freeze
+
+class Researcher
+  def initialize
+    args = get_args
+
+    display_help_and_exit if args.help
+
+    begin
+      @settings = get_settings
+    rescue StandardError => e
+      DRC.message("Error loading settings: #{e.message}")
+      DRC.message("Make sure you have your YAML configuration files set up properly.")
+      exit
+    end
+
+    @debug = args.debug || @settings.dig('research', 'debug') || false
+    @current_topic = nil
+    add_flags
+    UserVars.researcher ||= {}
+    check_status
+
+    if args.skill
+      @current_topic = args.skill
+    elsif args.symbiosis
+      @current_topic = "symbiosis #{args.sym_type}"
+    else
+      @current_topic = @settings.dig('research', 'topic')
+      unless @current_topic
+        DRC.message("No research topic specified.")
+        DRC.message("Either provide a topic as an argument or configure 'research: topic:' in your YAML settings.")
+        DRC.message("Type ';researcher help' for more information.")
+        exit
+      end
+    end
+
+    validate_research_topic
+    check_research
+    loop do
+      pause 5
+      check_research
+      break unless researching
+    end
+  end
+
+  def display_help_and_exit
+    DRC.message("Researcher - Automated magical research script")
+    DRC.message("")
+    DRC.message("Usage:")
+    DRC.message("  ;researcher <topic>              - Research a specific magic skill")
+    DRC.message("  ;researcher symbiosis <type>     - Research a symbiosis type")
+    DRC.message("  ;researcher debug                - Enable debug mode")
+    DRC.message("  ;researcher help                 - Display this help")
+    DRC.message("  ;researcher                      - Use topic from YAML settings")
+    DRC.message("")
+    DRC.message("Valid Research Topics:")
+    DRC.message("  fundamental   - Magic/Arcana experience")
+    DRC.message("  stream        - Attunement experience (or use 'attunement')")
+    DRC.message("  augmentation  - Augmentation experience")
+    DRC.message("  utility       - Utility experience")
+    DRC.message("  warding       - Warding experience")
+    DRC.message("  sorcery       - Sorcerous research (backlash risk)")
+    DRC.message("  energy        - High energy spellcasting (backlash risk)")
+    DRC.message("  field         - Mana field theory (backlash risk)")
+    DRC.message("  spell         - Spell research (backlash risk)")
+    DRC.message("  plane         - Plane of probability (quest required)")
+    DRC.message("  planes        - Elemental planes (quest required)")
+    DRC.message("  road          - Starry road (quest required)")
+    DRC.message("  wild          - Wild magic (backlash risk, event-only)")
+    DRC.message("")
+    DRC.message("Valid Symbiosis Types:")
+    DRC.message("  activate, avoid, cast, discern, endure, examine, explore,")
+    DRC.message("  harness, harvest, heal, impress, learn, perform, remember,")
+    DRC.message("  resolve, spell, spring, strengthen, watch")
+    DRC.message("")
+    DRC.message("YAML Configuration:")
+    DRC.message("  research:")
+    DRC.message("    topic: augmentation  # Required if no CLI argument")
+    DRC.message("    debug: false         # Optional")
+    exit
+  end
+
+  def validate_research_topic
+    @current_topic = @current_topic&.downcase
+    return if @current_topic&.match?(/^symbiosis \S+$/)
+
+    @current_topic = 'stream' if @current_topic == 'attunement'
+
+    unless @current_topic && VALID_RESEARCH_TOPICS.include?(@current_topic)
+      DRC.message("Invalid research topic: #{@current_topic}")
+      DRC.message("Valid topics are: #{VALID_RESEARCH_TOPICS.join(', ')}")
+      DRC.message("For symbiosis research, use: ;researcher symbiosis <type>")
+      DRC.message("Type ';researcher help' for more information.")
+      exit
+    end
+  end
+
+  def set_researching(status)
+    echo "researching=#{status}" if @debug
+    UserVars.researcher['researching'] = status
+    UserVars.researcher['timestamp'] = Time.now
+  end
+
+  def researching
+    return false if Flags['research-partial']
+    return false if Flags['research-complete']
+    return false unless DRSpells.active_spells.include?('Gauge Flow')
+    UserVars.researcher['researching']
+  end
+
+  def add_flags
+    Flags.add('research-partial', 'there is still more to learn before', 'distracted by combat', 'distracted by your spellcasting', 'You lose your focus on your research project', 'you forget what you were') unless Flags['research-partial']
+    Flags.add('research-complete', '^Breakthrough!', 'You complete reviewing your knowledge of the \w+ symbiosis and commit the details to memory') unless Flags['research-complete']
+  end
+
+  def check_status
+    case DRC.bput('research status', 'You estimate that you will complete it a few minutes from now', "You're not researching anything", "You have completed \d+% of a project about")
+    when 'You estimate that you will complete it a few minutes from now'
+      set_researching(true)
+    when "You're not researching anything", "You have completed \d+% of a project about"
+      set_researching(false)
+    end
+  end
+
+  def check_research
+    if Flags['research-partial']
+      Flags.reset('research-partial')
+      set_researching(false)
+      start_research
+    elsif Flags['research-complete']
+      Flags.reset('research-complete')
+      set_researching(false)
+      @current_topic = nil
+    else
+      start_research
+    end
+  end
+
+  def start_research
+    return if researching
+
+    check_gaf
+    case DRC.bput("research #{@current_topic} 300", 'You expertly coach', 'You focus', 'You tentatively', 'You confidently', 'Abandoning the normal', 'You cannot begin', 'You are already busy', 'Usage:', "You do not know how to research", 'You start to research', 'You begin to bend', 'With a mixture of rational concern')
+    when 'You cannot begin'
+      fput('research cancel')
+      fput('research cancel')
+      start_research
+    when 'You focus', 'You tentatively', 'You confidently', 'Abandoning the normal', 'You are already busy', 'You start to research', 'You expertly coach', 'You begin to bend', 'With a mixture of rational concern'
+      set_researching(true)
+    when 'Usage:', 'You do not know how to research'
+      echo "Invalid research option"
+      set_researching(false)
+      exit
+    end
+  end
+
+  def check_gaf
+    return if DRSpells.active_spells.include?('Gauge Flow')
+
+    gaf_spell_data = @settings.dig('waggle_sets', 'gaf', 'Gauge Flow')
+    if gaf_spell_data
+      echo "Using waggle set settings" if @debug
+      echo "waggle data: #{gaf_spell_data}" if @debug
+      DRCA.cast_spell(gaf_spell_data, @settings)
+    else
+      echo "Using min prep. Make a waggle_set called 'gaf' with Gauge Flow in it if you want more control" if @debug
+      DRCA.cast_spell({ 'abbrev' => 'gaf', 'mana' => 5 }, @settings)
+    end
+  end
+
+  def get_args
+    arg_definitions = [
+      [
+        { name: 'help', regex: /^help$/i, optional: true, description: 'Display help text and exit' }
+      ],
+      [
+        { name: 'debug', regex: /^debug$/i, optional: true, description: 'Enable debug output' }
+      ],
+      [
+        { name: 'skill', options: %w[attunement augmentation fundamental stream utility warding sorcery energy field spell plane planes road wild], description: 'What skill or type of research do you want to do?' }
+      ],
+      [
+        { name: 'symbiosis', regex: /symbiosis/i, description: "Do symbiosis research?" },
+        { name: 'sym_type', options: %w[activate avoid cast discern endure examine explore harness harvest heal impress learn perform remember resolve spell spring strengthen watch], description: "Which symbiosis do you want to research?" }
+      ]
+    ]
+    Lich::Common::ArgParser.new.parse_args(arg_definitions)
+  end
+end
+
+Researcher.new
