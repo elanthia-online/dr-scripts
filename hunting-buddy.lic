@@ -141,6 +141,7 @@ class HuntingBuddy
       stop_on_no_moons = info['moons'] || info['stop_on_moons'] # boolean
       stop_on_encumbrance = info['stop_on_encumbrance'] # numeric threshold
       stop_on_burgle_cooldown = info['stop_on_burgle_cooldown'] # boolean
+      @disable_room_descriptions = info.key?('disable_room_descriptions') ? info['disable_room_descriptions'] : @settings.hunting_disable_room_descriptions
       hunting_zones = [info[:zone]].flatten.compact # string or list of hunting zones
       waiting_room = info['full_waiting_room'] || @settings.safe_room # room id
       prefer_buddies = info['prefer_buddies'] # boolean
@@ -159,6 +160,7 @@ class HuntingBuddy
         echo("  stop_on_no_moons: #{stop_on_no_moons}")
         echo("  stop_on_encumbrance: #{stop_on_encumbrance}")
         echo("  stop_on_burgle_cooldown: #{stop_on_burgle_cooldown}")
+        echo("  disable_room_descriptions: #{@disable_room_descriptions}")
         echo("  hunting_zones: #{hunting_zones}")
         echo("  waiting_room: #{waiting_room}")
         echo("  prefer_buddies: #{prefer_buddies}")
