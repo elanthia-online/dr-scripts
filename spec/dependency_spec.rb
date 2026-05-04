@@ -105,10 +105,7 @@ extract_constant(dep_lines, dep_path, 'DR_OBSOLETE_SCRIPTS')
 extract_constant(dep_lines, dep_path, 'DR_OBSOLETE_DATA_FILES')
 
 %w[
-  dr_obsolete_script?
   warn_obsolete_scripts
-  handle_obsolete_autostart
-  stop_autostart
   save_bankbot_transaction
   load_bankbot_ledger
   save_reportbot_whitelist
@@ -134,67 +131,6 @@ RSpec.describe 'Obsolete Scripts' do
 
     it 'is frozen' do
       expect(DR_OBSOLETE_SCRIPTS).to be_frozen
-    end
-  end
-
-  describe '#dr_obsolete_script?' do
-    context 'with a non-obsolete script' do
-      it 'returns false without warnings' do
-        expect(dr_obsolete_script?('hunting-buddy')).to be false
-        expect($respond_messages).to be_empty
-      end
-    end
-
-    context 'with an obsolete script name' do
-      it 'returns false (allows caller to decide behavior)' do
-        expect(dr_obsolete_script?('exp-monitor')).to be false
-      end
-
-      it 'warns about the calling script referencing an obsolete script' do
-        dr_obsolete_script?('exp-monitor')
-        expect($respond_messages.last).to include('exp-monitor')
-        expect($respond_messages.last).to include('references obsolete script')
-      end
-    end
-
-    context 'when the .lic suffix is included' do
-      it 'strips the suffix and still detects obsolete scripts' do
-        dr_obsolete_script?('exp-monitor.lic')
-        expect($respond_messages).not_to be_empty
-      end
-    end
-
-    context 'when the obsolete script file exists locally' do
-      around do |example|
-        path = File.join(SCRIPT_DIR, 'exp-monitor.lic')
-        File.write(path, '# obsolete')
-        example.run
-      ensure
-        File.delete(path) if File.exist?(path)
-      end
-
-      it 'warns user to delete the file' do
-        dr_obsolete_script?('exp-monitor')
-        expect($respond_messages.first).to include('should be deleted')
-      end
-    end
-
-    context 'when the obsolete script file exists in custom/' do
-      around do |example|
-        custom_dir = File.join(SCRIPT_DIR, 'custom')
-        FileUtils.mkdir_p(custom_dir)
-        path = File.join(custom_dir, 'exp-monitor.lic')
-        File.write(path, '# obsolete')
-        example.run
-      ensure
-        File.delete(path) if File.exist?(path)
-        FileUtils.rm_rf(custom_dir)
-      end
-
-      it 'warns user to delete from scripts/custom' do
-        dr_obsolete_script?('exp-monitor')
-        expect($respond_messages.first).to include('scripts/custom')
-      end
     end
   end
 
@@ -243,65 +179,6 @@ RSpec.describe 'Obsolete Scripts' do
       it 'produces no warnings' do
         warn_obsolete_data_files
         expect($respond_messages).to be_empty
-      end
-    end
-  end
-
-  describe '#handle_obsolete_autostart' do
-    before do
-      UserVars.autostart_scripts = []
-    end
-
-    context 'with a non-obsolete script' do
-      it 'returns false' do
-        expect(handle_obsolete_autostart('crossing-training')).to be false
-      end
-
-      it 'produces no messages' do
-        handle_obsolete_autostart('crossing-training')
-        expect($respond_messages).to be_empty
-      end
-    end
-
-    context 'when script is in UserVars autostarts' do
-      before { UserVars.autostart_scripts = ['exp-monitor', 'hunting-buddy'] }
-
-      it 'returns true' do
-        expect(handle_obsolete_autostart('exp-monitor')).to be true
-      end
-
-      it 'removes from UserVars.autostart_scripts' do
-        handle_obsolete_autostart('exp-monitor')
-        expect(UserVars.autostart_scripts).to eq(['hunting-buddy'])
-      end
-
-      it 'warns about removal' do
-        handle_obsolete_autostart('exp-monitor')
-        expect($respond_messages.join).to include('Removing obsolete')
-      end
-
-      it 'includes the manual removal command' do
-        handle_obsolete_autostart('exp-monitor')
-        expect($respond_messages.join).to include("stop_autostart('exp-monitor')")
-      end
-    end
-
-    context 'when script is in YAML profile autostarts only' do
-      it 'returns true' do
-        expect(handle_obsolete_autostart('spellmonitor')).to be true
-      end
-
-      it 'tells user to edit their YAML' do
-        handle_obsolete_autostart('spellmonitor')
-        expect($respond_messages.join).to include('profile YAML')
-      end
-    end
-
-    context 'each obsolete script is recognized' do
-      DR_OBSOLETE_SCRIPTS.each do |script_name|
-        it "handles '#{script_name}'" do
-          expect(handle_obsolete_autostart(script_name)).to be true
-        end
       end
     end
   end
@@ -1056,7 +933,7 @@ end
 
 RSpec.describe 'Sentinel Gating Structure' do
   describe 'gate block extraction' do
-    %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP CORE_AUTOSTART].each do |sentinel|
+    %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP].each do |sentinel|
       it "#{sentinel} gate block exists and is extractable" do
         expect { extract_gate_block(DEP_SOURCE, sentinel) }.not_to raise_error
       end
@@ -1064,7 +941,7 @@ RSpec.describe 'Sentinel Gating Structure' do
   end
 
   describe 'gate independence' do
-    let(:sentinels) { %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP CORE_AUTOSTART] }
+    let(:sentinels) { %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP] }
 
     it 'no gate block contains another sentinel check' do
       sentinels.each do |sentinel|
@@ -1168,32 +1045,30 @@ RSpec.describe 'Sentinel Gating Structure' do
     end
   end
 
-  describe 'CORE_AUTOSTART gate contents' do
-    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_AUTOSTART') }
-
-    it 'defines handle_obsolete_autostart method' do
-      expect(block).to include('def handle_obsolete_autostart')
+  describe 'CORE_AUTOSTART gate removed' do
+    it 'no longer contains CORE_AUTOSTART gate block' do
+      expect(DEP_SOURCE).not_to include('const_defined?(:CORE_AUTOSTART')
     end
 
-    it 'defines dr_obsolete_script? method' do
-      expect(block).to include('def dr_obsolete_script?')
+    it 'no longer defines handle_obsolete_autostart' do
+      expect(DEP_SOURCE).not_to match(/^\s*def handle_obsolete_autostart/)
     end
 
-    it 'defines autostart method' do
-      expect(block).to include('def autostart(')
+    it 'no longer defines autostart() helper' do
+      # autostart as a method def at top-level (not ScriptManager#autostarts)
+      expect(DEP_SOURCE).not_to match(/^\s*def autostart\(/)
     end
 
-    it 'defines stop_autostart method' do
-      expect(block).to include('def stop_autostart(')
+    it 'no longer defines stop_autostart' do
+      expect(DEP_SOURCE).not_to match(/^\s*def stop_autostart/)
     end
 
-    it 'defines dependency_status method' do
-      expect(block).to include('def dependency_status')
+    it 'no longer defines dependency_status' do
+      expect(DEP_SOURCE).not_to match(/^\s*def dependency_status/)
     end
 
-    it 'merges Settings autostart into UserVars' do
-      expect(block).to include("Settings['autostart']")
-      expect(block).to include('UserVars.autostart_scripts')
+    it 'no longer contains the zombie merge of Settings autostart into UserVars' do
+      expect(DEP_SOURCE).not_to include("Settings['autostart']")
     end
   end
 
@@ -1240,12 +1115,12 @@ RSpec.describe 'Sentinel Gating Structure' do
   end
 
   describe 'version' do
-    it 'has been ticked to 3.0.0' do
-      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '3.0.0'")
+    it 'has been ticked to 3.0.1' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '3.0.1'")
     end
 
-    it 'requires minimum lich version 5.16.2' do
-      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.16.2'")
+    it 'requires minimum lich version 5.17.0' do
+      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.17.0'")
     end
   end
 
