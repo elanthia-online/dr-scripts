@@ -29,12 +29,28 @@ RSpec.describe 'CORE_AUTOSTART block removal from dependency.lic' do
   end
 
   describe 'removed zombie merge code' do
-    it 'does not merge Settings autostart into UserVars.autostart_scripts' do
-      expect(DEP_CONTENT).not_to include("Settings['autostart']")
+    it 'does not contain the perpetual merge into UserVars.autostart_scripts' do
+      expect(DEP_CONTENT).not_to include('UserVars.autostart_scripts = merged')
     end
 
     it 'does not contain the zombie merge echo message' do
       expect(DEP_CONTENT).not_to include('Merging global autostarts into character autostarts')
+    end
+  end
+
+  describe 'one-shot orphan cleanup' do
+    it "clears Settings['autostart'] if present" do
+      expect(DEP_CONTENT).to include("Settings['autostart'] = nil")
+    end
+
+    it 'saves after clearing' do
+      cleanup_block = DEP_CONTENT[/if Settings\['autostart'\].*?end/m]
+      expect(cleanup_block).not_to be_nil
+      expect(cleanup_block).to include('Settings.save')
+    end
+
+    it 'only runs once (conditional on Settings having the key)' do
+      expect(DEP_CONTENT).to match(/^if Settings\['autostart'\]/)
     end
   end
 
@@ -101,15 +117,12 @@ RSpec.describe 'CORE_AUTOSTART block removal from dependency.lic' do
       expect(DEP_CONTENT).to include('end # CORE_DR_STARTUP gate')
     end
 
-    it 'CORE_DR_STARTUP gate immediately follows ScriptManager gate' do
-      # After removing the CORE_AUTOSTART block, these two should be adjacent
-      # (with only blank lines or comments between them).
+    it 'no function defs or gate blocks between ScriptManager and CORE_DR_STARTUP' do
       manager_end = DEP_CONTENT.index('end # ScriptManager gate')
       startup_gate = DEP_CONTENT.index('# --- CORE_DR_STARTUP gate ---')
       expect(manager_end).not_to be_nil
       expect(startup_gate).not_to be_nil
       between = DEP_CONTENT[manager_end..startup_gate]
-      # Should only contain the closing comment, newlines, and the startup comment
       expect(between).not_to include('def ')
       expect(between).not_to include('unless ')
     end

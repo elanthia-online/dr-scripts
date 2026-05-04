@@ -942,6 +942,17 @@ unless Lich::Common.const_defined?(:CORE_GET_SETTINGS, false)
   end
 end # ScriptManager gate
 
+# --- One-shot cleanup of orphaned Settings['autostart'] ---
+# The old CORE_AUTOSTART gate merged Settings['autostart'] into
+# UserVars.autostart_scripts on every login, making it impossible
+# to permanently remove entries.  Clear the orphaned data once,
+# then this block becomes a no-op on subsequent logins.
+if Settings['autostart']
+  echo("Clearing orphaned Settings['autostart'] (no longer used).")
+  Settings['autostart'] = nil
+  Settings.save
+end
+
 # --- CORE_DR_STARTUP gate ---
 unless Lich::Common.const_defined?(:CORE_DR_STARTUP, false)
   unless UserVars.dependency_setflags
