@@ -1050,12 +1050,15 @@ RSpec.describe 'Sentinel Gating Structure' do
       expect(DEP_SOURCE).not_to include('const_defined?(:CORE_AUTOSTART')
     end
 
+    it 'no longer contains the autostart helpers gate comment' do
+      expect(DEP_SOURCE).not_to include('Autostart helpers gate')
+    end
+
     it 'no longer defines handle_obsolete_autostart' do
       expect(DEP_SOURCE).not_to match(/^\s*def handle_obsolete_autostart/)
     end
 
     it 'no longer defines autostart() helper' do
-      # autostart as a method def at top-level (not ScriptManager#autostarts)
       expect(DEP_SOURCE).not_to match(/^\s*def autostart\(/)
     end
 
@@ -1067,8 +1070,28 @@ RSpec.describe 'Sentinel Gating Structure' do
       expect(DEP_SOURCE).not_to match(/^\s*def dependency_status/)
     end
 
-    it 'no longer contains the zombie merge of Settings autostart into UserVars' do
-      expect(DEP_SOURCE).not_to include("Settings['autostart']")
+    it 'no longer contains the perpetual merge into UserVars.autostart_scripts' do
+      expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts = merged')
+    end
+
+    it 'no longer contains the zombie merge echo message' do
+      expect(DEP_SOURCE).not_to include('Merging global autostarts into character autostarts')
+    end
+  end
+
+  describe 'one-shot orphan cleanup of Settings autostart' do
+    it "clears Settings['autostart'] if present" do
+      expect(DEP_SOURCE).to include("Settings['autostart'] = nil")
+    end
+
+    it 'saves after clearing' do
+      cleanup_block = DEP_SOURCE[/if Settings\['autostart'\].*?end/m]
+      expect(cleanup_block).not_to be_nil
+      expect(cleanup_block).to include('Settings.save')
+    end
+
+    it 'only runs once (conditional on Settings having the key)' do
+      expect(DEP_SOURCE).to match(/^if Settings\['autostart'\]/)
     end
   end
 
