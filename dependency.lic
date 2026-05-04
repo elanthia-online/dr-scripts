@@ -953,6 +953,24 @@ if Settings['autostart']
   Settings.save
 end
 
+# --- Deprecated autostart helpers ---
+# These functions were removed in 3.1.0. Thin stubs remain so that
+# scripts or console calls get a clear message instead of NoMethodError.
+def autostart(_script_names, _global = true)
+  echo("DEPRECATED: autostart() has been removed.")
+  echo("Use the 'autostarts' list in your YAML profile, or ;autostart add <script>")
+end
+
+def stop_autostart(_script_names)
+  echo("DEPRECATED: stop_autostart() has been removed.")
+  echo("Remove the script from 'autostarts' in your YAML profile, or ;autostart remove <script>")
+end
+
+def dependency_status
+  echo("DEPRECATED: dependency_status() has been removed.")
+  echo("Use ;autostart list to see active autostarts.")
+end
+
 # --- CORE_DR_STARTUP gate ---
 unless Lich::Common.const_defined?(:CORE_DR_STARTUP, false)
   unless UserVars.dependency_setflags

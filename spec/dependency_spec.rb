@@ -1058,24 +1058,40 @@ RSpec.describe 'Sentinel Gating Structure' do
       expect(DEP_SOURCE).not_to match(/^\s*def handle_obsolete_autostart/)
     end
 
-    it 'no longer defines autostart() helper' do
-      expect(DEP_SOURCE).not_to match(/^\s*def autostart\(/)
-    end
-
-    it 'no longer defines stop_autostart' do
-      expect(DEP_SOURCE).not_to match(/^\s*def stop_autostart/)
-    end
-
-    it 'no longer defines dependency_status' do
-      expect(DEP_SOURCE).not_to match(/^\s*def dependency_status/)
-    end
-
     it 'no longer contains the perpetual merge into UserVars.autostart_scripts' do
       expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts = merged')
     end
 
     it 'no longer contains the zombie merge echo message' do
       expect(DEP_SOURCE).not_to include('Merging global autostarts into character autostarts')
+    end
+  end
+
+  describe 'deprecated autostart helper stubs' do
+    it 'defines autostart() as a deprecation stub' do
+      expect(DEP_SOURCE).to match(/def autostart\(/)
+      expect(DEP_SOURCE).to include('DEPRECATED: autostart() has been removed')
+    end
+
+    it 'defines stop_autostart() as a deprecation stub' do
+      expect(DEP_SOURCE).to match(/def stop_autostart\(/)
+      expect(DEP_SOURCE).to include('DEPRECATED: stop_autostart() has been removed')
+    end
+
+    it 'defines dependency_status() as a deprecation stub' do
+      expect(DEP_SOURCE).to match(/def dependency_status/)
+      expect(DEP_SOURCE).to include('DEPRECATED: dependency_status() has been removed')
+    end
+
+    it 'points users to YAML autostarts or ;autostart add' do
+      expect(DEP_SOURCE).to include(';autostart add')
+      expect(DEP_SOURCE).to include(';autostart remove')
+      expect(DEP_SOURCE).to include(';autostart list')
+    end
+
+    it 'stubs do not modify UserVars.autostart_scripts' do
+      expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts.push')
+      expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts.delete')
     end
   end
 
