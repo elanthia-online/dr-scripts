@@ -1090,7 +1090,7 @@ RSpec.describe 'Sentinel Gating Structure' do
       expect(cleanup_block).to include('Settings.save')
     end
 
-    it 'only runs once (conditional on Settings having the key)' do
+    it 'is guarded by a conditional check on Settings key' do
       expect(DEP_SOURCE).to match(/^if Settings\['autostart'\]/)
     end
   end
@@ -1138,8 +1138,8 @@ RSpec.describe 'Sentinel Gating Structure' do
   end
 
   describe 'version' do
-    it 'has been ticked to 3.0.1' do
-      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '3.0.1'")
+    it 'has been ticked to 3.1.0' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '3.1.0'")
     end
 
     it 'requires minimum lich version 5.17.0' do

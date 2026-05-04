@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '3.0.1'
+$DEPENDENCY_VERSION = '3.1.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.17.0'
 
