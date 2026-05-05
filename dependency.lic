@@ -683,8 +683,6 @@ unless Lich::Common.const_defined?(:CORE_GET_SETTINGS, false)
         echo("All scripts are up to date.")
       end
       autostarts.each do |script|
-        next if handle_obsolete_autostart(script)
-
         custom_require.call(script)
       end
       finish_time = Time.now

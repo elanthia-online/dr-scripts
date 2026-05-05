@@ -1054,8 +1054,8 @@ RSpec.describe 'Sentinel Gating Structure' do
       expect(DEP_SOURCE).not_to include('Autostart helpers gate')
     end
 
-    it 'no longer defines handle_obsolete_autostart' do
-      expect(DEP_SOURCE).not_to match(/^\s*def handle_obsolete_autostart/)
+    it 'no longer references handle_obsolete_autostart anywhere' do
+      expect(DEP_SOURCE).not_to match(/\bhandle_obsolete_autostart/)
     end
 
     it 'no longer contains the perpetual merge into UserVars.autostart_scripts' do
