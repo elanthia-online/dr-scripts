@@ -392,7 +392,8 @@ RSpec.describe Healer do
       dead_clear = health_result(dead: true, score: 0)
       allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(dead_clear)
 
-      expect(DRC).not_to receive(:bput).with(/link.*unity/, anything, anything)
+      expect(DRC).not_to receive(:bput)
+        .with(a_string_matching(/link.*unity/), *Healer::LINK_RESPONSES)
 
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
     end
@@ -493,7 +494,8 @@ RSpec.describe Healer do
       )
       allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(living_wounded)
 
-      expect(DRC).not_to receive(:bput).with(/link.*unity/i, anything, anything)
+      expect(DRC).not_to receive(:bput)
+        .with(a_string_matching(/link.*unity/i), *Healer::LINK_RESPONSES)
 
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
     end

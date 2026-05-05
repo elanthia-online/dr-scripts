@@ -196,8 +196,9 @@ class Healer
     )
 
     unless lines
-      Lich::Messaging.msg('bold', 'Healer: ERROR - Could not check link abilities (timeout).')
-      exit
+      @unity_available = false
+      Lich::Messaging.msg('bold', 'Healer: Could not verify link abilities (timeout)')
+      return
     end
 
     output = lines.map { |l| l.gsub(/<[^>]*>/, '') }.join("\n")
