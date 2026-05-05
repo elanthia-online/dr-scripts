@@ -444,7 +444,7 @@ RSpec.describe Healer do
       expect(healer.instance_variable_get(:@unity_available)).to be false
     end
 
-    it 'warns but continues when Unity is not available' do
+    it 'notes fallback to touch transfer when Unity is not available' do
       $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
 
       allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
@@ -454,7 +454,7 @@ RSpec.describe Healer do
       allow(Lich::Util).to receive(:issue_command).and_return(link_output)
 
       expect(Lich::Messaging).to receive(:msg)
-        .with('bold', /WARNING - Link Unity not available/)
+        .with('bold', /Link Unity not available -- wounds will transfer via touch/)
 
       Healer.new
     end
