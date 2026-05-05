@@ -209,11 +209,7 @@ class Healer
 
     @unity_available = output.include?('UNITY')
 
-    if @unity_available
-      Lich::Messaging.msg('bold', 'Healer: Link Unity verified -- instant wound transfer available')
-    else
-      Lich::Messaging.msg('bold', 'Healer: Link Unity not available -- wounds will transfer via touch instead')
-    end
+    Lich::Messaging.msg('bold', 'Healer: Link Unity available') if @unity_available
   end
 
   # Checks if character knows Heal + Adaptive Curing for passive healing.
@@ -781,9 +777,7 @@ class Healer
             remove_patient(victim, reason: :not_found)
             return
           end
-        elsif !@unity_available
-          log("#{victim} will use touch transfer (Unity not available)")
-        else
+        elsif !has_healable_wounds?(victim_health)
           log("#{victim} only has hands/legs wounds, skipping Unity link")
         end
       end
