@@ -177,8 +177,10 @@ class Healer
   # ============================================================
 
   # Validates that the empath has Link Unity by checking `link` command output.
-  # Uses silent issue_command to avoid polluting the game window.
-  # Exits immediately if not an empath or Unity not available.
+  # Checks whether the character can use Link Unity for instant wound transfers.
+  # Sets @unity_available accordingly. Without Unity, wounds still transfer
+  # via the normal touch flow. Exits only if the character is not an empath.
+  #
   # @return [void]
   def validate_link_unity
     waitrt?
@@ -194,8 +196,9 @@ class Healer
     )
 
     unless lines
-      Lich::Messaging.msg('bold', 'Healer: ERROR - Could not check link abilities (timeout).')
-      exit
+      @unity_available = false
+      Lich::Messaging.msg('bold', 'Healer: Could not verify link abilities (timeout)')
+      return
     end
 
     output = lines.map { |l| l.gsub(/<[^>]*>/, '') }.join("\n")
@@ -205,13 +208,9 @@ class Healer
       exit
     end
 
-    unless output.include?('UNITY')
-      Lich::Messaging.msg('bold', 'Healer: ERROR - Link Unity not available. Cannot transfer wounds.')
-      Lich::Messaging.msg('bold', 'Healer: You need to learn the Unity manifestation of Empathic Link.')
-      exit
-    end
+    @unity_available = output.include?('UNITY')
 
-    Lich::Messaging.msg('bold', 'Healer: Link Unity verified')
+    Lich::Messaging.msg('bold', 'Healer: Link Unity available') if @unity_available
   end
 
   # Checks if character knows Heal + Adaptive Curing for passive healing.
@@ -766,21 +765,21 @@ class Healer
       update_patient(victim, touched: true, timer: Time.now, dead: true) unless patient_data[:touched]
     end
 
-    # First encounter (living patients): upgrade to Unity link if patient has healable wounds
-    # Unity is for wound transfer only -- not for poison/disease/vitality (those use basic empathic link from touch)
+    # First encounter (living patients): use Unity for instant wound transfer if available.
+    # Without Unity, wounds transfer via the normal touch flow instead.
     unless patient_data[:touched] || victim_health.dead
       if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
         DRC.log_window("Healer: New patient: #{victim}", "familiar")
-        if has_healable_wounds?(victim_health)
-          log("Upgrading to Unity link with #{victim} for wound transfer")
+        if @unity_available && has_healable_wounds?(victim_health)
+          log("Using Unity link with #{victim} for instant wound transfer")
           link_result = DRC.bput("link #{victim} unity", *LINK_RESPONSES)
           if link_result =~ LINK_NOT_FOUND_PATTERN
             Lich::Messaging.msg("bold", "Healer: Could not link with #{victim}")
             remove_patient(victim, reason: :not_found)
             return
           end
-        else
-          log("#{victim} only has hands/legs wounds, skipping unity link")
+        elsif !has_healable_wounds?(victim_health)
+          log("#{victim} only has hands/legs wounds, skipping Unity link")
         end
       end
     end
