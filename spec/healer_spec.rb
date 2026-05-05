@@ -76,7 +76,12 @@ load_lic_class('healer.lic', 'Healer')
 
 # Helper to build a Healer instance bypassing startup validations.
 # Tests that exercise validation do so explicitly.
-def build_healer(settings: {}, friends: [])
+#
+# @param settings [Hash] overrides merged into default test settings
+# @param friends [Array<String>] friend list for the healer
+# @param unity [Boolean] whether Unity link is available (default true)
+# @return [Healer] configured instance
+def build_healer(settings: {}, friends: [], unity: true)
   test_settings = OpenStruct.new({
     friends: friends,
     healer_waggle_set: 'healme',
@@ -90,7 +95,9 @@ def build_healer(settings: {}, friends: [])
   allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
   allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
 
-  Healer.new
+  healer = Healer.new
+  healer.instance_variable_set(:@unity_available, unity)
+  healer
 end
 
 # Builds a HealthResult-like object with sensible defaults
@@ -401,6 +408,123 @@ RSpec.describe Healer do
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
 
       expect(healer.instance_variable_get(:@spell_task)).to be_nil
+    end
+  end
+
+  # ============================================================
+  # Unity Link Availability (Graceful Degradation)
+  # ============================================================
+
+  describe 'validate_link_unity' do
+    it 'sets @unity_available to true when UNITY appears in link output' do
+      $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
+
+      allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
+      allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
+
+      link_output = ['<output>LINK options: TOUCH UNITY</output>']
+      allow(Lich::Util).to receive(:issue_command).and_return(link_output)
+
+      healer = Healer.new
+
+      expect(healer.instance_variable_get(:@unity_available)).to be true
+    end
+
+    it 'sets @unity_available to false when UNITY is absent from link output' do
+      $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
+
+      allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
+      allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
+
+      link_output = ['<output>LINK options: TOUCH</output>']
+      allow(Lich::Util).to receive(:issue_command).and_return(link_output)
+
+      healer = Healer.new
+
+      expect(healer.instance_variable_get(:@unity_available)).to be false
+    end
+
+    it 'warns but continues when Unity is not available' do
+      $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
+
+      allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
+      allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
+
+      link_output = ['<output>LINK options: TOUCH</output>']
+      allow(Lich::Util).to receive(:issue_command).and_return(link_output)
+
+      expect(Lich::Messaging).to receive(:msg)
+        .with('bold', /WARNING - Link Unity not available/)
+
+      Healer.new
+    end
+  end
+
+  # ============================================================
+  # Living Patient Unity Link Gating
+  # ============================================================
+
+  describe 'living patient healing with Unity gating' do
+    it 'attempts Unity link when @unity_available is true and patient has healable wounds' do
+      healer = build_healer(friends: ['Tenuk'], unity: true)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      living_wounded = health_result(
+        score: 9,
+        wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }
+      )
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(living_wounded)
+
+      expect(DRC).to receive(:bput)
+        .with('link Tenuk unity', *Healer::LINK_RESPONSES)
+        .and_return('You feel a connection')
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+    end
+
+    it 'skips Unity link when @unity_available is false' do
+      healer = build_healer(friends: ['Tenuk'], unity: false)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      living_wounded = health_result(
+        score: 9,
+        wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }
+      )
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(living_wounded)
+
+      expect(DRC).not_to receive(:bput).with(/link.*unity/i, anything, anything)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+    end
+
+    it 'still queues poison patients when Unity is unavailable' do
+      healer = build_healer(friends: ['Tenuk'], unity: false)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      poisoned_patient = health_result(poisoned: true, score: 0)
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(poisoned_patient)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+
+      task = healer.instance_variable_get(:@spell_task)
+      expect(task).not_to be_nil
+      expect(task[:type]).to eq(:poison)
+    end
+
+    it 'still queues diseased patients when Unity is unavailable' do
+      healer = build_healer(friends: ['Tenuk'], unity: false)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      diseased_patient = health_result(diseased: true, score: 0)
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(diseased_patient)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+
+      expect(healer.get_patient('Tenuk')[:touched]).to be true
     end
   end
 

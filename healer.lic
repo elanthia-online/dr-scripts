@@ -177,8 +177,10 @@ class Healer
   # ============================================================
 
   # Validates that the empath has Link Unity by checking `link` command output.
-  # Uses silent issue_command to avoid polluting the game window.
-  # Exits immediately if not an empath or Unity not available.
+  # Checks whether the character can use Link Unity for wound transfers.
+  # Sets @unity_available accordingly. Exits only if the character
+  # is not an empath at all.
+  #
   # @return [void]
   def validate_link_unity
     waitrt?
@@ -205,13 +207,15 @@ class Healer
       exit
     end
 
-    unless output.include?('UNITY')
-      Lich::Messaging.msg('bold', 'Healer: ERROR - Link Unity not available. Cannot transfer wounds.')
-      Lich::Messaging.msg('bold', 'Healer: You need to learn the Unity manifestation of Empathic Link.')
-      exit
-    end
+    @unity_available = output.include?('UNITY')
 
-    Lich::Messaging.msg('bold', 'Healer: Link Unity verified')
+    if @unity_available
+      Lich::Messaging.msg('bold', 'Healer: Link Unity verified')
+    else
+      Lich::Messaging.msg('bold', 'Healer: WARNING - Link Unity not available. Wound transfers disabled.')
+      Lich::Messaging.msg('bold', 'Healer: You need to learn the Unity manifestation of Empathic Link.')
+      Lich::Messaging.msg('bold', 'Healer: Can still cure poison, disease, parasites, and heal vitality.')
+    end
   end
 
   # Checks if character knows Heal + Adaptive Curing for passive healing.
@@ -766,12 +770,13 @@ class Healer
       update_patient(victim, touched: true, timer: Time.now, dead: true) unless patient_data[:touched]
     end
 
-    # First encounter (living patients): upgrade to Unity link if patient has healable wounds
-    # Unity is for wound transfer only -- not for poison/disease/vitality (those use basic empathic link from touch)
+    # First encounter (living patients): establish Unity link if available and patient has healable wounds.
+    # Unity is an instant transfer-as-is method -- all wounds move immediately, and the empath's
+    # vitality is set to the patient's pre-unity value (lethal on dead patients).
     unless patient_data[:touched] || victim_health.dead
       if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
         DRC.log_window("Healer: New patient: #{victim}", "familiar")
-        if has_healable_wounds?(victim_health)
+        if @unity_available && has_healable_wounds?(victim_health)
           log("Upgrading to Unity link with #{victim} for wound transfer")
           link_result = DRC.bput("link #{victim} unity", *LINK_RESPONSES)
           if link_result =~ LINK_NOT_FOUND_PATTERN
