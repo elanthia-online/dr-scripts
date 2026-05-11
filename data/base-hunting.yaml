@@ -1631,7 +1631,7 @@ hunting_zones:
   # - 6975 #has a trunk in the room that messes with looting
   # https://elanthipedia.play.net/Peccary                               225-300
   # horses & antelope sometimes also present
-  peccary_shard:
+  shard_peccary:
   - 6282
   - 6288
   - 6289
@@ -1642,7 +1642,7 @@ hunting_zones:
   - 6314
   - 8419
   - 11477
-  peccary_shard_plus:
+  shard_peccary_plus:
   #these appraise slightly higher
   - 11479
   - 14745
