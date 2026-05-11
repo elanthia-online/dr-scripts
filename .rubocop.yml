@@ -60,6 +60,9 @@ Metrics/ParameterLists:
 Naming:
   Enabled: false
 
+Naming/AsciiIdentifiers:
+  Enabled: true
+
 Security/Eval:
   Enabled: false
   
@@ -68,3 +71,6 @@ Security/MarshalLoad:
 
 Style:
   Enabled: false
+
+Style/AsciiComments:
+  Enabled: true
