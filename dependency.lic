@@ -2,7 +2,7 @@
   Documentation: https://elanthipedia.play.net/Lich_script_development#dependency
 =end
 
-$DEPENDENCY_VERSION = '3.0.1'
+$DEPENDENCY_VERSION = '3.1.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.17.0'
 
@@ -683,8 +683,6 @@ unless Lich::Common.const_defined?(:CORE_GET_SETTINGS, false)
         echo("All scripts are up to date.")
       end
       autostarts.each do |script|
-        next if handle_obsolete_autostart(script)
-
         custom_require.call(script)
       end
       finish_time = Time.now
@@ -942,75 +940,34 @@ unless Lich::Common.const_defined?(:CORE_GET_SETTINGS, false)
   end
 end # ScriptManager gate
 
-# --- Autostart helpers gate (moving to autostart.lic) ---
-unless Lich::Common.const_defined?(:CORE_AUTOSTART, false)
-  # Merge Settings['autostart'] (per-game global) into UserVars.autostart_scripts (per-character).
-  UserVars.autostart_scripts ||= []
-  if Settings['autostart'] && !Settings['autostart'].empty?
-    merged = (UserVars.autostart_scripts + Settings['autostart']).uniq - ['dependency']
-    if merged != UserVars.autostart_scripts
-      echo("Merging global autostarts into character autostarts.")
-      echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
-      echo("Before: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-      UserVars.autostart_scripts = merged
-      echo("After: UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-    end
-  end
+# --- One-shot cleanup of orphaned Settings['autostart'] ---
+# The old CORE_AUTOSTART gate merged Settings['autostart'] into
+# UserVars.autostart_scripts on every login, making it impossible
+# to permanently remove entries.  Clear the orphaned data once,
+# then this block becomes a no-op on subsequent logins.
+if Settings['autostart']
+  echo("Clearing orphaned Settings['autostart'] (no longer used).")
+  Settings['autostart'] = nil
+  Settings.save
+end
 
-  def handle_obsolete_autostart(script)
-    return false unless defined?(DR_OBSOLETE_SCRIPTS) && DR_OBSOLETE_SCRIPTS.include?(script)
+# --- Deprecated autostart helpers ---
+# These functions were removed in 3.1.0. Thin stubs remain so that
+# scripts or console calls get a clear message instead of NoMethodError.
+def autostart(_script_names, _global = true)
+  echo("DEPRECATED: autostart() has been removed.")
+  echo("Use the 'autostarts' list in your YAML profile, or ;autostart add <script>")
+end
 
-    if UserVars.autostart_scripts.to_a.include?(script)
-      _respond Lich::Messaging.monsterbold("--- Lich: Removing obsolete '#{script}' from autostarts.")
-      _respond Lich::Messaging.monsterbold("--- Lich: If unsuccessful, remove manually with: #{$clean_lich_char}e stop_autostart('#{script}')")
-      UserVars.autostart_scripts.delete(script)
-    else
-      _respond Lich::Messaging.monsterbold("--- Lich: '#{script}' is obsolete. Please remove it from the 'autostarts' setting in your profile YAML.")
-    end
+def stop_autostart(_script_names)
+  echo("DEPRECATED: stop_autostart() has been removed.")
+  echo("Remove the script from 'autostarts' in your YAML profile, or ;autostart remove <script>")
+end
 
-    true
-  end
-
-  def dr_obsolete_script?(name)
-    script_name = name.to_s.sub(/\.lic$/, '')
-    return false unless defined?(DR_OBSOLETE_SCRIPTS) && DR_OBSOLETE_SCRIPTS.include?(script_name)
-
-    custom_path = File.join(SCRIPT_DIR, 'custom', "#{script_name}.lic")
-    scripts_path = File.join(SCRIPT_DIR, "#{script_name}.lic")
-
-    if File.exist?(custom_path)
-      _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from scripts/custom. It is no longer needed and may cause problems.")
-    elsif File.exist?(scripts_path)
-      _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{script_name}.lic' is obsolete and should be deleted from #{SCRIPT_DIR}. It is no longer needed and may cause problems.")
-    end
-
-    caller_name = Script.current.name rescue 'unknown'
-    _respond Lich::Messaging.monsterbold("--- Lich: WARNING: '#{caller_name}' references obsolete script '#{script_name}'. The calling script should be updated to remove this dependency.")
-    false
-  end
-
-  def autostart(script_names, _global = true)
-    script_names = [script_names] unless script_names.is_a?(Array)
-    script_names.map!(&method(:format_name))
-    UserVars.autostart_scripts ||= []
-    script_names.each { |script| UserVars.autostart_scripts.push(script) unless UserVars.autostart_scripts.include?(script) }
-    script_names.each { |script| $manager.run_script(script) } if defined?($manager)
-  end
-
-  def stop_autostart(script_names)
-    script_names = [script_names] unless script_names.is_a?(Array)
-    UserVars.autostart_scripts ||= []
-    script_names.each { |script| UserVars.autostart_scripts.delete(script) }
-  end
-
-  def dependency_status
-    echo("Dependency version: #{$DEPENDENCY_VERSION}")
-    echo("Settings['autostart'] = #{Settings['autostart'].inspect}")
-    echo("UserVars.autostart_scripts = #{UserVars.autostart_scripts.inspect}")
-    echo("Resolved autostarts = #{$manager.autostarts.inspect}") if defined?($manager)
-    nil
-  end
-end # Autostart helpers gate
+def dependency_status
+  echo("DEPRECATED: dependency_status() has been removed.")
+  echo("Use ;autostart list to see active autostarts.")
+end
 
 # --- CORE_DR_STARTUP gate ---
 unless Lich::Common.const_defined?(:CORE_DR_STARTUP, false)

@@ -322,7 +322,8 @@ class Healer
       touched: false,
       vh_attempted: false,
       needs_teach: true,
-      dead: false
+      dead: false,
+      unity_linked: false
     }
 
     log("Added patient: #{name}")
@@ -601,7 +602,7 @@ class Healer
 
       break if current_score.zero?
 
-      if elapsed >= PASSIVE_HEAL_MAX_WAIT
+      if elapsed >= PASSIVE_HEAL_MAX_WAIT && !DRSpells.active_spells['Regenerate']
         Lich::Messaging.msg('bold', 'Healer: Passive healing timeout, falling back to healme')
         unless spell_conflict? || Script.running?('healme')
           DRC.wait_for_script_to_complete('healme')
@@ -779,6 +780,7 @@ class Healer
             remove_patient(victim, reason: :not_found)
             return
           end
+          update_patient(victim, unity_linked: true)
         else
           log("#{victim} only has hands/legs wounds, skipping unity link")
         end
@@ -862,18 +864,24 @@ class Healer
   # @param wound_score [Integer] patient's current wound score
   # @return [void]
   def transfer_wounds(victim, wound_score)
-    body_part = next_heal_location
+    patient = get_patient(victim)
 
-    unless body_part
-      Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
-      heal_self
-      return # Will retry on next cycle after self-healing
+    if patient&.dig(:unity_linked)
+      log("Transferring wounds from #{victim} via Unity (score: #{wound_score})")
+      DRC.log_window("Healer: #{victim} (#{wound_score}) via Unity", "familiar")
+    else
+      body_part = next_heal_location
+
+      unless body_part
+        Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
+        heal_self
+        return
+      end
+
+      log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
+      DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
+      DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
     end
-
-    log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
-    DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
-
-    DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
 
     result = DRC.bput("transfer #{victim} quick all", *TRANSFER_RESPONSES)
 
@@ -883,7 +891,7 @@ class Healer
       return
     end
 
-    update_patient(victim, touched: true, timer: Time.now, body_part: body_part)
+    update_patient(victim, touched: true, timer: Time.now)
     @last_health_check = nil # Invalidate cache -- we just took wounds
     heal_self
   end
@@ -1129,6 +1137,7 @@ class Healer
     @patients.each_value do |p|
       p[:touched] = false
       p[:body_part] = nil
+      p[:unity_linked] = false
     end
 
     # Clear spell slot -- any in-progress FP/CD/VH is invalidated by the fall

@@ -860,6 +860,153 @@ RSpec.describe Healer do
   end
 
   # ============================================================
+  # Unity Link Wound Transfer (skips redirect for Unity-linked patients)
+  # ============================================================
+
+  describe '#transfer_wounds' do
+    it 'skips redirect when patient is Unity-linked' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', unity_linked: true)
+
+      allow(DRC).to receive(:bput)
+        .with("transfer Tenuk quick all", anything, anything)
+        .and_return('You touch')
+      allow(healer).to receive(:heal_self)
+
+      expect(DRC).not_to receive(:bput).with(/redirect/, anything, anything)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+    end
+
+    it 'redirects to an unwounded body part when patient is not Unity-linked' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+      allow(DRC).to receive(:bput)
+        .with(/redirect all to/, anything, anything)
+        .and_return('You are now redirecting')
+      allow(DRC).to receive(:bput)
+        .with("transfer Tenuk quick all", anything, anything)
+        .and_return('You touch')
+      allow(healer).to receive(:heal_self)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+
+      expect(DRC).to have_received(:bput).with(/redirect all to/, anything, anything)
+    end
+
+    it 'heals self and returns when no unwounded parts available for non-Unity patient' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+
+      all_wounded = Healer::HEAL_LOCATIONS.map { |part| wound(body_part: part, severity: 2) }
+      wounded_health = health_result(wounds: { 2 => all_wounded }, score: 99)
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+      allow(healer).to receive(:heal_self)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+
+      expect(healer).to have_received(:heal_self)
+      expect(DRC).not_to have_received(:bput).with(/transfer Tenuk/, anything, anything)
+    end
+
+    it 'transfers even when all body parts are wounded for Unity-linked patient' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', unity_linked: true)
+
+      all_wounded = Healer::HEAL_LOCATIONS.map { |part| wound(body_part: part, severity: 2) }
+      wounded_health = health_result(wounds: { 2 => all_wounded }, score: 99)
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+      allow(DRC).to receive(:bput)
+        .with("transfer Tenuk quick all", anything, anything)
+        .and_return('You touch')
+      allow(healer).to receive(:heal_self)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+
+      expect(DRC).to have_received(:bput).with("transfer Tenuk quick all", anything, anything)
+    end
+  end
+
+  # ============================================================
+  # Passive Healing Timeout (skips timeout when Regenerate is active)
+  # ============================================================
+
+  describe '#wait_for_passive_healing' do
+    it 'falls back to healme when timeout expires and Regenerate is not active' do
+      healer = build_healer
+      healer.instance_variable_set(:@passive_healing_available, true)
+
+      wounded = health_result(score: 5, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+      allow(DRCH).to receive(:check_health).and_return(wounded)
+      allow(healer).to receive(:pause)
+      Harness::DRSpells._set_active_spells({})
+
+      expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+
+      healer.send(:wait_for_passive_healing)
+    end
+
+    it 'does not fall back to healme when Regenerate is active' do
+      healer = build_healer
+      healer.instance_variable_set(:@passive_healing_available, true)
+
+      call_count = 0
+      allow(DRCH).to receive(:check_health) do
+        call_count += 1
+        if call_count <= (Healer::PASSIVE_HEAL_MAX_WAIT / Healer::PASSIVE_HEAL_POLL_INTERVAL) + 1
+          health_result(score: 5, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+        else
+          health_result(score: 0, wounds: {})
+        end
+      end
+      allow(healer).to receive(:pause)
+      Harness::DRSpells._set_active_spells('Regenerate' => true)
+
+      expect(DRC).not_to receive(:wait_for_script_to_complete).with('healme')
+
+      healer.send(:wait_for_passive_healing)
+    end
+  end
+
+  # ============================================================
+  # Emergency Fall Clears Unity Link State
+  # ============================================================
+
+  describe '#check_emergency_fall' do
+    it 'clears unity_linked flag on all patients when emergency fall triggers' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.add_patient('Navesi')
+      healer.send(:update_patient, 'Tenuk', unity_linked: true)
+      healer.send(:update_patient, 'Navesi', unity_linked: true)
+
+      DRStats.health = 25 # Below EMERGENCY_VIT_THRESHOLD of 30
+
+      healer.send(:check_emergency_fall)
+
+      expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
+      expect(healer.get_patient('Navesi')[:unity_linked]).to be false
+    end
+  end
+
+  # ============================================================
+  # Patient Initial State Includes unity_linked
+  # ============================================================
+
+  describe 'patient initial state' do
+    it 'initializes unity_linked to false' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+
+      expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
+    end
+  end
+
+  # ============================================================
   # VH Waggle Validation
   # ============================================================
 
