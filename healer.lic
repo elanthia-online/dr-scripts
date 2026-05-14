@@ -780,7 +780,11 @@ class Healer
             remove_patient(victim, reason: :not_found)
             return
           end
-          update_patient(victim, unity_linked: true)
+          if link_result =~ LINK_SUCCESS_PATTERN
+            update_patient(victim, unity_linked: true)
+          else
+            log("Unity link failed for #{victim}, falling back to redirect flow")
+          end
         else
           log("#{victim} only has hands/legs wounds, skipping unity link")
         end

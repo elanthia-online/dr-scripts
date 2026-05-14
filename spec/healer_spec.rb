@@ -957,7 +957,7 @@ RSpec.describe Healer do
       call_count = 0
       allow(DRCH).to receive(:check_health) do
         call_count += 1
-        if call_count <= (Healer::PASSIVE_HEAL_MAX_WAIT / Healer::PASSIVE_HEAL_POLL_INTERVAL) + 1
+        if call_count <= (Healer::PASSIVE_HEAL_MAX_WAIT / Healer::PASSIVE_HEAL_POLL_INTERVAL) + 2
           health_result(score: 5, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
         else
           health_result(score: 0, wounds: {})
