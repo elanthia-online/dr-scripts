@@ -522,12 +522,14 @@ hunting_zones:
   # https://elanthipedia.play.net/Blood_dryad                              25-40
   # There are Blood Dryads and Blood Nyads in this area.
   blood_dryad:
-  - 10056
-  - 10055
-  - 10054
-  - 10053
-  - 10052
-  - 10051
+  - 9358
+  - 9359
+  - 9360
+  - 9361
+  - 9362
+  - 9363
+  - 9364
+  - 19202
   # https://elanthipedia.play.net/Cougar                                   30-49
   cougars_forest_of_night:
   - 9352
