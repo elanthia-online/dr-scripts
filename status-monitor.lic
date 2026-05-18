@@ -79,6 +79,15 @@ module StatusMonitor
       @recent_seen_lines.clear
     end
 
+    # Closes the database connection after flushing pending data.
+    #
+    # @param filter_strings [Array<Regexp>] patterns to reject before final flush
+    # @return [void]
+    def shutdown(filter_strings = [])
+      save(filter_strings)
+      @db.close
+    end
+
     # Returns the total count of seen messages in the database.
     #
     # @return [Integer] number of stored messages
@@ -95,7 +104,7 @@ module StatusMonitor
       db.execute('PRAGMA synchronous=NORMAL')
       db.execute(<<~SQL)
         CREATE TABLE IF NOT EXISTS seen_messages (
-          line_hash TEXT PRIMARY KEY,
+          line_text TEXT PRIMARY KEY,
           first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           source TEXT DEFAULT 'live'
         )
@@ -106,14 +115,14 @@ module StatusMonitor
     # @param line [String] message line to check
     # @return [Boolean] true if line exists in the database
     def exists_in_db?(line)
-      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_hash = ?', line) ? true : false
+      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_text = ?', line) ? true : false
     end
 
     # @param line [String] message line to insert
     # @param source [String] origin of the line ('live', 'import', 'migration')
     # @return [void]
     def insert_line(line, source = 'live')
-      @db.execute('INSERT OR IGNORE INTO seen_messages (line_hash, source) VALUES (?, ?)', line, source)
+      @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', line, source)
     end
 
     # Imports entries from a legacy Marshal .dat file and renames it.
@@ -510,6 +519,13 @@ module StatusMonitor
       @store.save(@filter.filter_strings)
     end
 
+    # Flushes pending data and closes the database connection.
+    #
+    # @return [void]
+    def shutdown
+      @store.shutdown(@filter.filter_strings)
+    end
+
     # @return [String, nil] last seen room players component line
     def last_player_line
       @filter.last_player_line
@@ -557,6 +573,10 @@ end
 settings = get_settings
 monitor = StatusMonitor::Monitor.new(settings)
 
+before_dying do
+  monitor.shutdown
+end
+
 if nowindow
   loop do
     line = script.gets
@@ -592,7 +612,6 @@ before_dying do
   CharSettings['window_width']    = save_window_width    if (save_window_width.class == Integer) && (save_window_width > 100)
   CharSettings['window_height']   = save_window_height   if (save_window_height.class == Integer) && (save_window_height > 100)
   Gtk.queue { window.destroy }
-  monitor.save
 end
 
 begin
