@@ -1642,8 +1642,9 @@ hunting_zones:
   - 6314
   - 8419
   - 11477
+  # https://elanthipedia.play.net/Peccary                               225-300
+  # these appraise slightly higher
   shard_peccary_plus:
-  #these appraise slightly higher
   - 11479
   - 14745
   - 6310
@@ -1659,6 +1660,28 @@ hunting_zones:
   - 16569
   - 16570
   - 6982
+  # https://elanthipedia.play.net/Clouded_arzumos                        230-340
+  # also antelopes
+  shard_clouded_arzumos:
+  - 6285
+  - 6286
+  - 6290
+  - 6291
+  - 6292
+  - 6293
+  - 6294
+  # https://elanthipedia.play.net/Clouded_arzumos                        230-340
+  # these appraise slightly higher
+  shard_clouded_arzumos_plus:
+  - 6295
+  - 6296
+  - 6297
+  - 6298
+  - 6299
+  - 6300
+  - 6301
+  - 6302
+  - 6303
   # https://elanthipedia.play.net/Baby_forest_gryphon                    250-350
   # https://elanthipedia.play.net/Young_forest_gryphon                   300-420
   # https://elanthipedia.play.net/Fledgling_forest_gryphon_(1)           300-400
@@ -1679,27 +1702,6 @@ hunting_zones:
   - 6237
   - 6238
   - 6239
-  # https://elanthipedia.play.net/Clouded_arzumos                        230-340
-  # also antelopes
-  shard_clouded_arzumos:
-  - 6285
-  - 6286
-  - 6290
-  - 6291
-  - 6292
-  - 6293
-  - 6294
-  shard_clouded_arzumos_plus:
-  # these appraise slightly higher
-  - 6295
-  - 6296
-  - 6297
-  - 6298
-  - 6299
-  - 6300
-  - 6301
-  - 6302
-  - 6303
   # https://elanthipedia.play.net/Adan%27f_shadow_mage                   250-370
   # https://elanthipedia.play.net/Adan%27f_blood_warrior                 250-325
   # Spawn is hit or miss
