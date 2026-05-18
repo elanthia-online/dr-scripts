@@ -18,7 +18,6 @@
 
 require 'sqlite3'
 require 'zlib'
-require 'fileutils'
 
 arg_definitions = [
   [
@@ -43,6 +42,7 @@ module StatusMonitorImport
   ].freeze
 
   # Opens or creates the seen_messages SQLite database.
+  # Schema must stay in sync with StatusMonitor::MessageStore#open_database.
   #
   # @param character_name [String] character name for database filename
   # @return [SQLite3::Database] database connection
@@ -88,6 +88,7 @@ module StatusMonitorImport
   end
 
   # Scrubs a line for similarity comparison, removing numbers and currency.
+  # Must stay in sync with StatusMonitor::MessageFilter#similarity_scrub.
   #
   # @param line [String] cleaned line
   # @return [String] scrubbed line
