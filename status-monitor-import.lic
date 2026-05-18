@@ -74,7 +74,7 @@ module StatusMonitorImport
   # @param path [String] file path to check
   # @return [Boolean] true if already imported
   def self.already_imported?(db, path)
-    db.get_first_value('SELECT 1 FROM import_log WHERE file_path = ?', path) ? true : false
+    db.get_first_value('SELECT 1 FROM import_log WHERE file_path = ?', [path]) ? true : false
   end
 
   # Records that a file has been imported.
@@ -84,7 +84,7 @@ module StatusMonitorImport
   # @param count [Integer] number of lines imported
   # @return [void]
   def self.record_import(db, path, count)
-    db.execute('INSERT OR REPLACE INTO import_log (file_path, lines_imported) VALUES (?, ?)', path, count)
+    db.execute('INSERT OR REPLACE INTO import_log (file_path, lines_imported) VALUES (?, ?)', [path, count])
   end
 
   # Scrubs a line for similarity comparison, removing numbers and currency.
@@ -159,7 +159,7 @@ module StatusMonitorImport
   def self.flush_batch(db, lines)
     db.transaction do
       lines.each do |line|
-        db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', line, 'import')
+        db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, 'import'])
       end
     end
     lines.size
