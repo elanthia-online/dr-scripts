@@ -39,7 +39,7 @@ module StatusMonitorImport
   # Lines matching these patterns are not useful for the seen corpus.
   SKIP_PATTERNS = [
     /^$/,
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/,  # bare timestamp lines (session headers)
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, # bare timestamp lines (session headers)
     /^>/, # upstream commands
   ].freeze
 
@@ -54,7 +54,7 @@ module StatusMonitorImport
     db.execute('PRAGMA synchronous=NORMAL')
     db.execute(<<~SQL)
       CREATE TABLE IF NOT EXISTS seen_messages (
-        line_hash TEXT PRIMARY KEY,
+        line_text TEXT PRIMARY KEY,
         first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         source TEXT DEFAULT 'live'
       )
@@ -159,7 +159,7 @@ module StatusMonitorImport
   def self.flush_batch(db, lines)
     db.transaction do
       lines.each do |line|
-        db.execute('INSERT OR IGNORE INTO seen_messages (line_hash, source) VALUES (?, ?)', line, 'import')
+        db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', line, 'import')
       end
     end
     lines.size
@@ -213,7 +213,7 @@ module StatusMonitorImport
 
     echo "Found #{total_files} log files for #{character_name}."
 
-    files.each_with_index do |file, idx|
+    files.each_with_index do |file, _idx|
       if already_imported?(db, file)
         skipped += 1
         next
@@ -228,7 +228,7 @@ module StatusMonitorImport
         elapsed = Time.now - start_time
         rate = processed / elapsed
         remaining = ((total_files - skipped - processed) / rate).round
-        echo "Progress: #{processed}/#{total_files - skipped} files, #{total_lines} lines, ~#{remaining}s remaining"
+        echo "Progress: #{processed}/#{total_files - skipped} files, #{total_lines} lines scanned, ~#{remaining}s remaining"
       end
     end
 
@@ -237,7 +237,7 @@ module StatusMonitorImport
 
     echo "Import complete in #{elapsed}s."
     echo "  Files: #{processed} processed, #{skipped} skipped (already imported)"
-    echo "  Lines processed: #{total_lines}"
+    echo "  Lines scanned: #{total_lines}"
     echo "  New unique entries: #{count_after - count_before}"
     echo "  Total corpus size: #{count_after}"
   ensure
