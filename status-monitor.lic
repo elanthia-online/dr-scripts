@@ -116,14 +116,14 @@ module StatusMonitor
     # @param line [String] message line to check
     # @return [Boolean] true if line exists in the database
     def exists_in_db?(line)
-      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_text = ?', line) ? true : false
+      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_text = ?', [line]) ? true : false
     end
 
     # @param line [String] message line to insert
     # @param source [String] origin of the line ('live', 'import', 'migration')
     # @return [void]
     def insert_line(line, source = 'live')
-      @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', line, source)
+      @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, source])
     end
 
     # Imports entries from a legacy Marshal .dat file and renames it.
