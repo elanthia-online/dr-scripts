@@ -616,12 +616,6 @@ RSpec.describe StatusMonitor::Monitor do
     FileUtils.rm_rf(tmpdir)
   end
 
-  def stub_get_data
-    define_method(:get_data) do |_type|
-      OpenStruct.new('filter_strings' => ['ignore_this'])
-    end
-  end
-
   # get_data must be defined at top level for Monitor to call it
   it 'detector runs before unseen? gate (spam detection regression test)' do
     # Define get_data in scope
