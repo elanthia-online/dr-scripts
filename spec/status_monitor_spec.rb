@@ -3,7 +3,6 @@
 require 'sqlite3'
 require 'tmpdir'
 require 'ostruct'
-require 'set'
 require 'fileutils'
 
 # Test suite for status-monitor.lic
