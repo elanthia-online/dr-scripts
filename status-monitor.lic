@@ -245,6 +245,8 @@ module StatusMonitor
                   .map { |obj| obj.strip.scan(/\w+$/).first }
     end
 
+    # @param line [String] raw game stream line to check for player component
+    # @return [void]
     def update_players(line)
       return unless line =~ %r{\'room players\'>Also here: (.*)\.</component>}
 
@@ -252,6 +254,8 @@ module StatusMonitor
       @room_players = find_pcs(Regexp.last_match(1).dup)
     end
 
+    # @param line [String] raw game stream line to check for percWindow toggle
+    # @return [void]
     def check_spells(line)
       @perc_window_check ||= line =~ /pushStream id="percWindow"/i
       @perc_window_check = line !~ /<popStream/ if @perc_window_check
@@ -397,6 +401,7 @@ module StatusMonitor
 
     private
 
+    # @return [void]
     def init_slackbot
       username = @settings.slack_username
       return if username.nil? || username.to_s.strip.empty?
@@ -406,6 +411,8 @@ module StatusMonitor
       echo "SlackBot init failed: #{e.message}"
     end
 
+    # @param message [String] message body to send
+    # @return [void]
     def send_slack(message)
       return unless @slackbot&.initialized?
 
@@ -560,6 +567,8 @@ module StatusMonitor
   end
 end
 
+# @param entry [Gtk::Entry] health bar widget to update
+# @return [void]
 def update_health_bar(entry)
   hp = health
   if hp >= 75
@@ -570,6 +579,10 @@ def update_health_bar(entry)
   entry.text = "#{hp}%"
 end
 
+# @param back [String, nil] original line before processing
+# @param line [String] cleaned line
+# @param player_line [String, nil] last room players component
+# @return [void]
 def write_debug_log(back, line, player_line)
   File.open("status-monitor-debug-#{checkname}.txt", 'a') do |f|
     f.puts(back)
