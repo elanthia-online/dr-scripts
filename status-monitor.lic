@@ -97,6 +97,7 @@ module StatusMonitor
 
     private
 
+    # Schema must stay in sync with StatusMonitorImport.open_database.
     # @return [SQLite3::Database] initialized database connection
     def open_database
       db = SQLite3::Database.new(@db_path)
@@ -218,6 +219,7 @@ module StatusMonitor
 
     # Normalizes a line by stripping variable content (numbers, currency)
     # so that semantically identical messages compare as equal.
+    # Must stay in sync with StatusMonitorImport.similarity_scrub.
     #
     # @param line [String] cleaned message line
     # @return [String] scrubbed copy of the line
