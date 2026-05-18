@@ -39,7 +39,6 @@ module StatusMonitorImport
   # Lines matching these patterns are not useful for the seen corpus.
   SKIP_PATTERNS = [
     /^$/,
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, # bare timestamp lines (session headers)
     /^>/, # upstream commands
   ].freeze
 
@@ -191,8 +190,9 @@ module StatusMonitorImport
     db = open_database(character_name)
 
     if reset
+      db.execute("DELETE FROM seen_messages WHERE source = 'import'")
       db.execute('DELETE FROM import_log')
-      echo 'Import log cleared -- will re-process all files.'
+      echo 'Import log and imported entries cleared -- will re-process all files.'
     end
 
     files = find_log_files(character_name)

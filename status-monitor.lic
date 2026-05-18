@@ -423,22 +423,26 @@ module StatusMonitor
     # @param line [String] suspicious line to scan
     # @return [void]
     def self.check(line)
+      found = Set.new
+
       line.gsub(/_|~|-|=|\./, '')
           .scan(/[A-Z\s]{3,}/)
           .each do |match|
             match = match.gsub(/\s/, '')
-            next unless VALID_COMMANDS.include?(match)
-
-            pause 3
-            fput(match.downcase)
-            pause 5
+            found << match if VALID_COMMANDS.include?(match)
           end
 
       line.split(' ').each do |token|
         next unless token =~ /[_~=-]/
 
-        cleaned = token.gsub(/_|~|-|=/, '')
-        fput(cleaned.downcase) if VALID_COMMANDS.include?(cleaned.upcase)
+        cleaned = token.gsub(/_|~|-|=/, '').upcase
+        found << cleaned if VALID_COMMANDS.include?(cleaned)
+      end
+
+      found.each do |cmd|
+        pause 3
+        fput(cmd.downcase)
+        pause 5
       end
     end
   end
@@ -483,6 +487,9 @@ module StatusMonitor
 
     # Processes a single raw game line through the full pipeline.
     #
+    # Spam detection runs before the unseen? check so repeated lines
+    # within the recent window are still counted by the detector.
+    #
     # @param line [String] raw game stream line
     # @return [Boolean] true if the line was unseen (potential alert)
     def process(line)
@@ -492,7 +499,6 @@ module StatusMonitor
       return false if @filter.filtered?(cleaned)
 
       scrubbed = @filter.similarity_scrub(cleaned)
-      return false unless @store.unseen?(scrubbed)
 
       alert = @detector.check(scrubbed)
       if alert
@@ -500,7 +506,7 @@ module StatusMonitor
         @spam_line = alert[:line]
       end
 
-      true
+      @store.unseen?(scrubbed)
     end
 
     # Clears the current spam line after it has been consumed.
