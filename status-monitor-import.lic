@@ -135,7 +135,7 @@ module StatusMonitorImport
       cleaned = clean_line(raw_line)
       next unless cleaned
 
-      scrubbed = similarity_scrub(cleaned)
+      scrubbed = similarity_scrub(cleaned).strip
       next if scrubbed.empty?
 
       batch << scrubbed
