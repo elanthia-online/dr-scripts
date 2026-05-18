@@ -440,16 +440,17 @@ class Restock
   # @param sigil_purchases [Array<Hash>] purchase list from collect_sigil_purchases
   # @return [void]
   def purchase_sigil_scrolls(sigil_purchases)
+    failed = false
     sigil_purchases.each do |purchase|
+      break if failed
       purchase['needed'].times do
         DRCT.order_item(purchase['room'], purchase['order_number'])
-        if reget(3, 'Seeing that you are too encumbered')
-          fput('get sigil-scroll from counter')
-        end
+        fput('get sigil-scroll from counter') if reget(3, 'Seeing that you are too encumbered')
         unless DRCI.put_away_item?("#{purchase['sigil_type']} sigil-scroll", purchase['book'])
           echo "Failed to add #{purchase['sigil_type']} scroll to #{purchase['book']}"
           DRCI.stow_hands
-          return
+          failed = true
+          break
         end
       end
     end

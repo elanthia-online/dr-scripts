@@ -767,13 +767,13 @@ RSpec.describe Restock do
       restock_config = {
         'sigil_books' => {
           'platinum-hued book' => {
-            'container' => 'satchel',
+            'container'  => 'satchel',
             'congruence' => {
-              'quantity' => 20,
+              'quantity'     => 20,
               'min_quantity' => 5,
-              'room' => 14753,
+              'room'         => 14753,
               'order_number' => 3,
-              'price' => 312
+              'price'        => 312
             }
           }
         }
@@ -800,13 +800,13 @@ RSpec.describe Restock do
       restock_config = {
         'sigil_books' => {
           'platinum-hued book' => {
-            'container' => 'satchel',
+            'container'  => 'satchel',
             'congruence' => {
-              'quantity' => 20,
+              'quantity'     => 20,
               'min_quantity' => 5,
-              'room' => 14753,
+              'room'         => 14753,
               'order_number' => 3,
-              'price' => 312
+              'price'        => 312
             }
           }
         }
@@ -825,10 +825,10 @@ RSpec.describe Restock do
         'sigil_books' => {
           'missing book' => {
             'congruence' => {
-              'quantity' => 20,
-              'room' => 14753,
+              'quantity'     => 20,
+              'room'         => 14753,
               'order_number' => 3,
-              'price' => 312
+              'price'        => 312
             }
           }
         }
@@ -847,10 +847,10 @@ RSpec.describe Restock do
         'sigil_books' => {
           'platinum-hued book' => {
             'congruence' => {
-              'quantity' => 10,
-              'room' => 14753,
+              'quantity'     => 10,
+              'room'         => 14753,
               'order_number' => 3,
-              'price' => 312
+              'price'        => 312
             }
           }
         }
@@ -868,18 +868,18 @@ RSpec.describe Restock do
       restock_config = {
         'sigil_books' => {
           'platinum-hued book' => {
-            'container' => 'satchel',
+            'container'  => 'satchel',
             'congruence' => {
-              'quantity' => 20,
-              'room' => 14753,
+              'quantity'     => 20,
+              'room'         => 14753,
               'order_number' => 3,
-              'price' => 312
+              'price'        => 312
             },
-            'abolition' => {
-              'quantity' => 10,
-              'room' => 14753,
+            'abolition'  => {
+              'quantity'     => 10,
+              'room'         => 14753,
               'order_number' => 5,
-              'price' => 250
+              'price'        => 250
             }
           }
         }
@@ -903,12 +903,12 @@ RSpec.describe Restock do
   describe '#purchase_sigil_scrolls' do
     it 'orders from shop and stows scroll into book' do
       purchases = [{
-        'book' => 'platinum-hued book',
-        'sigil_type' => 'congruence',
+        'book'         => 'platinum-hued book',
+        'sigil_type'   => 'congruence',
         'order_number' => 3,
-        'price' => 312,
-        'room' => 14753,
-        'needed' => 2
+        'price'        => 312,
+        'room'         => 14753,
+        'needed'       => 2
       }]
       instance = build_instance
 
@@ -925,12 +925,12 @@ RSpec.describe Restock do
 
     it 'stops purchasing when put_away_item fails' do
       purchases = [{
-        'book' => 'platinum-hued book',
-        'sigil_type' => 'congruence',
+        'book'         => 'platinum-hued book',
+        'sigil_type'   => 'congruence',
         'order_number' => 3,
-        'price' => 312,
-        'room' => 14753,
-        'needed' => 5
+        'price'        => 312,
+        'room'         => 14753,
+        'needed'       => 5
       }]
       instance = build_instance
 
@@ -971,8 +971,8 @@ RSpec.describe Restock do
 
       allow(instance).to receive(:count_nonstackable_item).and_return(0)
       allow(instance).to receive(:collect_sigil_purchases).and_return([
-        { 'needed' => 5, 'price' => 200, 'room' => 14753 }
-      ])
+                                                                        { 'needed' => 5, 'price' => 200, 'room' => 14753 }
+                                                                      ])
       allow(DRCI).to receive(:stow_hands)
       allow(DRCM).to receive(:deposit_coins)
       allow(instance).to receive(:purchase_item)
@@ -1008,8 +1008,8 @@ RSpec.describe Restock do
       instance = build_instance
 
       allow(instance).to receive(:collect_sigil_purchases).and_return([
-        { 'needed' => 3, 'price' => 100, 'room' => 14753 }
-      ])
+                                                                        { 'needed' => 3, 'price' => 100, 'room' => 14753 }
+                                                                      ])
       allow(DRCI).to receive(:stow_hands)
       allow(DRCM).to receive(:ensure_copper_on_hand)
       allow(DRCM).to receive(:deposit_coins)
@@ -1026,10 +1026,10 @@ RSpec.describe Restock do
       instance = build_instance
 
       allow(instance).to receive(:collect_sigil_purchases).and_return([
-        { 'needed' => 2, 'price' => 100, 'room' => 14753 },
-        { 'needed' => 3, 'price' => 200, 'room' => 14753 },
-        { 'needed' => 1, 'price' => 50, 'room' => 9999 }
-      ])
+                                                                        { 'needed' => 2, 'price' => 100, 'room' => 14753 },
+                                                                        { 'needed' => 3, 'price' => 200, 'room' => 14753 },
+                                                                        { 'needed' => 1, 'price' => 50, 'room' => 9999 }
+                                                                      ])
       allow(DRCI).to receive(:stow_hands)
       allow(DRCM).to receive(:deposit_coins)
       allow(instance).to receive(:purchase_sigil_scrolls)
@@ -1148,10 +1148,10 @@ RSpec.describe Restock do
 
     it 'excludes the sigil_books key from regular item parsing' do
       restock_config = {
-        'arrow' => { 'quantity' => 30 },
+        'arrow'       => { 'quantity' => 30 },
         'sigil_books' => {
           'platinum-hued book' => {
-            'container' => 'satchel',
+            'container'  => 'satchel',
             'congruence' => { 'quantity' => 20, 'room' => 14753, 'order_number' => 3, 'price' => 312 }
           }
         }
