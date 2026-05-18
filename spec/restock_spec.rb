@@ -44,6 +44,7 @@ module DRCT
   class << self
     def walk_to(*_args); end
     def buy_item(*_args); end
+    def order_item(*_args); end
   end
 end
 
@@ -52,6 +53,7 @@ module DRCI
     def open_container?(*_args); true; end
     def stow_hands; end
     def put_away_item?(*_args); true; end
+    def get_item?(*_args); true; end
     def count_items_in_container(*_args); 0; end
   end
 end
@@ -115,11 +117,11 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
-  # #start_restock -- duplicate purchase bug regression test
+  # #start_restock -- routing to restock_default vs restock_items
   # ===========================================================================
   describe '#start_restock' do
     context 'with items from multiple custom hometowns' do
-      it 'restocks each hometown group exactly once' do
+      it 'sends default items to restock_default and groups custom items by hometown' do
         crossing_item = make_item('hometown' => 'Crossing', 'name' => 'arrow')
         shard_item = make_item('hometown' => 'Shard', 'name' => 'bolt')
         instance = build_instance(
@@ -128,31 +130,34 @@ RSpec.describe Restock do
 
         allow(instance).to receive(:parse_restockable_items).and_return([crossing_item, shard_item])
 
-        call_log = []
+        default_calls = []
+        allow(instance).to receive(:restock_default) do |items, town|
+          default_calls << { town: town, items: items.map { |i| i['name'] } }
+        end
+
+        custom_calls = []
         allow(instance).to receive(:restock_items) do |items, town|
-          call_log << { town: town, items: items.map { |i| i['name'] } }
+          custom_calls << { town: town, items: items.map { |i| i['name'] } }
         end
 
         instance.send(:start_restock)
 
-        # Default hometown gets the non-custom items (empty in this case)
-        default_calls = call_log.select { |c| c[:town] == 'Riverhaven' }
+        # Default hometown gets non-custom items via restock_default (empty here)
         expect(default_calls.length).to eq(1)
+        expect(default_calls.first[:town]).to eq('Riverhaven')
         expect(default_calls.first[:items]).to be_empty
 
-        # Each custom hometown called exactly once -- not duplicated
-        crossing_calls = call_log.select { |c| c[:town] == 'Crossing' }
-        expect(crossing_calls.length).to eq(1)
-        expect(crossing_calls.first[:items]).to eq(['arrow'])
-
-        shard_calls = call_log.select { |c| c[:town] == 'Shard' }
-        expect(shard_calls.length).to eq(1)
-        expect(shard_calls.first[:items]).to eq(['bolt'])
+        # Each custom hometown called via restock_items exactly once
+        expect(custom_calls.length).to eq(2)
+        crossing = custom_calls.find { |c| c[:town] == 'Crossing' }
+        expect(crossing[:items]).to eq(['arrow'])
+        shard = custom_calls.find { |c| c[:town] == 'Shard' }
+        expect(shard[:items]).to eq(['bolt'])
       end
     end
 
     context 'with no custom hometown items' do
-      it 'only restocks the default hometown' do
+      it 'only calls restock_default for the default hometown' do
         item = make_item
         instance = build_instance(
           settings: OpenStruct.new(hometown: 'Crossing')
@@ -160,16 +165,18 @@ RSpec.describe Restock do
 
         allow(instance).to receive(:parse_restockable_items).and_return([item])
 
-        call_log = []
-        allow(instance).to receive(:restock_items) do |items, town|
-          call_log << { town: town, count: items.length }
+        default_calls = []
+        allow(instance).to receive(:restock_default) do |items, town|
+          default_calls << { town: town, count: items.length }
         end
+        allow(instance).to receive(:restock_items)
 
         instance.send(:start_restock)
 
-        expect(call_log.length).to eq(1)
-        expect(call_log.first[:town]).to eq('Crossing')
-        expect(call_log.first[:count]).to eq(1)
+        expect(default_calls.length).to eq(1)
+        expect(default_calls.first[:town]).to eq('Crossing')
+        expect(default_calls.first[:count]).to eq(1)
+        expect(instance).not_to have_received(:restock_items)
       end
     end
   end
@@ -567,6 +574,596 @@ RSpec.describe Restock do
       # Should use the user's custom values, not base-consumables
       expect(result.first['price']).to eq(150)
       expect(result.first['room']).to eq(5678)
+    end
+  end
+
+  # ===========================================================================
+  # #valid_item_data? -- required field validation
+  # ===========================================================================
+  describe '#valid_item_data?' do
+    it 'returns true when all required fields are present' do
+      instance = build_instance
+      expect(instance.send(:valid_item_data?, make_item)).to be true
+    end
+
+    %w[name size room price stackable quantity].each do |field|
+      it "returns false when '#{field}' is missing" do
+        item = make_item
+        item.delete(field)
+        instance = build_instance
+        expect(instance.send(:valid_item_data?, item)).to be false
+      end
+    end
+  end
+
+  # ===========================================================================
+  # #assess_restock_needs -- extracted counting/filtering logic
+  # ===========================================================================
+  describe '#assess_restock_needs' do
+    it 'returns items needing restock with buy_num and total coin' do
+      item = make_item('quantity' => 30, 'size' => 10, 'price' => 100)
+      instance = build_instance
+
+      allow(instance).to receive(:count_nonstackable_item).and_return(5)
+
+      items, coin = instance.send(:assess_restock_needs, [item])
+
+      expect(items.length).to eq(1)
+      # (30 - 5) / 10.0 = 2.5, ceil = 3
+      expect(items.first['buy_num']).to eq(3)
+      expect(coin).to eq(300)
+    end
+
+    it 'skips items at or above min_quantity' do
+      item = make_item('min_quantity' => 10, 'quantity' => 30)
+      instance = build_instance
+
+      allow(instance).to receive(:count_nonstackable_item).and_return(15)
+
+      items, coin = instance.send(:assess_restock_needs, [item])
+
+      expect(items).to be_empty
+      expect(coin).to eq(0)
+    end
+
+    it 'includes items below min_quantity' do
+      item = make_item('min_quantity' => 10, 'quantity' => 30, 'size' => 10, 'price' => 100)
+      instance = build_instance
+
+      allow(instance).to receive(:count_nonstackable_item).and_return(5)
+
+      items, coin = instance.send(:assess_restock_needs, [item])
+
+      expect(items.length).to eq(1)
+      # (30 - 5) / 10.0 = 2.5, ceil = 3
+      expect(items.first['buy_num']).to eq(3)
+      expect(coin).to eq(300)
+    end
+
+    it 'skips items already at target quantity when no min_quantity set' do
+      item = make_item('quantity' => 10)
+      instance = build_instance
+
+      allow(instance).to receive(:count_nonstackable_item).and_return(10)
+
+      items, coin = instance.send(:assess_restock_needs, [item])
+
+      expect(items).to be_empty
+      expect(coin).to eq(0)
+    end
+
+    it 'uses count_stackable_item for stackable items' do
+      item = make_item('stackable' => true, 'quantity' => 30, 'size' => 10, 'price' => 50)
+      instance = build_instance
+
+      allow(instance).to receive(:count_stackable_item).and_return(10)
+
+      items, coin = instance.send(:assess_restock_needs, [item])
+
+      expect(items.length).to eq(1)
+      expect(instance).to have_received(:count_stackable_item).with(item)
+      expect(items.first['buy_num']).to eq(2)
+      expect(coin).to eq(100)
+    end
+
+    it 'handles multiple items independently' do
+      arrow = make_item('name' => 'arrow', 'quantity' => 20, 'size' => 10, 'price' => 100)
+      bolt = make_item('name' => 'bolt', 'quantity' => 10, 'size' => 5, 'price' => 200)
+      instance = build_instance
+
+      call_count = 0
+      allow(instance).to receive(:count_nonstackable_item) do
+        call_count += 1
+        call_count == 1 ? 0 : 0
+      end
+
+      items, coin = instance.send(:assess_restock_needs, [arrow, bolt])
+
+      expect(items.length).to eq(2)
+      # arrow: (20-0)/10 = 2 buys * 100 = 200
+      # bolt: (10-0)/5 = 2 buys * 200 = 400
+      expect(coin).to eq(600)
+    end
+  end
+
+  # ===========================================================================
+  # #purchase_item -- clerk, order_number, and standard buy flows
+  # ===========================================================================
+  describe '#purchase_item' do
+    it 'uses ask-for flow when item has a clerk' do
+      item = make_item('clerk' => 'shopkeeper', 'room' => 5678)
+      instance = build_instance
+
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCT).to receive(:buy_item)
+
+      instance.send(:purchase_item, item)
+
+      expect(DRCT).to have_received(:walk_to).with(5678)
+      expect(DRCT).not_to have_received(:buy_item)
+    end
+
+    it 'uses DRCT.order_item when item has an order_number' do
+      item = make_item('order_number' => 16, 'room' => 14753)
+      instance = build_instance
+
+      allow(DRCT).to receive(:order_item)
+      allow(DRCT).to receive(:buy_item)
+
+      instance.send(:purchase_item, item)
+
+      expect(DRCT).to have_received(:order_item).with(14753, 16)
+      expect(DRCT).not_to have_received(:buy_item)
+    end
+
+    it 'prefers clerk over order_number when both are present' do
+      item = make_item('clerk' => 'shopkeeper', 'order_number' => 16, 'room' => 5678)
+      instance = build_instance
+
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCT).to receive(:order_item)
+
+      instance.send(:purchase_item, item)
+
+      expect(DRCT).to have_received(:walk_to).with(5678)
+      expect(DRCT).not_to have_received(:order_item)
+    end
+
+    it 'uses standard buy_item when item has no clerk or order_number' do
+      item = make_item('room' => 5678)
+      instance = build_instance
+
+      allow(DRCT).to receive(:buy_item)
+      allow(DRCT).to receive(:walk_to)
+
+      instance.send(:purchase_item, item)
+
+      expect(DRCT).to have_received(:buy_item).with(5678, 'arrow')
+      expect(DRCT).not_to have_received(:walk_to)
+    end
+  end
+
+  # ===========================================================================
+  # #collect_sigil_purchases -- sigil book scroll counting
+  # ===========================================================================
+  describe '#collect_sigil_purchases' do
+    it 'returns empty array when no sigil_books config exists' do
+      instance = build_instance(restock: {})
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result).to eq([])
+    end
+
+    it 'returns empty array when sigil_books is nil' do
+      instance = build_instance(restock: { 'sigil_books' => nil })
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result).to eq([])
+    end
+
+    it 'calculates needed quantity and builds purchase hash' do
+      restock_config = {
+        'sigil_books' => {
+          'platinum-hued book' => {
+            'container' => 'satchel',
+            'congruence' => {
+              'quantity' => 20,
+              'min_quantity' => 5,
+              'room' => 14753,
+              'order_number' => 3,
+              'price' => 312
+            }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config)
+
+      allow(instance).to receive(:count_sigils_in_book)
+        .with('platinum-hued book', 'congruence', 'satchel')
+        .and_return(3)
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result.length).to eq(1)
+      purchase = result.first
+      expect(purchase['book']).to eq('platinum-hued book')
+      expect(purchase['sigil_type']).to eq('congruence')
+      expect(purchase['order_number']).to eq(3)
+      expect(purchase['price']).to eq(312)
+      expect(purchase['room']).to eq(14753)
+      expect(purchase['needed']).to eq(17)
+    end
+
+    it 'skips sigil types at or above min_quantity' do
+      restock_config = {
+        'sigil_books' => {
+          'platinum-hued book' => {
+            'container' => 'satchel',
+            'congruence' => {
+              'quantity' => 20,
+              'min_quantity' => 5,
+              'room' => 14753,
+              'order_number' => 3,
+              'price' => 312
+            }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config)
+
+      allow(instance).to receive(:count_sigils_in_book).and_return(10)
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result).to be_empty
+    end
+
+    it 'skips when book is not found (nil count)' do
+      restock_config = {
+        'sigil_books' => {
+          'missing book' => {
+            'congruence' => {
+              'quantity' => 20,
+              'room' => 14753,
+              'order_number' => 3,
+              'price' => 312
+            }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config)
+
+      allow(instance).to receive(:count_sigils_in_book).and_return(nil)
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result).to be_empty
+    end
+
+    it 'skips when already at target quantity' do
+      restock_config = {
+        'sigil_books' => {
+          'platinum-hued book' => {
+            'congruence' => {
+              'quantity' => 10,
+              'room' => 14753,
+              'order_number' => 3,
+              'price' => 312
+            }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config)
+
+      allow(instance).to receive(:count_sigils_in_book).and_return(10)
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result).to be_empty
+    end
+
+    it 'handles multiple sigil types in one book' do
+      restock_config = {
+        'sigil_books' => {
+          'platinum-hued book' => {
+            'container' => 'satchel',
+            'congruence' => {
+              'quantity' => 20,
+              'room' => 14753,
+              'order_number' => 3,
+              'price' => 312
+            },
+            'abolition' => {
+              'quantity' => 10,
+              'room' => 14753,
+              'order_number' => 5,
+              'price' => 250
+            }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config)
+
+      allow(instance).to receive(:count_sigils_in_book).and_return(0)
+
+      result = instance.send(:collect_sigil_purchases)
+
+      expect(result.length).to eq(2)
+      types = result.map { |p| p['sigil_type'] }
+      expect(types).to include('congruence')
+      expect(types).to include('abolition')
+    end
+  end
+
+  # ===========================================================================
+  # #purchase_sigil_scrolls -- purchasing and stowing scrolls into books
+  # ===========================================================================
+  describe '#purchase_sigil_scrolls' do
+    it 'orders from shop and stows scroll into book' do
+      purchases = [{
+        'book' => 'platinum-hued book',
+        'sigil_type' => 'congruence',
+        'order_number' => 3,
+        'price' => 312,
+        'room' => 14753,
+        'needed' => 2
+      }]
+      instance = build_instance
+
+      allow(DRCT).to receive(:order_item)
+      allow(instance).to receive(:reget).and_return(nil)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+      instance.send(:purchase_sigil_scrolls, purchases)
+
+      expect(DRCT).to have_received(:order_item).with(14753, 3).exactly(2).times
+      expect(DRCI).to have_received(:put_away_item?)
+        .with('congruence sigil-scroll', 'platinum-hued book').exactly(2).times
+    end
+
+    it 'stops purchasing when put_away_item fails' do
+      purchases = [{
+        'book' => 'platinum-hued book',
+        'sigil_type' => 'congruence',
+        'order_number' => 3,
+        'price' => 312,
+        'room' => 14753,
+        'needed' => 5
+      }]
+      instance = build_instance
+
+      allow(DRCT).to receive(:order_item)
+      allow(instance).to receive(:reget).and_return(nil)
+      put_count = 0
+      allow(DRCI).to receive(:put_away_item?) do
+        put_count += 1
+        put_count <= 2
+      end
+      allow(DRCI).to receive(:stow_hands)
+
+      instance.send(:purchase_sigil_scrolls, purchases)
+
+      # Stopped after 3rd order (2 succeed, 3rd fails)
+      expect(DRCT).to have_received(:order_item).exactly(3).times
+      expect(DRCI).to have_received(:stow_hands)
+    end
+
+    it 'does nothing when purchase list is empty' do
+      instance = build_instance
+
+      allow(DRCT).to receive(:order_item)
+
+      instance.send(:purchase_sigil_scrolls, [])
+
+      expect(DRCT).not_to have_received(:order_item)
+    end
+  end
+
+  # ===========================================================================
+  # #restock_default -- consolidated bank trip
+  # ===========================================================================
+  describe '#restock_default' do
+    it 'combines regular item and sigil purchase costs in one withdrawal' do
+      item = make_item('quantity' => 20, 'size' => 10, 'price' => 100)
+      instance = build_instance
+
+      allow(instance).to receive(:count_nonstackable_item).and_return(0)
+      allow(instance).to receive(:collect_sigil_purchases).and_return([
+        { 'needed' => 5, 'price' => 200, 'room' => 14753 }
+      ])
+      allow(DRCI).to receive(:stow_hands)
+      allow(DRCM).to receive(:deposit_coins)
+      allow(instance).to receive(:purchase_item)
+      allow(instance).to receive(:handle_encumbrance)
+      allow(instance).to receive(:stow_item)
+      allow(instance).to receive(:purchase_sigil_scrolls)
+
+      # regular: 2 buys * 100 = 200; bribe: 2502 * 1 = 2502
+      # sigil: 5 * 200 = 1000; sigil bribe: 2502 * 1 = 2502
+      # total: 200 + 2502 + 1000 + 2502 = 7204
+      expected_coin = 200 + 2502 + 1000 + 2502
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(expected_coin, anything, 'Crossing')
+
+      instance.send(:restock_default, [item], 'Crossing')
+    end
+
+    it 'returns early when nothing needs restocking and no sigil purchases' do
+      item = make_item('quantity' => 10)
+      instance = build_instance
+
+      allow(instance).to receive(:count_nonstackable_item).and_return(10)
+      allow(instance).to receive(:collect_sigil_purchases).and_return([])
+      allow(DRCI).to receive(:stow_hands)
+      allow(DRCM).to receive(:ensure_copper_on_hand)
+
+      instance.send(:restock_default, [item], 'Crossing')
+
+      expect(DRCI).not_to have_received(:stow_hands)
+      expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+    end
+
+    it 'proceeds when only sigil purchases are needed' do
+      instance = build_instance
+
+      allow(instance).to receive(:collect_sigil_purchases).and_return([
+        { 'needed' => 3, 'price' => 100, 'room' => 14753 }
+      ])
+      allow(DRCI).to receive(:stow_hands)
+      allow(DRCM).to receive(:ensure_copper_on_hand)
+      allow(DRCM).to receive(:deposit_coins)
+      allow(instance).to receive(:purchase_sigil_scrolls)
+
+      # sigil: 3 * 100 = 300; bribe: 2502 * 1 room = 2502
+      expected_coin = 300 + 2502
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(expected_coin, anything, 'Crossing')
+
+      instance.send(:restock_default, [], 'Crossing')
+    end
+
+    it 'pads bribe per unique sigil room, not per purchase' do
+      instance = build_instance
+
+      allow(instance).to receive(:collect_sigil_purchases).and_return([
+        { 'needed' => 2, 'price' => 100, 'room' => 14753 },
+        { 'needed' => 3, 'price' => 200, 'room' => 14753 },
+        { 'needed' => 1, 'price' => 50, 'room' => 9999 }
+      ])
+      allow(DRCI).to receive(:stow_hands)
+      allow(DRCM).to receive(:deposit_coins)
+      allow(instance).to receive(:purchase_sigil_scrolls)
+
+      # sigil cost: 2*100 + 3*200 + 1*50 = 850
+      # bribe: 2502 * 2 unique rooms = 5004
+      expected_coin = 850 + 5004
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(expected_coin, anything, 'Crossing')
+
+      instance.send(:restock_default, [], 'Crossing')
+    end
+  end
+
+  # ===========================================================================
+  # #parse_restockable_items -- sigil_books key filtering
+  # ===========================================================================
+  describe '#parse_restockable_items' do
+    let(:consumables) do
+      {
+        'arrow' => {
+          'name'      => 'arrow',
+          'size'      => 10,
+          'price'     => 100,
+          'room'      => 1234,
+          'stackable' => false,
+          'quantity'  => 20
+        }
+      }
+    end
+
+    it 'merges base-consumables data for known items' do
+      restock_config = { 'arrow' => { 'quantity' => 30 } }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
+
+      result = instance.send(:parse_restockable_items)
+
+      expect(result.length).to eq(1)
+      item = result.first
+      expect(item['quantity']).to eq(30)
+      expect(item['name']).to eq('arrow')
+      expect(item['size']).to eq(10)
+      expect(item['price']).to eq(100)
+    end
+
+    it 'preserves all user overrides over base-consumables defaults' do
+      restock_config = { 'arrow' => { 'quantity' => 50, 'price' => 200 } }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
+
+      result = instance.send(:parse_restockable_items)
+      item = result.first
+
+      expect(item['quantity']).to eq(50)
+      expect(item['price']).to eq(200)
+    end
+
+    it 'accepts fully custom items with all required fields' do
+      restock_config = {
+        'custom_thing' => {
+          'name'      => 'widget',
+          'size'      => 1,
+          'room'      => 9999,
+          'price'     => 50,
+          'stackable' => false,
+          'quantity'  => 5
+        }
+      }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => {} })
+
+      result = instance.send(:parse_restockable_items)
+
+      expect(result.length).to eq(1)
+      expect(result.first['name']).to eq('widget')
+    end
+
+    it 'rejects custom items missing required fields' do
+      restock_config = {
+        'broken_thing' => { 'name' => 'widget' }
+      }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => {} })
+
+      result = instance.send(:parse_restockable_items)
+
+      expect(result).to be_empty
+    end
+
+    it 'skips base-consumables lookup when item specifies custom hometown' do
+      restock_config = {
+        'arrow' => {
+          'hometown'  => 'Shard',
+          'name'      => 'arrow',
+          'size'      => 10,
+          'room'      => 5678,
+          'price'     => 150,
+          'stackable' => false,
+          'quantity'  => 20
+        }
+      }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
+
+      result = instance.send(:parse_restockable_items)
+
+      expect(result.length).to eq(1)
+      expect(result.first['price']).to eq(150)
+      expect(result.first['room']).to eq(5678)
+    end
+
+    it 'excludes the sigil_books key from regular item parsing' do
+      restock_config = {
+        'arrow' => { 'quantity' => 30 },
+        'sigil_books' => {
+          'platinum-hued book' => {
+            'container' => 'satchel',
+            'congruence' => { 'quantity' => 20, 'room' => 14753, 'order_number' => 3, 'price' => 312 }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
+
+      result = instance.send(:parse_restockable_items)
+
+      expect(result.length).to eq(1)
+      expect(result.first['name']).to eq('arrow')
     end
   end
 

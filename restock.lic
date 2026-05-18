@@ -98,6 +98,8 @@
 #       stackable: false
 #       quantity: 30
 class Restock
+  SHARD_BRIBE_PADDING = 2502
+
   def initialize
     arg_definitions = [
       [
@@ -144,33 +146,12 @@ class Restock
   # @param town [String] town to use for banking
   # @return [void]
   def restock_default(item_list, town)
-    # Count regular items
-    items_to_restock = []
-    coin_needed = 0
+    items_to_restock, coin_needed = assess_restock_needs(item_list)
+    coin_needed += SHARD_BRIBE_PADDING * items_to_restock.length
 
-    item_list.each do |item|
-      remaining = if item['stackable']
-                    count_stackable_item(item)
-                  else
-                    count_nonstackable_item(item)
-                  end
-      if item['min_quantity']
-        next unless remaining < item['min_quantity']
-      end
-      next unless remaining < item['quantity']
-
-      num_needed = item['quantity'] - remaining
-      buy_num = (num_needed / item['size'].to_f).ceil
-      coin_needed += buy_num * item['price']
-      item['buy_num'] = buy_num
-      items_to_restock.push(item)
-    end
-    coin_needed += 2502 * items_to_restock.length
-
-    # Count sigil book scrolls
     sigil_purchases = collect_sigil_purchases
     coin_needed += sigil_purchases.sum { |p| p['needed'] * p['price'] }
-    coin_needed += 2502 * sigil_purchases.map { |p| p['room'] }.uniq.length
+    coin_needed += SHARD_BRIBE_PADDING * sigil_purchases.map { |p| p['room'] }.uniq.length
 
     return if items_to_restock.empty? && sigil_purchases.empty?
 
@@ -178,7 +159,6 @@ class Restock
     echo "Total coin needed: #{coin_needed}" if @debug
     DRCM.ensure_copper_on_hand(coin_needed, @settings, town)
 
-    # Purchase regular items
     items_to_restock.each do |item|
       item['buy_num'].times do
         purchase_item(item)
@@ -187,16 +167,7 @@ class Restock
       end
     end
 
-    # Purchase sigil book scrolls grouped by shop room
-    sigil_purchases.group_by { |p| p['room'] }.each do |room, room_purchases|
-      DRCT.walk_to(room)
-      room_purchases.each do |purchase|
-        purchase['needed'].times do
-          purchase_via_order(purchase['order_number'])
-          DRC.bput("put my #{purchase['sigil_type']} sigil-scroll in my #{purchase['book']}", /You add/)
-        end
-      end
-    end
+    purchase_sigil_scrolls(sigil_purchases)
 
     DRCI.stow_hands
     DRCM.deposit_coins(@keep_copper, @settings, town)
@@ -209,35 +180,14 @@ class Restock
   # @param town [String] town to restock in
   # @return [void]
   def restock_items(item_list, town)
-    items_to_restock = []
-    coin_needed = 0
-
-    item_list.each do |item|
-      remaining = if item['stackable']
-                    count_stackable_item(item)
-                  else
-                    count_nonstackable_item(item)
-                  end
-      if item['min_quantity']
-        next unless remaining < item['min_quantity']
-      end
-      next unless remaining < item['quantity']
-
-      num_needed = item['quantity'] - remaining
-      buy_num = (num_needed / item['size'].to_f).ceil
-      coin_needed += buy_num * item['price']
-      item['buy_num'] = buy_num
-      items_to_restock.push(item)
-    end
+    items_to_restock, coin_needed = assess_restock_needs(item_list)
 
     return if items_to_restock.empty?
 
     DRCI.stow_hands
 
     if coin_needed > 0
-      # Pad for Shard night-bribe (2502 copper per shop visit).
-      # Over-estimates intentionally; excess deposited at end.
-      coin_needed += 2502 * items_to_restock.length
+      coin_needed += SHARD_BRIBE_PADDING * items_to_restock.length
       echo "Coin needed is #{coin_needed}" if @debug
       DRCM.ensure_copper_on_hand(coin_needed, @settings, town)
     end
@@ -254,9 +204,8 @@ class Restock
 
   private
 
-  # Purchases a single item. Uses ask-for flow when item specifies a clerk,
-  # two-step order confirmation when item specifies an order_number,
-  # otherwise uses standard buy.
+  # Purchases a single item. Dispatches to ask-for, DRCT.order_item,
+  # or standard buy depending on item configuration.
   #
   # @param item [Hash] item configuration with 'name', 'room', optional 'clerk', optional 'order_number'
   # @return [void]
@@ -265,8 +214,7 @@ class Restock
       DRCT.walk_to(item['room'])
       fput("ask #{item['clerk']} for #{item['name']}")
     elsif item['order_number']
-      DRCT.walk_to(item['room'])
-      purchase_via_order(item['order_number'])
+      DRCT.order_item(item['room'], item['order_number'])
     else
       DRCT.buy_item(item['room'], item['name'])
     end
@@ -468,13 +416,43 @@ class Restock
     end
   end
 
-  # Purchases an item using the two-step order confirmation flow.
+  # Counts items, determines what needs restocking, and calculates coin cost.
   #
-  # @param order_number [Integer] catalog number from the shop's ORDER list
+  # @param item_list [Array<Hash>] items to evaluate
+  # @return [Array(Array<Hash>, Integer)] items needing restock and total coin cost
+  def assess_restock_needs(item_list)
+    items_to_restock = []
+    coin_needed = 0
+    item_list.each do |item|
+      remaining = item['stackable'] ? count_stackable_item(item) : count_nonstackable_item(item)
+      next if item['min_quantity'] && remaining >= item['min_quantity']
+      next unless remaining < item['quantity']
+      buy_num = ((item['quantity'] - remaining) / item['size'].to_f).ceil
+      coin_needed += buy_num * item['price']
+      item['buy_num'] = buy_num
+      items_to_restock << item
+    end
+    [items_to_restock, coin_needed]
+  end
+
+  # Purchases sigil scrolls and stows them into their books.
+  #
+  # @param sigil_purchases [Array<Hash>] purchase list from collect_sigil_purchases
   # @return [void]
-  def purchase_via_order(order_number)
-    DRC.bput("order #{order_number}", /Just order it again/)
-    DRC.bput("order #{order_number}", /hands you/)
+  def purchase_sigil_scrolls(sigil_purchases)
+    sigil_purchases.each do |purchase|
+      purchase['needed'].times do
+        DRCT.order_item(purchase['room'], purchase['order_number'])
+        if reget(3, 'Seeing that you are too encumbered')
+          fput('get sigil-scroll from counter')
+        end
+        unless DRCI.put_away_item?("#{purchase['sigil_type']} sigil-scroll", purchase['book'])
+          echo "Failed to add #{purchase['sigil_type']} scroll to #{purchase['book']}"
+          DRCI.stow_hands
+          return
+        end
+      end
+    end
   end
 end
 
