@@ -575,6 +575,26 @@ RSpec.describe Restock do
       expect(result.first['price']).to eq(150)
       expect(result.first['room']).to eq(5678)
     end
+
+    it 'excludes the sigil_books key from regular item parsing' do
+      restock_config = {
+        'arrow'       => { 'quantity' => 30 },
+        'sigil_books' => {
+          'platinum-hued book' => {
+            'container'  => 'satchel',
+            'congruence' => { 'quantity' => 20, 'room' => 14753, 'order_number' => 3, 'price' => 312 }
+          }
+        }
+      }
+      instance = build_instance(restock: restock_config, hometown: 'Crossing')
+
+      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
+
+      result = instance.send(:parse_restockable_items)
+
+      expect(result.length).to eq(1)
+      expect(result.first['name']).to eq('arrow')
+    end
   end
 
   # ===========================================================================
@@ -1040,149 +1060,6 @@ RSpec.describe Restock do
       expect(DRCM).to receive(:ensure_copper_on_hand).with(expected_coin, anything, 'Crossing')
 
       instance.send(:restock_default, [], 'Crossing')
-    end
-  end
-
-  # ===========================================================================
-  # #parse_restockable_items -- sigil_books key filtering
-  # ===========================================================================
-  describe '#parse_restockable_items' do
-    let(:consumables) do
-      {
-        'arrow' => {
-          'name'      => 'arrow',
-          'size'      => 10,
-          'price'     => 100,
-          'room'      => 1234,
-          'stackable' => false,
-          'quantity'  => 20
-        }
-      }
-    end
-
-    it 'merges base-consumables data for known items' do
-      restock_config = { 'arrow' => { 'quantity' => 30 } }
-      instance = build_instance(restock: restock_config, hometown: 'Crossing')
-
-      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
-
-      result = instance.send(:parse_restockable_items)
-
-      expect(result.length).to eq(1)
-      item = result.first
-      expect(item['quantity']).to eq(30)
-      expect(item['name']).to eq('arrow')
-      expect(item['size']).to eq(10)
-      expect(item['price']).to eq(100)
-    end
-
-    it 'preserves all user overrides over base-consumables defaults' do
-      restock_config = { 'arrow' => { 'quantity' => 50, 'price' => 200 } }
-      instance = build_instance(restock: restock_config, hometown: 'Crossing')
-
-      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
-
-      result = instance.send(:parse_restockable_items)
-      item = result.first
-
-      expect(item['quantity']).to eq(50)
-      expect(item['price']).to eq(200)
-    end
-
-    it 'accepts fully custom items with all required fields' do
-      restock_config = {
-        'custom_thing' => {
-          'name'      => 'widget',
-          'size'      => 1,
-          'room'      => 9999,
-          'price'     => 50,
-          'stackable' => false,
-          'quantity'  => 5
-        }
-      }
-      instance = build_instance(restock: restock_config, hometown: 'Crossing')
-
-      $test_data = OpenStruct.new(consumables: { 'Crossing' => {} })
-
-      result = instance.send(:parse_restockable_items)
-
-      expect(result.length).to eq(1)
-      expect(result.first['name']).to eq('widget')
-    end
-
-    it 'rejects custom items missing required fields' do
-      restock_config = {
-        'broken_thing' => { 'name' => 'widget' }
-      }
-      instance = build_instance(restock: restock_config, hometown: 'Crossing')
-
-      $test_data = OpenStruct.new(consumables: { 'Crossing' => {} })
-
-      result = instance.send(:parse_restockable_items)
-
-      expect(result).to be_empty
-    end
-
-    it 'skips base-consumables lookup when item specifies custom hometown' do
-      restock_config = {
-        'arrow' => {
-          'hometown'  => 'Shard',
-          'name'      => 'arrow',
-          'size'      => 10,
-          'room'      => 5678,
-          'price'     => 150,
-          'stackable' => false,
-          'quantity'  => 20
-        }
-      }
-      instance = build_instance(restock: restock_config, hometown: 'Crossing')
-
-      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
-
-      result = instance.send(:parse_restockable_items)
-
-      expect(result.length).to eq(1)
-      expect(result.first['price']).to eq(150)
-      expect(result.first['room']).to eq(5678)
-    end
-
-    it 'excludes the sigil_books key from regular item parsing' do
-      restock_config = {
-        'arrow'       => { 'quantity' => 30 },
-        'sigil_books' => {
-          'platinum-hued book' => {
-            'container'  => 'satchel',
-            'congruence' => { 'quantity' => 20, 'room' => 14753, 'order_number' => 3, 'price' => 312 }
-          }
-        }
-      }
-      instance = build_instance(restock: restock_config, hometown: 'Crossing')
-
-      $test_data = OpenStruct.new(consumables: { 'Crossing' => consumables })
-
-      result = instance.send(:parse_restockable_items)
-
-      expect(result.length).to eq(1)
-      expect(result.first['name']).to eq('arrow')
-    end
-  end
-
-  # ===========================================================================
-  # #valid_item_data? -- required field validation
-  # ===========================================================================
-  describe '#valid_item_data?' do
-    it 'returns true when all required fields are present' do
-      instance = build_instance
-      expect(instance.send(:valid_item_data?, make_item)).to be true
-    end
-
-    %w[name size room price stackable quantity].each do |field|
-      it "returns false when '#{field}' is missing" do
-        item = make_item
-        item.delete(field)
-        instance = build_instance
-        expect(instance.send(:valid_item_data?, item)).to be false
-      end
     end
   end
 end
