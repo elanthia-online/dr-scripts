@@ -447,11 +447,11 @@ module StatusMonitor
       found = Set.new
 
       normalized.gsub(/_|~|-|=|\./, '')
-               .scan(/[A-Z\s]{3,}/)
-               .each do |match|
-                 match = match.gsub(/\s/, '')
-                 found << match if VALID_COMMANDS.include?(match)
-               end
+                .scan(/[A-Z\s]{3,}/)
+                .each do |match|
+                  match = match.gsub(/\s/, '')
+                  found << match if VALID_COMMANDS.include?(match)
+                end
 
       normalized.split(' ').each do |token|
         next unless token =~ /[_~=-]/
