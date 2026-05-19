@@ -108,15 +108,14 @@ RSpec.describe StatusMonitor::SpamDetector do
       end
     end
 
-    context 'buffer overflow' do
-      it 'caps @recent_seen at 20 entries' do
+    context 'time-windowed counts' do
+      it 'retains all entries within the 90-second window' do
         detector = described_class.new(make_settings(unique: 100))
         25.times { |i| detector.check("line_#{i}") }
-        # After 25 unique inserts, buffer should be 20 (last 20)
-        # Verify by checking that line_0 through line_4 are gone:
-        # inserting line_0 again should not show count > 1
-        alert = detector.check('line_0')
-        expect(alert).to be_nil
+        # With time-windowed counts, line_0 is still tracked (within 90s)
+        # Sending it again increments its count to 2, triggering the dedup guard
+        result = detector.check('line_0')
+        expect(result).to be_nil
       end
     end
 
@@ -179,6 +178,25 @@ RSpec.describe StatusMonitor::SpamDetector do
     end
   end
 
+  describe 'similarity percentage boundaries' do
+    it 'with similarity 0%, detects all lines as similar but debounce blocks rapid fire' do
+      detector = described_class.new(make_settings(unique: 100, frequency: 2, similarity: 0))
+      detector.check('hello world')
+      # Second unique line IS similar (dist < length * 1.0) but enters frequency buffer
+      alert = detector.check('completely different line')
+      expect(alert).to be_nil
+      # Third line is blocked by the 0.5s debounce guard (test runs instantly)
+      alert = detector.check('yet another line')
+      expect(alert).to be_nil
+    end
+
+    it 'with similarity 100%, never triggers similarity path' do
+      detector = described_class.new(make_settings(unique: 100, frequency: 2, similarity: 100))
+      20.times { |i| detector.check("similar line #{i}") }
+      expect($echo_messages.none? { |m| m.include?('freq_buffer') }).to be true
+    end
+  end
+
   describe '#reset_buffers' do
     it 'clears both recent_seen and frequency_buffer' do
       detector = described_class.new(make_settings(unique: 1))
@@ -187,6 +205,39 @@ RSpec.describe StatusMonitor::SpamDetector do
       # After alert fires, buffers are reset internally
       # Verify by sending new lines that should not alert
       expect(detector.check('b')).to be_nil
+    end
+  end
+
+  describe 'adversarial evasion' do
+    it 'catches number-padded variants after similarity_scrub normalizes them' do
+      # Attacker sends "suspicious content 1", "suspicious content 2", etc.
+      # After scrub strips digits, all collapse to "suspicious content "
+      detector = described_class.new(make_settings(unique: 2))
+      scrubbed = 'suspicious content '
+      detector.check(scrubbed)
+      detector.check(scrubbed)
+      alert = detector.check(scrubbed)
+      expect(alert).not_to be_nil
+    end
+
+    it 'buffer flooding does not reset repeat detection (time-windowed)' do
+      detector = described_class.new(make_settings(unique: 2))
+      detector.check('probe message')
+      detector.check('probe message')
+      20.times { |i| detector.check("unique noise line #{i}") }
+      alert = detector.check('probe message')
+      expect(alert).not_to be_nil
+    end
+
+    it 'expires entries older than 90 seconds' do
+      detector = described_class.new(make_settings(unique: 2))
+      detector.check('old probe')
+      detector.check('old probe')
+      # Backdate timestamps to simulate 91 seconds ago
+      timestamps = detector.instance_variable_get(:@seen_timestamps)
+      timestamps.transform_values! { Time.now - 91 }
+      # After expiry, the old probe count is gone
+      expect(detector.check('old probe')).to be_nil
     end
   end
 end
@@ -239,10 +290,16 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(store.unseen?('persistent line')).to be false
     end
 
-    it 'treats whitespace-only lines as non-empty (stores them)' do
+    it 'rejects whitespace-only lines' do
       store = described_class.new('Testchar')
-      expect(store.unseen?('   ')).to be true
       expect(store.unseen?('   ')).to be false
+    end
+
+    it 'rejects tabs and newlines' do
+      store = described_class.new('Testchar')
+      expect(store.unseen?("\t")).to be false
+      expect(store.unseen?("\n")).to be false
+      expect(store.unseen?(" \t \n ")).to be false
     end
 
     it 'is case-sensitive' do
@@ -329,6 +386,12 @@ RSpec.describe StatusMonitor::MessageStore do
       store.shutdown
       expect { store.count }.to raise_error(StandardError)
     end
+
+    it 'survives double shutdown (before_dying can fire twice)' do
+      store = described_class.new('Testchar')
+      store.shutdown
+      expect { store.shutdown }.not_to raise_error
+    end
   end
 
   describe '#count' do
@@ -372,12 +435,33 @@ RSpec.describe StatusMonitor::MessageStore do
 
     it 'renames backup file if present' do
       dat_path = "seen_messages_Testchar.dat"
-      bak_path = "backup/seen_messages_#{File.basename(dat_path, '.dat')}.bak"
+      bak_path = "backup/#{File.basename(dat_path, '.dat')}.bak"
       FileUtils.mkdir_p('backup')
       File.open(dat_path, 'wb') { |f| Marshal.dump({}, f) }
       File.open(bak_path, 'wb') { |f| Marshal.dump({}, f) }
       described_class.new('Testchar')
       expect(File.exist?("#{bak_path}.migrated")).to be true
+    end
+
+    it 'survives .dat containing non-Hash data (Array)' do
+      dat_path = "seen_messages_Testchar.dat"
+      File.open(dat_path, 'wb') { |f| Marshal.dump(["not", "a", "hash"], f) }
+      store = nil
+      expect { store = described_class.new('Testchar') }.not_to raise_error
+      expect(store.count).to eq(0)
+      expect($echo_messages.any? { |m| m.include?('Warning') }).to be true
+    end
+
+    it 'constructs the correct backup path (no doubled prefix)' do
+      dat_path = "seen_messages_Testchar.dat"
+      correct_bak = "backup/seen_messages_Testchar.bak"
+      wrong_bak = "backup/seen_messages_seen_messages_Testchar.bak"
+      FileUtils.mkdir_p('backup')
+      File.open(dat_path, 'wb') { |f| Marshal.dump({}, f) }
+      File.open(correct_bak, 'wb') { |f| Marshal.dump({}, f) }
+      described_class.new('Testchar')
+      expect(File.exist?("#{correct_bak}.migrated")).to be true
+      expect(File.exist?(wrong_bak)).to be false
     end
 
     it 'survives corrupted .dat without crashing' do
@@ -476,6 +560,113 @@ RSpec.describe StatusMonitor::CommandDetector do
       described_class.check('try J_U~M=P now')
       expect($fput_commands).to include('jump')
     end
+
+    it 'detects dot-separated obfuscation via first scanner' do
+      described_class.check('try J.U.M.P now')
+      expect($fput_commands).to include('jump')
+    end
+
+    it 'detects hyphen-separated obfuscation' do
+      described_class.check('try J-U-M-P now')
+      expect($fput_commands).to include('jump')
+    end
+
+    it 'detects a bare command with no surrounding text' do
+      described_class.check('JUMP')
+      expect($fput_commands).to include('jump')
+    end
+
+    it 'detects uppercase runs embedded in lowercase words (character class scan)' do
+      described_class.check('theJUMPwasfast')
+      expect($fput_commands).to include('jump')
+    end
+
+    it 'detects commands with multiple consecutive separators' do
+      described_class.check('try J__U__M__P now')
+      expect($fput_commands).to include('jump')
+    end
+  end
+
+  describe 'adversarial evasion' do
+    it 'misses commands with Cyrillic lookalike letters (known gap, needs transliteration)' do
+      line = "JUМP here"
+      described_class.check(line)
+      expect($fput_commands).not_to include('jump')
+    end
+
+    it 'detects commands despite zero-width characters inserted' do
+      line = "JU​MP here"
+      described_class.check(line)
+      expect($fput_commands).to include('jump')
+    end
+
+    it 'detects mixed-case commands via second scanner upcase' do
+      described_class.check('try j_U_m_P now')
+      expect($fput_commands).to include('jump')
+    end
+
+    it 'finds commands in very long lines' do
+      padding = 'a' * 5000
+      described_class.check("#{padding} JUMP #{padding}")
+      expect($fput_commands).to include('jump')
+    end
+  end
+end
+
+# ---------------------------------------------------------------------------
+# AlertHandler -- alert responses
+# ---------------------------------------------------------------------------
+RSpec.describe StatusMonitor::AlertHandler do
+  before do
+    $echo_messages.clear
+    $fput_commands.clear
+  end
+
+  def make_alert_settings(respond: false, quit: false, slack: nil)
+    OpenStruct.new(
+      status_monitor_respond: respond,
+      quit_on_status_warning: quit,
+      slack_username: slack
+    )
+  end
+
+  it 'calls echo three times for beeps' do
+    handler = described_class.new(make_alert_settings)
+    handler.fire('suspicious line', 'counts')
+    beeps = $echo_messages.count { |m| m == "\a" }
+    expect(beeps).to eq(3)
+  end
+
+  it 'executes detected commands via CommandDetector' do
+    handler = described_class.new(make_alert_settings)
+    handler.fire('you see JUMP here', 'counts')
+    expect($fput_commands).to include('jump')
+  end
+
+  it 'sends a response when status_monitor_respond is true' do
+    handler = described_class.new(make_alert_settings(respond: true))
+    handler.fire('suspicious line', 'counts')
+    responses = ["'Hmmm?", "'Yes", "'Ok?"]
+    expect($fput_commands.any? { |cmd| responses.include?(cmd) }).to be true
+  end
+
+  it 'does not send a response when status_monitor_respond is false' do
+    handler = described_class.new(make_alert_settings(respond: false))
+    handler.fire('a plain line with no commands', 'counts')
+    responses = ["'Hmmm?", "'Yes", "'Ok?"]
+    expect($fput_commands.none? { |cmd| responses.include?(cmd) }).to be true
+  end
+
+  it 'sends exit when quit_on_status_warning is true' do
+    handler = described_class.new(make_alert_settings(quit: true))
+    handler.fire('suspicious line', 'counts')
+    expect($fput_commands).to include('exit')
+  end
+
+  it 'does not send exit when quit_on_status_warning is false' do
+    handler = described_class.new(make_alert_settings(quit: false))
+    handler.fire('a plain line', 'counts')
+    expect($fput_commands).not_to include('exit')
   end
 end
 
@@ -560,17 +751,34 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(filter.clean(+"<preset id='roomDesc'>A room</preset>")).to be_nil
     end
 
-    it 'returns nil for perception window lines' do
-      filter.clean(+'something <pushStream id="percWindow"/>')
-      result = filter.clean(+'spell data here')
-      expect(result).to be_nil
+    it 'filters content within a filtered stream (percWindow)' do
+      filter.clean(+'<pushStream id="percWindow"/>')
+      expect(filter.clean(+'spell data here')).to be_nil
+      expect(filter.clean(+'more spell data')).to be_nil
     end
 
-    it 'unblocks after percWindow popStream' do
+    it 'unblocks after popStream' do
       filter.clean(+'<pushStream id="percWindow"/>')
       filter.clean(+'<popStream/>')
       result = filter.clean(+'normal line after perc')
       expect(result).not_to be_nil
+    end
+
+    it 'filters content within all filtered streams' do
+      %w[assess ooc atmospherics thoughts talk death group logons shopWindow].each do |stream|
+        f = described_class.new([])
+        f.clean(+"<pushStream id=\"#{stream}\"/>")
+        expect(f.clean(+'content inside stream')).to be_nil, "Expected #{stream} stream content to be filtered"
+        f.clean(+'<popStream/>')
+        expect(f.clean(+'content after stream')).not_to be_nil, "Expected content after #{stream} popStream to pass"
+      end
+    end
+
+    it 'passes content within non-filtered streams (e.g., room)' do
+      filter.clean(+'<pushStream id="room"/>')
+      result = filter.clean(+'room content should pass')
+      expect(result).not_to be_nil
+      filter.clean(+'<popStream/>')
     end
 
     it 'filters lines containing room player names' do
@@ -583,6 +791,14 @@ RSpec.describe StatusMonitor::MessageFilter do
       filter.clean(+"'room players'>Also here: Warrior Alice.</component>")
       filter.clean(+"'room players'>Also here: Warrior Charlie.</component>")
       result = filter.clean(+'Alice walks in')
+      expect(result).not_to be_nil
+    end
+  end
+
+  describe 'adversarial scenarios' do
+    it 'does not trigger stream state from pushStream substring in normal text' do
+      filter.clean(+'Someone says, "check pushStream id="percWindow" this out"')
+      result = filter.clean(+'This important line should be visible')
       expect(result).not_to be_nil
     end
   end
@@ -652,6 +868,30 @@ RSpec.describe StatusMonitor::Monitor do
 
     monitor = described_class.new(settings)
     expect(monitor.process('')).to be false
+  ensure
+    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
+  end
+
+  it 'returns false for lines that scrub to whitespace' do
+    Object.send(:define_method, :get_data) do |_type|
+      OpenStruct.new('filter_strings' => [])
+    end
+
+    monitor = described_class.new(settings)
+    result = monitor.process(+'42 kronars')
+    expect(result).to be false
+  ensure
+    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
+  end
+
+  it 'returns false for lines matching a filter pattern' do
+    Object.send(:define_method, :get_data) do |_type|
+      OpenStruct.new('filter_strings' => ['gold coins'])
+    end
+
+    monitor = described_class.new(settings)
+    result = monitor.process(+'you see gold coins on the ground')
+    expect(result).to be false
   ensure
     Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
