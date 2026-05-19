@@ -41,7 +41,7 @@ module StatusMonitor
     # @param line [String] scrubbed message line
     # @return [Boolean] true if the line has never been seen before
     def unseen?(line)
-      return false if line.nil? || line.empty?
+      return false if line.nil? || line.strip.empty?
       return false if @recent_seen_lines[line]
       return false if exists_in_db?(line)
 
@@ -140,7 +140,7 @@ module StatusMonitor
         end
       end
       File.rename(@legacy_dat, "#{@legacy_dat}.migrated")
-      backup = "backup/seen_messages_#{File.basename(@legacy_dat, '.dat')}.bak"
+      backup = "backup/#{File.basename(@legacy_dat, '.dat')}.bak"
       File.rename(backup, "#{backup}.migrated") if File.exist?(backup)
       echo "Migrated #{count} entries to SQLite. Old .dat renamed to .dat.migrated."
     rescue => e
@@ -155,23 +155,16 @@ module StatusMonitor
   class MessageFilter
     attr_reader :last_player_line
 
+    FILTERED_STREAMS = %w[assess ooc atmospherics thoughts talk death group percWindow logons shopWindow].freeze
+
     # @param filter_strings [Array<Regexp>] configurable patterns to ignore
     def initialize(filter_strings)
       @filter_strings = filter_strings
       @room_players = []
-      @perc_window_check = false
+      @in_stream = false
+      @current_stream = ''
       @non_useful_tags = [
         /<preset id='roomDesc'>/i,
-        /pushStream id="assess"/i,
-        /pushStream id="ooc"/i,
-        /pushStream id="atmospherics"/i,
-        /pushStream id="thoughts"/i,
-        /pushStream id="talk"/i,
-        /pushStream id="death"/i,
-        /pushStream id="group"/i,
-        /pushStream id="percWindow"/i,
-        /pushStream id="logons"/i,
-        /pushStream id="shopWindow"/i,
         /component id='room/i,
         /component id='exp/i,
         %r{</prompt>$},
@@ -194,8 +187,9 @@ module StatusMonitor
     # @return [String, nil] cleaned line, or nil if it should be ignored
     def clean(line)
       update_players(line)
-      check_spells(line)
-      return nil if line.nil? || line.empty? || @non_useful_tags.any? { |tag| tag =~ line } || @perc_window_check
+      update_stream_state(line)
+      return nil if @in_stream && FILTERED_STREAMS.include?(@current_stream)
+      return nil if line.nil? || line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
       return nil if @room_players.any? { |name| line.include?(name) }
       return nil if UserVars.npcs.any? { |name| line.include?(name) }
 
@@ -254,11 +248,16 @@ module StatusMonitor
       @room_players = find_pcs(Regexp.last_match(1).dup)
     end
 
-    # @param line [String] raw game stream line to check for percWindow toggle
+    # @param line [String] raw game stream line
     # @return [void]
-    def check_spells(line)
-      @perc_window_check ||= line =~ /pushStream id="percWindow"/i
-      @perc_window_check = line !~ /<popStream/ if @perc_window_check
+    def update_stream_state(line)
+      if line =~ /<pushStream id="([^"]+)"/i
+        @in_stream = true
+        @current_stream = Regexp.last_match(1)
+      elsif line =~ /<popStream/i
+        @in_stream = false
+        @current_stream = ''
+      end
     end
   end
 
@@ -278,7 +277,8 @@ module StatusMonitor
       @unique_line_threshold = settings.unique_line_threshold
       @line_frequency_threshold = settings.line_frequency_threshold
       @line_similarity_percentage = settings.line_similarity_percentage
-      @recent_seen = []
+      @seen_counts = Hash.new(0)
+      @seen_timestamps = {}
       @frequency_buffer = []
     end
 
@@ -287,17 +287,17 @@ module StatusMonitor
     # @param line [String] scrubbed message line
     # @return [Hash, nil] alert info hash with :line and :counts, or nil
     def check(line)
-      @recent_seen << line
-      @recent_seen = @recent_seen.last(20) if @recent_seen.length > 20
-      counts = @recent_seen.each_with_object(Hash.new(0)) { |phrase, count| count[phrase] += 1 }
+      expire_old_entries
+      @seen_counts[line] += 1
+      @seen_timestamps[line] = Time.now
 
-      if counts.values.max > @unique_line_threshold
-        echo "Passed unique line threshold #{counts.inspect}"
+      if @seen_counts.values.max > @unique_line_threshold
+        echo "Passed unique line threshold #{@seen_counts.inspect}"
         reset_buffers
-        return { line: line, counts: counts.inspect }
+        return { line: line, counts: @seen_counts.inspect }
       end
 
-      return nil if counts[line] > 1
+      return nil if @seen_counts[line] > 1
       return nil unless similar_to_recent?(line)
       return nil if @frequency_buffer.any? { |x| (Time.now - x) < 0.5 }
 
@@ -306,7 +306,7 @@ module StatusMonitor
       if @frequency_buffer.size >= @line_frequency_threshold
         echo 'Passed freq_buffer size'
         reset_buffers
-        return { line: line, counts: counts.inspect }
+        return { line: line, counts: @seen_counts.inspect }
       end
 
       nil
@@ -316,7 +316,8 @@ module StatusMonitor
     #
     # @return [void]
     def reset_buffers
-      @recent_seen = []
+      @seen_counts = Hash.new(0)
+      @seen_timestamps = {}
       @frequency_buffer = []
     end
 
@@ -352,11 +353,21 @@ module StatusMonitor
 
     private
 
+    def expire_old_entries
+      cutoff = Time.now - 90
+      @seen_timestamps.delete_if do |key, ts|
+        if ts < cutoff
+          @seen_counts.delete(key)
+          true
+        end
+      end
+    end
+
     # @param line [String] line to compare against recent history
     # @return [Boolean] true if line is suspiciously similar to a recent line
     def similar_to_recent?(line)
       threshold = (100 - @line_similarity_percentage.to_f) / 100
-      @recent_seen.any? do |seen|
+      @seen_counts.keys.first(50).any? do |seen|
         dist = levenshtein_distance(seen, line)
         dist > 0 && dist < line.length * threshold
       end
@@ -432,16 +443,17 @@ module StatusMonitor
     # @param line [String] suspicious line to scan
     # @return [void]
     def self.check(line)
+      normalized = line.gsub(/[^\x20-\x7E]/, '')
       found = Set.new
 
-      line.gsub(/_|~|-|=|\./, '')
-          .scan(/[A-Z\s]{3,}/)
-          .each do |match|
-            match = match.gsub(/\s/, '')
-            found << match if VALID_COMMANDS.include?(match)
-          end
+      normalized.gsub(/_|~|-|=|\./, '')
+               .scan(/[A-Z\s]{3,}/)
+               .each do |match|
+                 match = match.gsub(/\s/, '')
+                 found << match if VALID_COMMANDS.include?(match)
+               end
 
-      line.split(' ').each do |token|
+      normalized.split(' ').each do |token|
         next unless token =~ /[_~=-]/
 
         cleaned = token.gsub(/_|~|-|=/, '').upcase
@@ -507,7 +519,8 @@ module StatusMonitor
       return false if cleaned.nil?
       return false if @filter.filtered?(cleaned)
 
-      scrubbed = @filter.similarity_scrub(cleaned)
+      scrubbed = @filter.similarity_scrub(cleaned).strip
+      return false if scrubbed.empty?
 
       alert = @detector.check(scrubbed)
       if alert
