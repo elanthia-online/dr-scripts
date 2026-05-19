@@ -31,6 +31,7 @@ args = parse_args(arg_definitions)
 
 module StatusMonitorImport
   TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[^:]*: /
+  BARE_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?(\s+\S+)?$/
   XML_TAG_PATTERN = /<[^>]+>/
   REGET_MARKER = /<!-- Above contents from reget/
   CURRENCY_SCRUB = [/[0-9]+/, /(kronars|lirums|dokoras)/i].freeze
@@ -105,6 +106,7 @@ module StatusMonitorImport
   def self.clean_line(line)
     line = line.strip
     return nil if SKIP_PATTERNS.any? { |p| p.match?(line) }
+    return nil if line.match?(BARE_TIMESTAMP_PATTERN)
     return nil if line.match?(REGET_MARKER)
 
     line = line.sub(TIMESTAMP_PATTERN, '')
@@ -208,6 +210,7 @@ module StatusMonitorImport
     total_lines = 0
     skipped = 0
     processed = 0
+    errors = 0
     start_time = Time.now
 
     count_before = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
@@ -220,10 +223,16 @@ module StatusMonitorImport
         next
       end
 
-      lines = import_file(db, file)
-      record_import(db, file, lines)
-      total_lines += lines
-      processed += 1
+      begin
+        lines = import_file(db, file)
+        record_import(db, file, lines)
+        total_lines += lines
+        processed += 1
+      rescue Zlib::GzipFile::Error, EOFError, SystemCallError => e
+        echo "Skipping #{file}: #{e.class}: #{e.message}"
+        errors += 1
+        next
+      end
 
       if (processed % 50).zero?
         elapsed = Time.now - start_time
@@ -237,7 +246,7 @@ module StatusMonitorImport
     elapsed = (Time.now - start_time).round(1)
 
     echo "Import complete in #{elapsed}s."
-    echo "  Files: #{processed} processed, #{skipped} skipped (already imported)"
+    echo "  Files: #{processed} processed, #{skipped} skipped (already imported), #{errors} errors"
     echo "  Lines scanned: #{total_lines}"
     echo "  New unique entries: #{count_after - count_before}"
     echo "  Total corpus size: #{count_after}"
