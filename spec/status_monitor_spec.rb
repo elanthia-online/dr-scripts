@@ -247,7 +247,6 @@ end
 # ---------------------------------------------------------------------------
 RSpec.describe StatusMonitor::MessageStore do
   let(:tmpdir) { Dir.mktmpdir('status-monitor-test') }
-  let(:original_dir) { Dir.pwd }
 
   before do
     $echo_messages.clear

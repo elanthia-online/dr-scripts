@@ -23,6 +23,12 @@ end
 
 LICH_DIR = Dir.mktmpdir('lich-test-import') unless defined?(LICH_DIR)
 
+RSpec.configure do |config|
+  config.after(:suite) do
+    FileUtils.rm_rf(LICH_DIR) if defined?(LICH_DIR) && File.exist?(LICH_DIR)
+  end
+end
+
 # Extract the StatusMonitorImport module from the .lic file.
 import_path = File.join(File.dirname(__FILE__), '..', 'status-monitor-import.lic')
 import_lines = File.readlines(import_path)
