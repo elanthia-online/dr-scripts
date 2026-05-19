@@ -62,19 +62,29 @@ RSpec.describe 'StatusMonitorImport.clean_line' do
       expect(StatusMonitorImport.clean_line(line)).to eq('You rest.')
     end
 
-    it 'passes through bare timestamp header lines (no content after strip)' do
-      # Bare timestamp with timezone but no ": " suffix -- TIMESTAMP_PATTERN won't match
-      # The line passes through as-is (harmless noise in corpus)
+    it 'skips bare timestamp header lines (no content after timestamp)' do
       line = '2026-01-04 18:59:20 NZDT'
-      result = StatusMonitorImport.clean_line(line)
-      expect(result).to eq('2026-01-04 18:59:20 NZDT')
+      expect(StatusMonitorImport.clean_line(line)).to be_nil
     end
 
-    it 'passes through default header format' do
-      # Default log.lic header: %Y-%m-%d %H:%M:%S.%L %:z
+    it 'skips default header format with milliseconds and numeric timezone' do
       line = '2026-01-04 18:59:20.727 +13:00'
-      result = StatusMonitorImport.clean_line(line)
-      expect(result).not_to be_nil
+      expect(StatusMonitorImport.clean_line(line)).to be_nil
+    end
+
+    it 'skips bare timestamp without timezone' do
+      line = '2026-01-04 18:59:20'
+      expect(StatusMonitorImport.clean_line(line)).to be_nil
+    end
+
+    it 'skips bare timestamp with milliseconds only (no timezone)' do
+      line = '2026-01-04 18:59:20.727'
+      expect(StatusMonitorImport.clean_line(line)).to be_nil
+    end
+
+    it 'does not skip timestamp-prefixed lines with trailing content' do
+      line = '2026-01-04 18:59:20.727 +13:00 extra content here'
+      expect(StatusMonitorImport.clean_line(line)).not_to be_nil
     end
 
     it 'does not skip timestamped content lines (regression test)' do
@@ -316,6 +326,89 @@ RSpec.describe 'StatusMonitorImport database operations' do
       StatusMonitorImport.import_file(db, log_path)
       actual = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
       expect(actual).to eq(1)
+      db.close
+    end
+  end
+
+  describe 'corrupt file resilience' do
+    it 'raises on a corrupt .gz file from import_file directly' do
+      db = StatusMonitorImport.open_database('Test')
+      corrupt_path = File.join(tmpdir, 'corrupt.log.gz')
+      File.write(corrupt_path, 'not valid gzip data at all')
+      expect { StatusMonitorImport.import_file(db, corrupt_path) }.to raise_error(Zlib::GzipFile::Error)
+      db.close
+    end
+
+    it 'skips corrupt .gz files and continues importing remaining files' do
+      log_dir = File.join(LICH_DIR, 'logs', 'DR-Testchar')
+      FileUtils.mkdir_p(log_dir)
+
+      good1 = File.join(log_dir, '01-good.log')
+      File.write(good1, "2026-01-04 18:59:20 NZDT: First good line\n")
+
+      corrupt = File.join(log_dir, '02-corrupt.log.gz')
+      File.write(corrupt, 'not valid gzip data')
+
+      good2 = File.join(log_dir, '03-good.log')
+      File.write(good2, "2026-01-04 18:59:20 NZDT: Second good line\n")
+
+      db = StatusMonitorImport.open_database('Testchar')
+      errors = 0
+      [good1, corrupt, good2].each do |file|
+        begin
+          lines = StatusMonitorImport.import_file(db, file)
+          StatusMonitorImport.record_import(db, file, lines)
+        rescue Zlib::GzipFile::Error, EOFError, SystemCallError
+          errors += 1
+          next
+        end
+      end
+
+      count = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
+      expect(count).to eq(2)
+      expect(errors).to eq(1)
+      db.close
+    ensure
+      FileUtils.rm_rf(log_dir)
+    end
+
+    it 'handles truncated .gz files (EOFError)' do
+      db = StatusMonitorImport.open_database('Test')
+      gz_path = File.join(tmpdir, 'truncated.log.gz')
+      full_gz = StringIO.new
+      gz = Zlib::GzipWriter.new(full_gz)
+      gz.write("2026-01-04 18:59:20 NZDT: A line\n" * 100)
+      gz.close
+      # Write only the first half of the gzip data
+      File.binwrite(gz_path, full_gz.string[0, full_gz.string.length / 2])
+      expect { StatusMonitorImport.import_file(db, gz_path) }.to raise_error(Zlib::Error)
+      db.close
+    end
+  end
+
+  describe 'pipeline integration' do
+    it 'excludes lines that clean but scrub to empty' do
+      db = StatusMonitorImport.open_database('Test')
+      log_path = File.join(tmpdir, 'scrub-test.log')
+      File.write(log_path, [
+        '2026-01-04 18:59:20 NZDT: 500 kronars',
+        '2026-01-04 18:59:21 NZDT: A real game message',
+      ].join("\n"))
+      StatusMonitorImport.import_file(db, log_path)
+      count = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
+      expect(count).to eq(1)
+      stored = db.get_first_value('SELECT line_text FROM seen_messages')
+      expect(stored).to eq('A real game message')
+      db.close
+    end
+
+    it 'excludes lines that scrub to only whitespace' do
+      db = StatusMonitorImport.open_database('Test')
+      log_path = File.join(tmpdir, 'whitespace-scrub.log')
+      File.write(log_path, "2026-01-04 18:59:20 NZDT: 100 200 300\n")
+      StatusMonitorImport.import_file(db, log_path)
+      count = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
+      expect(count).to eq(0)
       db.close
     end
   end
