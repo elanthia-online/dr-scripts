@@ -7581,6 +7581,24 @@ crafting_recipes:
   type: tailoring
   work_order: true
   chapter: 5
+- name: a lacework kerchief
+  noun: kerchief
+  volume: 10
+  type: tailoring
+  work_order: true
+  chapter: 5
+- name: a lacework hat
+  noun: hat
+  volume: 30
+  type: tailoring
+  work_order: true
+  chapter: 5
+- name: a lacework shroud
+  noun: shroud
+  volume: 90
+  type: tailoring
+  work_order: true
+  chapter: 5
 # Tailoring Chapter 6 recipes
 # No recipes
 # Tailoring Chapter 7 recipes

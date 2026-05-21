@@ -177,8 +177,10 @@ class Healer
   # ============================================================
 
   # Validates that the empath has Link Unity by checking `link` command output.
-  # Uses silent issue_command to avoid polluting the game window.
-  # Exits immediately if not an empath or Unity not available.
+  # Checks whether the character can use Link Unity for instant wound transfers.
+  # Sets @unity_available accordingly. Without Unity, wounds still transfer
+  # via the normal touch flow. Exits only if the character is not an empath.
+  #
   # @return [void]
   def validate_link_unity
     waitrt?
@@ -194,8 +196,9 @@ class Healer
     )
 
     unless lines
-      Lich::Messaging.msg('bold', 'Healer: ERROR - Could not check link abilities (timeout).')
-      exit
+      @unity_available = false
+      Lich::Messaging.msg('bold', 'Healer: Could not verify link abilities (timeout)')
+      return
     end
 
     output = lines.map { |l| l.gsub(/<[^>]*>/, '') }.join("\n")
@@ -205,13 +208,9 @@ class Healer
       exit
     end
 
-    unless output.include?('UNITY')
-      Lich::Messaging.msg('bold', 'Healer: ERROR - Link Unity not available. Cannot transfer wounds.')
-      Lich::Messaging.msg('bold', 'Healer: You need to learn the Unity manifestation of Empathic Link.')
-      exit
-    end
+    @unity_available = output.include?('UNITY')
 
-    Lich::Messaging.msg('bold', 'Healer: Link Unity verified')
+    Lich::Messaging.msg('bold', 'Healer: Link Unity available') if @unity_available
   end
 
   # Checks if character knows Heal + Adaptive Curing for passive healing.
@@ -322,7 +321,8 @@ class Healer
       touched: false,
       vh_attempted: false,
       needs_teach: true,
-      dead: false
+      dead: false,
+      unity_linked: false
     }
 
     log("Added patient: #{name}")
@@ -601,7 +601,7 @@ class Healer
 
       break if current_score.zero?
 
-      if elapsed >= PASSIVE_HEAL_MAX_WAIT
+      if elapsed >= PASSIVE_HEAL_MAX_WAIT && !DRSpells.active_spells['Regenerate']
         Lich::Messaging.msg('bold', 'Healer: Passive healing timeout, falling back to healme')
         unless spell_conflict? || Script.running?('healme')
           DRC.wait_for_script_to_complete('healme')
@@ -766,21 +766,26 @@ class Healer
       update_patient(victim, touched: true, timer: Time.now, dead: true) unless patient_data[:touched]
     end
 
-    # First encounter (living patients): upgrade to Unity link if patient has healable wounds
-    # Unity is for wound transfer only -- not for poison/disease/vitality (those use basic empathic link from touch)
+    # First encounter (living patients): use Unity for instant wound transfer if available.
+    # Without Unity, wounds transfer via the normal touch flow instead.
     unless patient_data[:touched] || victim_health.dead
       if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
         DRC.log_window("Healer: New patient: #{victim}", "familiar")
-        if has_healable_wounds?(victim_health)
-          log("Upgrading to Unity link with #{victim} for wound transfer")
+        if @unity_available && has_healable_wounds?(victim_health)
+          log("Using Unity link with #{victim} for instant wound transfer")
           link_result = DRC.bput("link #{victim} unity", *LINK_RESPONSES)
           if link_result =~ LINK_NOT_FOUND_PATTERN
             Lich::Messaging.msg("bold", "Healer: Could not link with #{victim}")
             remove_patient(victim, reason: :not_found)
             return
           end
-        else
-          log("#{victim} only has hands/legs wounds, skipping unity link")
+          if link_result =~ LINK_SUCCESS_PATTERN
+            update_patient(victim, unity_linked: true)
+          else
+            log("Unity link failed for #{victim}, falling back to redirect flow")
+          end
+        elsif !has_healable_wounds?(victim_health)
+          log("#{victim} only has hands/legs wounds, skipping Unity link")
         end
       end
     end
@@ -862,18 +867,24 @@ class Healer
   # @param wound_score [Integer] patient's current wound score
   # @return [void]
   def transfer_wounds(victim, wound_score)
-    body_part = next_heal_location
+    patient = get_patient(victim)
 
-    unless body_part
-      Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
-      heal_self
-      return # Will retry on next cycle after self-healing
+    if patient&.dig(:unity_linked)
+      log("Transferring wounds from #{victim} via Unity (score: #{wound_score})")
+      DRC.log_window("Healer: #{victim} (#{wound_score}) via Unity", "familiar")
+    else
+      body_part = next_heal_location
+
+      unless body_part
+        Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
+        heal_self
+        return
+      end
+
+      log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
+      DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
+      DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
     end
-
-    log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
-    DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
-
-    DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
 
     result = DRC.bput("transfer #{victim} quick all", *TRANSFER_RESPONSES)
 
@@ -883,7 +894,7 @@ class Healer
       return
     end
 
-    update_patient(victim, touched: true, timer: Time.now, body_part: body_part)
+    update_patient(victim, touched: true, timer: Time.now)
     @last_health_check = nil # Invalidate cache -- we just took wounds
     heal_self
   end
@@ -1129,6 +1140,7 @@ class Healer
     @patients.each_value do |p|
       p[:touched] = false
       p[:body_part] = nil
+      p[:unity_linked] = false
     end
 
     # Clear spell slot -- any in-progress FP/CD/VH is invalidated by the fall

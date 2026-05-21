@@ -522,12 +522,14 @@ hunting_zones:
   # https://elanthipedia.play.net/Blood_dryad                              25-40
   # There are Blood Dryads and Blood Nyads in this area.
   blood_dryad:
-  - 10056
-  - 10055
-  - 10054
-  - 10053
-  - 10052
-  - 10051
+  - 9358
+  - 9359
+  - 9360
+  - 9361
+  - 9362
+  - 9363
+  - 9364
+  - 19202
   # https://elanthipedia.play.net/Cougar                                   30-49
   cougars_forest_of_night:
   - 9352
@@ -663,6 +665,15 @@ hunting_zones:
   - 8461
   - 8458
   - 8459
+  # https://elanthipedia.play.net/Putrid_tree_snake                       100-130
+  putrid_tree_snakes:
+  - 9366
+  - 9367
+  - 10054
+  - 10055
+  - 10056
+  - 10057
+  - 19201
   # new mob - critter level 23-27                                          120-160
   # You'll need to remove gerbil's from the ignored_npcs: list otherwise it
   # just sit there not hunting.  
@@ -1557,6 +1568,13 @@ hunting_zones:
   young_prereni_stones:
   - 12276
   - 12277
+  # https://elanthipedia.play.net/Small_tree_sloth                       150-200
+  small_tree_sloths:
+  - 51821
+  - 51822
+  - 51823
+  - 51824
+  - 51825
   # https://elanthipedia.play.net/Windbag_(1)                            150-250
   # https://elanthipedia.play.net/Sylph_(2)                              150-250
   # Estate Holder Only - Construct
@@ -1629,6 +1647,30 @@ hunting_zones:
   - 6974
   - 6973
   # - 6975 #has a trunk in the room that messes with looting
+  # https://elanthipedia.play.net/Peccary                               225-300
+  # horses & antelope sometimes also present
+  shard_peccary:
+  - 6282
+  - 6288
+  - 6289
+  - 6326
+  - 6325
+  - 6324
+  - 6315
+  - 6314
+  - 8419
+  - 11477
+  # https://elanthipedia.play.net/Peccary                               225-300
+  # these appraise slightly higher
+  shard_peccary_plus:
+  - 11479
+  - 14745
+  - 6310
+  - 11480
+  - 6312
+  - 6323
+  - 6320
+  - 6319
   # https://elanthipedia.play.net/Beltunumshi_(2)                        225-350
   # same beltunumshi construct, estate holder only
   beltunumshi_thicket:
@@ -1636,6 +1678,28 @@ hunting_zones:
   - 16569
   - 16570
   - 6982
+  # https://elanthipedia.play.net/Clouded_arzumos                        230-340
+  # also antelopes
+  shard_clouded_arzumos:
+  - 6285
+  - 6286
+  - 6290
+  - 6291
+  - 6292
+  - 6293
+  - 6294
+  # https://elanthipedia.play.net/Clouded_arzumos                        230-340
+  # these appraise slightly higher
+  shard_clouded_arzumos_plus:
+  - 6295
+  - 6296
+  - 6297
+  - 6298
+  - 6299
+  - 6300
+  - 6301
+  - 6302
+  - 6303
   # https://elanthipedia.play.net/Baby_forest_gryphon                    250-350
   # https://elanthipedia.play.net/Young_forest_gryphon                   300-420
   # https://elanthipedia.play.net/Fledgling_forest_gryphon_(1)           300-400

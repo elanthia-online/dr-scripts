@@ -76,7 +76,12 @@ load_lic_class('healer.lic', 'Healer')
 
 # Helper to build a Healer instance bypassing startup validations.
 # Tests that exercise validation do so explicitly.
-def build_healer(settings: {}, friends: [])
+#
+# @param settings [Hash] overrides merged into default test settings
+# @param friends [Array<String>] friend list for the healer
+# @param unity [Boolean] whether Unity link is available (default true)
+# @return [Healer] configured instance
+def build_healer(settings: {}, friends: [], unity: true)
   test_settings = OpenStruct.new({
     friends: friends,
     healer_waggle_set: 'healme',
@@ -90,7 +95,9 @@ def build_healer(settings: {}, friends: [])
   allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
   allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
 
-  Healer.new
+  healer = Healer.new
+  healer.instance_variable_set(:@unity_available, unity)
+  healer
 end
 
 # Builds a HealthResult-like object with sensible defaults
@@ -385,7 +392,8 @@ RSpec.describe Healer do
       dead_clear = health_result(dead: true, score: 0)
       allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(dead_clear)
 
-      expect(DRC).not_to receive(:bput).with(/link.*unity/, anything, anything)
+      expect(DRC).not_to receive(:bput)
+        .with(a_string_matching(/link.*unity/), *Healer::LINK_RESPONSES)
 
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
     end
@@ -401,6 +409,123 @@ RSpec.describe Healer do
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
 
       expect(healer.instance_variable_get(:@spell_task)).to be_nil
+    end
+  end
+
+  # ============================================================
+  # Unity Link Availability (Graceful Degradation)
+  # ============================================================
+
+  describe 'validate_link_unity' do
+    it 'sets @unity_available to true when UNITY appears in link output' do
+      $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
+
+      allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
+      allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
+
+      link_output = ['<output>LINK options: TOUCH UNITY</output>']
+      allow(Lich::Util).to receive(:issue_command).and_return(link_output)
+
+      healer = Healer.new
+
+      expect(healer.instance_variable_get(:@unity_available)).to be true
+    end
+
+    it 'sets @unity_available to false when UNITY is absent from link output' do
+      $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
+
+      allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
+      allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
+
+      link_output = ['<output>LINK options: TOUCH</output>']
+      allow(Lich::Util).to receive(:issue_command).and_return(link_output)
+
+      healer = Healer.new
+
+      expect(healer.instance_variable_get(:@unity_available)).to be false
+    end
+
+    it 'does not message when Unity is not available' do
+      $test_settings = OpenStruct.new(friends: [], healer_waggle_set: 'healme', cambrinth: nil, waggle_sets: nil)
+
+      allow_any_instance_of(Healer).to receive(:validate_healing_spells).and_return(false)
+      allow_any_instance_of(Healer).to receive(:validate_vh_spell).and_return(false)
+
+      link_output = ['<output>LINK options: TOUCH</output>']
+      allow(Lich::Util).to receive(:issue_command).and_return(link_output)
+
+      expect(Lich::Messaging).not_to receive(:msg).with('bold', /Unity/)
+
+      Healer.new
+    end
+  end
+
+  # ============================================================
+  # Living Patient Unity Link Gating
+  # ============================================================
+
+  describe 'living patient healing with Unity gating' do
+    it 'attempts Unity link when @unity_available is true and patient has healable wounds' do
+      healer = build_healer(friends: ['Tenuk'], unity: true)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      living_wounded = health_result(
+        score: 9,
+        wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }
+      )
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(living_wounded)
+
+      expect(DRC).to receive(:bput)
+        .with('link Tenuk unity', *Healer::LINK_RESPONSES)
+        .and_return('You feel a connection')
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+    end
+
+    it 'skips Unity link when @unity_available is false' do
+      healer = build_healer(friends: ['Tenuk'], unity: false)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      living_wounded = health_result(
+        score: 9,
+        wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }
+      )
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(living_wounded)
+
+      expect(DRC).not_to receive(:bput)
+        .with(a_string_matching(/link.*unity/i), *Healer::LINK_RESPONSES)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+    end
+
+    it 'still queues poison patients when Unity is unavailable' do
+      healer = build_healer(friends: ['Tenuk'], unity: false)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      poisoned_patient = health_result(poisoned: true, score: 0)
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(poisoned_patient)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+
+      task = healer.instance_variable_get(:@spell_task)
+      expect(task).not_to be_nil
+      expect(task[:type]).to eq(:poison)
+    end
+
+    it 'still queues diseased patients when Unity is unavailable' do
+      healer = build_healer(friends: ['Tenuk'], unity: false)
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+
+      diseased_patient = health_result(diseased: true, score: 0)
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(diseased_patient)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+
+      expect(healer.get_patient('Tenuk')[:touched]).to be true
     end
   end
 
@@ -856,6 +981,153 @@ RSpec.describe Healer do
 
       expect(healer.patients).to be_empty
       expect(healer.instance_variable_get(:@spell_task)).to be_nil
+    end
+  end
+
+  # ============================================================
+  # Unity Link Wound Transfer (skips redirect for Unity-linked patients)
+  # ============================================================
+
+  describe '#transfer_wounds' do
+    it 'skips redirect when patient is Unity-linked' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', unity_linked: true)
+
+      allow(DRC).to receive(:bput)
+        .with("transfer Tenuk quick all", anything, anything)
+        .and_return('You touch')
+      allow(healer).to receive(:heal_self)
+
+      expect(DRC).not_to receive(:bput).with(/redirect/, anything, anything)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+    end
+
+    it 'redirects to an unwounded body part when patient is not Unity-linked' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+      allow(DRC).to receive(:bput)
+        .with(/redirect all to/, anything, anything)
+        .and_return('You are now redirecting')
+      allow(DRC).to receive(:bput)
+        .with("transfer Tenuk quick all", anything, anything)
+        .and_return('You touch')
+      allow(healer).to receive(:heal_self)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+
+      expect(DRC).to have_received(:bput).with(/redirect all to/, anything, anything)
+    end
+
+    it 'heals self and returns when no unwounded parts available for non-Unity patient' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+
+      all_wounded = Healer::HEAL_LOCATIONS.map { |part| wound(body_part: part, severity: 2) }
+      wounded_health = health_result(wounds: { 2 => all_wounded }, score: 99)
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+      allow(healer).to receive(:heal_self)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+
+      expect(healer).to have_received(:heal_self)
+      expect(DRC).not_to have_received(:bput).with(/transfer Tenuk/, anything, anything)
+    end
+
+    it 'transfers even when all body parts are wounded for Unity-linked patient' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', unity_linked: true)
+
+      all_wounded = Healer::HEAL_LOCATIONS.map { |part| wound(body_part: part, severity: 2) }
+      wounded_health = health_result(wounds: { 2 => all_wounded }, score: 99)
+      allow(DRCH).to receive(:check_health).and_return(wounded_health)
+      allow(DRC).to receive(:bput)
+        .with("transfer Tenuk quick all", anything, anything)
+        .and_return('You touch')
+      allow(healer).to receive(:heal_self)
+
+      healer.send(:transfer_wounds, 'Tenuk', 5)
+
+      expect(DRC).to have_received(:bput).with("transfer Tenuk quick all", anything, anything)
+    end
+  end
+
+  # ============================================================
+  # Passive Healing Timeout (skips timeout when Regenerate is active)
+  # ============================================================
+
+  describe '#wait_for_passive_healing' do
+    it 'falls back to healme when timeout expires and Regenerate is not active' do
+      healer = build_healer
+      healer.instance_variable_set(:@passive_healing_available, true)
+
+      wounded = health_result(score: 5, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+      allow(DRCH).to receive(:check_health).and_return(wounded)
+      allow(healer).to receive(:pause)
+      Harness::DRSpells._set_active_spells({})
+
+      expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+
+      healer.send(:wait_for_passive_healing)
+    end
+
+    it 'does not fall back to healme when Regenerate is active' do
+      healer = build_healer
+      healer.instance_variable_set(:@passive_healing_available, true)
+
+      call_count = 0
+      allow(DRCH).to receive(:check_health) do
+        call_count += 1
+        if call_count <= (Healer::PASSIVE_HEAL_MAX_WAIT / Healer::PASSIVE_HEAL_POLL_INTERVAL) + 2
+          health_result(score: 5, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+        else
+          health_result(score: 0, wounds: {})
+        end
+      end
+      allow(healer).to receive(:pause)
+      Harness::DRSpells._set_active_spells('Regenerate' => true)
+
+      expect(DRC).not_to receive(:wait_for_script_to_complete).with('healme')
+
+      healer.send(:wait_for_passive_healing)
+    end
+  end
+
+  # ============================================================
+  # Emergency Fall Clears Unity Link State
+  # ============================================================
+
+  describe '#check_emergency_fall' do
+    it 'clears unity_linked flag on all patients when emergency fall triggers' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.add_patient('Navesi')
+      healer.send(:update_patient, 'Tenuk', unity_linked: true)
+      healer.send(:update_patient, 'Navesi', unity_linked: true)
+
+      DRStats.health = 25 # Below EMERGENCY_VIT_THRESHOLD of 30
+
+      healer.send(:check_emergency_fall)
+
+      expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
+      expect(healer.get_patient('Navesi')[:unity_linked]).to be false
+    end
+  end
+
+  # ============================================================
+  # Patient Initial State Includes unity_linked
+  # ============================================================
+
+  describe 'patient initial state' do
+    it 'initializes unity_linked to false' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+
+      expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
     end
   end
 

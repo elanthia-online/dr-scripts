@@ -3227,6 +3227,14 @@ spell_data:
     recast: 1
     mana_type: lunar
     prep: prepare
+  Ouroboral Thoughts:
+    abbrev: OT
+    mana: 15
+    skill: Warding
+    recast: 1
+    guild: Trader
+    mana_type: lunar
+    prep: prepare
   Platinum Hands of Kertigen:
     abbrev: PHK
     mana: 15
@@ -3235,6 +3243,14 @@ spell_data:
     recast: 1
     mana_type: lunar
     prep: prepare
+  Prosperity in Darkness:
+    abbrev: PRDA
+    guild: Trader
+    metamagic: true
+  Prosperity Everlasting:
+    abbrev: PREV
+    guild: Trader
+    metamagic: true
   Regalia:
     abbrev: REGAL
     mana: 15
@@ -3256,6 +3272,10 @@ spell_data:
     mana_type: lunar
     guild: Trader
     prep: prepare
+  Starforged Regalia:
+    abbrev: SFR
+    guild: Trader
+    metamagic: true
   Stellar Collector:
     abbrev: STC
     mana: 30
