@@ -1518,14 +1518,14 @@ RSpec.describe FenvolPuzzle do
     end
 
     describe '#try_open_candidates with edge input' do
-      it 'handles empty string by returning nil noun' do
+      it 'returns empty array for empty string' do
         result = instance.send(:try_open_candidates, '')
-        expect(result).to eq([nil])
+        expect(result).to eq([])
       end
 
-      it 'handles single space by returning nil noun' do
+      it 'returns empty array for whitespace-only string' do
         result = instance.send(:try_open_candidates, ' ')
-        expect(result).to eq([nil])
+        expect(result).to eq([])
       end
     end
 

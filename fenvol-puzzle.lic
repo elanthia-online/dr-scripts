@@ -369,6 +369,8 @@ class FenvolPuzzle
   # @return [Array<String>] e.g. ["green ottoman", "ichorous ottoman", "ottoman"]
   def try_open_candidates(noun_phrase)
     words = noun_phrase.split
+    return [] if words.empty?
+
     noun = words.last
     adjectives = words[0..-2]
 
