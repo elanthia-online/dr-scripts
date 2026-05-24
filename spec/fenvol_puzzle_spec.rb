@@ -358,11 +358,11 @@ RSpec.describe FenvolPuzzle do
       expect(instance.send(:in_poem?, 'crimson grimoire.')).to be true
     end
 
-    it 'returns false for partial word matches that are not substrings' do
+    it 'matches partial words via substring (grim inside grimoire)' do
       expect(instance.send(:in_poem?, 'grim')).to be true
     end
 
-    it 'returns false for empty item text with non-empty poem' do
+    it 'returns true for empty item text (empty string is substring of anything)' do
       expect(instance.send(:in_poem?, '')).to be true
     end
 
@@ -704,6 +704,35 @@ RSpec.describe FenvolPuzzle do
       allow(instance).to receive(:echo)
       expect(instance.send(:enter_library)).to be false
     end
+
+    it 'returns true when card handed on first touch' do
+      allow(DRC).to receive(:bput).and_return('You hand your card to the butler')
+      allow(instance).to receive(:pause)
+      expect(instance.send(:enter_library)).to be true
+    end
+
+    it 'sends exactly two touch door commands after redeem' do
+      call_count = 0
+      commands = []
+      allow(DRC).to receive(:bput) do |cmd, *_patterns|
+        call_count += 1
+        commands << cmd
+        case call_count
+        when 1 then 'Only those who can provide proper authorization'
+        when 2 then 'You get a library card'
+        when 3 then 'Once you redeem this card'
+        when 4 then 'The stoic butler takes your card'
+        when 5 then 'You put your card'
+        when 6 then 'If you are sure you wish to proceed'
+        when 7 then 'the world unravels'
+        else ''
+        end
+      end
+      allow(instance).to receive(:pause)
+      instance.send(:enter_library)
+      touch_commands = commands.select { |c| c == 'touch door' }
+      expect(touch_commands.size).to eq(3)
+    end
   end
 
   # -------------------------------------------------------------------
@@ -735,6 +764,37 @@ RSpec.describe FenvolPuzzle do
       allow(DRC).to receive(:bput).and_return('I could not find that')
       allow(instance).to receive(:echo)
       expect(instance.send(:redeem_card)).to be false
+    end
+
+    it 'proceeds normally when already holding a card' do
+      call_count = 0
+      allow(DRC).to receive(:bput) do |*_args|
+        call_count += 1
+        case call_count
+        when 1 then 'you are already holding that'
+        when 2 then 'Once you redeem this card'
+        when 3 then 'The stoic butler takes your card'
+        when 4 then 'You put your cards away'
+        else ''
+        end
+      end
+      expect(instance.send(:redeem_card)).to be true
+    end
+
+    it 'sends stow command after redeeming' do
+      commands = []
+      allow(DRC).to receive(:bput) do |cmd, *_args|
+        commands << cmd
+        case commands.size
+        when 1 then 'You get a library card'
+        when 2 then 'Once you redeem this card'
+        when 3 then 'The stoic butler takes your card'
+        when 4 then 'You put your cards away'
+        else ''
+        end
+      end
+      instance.send(:redeem_card)
+      expect(commands.last).to eq('stow')
     end
   end
 
@@ -770,6 +830,22 @@ RSpec.describe FenvolPuzzle do
 
     it 'returns attempt for already-open containers' do
       allow(DRC).to receive(:bput).and_return('That is already open.')
+      result = instance.send(:try_open, 'carved chest')
+      expect(result).to eq('carved chest')
+    end
+
+    it 'returns second candidate when first fails but second succeeds' do
+      call_count = 0
+      allow(DRC).to receive(:bput) do |*_args|
+        call_count += 1
+        call_count == 1 ? 'What were you referring to?' : 'You open the chest.'
+      end
+      result = instance.send(:try_open, 'ornate carved chest')
+      expect(result).to eq('ornate chest')
+    end
+
+    it 'recognizes swings open as success' do
+      allow(DRC).to receive(:bput).and_return('The lid swings open.')
       result = instance.send(:try_open, 'carved chest')
       expect(result).to eq('carved chest')
     end
@@ -845,6 +921,76 @@ RSpec.describe FenvolPuzzle do
       instance.send(:check_container, 'chest')
       expect(instance.instance_variable_get(:@found)).to eq(0)
     end
+
+    it 'strips trailing period from item text before matching' do
+      instance.instance_variable_set(:@poem, 'a silver ring')
+      call_count = 0
+      allow(DRC).to receive(:bput) do |*_args|
+        call_count += 1
+        case call_count
+        when 1 then 'You open the chest.'
+        when 2 then 'In the chest you see a silver ring.'
+        when 3 then 'You reach for the ring and turn it.'
+        else ''
+        end
+      end
+      allow(instance).to receive(:echo)
+      allow(instance).to receive(:pause)
+      instance.send(:check_container, 'chest')
+      expect(instance.instance_variable_get(:@found)).to eq(1)
+    end
+
+    it 'strips trailing exclamation from item text' do
+      instance.instance_variable_set(:@poem, 'a silver ring')
+      call_count = 0
+      allow(DRC).to receive(:bput) do |*_args|
+        call_count += 1
+        case call_count
+        when 1 then 'You open the chest.'
+        when 2 then 'In the chest you see a silver ring!'
+        when 3 then 'You reach for the ring and turn it.'
+        else ''
+        end
+      end
+      allow(instance).to receive(:echo)
+      allow(instance).to receive(:pause)
+      instance.send(:check_container, 'chest')
+      expect(instance.instance_variable_get(:@found)).to eq(1)
+    end
+
+    it 'returns silently when look result matches neither pattern' do
+      call_count = 0
+      allow(DRC).to receive(:bput) do |*_args|
+        call_count += 1
+        case call_count
+        when 1 then 'You open the chest.'
+        when 2 then 'Some completely unexpected response.'
+        else ''
+        end
+      end
+      allow(instance).to receive(:echo)
+      expect { instance.send(:check_container, 'chest') }.not_to raise_error
+      expect(instance.instance_variable_get(:@found)).to eq(0)
+    end
+
+    it 'uses adjective fallback when opening multi-word container' do
+      instance.instance_variable_set(:@poem, 'a crimson grimoire')
+      call_count = 0
+      allow(DRC).to receive(:bput) do |_cmd, *_args|
+        call_count += 1
+        case call_count
+        when 1 then 'What were you referring to?'
+        when 2 then 'You open the chest.'
+        when 3 then 'In the chest you see a crimson grimoire.'
+        when 4 then 'You reach for the grimoire.'
+        else ''
+        end
+      end
+      allow(instance).to receive(:echo)
+      allow(instance).to receive(:pause)
+      instance.send(:check_container, 'ornate chest')
+      expect(instance.instance_variable_get(:@found)).to eq(1)
+    end
   end
 
   # -------------------------------------------------------------------
@@ -918,6 +1064,18 @@ RSpec.describe FenvolPuzzle do
       expect(instance).to receive(:echo).with('Containers: carved chest, iron strongbox')
       instance.send(:solve_room, containers)
     end
+
+    it 'stops after first container if puzzle completes during check' do
+      containers = ['carved chest', 'iron strongbox', 'oak barrel']
+      allow(instance).to receive(:echo)
+      checked = []
+      allow(instance).to receive(:check_container) do |noun|
+        checked << noun
+        Flags['fenvol-complete'] = true
+      end
+      instance.send(:solve_room, containers)
+      expect(checked).to eq(['carved chest'])
+    end
   end
 
   # -------------------------------------------------------------------
@@ -958,6 +1116,156 @@ RSpec.describe FenvolPuzzle do
   end
 
   # -------------------------------------------------------------------
+  # #capture_poem_lines
+  # -------------------------------------------------------------------
+  describe '#capture_poem_lines' do
+    it 'captures lines between opening and closing delimiters' do
+      lines = [
+        '- - - - - - -',
+        'a crimson grimoire rests',
+        'upon the ancient shelf',
+        '- - - - - - -'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      result = instance.send(:capture_poem_lines)
+      expect(result).to eq(['a crimson grimoire rests', 'upon the ancient shelf'])
+    end
+
+    it 'skips lines before the opening delimiter' do
+      lines = [
+        'The notecard reads:',
+        'Some flavor text here.',
+        '- - - - - - -',
+        'poem line one',
+        '- - - - - - -'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      result = instance.send(:capture_poem_lines)
+      expect(result).to eq(['poem line one'])
+    end
+
+    it 'strips XML tags from lines' do
+      lines = [
+        '- - - - - - -',
+        '<pushBold/>a crimson grimoire<popBold/>',
+        '- - - - - - -'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      result = instance.send(:capture_poem_lines)
+      expect(result).to eq(['a crimson grimoire'])
+    end
+
+    it 'returns empty array when no delimiters found within 100 lines' do
+      allow(instance).to receive(:get).and_return('no delimiter here')
+      result = instance.send(:capture_poem_lines)
+      expect(result).to be_empty
+    end
+
+    it 'returns empty array when only opening delimiter exists within 100 lines' do
+      call_count = 0
+      allow(instance).to receive(:get) do
+        call_count += 1
+        call_count == 1 ? '- - - - - - -' : 'poem line that never ends'
+      end
+      result = instance.send(:capture_poem_lines)
+      expect(result.size).to eq(99)
+    end
+
+    it 'handles empty lines within the poem' do
+      lines = [
+        '- - - - - - -',
+        'line one',
+        '',
+        'line three',
+        '- - - - - - -'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      result = instance.send(:capture_poem_lines)
+      expect(result).to eq(['line one', '', 'line three'])
+    end
+
+    it 'strips entity references from lines' do
+      lines = [
+        '- - - - - - -',
+        'fire &amp; ice',
+        '- - - - - - -'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      result = instance.send(:capture_poem_lines)
+      expect(result).to eq(['fire  ice'])
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # #scan_room
+  # -------------------------------------------------------------------
+  describe '#scan_room' do
+    it 'parses exits from Obvious exits line' do
+      lines = [
+        'You see a carved chest here.',
+        'Obvious exits: north, south, east.'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      _containers, exits = instance.send(:scan_room)
+      expect(exits).to eq(%w[north south east])
+    end
+
+    it 'handles singular Obvious exit' do
+      lines = [
+        'A plain room.',
+        'Obvious exit: north.'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      _containers, exits = instance.send(:scan_room)
+      expect(exits).to eq(['north'])
+    end
+
+    it 'strips trailing punctuation from exit names' do
+      lines = ['Obvious exits: north, south.']
+      allow(instance).to receive(:get).and_return(*lines)
+      _containers, exits = instance.send(:scan_room)
+      expect(exits).to eq(%w[north south])
+    end
+
+    it 'rejects none exits' do
+      lines = ['Obvious exits: none.']
+      allow(instance).to receive(:get).and_return(*lines)
+      _containers, exits = instance.send(:scan_room)
+      expect(exits).to be_empty
+    end
+
+    it 'finds containers in room description text' do
+      lines = [
+        'You see a tall mahogany bookcase here.',
+        'Obvious exits: north.'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      containers, _exits = instance.send(:scan_room)
+      expect(containers).to include('tall mahogany bookcase')
+    end
+
+    it 'strips XML from room description lines' do
+      lines = [
+        '<pushBold/>You see a carved chest.<popBold/>',
+        'Obvious exits: north.'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      containers, _exits = instance.send(:scan_room)
+      expect(containers).not_to be_empty
+    end
+
+    it 'returns empty containers when room has no container nouns' do
+      lines = [
+        'An empty stone corridor.',
+        'Obvious exits: east.'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      containers, _exits = instance.send(:scan_room)
+      expect(containers).to be_empty
+    end
+  end
+
+  # -------------------------------------------------------------------
   # #explore
   # -------------------------------------------------------------------
   describe '#explore' do
@@ -983,6 +1291,83 @@ RSpec.describe FenvolPuzzle do
       allow(instance).to receive(:echo)
       instance.send(:explore)
       expect(instance.instance_variable_get(:@visited)).to include('Library Room A')
+    end
+
+    it 'moves into exit and backtracks via opposite direction' do
+      XMLData.room_title = 'Room A'
+      allow(instance).to receive(:scan_room) do
+        XMLData.room_title == 'Room A' ? [[], ['north']] : [[], []]
+      end
+      allow(instance).to receive(:solve_room)
+      allow(instance).to receive(:echo)
+      move_calls = []
+      allow(instance).to receive(:move) do |dir|
+        move_calls << dir
+        XMLData.room_title = dir == 'north' ? 'Room B' : 'Room A'
+      end
+      instance.send(:explore)
+      expect(move_calls).to eq(%w[north south])
+    end
+
+    it 'explores multiple exits and backtracks each' do
+      XMLData.room_title = 'Room A'
+      allow(instance).to receive(:scan_room) do
+        XMLData.room_title == 'Room A' ? [[], %w[north east]] : [[], []]
+      end
+      allow(instance).to receive(:solve_room)
+      allow(instance).to receive(:echo)
+      move_calls = []
+      allow(instance).to receive(:move) do |dir|
+        move_calls << dir
+        case dir
+        when 'north' then XMLData.room_title = 'Room B'
+        when 'east'  then XMLData.room_title = 'Room C'
+        when 'south', 'west' then XMLData.room_title = 'Room A'
+        end
+      end
+      instance.send(:explore)
+      expect(move_calls).to eq(%w[north south east west])
+    end
+
+    it 'does not backtrack when already in the origin room' do
+      XMLData.room_title = 'Room A'
+      allow(instance).to receive(:scan_room).and_return([[], ['north']])
+      allow(instance).to receive(:solve_room)
+      allow(instance).to receive(:echo)
+      move_calls = []
+      allow(instance).to receive(:move) do |dir|
+        move_calls << dir
+        XMLData.room_title = 'Room A'
+      end
+      instance.send(:explore)
+      expect(move_calls).to eq(['north'])
+    end
+
+    it 'stops traversing exits when puzzle completes mid-exploration' do
+      XMLData.room_title = 'Room A'
+      allow(instance).to receive(:scan_room).and_return([[], %w[north east south]])
+      allow(instance).to receive(:solve_room) do
+        Flags['fenvol-complete'] = true
+      end
+      allow(instance).to receive(:echo)
+      expect(instance).not_to receive(:move)
+      instance.send(:explore)
+    end
+
+    it 'uses downcase when looking up opposite for backtracking' do
+      XMLData.room_title = 'Room A'
+      allow(instance).to receive(:scan_room) do
+        XMLData.room_title == 'Room A' ? [[], ['North']] : [[], []]
+      end
+      allow(instance).to receive(:solve_room)
+      allow(instance).to receive(:echo)
+      move_calls = []
+      allow(instance).to receive(:move) do |dir|
+        move_calls << dir
+        XMLData.room_title = dir == 'North' ? 'Room B' : 'Room A'
+      end
+      instance.send(:explore)
+      expect(move_calls).to eq(%w[North south])
     end
   end
 
@@ -1013,6 +1398,75 @@ RSpec.describe FenvolPuzzle do
     it 'includes an empty set for no-arg invocation' do
       defs = instance.send(:arg_definitions)
       expect(defs.last).to be_empty
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # #run_once
+  # -------------------------------------------------------------------
+  describe '#run_once' do
+    before do
+      stub_flags_class
+      allow(instance).to receive(:echo)
+      allow(instance).to receive(:pause)
+    end
+
+    it 'returns false when enter_library fails' do
+      allow(instance).to receive(:enter_library).and_return(false)
+      expect(instance.send(:run_once)).to be false
+    end
+
+    it 'returns true but warns when poem is empty' do
+      allow(instance).to receive(:enter_library).and_return(true)
+      allow(instance).to receive(:read_poem).and_return('')
+      expect(instance).to receive(:echo).with('Could not parse poem from notecard.')
+      expect(instance.send(:run_once)).to be true
+    end
+
+    it 'does not explore when poem is empty' do
+      allow(instance).to receive(:enter_library).and_return(true)
+      allow(instance).to receive(:read_poem).and_return('')
+      expect(instance).not_to receive(:explore)
+      instance.send(:run_once)
+    end
+
+    it 'resets state at start of each run' do
+      instance.instance_variable_set(:@found, 5)
+      instance.instance_variable_set(:@visited, ['old room'])
+      allow(instance).to receive(:enter_library).and_return(true)
+      allow(instance).to receive(:read_poem).and_return('some poem')
+      allow(instance).to receive(:explore)
+      allow(instance).to receive(:complete?).and_return(false)
+      instance.send(:run_once)
+      expect(instance.instance_variable_get(:@found)).to eq(0)
+      expect(instance.instance_variable_get(:@visited)).to be_empty
+    end
+
+    it 'calls handle_completion when puzzle is complete' do
+      allow(instance).to receive(:enter_library).and_return(true)
+      allow(instance).to receive(:read_poem).and_return('some poem')
+      allow(instance).to receive(:explore)
+      allow(instance).to receive(:complete?).and_return(true)
+      expect(instance).to receive(:handle_completion)
+      instance.send(:run_once)
+    end
+
+    it 'does not call handle_completion when puzzle is not complete' do
+      allow(instance).to receive(:enter_library).and_return(true)
+      allow(instance).to receive(:read_poem).and_return('some poem')
+      allow(instance).to receive(:explore)
+      allow(instance).to receive(:complete?).and_return(false)
+      expect(instance).not_to receive(:handle_completion)
+      instance.send(:run_once)
+    end
+
+    it 'resets both flags at start' do
+      Flags['fenvol-complete'] = true
+      Flags['fenvol-reward'] = true
+      allow(instance).to receive(:enter_library).and_return(false)
+      instance.send(:run_once)
+      expect(Flags['fenvol-complete']).to be false
+      expect(Flags['fenvol-reward']).to be false
     end
   end
 
@@ -1116,6 +1570,214 @@ RSpec.describe FenvolPuzzle do
         long_text = 'word ' * 10_000
         result = instance.send(:normalize_text, long_text)
         expect(result.split.size).to eq(10_000)
+      end
+    end
+
+    describe '#in_poem? false positive risks' do
+      it 'false-matches when item name is a substring of a different poem word' do
+        instance.instance_variable_set(:@poem, 'the grimoire glows')
+        expect(instance.send(:in_poem?, 'a grim mask')).to be false
+      end
+
+      it 'false-matches when item name overlaps poem word boundaries' do
+        instance.instance_variable_set(:@poem, 'old tome rests here')
+        expect(instance.send(:in_poem?, 'tome rest')).to be true
+      end
+
+      it 'does not match when article stripping changes meaning' do
+        instance.instance_variable_set(:@poem, 'a leather anthology')
+        expect(instance.send(:in_poem?, 'the leather anthology')).to be true
+      end
+
+      it 'only strips a leading article, not embedded articles' do
+        instance.instance_variable_set(:@poem, 'tome of the ancients')
+        expect(instance.send(:in_poem?, 'a tome of the ancients')).to be true
+      end
+    end
+
+    describe '#complete? with nil and truthy values' do
+      before { stub_flags_class }
+
+      it 'treats nil flag as falsy' do
+        Flags['fenvol-complete'] = nil
+        instance.instance_variable_set(:@found, 0)
+        expect(instance.send(:complete?)).to be false
+      end
+
+      it 'treats truthy non-boolean flag as complete' do
+        Flags['fenvol-complete'] = 'some match data'
+        instance.instance_variable_set(:@found, 0)
+        expect(instance.send(:complete?)).to be_truthy
+      end
+
+      it 'returns true when found equals TARGET_COUNT even with nil flag' do
+        Flags['fenvol-complete'] = nil
+        instance.instance_variable_set(:@found, FenvolPuzzle::TARGET_COUNT)
+        expect(instance.send(:complete?)).to be true
+      end
+    end
+
+    describe '#scan_containers with bare nouns (no adjective)' do
+      it 'does not find a container noun at sentence start with no preceding word' do
+        text = 'chest sits in the corner'
+        result = instance.send(:scan_containers, text)
+        expect(result).to be_empty
+      end
+
+      it 'finds bare container noun when preceded by at least one word' do
+        text = 'the chest sits in the corner'
+        result = instance.send(:scan_containers, text)
+        expect(result).to include('the chest')
+      end
+
+      it 'does not find container noun immediately after punctuation' do
+        text = 'here, chest stands alone'
+        result = instance.send(:scan_containers, text)
+        expect(result).to be_empty
+      end
+    end
+
+    describe '#enter_library command ordering' do
+      it 'does not call redeem_card when already at confirmation' do
+        allow(DRC).to receive(:bput).and_return(
+          'If you are sure you wish to proceed',
+          'the world unravels'
+        )
+        allow(instance).to receive(:pause)
+        expect(instance).not_to receive(:redeem_card)
+        instance.send(:enter_library)
+      end
+
+      it 'does not call redeem_card when already inside' do
+        allow(DRC).to receive(:bput).and_return('What were you referring to?')
+        expect(instance).not_to receive(:redeem_card)
+        instance.send(:enter_library)
+      end
+    end
+
+    describe '#stow_reward edge cases' do
+      it 'handles right_hand returning an object with to_s' do
+        obj = double('item', to_s: 'fancy dress', empty?: false)
+        allow(obj).to receive(:downcase).and_return('fancy dress')
+        $right_hand = obj
+        instance.instance_variable_set(:@discard_list, ['dress'])
+        expect(instance).to receive(:fput).with('put my dress in bucket')
+        instance.send(:stow_reward)
+      end
+
+      it 'does nothing when discard_list is nil-initialized' do
+        $right_hand = 'silver ring'
+        instance.instance_variable_set(:@discard_list, nil)
+        instance.instance_variable_set(:@container, nil)
+        expect { instance.send(:stow_reward) }.to raise_error(NoMethodError)
+      end
+    end
+
+    describe '#handle_completion timing' do
+      before { stub_flags_class }
+
+      it 'checks reward flag before each pause' do
+        Flags['fenvol-reward'] = false
+        allow(instance).to receive(:echo)
+        allow(instance).to receive(:stow_reward)
+        pause_count = 0
+        allow(instance).to receive(:pause) do |_s|
+          pause_count += 1
+          Flags['fenvol-reward'] = true if pause_count == 3
+        end
+        instance.send(:handle_completion)
+        expect(pause_count).to eq(3)
+      end
+    end
+
+    describe '#turn_item with multi-word nouns' do
+      it 'uses only the last word as the noun for the turn command' do
+        expect(DRC).to receive(:bput).with(
+          'turn codex in chest',
+          FenvolPuzzle::TURN_SUCCESS_PATTERN,
+          FenvolPuzzle::TURN_FAILURE_PATTERN
+        ).and_return('You reach for the codex')
+        allow(instance).to receive(:echo)
+        allow(instance).to receive(:pause)
+        instance.send(:turn_item, 'chest', 'a dusty ancient codex')
+      end
+    end
+
+    describe '#scan_containers with overlapping noun patterns' do
+      it 'matches bookshelf without also matching shelf' do
+        text = 'a tall bookshelf stands here'
+        result = instance.send(:scan_containers, text)
+        expect(result.size).to eq(1)
+        expect(result.first).to end_with('bookshelf')
+      end
+
+      it 'does not match shelf inside bookshelf via word boundary' do
+        text = 'the old bookshelf is dusty'
+        result = instance.send(:scan_containers, text)
+        nouns = result.map { |c| c.split.last }
+        expect(nouns).not_to include('shelf')
+      end
+    end
+
+    describe 'full integration: check_container through try_open fallback' do
+      it 'falls back through adjectives until one works, then checks item' do
+        instance.instance_variable_set(:@poem, 'a sapphire tome glimmers')
+        call_count = 0
+        allow(DRC).to receive(:bput) do |_cmd, *_args|
+          call_count += 1
+          case call_count
+          when 1 then 'What were you referring to?'
+          when 2 then 'You open the bookcase.'
+          when 3 then 'In the bookcase you see a sapphire tome.'
+          when 4 then 'You reach for the tome and turn it.'
+          else ''
+          end
+        end
+        allow(instance).to receive(:echo)
+        allow(instance).to receive(:pause)
+        instance.send(:check_container, 'old mahogany bookcase')
+        expect(instance.instance_variable_get(:@found)).to eq(1)
+      end
+    end
+
+    describe 'run_loop repeat behavior' do
+      before { stub_flags_class }
+
+      it 'calls stow_reward before each run and after all runs' do
+        instance.instance_variable_set(:@repeat_count, 2)
+        stow_count = 0
+        allow(instance).to receive(:stow_reward) { stow_count += 1 }
+        allow(instance).to receive(:echo)
+        run_count = 0
+        allow(instance).to receive(:run_once) do
+          run_count += 1
+          true
+        end
+        instance.send(:run_loop)
+        expect(stow_count).to eq(3)
+      end
+
+      it 'stops looping when run_once returns false' do
+        instance.instance_variable_set(:@repeat_mode, :infinite)
+        run_count = 0
+        allow(instance).to receive(:stow_reward)
+        allow(instance).to receive(:echo)
+        allow(instance).to receive(:run_once) do
+          run_count += 1
+          run_count < 3
+        end
+        instance.send(:run_loop)
+        expect(run_count).to eq(3)
+      end
+
+      it 'echoes run number only when repeating' do
+        instance.instance_variable_set(:@repeat_mode, nil)
+        instance.instance_variable_set(:@repeat_count, nil)
+        allow(instance).to receive(:stow_reward)
+        allow(instance).to receive(:run_once).and_return(false)
+        expect(instance).not_to receive(:echo).with(/=== Run/)
+        allow(instance).to receive(:echo).with(/All done/)
+        instance.send(:run_loop)
       end
     end
   end

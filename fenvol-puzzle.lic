@@ -4,6 +4,10 @@
   Solves Fenvol's Library puzzle: enters the library, reads a notecard poem,
   explores rooms via DFS, opens containers, and turns items matching the poem.
 
+  Merged from two community scripts with gratitude:
+    - fenvol-puzzle by Damiza (entry flow, repeat modes, adjective-aware containers)
+    - puzzle-shelf by Elysande (poem matching, Flags completion, DFS via room titles)
+
   YAML settings:
     fenvol_container: canvas sack in my back   # optional -- stow reward here
     fenvol_discard_list:                        # optional -- nouns to discard
