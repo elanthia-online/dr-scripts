@@ -1,0 +1,440 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#fenvol-puzzle
+
+  Solves Fenvol's Library puzzle: enters the library, reads a notecard poem,
+  explores rooms via DFS, opens containers, and turns items matching the poem.
+
+  YAML settings:
+    fenvol_container: canvas sack in my back   # optional -- stow reward here
+    fenvol_discard_list:                        # optional -- nouns to discard
+      - dress
+      - bodice
+
+  Args:
+    ;fenvol-puzzle           single run (default)
+    ;fenvol-puzzle 3         run exactly 3 times
+    ;fenvol-puzzle repeat    run until out of library cards
+=end
+
+class FenvolPuzzle
+  # Container nouns recognized in room descriptions.
+  CONTAINER_NOUNS = %w[
+    armoire barrel bin bookcase bookshelf box bucket cabinet caddy
+    canister cart carton case cask cellaret chest coffer coffin crate
+    credenza cupboard desk drawer dresser footlocker hamper hutch
+    lockbox locker ottoman planter sack safe shelf strongbox trunk
+    vanity wardrobe
+  ].freeze
+
+  # Bidirectional direction mapping for DFS backtracking.
+  OPPOSITES = {
+    'north'     => 'south',     'south'     => 'north',
+    'east'      => 'west',      'west'      => 'east',
+    'northeast' => 'southwest', 'southwest' => 'northeast',
+    'northwest' => 'southeast', 'southeast' => 'northwest',
+    'up'        => 'down',      'down'      => 'up',
+    'in'        => 'out',       'out'       => 'in'
+  }.freeze
+
+  # Delimiter separating the poem from surrounding notecard text.
+  POEM_DELIMITER = /(- ){5,}/.freeze
+
+  # Number of correct items to find.
+  TARGET_COUNT = 6
+
+  BUTLER_GATE_PATTERN    = /Only those who can provide proper authorization/i.freeze
+  ENTRY_CONFIRM_PATTERN  = /If you are sure you wish to proceed/i.freeze
+  WORLD_UNRAVELS_PATTERN = /the world unravels/i.freeze
+  CARD_HANDED_PATTERN    = /You hand your card/i.freeze
+  CARD_NOT_FOUND_PATTERN = /What were you|I could not/i.freeze
+  REDEEM_CONFIRM_PATTERN = /Once you redeem|repeat the command/i.freeze
+  REDEEM_CONSUME_PATTERN = /The stoic butler takes|You have just redeemed/i.freeze
+  OPEN_SUCCESS_PATTERN   = /You open|already open|swings open/i.freeze
+  OPEN_FAILURE_PATTERN   = /What were you|I could not|Please rephrase|You cannot/i.freeze
+  LOOK_EMPTY_PATTERN     = /nothing in there|is empty|What were you|I could not/i.freeze
+  ITEM_VISIBLE_PATTERN   = /you see (.+)/i.freeze
+  TURN_SUCCESS_PATTERN   = /You reach for/i.freeze
+  TURN_FAILURE_PATTERN   = /What were you|I could not/i.freeze
+  PUZZLE_COMPLETE_PATTERN = /A bright flash of amber light temporarily blinds/i.freeze
+  REWARD_PATTERN         = /The library attendant hands/i.freeze
+  NOT_FOUND_PATTERN      = /What were you/i.freeze
+
+  def initialize
+    args = parse_args(arg_definitions)
+    settings = get_settings
+
+    @repeat_mode  = args.repeat ? :infinite : nil
+    @repeat_count = args.repeats&.to_i
+    @container    = settings.fenvol_container
+    @discard_list = Array(settings.fenvol_discard_list).map { |s| s.to_s.downcase }
+
+    Flags.add('fenvol-complete', PUZZLE_COMPLETE_PATTERN)
+    Flags.add('fenvol-reward', REWARD_PATTERN)
+
+    run_loop
+  end
+
+  private
+
+  # @return [Array<Array<Hash>>] argument definitions for parse_args
+  def arg_definitions
+    [
+      [{ name: 'repeats', regex: /\d+/, description: 'Number of times to run (e.g. 3)' }],
+      [{ name: 'repeat',  regex: /repeat/i, description: 'Run until out of library cards' }],
+      []
+    ]
+  end
+
+  # Runs the puzzle loop, repeating based on configured mode.
+  def run_loop
+    run_count = 0
+    loop do
+      run_count += 1
+      stow_reward
+      echo "=== Run #{run_count} ===" if repeating?
+
+      break unless run_once
+      break unless should_continue?(run_count)
+    end
+
+    stow_reward
+    echo "All done after #{run_count} run(s)."
+  end
+
+  # @return [Boolean] true if configured for multiple runs
+  def repeating?
+    !@repeat_mode.nil? || !@repeat_count.nil?
+  end
+
+  # @param run_count [Integer] completed runs so far
+  # @return [Boolean] true if another run should be attempted
+  def should_continue?(run_count)
+    return true if @repeat_mode == :infinite
+    return run_count < @repeat_count if @repeat_count
+
+    false
+  end
+
+  # Performs a single puzzle run: enter, read poem, explore, solve.
+  # @return [Boolean] false if out of library cards, true otherwise
+  def run_once
+    @visited = []
+    @found   = 0
+    @poem    = nil
+    Flags.reset('fenvol-complete')
+    Flags.reset('fenvol-reward')
+
+    return false unless enter_library
+
+    @poem = read_poem
+    if @poem.empty?
+      echo 'Could not parse poem from notecard.'
+      return true
+    end
+
+    echo "Poem captured (#{@poem.split.size} words)."
+    explore
+    handle_completion if complete?
+    echo "Found #{@found}/#{TARGET_COUNT}."
+    true
+  end
+
+  # --- Entry ---
+
+  # Touches the door, redeems a library card if needed, and enters.
+  # @return [Boolean] true if entered, false if out of cards
+  def enter_library
+    result = DRC.bput(
+      'touch door',
+      BUTLER_GATE_PATTERN, ENTRY_CONFIRM_PATTERN,
+      WORLD_UNRAVELS_PATTERN, CARD_HANDED_PATTERN,
+      NOT_FOUND_PATTERN
+    )
+
+    if result =~ WORLD_UNRAVELS_PATTERN || result =~ CARD_HANDED_PATTERN
+      pause 1
+      return true
+    end
+
+    if result =~ ENTRY_CONFIRM_PATTERN
+      DRC.bput('touch door', WORLD_UNRAVELS_PATTERN, CARD_HANDED_PATTERN)
+      pause 1
+      return true
+    end
+
+    return true if result =~ NOT_FOUND_PATTERN
+
+    return false unless redeem_card
+
+    DRC.bput('touch door', ENTRY_CONFIRM_PATTERN, WORLD_UNRAVELS_PATTERN, CARD_HANDED_PATTERN)
+    DRC.bput('touch door', WORLD_UNRAVELS_PATTERN, CARD_HANDED_PATTERN)
+    pause 1
+    true
+  end
+
+  # Gets and redeems a library card.
+  # @return [Boolean] true if redeemed, false if no cards available
+  def redeem_card
+    get_result = DRC.bput('get my li card', /You get/i, CARD_NOT_FOUND_PATTERN, /you are already/i)
+    if get_result =~ CARD_NOT_FOUND_PATTERN
+      echo 'Out of library cards.'
+      return false
+    end
+
+    DRC.bput('redeem my card', REDEEM_CONFIRM_PATTERN, ENTRY_CONFIRM_PATTERN)
+    DRC.bput('redeem my card', REDEEM_CONSUME_PATTERN, ENTRY_CONFIRM_PATTERN)
+    DRC.bput('stow', /You put/i, /What were you/i, /Stow what/i)
+    true
+  end
+
+  # --- Poem ---
+
+  # Reads the notecard and extracts the poem between delimiter lines.
+  # @return [String] normalized poem text
+  def read_poem
+    fput('read notecards')
+    lines = capture_poem_lines
+    normalize_text(lines.join(' '))
+  end
+
+  # Captures raw lines from the game between poem delimiters.
+  # @return [Array<String>] raw poem lines
+  def capture_poem_lines
+    lines   = []
+    in_poem = false
+
+    100.times do
+      line = get
+      stripped = strip_xml(line)
+
+      unless in_poem
+        in_poem = true if stripped =~ POEM_DELIMITER
+        next
+      end
+
+      break if stripped =~ POEM_DELIMITER
+
+      lines << stripped.strip
+    end
+
+    lines
+  end
+
+  # Removes XML/HTML tags and entity references.
+  # @param text [String]
+  # @return [String]
+  def strip_xml(text)
+    text.gsub(/<[^>]+>/, '').gsub(/&\w+;/, '')
+  end
+
+  # Lowercases, strips non-alphanumeric (keeps hyphens and spaces), squeezes whitespace.
+  # @param text [String]
+  # @return [String]
+  def normalize_text(text)
+    text.downcase.gsub(/[^a-z0-9\s-]/, ' ').squeeze(' ').strip
+  end
+
+  # Checks whether an item description appears in the poem.
+  # @param item_text [String]
+  # @return [Boolean]
+  def in_poem?(item_text)
+    phrase = normalize_text(item_text)
+    phrase = phrase.sub(/\A(?:a|an|the) /, '')
+    @poem.include?(phrase)
+  end
+
+  # --- Room Scanning ---
+
+  # Issues LOOK, captures room description and exit directions.
+  # @return [Array(Array<String>, Array<String>)] [container_phrases, exits]
+  def scan_room
+    lines = []
+    exits = []
+
+    fput('look')
+    loop do
+      line = get
+      stripped = strip_xml(line)
+      if stripped =~ /Obvious exits?:\s*(.+)/i
+        exits = Regexp.last_match(1)
+                      .split(/,\s*/)
+                      .map { |e| e.strip.sub(/\W+$/, '') }
+                      .reject { |e| e =~ /\bnone\b/i }
+        break
+      end
+      lines << stripped.strip
+    end
+
+    room_text = lines.join(' ').downcase
+    [scan_containers(room_text), exits]
+  end
+
+  # Extracts container noun phrases (with up to 2 adjectives) from text.
+  # @param text [String] lowercased room description
+  # @return [Array<String>] container phrases like ["mahogany bookcase"]
+  def scan_containers(text)
+    noun_pattern = CONTAINER_NOUNS.map { |n| Regexp.escape(n) }.join('|')
+    containers = []
+
+    text.scan(/\b([a-z][a-z-]*)\s+([a-z][a-z-]*)\s+(#{noun_pattern})\b/) do |adj1, adj2, noun|
+      next unless CONTAINER_NOUNS.include?(noun)
+
+      containers << "#{adj1} #{adj2} #{noun}"
+    end
+
+    text.scan(/\b([a-z][a-z-]*)\s+(#{noun_pattern})\b/) do |adj, noun|
+      next unless CONTAINER_NOUNS.include?(noun)
+
+      candidate = "#{adj} #{noun}"
+      containers << candidate unless containers.any? { |c| c.end_with?(" #{noun}") }
+    end
+
+    containers.uniq
+  end
+
+  # --- Container Interaction ---
+
+  # Opens each container in the room and checks contents against the poem.
+  # @param containers [Array<String>] container noun phrases
+  def solve_room(containers)
+    if containers.empty?
+      echo 'No containers in this room.'
+      return
+    end
+
+    echo "Containers: #{containers.join(', ')}"
+    containers.each do |noun_phrase|
+      break if complete?
+
+      check_container(noun_phrase)
+    end
+  end
+
+  # Opens a container and turns the item inside if it matches the poem.
+  # @param noun_phrase [String] container noun phrase
+  def check_container(noun_phrase)
+    opened_as = try_open(noun_phrase)
+    unless opened_as
+      echo "#{noun_phrase}: could not open -- skipping."
+      return
+    end
+
+    look_result = DRC.bput("look in #{opened_as}", ITEM_VISIBLE_PATTERN, LOOK_EMPTY_PATTERN)
+    if look_result =~ LOOK_EMPTY_PATTERN
+      echo "#{opened_as}: empty."
+      return
+    end
+
+    return unless look_result =~ ITEM_VISIBLE_PATTERN
+
+    item_text = Regexp.last_match(1).strip.sub(/[.!]+$/, '')
+
+    unless in_poem?(item_text)
+      echo "#{opened_as}: \"#{item_text}\" -- not in poem."
+      return
+    end
+
+    turn_item(opened_as, item_text)
+  end
+
+  # Turns a matching item inside its container.
+  # @param container [String] container noun phrase used to open it
+  # @param item_text [String] item description
+  def turn_item(container, item_text)
+    item_noun = item_text.split.last
+    echo "#{container}: \"#{item_text}\" -- IN POEM, turning."
+    turn_result = DRC.bput("turn #{item_noun} in #{container}", TURN_SUCCESS_PATTERN, TURN_FAILURE_PATTERN)
+    return unless turn_result =~ TURN_SUCCESS_PATTERN
+
+    @found += 1
+    echo "Found #{@found}/#{TARGET_COUNT}."
+    pause 0.5
+  end
+
+  # Tries to open a container, falling back through adjective combinations.
+  # @param noun_phrase [String] full container phrase
+  # @return [String, nil] the phrase that succeeded, or nil
+  def try_open(noun_phrase)
+    try_open_candidates(noun_phrase).each do |attempt|
+      result = DRC.bput("open #{attempt}", OPEN_SUCCESS_PATTERN, OPEN_FAILURE_PATTERN)
+      return attempt if result =~ OPEN_SUCCESS_PATTERN
+    end
+    nil
+  end
+
+  # Generates open candidates from most specific to least.
+  # @param noun_phrase [String] e.g. "ichorous green ottoman"
+  # @return [Array<String>] e.g. ["green ottoman", "ichorous ottoman", "ottoman"]
+  def try_open_candidates(noun_phrase)
+    words = noun_phrase.split
+    noun = words.last
+    adjectives = words[0..-2]
+
+    candidates = adjectives.reverse.map { |adj| "#{adj} #{noun}" }
+    candidates << noun
+    candidates.uniq
+  end
+
+  # --- Exploration ---
+
+  # DFS through connected rooms. Each room is visited once.
+  def explore
+    room_key = XMLData.room_title
+    return if @visited.include?(room_key) || complete?
+
+    @visited << room_key
+
+    echo "=== #{room_key} ==="
+    containers, exits = scan_room
+    solve_room(containers)
+
+    exits.each do |dir|
+      break if complete?
+
+      move(dir)
+      explore
+      back = OPPOSITES[dir.downcase.strip]
+      move(back) if back && XMLData.room_title != room_key
+    end
+  end
+
+  # @return [Boolean] true if the puzzle is solved
+  def complete?
+    Flags['fenvol-complete'] || @found >= TARGET_COUNT
+  end
+
+  # Waits for the reward after puzzle completion.
+  def handle_completion
+    echo 'Puzzle complete!'
+    5.times do
+      break if Flags['fenvol-reward']
+
+      pause 1
+    end
+    stow_reward
+  end
+
+  # --- Reward ---
+
+  # Stows or discards whatever is in the right hand.
+  def stow_reward
+    item = DRC.right_hand
+    return unless item && !item.to_s.empty?
+
+    noun = item.to_s.downcase.split.last
+
+    if @discard_list.include?(noun)
+      echo "Discarding #{item} (on discard list)."
+      fput("put my #{noun} in bucket")
+    elsif @container && !@container.to_s.empty?
+      fput("put my #{noun} in my #{@container}")
+    end
+  end
+end
+
+before_dying do
+  Flags.delete('fenvol-complete')
+  Flags.delete('fenvol-reward')
+end
+
+FenvolPuzzle.new
