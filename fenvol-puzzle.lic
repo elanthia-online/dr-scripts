@@ -374,7 +374,8 @@ class FenvolPuzzle
     noun = words.last
     adjectives = words[0..-2]
 
-    candidates = adjectives.reverse.map { |adj| "#{adj} #{noun}" }
+    candidates = [noun_phrase]
+    candidates += adjectives.reverse.map { |adj| "#{adj} #{noun}" }
     candidates << noun
     candidates.uniq
   end
