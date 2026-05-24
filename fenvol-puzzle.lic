@@ -1,6 +1,4 @@
 =begin
-  Documentation: https://elanthipedia.play.net/Lich_script_repository#fenvol-puzzle
-
   Solves Fenvol's Library puzzle: enters the library, reads a notecard poem,
   explores rooms via DFS, opens containers, and turns items matching the poem.
 
