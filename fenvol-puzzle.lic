@@ -194,13 +194,13 @@ class FenvolPuzzle
   # Gets and redeems a library card.
   # @return [Boolean] true if redeemed, false if no cards available
   def redeem_card
-    unless DRCI.get_item?('li card')
+    unless DRCI.get_item?('library card')
       echo 'Out of library cards.'
       return false
     end
 
-    DRC.bput('redeem my card', REDEEM_CONFIRM_PATTERN, ENTRY_CONFIRM_PATTERN)
-    DRC.bput('redeem my card', REDEEM_CONSUME_PATTERN, ENTRY_CONFIRM_PATTERN)
+    DRC.bput('redeem my library card', REDEEM_CONFIRM_PATTERN, ENTRY_CONFIRM_PATTERN)
+    DRC.bput('redeem my library card', REDEEM_CONSUME_PATTERN, ENTRY_CONFIRM_PATTERN)
     DRCI.stow_hands
     true
   end

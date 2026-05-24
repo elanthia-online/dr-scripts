@@ -780,7 +780,7 @@ RSpec.describe FenvolPuzzle do
 
     it 'returns false when out of library cards' do
       allow(DRC).to receive(:bput).and_return('Only those who can provide proper authorization')
-      allow(DRCI).to receive(:get_item?).with('li card').and_return(false)
+      allow(DRCI).to receive(:get_item?).with('library card').and_return(false)
       allow(instance).to receive(:echo)
       expect(instance.send(:enter_library)).to be false
     end
@@ -818,14 +818,14 @@ RSpec.describe FenvolPuzzle do
   # -------------------------------------------------------------------
   describe '#redeem_card' do
     it 'returns true after successful redemption' do
-      allow(DRCI).to receive(:get_item?).with('li card').and_return(true)
+      allow(DRCI).to receive(:get_item?).with('library card').and_return(true)
       allow(DRC).to receive(:bput).and_return('Once you redeem', 'The stoic butler takes')
       allow(DRCI).to receive(:stow_hands).and_return(true)
       expect(instance.send(:redeem_card)).to be true
     end
 
     it 'returns false when DRCI.get_item? fails' do
-      allow(DRCI).to receive(:get_item?).with('li card').and_return(false)
+      allow(DRCI).to receive(:get_item?).with('library card').and_return(false)
       allow(instance).to receive(:echo)
       expect(instance.send(:redeem_card)).to be false
     end
