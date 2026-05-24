@@ -152,7 +152,11 @@ RSpec.describe FenvolPuzzle do
     end
 
     it 'includes container nouns from both source scripts' do
-      expect(FenvolPuzzle::CONTAINER_NOUNS).to include('bookcase', 'armoire', 'cabinet', 'safe', 'drawer', 'shelf')
+      expect(FenvolPuzzle::CONTAINER_NOUNS).to include('bookcase', 'armoire', 'cabinet', 'safe', 'drawer', 'bookshelf')
+    end
+
+    it 'does not include bare shelf (bookshelf covers that use case)' do
+      expect(FenvolPuzzle::CONTAINER_NOUNS).not_to include('shelf')
     end
   end
 
@@ -1369,6 +1373,28 @@ RSpec.describe FenvolPuzzle do
       instance.send(:explore)
       expect(move_calls).to eq(%w[North south])
     end
+
+    it 'does not backtrack after puzzle completes mid-DFS (prevents post-teleport drift)' do
+      XMLData.room_title = 'Room A'
+      allow(instance).to receive(:echo)
+      allow(instance).to receive(:scan_room) do
+        XMLData.room_title == 'Room A' ? [[], ['north']] : [[], []]
+      end
+      instance.instance_variable_set(:@found, 5)
+      allow(instance).to receive(:solve_room) do
+        if XMLData.room_title == 'Room B'
+          instance.instance_variable_set(:@found, 6)
+        end
+      end
+      move_calls = []
+      allow(instance).to receive(:move) do |dir|
+        move_calls << dir
+        XMLData.room_title = dir == 'north' ? 'Room B' : 'Room A'
+      end
+      instance.send(:explore)
+      expect(move_calls).to eq(['north'])
+      expect(move_calls).not_to include('south')
+    end
   end
 
   # -------------------------------------------------------------------
@@ -1485,6 +1511,20 @@ RSpec.describe FenvolPuzzle do
         text = 'the chestnut tree and the boxing match'
         result = instance.send(:scan_containers, text)
         expect(result).to be_empty
+      end
+
+      it 'does not match bare shelf in flavor text like "on a bottom shelf"' do
+        text = 'on a bottom shelf, a large umber carton peeks out from baskets of yarn'
+        result = instance.send(:scan_containers, text)
+        shelf_matches = result.select { |c| c.split.last == 'shelf' }
+        expect(shelf_matches).to be_empty
+        expect(result).to include('large umber carton')
+      end
+
+      it 'still matches bookshelf as a container' do
+        text = 'a rickety blue bookshelf stands here'
+        result = instance.send(:scan_containers, text)
+        expect(result.any? { |c| c.end_with?('bookshelf') }).to be true
       end
 
       it 'still finds containers in text with extra whitespace' do

@@ -24,7 +24,7 @@ class FenvolPuzzle
     armoire barrel bin bookcase bookshelf box bucket cabinet caddy
     canister cart carton case cask cellaret chest coffer coffin crate
     credenza cupboard desk drawer dresser footlocker hamper hutch
-    lockbox locker ottoman planter sack safe shelf strongbox trunk
+    lockbox locker ottoman planter sack safe strongbox trunk
     vanity wardrobe
   ].freeze
 
@@ -397,6 +397,8 @@ class FenvolPuzzle
 
       move(dir)
       explore
+      break if complete?
+
       back = OPPOSITES[dir.downcase.strip]
       move(back) if back && XMLData.room_title != room_key
     end
