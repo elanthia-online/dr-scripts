@@ -106,7 +106,10 @@ class FenvolPuzzle
     run_count = 0
     loop do
       run_count += 1
-      stow_reward
+      unless stow_reward
+        _respond Lich::Messaging.monsterbold('fenvol-puzzle: Could not stow reward. Container may be full.')
+        break
+      end
       echo "=== Run #{run_count} ===" if repeating?
 
       break unless run_once
@@ -191,15 +194,14 @@ class FenvolPuzzle
   # Gets and redeems a library card.
   # @return [Boolean] true if redeemed, false if no cards available
   def redeem_card
-    get_result = DRC.bput('get my li card', /You get/i, CARD_NOT_FOUND_PATTERN, /you are already/i)
-    if get_result =~ CARD_NOT_FOUND_PATTERN
+    unless DRCI.get_item?('li card')
       echo 'Out of library cards.'
       return false
     end
 
     DRC.bput('redeem my card', REDEEM_CONFIRM_PATTERN, ENTRY_CONFIRM_PATTERN)
     DRC.bput('redeem my card', REDEEM_CONSUME_PATTERN, ENTRY_CONFIRM_PATTERN)
-    DRC.bput('stow', /You put/i, /What were you/i, /Stow what/i)
+    DRCI.stow_hands
     true
   end
 
@@ -438,18 +440,23 @@ class FenvolPuzzle
   # --- Reward ---
 
   # Stows or discards whatever is in the right hand.
+  # @return [Boolean] true if hand is empty afterward, false if stow failed
   def stow_reward
     item = DRC.right_hand
-    return unless item && !item.to_s.empty?
+    return true unless item && !item.to_s.empty?
 
     noun = item.to_s.downcase.split.last
 
     if @discard_list.include?(noun)
       echo "Discarding #{item} (on discard list)."
-      fput("put my #{noun} in bucket")
-    elsif @container && !@container.to_s.empty?
-      fput("put my #{noun} in my #{@container}")
+      return DRCI.put_away_item?(noun, 'bucket')
     end
+
+    if @container && !@container.to_s.empty?
+      return DRCI.put_away_item?(noun, @container)
+    end
+
+    true
   end
 end
 

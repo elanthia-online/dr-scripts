@@ -78,6 +78,20 @@ module DRC
   end
 end
 
+module DRCI
+  def self.get_item?(*_args)
+    true
+  end
+
+  def self.put_away_item?(*_args)
+    true
+  end
+
+  def self.stow_hands
+    true
+  end
+end
+
 module Lich
   module Messaging
     def self.monsterbold(text)
@@ -661,60 +675,63 @@ RSpec.describe FenvolPuzzle do
   # #stow_reward
   # -------------------------------------------------------------------
   describe '#stow_reward' do
-    it 'does nothing when right hand is empty' do
+    it 'returns true when right hand is empty' do
       $right_hand = nil
-      expect(instance).not_to receive(:fput)
-      instance.send(:stow_reward)
+      expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'does nothing when right hand is empty string' do
+    it 'returns true when right hand is empty string' do
       $right_hand = ''
-      expect(instance).not_to receive(:fput)
-      instance.send(:stow_reward)
+      expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'discards item when its noun is on the discard list' do
+    it 'discards item via DRCI.put_away_item? into bucket' do
       $right_hand = 'silk dress'
       instance.instance_variable_set(:@discard_list, ['dress'])
-      expect(instance).to receive(:fput).with('put my dress in bucket')
-      instance.send(:stow_reward)
+      expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
+      expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'stows item into configured container' do
+    it 'stows item via DRCI.put_away_item? into configured container' do
       $right_hand = 'silver ring'
       instance.instance_variable_set(:@container, 'canvas sack in my back')
-      expect(instance).to receive(:fput).with('put my ring in my canvas sack in my back')
-      instance.send(:stow_reward)
+      expect(DRCI).to receive(:put_away_item?).with('ring', 'canvas sack in my back').and_return(true)
+      expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'does nothing when item is not on discard list and no container set' do
+    it 'returns true when no discard list and no container set' do
       $right_hand = 'silver ring'
       instance.instance_variable_set(:@discard_list, [])
       instance.instance_variable_set(:@container, nil)
-      expect(instance).not_to receive(:fput)
-      instance.send(:stow_reward)
+      expect(instance.send(:stow_reward)).to be true
     end
 
     it 'prefers discarding over stowing when both match' do
       $right_hand = 'old dress'
       instance.instance_variable_set(:@discard_list, ['dress'])
       instance.instance_variable_set(:@container, 'backpack')
-      expect(instance).to receive(:fput).with('put my dress in bucket')
-      instance.send(:stow_reward)
+      expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
+      expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'does not stow when container is empty string' do
+    it 'returns true when container is empty string (no-op)' do
       $right_hand = 'silver ring'
       instance.instance_variable_set(:@container, '')
-      expect(instance).not_to receive(:fput)
-      instance.send(:stow_reward)
+      expect(instance.send(:stow_reward)).to be true
     end
 
     it 'matches discard list case-insensitively via downcase' do
       $right_hand = 'Fancy DRESS'
       instance.instance_variable_set(:@discard_list, ['dress'])
-      expect(instance).to receive(:fput).with('put my dress in bucket')
+      expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
       instance.send(:stow_reward)
+    end
+
+    it 'returns false when DRCI.put_away_item? fails (container full)' do
+      $right_hand = 'silver ring'
+      instance.instance_variable_set(:@container, 'backpack')
+      allow(DRCI).to receive(:put_away_item?).and_return(false)
+      expect(instance.send(:stow_reward)).to be false
     end
   end
 
@@ -748,29 +765,22 @@ RSpec.describe FenvolPuzzle do
         call_count += 1
         case call_count
         when 1 then 'Only those who can provide proper authorization'
-        when 2 then 'You get a library card'
-        when 3 then 'Once you redeem this card'
-        when 4 then 'The stoic butler takes your card'
-        when 5 then 'You put your card'
-        when 6 then 'If you are sure you wish to proceed'
-        when 7 then 'the world unravels'
+        when 2 then 'Once you redeem this card'
+        when 3 then 'The stoic butler takes your card'
+        when 4 then 'If you are sure you wish to proceed'
+        when 5 then 'the world unravels'
         else ''
         end
       end
+      allow(DRCI).to receive(:get_item?).and_return(true)
+      allow(DRCI).to receive(:stow_hands)
       allow(instance).to receive(:pause)
       expect(instance.send(:enter_library)).to be true
     end
 
     it 'returns false when out of library cards' do
-      call_count = 0
-      allow(DRC).to receive(:bput) do |*_args|
-        call_count += 1
-        case call_count
-        when 1 then 'Only those who can provide proper authorization'
-        when 2 then 'What were you referring to?'
-        else ''
-        end
-      end
+      allow(DRC).to receive(:bput).and_return('Only those who can provide proper authorization')
+      allow(DRCI).to receive(:get_item?).with('li card').and_return(false)
       allow(instance).to receive(:echo)
       expect(instance.send(:enter_library)).to be false
     end
@@ -781,23 +791,21 @@ RSpec.describe FenvolPuzzle do
       expect(instance.send(:enter_library)).to be true
     end
 
-    it 'sends exactly two touch door commands after redeem' do
-      call_count = 0
+    it 'sends two more touch door commands after redeem' do
       commands = []
       allow(DRC).to receive(:bput) do |cmd, *_patterns|
-        call_count += 1
         commands << cmd
-        case call_count
+        case commands.size
         when 1 then 'Only those who can provide proper authorization'
-        when 2 then 'You get a library card'
-        when 3 then 'Once you redeem this card'
-        when 4 then 'The stoic butler takes your card'
-        when 5 then 'You put your card'
-        when 6 then 'If you are sure you wish to proceed'
-        when 7 then 'the world unravels'
+        when 2 then 'Once you redeem this card'
+        when 3 then 'The stoic butler takes your card'
+        when 4 then 'If you are sure you wish to proceed'
+        when 5 then 'the world unravels'
         else ''
         end
       end
+      allow(DRCI).to receive(:get_item?).and_return(true)
+      allow(DRCI).to receive(:stow_hands)
       allow(instance).to receive(:pause)
       instance.send(:enter_library)
       touch_commands = commands.select { |c| c == 'touch door' }
@@ -810,61 +818,23 @@ RSpec.describe FenvolPuzzle do
   # -------------------------------------------------------------------
   describe '#redeem_card' do
     it 'returns true after successful redemption' do
-      call_count = 0
-      allow(DRC).to receive(:bput) do |*_args|
-        call_count += 1
-        case call_count
-        when 1 then 'You get a library card'
-        when 2 then 'Once you redeem this card'
-        when 3 then 'The stoic butler takes your card'
-        when 4 then 'You put your cards away'
-        else ''
-        end
-      end
+      allow(DRCI).to receive(:get_item?).with('li card').and_return(true)
+      allow(DRC).to receive(:bput).and_return('Once you redeem', 'The stoic butler takes')
+      allow(DRCI).to receive(:stow_hands).and_return(true)
       expect(instance.send(:redeem_card)).to be true
     end
 
-    it 'returns false when no cards available' do
-      allow(DRC).to receive(:bput).and_return('What were you referring to?')
+    it 'returns false when DRCI.get_item? fails' do
+      allow(DRCI).to receive(:get_item?).with('li card').and_return(false)
       allow(instance).to receive(:echo)
       expect(instance.send(:redeem_card)).to be false
     end
 
-    it 'returns false when cards could not be found' do
-      allow(DRC).to receive(:bput).and_return('I could not find that')
-      allow(instance).to receive(:echo)
-      expect(instance.send(:redeem_card)).to be false
-    end
-
-    it 'proceeds normally when already holding a card' do
-      call_count = 0
-      allow(DRC).to receive(:bput) do |*_args|
-        call_count += 1
-        case call_count
-        when 1 then 'you are already holding that'
-        when 2 then 'Once you redeem this card'
-        when 3 then 'The stoic butler takes your card'
-        when 4 then 'You put your cards away'
-        else ''
-        end
-      end
-      expect(instance.send(:redeem_card)).to be true
-    end
-
-    it 'sends stow command after redeeming' do
-      commands = []
-      allow(DRC).to receive(:bput) do |cmd, *_args|
-        commands << cmd
-        case commands.size
-        when 1 then 'You get a library card'
-        when 2 then 'Once you redeem this card'
-        when 3 then 'The stoic butler takes your card'
-        when 4 then 'You put your cards away'
-        else ''
-        end
-      end
+    it 'calls DRCI.stow_hands after redeeming' do
+      allow(DRCI).to receive(:get_item?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('Once you redeem', 'The stoic butler takes')
+      expect(DRCI).to receive(:stow_hands)
       instance.send(:redeem_card)
-      expect(commands.last).to eq('stow')
     end
   end
 
@@ -1639,14 +1609,14 @@ RSpec.describe FenvolPuzzle do
       it 'extracts noun from multi-word item' do
         $right_hand = 'ornate silver ring'
         instance.instance_variable_set(:@container, 'backpack')
-        expect(instance).to receive(:fput).with('put my ring in my backpack')
+        expect(DRCI).to receive(:put_away_item?).with('ring', 'backpack').and_return(true)
         instance.send(:stow_reward)
       end
 
       it 'handles single-word item' do
         $right_hand = 'ring'
         instance.instance_variable_set(:@container, 'backpack')
-        expect(instance).to receive(:fput).with('put my ring in my backpack')
+        expect(DRCI).to receive(:put_away_item?).with('ring', 'backpack').and_return(true)
         instance.send(:stow_reward)
       end
     end
@@ -1767,7 +1737,8 @@ RSpec.describe FenvolPuzzle do
         allow(obj).to receive(:downcase).and_return('fancy dress')
         $right_hand = obj
         instance.instance_variable_set(:@discard_list, ['dress'])
-        expect(instance).to receive(:fput).with('put my dress in bucket')
+        allow(instance).to receive(:echo)
+        expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
         instance.send(:stow_reward)
       end
 
@@ -1852,7 +1823,10 @@ RSpec.describe FenvolPuzzle do
       it 'calls stow_reward before each run and after all runs' do
         instance.instance_variable_set(:@repeat_count, 2)
         stow_count = 0
-        allow(instance).to receive(:stow_reward) { stow_count += 1 }
+        allow(instance).to receive(:stow_reward) do
+          stow_count += 1
+          true
+        end
         allow(instance).to receive(:echo)
         run_count = 0
         allow(instance).to receive(:run_once) do
@@ -1866,7 +1840,7 @@ RSpec.describe FenvolPuzzle do
       it 'stops looping when run_once returns false' do
         instance.instance_variable_set(:@repeat_mode, :infinite)
         run_count = 0
-        allow(instance).to receive(:stow_reward)
+        allow(instance).to receive(:stow_reward).and_return(true)
         allow(instance).to receive(:echo)
         allow(instance).to receive(:run_once) do
           run_count += 1
@@ -1876,10 +1850,24 @@ RSpec.describe FenvolPuzzle do
         expect(run_count).to eq(3)
       end
 
+      it 'stops looping when stow_reward returns false (container full)' do
+        instance.instance_variable_set(:@repeat_mode, :infinite)
+        allow(instance).to receive(:echo)
+        allow(instance).to receive(:_respond)
+        run_count = 0
+        allow(instance).to receive(:stow_reward) do
+          run_count += 1
+          run_count <= 2
+        end
+        allow(instance).to receive(:run_once).and_return(true)
+        instance.send(:run_loop)
+        expect(run_count).to eq(2 + 1 + 1)
+      end
+
       it 'echoes run number only when repeating' do
         instance.instance_variable_set(:@repeat_mode, nil)
         instance.instance_variable_set(:@repeat_count, nil)
-        allow(instance).to receive(:stow_reward)
+        allow(instance).to receive(:stow_reward).and_return(true)
         allow(instance).to receive(:run_once).and_return(false)
         expect(instance).not_to receive(:echo).with(/=== Run/)
         allow(instance).to receive(:echo).with(/All done/)
