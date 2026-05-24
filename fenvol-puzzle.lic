@@ -70,6 +70,8 @@ class FenvolPuzzle
     @container    = settings.fenvol_container
     @discard_list = Array(settings.fenvol_discard_list).map { |s| s.to_s.downcase }
 
+    validate_empty_hands
+
     Flags.add('fenvol-complete', PUZZLE_COMPLETE_PATTERN)
     Flags.add('fenvol-reward', REWARD_PATTERN)
 
@@ -85,6 +87,18 @@ class FenvolPuzzle
       [{ name: 'repeat',  regex: /repeat/i, description: 'Run until out of library cards' }],
       []
     ]
+  end
+
+  # Exits with an error if either hand is occupied.
+  def validate_empty_hands
+    right = DRC.right_hand
+    left  = DRC.left_hand
+    return if (right.nil? || right.to_s.empty?) && (left.nil? || left.to_s.empty?)
+
+    _respond Lich::Messaging.monsterbold('fenvol-puzzle: Both hands must be empty before starting.')
+    _respond Lich::Messaging.monsterbold('  Tip: Set fenvol_container in your YAML to auto-stow rewards.')
+    _respond Lich::Messaging.monsterbold('  Example: fenvol_container: canvas sack in my back')
+    exit
   end
 
   # Runs the puzzle loop, repeating based on configured mode.

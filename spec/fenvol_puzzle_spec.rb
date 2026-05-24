@@ -69,8 +69,20 @@ module DRC
     $right_hand
   end
 
+  def self.left_hand
+    $left_hand
+  end
+
   def self.bput(*_args)
     ''
+  end
+end
+
+module Lich
+  module Messaging
+    def self.monsterbold(text)
+      text
+    end
   end
 end
 
@@ -85,6 +97,8 @@ end
 def fput(*_args); end
 
 def echo(*_args); end
+
+def _respond(*_args); end
 
 def get
   ''
@@ -112,6 +126,7 @@ RSpec.configure do |config|
   config.before do
     reset_data
     $right_hand = nil
+    $left_hand = nil
     XMLData.room_title = 'Test Room'
   end
 end
@@ -588,6 +603,57 @@ RSpec.describe FenvolPuzzle do
       Flags['fenvol-complete'] = false
       instance.instance_variable_set(:@found, FenvolPuzzle::TARGET_COUNT + 1)
       expect(instance.send(:complete?)).to be true
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # #validate_empty_hands
+  # -------------------------------------------------------------------
+  describe '#validate_empty_hands' do
+    it 'passes when both hands are empty' do
+      allow(DRC).to receive(:right_hand).and_return(nil)
+      allow(DRC).to receive(:left_hand).and_return(nil)
+      expect { instance.send(:validate_empty_hands) }.not_to raise_error
+    end
+
+    it 'passes when hands return empty strings' do
+      allow(DRC).to receive(:right_hand).and_return('')
+      allow(DRC).to receive(:left_hand).and_return('')
+      expect { instance.send(:validate_empty_hands) }.not_to raise_error
+    end
+
+    it 'exits when right hand is occupied' do
+      allow(DRC).to receive(:right_hand).and_return('sword')
+      allow(DRC).to receive(:left_hand).and_return(nil)
+      allow(instance).to receive(:_respond)
+      expect { instance.send(:validate_empty_hands) }.to raise_error(SystemExit)
+    end
+
+    it 'exits when left hand is occupied' do
+      allow(DRC).to receive(:right_hand).and_return(nil)
+      allow(DRC).to receive(:left_hand).and_return('shield')
+      allow(instance).to receive(:_respond)
+      expect { instance.send(:validate_empty_hands) }.to raise_error(SystemExit)
+    end
+
+    it 'exits when both hands are occupied' do
+      allow(DRC).to receive(:right_hand).and_return('sword')
+      allow(DRC).to receive(:left_hand).and_return('shield')
+      allow(instance).to receive(:_respond)
+      expect { instance.send(:validate_empty_hands) }.to raise_error(SystemExit)
+    end
+
+    it 'outputs monsterbold messages mentioning fenvol_container setting' do
+      allow(DRC).to receive(:right_hand).and_return('sword')
+      allow(DRC).to receive(:left_hand).and_return(nil)
+      messages = []
+      allow(instance).to receive(:_respond) { |msg| messages << msg }
+      begin
+        instance.send(:validate_empty_hands)
+      rescue SystemExit
+        nil
+      end
+      expect(messages.size).to eq(3)
     end
   end
 
