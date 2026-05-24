@@ -467,12 +467,12 @@ RSpec.describe FenvolPuzzle do
   # #try_open_candidates
   # -------------------------------------------------------------------
   describe '#try_open_candidates' do
-    it 'starts with the full phrase for two-adjective containers' do
+    it 'generates adj+noun pairs from two-adjective phrase (DR only accepts single adj)' do
       result = instance.send(:try_open_candidates, 'ichorous green ottoman')
-      expect(result).to eq(['ichorous green ottoman', 'green ottoman', 'ichorous ottoman', 'ottoman'])
+      expect(result).to eq(['green ottoman', 'ichorous ottoman', 'ottoman'])
     end
 
-    it 'deduplicates full phrase with single-adjective (same as adj+noun)' do
+    it 'generates adj+noun pair from single-adjective phrase' do
       result = instance.send(:try_open_candidates, 'carved chest')
       expect(result).to eq(['carved chest', 'chest'])
     end
@@ -487,12 +487,12 @@ RSpec.describe FenvolPuzzle do
       expect(result).to eq(['chest chest', 'chest'])
     end
 
-    it 'starts with full phrase for three-adjective containers' do
+    it 'generates adj+noun pairs from three-adjective phrase' do
       result = instance.send(:try_open_candidates, 'old dark wooden chest')
-      expect(result).to eq(['old dark wooden chest', 'wooden chest', 'dark chest', 'old chest', 'chest'])
+      expect(result).to eq(['wooden chest', 'dark chest', 'old chest', 'chest'])
     end
 
-    it 'preserves hyphenated adjectives with full phrase first' do
+    it 'preserves hyphenated adjectives' do
       result = instance.send(:try_open_candidates, 'dark-stained armoire')
       expect(result).to eq(['dark-stained armoire', 'armoire'])
     end
@@ -806,17 +806,17 @@ RSpec.describe FenvolPuzzle do
   # #try_open
   # -------------------------------------------------------------------
   describe '#try_open' do
-    it 'tries full phrase first and returns it on success' do
+    it 'returns the first adj+noun candidate that succeeds' do
       allow(DRC).to receive(:bput).and_return('You open the carved chest.')
       result = instance.send(:try_open, 'old carved chest')
-      expect(result).to eq('old carved chest')
+      expect(result).to eq('carved chest')
     end
 
     it 'falls back to bare noun when all adjective attempts fail' do
       call_count = 0
       allow(DRC).to receive(:bput) do |*_args|
         call_count += 1
-        if call_count <= 3
+        if call_count <= 2
           'What were you referring to?'
         else
           'You open the chest.'
@@ -838,14 +838,14 @@ RSpec.describe FenvolPuzzle do
       expect(result).to eq('carved chest')
     end
 
-    it 'falls back to second candidate when full phrase fails' do
+    it 'returns second candidate when first adj+noun fails' do
       call_count = 0
       allow(DRC).to receive(:bput) do |*_args|
         call_count += 1
         call_count == 1 ? 'What were you referring to?' : 'You open the chest.'
       end
       result = instance.send(:try_open, 'ornate carved chest')
-      expect(result).to eq('carved chest')
+      expect(result).to eq('ornate chest')
     end
 
     it 'recognizes swings open as success' do

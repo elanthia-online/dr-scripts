@@ -364,7 +364,8 @@ class FenvolPuzzle
     nil
   end
 
-  # Generates open candidates from most specific to least.
+  # Generates open candidates as adjective+noun pairs, most specific adjective first.
+  # DR's parser only accepts a single adjective+noun, not multi-word phrases.
   # @param noun_phrase [String] e.g. "ichorous green ottoman"
   # @return [Array<String>] e.g. ["green ottoman", "ichorous ottoman", "ottoman"]
   def try_open_candidates(noun_phrase)
@@ -374,8 +375,7 @@ class FenvolPuzzle
     noun = words.last
     adjectives = words[0..-2]
 
-    candidates = [noun_phrase]
-    candidates += adjectives.reverse.map { |adj| "#{adj} #{noun}" }
+    candidates = adjectives.reverse.map { |adj| "#{adj} #{noun}" }
     candidates << noun
     candidates.uniq
   end
