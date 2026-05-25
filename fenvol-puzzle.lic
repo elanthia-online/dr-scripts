@@ -365,7 +365,7 @@ class FenvolPuzzle
   # @param container [String] container noun phrase used to open it
   # @param item_text [String] item description
   def turn_item(container, item_text)
-    item_noun = item_text.split.last
+    item_noun = DRC.get_noun(item_text)
     echo "#{container}: \"#{item_text}\" -- IN POEM, turning."
     turn_result = DRC.bput("turn #{item_noun} in #{container}", TURN_SUCCESS_PATTERN, TURN_FAILURE_PATTERN)
     return unless turn_result =~ TURN_SUCCESS_PATTERN
@@ -455,7 +455,7 @@ class FenvolPuzzle
     return true unless item && !item.to_s.empty?
 
     item_text = item.to_s.downcase
-    noun = item_text.split.last
+    noun = DRC.get_noun(item_text)
 
     if @discard_list.any? { |pattern| item_text.include?(pattern) }
       echo "Discarding #{item} (matches discard list)."

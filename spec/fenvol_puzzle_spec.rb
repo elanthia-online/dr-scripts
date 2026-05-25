@@ -76,6 +76,10 @@ module DRC
   def self.bput(*_args)
     ''
   end
+
+  def self.get_noun(long_name)
+    long_name.to_s.strip.scan(/[a-z\-']+$/i).first
+  end
 end
 
 module DRCI
