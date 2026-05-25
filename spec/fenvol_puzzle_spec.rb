@@ -731,6 +731,31 @@ RSpec.describe FenvolPuzzle do
       instance.send(:stow_reward)
     end
 
+    it 'matches multi-word discard patterns against full item text' do
+      $right_hand = 'a heavy iron battle axe'
+      instance.instance_variable_set(:@discard_list, ['battle axe'])
+      allow(instance).to receive(:echo)
+      expect(DRCI).to receive(:put_away_item_unsafe?).with('my axe', 'bucket').and_return(true)
+      expect(instance.send(:stow_reward)).to be true
+    end
+
+    it 'does not discard when multi-word pattern does not match' do
+      $right_hand = 'a woodcutter axe'
+      instance.instance_variable_set(:@discard_list, ['battle axe'])
+      instance.instance_variable_set(:@containers, ['backpack'])
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      expect(DRCI).not_to receive(:put_away_item_unsafe?)
+      instance.send(:stow_reward)
+    end
+
+    it 'matches single-word discard pattern as substring of full item text' do
+      $right_hand = 'a brilliant scarlet camlet cloak'
+      instance.instance_variable_set(:@discard_list, ['cloak'])
+      allow(instance).to receive(:echo)
+      expect(DRCI).to receive(:put_away_item_unsafe?).with('my cloak', 'bucket').and_return(true)
+      instance.send(:stow_reward)
+    end
+
     it 'returns false when DRCI.put_away_item? fails (all containers full)' do
       $right_hand = 'silver ring'
       instance.instance_variable_set(:@containers, ['backpack'])

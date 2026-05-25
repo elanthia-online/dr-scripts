@@ -11,9 +11,9 @@
     fenvol_container:                          # -- or a list for oversized items
       - canvas sack in my back                 #    tries each until one works
       - gladiator's rucksack
-    fenvol_discard_list:                        # optional -- nouns to discard
-      - dress
-      - bodice
+    fenvol_discard_list:                        # optional -- patterns to discard
+      - dress                                  #    matches any item containing "dress"
+      - battle axe                             #    matches "battle axe" but not "axe"
 
   Args:
     ;fenvol-puzzle           single run (default)
@@ -446,16 +446,19 @@ class FenvolPuzzle
   # --- Reward ---
 
   # Stows or discards whatever is in the right hand.
+  # Checks the full item description against @discard_list patterns (substring match),
+  # so "battle axe" matches only battle axes while "axe" matches any axe.
   # Tries each container in @containers until one accepts the item.
   # @return [Boolean] true if hand is empty afterward, false if stow failed
   def stow_reward
     item = DRC.right_hand
     return true unless item && !item.to_s.empty?
 
-    noun = item.to_s.downcase.split.last
+    item_text = item.to_s.downcase
+    noun = item_text.split.last
 
-    if @discard_list.include?(noun)
-      echo "Discarding #{item} (on discard list)."
+    if @discard_list.any? { |pattern| item_text.include?(pattern) }
+      echo "Discarding #{item} (matches discard list)."
       return DRCI.put_away_item_unsafe?("my #{noun}", 'bucket')
     end
 
