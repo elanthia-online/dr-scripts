@@ -7,9 +7,9 @@
     - puzzle-shelf by Elysande (poem matching, Flags completion, DFS via room titles)
 
   YAML settings:
-    fenvol_container: canvas sack in my back   # optional -- stow reward here
-    fenvol_container:                          # or a list (tries each in order)
-      - canvas sack in my back
+    fenvol_container: canvas sack in my back   # optional -- single container
+    fenvol_container:                          # -- or a list for oversized items
+      - canvas sack in my back                 #    tries each until one works
       - gladiator's rucksack
     fenvol_discard_list:                        # optional -- nouns to discard
       - dress
