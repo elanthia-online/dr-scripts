@@ -456,7 +456,7 @@ class FenvolPuzzle
 
     if @discard_list.include?(noun)
       echo "Discarding #{item} (on discard list)."
-      return DRCI.put_away_item?(noun, 'bucket')
+      return DRCI.put_away_item_unsafe?("my #{noun}", 'bucket')
     end
 
     return true if @containers.empty?

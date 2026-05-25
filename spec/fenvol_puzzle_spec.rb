@@ -87,6 +87,10 @@ module DRCI
     true
   end
 
+  def self.put_away_item_unsafe?(*_args)
+    true
+  end
+
   def self.stow_hands
     true
   end
@@ -685,10 +689,10 @@ RSpec.describe FenvolPuzzle do
       expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'discards item via DRCI.put_away_item? into bucket' do
+    it 'discards item via put_away_item_unsafe? into room bucket (no "my" prefix)' do
       $right_hand = 'silk dress'
       instance.instance_variable_set(:@discard_list, ['dress'])
-      expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
+      expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
       expect(instance.send(:stow_reward)).to be true
     end
 
@@ -710,7 +714,7 @@ RSpec.describe FenvolPuzzle do
       $right_hand = 'old dress'
       instance.instance_variable_set(:@discard_list, ['dress'])
       instance.instance_variable_set(:@containers, ['backpack'])
-      expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
+      expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
       expect(instance.send(:stow_reward)).to be true
     end
 
@@ -723,7 +727,7 @@ RSpec.describe FenvolPuzzle do
     it 'matches discard list case-insensitively via downcase' do
       $right_hand = 'Fancy DRESS'
       instance.instance_variable_set(:@discard_list, ['dress'])
-      expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
+      expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
       instance.send(:stow_reward)
     end
 
@@ -1746,7 +1750,7 @@ RSpec.describe FenvolPuzzle do
         $right_hand = obj
         instance.instance_variable_set(:@discard_list, ['dress'])
         allow(instance).to receive(:echo)
-        expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
+        expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
         instance.send(:stow_reward)
       end
 
