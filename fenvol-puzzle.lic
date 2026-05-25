@@ -8,6 +8,9 @@
 
   YAML settings:
     fenvol_container: canvas sack in my back   # optional -- stow reward here
+    fenvol_container:                          # or a list (tries each in order)
+      - canvas sack in my back
+      - gladiator's rucksack
     fenvol_discard_list:                        # optional -- nouns to discard
       - dress
       - bodice
@@ -67,7 +70,7 @@ class FenvolPuzzle
 
     @repeat_mode  = args.repeat ? :infinite : nil
     @repeat_count = args.repeats&.to_i
-    @container    = settings.fenvol_container
+    @containers   = Array(settings.fenvol_container).map(&:to_s).reject(&:empty?)
     @discard_list = Array(settings.fenvol_discard_list).map { |s| s.to_s.downcase }
 
     validate_empty_hands
@@ -97,7 +100,9 @@ class FenvolPuzzle
 
     _respond Lich::Messaging.monsterbold('fenvol-puzzle: Both hands must be empty before starting.')
     _respond Lich::Messaging.monsterbold('  Tip: Set fenvol_container in your YAML to auto-stow rewards.')
-    _respond Lich::Messaging.monsterbold('  Example: fenvol_container: canvas sack in my back')
+    _respond Lich::Messaging.monsterbold('  Supports a list for oversized items: fenvol_container:')
+    _respond Lich::Messaging.monsterbold('    - canvas sack in my back')
+    _respond Lich::Messaging.monsterbold('    - gladiator rucksack')
     exit
   end
 
@@ -202,6 +207,7 @@ class FenvolPuzzle
     DRC.bput('redeem my library card', REDEEM_CONFIRM_PATTERN, ENTRY_CONFIRM_PATTERN)
     DRC.bput('redeem my library card', REDEEM_CONSUME_PATTERN, ENTRY_CONFIRM_PATTERN)
     DRCI.stow_hands
+    stow_reward
     true
   end
 
@@ -440,6 +446,7 @@ class FenvolPuzzle
   # --- Reward ---
 
   # Stows or discards whatever is in the right hand.
+  # Tries each container in @containers until one accepts the item.
   # @return [Boolean] true if hand is empty afterward, false if stow failed
   def stow_reward
     item = DRC.right_hand
@@ -452,11 +459,9 @@ class FenvolPuzzle
       return DRCI.put_away_item?(noun, 'bucket')
     end
 
-    if @container && !@container.to_s.empty?
-      return DRCI.put_away_item?(noun, @container)
-    end
+    return true if @containers.empty?
 
-    true
+    DRCI.put_away_item?(noun, @containers)
   end
 end
 

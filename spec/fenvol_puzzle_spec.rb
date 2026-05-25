@@ -151,7 +151,7 @@ RSpec.describe FenvolPuzzle do
   before do
     instance.instance_variable_set(:@repeat_mode, nil)
     instance.instance_variable_set(:@repeat_count, nil)
-    instance.instance_variable_set(:@container, nil)
+    instance.instance_variable_set(:@containers, [])
     instance.instance_variable_set(:@discard_list, [])
     instance.instance_variable_set(:@poem, '')
     instance.instance_variable_set(:@found, 0)
@@ -667,7 +667,7 @@ RSpec.describe FenvolPuzzle do
       rescue SystemExit
         nil
       end
-      expect(messages.size).to eq(3)
+      expect(messages.size).to eq(5)
     end
   end
 
@@ -692,31 +692,31 @@ RSpec.describe FenvolPuzzle do
       expect(instance.send(:stow_reward)).to be true
     end
 
-    it 'stows item via DRCI.put_away_item? into configured container' do
+    it 'stows item via DRCI.put_away_item? into configured containers' do
       $right_hand = 'silver ring'
-      instance.instance_variable_set(:@container, 'canvas sack in my back')
-      expect(DRCI).to receive(:put_away_item?).with('ring', 'canvas sack in my back').and_return(true)
+      instance.instance_variable_set(:@containers, ['canvas sack in my back'])
+      expect(DRCI).to receive(:put_away_item?).with('ring', ['canvas sack in my back']).and_return(true)
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'returns true when no discard list and no container set' do
       $right_hand = 'silver ring'
       instance.instance_variable_set(:@discard_list, [])
-      instance.instance_variable_set(:@container, nil)
+      instance.instance_variable_set(:@containers, [])
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'prefers discarding over stowing when both match' do
       $right_hand = 'old dress'
       instance.instance_variable_set(:@discard_list, ['dress'])
-      instance.instance_variable_set(:@container, 'backpack')
+      instance.instance_variable_set(:@containers, ['backpack'])
       expect(DRCI).to receive(:put_away_item?).with('dress', 'bucket').and_return(true)
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'returns true when container is empty string (no-op)' do
       $right_hand = 'silver ring'
-      instance.instance_variable_set(:@container, '')
+      instance.instance_variable_set(:@containers, [])
       expect(instance.send(:stow_reward)).to be true
     end
 
@@ -727,11 +727,18 @@ RSpec.describe FenvolPuzzle do
       instance.send(:stow_reward)
     end
 
-    it 'returns false when DRCI.put_away_item? fails (container full)' do
+    it 'returns false when DRCI.put_away_item? fails (all containers full)' do
       $right_hand = 'silver ring'
-      instance.instance_variable_set(:@container, 'backpack')
-      allow(DRCI).to receive(:put_away_item?).and_return(false)
+      instance.instance_variable_set(:@containers, ['backpack'])
+      allow(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(false)
       expect(instance.send(:stow_reward)).to be false
+    end
+
+    it 'passes multiple containers to DRCI.put_away_item? which tries each' do
+      $right_hand = 'quarterstaff'
+      instance.instance_variable_set(:@containers, ['sack', 'rucksack'])
+      expect(DRCI).to receive(:put_away_item?).with('quarterstaff', ['sack', 'rucksack']).and_return(true)
+      expect(instance.send(:stow_reward)).to be true
     end
   end
 
@@ -830,10 +837,11 @@ RSpec.describe FenvolPuzzle do
       expect(instance.send(:redeem_card)).to be false
     end
 
-    it 'calls DRCI.stow_hands after redeeming' do
+    it 'calls DRCI.stow_hands then stow_reward as fallback after redeeming' do
       allow(DRCI).to receive(:get_item?).and_return(true)
       allow(DRC).to receive(:bput).and_return('Once you redeem', 'The stoic butler takes')
-      expect(DRCI).to receive(:stow_hands)
+      expect(DRCI).to receive(:stow_hands).ordered
+      expect(instance).to receive(:stow_reward).ordered
       instance.send(:redeem_card)
     end
   end
@@ -1608,15 +1616,15 @@ RSpec.describe FenvolPuzzle do
     describe '#stow_reward with tricky item names' do
       it 'extracts noun from multi-word item' do
         $right_hand = 'ornate silver ring'
-        instance.instance_variable_set(:@container, 'backpack')
-        expect(DRCI).to receive(:put_away_item?).with('ring', 'backpack').and_return(true)
+        instance.instance_variable_set(:@containers, ['backpack'])
+        expect(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(true)
         instance.send(:stow_reward)
       end
 
       it 'handles single-word item' do
         $right_hand = 'ring'
-        instance.instance_variable_set(:@container, 'backpack')
-        expect(DRCI).to receive(:put_away_item?).with('ring', 'backpack').and_return(true)
+        instance.instance_variable_set(:@containers, ['backpack'])
+        expect(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(true)
         instance.send(:stow_reward)
       end
     end
@@ -1745,7 +1753,7 @@ RSpec.describe FenvolPuzzle do
       it 'does nothing when discard_list is nil-initialized' do
         $right_hand = 'silver ring'
         instance.instance_variable_set(:@discard_list, nil)
-        instance.instance_variable_set(:@container, nil)
+        instance.instance_variable_set(:@containers, [])
         expect { instance.send(:stow_reward) }.to raise_error(NoMethodError)
       end
     end
