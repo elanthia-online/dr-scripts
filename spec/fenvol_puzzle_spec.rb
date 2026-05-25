@@ -1902,7 +1902,8 @@ RSpec.describe FenvolPuzzle do
         end
         allow(instance).to receive(:run_once).and_return(true)
         instance.send(:run_loop)
-        expect(run_count).to eq(2 + 1 + 1)
+        # 2 successful stow_reward at top of loop + 1 failed (breaks loop) + 1 final stow_reward after loop
+        expect(run_count).to eq(4)
       end
 
       it 'echoes run number only when repeating' do
