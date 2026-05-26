@@ -84,8 +84,17 @@ class Appraisal
   end
 
   def classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container)
+    opened_here = false
+    result = DRC.bput("appraise my #{name} quick", 'Roundtime', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/, /worth a total of about \d+/)
+
+    if result =~ /You.ll need to open the .* to examine its contents./
+      DRC.bput("open my #{name}", /You open your .* ./, /That is already open/)
+      opened_here = true
+      result = DRC.bput("appraise my #{name} quick", 'Roundtime', /There doesn.t appear to be anything in/, /worth a total of about \d+/)
+    end
+
     chosen_container = nil
-    case DRC.bput("appraise my #{name} quick", 'Roundtime', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/, /worth a total of about \d+/)
+    case result
     when /worth a total of about (\d+)/
       pouch_value = Regexp.last_match(1).to_i
       if pouch_value < low_value
@@ -104,14 +113,12 @@ class Appraisal
           chosen_container = low_value_gem_pouch_container
         end
       end
-    when /You.ll need to open the .* to examine its contents./
-      DRC.bput("open my #{name}", /You open your .* ./, /That is already open/)
-      DRC.bput("appraise my #{name} quick", 'Roundtime')
-      DRC.bput("close my #{name}", /You close your/, /That is already closed/)
     when /There doesn.t appear to be anything in/
       DRC.message("Empty pouch found, putting it into spare_gem_pouch_container")
       chosen_container = spare_gem_pouch_container
     end
+
+    DRC.bput("close my #{name}", /You close your/, /That is already closed/) if opened_here
     waitrt?
     chosen_container
   end
