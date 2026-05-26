@@ -189,11 +189,8 @@ class Appraisal
         next
       end
 
-      case DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
-      when /You get .* from your .*#{kit_pattern}/
-      else
-        next
-      end
+      pull_result = DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
+      next unless pull_result =~ /You get .* from your .*#{kit_pattern}/
 
       target = classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container) || gem_kit_name
       DRCI.put_away_item?(name, target)
