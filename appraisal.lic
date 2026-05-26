@@ -32,7 +32,7 @@ class Appraisal
       @count = true
     end
 
-    pouch_low_value = settings.gem_pouch_low_value.to_i || 1
+    pouch_low_value = (settings.gem_pouch_low_value || 1).to_i
 
     if args.focus
       if DRSkill.getrank('Appraisal') < 200
@@ -50,6 +50,8 @@ class Appraisal
           assess_zills
         when 'pouches'
           train_appraisal_with_pouches(settings.full_pouch_container, settings.spare_gem_pouch_container, settings.low_value_gem_pouch_container, pouch_low_value, pouch_adjective, settings.gem_pouch_noun)
+        when 'kit_pouches'
+          train_appraisal_with_kit_pouches(settings.gem_kit_name, settings.spare_gem_pouch_container, settings.low_value_gem_pouch_container, pouch_low_value, pouch_adjective, settings.gem_pouch_noun)
         when 'gear'
           train_appraisal_with_gear
         when 'bundle'
@@ -77,52 +79,118 @@ class Appraisal
     waitrt?
   end
 
+  def pouch_name(gem_pouch_adjective, gem_pouch_noun)
+    [gem_pouch_adjective, gem_pouch_noun].compact.reject { |s| s.to_s.empty? }.join(' ')
+  end
+
+  def classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container)
+    chosen_container = nil
+    case DRC.bput("appraise my #{name} quick", 'Roundtime', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/, /worth a total of about \d+/)
+    when /worth a total of about (\d+)/
+      pouch_value = Regexp.last_match(1).to_i
+      if pouch_value < low_value
+        DRC.message("Low value pouch found, putting it into low_value_gem_pouch_container")
+        chosen_container = low_value_gem_pouch_container
+      end
+      if @count && low_value_gem_pouch_container.to_s.empty?
+        DRC.message("\"count\" passed as an argument, but no low_value_gem_pouch_container defined. Skipping counting.")
+        @count = false
+      end
+      if @count
+        /(\d+)/ =~ DRC.bput("count my #{name}", /You sort through the contents .* and find \d+ gems in it/)
+        pouch_count = Regexp.last_match(1).to_i
+        if pouch_count < 500
+          DRC.message("Pouch not full, putting it into #{low_value_gem_pouch_container}")
+          chosen_container = low_value_gem_pouch_container
+        end
+      end
+    when /You.ll need to open the .* to examine its contents./
+      DRC.bput("open my #{name}", /You open your .* ./, /That is already open/)
+      DRC.bput("appraise my #{name} quick", 'Roundtime')
+      DRC.bput("close my #{name}", /You close your/, /That is already closed/)
+    when /There doesn.t appear to be anything in/
+      DRC.message("Empty pouch found, putting it into spare_gem_pouch_container")
+      chosen_container = spare_gem_pouch_container
+    end
+    waitrt?
+    chosen_container
+  end
+
   def train_appraisal_with_pouches(full_pouch_container, spare_gem_pouch_container, low_value_gem_pouch_container, low_value, gem_pouch_adjective, gem_pouch_noun)
+    name = pouch_name(gem_pouch_adjective, gem_pouch_noun)
     if gem_pouch_adjective
-      case DRC.bput("appraise my #{gem_pouch_adjective} #{gem_pouch_noun} quick", 'Roundtime', 'You can.t appraise the', 'Appraise what', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/)
+      case DRC.bput("appraise my #{name} quick", 'Roundtime', 'You can.t appraise the', 'Appraise what', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/)
       when /You.ll need to open the .* to examine its contents./
-        DRC.bput("open my #{gem_pouch_adjective} #{gem_pouch_noun}", /You open your .*./, /That is already open/)
-        DRC.bput("appraise my #{gem_pouch_adjective} #{gem_pouch_noun} quick", 'Roundtime', 'You can.t appraise the', 'Appraise what')
-        DRC.bput("close my #{gem_pouch_adjective} #{gem_pouch_noun}", /You close your/, /That is already closed/)
+        DRC.bput("open my #{name}", /You open your .*./, /That is already open/)
+        DRC.bput("appraise my #{name} quick", 'Roundtime', 'You can.t appraise the', 'Appraise what')
+        DRC.bput("close my #{name}", /You close your/, /That is already closed/)
       end
       waitrt?
     end
     pause 1
     $ORDINALS.each do |ordinal|
-      gem_pouch_container = full_pouch_container
-      break unless DRCI.get_item?("#{ordinal} #{gem_pouch_adjective} #{gem_pouch_noun}", gem_pouch_container)
+      break unless DRCI.get_item?("#{ordinal} #{name}", full_pouch_container)
 
-      case DRC.bput("appraise my #{gem_pouch_adjective} #{gem_pouch_noun} quick", 'Roundtime', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/, /worth a total of about \d+/)
-      when /worth a total of about (\d+)/
-        pouch_value = Regexp.last_match(1).to_i
-        if pouch_value < low_value
-          DRC.message("Low value pouch found, putting it into low_value_gem_pouch_container")
-          gem_pouch_container = low_value_gem_pouch_container
-        end
-        if @count && (low_value_gem_pouch_container.empty? || low_value_gem_pouch_container.nil?)
-          DRC.message("\"count\" passed as an argument, but no low_value_gem_pouch_container defined. Skipping counting.")
-          @count = false
-        end
-        if @count
-          /(\d+)/ =~ DRC.bput("count my #{gem_pouch_adjective} #{gem_pouch_noun}", /You sort through the contents .* and find \d+ gems in it/)
-          pouch_count = Regexp.last_match(1).to_i
-          if pouch_count < 500
-            DRC.message("Pouch not full, putting it into #{low_value_gem_pouch_container}")
-            gem_pouch_container = low_value_gem_pouch_container
-          end
-        end
-      when /You.ll need to open the .* to examine its contents./
-        DRC.bput("open my #{gem_pouch_adjective} #{gem_pouch_noun}", /You open your .* ./, /That is already open/)
-        DRC.bput("appraise my #{gem_pouch_adjective} #{gem_pouch_noun} quick", 'Roundtime')
-        DRC.bput("close my #{gem_pouch_adjective} #{gem_pouch_noun}", /You close your/, /That is already closed/)
-      when /There doesn.t appear to be anything in/
-        DRC.message("Empty pouch found, putting it into spare_gem_pouch_container")
-        gem_pouch_container = spare_gem_pouch_container
-      end
-      waitrt?
-      DRCI.put_away_item?("#{gem_pouch_adjective} #{gem_pouch_noun}", gem_pouch_container)
+      target = classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container) || full_pouch_container
+      DRCI.put_away_item?(name, target)
       pause 1
       break if DRSkill.getxp('Appraisal') >= 30
+    end
+  end
+
+  def count_kit_pouches(gem_kit_name)
+    count = 0
+    clear
+    put "rummage my #{gem_kit_name}"
+    timer = Time.now
+    while Time.now - timer < 10
+      line = get?
+      if line.nil?
+        pause 0.1
+        next
+      end
+      if (m = line.match(/^\s*(\d+)\.\s+/))
+        n = m[1].to_i
+        count = n if n > count
+      end
+      break if line =~ /^Roundtime:/ || line =~ /^\[You can TURN/ || line =~ /What were you/ || line =~ /isn.t a container/i
+    end
+    waitrt?
+    count
+  end
+
+  def train_appraisal_with_kit_pouches(gem_kit_name, spare_gem_pouch_container, low_value_gem_pouch_container, low_value, gem_pouch_adjective, gem_pouch_noun)
+    if gem_kit_name.to_s.empty?
+      DRC.message("No gem_kit_name defined. Skipping kit_pouches task.")
+      return
+    end
+
+    total = count_kit_pouches(gem_kit_name)
+    if total <= 0
+      DRC.message("No pouches found in #{gem_kit_name}.")
+      return
+    end
+
+    name = pouch_name(gem_pouch_adjective, gem_pouch_noun)
+    kit_pattern = Regexp.escape(gem_kit_name)
+
+    total.downto(1) do |slot|
+      break if DRSkill.getxp('Appraisal') >= 30
+
+      case DRC.bput("turn my #{gem_kit_name} to #{slot}", /You turn/, /already (set )?to/, /Turn what/, /does not have that many/)
+      when /does not have that many/
+        next
+      end
+
+      case DRC.bput("pull my #{gem_kit_name}", /You get .* from your #{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
+      when /You get .* from your #{kit_pattern}/
+      else
+        next
+      end
+
+      target = classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container) || gem_kit_name
+      DRCI.put_away_item?(name, target)
+      pause 1
     end
   end
 
