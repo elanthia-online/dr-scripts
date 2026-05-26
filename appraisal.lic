@@ -189,8 +189,8 @@ class Appraisal
         next
       end
 
-      case DRC.bput("pull my #{gem_kit_name}", /You get .* from your #{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
-      when /You get .* from your #{kit_pattern}/
+      case DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
+      when /You get .* from your .*#{kit_pattern}/
       else
         next
       end
