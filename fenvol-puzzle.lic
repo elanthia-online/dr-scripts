@@ -258,12 +258,19 @@ class FenvolPuzzle
     text.downcase.gsub(/[^a-z0-9\s-]/, ' ').squeeze(' ').strip
   end
 
+  # Strips leading article (a, an, the, some) from an item description.
+  # @param text [String]
+  # @return [String]
+  def strip_article(text)
+    text.sub(/\A(?:a|an|the|some) /i, '')
+  end
+
   # Checks whether an item description appears in the poem.
   # @param item_text [String]
   # @return [Boolean]
   def in_poem?(item_text)
     phrase = normalize_text(item_text)
-    phrase = phrase.sub(/\A(?:a|an|the) /, '')
+    phrase = strip_article(phrase)
     @poem.include?(phrase)
   end
 
@@ -365,7 +372,7 @@ class FenvolPuzzle
   # @param container [String] container noun phrase used to open it
   # @param item_text [String] item description
   def turn_item(container, item_text)
-    item_noun = DRC.get_noun(item_text)
+    item_noun = DRC.get_noun(strip_article(item_text))
     echo "#{container}: \"#{item_text}\" -- IN POEM, turning."
     turn_result = DRC.bput("turn #{item_noun} in #{container}", TURN_SUCCESS_PATTERN, TURN_FAILURE_PATTERN)
     return unless turn_result =~ TURN_SUCCESS_PATTERN
@@ -455,7 +462,7 @@ class FenvolPuzzle
     return true unless item && !item.to_s.empty?
 
     item_text = item.to_s.downcase
-    noun = DRC.get_noun(item_text)
+    noun = GameObj.right_hand&.noun || item_text.split.last
 
     if @discard_list.any? { |pattern| item_text.include?(pattern) }
       echo "Discarding #{item} (matches discard list)."
