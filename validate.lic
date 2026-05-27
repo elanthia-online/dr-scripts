@@ -134,7 +134,7 @@ class DRYamlValidator
   def assert_that_appraisal_training_settings_are_valid(settings)
     return if settings.appraisal_training.empty?
 
-    valid_settings = %w[pouches zills art gear bundle]
+    valid_settings = %w[pouches kit_pouches zills art gear bundle]
     bad_settings = settings.appraisal_training - valid_settings
     return if bad_settings.nil? || bad_settings.empty?
 
