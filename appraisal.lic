@@ -29,7 +29,12 @@ class Appraisal
     end
 
     if args.count
-      @count = true
+      if settings.low_value_gem_pouch_container.to_s.empty?
+        echo '"count" passed as an argument, but no low_value_gem_pouch_container defined. Skipping counting.'
+        @count = false
+      else
+        @count = true
+      end
     end
 
     pouch_low_value = (settings.gem_pouch_low_value || 1).to_i
@@ -101,10 +106,6 @@ class Appraisal
         DRC.message("Low value pouch found, putting it into low_value_gem_pouch_container")
         chosen_container = low_value_gem_pouch_container
       end
-      if @count && low_value_gem_pouch_container.to_s.empty?
-        DRC.message("\"count\" passed as an argument, but no low_value_gem_pouch_container defined. Skipping counting.")
-        @count = false
-      end
       if @count
         /(\d+)/ =~ DRC.bput("count my #{name}", /You sort through the contents .* and find \d+ gems in it/)
         pouch_count = Regexp.last_match(1).to_i
@@ -114,8 +115,14 @@ class Appraisal
         end
       end
     when /There doesn.t appear to be anything in/
-      DRC.message("Empty pouch found, putting it into spare_gem_pouch_container")
-      chosen_container = spare_gem_pouch_container
+      if spare_gem_pouch_container.to_s.empty?
+        DRC.message("Empty pouch found, but no spare_gem_pouch_container defined. Leaving in default container.")
+      else
+        DRC.message("Empty pouch found, putting it into spare_gem_pouch_container")
+        chosen_container = spare_gem_pouch_container
+      end
+    else
+      DRC.message("Unrecognized appraise result for #{name}: #{result.inspect}. Pouch not classified by value; routing to default container.")
     end
 
     DRC.bput("close my #{name}", /You close your/, /That is already closed/) if opened_here
@@ -147,16 +154,18 @@ class Appraisal
 
   def count_kit_pouches(gem_kit_name)
     count = 0
+    in_listing = false
     clear
     put "rummage my #{gem_kit_name}"
     timer = Time.now
-    while Time.now - timer < 10
+    while Time.now - timer < 20
       line = get?
       if line.nil?
         pause 0.1
         next
       end
-      if (m = line.match(/^\s*(\d+)\.\s+/))
+      in_listing = true if line =~ /^Rummaging through .* you find it contains:/i
+      if in_listing && (m = line.match(/^\s*(\d+)\.\s+/))
         n = m[1].to_i
         count = n if n > count
       end
@@ -270,5 +279,5 @@ class Appraisal
   end
 end
 
-# Call this last to avoid the need for forward declarations
+# Call this last
 Appraisal.new
