@@ -563,7 +563,7 @@ def display_requirements(requirements, level_target, brief, pretty_print)
     end
   end
 
-  # Headline meters — shown in both prettyprint and traditional mode.
+  # Headline meters - shown in both prettyprint and traditional mode.
   DRC.message("___________________________________________________________")
   tdps_capped = DRStats.circle >= 150
   if pretty_print
@@ -589,7 +589,7 @@ def display_requirements(requirements, level_target, brief, pretty_print)
     respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(circle_pct)} #{circle_pct}%  ->  Circle #{level_target} (#{total_agg_gained} of #{total_agg_gap} ranks earned)")
   end
 
-  # Bottleneck row (only when there is one) — sits under Circle Progress since it explains the % gap.
+  # Bottleneck row (only when there is one) - sits under Circle Progress since it explains the % gap.
   if bottleneck_info
     b_name, b_gained, b_gap = bottleneck_info
     respond(" #{'Bottleneck:'.ljust(18)}#{b_name} - #{b_gained} of #{b_gap} ranks for circle #{level_target}")
