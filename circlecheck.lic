@@ -524,46 +524,31 @@ def display_requirements(requirements, level_target, brief, pretty_print)
            0
          end
 
-  # Circle Progress: slowest blocking skill's progress toward level_target.
-  # circle_pct is nil when capped at 200th circle (no next circle exists).
-  # Metric depends on target distance:
-  #   - next circle (target = current+1): gap-based (gained/gap for this circle's chunk).
-  #     High dynamic range; expected to reset when you circle.
-  #   - multi-circle (target > current+1): absolute (current_ranks / required_for_target).
-  #     Monotonic; doesn't reset on circling, so users tracking a long-term goal
-  #     see steady forward progress.
+  # Circle Progress: aggregate gap-based progress toward level_target.
+  # Per skill, gap = ranks needed at level_target minus ranks needed at current circle,
+  # and gained = how much of that gap the player currently has (clamped 0..gap).
+  # Sum across requirements gives a monotonic %, scales naturally to next-circle or
+  # multi-circle targets, and doesn't reset when you circle.
   circle_capped = DRStats.circle >= 200
-  multi_circle_target = level_target > DRStats.circle + 1
   circle_pct = nil
   bottleneck_info = nil
-  all_maxed = requirements.all? { |req| req[3] >= 1750 }
+  total_agg_gap = 0
+  total_agg_gained = 0
   unless circle_capped
+    total_agg_gap = requirements.sum { |req| req[5] }
+    total_agg_gained = requirements.sum { |req| req[4] }
+    circle_pct = total_agg_gap.zero? ? 100 : ((total_agg_gained.to_f / total_agg_gap) * 100).round
+
+    # Bottleneck = the single blocking skill that needs the most ranks to reach target.
     blockers = requirements.select { |req| req[1] < level_target }
-    if blockers.empty?
-      circle_pct = 100
-    else
-      # Bottleneck = skill needing the most absolute ranks to reach target.
-      # That's the real grind, regardless of how far through its own gap it is.
+    unless blockers.empty?
       bottleneck = blockers.max_by { |req| req[2] }
-      b_name, _b_met, b_missing, b_ranks, b_gained, b_gap = bottleneck
-      if multi_circle_target
-        b_target_ranks = b_ranks + b_missing
-        circle_pct = b_target_ranks.zero? ? 100 : ((b_ranks.to_f / b_target_ranks) * 100).round
-        bottleneck_info = [b_name, b_ranks, b_target_ranks, :absolute]
-      else
-        circle_pct = b_gap.zero? ? 100 : ((b_gained.to_f / b_gap) * 100).round
-        bottleneck_info = [b_name, b_gained, b_gap, :gap]
-      end
+      b_name, _b_met, _b_missing, _b_ranks, b_gained, b_gap = bottleneck
+      bottleneck_info = [b_name, b_gained, b_gap]
     end
   end
 
-  # Cap Progress: total ranks across requirement skills vs 1750-per-skill max.
-  cap_per_skill = 1750
-  total_ranks = requirements.sum { |req| [req[3], cap_per_skill].min }
-  max_ranks = requirements.size * cap_per_skill
-  cap_pct = max_ranks.zero? ? 100 : ((total_ranks.to_f / max_ranks) * 100).round
-
-  # Headline meters - shown in both prettyprint and traditional mode.
+  # Headline meters — shown in both prettyprint and traditional mode.
   DRC.message("___________________________________________________________")
   tdps_capped = DRStats.circle >= 150
   if pretty_print
@@ -584,23 +569,15 @@ def display_requirements(requirements, level_target, brief, pretty_print)
 
   # Circle Progress row
   if circle_capped
-    respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(100)} CAPPED")
+    respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(100)} Capped")
   else
-    respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(circle_pct)} #{circle_pct}%  ->  Circle #{level_target}")
+    respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(circle_pct)} #{circle_pct}%  ->  Circle #{level_target} (#{total_agg_gained} of #{total_agg_gap} ranks earned)")
   end
 
-  # Bottleneck row (only when there is one) - sits under Circle Progress since it explains the % gap.
+  # Bottleneck row (only when there is one) — sits under Circle Progress since it explains the % gap.
   if bottleneck_info
-    b_name, b_n, b_d, b_kind = bottleneck_info
-    suffix = b_kind == :gap ? " (this circle)" : ""
-    respond(" #{'Bottleneck:'.ljust(18)}#{b_name} - #{b_n} of #{b_d} ranks#{suffix}")
-  end
-
-  # Cap Progress row - long-term goal, sits below the circle-related rows.
-  if all_maxed
-    respond(" #{'Cap Progress:'.ljust(18)}#{progress_bar(100)} All Rank Requirements Capped")
-  else
-    respond(" #{'Cap Progress:'.ljust(18)}#{progress_bar(cap_pct)} #{cap_pct}%  ->  #{total_ranks} / #{max_ranks} ranks")
+    b_name, b_gained, b_gap = bottleneck_info
+    respond(" #{'Bottleneck:'.ljust(18)}#{b_name} - #{b_gained} of #{b_gap} ranks for circle #{level_target}")
   end
 
   respond("")
@@ -768,29 +745,38 @@ end
 def calc_requirement(skill_info, costs, level_target)
   name, ranks = skill_info
   echo("calc_requirement #{ranks}:#{costs}") if $debug_mode_cc
+  current_circle = DRStats.circle
   required_rank = 0
-  required_rank_at_met = 0
+  required_rank_at_current = 0
+  required_rank_at_target = 0
   met_circle = 0
   (1..200).each do |circle|
     cost = costs.find { |cap, _| circle <= cap }.last
     if required_rank + cost <= ranks || circle < level_target
-      if required_rank + cost <= ranks
-        met_circle = circle
-        required_rank_at_met = required_rank + cost
-      end
+      met_circle = circle if required_rank + cost <= ranks
       required_rank += cost
+      required_rank_at_current = required_rank if circle == current_circle
+      required_rank_at_target = required_rank if circle == level_target
       next
     else
       echo("circle #{circle}, cost:#{cost} ranks:#{ranks} required_rank:#{required_rank}") if $debug_mode_cc
-      target_required = required_rank + cost
-      gap = target_required - required_rank_at_met
-      gained = ranks - required_rank_at_met
-      gained = 0 if gained < 0
-      gained = gap if gained > gap
-      return [name, met_circle, cost - (ranks - required_rank), ranks, gained, gap]
+      required_rank_at_target = required_rank + cost if circle == level_target
+      required_rank_at_current = required_rank if circle == current_circle
+      agg_gap = required_rank_at_target - required_rank_at_current
+      agg_gap = 0 if agg_gap < 0
+      agg_gained = ranks - required_rank_at_current
+      agg_gained = 0 if agg_gained < 0
+      agg_gained = agg_gap if agg_gained > agg_gap
+      return [name, met_circle, cost - (ranks - required_rank), ranks, agg_gained, agg_gap]
     end
   end
-  [name, 200, ranks - required_rank, ranks, 1, 1]
+  # Player exceeds all 200 circles in this skill
+  agg_gap = required_rank_at_target - required_rank_at_current
+  agg_gap = 0 if agg_gap < 0
+  agg_gained = ranks - required_rank_at_current
+  agg_gained = 0 if agg_gained < 0
+  agg_gained = agg_gap if agg_gained > agg_gap
+  [name, 200, ranks - required_rank, ranks, agg_gained, agg_gap]
 end
 
 def calc_requirements(reqs, type, level_target)
