@@ -289,6 +289,11 @@ RSpec.describe 'Utility Functions' do
   end
 
   describe '#verify_script' do
+    it 'returns true when script exists' do
+      allow(Script).to receive(:exists?).and_return(true)
+      expect(verify_script('present-script')).to be true
+    end
+
     it 'returns false when script does not exist' do
       expect(verify_script('nonexistent-script')).to be false
     end
