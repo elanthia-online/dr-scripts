@@ -82,6 +82,14 @@ module DRC
   end
 end
 
+module GameObj
+  @right_hand = nil
+
+  class << self
+    attr_accessor :right_hand
+  end
+end
+
 module DRCI
   def self.get_item?(*_args)
     true
@@ -142,6 +150,12 @@ end
 
 def before_dying(&_block); end
 
+def set_right_hand(name, noun = nil)
+  $right_hand = name
+  noun ||= name&.to_s&.split&.last
+  GameObj.right_hand = noun ? OpenStruct.new(noun: noun) : nil
+end
+
 load_lic_class('fenvol-puzzle.lic', 'FenvolPuzzle')
 
 RSpec.configure do |config|
@@ -149,6 +163,7 @@ RSpec.configure do |config|
     reset_data
     $right_hand = nil
     $left_hand = nil
+    GameObj.right_hand = nil
     XMLData.room_title = 'Test Room'
   end
 end
@@ -684,38 +699,38 @@ RSpec.describe FenvolPuzzle do
   # -------------------------------------------------------------------
   describe '#stow_reward' do
     it 'returns true when right hand is empty' do
-      $right_hand = nil
+      set_right_hand(nil)
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'returns true when right hand is empty string' do
-      $right_hand = ''
+      set_right_hand('')
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'discards item via put_away_item_unsafe? into room bucket (no "my" prefix)' do
-      $right_hand = 'silk dress'
+      set_right_hand('silk dress', 'dress')
       instance.instance_variable_set(:@discard_list, ['dress'])
       expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'stows item via DRCI.put_away_item? into configured containers' do
-      $right_hand = 'silver ring'
+      set_right_hand('silver ring', 'ring')
       instance.instance_variable_set(:@containers, ['canvas sack in my back'])
       expect(DRCI).to receive(:put_away_item?).with('ring', ['canvas sack in my back']).and_return(true)
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'returns true when no discard list and no container set' do
-      $right_hand = 'silver ring'
+      set_right_hand('silver ring', 'ring')
       instance.instance_variable_set(:@discard_list, [])
       instance.instance_variable_set(:@containers, [])
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'prefers discarding over stowing when both match' do
-      $right_hand = 'old dress'
+      set_right_hand('old dress', 'dress')
       instance.instance_variable_set(:@discard_list, ['dress'])
       instance.instance_variable_set(:@containers, ['backpack'])
       expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
@@ -723,20 +738,20 @@ RSpec.describe FenvolPuzzle do
     end
 
     it 'returns true when container is empty string (no-op)' do
-      $right_hand = 'silver ring'
+      set_right_hand('silver ring', 'ring')
       instance.instance_variable_set(:@containers, [])
       expect(instance.send(:stow_reward)).to be true
     end
 
     it 'matches discard list case-insensitively via downcase' do
-      $right_hand = 'Fancy DRESS'
+      set_right_hand('Fancy DRESS', 'dress')
       instance.instance_variable_set(:@discard_list, ['dress'])
       expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
       instance.send(:stow_reward)
     end
 
     it 'matches multi-word discard patterns against full item text' do
-      $right_hand = 'a heavy iron battle axe'
+      set_right_hand('a heavy iron battle axe', 'axe')
       instance.instance_variable_set(:@discard_list, ['battle axe'])
       allow(instance).to receive(:echo)
       expect(DRCI).to receive(:put_away_item_unsafe?).with('my axe', 'bucket').and_return(true)
@@ -744,7 +759,7 @@ RSpec.describe FenvolPuzzle do
     end
 
     it 'does not discard when multi-word pattern does not match' do
-      $right_hand = 'a woodcutter axe'
+      set_right_hand('a woodcutter axe', 'axe')
       instance.instance_variable_set(:@discard_list, ['battle axe'])
       instance.instance_variable_set(:@containers, ['backpack'])
       allow(DRCI).to receive(:put_away_item?).and_return(true)
@@ -753,7 +768,7 @@ RSpec.describe FenvolPuzzle do
     end
 
     it 'matches single-word discard pattern as substring of full item text' do
-      $right_hand = 'a brilliant scarlet camlet cloak'
+      set_right_hand('a brilliant scarlet camlet cloak', 'cloak')
       instance.instance_variable_set(:@discard_list, ['cloak'])
       allow(instance).to receive(:echo)
       expect(DRCI).to receive(:put_away_item_unsafe?).with('my cloak', 'bucket').and_return(true)
@@ -761,14 +776,14 @@ RSpec.describe FenvolPuzzle do
     end
 
     it 'returns false when DRCI.put_away_item? fails (all containers full)' do
-      $right_hand = 'silver ring'
+      set_right_hand('silver ring', 'ring')
       instance.instance_variable_set(:@containers, ['backpack'])
       allow(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(false)
       expect(instance.send(:stow_reward)).to be false
     end
 
     it 'passes multiple containers to DRCI.put_away_item? which tries each' do
-      $right_hand = 'quarterstaff'
+      set_right_hand('quarterstaff', 'quarterstaff')
       instance.instance_variable_set(:@containers, ['sack', 'rucksack'])
       expect(DRCI).to receive(:put_away_item?).with('quarterstaff', ['sack', 'rucksack']).and_return(true)
       expect(instance.send(:stow_reward)).to be true
@@ -1647,15 +1662,23 @@ RSpec.describe FenvolPuzzle do
     end
 
     describe '#stow_reward with tricky item names' do
-      it 'extracts noun from multi-word item' do
-        $right_hand = 'ornate silver ring'
+      it 'uses GameObj.right_hand.noun for multi-word item' do
+        set_right_hand('ornate silver ring', 'ring')
         instance.instance_variable_set(:@containers, ['backpack'])
         expect(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(true)
         instance.send(:stow_reward)
       end
 
       it 'handles single-word item' do
-        $right_hand = 'ring'
+        set_right_hand('ring', 'ring')
+        instance.instance_variable_set(:@containers, ['backpack'])
+        expect(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(true)
+        instance.send(:stow_reward)
+      end
+
+      it 'falls back to split.last when GameObj.right_hand is nil' do
+        $right_hand = 'ornate silver ring'
+        GameObj.right_hand = nil
         instance.instance_variable_set(:@containers, ['backpack'])
         expect(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(true)
         instance.send(:stow_reward)
@@ -1777,6 +1800,7 @@ RSpec.describe FenvolPuzzle do
         obj = double('item', to_s: 'fancy dress', empty?: false)
         allow(obj).to receive(:downcase).and_return('fancy dress')
         $right_hand = obj
+        GameObj.right_hand = OpenStruct.new(noun: 'dress')
         instance.instance_variable_set(:@discard_list, ['dress'])
         allow(instance).to receive(:echo)
         expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)
