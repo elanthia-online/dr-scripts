@@ -8905,14 +8905,14 @@ crafting_recipes:
   volume: 1
   type: remedies
   work_order: false
-  chapter: 
+  chapter: # Instructions only, not in crafting book.
   container: bowl
   herb1: purple blossom
-  herb1_stock: 
+  herb1_stock: # Not purchasable at the society
   herb2: white blossom
-  herb2_stock: 
+  herb2_stock: # Not purchasable at the society
   herb3: pink blossom
-  herb3_stock: 
+  herb3_stock: # Not purchasable at the society
   liquid: water
 ####################################
 ##### Enchanting section ends #####
