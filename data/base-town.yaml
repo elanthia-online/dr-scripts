@@ -1636,7 +1636,7 @@ Ain Ghazal:
       id: 13663
   #Needs attunement_rooms
 Hara'jaal:
-  currency: lirum
+  currency: lirums
   leather_repair: &ushei
     id: 15313
     name: Ushei

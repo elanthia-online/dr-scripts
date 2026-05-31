@@ -8508,6 +8508,15 @@ crafting_recipes:
   container: mortar
   herb1: plovik
   herb1_stock: 4
+- name: some head unguent
+  noun: unguent
+  volume: 1
+  type: remedies
+  work_order: true
+  chapter: 3
+  container: mortar
+  herb1: nemoih
+  herb1_stock: 3
 - name: some back unguent
   noun: unguent
   volume: 1
@@ -8891,6 +8900,20 @@ crafting_recipes:
   herb1: belradi
   herb1-stock:
   liquid: alcohol
+- name: some alyssum tea
+  noun: tea
+  volume: 1
+  type: remedies
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  container: bowl
+  herb1: purple blossom
+  herb1_stock: # Not purchasable at the society
+  herb2: white blossom
+  herb2_stock: # Not purchasable at the society
+  herb3: pink blossom
+  herb3_stock: # Not purchasable at the society
+  liquid: water
 ####################################
 ##### Enchanting section ends #####
 ####################################
