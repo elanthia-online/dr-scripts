@@ -46,16 +46,6 @@ module DRC
   end
 end unless defined?(DRC)
 
-module Lich
-  module Common
-    class ArgParser
-      def parse_args(*_args)
-        OpenStruct.new
-      end
-    end
-  end
-end unless defined?(Lich::Common::ArgParser)
-
 def get_settings(*)
   {}
 end unless defined?(get_settings)
@@ -83,6 +73,7 @@ class UserVars
 end unless defined?(UserVars)
 
 load_lic_constant('researcher.lic', 'VALID_RESEARCH_TOPICS')
+load_lic_constant('researcher.lic', 'VALID_SYMBIOSIS_TYPES')
 load_lic_class('researcher.lic', 'Researcher')
 
 RSpec.describe Researcher do
@@ -634,36 +625,6 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
-  # display_help_and_exit
-  # ---------------------------------------------------------------------------
-  describe '#display_help_and_exit' do
-    before { allow(DRC).to receive(:message) }
-
-    it 'exits after displaying help' do
-      researcher.send(:display_help_and_exit)
-      expect(researcher).to have_received(:exit)
-    end
-
-    it 'mentions all valid research topics' do
-      researcher.send(:display_help_and_exit)
-      VALID_RESEARCH_TOPICS.each do |topic|
-        expect(DRC).to have_received(:message).with(/#{topic}/).at_least(:once)
-      end
-    end
-
-    it 'mentions symbiosis types' do
-      researcher.send(:display_help_and_exit)
-      expect(DRC).to have_received(:message).with(/activate/).at_least(:once)
-      expect(DRC).to have_received(:message).with(/spell/).at_least(:once)
-    end
-
-    it 'mentions YAML configuration' do
-      researcher.send(:display_help_and_exit)
-      expect(DRC).to have_received(:message).with(/YAML/).at_least(:once)
-    end
-  end
-
-  # ---------------------------------------------------------------------------
   # Integration-style: check_status -> researching interaction
   # ---------------------------------------------------------------------------
   describe 'check_status and researching interaction' do
@@ -752,6 +713,129 @@ RSpec.describe Researcher do
   # ---------------------------------------------------------------------------
   # VALID_RESEARCH_TOPICS constant
   # ---------------------------------------------------------------------------
+  # resolve_topic
+  # ---------------------------------------------------------------------------
+  describe '#resolve_topic' do
+    context 'with a skill argument' do
+      VALID_RESEARCH_TOPICS.each do |topic|
+        it "returns '#{topic}' when skill is '#{topic}'" do
+          args = OpenStruct.new(skill: topic)
+          expect(researcher.send(:resolve_topic, args)).to eq(topic)
+        end
+      end
+
+      it "returns 'attunement' when skill is 'attunement'" do
+        args = OpenStruct.new(skill: 'attunement')
+        expect(researcher.send(:resolve_topic, args)).to eq('attunement')
+      end
+    end
+
+    context 'with symbiosis arguments' do
+      VALID_SYMBIOSIS_TYPES.each do |sym_type|
+        it "returns 'symbiosis #{sym_type}' for type '#{sym_type}'" do
+          args = OpenStruct.new(symbiosis: 'symbiosis', sym_type: sym_type)
+          expect(researcher.send(:resolve_topic, args)).to eq("symbiosis #{sym_type}")
+        end
+      end
+
+      it 'exits when symbiosis is set but sym_type is nil' do
+        allow(DRC).to receive(:message)
+        args = OpenStruct.new(symbiosis: 'symbiosis')
+        researcher.send(:resolve_topic, args)
+        expect(researcher).to have_received(:exit)
+      end
+
+      it 'shows usage hint when sym_type is missing' do
+        allow(DRC).to receive(:message)
+        args = OpenStruct.new(symbiosis: 'symbiosis')
+        researcher.send(:resolve_topic, args)
+        expect(DRC).to have_received(:message).with(/requires a type/)
+      end
+    end
+
+    context 'with no CLI arguments (YAML fallback)' do
+      it 'returns the YAML topic when configured' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
+        args = OpenStruct.new
+        expect(researcher.send(:resolve_topic, args)).to eq('warding')
+      end
+
+      it 'exits when no YAML topic is configured' do
+        allow(DRC).to receive(:message)
+        researcher.instance_variable_set(:@settings, {})
+        args = OpenStruct.new
+        researcher.send(:resolve_topic, args)
+        expect(researcher).to have_received(:exit)
+      end
+
+      it 'exits when research key exists but topic is nil' do
+        allow(DRC).to receive(:message)
+        researcher.instance_variable_set(:@settings, { 'research' => {} })
+        args = OpenStruct.new
+        researcher.send(:resolve_topic, args)
+        expect(researcher).to have_received(:exit)
+      end
+
+      it 'shows a helpful error when no topic is configured' do
+        allow(DRC).to receive(:message)
+        researcher.instance_variable_set(:@settings, {})
+        args = OpenStruct.new
+        researcher.send(:resolve_topic, args)
+        expect(DRC).to have_received(:message).with(/No research topic specified/)
+      end
+    end
+
+    context 'argument precedence' do
+      it 'prefers skill over YAML settings' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
+        args = OpenStruct.new(skill: 'augmentation')
+        expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+
+      it 'prefers symbiosis over YAML settings' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
+        args = OpenStruct.new(symbiosis: 'symbiosis', sym_type: 'cast')
+        expect(researcher.send(:resolve_topic, args)).to eq('symbiosis cast')
+      end
+
+      it 'prefers skill over symbiosis when both are set' do
+        args = OpenStruct.new(skill: 'augmentation', symbiosis: 'symbiosis', sym_type: 'cast')
+        expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # resolve_topic + validate_research_topic integration
+  # ---------------------------------------------------------------------------
+  describe 'resolve_topic -> validate_research_topic pipeline' do
+    it 'normalizes attunement from CLI to stream' do
+      args = OpenStruct.new(skill: 'attunement')
+      researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+      researcher.send(:validate_research_topic)
+      expect(researcher.instance_variable_get(:@current_topic)).to eq('stream')
+    end
+
+    it 'passes symbiosis topics through validation unchanged' do
+      args = OpenStruct.new(symbiosis: 'symbiosis', sym_type: 'heal')
+      researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+      researcher.send(:validate_research_topic)
+      expect(researcher.instance_variable_get(:@current_topic)).to eq('symbiosis heal')
+    end
+
+    VALID_RESEARCH_TOPICS.each do |topic|
+      it "round-trips '#{topic}' from CLI through validation" do
+        args = OpenStruct.new(skill: topic)
+        researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+        researcher.send(:validate_research_topic)
+        expect(researcher).not_to have_received(:exit)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # VALID_RESEARCH_TOPICS constant
+  # ---------------------------------------------------------------------------
   describe 'VALID_RESEARCH_TOPICS' do
     it 'is frozen' do
       expect(VALID_RESEARCH_TOPICS).to be_frozen
@@ -770,6 +854,74 @@ RSpec.describe Researcher do
 
     it 'does not include symbiosis (handled separately)' do
       expect(VALID_RESEARCH_TOPICS).not_to include('symbiosis')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # VALID_SYMBIOSIS_TYPES constant
+  # ---------------------------------------------------------------------------
+  describe 'VALID_SYMBIOSIS_TYPES' do
+    it 'is frozen' do
+      expect(VALID_SYMBIOSIS_TYPES).to be_frozen
+    end
+
+    it 'contains all valid symbiosis types' do
+      expect(VALID_SYMBIOSIS_TYPES).to contain_exactly(
+        'activate', 'avoid', 'cast', 'discern', 'endure', 'examine', 'explore',
+        'harness', 'harvest', 'heal', 'impress', 'learn', 'perform', 'remember',
+        'resolve', 'spell', 'spring', 'strengthen', 'watch'
+      )
+    end
+
+    it 'includes spell (overlaps with VALID_RESEARCH_TOPICS)' do
+      expect(VALID_SYMBIOSIS_TYPES).to include('spell')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # get_args arg definitions structure
+  # ---------------------------------------------------------------------------
+  describe '#get_args structure' do
+    it 'uses a single arg pattern (not multiple exclusive patterns)' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      expect(@captured_defs.length).to eq(1), 'Expected a single arg pattern to avoid multi-pattern match conflicts'
+    end
+
+    it 'defines all args as optional' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      non_optional = @captured_defs.first.reject { |d| d[:optional] }
+      expect(non_optional).to be_empty, "Expected all args to be optional, but found required: #{non_optional.map { |d| d[:name] }}"
+    end
+
+    it 'includes attunement in skill options for alias support' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      skill_def = @captured_defs.first.find { |d| d[:name] == 'skill' }
+      expect(skill_def[:options]).to include('attunement')
+    end
+
+    it 'skill options include all VALID_RESEARCH_TOPICS' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      skill_def = @captured_defs.first.find { |d| d[:name] == 'skill' }
+      VALID_RESEARCH_TOPICS.each do |topic|
+        expect(skill_def[:options]).to include(topic), "skill options missing '#{topic}'"
+      end
+    end
+
+    it 'sym_type options match VALID_SYMBIOSIS_TYPES' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      sym_def = @captured_defs.first.find { |d| d[:name] == 'sym_type' }
+      expect(sym_def[:options]).to match_array(VALID_SYMBIOSIS_TYPES)
+    end
+
+    it 'calls parse_args (global) not Lich::Common::ArgParser directly' do
+      allow(researcher).to receive(:parse_args).and_return(OpenStruct.new)
+      researcher.send(:get_args)
+      expect(researcher).to have_received(:parse_args)
     end
   end
 end
