@@ -16,6 +16,11 @@ class Researcher
     @settings = get_settings
     args = get_args
 
+    unless DRSpells.known_spells.include?('Gauge Flow')
+      DRC.message("Gauge Flow is required to research. Exiting.")
+      exit
+    end
+
     @debug = args.debug || @settings.dig('research', 'debug') || false
     @current_topic = resolve_topic(args)
     add_flags
@@ -97,14 +102,14 @@ class Researcher
     Flags.add('research-complete', '^Breakthrough!', 'You complete reviewing your knowledge of the \w+ symbiosis and commit the details to memory') unless Flags['research-complete']
   end
 
+  # Queries game for research state. Always sets researching=false so
+  # start_research runs and validates the topic is correct via the game
+  # response ("You are already busy" or "You cannot begin" -> cancel).
+  #
   # @return [void]
   def check_status
-    case DRC.bput('research status', 'You estimate that you will complete it a few minutes from now', "You're not researching anything", "You have completed \d+% of a project about")
-    when 'You estimate that you will complete it a few minutes from now'
-      set_researching(true)
-    when "You're not researching anything", "You have completed \d+% of a project about"
-      set_researching(false)
-    end
+    DRC.bput('research status', 'You estimate that you will complete it a few minutes from now', "You're not researching anything", "You have completed \\d+% of a project about")
+    set_researching(false)
   end
 
   # @return [void]
