@@ -25,8 +25,8 @@ class Researcher
     @current_topic = resolve_topic(args)
     add_flags
     UserVars.researcher ||= {}
-    check_status
     validate_research_topic
+    check_status
     check_research
     loop do
       pause 5
@@ -121,8 +121,13 @@ class Researcher
     set_researching(false)
   end
 
+  # Cancels any active research. Sends three cancels to handle the worst
+  # case of active session + project: stop session, request cancel, confirm.
+  # Extra cancels when already cancelled are harmless ("not researching").
+  #
   # @return [void]
   def cancel_research
+    fput('research cancel')
     fput('research cancel')
     fput('research cancel')
   end

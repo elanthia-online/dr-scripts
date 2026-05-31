@@ -265,13 +265,13 @@ RSpec.describe Researcher do
       it 'cancels when a wrong topic is actively researched' do
         allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
         researcher.send(:check_status)
-        expect(researcher).to have_received(:fput).with('research cancel').twice
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
       end
 
       it 'cancels when a wrong topic is partially complete' do
         allow(DRC).to receive(:bput).and_return("You have completed \\d+% of a project about")
         researcher.send(:check_status)
-        expect(researcher).to have_received(:fput).with('research cancel').twice
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
       end
 
       it 'does not cancel when not researching anything' do
@@ -291,7 +291,7 @@ RSpec.describe Researcher do
         researcher.instance_variable_set(:@current_topic, 'symbiosis resolve')
         allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
         researcher.send(:check_status)
-        expect(researcher).to have_received(:fput).with('research cancel').twice
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
       end
     end
   end
@@ -551,7 +551,7 @@ RSpec.describe Researcher do
           call_count == 1 ? 'You cannot begin' : 'You focus'
         end
         researcher.send(:start_research)
-        expect(researcher).to have_received(:fput).with('research cancel').twice
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
       end
 
       it 'exits on "Usage:"' do
@@ -694,7 +694,7 @@ RSpec.describe Researcher do
     it 'check_status cancels wrong topic before start_research runs' do
       allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
       researcher.send(:check_status)
-      expect(researcher).to have_received(:fput).with('research cancel').twice
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
     end
 
     it 'check_status does not cancel when right topic is active' do
@@ -711,7 +711,7 @@ RSpec.describe Researcher do
         call_count == 1 ? 'You cannot begin' : 'You focus'
       end
       researcher.send(:start_research)
-      expect(researcher).to have_received(:fput).with('research cancel').twice
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
       expect(UserVars.researcher['researching']).to be true
     end
 
@@ -727,7 +727,7 @@ RSpec.describe Researcher do
 
       allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
       researcher.send(:check_status)
-      expect(researcher).to have_received(:fput).with('research cancel').twice
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
 
       allow(DRC).to receive(:bput).and_return('You focus')
       researcher.send(:start_research)
@@ -763,7 +763,7 @@ RSpec.describe Researcher do
         call_count == 1 ? 'You cannot begin' : 'You focus'
       end
       researcher.send(:start_research)
-      expect(researcher).to have_received(:fput).with('research cancel').exactly(2).times
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
     end
 
     it 'eventually succeeds after cancel' do
