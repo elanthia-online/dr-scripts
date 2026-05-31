@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'ostruct'
-
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 include Harness
 
@@ -711,21 +709,21 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
-  # VALID_RESEARCH_TOPICS constant
-  # ---------------------------------------------------------------------------
-  # resolve_topic
+  # resolve_topic (via get_args -> resolve_topic, using $parsed_args harness)
   # ---------------------------------------------------------------------------
   describe '#resolve_topic' do
     context 'with a skill argument' do
       VALID_RESEARCH_TOPICS.each do |topic|
         it "returns '#{topic}' when skill is '#{topic}'" do
-          args = OpenStruct.new(skill: topic)
+          $parsed_args = { skill: topic }
+          args = researcher.send(:get_args)
           expect(researcher.send(:resolve_topic, args)).to eq(topic)
         end
       end
 
       it "returns 'attunement' when skill is 'attunement'" do
-        args = OpenStruct.new(skill: 'attunement')
+        $parsed_args = { skill: 'attunement' }
+        args = researcher.send(:get_args)
         expect(researcher.send(:resolve_topic, args)).to eq('attunement')
       end
     end
@@ -733,21 +731,24 @@ RSpec.describe Researcher do
     context 'with symbiosis arguments' do
       VALID_SYMBIOSIS_TYPES.each do |sym_type|
         it "returns 'symbiosis #{sym_type}' for type '#{sym_type}'" do
-          args = OpenStruct.new(symbiosis: 'symbiosis', sym_type: sym_type)
+          $parsed_args = { symbiosis: 'symbiosis', sym_type: sym_type }
+          args = researcher.send(:get_args)
           expect(researcher.send(:resolve_topic, args)).to eq("symbiosis #{sym_type}")
         end
       end
 
       it 'exits when symbiosis is set but sym_type is nil' do
         allow(DRC).to receive(:message)
-        args = OpenStruct.new(symbiosis: 'symbiosis')
+        $parsed_args = { symbiosis: 'symbiosis' }
+        args = researcher.send(:get_args)
         researcher.send(:resolve_topic, args)
         expect(researcher).to have_received(:exit)
       end
 
       it 'shows usage hint when sym_type is missing' do
         allow(DRC).to receive(:message)
-        args = OpenStruct.new(symbiosis: 'symbiosis')
+        $parsed_args = { symbiosis: 'symbiosis' }
+        args = researcher.send(:get_args)
         researcher.send(:resolve_topic, args)
         expect(DRC).to have_received(:message).with(/requires a type/)
       end
@@ -756,14 +757,16 @@ RSpec.describe Researcher do
     context 'with no CLI arguments (YAML fallback)' do
       it 'returns the YAML topic when configured' do
         researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
-        args = OpenStruct.new
+        $parsed_args = {}
+        args = researcher.send(:get_args)
         expect(researcher.send(:resolve_topic, args)).to eq('warding')
       end
 
       it 'exits when no YAML topic is configured' do
         allow(DRC).to receive(:message)
         researcher.instance_variable_set(:@settings, {})
-        args = OpenStruct.new
+        $parsed_args = {}
+        args = researcher.send(:get_args)
         researcher.send(:resolve_topic, args)
         expect(researcher).to have_received(:exit)
       end
@@ -771,7 +774,8 @@ RSpec.describe Researcher do
       it 'exits when research key exists but topic is nil' do
         allow(DRC).to receive(:message)
         researcher.instance_variable_set(:@settings, { 'research' => {} })
-        args = OpenStruct.new
+        $parsed_args = {}
+        args = researcher.send(:get_args)
         researcher.send(:resolve_topic, args)
         expect(researcher).to have_received(:exit)
       end
@@ -779,7 +783,8 @@ RSpec.describe Researcher do
       it 'shows a helpful error when no topic is configured' do
         allow(DRC).to receive(:message)
         researcher.instance_variable_set(:@settings, {})
-        args = OpenStruct.new
+        $parsed_args = {}
+        args = researcher.send(:get_args)
         researcher.send(:resolve_topic, args)
         expect(DRC).to have_received(:message).with(/No research topic specified/)
       end
@@ -788,36 +793,62 @@ RSpec.describe Researcher do
     context 'argument precedence' do
       it 'prefers skill over YAML settings' do
         researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
-        args = OpenStruct.new(skill: 'augmentation')
+        $parsed_args = { skill: 'augmentation' }
+        args = researcher.send(:get_args)
         expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
       end
 
       it 'prefers symbiosis over YAML settings' do
         researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
-        args = OpenStruct.new(symbiosis: 'symbiosis', sym_type: 'cast')
+        $parsed_args = { symbiosis: 'symbiosis', sym_type: 'cast' }
+        args = researcher.send(:get_args)
         expect(researcher.send(:resolve_topic, args)).to eq('symbiosis cast')
       end
 
       it 'prefers skill over symbiosis when both are set' do
-        args = OpenStruct.new(skill: 'augmentation', symbiosis: 'symbiosis', sym_type: 'cast')
+        $parsed_args = { skill: 'augmentation', symbiosis: 'symbiosis', sym_type: 'cast' }
+        args = researcher.send(:get_args)
         expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+    end
+
+    context 'debug flag combinations' do
+      it 'does not interfere with skill resolution' do
+        $parsed_args = { skill: 'augmentation', debug: 'debug' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+
+      it 'does not interfere with symbiosis resolution' do
+        $parsed_args = { symbiosis: 'symbiosis', sym_type: 'cast', debug: 'debug' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('symbiosis cast')
+      end
+
+      it 'still falls through to YAML when only debug is set' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'utility' } })
+        $parsed_args = { debug: 'debug' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('utility')
       end
     end
   end
 
   # ---------------------------------------------------------------------------
-  # resolve_topic + validate_research_topic integration
+  # get_args -> resolve_topic -> validate_research_topic pipeline
   # ---------------------------------------------------------------------------
-  describe 'resolve_topic -> validate_research_topic pipeline' do
+  describe 'get_args -> resolve_topic -> validate_research_topic pipeline' do
     it 'normalizes attunement from CLI to stream' do
-      args = OpenStruct.new(skill: 'attunement')
+      $parsed_args = { skill: 'attunement' }
+      args = researcher.send(:get_args)
       researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
       researcher.send(:validate_research_topic)
       expect(researcher.instance_variable_get(:@current_topic)).to eq('stream')
     end
 
     it 'passes symbiosis topics through validation unchanged' do
-      args = OpenStruct.new(symbiosis: 'symbiosis', sym_type: 'heal')
+      $parsed_args = { symbiosis: 'symbiosis', sym_type: 'heal' }
+      args = researcher.send(:get_args)
       researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
       researcher.send(:validate_research_topic)
       expect(researcher.instance_variable_get(:@current_topic)).to eq('symbiosis heal')
@@ -825,11 +856,22 @@ RSpec.describe Researcher do
 
     VALID_RESEARCH_TOPICS.each do |topic|
       it "round-trips '#{topic}' from CLI through validation" do
-        args = OpenStruct.new(skill: topic)
+        $parsed_args = { skill: topic }
+        args = researcher.send(:get_args)
         researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
         researcher.send(:validate_research_topic)
         expect(researcher).not_to have_received(:exit)
       end
+    end
+
+    it 'round-trips debug + skill through the full pipeline' do
+      $parsed_args = { skill: 'warding', debug: 'debug' }
+      args = researcher.send(:get_args)
+      researcher.instance_variable_set(:@debug, args.debug || false)
+      researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+      researcher.send(:validate_research_topic)
+      expect(researcher.instance_variable_get(:@debug)).to be_truthy
+      expect(researcher.instance_variable_get(:@current_topic)).to eq('warding')
     end
   end
 
