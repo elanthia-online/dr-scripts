@@ -480,6 +480,30 @@ $GuildReqs = {
   }
 }
 
+CircleReq = Struct.new(:name, :met_circle, :missing_ranks, :ranks, :agg_gained, :agg_gap)
+
+def progress_bar(pct, width = 10)
+  pct = 0 if pct < 0
+  pct = 100 if pct > 100
+  filled = ((pct / 100.0) * width).round
+  # Stormfront / Wrayth mangle UTF-8 block chars; other clients render them fine.
+  # ($frontend reports either name depending on the version installed.)
+  filled_char, empty_char = %w[stormfront wrayth].include?($frontend) ? ['#', '-'] : ['█', '░']
+  "[" + (filled_char * filled) + (empty_char * (width - filled)) + "]"
+end
+
+# Clamp aggregate progress for one skill: how many ranks the player has gained
+# past the baseline (ranks needed at current circle) toward the target
+# (ranks needed at level_target). Returns [gained, gap], both >= 0 with gained <= gap.
+def clamp_progress(ranks, rank_at_current, rank_at_target)
+  gap = rank_at_target - rank_at_current
+  gap = 0 if gap < 0
+  gained = ranks - rank_at_current
+  gained = 0 if gained < 0
+  gained = gap if gained > gap
+  [gained, gap]
+end
+
 def main
   arg_definitions = [
     [
@@ -517,8 +541,66 @@ def display_requirements(requirements, level_target, brief, pretty_print)
            0
          end
 
-  # If the user has yaml set to circlecheck_prettyprint
-  # then handle top of display. Otherwise display traditional.
+  # Circle Progress: aggregate gap-based progress toward level_target.
+  # Per skill, gap = ranks needed at level_target minus ranks needed at current circle,
+  # and gained = how much of that gap the player currently has (clamped 0..gap).
+  # Sum across requirements gives a monotonic %, scales naturally to next-circle or
+  # multi-circle targets, and doesn't reset when you circle.
+  circle_capped = DRStats.circle >= 200
+  circle_pct = nil
+  bottleneck_info = nil
+  total_agg_gap = 0
+  total_agg_gained = 0
+  unless circle_capped
+    total_agg_gap = requirements.sum(&:agg_gap)
+    total_agg_gained = requirements.sum(&:agg_gained)
+    circle_pct = total_agg_gap.zero? ? 100 : ((total_agg_gained.to_f / total_agg_gap) * 100).round
+
+    # Bottleneck = the single blocking skill with the largest remaining gap toward
+    # level_target. Selecting and displaying the same metric (agg_gap - agg_gained)
+    # keeps the bottleneck row consistent with the aggregate meter.
+    blockers = requirements.select { |req| req.met_circle < level_target }
+    unless blockers.empty?
+      bottleneck = blockers.max_by { |req| req.agg_gap - req.agg_gained }
+      bottleneck_info = [bottleneck.name, bottleneck.agg_gained, bottleneck.agg_gap]
+    end
+  end
+
+  # Headline meters - shown in both prettyprint and traditional mode.
+  DRC.message("___________________________________________________________")
+  tdps_capped = DRStats.circle >= 150
+  if pretty_print
+    if tdps_capped
+      _respond " Current Circle:  <pushBold/>#{DRStats.circle}<popBold/>" +
+               " | TDPs:  #{DRStats.tdps}  (no TDPs awarded past circle 150)"
+    else
+      _respond " Current Circle:  <pushBold/>#{DRStats.circle}<popBold/>" +
+               " | Next Level TDPs:  #{DRStats.tdps} <pushBold/>+ #{tdps}<popBold/> = #{DRStats.tdps + tdps}"
+    end
+  else
+    if tdps_capped
+      respond(" Current Circle: #{DRStats.circle} | TDPs: #{DRStats.tdps}  (no TDPs awarded past circle 150)")
+    else
+      respond(" Current Circle: #{DRStats.circle} | Next Level TDPs: #{DRStats.tdps} + #{tdps} = #{DRStats.tdps + tdps}")
+    end
+  end
+
+  # Circle Progress row
+  if circle_capped
+    respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(100)} Capped")
+  else
+    respond(" #{'Circle Progress:'.ljust(18)}#{progress_bar(circle_pct)} #{circle_pct}%  ->  Circle #{level_target} (#{total_agg_gained} of #{total_agg_gap} ranks earned)")
+  end
+
+  # Bottleneck row (only when there is one) - sits under Circle Progress since it explains the % gap.
+  if bottleneck_info
+    b_name, b_gained, b_gap = bottleneck_info
+    respond(" #{'Bottleneck:'.ljust(18)}#{b_name} - #{b_gained} of #{b_gap} ranks for circle #{level_target}")
+  end
+
+  respond("")
+
+  # Per-skill row formatting depends on prettyprint setting.
   if pretty_print
     # Hash of column => spacing, which centralizes the formatting
     # to handle display of circlecheck columns and allows us to easily
@@ -534,13 +616,6 @@ def display_requirements(requirements, level_target, brief, pretty_print)
       8 => 3
     }
 
-    # This outputs the beginning section of circle check, which
-    # gives your current circle and your TDPs at next level.
-    DRC.message("___________________________________________________________")
-    _respond " Current Circle:  <pushBold/>#{DRStats.circle}<popBold/>" +
-             " | Next Level TDPs:  #{DRStats.tdps} <pushBold/>+ #{tdps}<popBold/> = #{DRStats.tdps + tdps}"
-    respond("")
-
     # Set column headings for later display for prettyprint
     column_headings =
       "SKILL".center(column_spacing[1]) +
@@ -548,13 +623,14 @@ def display_requirements(requirements, level_target, brief, pretty_print)
       "CIR".rjust(column_spacing[3]) +
       "  ".center(column_spacing[4]) +
       "RANKS for CIR".rjust(20)
-  else
-    # Retain original formatting at top of display
-    respond("Your next level will award: #{tdps} TDPs")
   end
 
   new_target = 0
-  requirements.each do |skill, met_circle, missing_ranks, ranks|
+  requirements.each do |req|
+    skill = req.name
+    met_circle = req.met_circle
+    missing_ranks = req.missing_ranks
+    ranks = req.ranks
     first_circle_seen ||= met_circle
 
     # Check if we're ready to circle. If so, display message.
@@ -674,7 +750,7 @@ def all_requirements(level_target)
   requirements += calc_requirements(reqs, 'Weapon', level_target)
   requirements += calc_requirements(reqs, 'Mastery', level_target)
 
-  requirements = requirements.sort_by { |item| [item[1], item[2]] }
+  requirements = requirements.sort_by { |item| [item.met_circle, item.missing_ranks] }
   echo("reqs: #{requirements}") if $debug_mode_cc
   requirements
 end
@@ -687,24 +763,42 @@ def get_skills_by_type(type)
     .reverse
 end
 
-# ['skill', met_circle, missing_ranks, ranks]
+# Returns a CircleReq for one skill requirement:
+#   name          - skill or slot name (e.g. "Theurgy", "1st Magic (Arcana)")
+#   met_circle    - highest circle this skill's ranks fully satisfy
+#   missing_ranks - ranks short of the next unmet circle (for display)
+#   ranks         - player's current ranks in this skill
+#   agg_gained    - ranks gained toward level_target, baselined at the player's
+#                   current circle (clamped 0..agg_gap). Used for the aggregate
+#                   Circle Progress meter.
+#   agg_gap       - ranks needed in this skill to step from the current circle's
+#                   requirement up to level_target's requirement.
 def calc_requirement(skill_info, costs, level_target)
   name, ranks = skill_info
   echo("calc_requirement #{ranks}:#{costs}") if $debug_mode_cc
+  current_circle = DRStats.circle
   required_rank = 0
+  required_rank_at_current = 0
+  required_rank_at_target = 0
   met_circle = 0
   (1..200).each do |circle|
     cost = costs.find { |cap, _| circle <= cap }.last
     if required_rank + cost <= ranks || circle < level_target
       met_circle = circle if required_rank + cost <= ranks
       required_rank += cost
+      required_rank_at_current = required_rank if circle == current_circle
+      required_rank_at_target = required_rank if circle == level_target
       next
     else
       echo("circle #{circle}, cost:#{cost} ranks:#{ranks} required_rank:#{required_rank}") if $debug_mode_cc
-      return [name, met_circle, cost - (ranks - required_rank), ranks]
+      required_rank_at_target = required_rank + cost if circle == level_target
+      agg_gained, agg_gap = clamp_progress(ranks, required_rank_at_current, required_rank_at_target)
+      return CircleReq.new(name, met_circle, cost - (ranks - required_rank), ranks, agg_gained, agg_gap)
     end
   end
-  [name, 200, ranks - required_rank, ranks]
+  # Player exceeds all 200 circles in this skill
+  agg_gained, agg_gap = clamp_progress(ranks, required_rank_at_current, required_rank_at_target)
+  CircleReq.new(name, 200, ranks - required_rank, ranks, agg_gained, agg_gap)
 end
 
 def calc_requirements(reqs, type, level_target)
