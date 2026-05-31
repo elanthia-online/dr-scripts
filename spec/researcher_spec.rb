@@ -211,12 +211,15 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
-  # check_status -- always sets researching=false so start_research
-  # validates the topic via game response
+  # check_status -- detects topic mismatch and cancels wrong-topic projects
   # ---------------------------------------------------------------------------
   describe '#check_status' do
-    it 'always sets researching false even when research is in progress' do
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+    before do
+      researcher.instance_variable_set(:@current_topic, 'augmentation')
+    end
+
+    it 'always sets researching false' do
+      allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
       researcher.send(:check_status)
       expect(UserVars.researcher['researching']).to be false
     end
@@ -227,14 +230,8 @@ RSpec.describe Researcher do
       expect(UserVars.researcher['researching']).to be false
     end
 
-    it 'sets researching false when partially complete' do
-      allow(DRC).to receive(:bput).and_return('You have completed 42% of a project about')
-      researcher.send(:check_status)
-      expect(UserVars.researcher['researching']).to be false
-    end
-
     it 'records a timestamp when setting status' do
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+      allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
       expect(UserVars.researcher['timestamp']).to be_a(Time)
     end
@@ -242,28 +239,60 @@ RSpec.describe Researcher do
     it 'sends the research status command' do
       allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
-      expect(DRC).to have_received(:bput).with('research status', anything, anything, anything)
+      expect(DRC).to have_received(:bput).with('research status', anything, anything, anything, anything, anything)
     end
 
-    it 'clears stale researching=true left by a previous script run' do
-      UserVars.researcher['researching'] = true
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
-      researcher.send(:check_status)
-      expect(UserVars.researcher['researching']).to be false
-    end
-
-    it 'clears stale researching=true even for partial completion' do
-      UserVars.researcher['researching'] = true
-      allow(DRC).to receive(:bput).and_return('You have completed 11% of a project about')
-      researcher.send(:check_status)
-      expect(UserVars.researcher['researching']).to be false
-    end
-
-    it 'clears stale researching=true even when not researching' do
+    it 'clears stale researching=true from a previous script run' do
       UserVars.researcher['researching'] = true
       allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
       expect(UserVars.researcher['researching']).to be false
+    end
+
+    context 'topic mismatch detection' do
+      it 'does not cancel when the right topic is actively researched' do
+        allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'does not cancel when the right topic is partially complete' do
+        allow(DRC).to receive(:bput).and_return("augmentation.*completed \\d+%")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'cancels when a wrong topic is actively researched' do
+        allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+        researcher.send(:check_status)
+        expect(researcher).to have_received(:fput).with('research cancel').twice
+      end
+
+      it 'cancels when a wrong topic is partially complete' do
+        allow(DRC).to receive(:bput).and_return("You have completed \\d+% of a project about")
+        researcher.send(:check_status)
+        expect(researcher).to have_received(:fput).with('research cancel').twice
+      end
+
+      it 'does not cancel when not researching anything' do
+        allow(DRC).to receive(:bput).and_return("You're not researching anything")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'extracts keyword correctly for symbiosis topics' do
+        researcher.instance_variable_set(:@current_topic, 'symbiosis resolve')
+        allow(DRC).to receive(:bput).and_return("resolve.*You estimate")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'cancels wrong topic when symbiosis is requested' do
+        researcher.instance_variable_set(:@current_topic, 'symbiosis resolve')
+        allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+        researcher.send(:check_status)
+        expect(researcher).to have_received(:fput).with('research cancel').twice
+      end
     end
   end
 
@@ -645,36 +674,6 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
-  # Integration: check_status always forces start_research to validate topic
-  # ---------------------------------------------------------------------------
-  describe 'check_status -> researching interaction' do
-    before do
-      researcher.send(:add_flags)
-    end
-
-    it 'researching returns false after check_status detects active research' do
-      DRSpells._set_active_spells({ 'Gauge Flow' => true })
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
-      researcher.send(:check_status)
-      expect(researcher.send(:researching)).to be false
-    end
-
-    it 'researching returns false after check_status detects no research' do
-      DRSpells._set_active_spells({ 'Gauge Flow' => true })
-      allow(DRC).to receive(:bput).and_return("You're not researching anything")
-      researcher.send(:check_status)
-      expect(researcher.send(:researching)).to be false
-    end
-
-    it 'researching returns false when Gauge Flow drops' do
-      DRSpells._set_active_spells({})
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
-      researcher.send(:check_status)
-      expect(researcher.send(:researching)).to be false
-    end
-  end
-
-  # ---------------------------------------------------------------------------
   # Integration: check_status -> start_research topic-mismatch cancel flow
   # ---------------------------------------------------------------------------
   describe 'topic-mismatch cancel flow' do
@@ -685,14 +684,26 @@ RSpec.describe Researcher do
       allow(researcher).to receive(:check_gaf)
     end
 
-    it 'check_status forces start_research to run even if previous run left researching=true' do
+    it 'check_status clears stale researching=true from a previous run' do
       UserVars.researcher['researching'] = true
       allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
       expect(UserVars.researcher['researching']).to be false
     end
 
-    it 'cancels wrong-topic research and starts the requested topic' do
+    it 'check_status cancels wrong topic before start_research runs' do
+      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+      researcher.send(:check_status)
+      expect(researcher).to have_received(:fput).with('research cancel').twice
+    end
+
+    it 'check_status does not cancel when right topic is active' do
+      allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
+      researcher.send(:check_status)
+      expect(researcher).not_to have_received(:fput)
+    end
+
+    it 'start_research cancels via "You cannot begin" fallback' do
       UserVars.researcher['researching'] = false
       call_count = 0
       allow(DRC).to receive(:bput) do
@@ -704,27 +715,32 @@ RSpec.describe Researcher do
       expect(UserVars.researcher['researching']).to be true
     end
 
-    it 'sets researching true when game says already busy with correct topic' do
+    it 'sets researching true when game says already busy' do
       UserVars.researcher['researching'] = false
       allow(DRC).to receive(:bput).and_return('You are already busy')
       researcher.send(:start_research)
       expect(UserVars.researcher['researching']).to be true
     end
 
-    it 'full flow: stale state -> check_status -> start_research -> cancel -> success' do
+    it 'full flow: wrong topic active -> check_status cancels -> start_research succeeds' do
       UserVars.researcher['researching'] = true
 
       allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
       researcher.send(:check_status)
-
-      call_count = 0
-      allow(DRC).to receive(:bput) do
-        call_count += 1
-        call_count == 1 ? 'You cannot begin' : 'You confidently'
-      end
-      researcher.send(:start_research)
-
       expect(researcher).to have_received(:fput).with('research cancel').twice
+
+      allow(DRC).to receive(:bput).and_return('You focus')
+      researcher.send(:start_research)
+      expect(UserVars.researcher['researching']).to be true
+    end
+
+    it 'full flow: right topic active -> check_status skips cancel -> start_research monitors' do
+      allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
+      researcher.send(:check_status)
+      expect(researcher).not_to have_received(:fput)
+
+      allow(DRC).to receive(:bput).and_return('You are already busy')
+      researcher.send(:start_research)
       expect(UserVars.researcher['researching']).to be true
     end
   end

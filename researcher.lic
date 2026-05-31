@@ -102,14 +102,29 @@ class Researcher
     Flags.add('research-complete', '^Breakthrough!', 'You complete reviewing your knowledge of the \w+ symbiosis and commit the details to memory') unless Flags['research-complete']
   end
 
-  # Queries game for research state. Always sets researching=false so
-  # start_research runs and validates the topic is correct via the game
-  # response ("You are already busy" or "You cannot begin" -> cancel).
+  # Queries game for research state and cancels any mismatched project.
+  # Uses a topic keyword as the first bput pattern so it matches before
+  # the generic patterns when the right topic is active.
   #
   # @return [void]
   def check_status
-    DRC.bput('research status', 'You estimate that you will complete it a few minutes from now', "You're not researching anything", "You have completed \\d+% of a project about")
+    keyword = @current_topic.sub(/^symbiosis /, '')
+    result = DRC.bput('research status',
+                      "#{keyword}.*You estimate",
+                      "#{keyword}.*completed \\d+%",
+                      'You estimate that you will complete it a few minutes from now',
+                      "You have completed \\d+% of a project about",
+                      "You're not researching anything")
+    if result =~ /You estimate|completed/ && result !~ /#{Regexp.escape(keyword)}/i
+      cancel_research
+    end
     set_researching(false)
+  end
+
+  # @return [void]
+  def cancel_research
+    fput('research cancel')
+    fput('research cancel')
   end
 
   # @return [void]
@@ -134,8 +149,7 @@ class Researcher
     check_gaf
     case DRC.bput("research #{@current_topic} 300", 'You expertly coach', 'You focus', 'You tentatively', 'You confidently', 'Abandoning the normal', 'You cannot begin', 'You are already busy', 'Usage:', "You do not know how to research", 'You start to research', 'You begin to bend', 'With a mixture of rational concern')
     when 'You cannot begin'
-      fput('research cancel')
-      fput('research cancel')
+      cancel_research
       start_research
     when 'You focus', 'You tentatively', 'You confidently', 'Abandoning the normal', 'You are already busy', 'You start to research', 'You expertly coach', 'You begin to bend', 'With a mixture of rational concern'
       set_researching(true)
