@@ -285,7 +285,8 @@ class DRYamlValidator
   def assert_that_crafting_training_spells_have_no_cambrinth(settings)
     return unless settings.crafting_training_spells
 
-    settings.crafting_training_spells.select { |_spell, data| data['cambrinth'] }
+    settings.crafting_training_spells
+            .select { |_spell, data| data['cambrinth'] }
             .each_key { |spell| warn("#{spell} in crafting_training_spells uses cambrinth which increases crafting time, you may want to remove it.") }
   end
 
@@ -862,11 +863,13 @@ class DRYamlValidator
   def assert_that_pet_buffs_have_spell_requirements(settings)
     return unless settings.buff_spells
 
-    settings.buff_spells.select { |_name, data| data['pet_type'] }
+    settings.buff_spells
+            .select { |_name, data| data['pet_type'] }
             .reject { |_name, data| data.include? 'recast_every' }
             .each_key { |name| error("Pet buffs require a custom recast timer. Please include a \"recast_every:\" setting for #{name}.") }
 
-    settings.buff_spells.select { |_name, data| data['pet_type'] }
+    settings.buff_spells
+            .select { |_name, data| data['pet_type'] }
             .reject { |_name, data| data.include? 'cast' }
             .each_key { |name| error("Pet buffs require a custom cast message. Please include a \"cast:\" setting for #{name}.") }
   end
@@ -974,10 +977,12 @@ class DRYamlValidator
             .reject { |_skill, cooldown| cooldown.is_a?(Integer) }
             .each { |skill, _cooldown| error("caravan_training_skills has an invalid cooldown at skill: '#{skill}'") }
 
-    settings.caravan_training_skills.reject { |skill, _cooldown| @valid_caravan_skills.include?(skill) }
+    settings.caravan_training_skills
+            .reject { |skill, _cooldown| @valid_caravan_skills.include?(skill) }
             .each { |skill, _cooldown| error("caravan_training_skills: skills not recognized as valid skills '#{skill}'") }
 
-    settings.caravan_training_skills.select { |skill, _cooldown| %w[Augmentation Utility Warding].include?(skill) }
+    settings.caravan_training_skills
+            .select { |skill, _cooldown| %w[Augmentation Utility Warding].include?(skill) }
             .reject { |skill, _cooldown| settings.crafting_training_spells.keys.include?(skill) }
             .each { |skill, _cooldown| error("caravan_training_skills: #{skill} is included, but no corresponding spell in crafting_training_spells!") }
   end
