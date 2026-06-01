@@ -1297,7 +1297,7 @@ class SafetyProcess
     end
 
     fput 'exit' if DRStats.health < @health_threshold
-    DRC.fix_standing
+    DRC.fix_standing unless standing?
     check_item_recovery(game_state)
     tend_lodged
     tend_parasite
