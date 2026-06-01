@@ -3077,7 +3077,7 @@ class ManipulateProcess
   def initialize(settings)
     echo('New ManipulateProcess') if $debug_mode_ct
 
-    @threshold = settings.manipulate_threshold
+    @threshold = settings.manipulate_threshold&.to_i
     echo("  @threshold: #{@threshold}") if $debug_mode_ct
 
     @manip_to_train = settings.manipulate_only_to_train
@@ -5790,7 +5790,7 @@ class GameState
   end
 
   def npcs
-    DRRoom.npcs - @ignored_npcs
+    DRRoom.npcs - (@ignored_npcs || [])
   end
 
   def dual_load?
