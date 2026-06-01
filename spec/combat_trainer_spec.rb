@@ -133,7 +133,7 @@ module DRCTH
   end
 end
 
-class Script
+module Script
   def self.running?(*_args) = false
 end
 
