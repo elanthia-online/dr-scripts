@@ -1684,7 +1684,7 @@ class SpellProcess
   def check_slivers(game_state)
     return unless DRSpells.known_spells.include?('Moonblade')
     return unless DRStats.moon_mage?
-    return unless @tk_spell
+    return unless @tk_spell&.dig('slivers')
     return if game_state.casting
     return if DRSpells.slivers
 
