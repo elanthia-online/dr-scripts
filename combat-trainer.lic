@@ -5061,6 +5061,11 @@ class GameState
       false
     else
       Flags.reset('war-stomp-ready')
+      if DRSpells.active_spells.include?('Heitak')
+        waitrt?
+        fput('face next')
+        fput('stomp')
+      end
       true
     end
   end
