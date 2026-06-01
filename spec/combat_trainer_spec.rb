@@ -1103,3 +1103,453 @@ RSpec.describe SetupProcess do
     end
   end
 end
+
+# ===================================================================
+# Cross-process state pollution
+#
+# Build a real GameState (via allocate), run methods from different
+# processes in sequence on the same object. Look for state left by
+# one method that corrupts assumptions in the next.
+# ===================================================================
+RSpec.describe 'Cross-process state pollution' do
+  before(:each) { ct_setup }
+
+  # Minimal GameState with enough state to run multiple process methods.
+  def build_live_game_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      is_empath: false, is_permashocked: false, construct_mode: false,
+      undead_mode: false, innocence_mode: false,
+      ignored_npcs: [], dance_threshold: 1, retreat_threshold: nil,
+      dancing: false, retreating: false, cached_npcs: nil,
+      clean_up_step: nil, mob_died: false, danger: false,
+      casting: false, loaded: false, parrying: false,
+      current_weapon_skill: 'Small Edged', last_weapon_skill: nil,
+      weapon_training: { 'Small Edged' => 'sword' },
+      weapons_to_train: { 'Small Edged' => 'sword' },
+      action_count: 0, target_action_count: 25, target_weapon_skill: 20,
+      last_exp: -1, last_action_count: 0, gain_check: 0,
+      no_gain_list: Hash.new(0), focus_threshold: 0,
+      focus_threshold_active: false, ignore_weapon_mindstate: false,
+      cooldown_timers: {}, constructs: [],
+      rush_shield: nil, rush_to_engage: false, rush_retreat_skip: false,
+      rush_engage_only: false, stomp_to_engage: false, stomp_on_cooldown: false,
+      pounce_on_cooldown: false, pounce_to_engage: false,
+      charged_maneuvers: {},
+      currently_whirlwinding: false, need_bundle: true,
+      skip_all_weapon_max_check: false,
+      no_skins: [], no_dissect: [], no_stab_mobs: [], no_loot: []
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  # BUG-FINDING: update_room_npcs sets @dancing, then is_offense_allowed?
+  # should still work independently (no state coupling).
+  it 'update_room_npcs does not affect is_offense_allowed?' do
+    DRRoom.npcs = []
+    gs = build_live_game_state(is_empath: true, construct_mode: true)
+    gs.update_room_npcs
+
+    expect(gs.dancing?).to be true
+    expect(gs.is_offense_allowed?).to be true
+  end
+
+  # BUG-FINDING: gain_check only fires when action_count > last_action_count.
+  # Verify that stagnant XP with rising action_count increments no_gain,
+  # then fresh XP resets it.
+  # gain_check requires weapons_to_train.size > 1 to increment no_gain
+  it 'skill_done? gain_check increments on stagnant XP, resets on gain' do
+    allow(DRSkill).to receive(:getxp).and_return(10)
+    allow(DRSkill).to receive(:getrank).and_return(100)
+    two_weapons = { 'Small Edged' => 'sword', 'Large Edged' => 'greatsword' }
+    gs = build_live_game_state(
+      last_exp: 10, gain_check: 2, action_count: 5, last_action_count: 0,
+      weapons_to_train: two_weapons, weapon_training: two_weapons
+    )
+
+    gs.skill_done?
+    first_no_gain = gs.instance_variable_get(:@no_gain_list)['Small Edged']
+    expect(first_no_gain).to eq(1)
+
+    gs.instance_variable_set(:@action_count, 10)
+    allow(DRSkill).to receive(:getxp).and_return(15)
+    gs.skill_done?
+    second_no_gain = gs.instance_variable_get(:@no_gain_list)['Small Edged']
+    expect(second_no_gain).to eq(0)
+  end
+
+  # BUG-FINDING: construct marking via ManipulateProcess persists on GameState.
+  # A construct NPC should remain marked across process boundaries.
+  it 'construct marking persists across process calls' do
+    DRRoom.npcs = ['golem']
+    gs = build_live_game_state
+
+    gs.send(:construct, 'golem')
+    expect(gs.construct?('golem')).to be true
+
+    gs.update_room_npcs
+    expect(gs.construct?('golem')).to be true
+  end
+
+  # BUG-FINDING: cleanup state machine -- calling next_clean_up_step
+  # repeatedly should progress through all states without skipping.
+  it 'cleanup state machine progresses through all states in order' do
+    gs = build_live_game_state
+    allow(gs).to receive(:bleeding?).and_return(false)
+    gs.instance_variable_set(:@stop_on_bleeding, false)
+    gs.instance_variable_set(:@skip_last_kill, false)
+
+    states = []
+    gs.next_clean_up_step
+    states << gs.instance_variable_get(:@clean_up_step)
+    4.times do
+      gs.next_clean_up_step
+      states << gs.instance_variable_get(:@clean_up_step)
+    end
+
+    expect(states).to eq(%w[kill clear_magic dismiss_pet stow done])
+  end
+
+  # BUG-FINDING: dancing state and can_engage? interaction.
+  # When dancing (npcs <= threshold), can_engage? should still return true
+  # if npcs exist -- dancing controls weapon selection, not engagement.
+  it 'dancing does not prevent engagement when npcs exist' do
+    DRRoom.npcs = ['rat']
+    gs = build_live_game_state(dance_threshold: 5)
+    gs.update_room_npcs
+
+    expect(gs.dancing?).to be true
+    expect(gs.can_engage?).to be true
+  end
+end
+
+# ===================================================================
+# Multi-tick simulation
+#
+# Call the same method repeatedly with changing external state.
+# Look for counters that grow without bound, timers that never reset,
+# or flags that get stuck.
+# ===================================================================
+RSpec.describe 'Multi-tick simulation' do
+  before(:each) { ct_setup }
+
+  def build_live_game_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      is_empath: false, is_permashocked: false, construct_mode: false,
+      undead_mode: false, innocence_mode: false,
+      ignored_npcs: [], dance_threshold: 1, retreat_threshold: 3,
+      dancing: false, retreating: false, cached_npcs: nil,
+      clean_up_step: nil, mob_died: false, danger: false,
+      casting: false, loaded: false, parrying: false,
+      current_weapon_skill: 'Small Edged', last_weapon_skill: nil,
+      weapon_training: { 'Small Edged' => 'sword', 'Large Edged' => 'greatsword' },
+      weapons_to_train: { 'Small Edged' => 'sword', 'Large Edged' => 'greatsword' },
+      action_count: 0, target_action_count: 25, target_weapon_skill: 20,
+      last_exp: -1, last_action_count: 0, gain_check: 5,
+      no_gain_list: Hash.new(0), focus_threshold: 0,
+      focus_threshold_active: false, ignore_weapon_mindstate: false,
+      cooldown_timers: {}, constructs: [],
+      rush_shield: nil, rush_to_engage: false, rush_retreat_skip: false,
+      rush_engage_only: false, stomp_to_engage: false, stomp_on_cooldown: false,
+      pounce_on_cooldown: false, pounce_to_engage: false,
+      charged_maneuvers: {},
+      currently_whirlwinding: false, need_bundle: true,
+      skip_all_weapon_max_check: false,
+      no_skins: [], no_dissect: [], no_stab_mobs: [], no_loot: []
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  # BUG-FINDING: update_room_npcs called 50 times with fluctuating NPC count.
+  # Verify dancing/retreating toggles correctly and no state leaks.
+  it 'update_room_npcs toggles dancing/retreating correctly over 50 ticks' do
+    gs = build_live_game_state(dance_threshold: 1, retreat_threshold: 3)
+
+    50.times do |i|
+      npc_count = (i % 5) + 0
+      DRRoom.npcs = Array.new(npc_count) { |j| "rat_#{j}" }
+      gs.update_room_npcs
+
+      expected_dancing = npc_count <= 1 || npc_count.zero?
+      expected_retreating = npc_count >= 3
+      expect(gs.dancing?).to eq(expected_dancing), "tick #{i}: npc_count=#{npc_count}, expected dancing=#{expected_dancing}"
+      expect(gs.retreating?).to eq(expected_retreating), "tick #{i}: npc_count=#{npc_count}, expected retreating=#{expected_retreating}"
+    end
+  end
+
+  # BUG-FINDING: skill_done? called repeatedly with stagnant XP should
+  # increment no_gain_list each tick (when action_count rises).
+  it 'no_gain_list increments correctly over many stagnant ticks' do
+    allow(DRSkill).to receive(:getxp).and_return(10)
+    allow(DRSkill).to receive(:getrank).and_return(100)
+    gs = build_live_game_state(last_exp: 10, gain_check: 100, action_count: 1, last_action_count: 0)
+
+    20.times do |i|
+      gs.instance_variable_set(:@action_count, i + 1)
+      gs.skill_done?
+
+      no_gain = gs.instance_variable_get(:@no_gain_list)['Small Edged']
+      expect(no_gain).to eq(i + 1), "tick #{i}: expected no_gain=#{i + 1}, got #{no_gain}"
+    end
+  end
+
+  # BUG-FINDING: ManipulateProcess called repeatedly -- cooldown timer
+  # should prevent spam. Verify exactly one manipulation per 120s window.
+  it 'ManipulateProcess respects cooldown across repeated calls' do
+    allow(DRSkill).to receive(:getxp).and_return(10)
+    allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+
+    mp = ManipulateProcess.allocate
+    mp.instance_variable_set(:@threshold, 1)
+    mp.instance_variable_set(:@manip_to_train, false)
+    mp.instance_variable_set(:@last_manip, Time.now - 200)
+
+    gs = double('GameState', danger: false, construct_mode?: false, npcs: ['rat'])
+    allow(gs).to receive(:construct?).and_return(false)
+
+    manip_count = 0
+    10.times do
+      old_time = mp.instance_variable_get(:@last_manip)
+      mp.execute(gs)
+      new_time = mp.instance_variable_get(:@last_manip)
+      manip_count += 1 if new_time != old_time
+    end
+
+    expect(manip_count).to eq(1)
+  end
+end
+
+# ===================================================================
+# Nil/missing YAML fields
+#
+# Settings arrive as OpenStruct from YAML. Missing keys return nil.
+# Wrong types (string "true" instead of boolean true) are common
+# user errors. Test that the code handles these gracefully.
+# ===================================================================
+RSpec.describe 'Nil and type-confused settings' do
+  before(:each) { ct_setup }
+
+  def build_live_game_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      is_empath: false, is_permashocked: false, construct_mode: false,
+      undead_mode: false, innocence_mode: false,
+      ignored_npcs: [], dance_threshold: 1, retreat_threshold: nil,
+      dancing: false, retreating: false, cached_npcs: nil,
+      clean_up_step: nil, mob_died: false, danger: false,
+      casting: false, loaded: false, parrying: false,
+      current_weapon_skill: nil, last_weapon_skill: nil,
+      weapon_training: {}, weapons_to_train: {},
+      action_count: 0, target_action_count: 25, target_weapon_skill: 20,
+      last_exp: -1, last_action_count: 0, gain_check: 0,
+      no_gain_list: Hash.new(0), focus_threshold: 0,
+      focus_threshold_active: false, ignore_weapon_mindstate: false,
+      cooldown_timers: {}, constructs: [],
+      rush_shield: nil, rush_to_engage: false, rush_retreat_skip: false,
+      rush_engage_only: false, stomp_to_engage: false, stomp_on_cooldown: false,
+      pounce_on_cooldown: false, pounce_to_engage: false,
+      charged_maneuvers: {}, currently_whirlwinding: false,
+      need_bundle: true, skip_all_weapon_max_check: false,
+      no_skins: [], no_dissect: [], no_stab_mobs: [], no_loot: []
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  # BUG-FINDING: permashocked set to string "true" instead of boolean
+  it 'string "true" for permashocked is truthy (matches boolean behavior)' do
+    gs = build_live_game_state(is_empath: true, is_permashocked: "true")
+    expect(gs.is_permashocked?).to be_truthy
+  end
+
+  # BUG-FINDING: permashocked set to string "false" is still truthy in Ruby
+  it 'string "false" for permashocked is truthy (Ruby string truthiness bug)' do
+    gs = build_live_game_state(is_empath: true, is_permashocked: "false")
+    expect(gs.is_permashocked?).to be_truthy
+  end
+
+  # BUG-FINDING: construct_mode set to nil (missing from YAML)
+  it 'nil construct_mode does not crash is_offense_allowed?' do
+    gs = build_live_game_state(is_empath: true, construct_mode: nil)
+    allow(DRSpells).to receive(:active_spells).and_return({})
+    expect { gs.is_offense_allowed? }.not_to raise_error
+    expect(gs.is_offense_allowed?).to be false
+  end
+
+  # BUG: ignored_npcs set to nil instead of empty array crashes with TypeError.
+  # YAML key `ignored_npcs:` with no value produces nil.
+  it 'nil ignored_npcs crashes update_room_npcs with TypeError' do
+    DRRoom.npcs = ['rat']
+    gs = build_live_game_state(ignored_npcs: nil)
+    expect { gs.update_room_npcs }.to raise_error(TypeError)
+  end
+
+  # BUG: dance_threshold set to nil instead of integer crashes.
+  # YAML key `dance_threshold:` with no value produces nil.
+  it 'nil dance_threshold crashes update_room_npcs with ArgumentError' do
+    DRRoom.npcs = ['rat']
+    gs = build_live_game_state(dance_threshold: nil, ignored_npcs: [])
+    expect { gs.update_room_npcs }.to raise_error(ArgumentError)
+  end
+
+  # BUG: dance_threshold set to string "2" crashes.
+  # YAML key `dance_threshold: "2"` (quoted) produces string.
+  # Ruby cannot compare Integer <= String.
+  it 'string dance_threshold crashes update_room_npcs with ArgumentError' do
+    DRRoom.npcs = ['rat']
+    gs = build_live_game_state(dance_threshold: "2", ignored_npcs: [])
+    expect { gs.update_room_npcs }.to raise_error(ArgumentError)
+  end
+
+  # BUG-FINDING: weapon_training as nil (not set in YAML at all)
+  it 'nil weapon_training does not crash determine_next_to_train' do
+    allow(DRC).to receive(:message)
+    allow(DRSkill).to receive(:getxp).and_return(0)
+    allow(DRSkill).to receive(:getrank).and_return(100)
+    gs = double('GameState')
+    allow(gs).to receive(:skill_done?).and_return(true)
+    allow(gs).to receive(:weapon_skill).and_return(nil)
+
+    sp = SetupProcess.allocate
+    sp.instance_variable_set(:@ignore_weapon_mindstate, false)
+    sp.instance_variable_set(:@offhand_trainables, false)
+    sp.instance_variable_set(:@priority_weapons, [])
+
+    expect { sp.send(:determine_next_to_train, gs, nil, false) }.not_to raise_error
+  end
+
+  # BUG: ManipulateProcess with threshold as string crashes.
+  # YAML key `manipulate_threshold: "2"` (quoted) produces string.
+  # Ruby cannot compare Integer >= String.
+  it 'string threshold for ManipulateProcess crashes with ArgumentError' do
+    allow(DRSkill).to receive(:getxp).and_return(10)
+
+    mp = ManipulateProcess.allocate
+    mp.instance_variable_set(:@threshold, "2")
+    mp.instance_variable_set(:@manip_to_train, false)
+    mp.instance_variable_set(:@last_manip, Time.now - 200)
+
+    gs = double('GameState', danger: false, construct_mode?: false, npcs: %w[rat kobold])
+
+    expect { mp.execute(gs) }.to raise_error(ArgumentError)
+  end
+end
+
+# ===================================================================
+# State mutation after cleanup
+#
+# The cleanup state machine (next_clean_up_step) drives script
+# shutdown. Test what happens when external state changes mid-cleanup
+# (new mob spawns, flags fire, etc).
+# ===================================================================
+RSpec.describe 'State mutation after cleanup' do
+  before(:each) { ct_setup }
+
+  def build_live_game_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      is_empath: false, is_permashocked: false, construct_mode: false,
+      undead_mode: false, innocence_mode: false,
+      ignored_npcs: [], dance_threshold: 1, retreat_threshold: nil,
+      dancing: false, retreating: false, cached_npcs: nil,
+      clean_up_step: nil, mob_died: false, danger: false,
+      casting: false, loaded: false, parrying: false,
+      current_weapon_skill: 'Small Edged', last_weapon_skill: nil,
+      weapon_training: { 'Small Edged' => 'sword' },
+      weapons_to_train: { 'Small Edged' => 'sword' },
+      action_count: 0, target_action_count: 25, target_weapon_skill: 20,
+      last_exp: -1, last_action_count: 0, gain_check: 0,
+      no_gain_list: Hash.new(0), focus_threshold: 0,
+      focus_threshold_active: false, ignore_weapon_mindstate: false,
+      cooldown_timers: {}, constructs: [],
+      rush_shield: nil, rush_to_engage: false, rush_retreat_skip: false,
+      rush_engage_only: false, stomp_to_engage: false, stomp_on_cooldown: false,
+      pounce_on_cooldown: false, pounce_to_engage: false,
+      charged_maneuvers: {}, currently_whirlwinding: false,
+      need_bundle: true, skip_all_weapon_max_check: false,
+      no_skins: [], no_dissect: [], no_stab_mobs: [], no_loot: [],
+      stop_on_bleeding: false, skip_last_kill: false
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  # BUG-FINDING: new mob spawns during cleanup. The cleanup state machine
+  # should not reverse -- once cleanup starts, it proceeds to completion.
+  it 'cleanup does not reverse when new npcs appear mid-cleanup' do
+    gs = build_live_game_state
+    allow(gs).to receive(:bleeding?).and_return(false)
+
+    gs.next_clean_up_step
+    expect(gs.cleaning_up?).to be true
+
+    DRRoom.npcs = %w[rat kobold gremlin]
+    gs.update_room_npcs
+
+    expect(gs.cleaning_up?).to be true
+    expect(gs.done_cleaning_up?).to be false
+  end
+
+  # BUG-FINDING: force_cleanup mid-kill should skip to clear_magic
+  it 'force_cleanup advances past kill even with npcs present' do
+    DRRoom.npcs = ['rat']
+    gs = build_live_game_state
+    allow(gs).to receive(:bleeding?).and_return(false)
+
+    gs.next_clean_up_step
+    expect(gs.finish_killing?).to be true
+
+    gs.force_cleanup
+    expect(gs.finish_killing?).to be false
+    expect(gs.finish_spell_casting?).to be true
+  end
+
+  # BUG-FINDING: can_engage? during cleanup should still work
+  # (cleanup doesn't set innocence or retreating)
+  it 'can_engage? remains true during cleanup with npcs present' do
+    DRRoom.npcs = ['rat']
+    gs = build_live_game_state
+    gs.update_room_npcs
+    allow(gs).to receive(:bleeding?).and_return(false)
+
+    gs.next_clean_up_step
+    expect(gs.cleaning_up?).to be true
+    expect(gs.can_engage?).to be true
+  end
+
+  # BUG-FINDING: is_offense_allowed? does not change during cleanup
+  it 'is_offense_allowed? is independent of cleanup state' do
+    gs = build_live_game_state(is_empath: true, construct_mode: true)
+    allow(gs).to receive(:bleeding?).and_return(false)
+
+    expect(gs.is_offense_allowed?).to be true
+    gs.next_clean_up_step
+    expect(gs.is_offense_allowed?).to be true
+    gs.next_clean_up_step
+    expect(gs.is_offense_allowed?).to be true
+  end
+
+  # BUG-FINDING: skip_last_kill should jump straight to clear_magic
+  it 'skip_last_kill skips the kill phase entirely' do
+    gs = build_live_game_state(skip_last_kill: true)
+    allow(gs).to receive(:bleeding?).and_return(false)
+
+    gs.next_clean_up_step
+    expect(gs.finish_killing?).to be false
+    expect(gs.finish_spell_casting?).to be true
+  end
+
+  # BUG-FINDING: calling next_clean_up_step past 'done' should not crash
+  it 'next_clean_up_step past done is a no-op' do
+    gs = build_live_game_state
+    allow(gs).to receive(:bleeding?).and_return(false)
+
+    5.times { gs.next_clean_up_step }
+    expect(gs.done_cleaning_up?).to be true
+
+    expect { gs.next_clean_up_step }.not_to raise_error
+  end
+end
