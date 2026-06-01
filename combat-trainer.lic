@@ -1654,6 +1654,12 @@ class SpellProcess
       Flags.reset('need-tkt-ammo')
       drop_tkt_ammo
     end
+
+    if game_state.casting
+      check_current(game_state)
+      return false
+    end
+
     check_slivers(game_state)
     check_regalia(game_state)
     check_consume(game_state)
@@ -2628,6 +2634,9 @@ class AbilityProcess
     @pounce_on_cooldown = settings.pounce_on_cooldown
     echo("  @pounce_on_cooldown: #{@pounce_on_cooldown}") if $debug_mode_ct
 
+    @can_stomp = DRStats.barbarian? && @stomp_on_cooldown
+    @can_pounce = DRStats.ranger? && @pounce_on_cooldown
+
     @yiamura_exists = settings.combat_trainer_use_yiamura
     echo("  @yiamura_exists: #{@yiamura_exists}") if $debug_mode_ct
 
@@ -2663,8 +2672,8 @@ class AbilityProcess
     check_nonspell_buffs(game_state)
     check_battle_cries(game_state)
     use_warhorn_or_egg(game_state) unless @warhorn_or_egg.nil? || @warhorn_or_egg.empty?
-    game_state.stomp if DRStats.barbarian? && @stomp_on_cooldown && game_state.npcs && Flags['war-stomp-ready']
-    game_state.pounce if DRStats.ranger? && @pounce_on_cooldown && game_state.npcs && Flags['pounce-ready']
+    game_state.stomp if @can_stomp && game_state.npcs.any? && Flags['war-stomp-ready']
+    game_state.pounce if @can_pounce && game_state.npcs.any? && Flags['pounce-ready']
     false
   end
 
@@ -4445,36 +4454,27 @@ class CombatTrainer
   end
 
   def make_processes(settings)
-    [
-      SetupProcess.new(settings, @equipment_manager),
-      SpellProcess.new(settings, @equipment_manager),
-      PetProcess.new(settings),
-      AbilityProcess.new(settings),
-      LootProcess.new(settings, @equipment_manager),
-      ManipulateProcess.new(settings),
-      TrainerProcess.new(settings, @equipment_manager),
-      AttackProcess.new(settings)
-    ]
+    @process_map = {}
+    @process_map['setup'] = SetupProcess.new(settings, @equipment_manager)
+    @process_map['spell'] = SpellProcess.new(settings, @equipment_manager)
+    @process_map['pet'] = PetProcess.new(settings)
+    @process_map['ability'] = AbilityProcess.new(settings)
+    @process_map['loot'] = LootProcess.new(settings, @equipment_manager)
+    @process_map['manipulate'] = ManipulateProcess.new(settings) if settings.manipulate_threshold
+    @process_map['trainer'] = TrainerProcess.new(settings, @equipment_manager)
+    @process_map['attack'] = AttackProcess.new(settings)
+    @process_map.values
   end
 
   def get_process(process)
-    case process
-    when 'setup' then @combat_processes[0]
-    when 'spell' then @combat_processes[1]
-    when 'pet' then @combat_processes[2]
-    when 'ability' then @combat_processes[3]
-    when 'loot' then @combat_processes[4]
-    when 'manipulate' then @combat_processes[5]
-    when 'trainer' then @combat_processes[6]
-    when 'attack' then @combat_processes[7]
-    end
+    @process_map[process]
   end
 
   def start_combat
     @equipment_manager.empty_hands
     loop do
+      @safety_process.execute(@game_state)
       @combat_processes.each do |process|
-        @safety_process.execute(@game_state)
         break if process.execute(@game_state)
       end
       pause 0.1
@@ -5345,8 +5345,9 @@ class GameState
   end
 
   def update_room_npcs
-    @dancing = npcs.length <= @dance_threshold || npcs.empty?
-    @retreating = @retreat_threshold && npcs.length >= @retreat_threshold
+    @cached_npcs = DRRoom.npcs - @ignored_npcs
+    @dancing = @cached_npcs.length <= @dance_threshold || @cached_npcs.empty?
+    @retreating = @retreat_threshold && @cached_npcs.length >= @retreat_threshold
   end
 
   def retreat_weapons
@@ -5790,7 +5791,7 @@ class GameState
   end
 
   def npcs
-    DRRoom.npcs - @ignored_npcs
+    @cached_npcs || DRRoom.npcs - @ignored_npcs
   end
 
   def dual_load?
