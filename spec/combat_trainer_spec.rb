@@ -185,17 +185,22 @@ load_lic_class('combat-trainer.lic', 'AbilityProcess')
 RSpec.configure do |config|
   config.before(:each) do
     reset_data
-    DRSpells._set_known_spells({})
-    DRSpells._set_slivers(false)
-    UserVars.moons = { 'visible' => [] }
-    UserVars.sun = { 'night' => false, 'day' => true }
-    UserVars.discerns = {}
-    UserVars.friends = []
-    $HUNTING_BUDDY = double('HuntingBuddy', stop_hunting: nil)
-    $COMBAT_TRAINER = double('CombatTrainer', stop: nil)
-    $right_hand = nil
-    $left_hand = nil
   end
+end
+
+# Shared setup for combat-trainer tests that need game state stubs.
+# Include in each describe block via: before(:each) { ct_setup }
+def ct_setup
+  DRSpells._set_known_spells({})
+  DRSpells._set_slivers(false)
+  UserVars.moons = { 'visible' => [] }
+  UserVars.sun = { 'night' => false, 'day' => true }
+  UserVars.discerns = {}
+  UserVars.friends = []
+  $HUNTING_BUDDY = double('HuntingBuddy', stop_hunting: nil)
+  $COMBAT_TRAINER = double('CombatTrainer', stop: nil)
+  $right_hand = nil
+  $left_hand = nil
 end
 
 # ===================================================================
@@ -204,6 +209,8 @@ end
 # wrong causes empathic shock (permanent character penalty).
 # ===================================================================
 RSpec.describe GameState do
+  before(:each) { ct_setup }
+
   # Focused builder: only the fields that matter for offense/defense.
   def build_offense_state(empath: false, permashocked: false, construct: false, undead: false, innocence: false)
     gs = GameState.allocate
@@ -600,6 +607,8 @@ end
 # marking. Manipulation errors silently broke before our fix.
 # ===================================================================
 RSpec.describe ManipulateProcess do
+  before(:each) { ct_setup }
+
   def build_manipulate(threshold: 2, manip_to_train: false, last_manip: Time.now - 200)
     mp = ManipulateProcess.allocate
     mp.instance_variable_set(:@threshold, threshold)
@@ -693,6 +702,8 @@ end
 # The dance/attack gate is the primary safety mechanism for empaths.
 # ===================================================================
 RSpec.describe AttackProcess do
+  before(:each) { ct_setup }
+
   def build_attack(**overrides)
     ap = AttackProcess.allocate
     defaults = {
@@ -797,6 +808,8 @@ end
 # AbilityProcess -- guild-gated abilities
 # ===================================================================
 RSpec.describe AbilityProcess do
+  before(:each) { ct_setup }
+
   def build_ability(**overrides)
     ap = AbilityProcess.allocate
     defaults = {
@@ -877,6 +890,8 @@ end
 # LootProcess -- bundle tying logic
 # ===================================================================
 RSpec.describe LootProcess do
+  before(:each) { ct_setup }
+
   def build_loot(**overrides)
     lp = LootProcess.allocate
     defaults = {
@@ -995,6 +1010,8 @@ end
 # SetupProcess -- weapon selection
 # ===================================================================
 RSpec.describe SetupProcess do
+  before(:each) { ct_setup }
+
   def build_setup(**overrides)
     sp = SetupProcess.allocate
     defaults = { ignore_weapon_mindstate: false, offhand_trainables: false, priority_weapons: [] }
