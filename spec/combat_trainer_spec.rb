@@ -623,9 +623,26 @@ RSpec.describe ManipulateProcess do
   end
 
   describe '#execute' do
-    it('skips on danger') { build_manipulate.execute(gs_double(danger: true)) }
-    it('skips on nil threshold') { build_manipulate(threshold: nil).execute(gs_double) }
-    it('skips on construct mode') { build_manipulate.execute(gs_double(construct_mode?: true)) }
+    it 'skips on danger and does not call manipulate' do
+      mp = build_manipulate(last_manip: Time.now - 200)
+      before_manip = mp.instance_variable_get(:@last_manip)
+      mp.execute(gs_double(danger: true))
+      expect(mp.instance_variable_get(:@last_manip)).to eq(before_manip)
+    end
+
+    it 'skips on nil threshold and does not call manipulate' do
+      mp = build_manipulate(threshold: nil, last_manip: Time.now - 200)
+      before_manip = mp.instance_variable_get(:@last_manip)
+      mp.execute(gs_double)
+      expect(mp.instance_variable_get(:@last_manip)).to eq(before_manip)
+    end
+
+    it 'skips on construct mode and does not call manipulate' do
+      mp = build_manipulate(last_manip: Time.now - 200)
+      before_manip = mp.instance_variable_get(:@last_manip)
+      mp.execute(gs_double(construct_mode?: true))
+      expect(mp.instance_variable_get(:@last_manip)).to eq(before_manip)
+    end
 
     it 'skips when empathy XP > 30 and manip_to_train set' do
       allow(DRSkill).to receive(:getxp).with('Empathy').and_return(31)
@@ -853,15 +870,16 @@ RSpec.describe AbilityProcess do
     # BUG-FINDING: game_state.npcs returns [] (truthy!) but .any? is false
     # This was a real bug we found -- the old code used `game_state.npcs` (truthy check)
     # instead of `game_state.npcs.any?`
-    it 'does NOT fire stomp when npcs array is empty (truthy-array bug)' do
+    # BUG ON MAIN: [] is truthy in Ruby so stomp fires with no targets.
+    # After PR #7418 merges (changes to .any?), flip to: not_to have_received
+    it 'fires stomp even when npcs array is empty (truthy-array bug on main)' do
       DRStats.guild = 'Barbarian'
       Flags.add('war-stomp-ready', 'ready')
       Flags['war-stomp-ready'] = true
       gs = gs_double
       allow(gs).to receive(:npcs).and_return([])
       build_ability(stomp_on_cooldown: true).execute(gs)
-      # On main branch this test documents the bug: [] is truthy so stomp fires.
-      # After the perf PR merges (which changes to .any?), this expectation flips.
+      expect(gs).to have_received(:stomp)
     end
 
     it 'fires pounce for ranger' do
