@@ -5020,6 +5020,7 @@ class GameState
   end
 
   def rush
+    return false unless is_offense_allowed?
     return if retreating?
     return false if DRC.left_hand # Need your offhand to equip a shield
     return if loaded
