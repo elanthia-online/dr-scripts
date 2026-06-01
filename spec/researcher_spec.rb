@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'ostruct'
-
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 include Harness
 
@@ -46,16 +44,6 @@ module DRC
   end
 end unless defined?(DRC)
 
-module Lich
-  module Common
-    class ArgParser
-      def parse_args(*_args)
-        OpenStruct.new
-      end
-    end
-  end
-end unless defined?(Lich::Common::ArgParser)
-
 def get_settings(*)
   {}
 end unless defined?(get_settings)
@@ -83,6 +71,7 @@ class UserVars
 end unless defined?(UserVars)
 
 load_lic_constant('researcher.lic', 'VALID_RESEARCH_TOPICS')
+load_lic_constant('researcher.lic', 'VALID_SYMBIOSIS_TYPES')
 load_lic_class('researcher.lic', 'Researcher')
 
 RSpec.describe Researcher do
@@ -222,13 +211,17 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
-  # check_status
+  # check_status -- detects topic mismatch and cancels wrong-topic projects
   # ---------------------------------------------------------------------------
   describe '#check_status' do
-    it 'sets researching true when research is in progress' do
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+    before do
+      researcher.instance_variable_set(:@current_topic, 'augmentation')
+    end
+
+    it 'always sets researching false' do
+      allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
       researcher.send(:check_status)
-      expect(UserVars.researcher['researching']).to be true
+      expect(UserVars.researcher['researching']).to be false
     end
 
     it 'sets researching false when not researching anything' do
@@ -237,14 +230,8 @@ RSpec.describe Researcher do
       expect(UserVars.researcher['researching']).to be false
     end
 
-    it 'sets researching false when partially complete' do
-      allow(DRC).to receive(:bput).and_return("You have completed \d+% of a project about")
-      researcher.send(:check_status)
-      expect(UserVars.researcher['researching']).to be false
-    end
-
     it 'records a timestamp when setting status' do
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+      allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
       expect(UserVars.researcher['timestamp']).to be_a(Time)
     end
@@ -252,7 +239,60 @@ RSpec.describe Researcher do
     it 'sends the research status command' do
       allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
-      expect(DRC).to have_received(:bput).with('research status', anything, anything, anything)
+      expect(DRC).to have_received(:bput).with('research status', anything, anything, anything, anything, anything)
+    end
+
+    it 'clears stale researching=true from a previous script run' do
+      UserVars.researcher['researching'] = true
+      allow(DRC).to receive(:bput).and_return("You're not researching anything")
+      researcher.send(:check_status)
+      expect(UserVars.researcher['researching']).to be false
+    end
+
+    context 'topic mismatch detection' do
+      it 'does not cancel when the right topic is actively researched' do
+        allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'does not cancel when the right topic is partially complete' do
+        allow(DRC).to receive(:bput).and_return("augmentation.*completed \\d+%")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'cancels when a wrong topic is actively researched' do
+        allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+        researcher.send(:check_status)
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
+      end
+
+      it 'cancels when a wrong topic is partially complete' do
+        allow(DRC).to receive(:bput).and_return("You have completed \\d+% of a project about")
+        researcher.send(:check_status)
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
+      end
+
+      it 'does not cancel when not researching anything' do
+        allow(DRC).to receive(:bput).and_return("You're not researching anything")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'extracts keyword correctly for symbiosis topics' do
+        researcher.instance_variable_set(:@current_topic, 'symbiosis resolve')
+        allow(DRC).to receive(:bput).and_return("resolve.*You estimate")
+        researcher.send(:check_status)
+        expect(researcher).not_to have_received(:fput)
+      end
+
+      it 'cancels wrong topic when symbiosis is requested' do
+        researcher.instance_variable_set(:@current_topic, 'symbiosis resolve')
+        allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+        researcher.send(:check_status)
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
+      end
     end
   end
 
@@ -511,7 +551,7 @@ RSpec.describe Researcher do
           call_count == 1 ? 'You cannot begin' : 'You focus'
         end
         researcher.send(:start_research)
-        expect(researcher).to have_received(:fput).with('research cancel').twice
+        expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
       end
 
       it 'exits on "Usage:"' do
@@ -634,62 +674,74 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
-  # display_help_and_exit
+  # Integration: check_status -> start_research topic-mismatch cancel flow
   # ---------------------------------------------------------------------------
-  describe '#display_help_and_exit' do
-    before { allow(DRC).to receive(:message) }
-
-    it 'exits after displaying help' do
-      researcher.send(:display_help_and_exit)
-      expect(researcher).to have_received(:exit)
-    end
-
-    it 'mentions all valid research topics' do
-      researcher.send(:display_help_and_exit)
-      VALID_RESEARCH_TOPICS.each do |topic|
-        expect(DRC).to have_received(:message).with(/#{topic}/).at_least(:once)
-      end
-    end
-
-    it 'mentions symbiosis types' do
-      researcher.send(:display_help_and_exit)
-      expect(DRC).to have_received(:message).with(/activate/).at_least(:once)
-      expect(DRC).to have_received(:message).with(/spell/).at_least(:once)
-    end
-
-    it 'mentions YAML configuration' do
-      researcher.send(:display_help_and_exit)
-      expect(DRC).to have_received(:message).with(/YAML/).at_least(:once)
-    end
-  end
-
-  # ---------------------------------------------------------------------------
-  # Integration-style: check_status -> researching interaction
-  # ---------------------------------------------------------------------------
-  describe 'check_status and researching interaction' do
+  describe 'topic-mismatch cancel flow' do
     before do
+      DRSpells._set_active_spells({})
+      researcher.instance_variable_set(:@current_topic, 'augmentation')
       researcher.send(:add_flags)
+      allow(researcher).to receive(:check_gaf)
     end
 
-    it 'researching returns true after check_status detects active research' do
-      DRSpells._set_active_spells({ 'Gauge Flow' => true })
-      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
-      researcher.send(:check_status)
-      expect(researcher.send(:researching)).to be true
-    end
-
-    it 'researching returns false after check_status detects no research' do
-      DRSpells._set_active_spells({ 'Gauge Flow' => true })
+    it 'check_status clears stale researching=true from a previous run' do
+      UserVars.researcher['researching'] = true
       allow(DRC).to receive(:bput).and_return("You're not researching anything")
       researcher.send(:check_status)
-      expect(researcher.send(:researching)).to be false
+      expect(UserVars.researcher['researching']).to be false
     end
 
-    it 'researching returns false even with status true when Gauge Flow drops' do
-      DRSpells._set_active_spells({})
+    it 'check_status cancels wrong topic before start_research runs' do
       allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
       researcher.send(:check_status)
-      expect(researcher.send(:researching)).to be false
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
+    end
+
+    it 'check_status does not cancel when right topic is active' do
+      allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
+      researcher.send(:check_status)
+      expect(researcher).not_to have_received(:fput)
+    end
+
+    it 'start_research cancels via "You cannot begin" fallback' do
+      UserVars.researcher['researching'] = false
+      call_count = 0
+      allow(DRC).to receive(:bput) do
+        call_count += 1
+        call_count == 1 ? 'You cannot begin' : 'You focus'
+      end
+      researcher.send(:start_research)
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
+      expect(UserVars.researcher['researching']).to be true
+    end
+
+    it 'sets researching true when game says already busy' do
+      UserVars.researcher['researching'] = false
+      allow(DRC).to receive(:bput).and_return('You are already busy')
+      researcher.send(:start_research)
+      expect(UserVars.researcher['researching']).to be true
+    end
+
+    it 'full flow: wrong topic active -> check_status cancels -> start_research succeeds' do
+      UserVars.researcher['researching'] = true
+
+      allow(DRC).to receive(:bput).and_return('You estimate that you will complete it a few minutes from now')
+      researcher.send(:check_status)
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
+
+      allow(DRC).to receive(:bput).and_return('You focus')
+      researcher.send(:start_research)
+      expect(UserVars.researcher['researching']).to be true
+    end
+
+    it 'full flow: right topic active -> check_status skips cancel -> start_research monitors' do
+      allow(DRC).to receive(:bput).and_return("augmentation.*You estimate")
+      researcher.send(:check_status)
+      expect(researcher).not_to have_received(:fput)
+
+      allow(DRC).to receive(:bput).and_return('You are already busy')
+      researcher.send(:start_research)
+      expect(UserVars.researcher['researching']).to be true
     end
   end
 
@@ -711,7 +763,7 @@ RSpec.describe Researcher do
         call_count == 1 ? 'You cannot begin' : 'You focus'
       end
       researcher.send(:start_research)
-      expect(researcher).to have_received(:fput).with('research cancel').exactly(2).times
+      expect(researcher).to have_received(:fput).with('research cancel').exactly(3).times
     end
 
     it 'eventually succeeds after cancel' do
@@ -750,6 +802,173 @@ RSpec.describe Researcher do
   end
 
   # ---------------------------------------------------------------------------
+  # resolve_topic (via get_args -> resolve_topic, using $parsed_args harness)
+  # ---------------------------------------------------------------------------
+  describe '#resolve_topic' do
+    context 'with a skill argument' do
+      VALID_RESEARCH_TOPICS.each do |topic|
+        it "returns '#{topic}' when skill is '#{topic}'" do
+          $parsed_args = { skill: topic }
+          args = researcher.send(:get_args)
+          expect(researcher.send(:resolve_topic, args)).to eq(topic)
+        end
+      end
+
+      it "returns 'attunement' when skill is 'attunement'" do
+        $parsed_args = { skill: 'attunement' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('attunement')
+      end
+    end
+
+    context 'with symbiosis arguments' do
+      VALID_SYMBIOSIS_TYPES.each do |sym_type|
+        it "returns 'symbiosis #{sym_type}' for type '#{sym_type}'" do
+          $parsed_args = { symbiosis: 'symbiosis', sym_type: sym_type }
+          args = researcher.send(:get_args)
+          expect(researcher.send(:resolve_topic, args)).to eq("symbiosis #{sym_type}")
+        end
+      end
+
+      it 'exits when symbiosis is set but sym_type is nil' do
+        allow(DRC).to receive(:message)
+        $parsed_args = { symbiosis: 'symbiosis' }
+        args = researcher.send(:get_args)
+        researcher.send(:resolve_topic, args)
+        expect(researcher).to have_received(:exit)
+      end
+
+      it 'shows usage hint when sym_type is missing' do
+        allow(DRC).to receive(:message)
+        $parsed_args = { symbiosis: 'symbiosis' }
+        args = researcher.send(:get_args)
+        researcher.send(:resolve_topic, args)
+        expect(DRC).to have_received(:message).with(/requires a type/)
+      end
+    end
+
+    context 'with no CLI arguments (YAML fallback)' do
+      it 'returns the YAML topic when configured' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
+        $parsed_args = {}
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('warding')
+      end
+
+      it 'exits when no YAML topic is configured' do
+        allow(DRC).to receive(:message)
+        researcher.instance_variable_set(:@settings, {})
+        $parsed_args = {}
+        args = researcher.send(:get_args)
+        researcher.send(:resolve_topic, args)
+        expect(researcher).to have_received(:exit)
+      end
+
+      it 'exits when research key exists but topic is nil' do
+        allow(DRC).to receive(:message)
+        researcher.instance_variable_set(:@settings, { 'research' => {} })
+        $parsed_args = {}
+        args = researcher.send(:get_args)
+        researcher.send(:resolve_topic, args)
+        expect(researcher).to have_received(:exit)
+      end
+
+      it 'shows a helpful error when no topic is configured' do
+        allow(DRC).to receive(:message)
+        researcher.instance_variable_set(:@settings, {})
+        $parsed_args = {}
+        args = researcher.send(:get_args)
+        researcher.send(:resolve_topic, args)
+        expect(DRC).to have_received(:message).with(/No research topic specified/)
+      end
+    end
+
+    context 'argument precedence' do
+      it 'prefers skill over YAML settings' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
+        $parsed_args = { skill: 'augmentation' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+
+      it 'prefers symbiosis over YAML settings' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'warding' } })
+        $parsed_args = { symbiosis: 'symbiosis', sym_type: 'cast' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('symbiosis cast')
+      end
+
+      it 'prefers skill over symbiosis when both are set' do
+        $parsed_args = { skill: 'augmentation', symbiosis: 'symbiosis', sym_type: 'cast' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+    end
+
+    context 'debug flag combinations' do
+      it 'does not interfere with skill resolution' do
+        $parsed_args = { skill: 'augmentation', debug: 'debug' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('augmentation')
+      end
+
+      it 'does not interfere with symbiosis resolution' do
+        $parsed_args = { symbiosis: 'symbiosis', sym_type: 'cast', debug: 'debug' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('symbiosis cast')
+      end
+
+      it 'still falls through to YAML when only debug is set' do
+        researcher.instance_variable_set(:@settings, { 'research' => { 'topic' => 'utility' } })
+        $parsed_args = { debug: 'debug' }
+        args = researcher.send(:get_args)
+        expect(researcher.send(:resolve_topic, args)).to eq('utility')
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # get_args -> resolve_topic -> validate_research_topic pipeline
+  # ---------------------------------------------------------------------------
+  describe 'get_args -> resolve_topic -> validate_research_topic pipeline' do
+    it 'normalizes attunement from CLI to stream' do
+      $parsed_args = { skill: 'attunement' }
+      args = researcher.send(:get_args)
+      researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+      researcher.send(:validate_research_topic)
+      expect(researcher.instance_variable_get(:@current_topic)).to eq('stream')
+    end
+
+    it 'passes symbiosis topics through validation unchanged' do
+      $parsed_args = { symbiosis: 'symbiosis', sym_type: 'heal' }
+      args = researcher.send(:get_args)
+      researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+      researcher.send(:validate_research_topic)
+      expect(researcher.instance_variable_get(:@current_topic)).to eq('symbiosis heal')
+    end
+
+    VALID_RESEARCH_TOPICS.each do |topic|
+      it "round-trips '#{topic}' from CLI through validation" do
+        $parsed_args = { skill: topic }
+        args = researcher.send(:get_args)
+        researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+        researcher.send(:validate_research_topic)
+        expect(researcher).not_to have_received(:exit)
+      end
+    end
+
+    it 'round-trips debug + skill through the full pipeline' do
+      $parsed_args = { skill: 'warding', debug: 'debug' }
+      args = researcher.send(:get_args)
+      researcher.instance_variable_set(:@debug, args.debug || false)
+      researcher.instance_variable_set(:@current_topic, researcher.send(:resolve_topic, args))
+      researcher.send(:validate_research_topic)
+      expect(researcher.instance_variable_get(:@debug)).to be_truthy
+      expect(researcher.instance_variable_get(:@current_topic)).to eq('warding')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # VALID_RESEARCH_TOPICS constant
   # ---------------------------------------------------------------------------
   describe 'VALID_RESEARCH_TOPICS' do
@@ -770,6 +989,74 @@ RSpec.describe Researcher do
 
     it 'does not include symbiosis (handled separately)' do
       expect(VALID_RESEARCH_TOPICS).not_to include('symbiosis')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # VALID_SYMBIOSIS_TYPES constant
+  # ---------------------------------------------------------------------------
+  describe 'VALID_SYMBIOSIS_TYPES' do
+    it 'is frozen' do
+      expect(VALID_SYMBIOSIS_TYPES).to be_frozen
+    end
+
+    it 'contains all valid symbiosis types' do
+      expect(VALID_SYMBIOSIS_TYPES).to contain_exactly(
+        'activate', 'avoid', 'cast', 'discern', 'endure', 'examine', 'explore',
+        'harness', 'harvest', 'heal', 'impress', 'learn', 'perform', 'remember',
+        'resolve', 'spell', 'spring', 'strengthen', 'watch'
+      )
+    end
+
+    it 'includes spell (overlaps with VALID_RESEARCH_TOPICS)' do
+      expect(VALID_SYMBIOSIS_TYPES).to include('spell')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # get_args arg definitions structure
+  # ---------------------------------------------------------------------------
+  describe '#get_args structure' do
+    it 'uses a single arg pattern (not multiple exclusive patterns)' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      expect(@captured_defs.length).to eq(1), 'Expected a single arg pattern to avoid multi-pattern match conflicts'
+    end
+
+    it 'defines all args as optional' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      non_optional = @captured_defs.first.reject { |d| d[:optional] }
+      expect(non_optional).to be_empty, "Expected all args to be optional, but found required: #{non_optional.map { |d| d[:name] }}"
+    end
+
+    it 'includes attunement in skill options for alias support' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      skill_def = @captured_defs.first.find { |d| d[:name] == 'skill' }
+      expect(skill_def[:options]).to include('attunement')
+    end
+
+    it 'skill options include all VALID_RESEARCH_TOPICS' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      skill_def = @captured_defs.first.find { |d| d[:name] == 'skill' }
+      VALID_RESEARCH_TOPICS.each do |topic|
+        expect(skill_def[:options]).to include(topic), "skill options missing '#{topic}'"
+      end
+    end
+
+    it 'sym_type options match VALID_SYMBIOSIS_TYPES' do
+      allow(researcher).to receive(:parse_args) { |defs| @captured_defs = defs; OpenStruct.new }
+      researcher.send(:get_args)
+      sym_def = @captured_defs.first.find { |d| d[:name] == 'sym_type' }
+      expect(sym_def[:options]).to match_array(VALID_SYMBIOSIS_TYPES)
+    end
+
+    it 'calls parse_args (global) not Lich::Common::ArgParser directly' do
+      allow(researcher).to receive(:parse_args).and_return(OpenStruct.new)
+      researcher.send(:get_args)
+      expect(researcher).to have_received(:parse_args)
     end
   end
 end

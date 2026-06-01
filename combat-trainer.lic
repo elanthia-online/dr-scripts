@@ -1690,7 +1690,7 @@ class SpellProcess
   def check_slivers(game_state)
     return unless DRSpells.known_spells.include?('Moonblade')
     return unless DRStats.moon_mage?
-    return unless @tk_spell
+    return unless @tk_spell&.dig('slivers')
     return if game_state.casting
     return if DRSpells.slivers
 
@@ -3086,7 +3086,7 @@ class ManipulateProcess
   def initialize(settings)
     echo('New ManipulateProcess') if $debug_mode_ct
 
-    @threshold = settings.manipulate_threshold
+    @threshold = settings.manipulate_threshold&.to_i
     echo("  @threshold: #{@threshold}") if $debug_mode_ct
 
     @manip_to_train = settings.manipulate_only_to_train
@@ -5020,6 +5020,7 @@ class GameState
   end
 
   def rush
+    return false unless is_offense_allowed?
     return if retreating?
     return false if DRC.left_hand # Need your offhand to equip a shield
     return if loaded
@@ -5061,6 +5062,11 @@ class GameState
       false
     else
       Flags.reset('war-stomp-ready')
+      if DRSpells.active_spells.include?('Heitak')
+        waitrt?
+        fput('face next')
+        fput('stomp')
+      end
       true
     end
   end
@@ -5791,7 +5797,7 @@ class GameState
   end
 
   def npcs
-    @cached_npcs || DRRoom.npcs - @ignored_npcs
+    @cached_npcs || DRRoom.npcs - (@ignored_npcs || [])
   end
 
   def dual_load?
