@@ -1585,6 +1585,22 @@ class SpellProcess
     drop_tkt_ammo
     Flags.add('need-tkt-ammo', 'There is nothing here that can be thrown')
 
+    @spell_checks = []
+    @spell_checks << :check_slivers if DRStats.moon_mage? && @tk_spell&.dig('slivers')
+    @spell_checks << :check_regalia if @regalia_array
+    @spell_checks << :check_consume if DRStats.necromancer?
+    @spell_checks << :check_cfw if DRStats.necromancer?
+    @spell_checks << :heal_corpse if DRStats.necromancer?
+    @spell_checks << :check_cfb if DRStats.necromancer?
+    @spell_checks << :check_bless if @buff_spells['Bless']
+    @spell_checks << :check_ignite if @buff_spells['Ignite']
+    @spell_checks << :check_rutilors_edge if @buff_spells["Rutilor's Edge"]
+    @spell_checks << :check_health if DRStats.empath? || DRStats.barbarian?
+    @spell_checks << :check_starlight if DRStats.trader?
+    @spell_checks << :check_avtalia unless settings.avtalia_array.empty?
+    @spell_checks << :check_buffs
+    echo("  @spell_checks: #{@spell_checks}") if $debug_mode_ct
+
     return unless DRStats.trader? && @regalia_array
 
     @regalia_spell = get_data('spells').spell_data['Regalia'] if @regalia_array && @regalia_spell.nil? # get data from the regalia waggle or base-spells
@@ -1660,19 +1676,7 @@ class SpellProcess
       return false
     end
 
-    check_slivers(game_state)
-    check_regalia(game_state)
-    check_consume(game_state)
-    check_cfw(game_state)
-    heal_corpse(game_state)
-    check_cfb(game_state)
-    check_bless(game_state)
-    check_ignite(game_state)
-    check_rutilors_edge(game_state)
-    check_health(game_state)
-    check_starlight(game_state)
-    check_avtalia(game_state)
-    check_buffs(game_state)
+    @spell_checks.each { |check| send(check, game_state) }
     if @prioritize_offensive_spells
       check_offensive(game_state)
       check_training(game_state)
@@ -1987,19 +1991,23 @@ class SpellProcess
     DRCA.release_cyclics if @release_cyclic_on_low_mana && DRStats.mana < @release_cyclic_threshold
     return if DRStats.mana < @training_spell_mana_threshold
 
-    needs_training = ['Warding', 'Utility', 'Augmentation', 'Sorcery', 'Debilitation', 'Targeted Magic']
-                     .select { |skill| @training_spells[skill] }
-                     .select { |skill| game_state.is_offense_allowed? || @training_spells[skill]['harmless'] }
-                     .select { |skill| ['Warding', 'Utility', 'Augmentation'].include?(skill) || !@training_spells_combat_sorcery && skill == 'Sorcery' || !game_state.npcs.empty? }
-                     .select { |skill| DRSkill.getxp(skill) < @magic_exp_training_max_threshold }
-                     .select { |skill| Time.now > (@training_spells[skill]['cyclic'] ? @training_cyclic_timer : @training_cast_timer) }
-                     .select { |skill| @training_spells[skill]['night'] ? UserVars.sun['night'] : true }
-                     .select { |skill| @training_spells[skill]['day'] ? UserVars.sun['day'] : true }
-                     .select { |skill| @training_spells[skill]['bright_celestial_object'] ? DRCMM.bright_celestial_object? : true }
-                     .select { |skill| @training_spells[skill]['any_celestial_object'] ? DRCMM.any_celestial_object? : true }
-                     .select { |skill| @training_spells[skill]['no_bright_celestial_object'] ? !DRCMM.bright_celestial_object? : true }
-                     .select { |skill| @training_spells[skill]['no_celestial_object'] ? !DRCMM.any_celestial_object? : true }
-                     .select { |skill| @training_spells[skill]['must_be_true'] ? eval(@training_spells[skill]['must_be_true']) : true }
+    needs_training = ['Warding', 'Utility', 'Augmentation', 'Sorcery', 'Debilitation', 'Targeted Magic'].select do |skill|
+      data = @training_spells[skill]
+      next false unless data
+      next false unless game_state.is_offense_allowed? || data['harmless']
+      next false unless %w[Warding Utility Augmentation].include?(skill) || (!@training_spells_combat_sorcery && skill == 'Sorcery') || !game_state.npcs.empty?
+      next false unless DRSkill.getxp(skill) < @magic_exp_training_max_threshold
+      next false unless Time.now > (data['cyclic'] ? @training_cyclic_timer : @training_cast_timer)
+      next false if data['night'] && !UserVars.sun['night']
+      next false if data['day'] && !UserVars.sun['day']
+      next false if data['bright_celestial_object'] && !DRCMM.bright_celestial_object?
+      next false if data['any_celestial_object'] && !DRCMM.any_celestial_object?
+      next false if data['no_bright_celestial_object'] && DRCMM.bright_celestial_object?
+      next false if data['no_celestial_object'] && DRCMM.any_celestial_object?
+      next false if data['must_be_true'] && !eval(data['must_be_true'])
+
+      true
+    end
     DRC.message "all eligible training spells: #{needs_training}" if $debug_mode_ct
     needs_training = game_state.sort_by_rate_then_rank(needs_training).first
     return unless needs_training
@@ -2050,15 +2058,18 @@ class SpellProcess
     return if game_state.casting
     return if DRStats.mana < @buff_spell_mana_threshold
 
-    recastable_buffs = @buff_spells
-                       .select { |_name, data| data['recast'] || data['recast_every'] || data['expire'] }
-                       .select { |_name, data| data['expire'] ? Flags["ct-#{data['abbrev']}"] : true }
-                       .select { |name, _data| check_buff_conditions?(name, game_state) }
-                       .select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
-                       .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
-                       .select { |_name, data| data['starlight_threshold'] ? enough_starlight?(game_state, data) : true }
-                       .select { |_name, data| data['must_be_true'] ? eval(data['must_be_true']) : true }
-                       .reject { |_name, data| data['cyclic'] && DRSpells.active_spells.include?(data['name']) && !data['recast_every'] }
+    recastable_buffs = @buff_spells.select do |name, data|
+      next false unless data['recast'] || data['recast_every'] || data['expire']
+      next false if data['expire'] && !Flags["ct-#{data['abbrev']}"]
+      next false unless check_buff_conditions?(name, game_state)
+      next false if data['night'] && !UserVars.sun['night']
+      next false if data['day'] && !UserVars.sun['day']
+      next false if data['starlight_threshold'] && !enough_starlight?(game_state, data)
+      next false if data['must_be_true'] && !eval(data['must_be_true'])
+      next false if data['cyclic'] && DRSpells.active_spells.include?(data['name']) && !data['recast_every']
+
+      true
+    end
 
     name, data = recastable_buffs.find do |name, data|
       if data['pet_type']
@@ -2285,25 +2296,28 @@ class SpellProcess
     return if DRStats.mana < @offensive_spell_mana_threshold
 
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
-    ready_spells = @offensive_spells
-                   .select { |spell| spell['target_enemy'] ? game_state.npcs.include?(spell['target_enemy']) : true }
-                   .select { |spell| spell['min_threshold'] ? game_state.npcs.length >= spell['min_threshold'] : true }
-                   .select { |spell| spell['max_threshold'] ? game_state.npcs.length <= spell['max_threshold'] : true }
-                   .select { |spell| spell['expire'] ? Flags["ct-#{spell['abbrev']}"] : true }
-                   .select { |spell| game_state.is_offense_allowed? || spell['harmless'] }
-                   .select { |spell| game_state.dancing? ? spell['harmless'] : true }
-                   .select { |spell| spell['recast_every'] ? check_spell_timer?(spell) : true }
-                   .select { |spell| (@cast_only_to_train || spell['cast_only_to_train']) ? DRSkill.getxp(spell['skill']) <= @magic_exp_training_max_threshold : true }
-                   .select { |spell| spell['cyclic'] ? !DRSpells.active_spells[spell['name']] : true }
-                   .select { |spell| spell['night'] ? UserVars.sun['night'] : true }
-                   .select { |spell| spell['day'] ? UserVars.sun['day'] : true }
-                   .select { |spell| spell['slivers'] ? (DRSpells.slivers || @tk_ammo) : true }
-                   .select { |spell| spell['starlight_threshold'] ? enough_starlight?(game_state, spell) : true }
-                   .select { |spell| spell['bright_celestial_object'] ? DRCMM.bright_celestial_object? : true }
-                   .select { |spell| spell['any_celestial_object'] ? DRCMM.any_celestial_object? : true }
-                   .select { |spell| spell['no_bright_celestial_object'] ? !DRCMM.bright_celestial_object? : true }
-                   .select { |spell| spell['no_celestial_object'] ? !DRCMM.any_celestial_object? : true }
-                   .select { |spell| spell['must_be_true'] ? eval(spell['must_be_true']) : true }
+    ready_spells = @offensive_spells.select do |spell|
+      next false if spell['target_enemy'] && !game_state.npcs.include?(spell['target_enemy'])
+      next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
+      next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
+      next false if spell['expire'] && !Flags["ct-#{spell['abbrev']}"]
+      next false unless game_state.is_offense_allowed? || spell['harmless']
+      next false if game_state.dancing? && !spell['harmless']
+      next false if spell['recast_every'] && !check_spell_timer?(spell)
+      next false if (@cast_only_to_train || spell['cast_only_to_train']) && DRSkill.getxp(spell['skill']) > @magic_exp_training_max_threshold
+      next false if spell['cyclic'] && DRSpells.active_spells[spell['name']]
+      next false if spell['night'] && !UserVars.sun['night']
+      next false if spell['day'] && !UserVars.sun['day']
+      next false if spell['slivers'] && !DRSpells.slivers && !@tk_ammo
+      next false if spell['starlight_threshold'] && !enough_starlight?(game_state, spell)
+      next false if spell['bright_celestial_object'] && !DRCMM.bright_celestial_object?
+      next false if spell['any_celestial_object'] && !DRCMM.any_celestial_object?
+      next false if spell['no_bright_celestial_object'] && DRCMM.bright_celestial_object?
+      next false if spell['no_celestial_object'] && DRCMM.any_celestial_object?
+      next false if spell['must_be_true'] && !eval(spell['must_be_true'])
+
+      true
+    end
     echo "Ready Spells: #{ready_spells.to_yaml}" if $debug_mode_ct
 
     data = if @offensive_spell_cycle.empty?
