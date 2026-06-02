@@ -488,7 +488,7 @@ def progress_bar(pct, width = 10)
   filled = ((pct / 100.0) * width).round
   # Stormfront / Wrayth mangle UTF-8 block chars; other clients render them fine.
   # ($frontend reports either name depending on the version installed.)
-  filled_char, empty_char = %w[stormfront wrayth].include?($frontend) ? ['#', '-'] : ['█', '░']
+  filled_char, empty_char = ['#', '-']
   "[" + (filled_char * filled) + (empty_char * (width - filled)) + "]"
 end
 
