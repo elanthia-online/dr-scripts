@@ -5351,7 +5351,7 @@ class GameState
   end
 
   def update_room_npcs
-    @cached_npcs = DRRoom.npcs - @ignored_npcs
+    @cached_npcs = DRRoom.npcs - (@ignored_npcs || [])
     @dancing = @cached_npcs.length <= @dance_threshold || @cached_npcs.empty?
     @retreating = @retreat_threshold && @cached_npcs.length >= @retreat_threshold
   end
