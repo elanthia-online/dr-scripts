@@ -3647,6 +3647,7 @@ class TrainerProcess
     when 'You must be closer'
       game_state.engage
     when 'Your analysis reveals a massive opening'
+      waitrt?
       return
     when 'You fail to find any holes'
       analyze(game_state, fail_count + 1)
