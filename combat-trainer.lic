@@ -1297,7 +1297,7 @@ class SafetyProcess
     end
 
     fput 'exit' if DRStats.health < @health_threshold
-    DRC.fix_standing
+    DRC.fix_standing unless standing?
     check_item_recovery(game_state)
     tend_lodged
     tend_parasite
@@ -1654,6 +1654,12 @@ class SpellProcess
       Flags.reset('need-tkt-ammo')
       drop_tkt_ammo
     end
+
+    if game_state.casting
+      check_current(game_state)
+      return false
+    end
+
     check_slivers(game_state)
     check_regalia(game_state)
     check_consume(game_state)
@@ -1684,7 +1690,7 @@ class SpellProcess
   def check_slivers(game_state)
     return unless DRSpells.known_spells.include?('Moonblade')
     return unless DRStats.moon_mage?
-    return unless @tk_spell
+    return unless @tk_spell&.dig('slivers')
     return if game_state.casting
     return if DRSpells.slivers
 
@@ -2628,6 +2634,9 @@ class AbilityProcess
     @pounce_on_cooldown = settings.pounce_on_cooldown
     echo("  @pounce_on_cooldown: #{@pounce_on_cooldown}") if $debug_mode_ct
 
+    @can_stomp = DRStats.barbarian? && @stomp_on_cooldown
+    @can_pounce = DRStats.ranger? && @pounce_on_cooldown
+
     @yiamura_exists = settings.combat_trainer_use_yiamura
     echo("  @yiamura_exists: #{@yiamura_exists}") if $debug_mode_ct
 
@@ -2663,8 +2672,8 @@ class AbilityProcess
     check_nonspell_buffs(game_state)
     check_battle_cries(game_state)
     use_warhorn_or_egg(game_state) unless @warhorn_or_egg.nil? || @warhorn_or_egg.empty?
-    game_state.stomp if DRStats.barbarian? && @stomp_on_cooldown && game_state.npcs && Flags['war-stomp-ready']
-    game_state.pounce if DRStats.ranger? && @pounce_on_cooldown && game_state.npcs && Flags['pounce-ready']
+    game_state.stomp if @can_stomp && game_state.npcs.any? && Flags['war-stomp-ready']
+    game_state.pounce if @can_pounce && game_state.npcs.any? && Flags['pounce-ready']
     false
   end
 
@@ -3077,7 +3086,7 @@ class ManipulateProcess
   def initialize(settings)
     echo('New ManipulateProcess') if $debug_mode_ct
 
-    @threshold = settings.manipulate_threshold
+    @threshold = settings.manipulate_threshold&.to_i
     echo("  @threshold: #{@threshold}") if $debug_mode_ct
 
     @manip_to_train = settings.manipulate_only_to_train
@@ -3624,6 +3633,7 @@ class TrainerProcess
     when 'You must be closer'
       game_state.engage
     when 'Your analysis reveals a massive opening'
+      waitrt?
       return
     when 'You fail to find any holes'
       analyze(game_state, fail_count + 1)
@@ -4445,36 +4455,27 @@ class CombatTrainer
   end
 
   def make_processes(settings)
-    [
-      SetupProcess.new(settings, @equipment_manager),
-      SpellProcess.new(settings, @equipment_manager),
-      PetProcess.new(settings),
-      AbilityProcess.new(settings),
-      LootProcess.new(settings, @equipment_manager),
-      ManipulateProcess.new(settings),
-      TrainerProcess.new(settings, @equipment_manager),
-      AttackProcess.new(settings)
-    ]
+    @process_map = {}
+    @process_map['setup'] = SetupProcess.new(settings, @equipment_manager)
+    @process_map['spell'] = SpellProcess.new(settings, @equipment_manager)
+    @process_map['pet'] = PetProcess.new(settings)
+    @process_map['ability'] = AbilityProcess.new(settings)
+    @process_map['loot'] = LootProcess.new(settings, @equipment_manager)
+    @process_map['manipulate'] = ManipulateProcess.new(settings) if settings.manipulate_threshold
+    @process_map['trainer'] = TrainerProcess.new(settings, @equipment_manager)
+    @process_map['attack'] = AttackProcess.new(settings)
+    @process_map.values
   end
 
   def get_process(process)
-    case process
-    when 'setup' then @combat_processes[0]
-    when 'spell' then @combat_processes[1]
-    when 'pet' then @combat_processes[2]
-    when 'ability' then @combat_processes[3]
-    when 'loot' then @combat_processes[4]
-    when 'manipulate' then @combat_processes[5]
-    when 'trainer' then @combat_processes[6]
-    when 'attack' then @combat_processes[7]
-    end
+    @process_map[process]
   end
 
   def start_combat
     @equipment_manager.empty_hands
     loop do
+      @safety_process.execute(@game_state)
       @combat_processes.each do |process|
-        @safety_process.execute(@game_state)
         break if process.execute(@game_state)
       end
       pause 0.1
@@ -5020,6 +5021,7 @@ class GameState
   end
 
   def rush
+    return false unless is_offense_allowed?
     return if retreating?
     return false if DRC.left_hand # Need your offhand to equip a shield
     return if loaded
@@ -5048,6 +5050,11 @@ class GameState
                   /You crouch for but a heartbeat, and then leap with the acrobatic ease/,
                   /Like an indefatigable avatar of Coshivi, you lope across the distance/,
                   /You set yourself, poised for the opportunity that will see you vanquish your adversary/,
+                  /^You barrel forward with the savage momentum of a charging boar/,
+                  /^You rush toward/,
+                  /^Dashing forward with increasing speed and length of stride/,
+                  /^You advance toward/,
+                  /^You surge forward in a storm of destructive fury/,
                   /^You are not ready to perform another War Stomp/, /^What are you trying to attack/,
                   /^You have not yet been taught the proper techniques to perform a War Stomp/,
                   /^Stomp where/,
@@ -5061,6 +5068,11 @@ class GameState
       false
     else
       Flags.reset('war-stomp-ready')
+      if DRSpells.active_spells.include?('Heitak')
+        waitrt?
+        fput('face next')
+        fput('stomp')
+      end
       true
     end
   end
@@ -5345,8 +5357,9 @@ class GameState
   end
 
   def update_room_npcs
-    @dancing = npcs.length <= @dance_threshold || npcs.empty?
-    @retreating = @retreat_threshold && npcs.length >= @retreat_threshold
+    @cached_npcs = DRRoom.npcs - (@ignored_npcs || [])
+    @dancing = @cached_npcs.length <= @dance_threshold || @cached_npcs.empty?
+    @retreating = @retreat_threshold && @cached_npcs.length >= @retreat_threshold
   end
 
   def retreat_weapons
@@ -5790,7 +5803,7 @@ class GameState
   end
 
   def npcs
-    DRRoom.npcs - @ignored_npcs
+    @cached_npcs || DRRoom.npcs - (@ignored_npcs || [])
   end
 
   def dual_load?

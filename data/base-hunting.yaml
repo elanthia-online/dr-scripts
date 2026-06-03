@@ -1869,6 +1869,9 @@ hunting_zones:
   - 16347
   - 16348
   - 16349
+  - 51827
+  - 51828
+  - 51829
   # https://elanthipedia.play.net/Storm_bull_(3)                         600-750
   # Strongest of the Storm Bulls - creature level 111 - 115
   # Estate Holder only BUT Can bring non-esate holder hunting buddies in a group!!
@@ -1876,6 +1879,7 @@ hunting_zones:
   - 16350
   - 16351
   - 16352
+  - 51830
   # https://elanthipedia.play.net/Young_wyvern                           600-900
   # Incredible swarm, usually busy
   # Need high reflex to avoid poison stinger
