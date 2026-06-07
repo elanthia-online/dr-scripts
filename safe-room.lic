@@ -27,8 +27,9 @@ class SafeRoom
     @adjectives_regex = Regexp.union(settings.healing_plant_adjectives)
     @noun_regex = Regexp.union(settings.healing_plant_nouns)
     @plant_regex = Regexp.new("#{@adjectives_regex} #{@noun_regex}")
+    args.force.nil? ? @force_healing = false : @force_healing = true
 
-    return unless args.force || need_healing?
+    return unless @force_healing || need_healing?
 
     @validator = CharacterValidator.new(false, false, false, '')
     pc_empaths = settings.safe_room_empaths || []
@@ -92,7 +93,7 @@ class SafeRoom
         end
       end
     elsif settings.necro_safe_room_use_devour
-      @health_threshold = 0 if args.force
+      @health_threshold = 0 if @force_healing
       devour_healing(settings, args.skip)
     end
 
@@ -326,7 +327,7 @@ class SafeRoom
         return !need_healing?
       end
     elsif DRRoom.pcs.include?(empath['name'])
-      return true unless need_healing?
+      return true unless need_healing? || @force_healing
 
       if empath['start_heal_action']
         fput(empath['start_heal_action'])
