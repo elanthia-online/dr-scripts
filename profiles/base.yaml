@@ -2302,7 +2302,6 @@ sorter:
 # https://elanthipedia.play.net/Lich_script_repository#inventory-manager
 inventory_manager_ignores:
   - '['
-  - '<'
   - 'Roundtime'
   - 'You have'
   - 'Vault Inventory'
