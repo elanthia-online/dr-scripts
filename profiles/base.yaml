@@ -52,6 +52,9 @@ t2_startup_delay: 0
 # Combat settings
 # https://elanthipedia.play.net/Lich_script_repository#combat-trainer
 aim_fillers:
+  Brawling:
+    - bob
+    - bob
   Crossbow:
     - bob
     - bob
