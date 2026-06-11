@@ -28,7 +28,7 @@
 # @example Resume interrupted work
 #   ;forge resume weaponsmithing hammer
 #
-# @example Craft and log to engineering logbook
+# @example Craft and log to forging logbook
 #   ;forge log weaponsmithing 4 "steel throwing hammer" steel hammer
 #
 # @see https://elanthipedia.play.net/Lich_script_repository#forge
@@ -1582,8 +1582,8 @@ class Forge
   def finalize_item
     case @finish
     when /log/
-      DRCC.logbook_item('engineering', @item, @bag)
-      info_log("#{@item} logged to engineering logbook.")
+      DRCC.logbook_item('forging', @item, @bag)
+      info_log("#{@item} logged to forging logbook.")
     when /stow/
       if DRCC.stow_crafting_item(@item, @bag, @forging_belt)
         info_log("#{@item} stowed in #{@bag}.")

@@ -2587,6 +2587,12 @@ hunting_zones:
   - 10811
   - 10812
   # - 11006 Issue with day/night descriptions
+  # No elanthipeida page yet - dryanoxie                                 475-680? (lvl 85 +/- 2)
+  dryanoxie:
+  - 51837
+  - 51838
+  - 51839
+  - 51840
   # https://elanthipedia.play.net/Sky_giant                              500-700
   # Good for boxes, lightning/wind magic
   sky_giants:

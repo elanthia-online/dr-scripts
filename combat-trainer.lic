@@ -5161,7 +5161,7 @@ class GameState
   # @returns name of the wielded weapon
   def wield_weapon(skill = weapon_skill, equip_main_hand = !offhand?)
     return unless skill
-    return if skill.eql?('Brawling')
+    return if skill.eql?('Brawling') && !is_brawling_ranged?
     return if skill.eql?('Tactics')
 
     weapon_name = weapon_training[skill]
