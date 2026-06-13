@@ -1597,7 +1597,7 @@ class SpellProcess
     @spell_checks << :check_rutilors_edge if @buff_spells["Rutilor's Edge"]
     @spell_checks << :check_health if DRStats.empath? || DRStats.barbarian?
     @spell_checks << :check_starlight if DRStats.trader?
-    @spell_checks << :check_avtalia unless settings.avtalia_array.empty?
+    @spell_checks << :check_avtalia if DRStats.trader? && !settings.avtalia_array.empty?
     @spell_checks << :check_buffs
     echo("  @spell_checks: #{@spell_checks}") if $debug_mode_ct
 
@@ -2082,6 +2082,9 @@ class SpellProcess
         !DRSpells.active_spells[name] || DRSpells.active_spells[name].to_i <= data['recast']
       end
     end
+    # No buff is due for recasting (all healthy or still on timer): nothing to do.
+    return unless data
+
     echo("found buff missing: #{name}") if $debug_mode_ct && name
     game_state.casting_weapon_buff = $weapon_buffs.include?(name)
     if data['ritual']
@@ -2329,6 +2332,8 @@ class SpellProcess
              @offensive_spell_cycle.rotate!
              ready_spells.find { |spell| spell['name'] == name }
            end
+    # No offensive spell survived the filter this tick: no-op instead of crashing.
+    return unless data
 
     game_state.hide_on_cast = true if data['use_stealth']
 
@@ -2345,8 +2350,8 @@ class SpellProcess
     else
       # track last spell for magic_gain_check
       @magic_last_spell = data
-      # if there is a spell to cast, snapshot the relevant skill's mindstate
-      @magic_last_exp = data.nil? ? -1 : DRSkill.getxp(data['skill'])
+      # snapshot the relevant skill's mindstate for the spell to cast
+      @magic_last_exp = DRSkill.getxp(data['skill'])
 
       prepare_spell(data, game_state)
     end
