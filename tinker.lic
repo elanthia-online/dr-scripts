@@ -40,25 +40,28 @@ class Tinker
         { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (glue/stain)' }
       ],
       [
-        { name: 'mechanisms', regex: /mechanisms/i, description: 'Walk to an open gear press and make a single stack of mechanisms from an existing ingot.' },
+        { name: 'mechanisms', regex: /mechanisms/i, description: 'Walk to a gear press and press ingots already in your bag into mechanisms. 5vol is consumed per press.' },
         { name: 'material', regex: /\w+/i, variable: true, description: 'What type of metal ingot to use' },
-        { name: 'number', regex: /\d+/i, optional: true, variable: true, description: 'How many sets of mechanisms to make (optional)' }
+        { name: 'number', regex: /\d+/i, optional: true, variable: true, description: 'How many sets of mechanisms to make (optional)' },
+        { name: 'speed', regex: /s\d+/i, optional: true, variable: true, description: 'Gear press speed/difficulty 1-12, prefix with s (e.g. s5). Optional, default 6.' }
       ]
     ]
     echo
     args = parse_args(arg_definitions)
     @chapter = args.chapter
     @material = args.material
-    @mechanism = args.mechanism
+    workorders_materials = @settings.workorders_materials || {}
+    @mechanism = args.mechanism || workorders_materials['mechanism_ingot_type'] || 'bronze'
     @chapter = args.chapter ? args.chapter.to_i : 8
     @noun = args.noun
     @info = get_data('crafting')['shaping'][@hometown]
-    args.number = args.number.to_i || 1
+    args.number = (args.number || 1).to_i
     @training_spells = @settings.crafting_training_spells
     args.recipe_name.sub!("lighten", "crossbow lightening")
     args.recipe_name.sub!("laminate", "crossbow lamination")
     args.recipe_name.sub!("cable", "crossbow cable-backing")
     @recipe_name = args.recipe_name
+    @mechanisms_per_item = compute_mechanisms_per_item
 
     DRC.wait_for_script_to_complete('buff', ['tinker'])
     Flags.add('tinkering-assembly', /with.*(backer) material/, /You need another bone, wood or horn (backing) material/, /another finished bow (string)/, /another finished (long|short) wooden (pole)/, /another .* leather (strip|cord)/, /need another (lenses)/, /another finished (mechanism)/, /You must assemble the (strips)/, /^You need another (.* boltheads)/, /You need another (bolt flights)/)
@@ -69,11 +72,6 @@ class Tinker
       work("analyze my #{@noun}")
     elsif args.mechanisms
       DRCC.get_adjust_tongs?('reset shovel', @bag, @bag_items, @belt, true) if @settings.adjustable_tongs
-      if @bag_items == nil
-        @bag_items = ["mechanisms"]
-      else
-        @bag_items.push("mechanisms") unless @bag_items.any? { |item| /mechanism/.match(item) }
-      end
       mechanisms(args)
     else
       DRCC.check_consumables('stain', @info['tool-room'], @info['stain-number'], @bag, @bag_items, @belt) unless args.skip
@@ -104,6 +102,7 @@ class Tinker
       DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
       DRCC.get_crafting_item(next_tool, @bag, @bag_items, @belt, skip)
     end
+    exit unless skip || DRCI.in_hands?(next_tool)
   end
 
   def prep
@@ -142,27 +141,26 @@ class Tinker
     end
   end
 
+  def compute_mechanisms_per_item
+    return 0 unless @recipe_name
+    recipe = get_data('recipes').crafting_recipes.find { |r| r['name'].to_s =~ /#{Regexp.escape(@recipe_name)}/i }
+    return 0 unless recipe && recipe['part']
+    recipe['part'].count { |p| p =~ /mechanism/i }
+  end
+
   def mechanisms(args)
-    DRCC.find_shaping_room(@hometown)
-    fput("turn press to 4")
-    count = args.number
-    count.times do
-      DRCC.get_crafting_item("#{args.material} ingot", @bag, @bag_items, @belt)
-      check_hand("#{args.material} ingot")
-      swap_tool("shovel")
-      DRC.bput("push fuel with my #{DRC.right_hand}", /^Roundtime/)
-      swap_tool("pliers")
-      @noun = "mechanisms"
-      work('push my ingot with press')
-      if args.number > 1 && count < args.number
-        DRCC.get_crafting_item('mechanisms', @bag, @bag_items, @belt, true)
-        fput('combine')
-      end
-      DRCC.stow_crafting_item('mechanisms', @bag, nil)
-      count -= 1
+    speed = args.speed ? args.speed.scan(/\d+/).first.to_i : 6
+    DRCC.create_mechanisms(@settings, args.material, args.number, speed)
+    consolidate_mechanisms("#{args.material} mechanisms")
+  end
+
+  def consolidate_mechanisms(mech_name)
+    return unless DRC.bput("get my #{mech_name} from my #{@bag}", /^You get/, /^I could not find/, /^What were/) =~ /^You get/
+    loop do
+      break unless DRC.bput("get my #{mech_name} from my #{@bag}", /^You get/, /^I could not find/, /^What were/) =~ /^You get/
+      fput('combine')
     end
-    DRCC.get_crafting_item("#{args.material} ingot", nil, nil, nil, true)
-    DRCC.stow_crafting_item("#{args.material} ingot", @bag, nil) if DRC.right_hand
+    DRCC.stow_crafting_item(mech_name, @bag, nil)
   end
 
   def assemble_part
@@ -173,8 +171,10 @@ class Tinker
     part.sub!("mechanism", "#{@mechanism} #{part}")
     swap_tool(part)
     if part.include?("mechanism")
-      until /is not required to continue crafting/ =~ DRC.bput("assemble my mechanism with my #{@noun}", /^You place your mechanisms/, /is not required to continue crafting/)
-        pause 0.05
+      (@mechanisms_per_item.positive? ? @mechanisms_per_item : 1).times do
+        DRC.bput("assemble my mechanism with my #{@noun}",
+                 /^You place your mechanisms/,
+                 /is not required to continue crafting/)
       end
     else
       DRC.bput("assemble my #{@noun} with my #{part}",
