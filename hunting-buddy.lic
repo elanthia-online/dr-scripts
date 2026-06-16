@@ -564,7 +564,7 @@ class HuntingBuddy
 
     fput('flag description off') if @disable_room_descriptions
 
-    verify_script('combat-trainer')
+    DRC.verify_script('combat-trainer')
     start_script('combat-trainer', args)
 
     # This pause "fixes" a race condition with combat starting and the monitors below trying to kill
