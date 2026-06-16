@@ -3,18 +3,20 @@
 
   As of 4.0.0, all gated class definitions (ArgParser, SetupFiles,
   ScriptManager) and boot-sequence orchestration have been removed.
-  Core lich 5.17.2+ provides these natively via sentinels:
+  Core lich 5.18.0+ provides these natively via sentinels:
     CORE_ARGPARSER, CORE_SETUPFILES, CORE_GET_SETTINGS,
     CORE_SCRIPT_LOADER, CORE_MAP_OVERRIDES, CORE_DR_STARTUP
 
   What remains are runtime helper functions (bankbot, slackbot,
-  reportbot, hometown, verify_script) that dr-scripts still call
-  and have not yet been upstreamed into core lich.
+  hometown) that dr-scripts still call and have not yet been
+  upstreamed into core lich. verify_script now lives in core as
+  DRC.verify_script and the dead reportbot/format helpers have
+  been removed.
 =end
 
-$DEPENDENCY_VERSION = '4.0.0'
+$DEPENDENCY_VERSION = '4.1.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
-$MIN_LICH_VERSION = '5.17.2'
+$MIN_LICH_VERSION = '5.18.0'
 
 unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
   10.times do
@@ -59,18 +61,6 @@ rescue => e
   {}
 end
 
-def save_reportbot_whitelist(whitelist)
-  File.open(File.join(LICH_DIR, 'reportbot-whitelist.yaml'), 'wb') { |file| file.puts(whitelist.to_yaml) }
-end
-
-def load_reportbot_whitelist
-  YAML.unsafe_load_file(File.join(LICH_DIR, 'reportbot-whitelist.yaml'))
-rescue => e
-  echo('*** ERROR PARSING YAML FILE ***')
-  echo(e.message)
-  []
-end
-
 def send_slackbot_message(message)
   return unless message
 
@@ -85,29 +75,7 @@ def register_slackbot(username)
   return if username.nil? || username.to_s.strip.empty?
 
   $slackbot_username = username
-  $slackbot_instance = SlackBot.new
-end
-
-def format_name(name)
-  name =~ /\.lic$/ ? name : "#{name}.lic"
-end
-
-def format_yaml_name(name)
-  name =~ /\.yaml$/ ? name : "#{name}.yaml"
-end
-
-def verify_script(script_names)
-  script_names = [script_names] unless script_names.is_a?(Array)
-  state = true
-  script_names
-    .reject { |name| Script.exists?(name) }
-    .each do |name|
-      echo "Failed to find a script named '#{name}'"
-      echo "Please report this to <https://github.com/elanthia-online/dr-scripts/issues>"
-      echo "or to Discord #{$DR_SCRIPTS_DISCORD_LINK}"
-      state = false
-    end
-  state
+  $slackbot_instance = Lich::DragonRealms::SlackBot.new
 end
 
 def shift_hometown(town_name)
