@@ -508,13 +508,14 @@ class InventoryManager
   end
 
   def search_for_item(item, nested)
+    needle = item.downcase
     @item_data.each do |k, v|
       next if k == @version_string
 
       matches = []
       v.each do |data|
         data = strip_nesting(data) unless nested
-        matches << data if data.downcase.include?(item)
+        matches << data if data.downcase.include?(needle)
       end
       # Only report characters that actually have a match, otherwise a large
       # multi-character database spams a "Checking/Found 0 matches" block per
