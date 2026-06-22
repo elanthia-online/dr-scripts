@@ -508,22 +508,23 @@ class InventoryManager
   end
 
   def search_for_item(item, nested)
-    total_found = 0
+    needle = item.downcase
     @item_data.each do |k, v|
       next if k == @version_string
 
-      total_found = 0
+      matches = []
+      v.each do |data|
+        data = strip_nesting(data) unless nested
+        matches << data if data.downcase.include?(needle)
+      end
+      # Only report characters that actually have a match, otherwise a large
+      # multi-character database spams a "Checking/Found 0 matches" block per
+      # character on every search.
+      next if matches.empty?
+
       DRC.message("Checking #{k}:")
-      v.each { |data|
-        if !nested
-          data = strip_nesting(data)
-        end
-        if data.downcase.include?(item)
-          total_found += 1
-          DRC.message("Match #{total_found}): #{data}")
-        end
-      }
-      DRC.message("Found #{total_found} match#{(total_found > 1 ? 'es' : '')} on #{k}\n")
+      matches.each_with_index { |data, index| DRC.message("Match #{index + 1}): #{data}") }
+      DRC.message("Found #{matches.length} match#{(matches.length > 1 ? 'es' : '')} on #{k}\n")
     end
   end
 

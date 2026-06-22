@@ -4,11 +4,14 @@ require 'tmpdir'
 require 'ostruct'
 require 'yaml'
 
-# Test suite for dependency.lic (v4.0.0+)
+# Test suite for dependency.lic (v4.1.0+)
 #
 # Covers the runtime helper functions that remain after all gated
-# code was removed (core lich 5.17.2+ provides ArgParser, SetupFiles,
+# code was removed (core lich 5.18.0+ provides ArgParser, SetupFiles,
 # ScriptManager, map overrides, and DR startup natively).
+#
+# verify_script now lives in core as DRC.verify_script; the dead
+# reportbot/format helpers were removed in v4.1.0.
 
 # Stub constants and globals before loading methods
 SCRIPT_DIR = Dir.mktmpdir('dr-scripts-test') unless defined?(SCRIPT_DIR)
@@ -68,13 +71,8 @@ end
 %w[
   save_bankbot_transaction
   load_bankbot_ledger
-  save_reportbot_whitelist
-  load_reportbot_whitelist
   register_slackbot
   send_slackbot_message
-  format_name
-  format_yaml_name
-  verify_script
   shift_hometown
   clear_hometown
 ].each { |fn| extract_method(dep_lines, dep_path, fn) }
@@ -143,46 +141,6 @@ RSpec.describe 'Bankbot Functions' do
   end
 end
 
-# --- Reportbot ---
-
-RSpec.describe 'Reportbot Functions' do
-  let(:whitelist_path) { File.join(LICH_DIR, 'reportbot-whitelist.yaml') }
-
-  after do
-    File.delete(whitelist_path) if File.exist?(whitelist_path)
-  end
-
-  describe '#save_reportbot_whitelist' do
-    it 'writes the whitelist to YAML' do
-      whitelist = %w[Player1 Player2 Player3]
-      save_reportbot_whitelist(whitelist)
-
-      saved = YAML.unsafe_load_file(whitelist_path)
-      expect(saved).to eq(whitelist)
-    end
-  end
-
-  describe '#load_reportbot_whitelist' do
-    context 'when the whitelist file exists' do
-      before do
-        File.open(whitelist_path, 'w') { |f| f.puts(%w[Alpha Beta].to_yaml) }
-      end
-
-      it 'returns the whitelist as an array' do
-        result = load_reportbot_whitelist
-        expect(result).to eq(%w[Alpha Beta])
-      end
-    end
-
-    context 'when the whitelist file does not exist' do
-      it 'returns an empty array' do
-        result = load_reportbot_whitelist
-        expect(result).to eq([])
-      end
-    end
-  end
-end
-
 # --- Slackbot ---
 
 RSpec.describe 'Slackbot Functions' do
@@ -193,7 +151,7 @@ RSpec.describe 'Slackbot Functions' do
 
   describe '#register_slackbot' do
     before do
-      stub_const('SlackBot', Class.new {
+      stub_const('Lich::DragonRealms::SlackBot', Class.new {
         define_method(:initialize) {}
         define_method(:direct_message) { |_user, _msg| }
       })
@@ -250,7 +208,7 @@ RSpec.describe 'Slackbot Functions' do
     end
 
     context 'when slackbot is registered' do
-      let(:mock_slackbot) { instance_double('SlackBot') }
+      let(:mock_slackbot) { instance_double('Lich::DragonRealms::SlackBot') }
 
       before do
         $slackbot_instance = mock_slackbot
@@ -268,41 +226,6 @@ end
 # --- Utility helpers ---
 
 RSpec.describe 'Utility Functions' do
-  describe '#format_name' do
-    it 'appends .lic if missing' do
-      expect(format_name('dependency')).to eq('dependency.lic')
-    end
-
-    it 'does not double-append .lic' do
-      expect(format_name('dependency.lic')).to eq('dependency.lic')
-    end
-  end
-
-  describe '#format_yaml_name' do
-    it 'appends .yaml if missing' do
-      expect(format_yaml_name('base-spells')).to eq('base-spells.yaml')
-    end
-
-    it 'does not double-append .yaml' do
-      expect(format_yaml_name('base-spells.yaml')).to eq('base-spells.yaml')
-    end
-  end
-
-  describe '#verify_script' do
-    it 'returns true when script exists' do
-      allow(Script).to receive(:exists?).and_return(true)
-      expect(verify_script('present-script')).to be true
-    end
-
-    it 'returns false when script does not exist' do
-      expect(verify_script('nonexistent-script')).to be false
-    end
-
-    it 'accepts an array of script names' do
-      expect(verify_script(%w[nonexistent1 nonexistent2])).to be false
-    end
-  end
-
   describe '#shift_hometown' do
     after { $HOMETOWN = nil }
 
@@ -325,12 +248,12 @@ end
 
 RSpec.describe 'Dependency Structure' do
   describe 'version' do
-    it 'declares version 4.0.0' do
-      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.0.0'")
+    it 'declares version 4.1.0' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.1.0'")
     end
 
-    it 'requires minimum lich version 5.17.2' do
-      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.17.2'")
+    it 'requires minimum lich version 5.18.0' do
+      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.18.0'")
     end
   end
 
@@ -364,18 +287,27 @@ RSpec.describe 'Dependency Structure' do
     %w[
       save_bankbot_transaction
       load_bankbot_ledger
-      save_reportbot_whitelist
-      load_reportbot_whitelist
       send_slackbot_message
       register_slackbot
-      format_name
-      format_yaml_name
-      verify_script
       shift_hometown
       clear_hometown
     ].each do |fn_name|
       it "defines #{fn_name}" do
         expect(DEP_SOURCE).to match(/^def #{Regexp.escape(fn_name)}[\s(]/)
+      end
+    end
+  end
+
+  describe 'removed helpers are absent' do
+    %w[
+      save_reportbot_whitelist
+      load_reportbot_whitelist
+      format_name
+      format_yaml_name
+      verify_script
+    ].each do |fn_name|
+      it "does not define #{fn_name}" do
+        expect(DEP_SOURCE).not_to match(/^def #{Regexp.escape(fn_name)}[\s(]/)
       end
     end
   end

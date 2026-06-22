@@ -2859,6 +2859,7 @@ capture_critter_settings:
     # List of items to dispose of
     junk:
       - sharkskin
+      - seagull feather
     # Where to store rewards\prizes for turning in captured critters
     reward_container: 
     # Optional custom game settings, if base-capture.yaml is out of date. Should match the format of an entry in base-capture.yaml
