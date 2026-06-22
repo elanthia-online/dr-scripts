@@ -104,8 +104,10 @@ class Smoker
     # Container is required for all equipment modes
     errors << "'container' is not set. Specify the container holding your smoking supplies (e.g., 'smoking jacket')." unless @bag
 
-    # Pipe-specific validation
-    needs_pipe = args.pipe || (args.smoke && args.smoke =~ /pipe/i)
+    # Pipe-specific validation. Anything that is not an explicit cigar run uses
+    # the pipe (bare ;smoke, image-only, and ;smoke pipe all default to @pipe).
+    using_cigar = args.cigar || (args.smoke && args.smoke =~ /cigar/i)
+    needs_pipe = !using_cigar
     errors << "'pipe' is not set. Specify the noun/adjective of your pipe (e.g., 'glitvire pipe')." if needs_pipe && !@pipe
 
     # Lighting chain validation - all smoking modes need a way to light
@@ -191,7 +193,7 @@ class Smoker
       unless DRRoom.pcs.include?(player)
         DRC.message("=== #{player} is no longer in the room ===")
         DRC.message("Learning session ended. Stowing equipment.")
-        DRCI.put_away_item?(@pipe, @bag) if @pipe && DRCI.in_hands?(@pipe)
+        DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
         exit
       end
       if /make a (?<image>\w+) smoke image/ =~ DRC.bput("Listen #{player}", /^You start paying attention to #{player.capitalize}'s advice on how to make a (?<image>\w+) smoke image/, /^#{player.capitalize} isn't teaching a class/)
@@ -201,7 +203,7 @@ class Smoker
         unless DRRoom.pcs.include?(player)
           DRC.message("=== #{player} is no longer in the room ===")
           DRC.message("Learning session ended. Stowing equipment.")
-          DRCI.put_away_item?(@pipe, @bag) if @pipe && DRCI.in_hands?(@pipe)
+          DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
           exit
         end
         image = Flags['time-to-listen'][:image]
@@ -212,7 +214,7 @@ class Smoker
         unless DRRoom.pcs.include?(player)
           DRC.message("=== #{player} left the room mid-lesson ===")
           DRC.message("Learning session ended. Stowing equipment.")
-          DRCI.put_away_item?(@pipe, @bag) if @pipe && DRCI.in_hands?(@pipe)
+          DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
           exit
         end
         Flags.reset('teacher-smoked')
