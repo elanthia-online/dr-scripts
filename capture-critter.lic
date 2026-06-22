@@ -18,7 +18,7 @@ class CaptureCritter
     args = parse_args(arg_definitions)
 
     # Each capture event may have different "game over" messages. They seem similar, but this may not capture all of them.
-    Flags.add("critter-done", '^[PW]hew!  All of the')
+    Flags.add("critter-done", '^(?:TWEET:\s+)?[PW]hew! +All of the')
 
     # Set the target event
     @event_info = event_data[args.event]
@@ -28,7 +28,7 @@ class CaptureCritter
       exit
     end
 
-    @critter_regexp = /\b(#{Regexp.union(@event_info["critter_names"]).source})\b/i
+    @critter_regexp = /\b(#{Regexp.union(@event_info["critter_names"]).source})\z/i
 
     run
   end
