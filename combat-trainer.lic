@@ -4497,7 +4497,7 @@ class CombatTrainer
       @combat_processes.each do |process|
         break if process.execute(@game_state)
       end
-      pause 0.1
+      pause 0.01
       if @game_state.done_cleaning_up?
         echo('CombatTrainer::clean_up') if $debug_mode_ct
         @running = false
