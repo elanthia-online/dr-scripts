@@ -4465,6 +4465,7 @@ class CombatTrainer
 
     @stop = false
     @running = true
+    @loop_tick = settings.combat_trainer_loop_tick || 0.1
     $debug_mode_ct = UserVars.combat_trainer_debug || settings.debug_mode
     @game_state = GameState.new(settings, @equipment_manager)
     @safety_process = SafetyProcess.new(settings, @equipment_manager)
@@ -4496,7 +4497,7 @@ class CombatTrainer
       @combat_processes.each do |process|
         break if process.execute(@game_state)
       end
-      pause 0.1
+      pause @loop_tick
       if @game_state.done_cleaning_up?
         echo('CombatTrainer::clean_up') if $debug_mode_ct
         @running = false
