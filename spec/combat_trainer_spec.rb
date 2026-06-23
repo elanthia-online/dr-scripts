@@ -518,14 +518,12 @@ RSpec.describe GameState do
     # On main (unfixed), rush does NOT check is_offense_allowed?, so a
     # non-permashocked empath with rush configured WILL execute the maneuver.
     # After the fix merges, change this to: expect(gs.rush).to be false
-    it 'non-permashocked empath is NOT blocked from rush (unfixed on main)' do
+    it 'blocks a non-permashocked empath from rush (offense not allowed)' do
       DRRoom.npcs = ['rat']
       gs = build_rush_state(empath: true, shield: 'shield', rush_to_engage: true)
-      allow(gs).to receive(:retreating?).and_return(false)
-      allow(gs).to receive(:loaded).and_return(false)
-      allow(gs).to receive(:charged_maneuver_off_cooldown?).and_return(true)
-      allow(gs).to receive(:use_charged_maneuver).and_return(true)
-      expect(gs.rush).to be_truthy
+      # is_offense_allowed? is false for a non-permashocked empath (is_permashocked?
+      # returns false), so rush short-circuits before any maneuver, per PR #7355.
+      expect(gs.rush).to be_falsy
     end
 
     it('blocks when retreating') do
@@ -936,6 +934,9 @@ RSpec.describe AbilityProcess do
       roar_helm_noun: nil
     }
     defaults.merge(overrides).each { |k, v| ap.instance_variable_set(:"@#{k}", v) }
+    # Mirror initialize: @can_stomp/@can_pounce are precomputed there and #execute gates on them.
+    ap.instance_variable_set(:@can_stomp, DRStats.barbarian? && ap.instance_variable_get(:@stomp_on_cooldown))
+    ap.instance_variable_set(:@can_pounce, DRStats.ranger? && ap.instance_variable_get(:@pounce_on_cooldown))
     ap
   end
 
@@ -965,19 +966,17 @@ RSpec.describe AbilityProcess do
       expect(gs).not_to have_received(:stomp)
     end
 
-    # BUG-FINDING: game_state.npcs returns [] (truthy!) but .any? is false
-    # This was a real bug we found -- the old code used `game_state.npcs` (truthy check)
-    # instead of `game_state.npcs.any?`
-    # BUG ON MAIN: [] is truthy in Ruby so stomp fires with no targets.
-    # After PR #7418 merges (changes to .any?), flip to: not_to have_received
-    it 'fires stomp even when npcs array is empty (truthy-array bug on main)' do
+    # Boundary: with no targets npcs.any? is false, so stomp must NOT fire.
+    # Verifies the .any? guard in AbilityProcess#execute (a bare truthy check on
+    # game_state.npcs would wrongly fire stomp on an empty array).
+    it 'does NOT fire stomp when npcs array is empty' do
       DRStats.guild = 'Barbarian'
       Flags.add('war-stomp-ready', 'ready')
       Flags['war-stomp-ready'] = true
       gs = gs_double
       allow(gs).to receive(:npcs).and_return([])
       build_ability(stomp_on_cooldown: true).execute(gs)
-      expect(gs).to have_received(:stomp)
+      expect(gs).not_to have_received(:stomp)
     end
 
     it 'fires pounce for ranger' do
@@ -1764,9 +1763,9 @@ RSpec.describe ManipulateProcess do
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first goblin/, anything, anything, anything, anything, anything, anything)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first goblin/, any_args)
       end
     end
 
@@ -1780,9 +1779,9 @@ RSpec.describe ManipulateProcess do
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship third rat/, anything, anything, anything, anything, anything, anything)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship third rat/, any_args)
       end
     end
 
@@ -1796,10 +1795,10 @@ RSpec.describe ManipulateProcess do
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second kobold/, anything, anything, anything, anything, anything, anything)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship second kobold/, any_args)
       end
     end
 
@@ -1816,8 +1815,8 @@ RSpec.describe ManipulateProcess do
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).not_to have_received(:bput).with(/manipulate friendship .* golem/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, anything, anything, anything, anything, anything, anything)
+        expect(DRC).not_to have_received(:bput).with(/manipulate friendship .* golem/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
       end
     end
 
@@ -1831,9 +1830,9 @@ RSpec.describe ManipulateProcess do
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, anything, anything, anything, anything, anything, anything)
-        expect(DRC).not_to have_received(:bput).with(/manipulate friendship third rat/, anything, anything, anything, anything, anything, anything)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
+        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
+        expect(DRC).not_to have_received(:bput).with(/manipulate friendship third rat/, any_args)
       end
     end
   end
@@ -2960,7 +2959,7 @@ RSpec.describe SpellProcess do
   def build_spell_process(**overrides)
     instance = SpellProcess.allocate
     defaults = {
-      tk_spell: { 'abbrev' => 'tkt' },
+      tk_spell: { 'abbrev' => 'tkt', 'slivers' => true },
       tk_ammo: nil,
       settings: OpenStruct.new
     }
@@ -3274,7 +3273,7 @@ RSpec.describe LootProcess do
         Flags['container-full'] = nil
         # The pouch-full flag fires as a side effect during the stow bput call.
         # Simulate this by having the stow bput set the flag.
-        allow(DRC).to receive(:bput).with(/^stow /, *Array.new(15, anything)) do
+        allow(DRC).to receive(:bput).with(/^stow /, any_args) do
           Flags['pouch-full'] = true
           'You put'
         end
@@ -3318,7 +3317,7 @@ RSpec.describe LootProcess do
 
       before(:each) do
         Flags['container-full'] = nil
-        allow(DRC).to receive(:bput).with(/^stow /, *Array.new(15, anything)) do
+        allow(DRC).to receive(:bput).with(/^stow /, any_args) do
           Flags['pouch-full'] = true
           'You put'
         end
@@ -3345,7 +3344,7 @@ RSpec.describe LootProcess do
 
       before(:each) do
         Flags['container-full'] = nil
-        allow(DRC).to receive(:bput).with(/^stow /, *Array.new(15, anything)) do
+        allow(DRC).to receive(:bput).with(/^stow /, any_args) do
           Flags['pouch-full'] = true
           'You put'
         end
