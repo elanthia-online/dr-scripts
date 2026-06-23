@@ -416,6 +416,8 @@ combat_trainer_offhand_trainables: false
 combat_trainer_focus_threshold: 0
 # roughly number of consecutive spell casts of a single skill (e.g. Targeted Magic)that need to not gain mindstate (mob too low) before it is blacklisted.
 combat_trainer_magic_gain_check: 3
+# seconds to pause at the end of each main combat loop tick. Lower = faster reaction, higher = less idle CPU usage. Default 0.1.
+combat_trainer_loop_tick: 0.1
 
 dual_load: false
 # use_stealth_attacks true will train stealth by hiding and attacking/backstabbing from stealth.  Thieves also use backstab: below
