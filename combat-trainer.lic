@@ -37,6 +37,7 @@ class SetupProcess
   end
 
   def execute(game_state)
+    waitrt?
     return true if game_state.done_cleaning_up?
 
     if game_state.stowing?
@@ -304,7 +305,6 @@ class SetupProcess
 
     if @stance_override
       game_state.reset_stance = false
-      pause
       waitrt?
       DRC.bput("stance set #{@stance_override}", 'Setting your')
       @override_done = true
@@ -613,6 +613,7 @@ class LootProcess
   end
 
   def execute(game_state)
+    waitrt?
     if DRRoom.room_objs.include?("junk")
       @dump_item_count -= 3
     end
@@ -1643,7 +1644,6 @@ class SpellProcess
 
       if @tk_ammo
         waitrt?
-        pause
         fput("stow #{@tk_ammo}")
       end
       DRCA.shatter_regalia? if @regalia_array
@@ -2686,6 +2686,7 @@ class AbilityProcess
   end
 
   def execute(game_state)
+    waitrt?
     check_paladin_skills
     check_yiamura if @yiamura_exists
     check_nonspell_buffs(game_state)
@@ -3075,11 +3076,9 @@ class AbilityProcess
 
       # Use roar helm if specified
       fput("scream #{@roar_helm_noun}") if @roar_helm_noun
-      pause
       waitrt?
 
       fput(command)
-      pause
       waitrt?
       if Flags['ct-battle-cry-not-facing']
         # Oops, you're not actually facing an enemy to roar/scream at
@@ -3115,6 +3114,7 @@ class ManipulateProcess
   end
 
   def execute(game_state)
+    waitrt?
     return if game_state.danger || @threshold.nil? || game_state.construct_mode?
 
     @filtered_npcs = game_state.npcs
@@ -3312,6 +3312,7 @@ class TrainerProcess
   end
 
   def execute(game_state)
+    waitrt?
     return if game_state.danger
 
     case select_ability(game_state)
@@ -3537,7 +3538,6 @@ class TrainerProcess
     pause 1
     @equipment_manager.wield_weapon?(game_state.weapon_name, game_state.weapon_skill)
     DRC.bput('commune meraud', /^You struggle to commune/, 'Nothing happens.', 'you have attempted a commune too recently', 'You close your eyes and concentrate, letting your mind still and feeling your breathing grow shallow', 'the ground is already consecrated')
-    pause
     waitrt?
     DRC.fix_standing
     game_state.blessed_room = true
@@ -3593,7 +3593,6 @@ class TrainerProcess
 
     if DRC.hide?
       DRC.bput('ambush stun', { 'timeout' => 0, 'suppress_no_match' => true }, 'Wouldn\'t it be better if you used a melee weapon?', 'You must be hidden or invisible to ambush', 'You aren\'t close enough to attack', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'Roundtime', 'is already out cold')
-      pause
       waitrt?
     end
 
@@ -3627,7 +3626,6 @@ class TrainerProcess
         'Snipe dirt at somebody',
         'Roundtime'
       ) != 'Roundtime'
-      pause
       waitrt?
     end
 
@@ -3874,6 +3872,7 @@ class AttackProcess
   end
 
   def execute(game_state)
+    waitrt?
     check_face(game_state)
     if game_state.npcs.uniq.length == 1 && !game_state.stabbable?(game_state.npcs.uniq.first)
       game_state.no_stab_current_mob = true
@@ -3967,7 +3966,6 @@ class AttackProcess
       DRC.bput(command, { 'timeout' => 0, 'suppress_no_match' => true }, 'Wouldn\'t it be better if you used a melee weapon?', 'You need two hands to wield this weapon', 'You turn to face', 'Face What?', 'Roundtime', "You aren't close enough to attack", 'It would help if you were closer', 'There is nothing else to face!', 'You must be hidden', 'flying too high for you to attack', 'You can\'t coldcock', 'while it is flying', 'Novel idea, but it\'s a ghost!', 'Bumbling, you slip', 'You can not slam with that', 'You must be hidden or invisible to ambush', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'is already out cold')
     end
 
-    pause
     waitrt?
 
     if reget(5, 'flying too high for you to attack')
@@ -4175,7 +4173,6 @@ class AttackProcess
         matches = ['Roundtime', "You aren't close enough to attack", 'What are you', 'There is nothing'] if @rt_actions.include?(first_word)
         matches = ['You put', 'You sheathe', 'Sheathing a', 'Sheathing some'] if @stow_actions.include?(first_word)
         DRC.bput(action.strip, matches)
-        pause 0.25
         waitrt?
       end
     else
@@ -4367,6 +4364,7 @@ class AttackProcess
 
   def dance(game_state)
     if game_state.can_engage?
+      waitrt?
       game_state.set_dance_queue
       case DRC.bput(game_state.next_dance_action, 'You must be closer', 'There is nothing else', 'What are you trying', /.*/)
       when 'You must be closer', 'There is nothing else', 'What are you trying'
@@ -4493,6 +4491,7 @@ class CombatTrainer
   def start_combat
     @equipment_manager.empty_hands
     loop do
+      waitrt?
       @safety_process.execute(@game_state)
       @combat_processes.each do |process|
         break if process.execute(@game_state)
