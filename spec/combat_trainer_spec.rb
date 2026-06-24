@@ -183,8 +183,8 @@ class UserVars
       end
     end
 
-    def respond_to_missing?(_name, _include_private = false)
-      true
+    def respond_to_missing?(name, _include_private = false)
+      name.to_s.end_with?('=') || _data.key?(name.to_sym) || super
     end
   end
 end
@@ -204,7 +204,7 @@ class Harness::DRSpells
   def self._set_slivers(val) = (@@_slivers = val)
 
   class << self
-    alias_method :_orig_reset, :_reset
+    alias_method(:_orig_reset, :_reset) unless method_defined?(:_orig_reset)
     def _reset
       _orig_reset
       @@_known_spells = {}
@@ -1896,6 +1896,7 @@ RSpec.describe SafetyProcess do
       it 'stops hunt at default threshold of 3' do
         instance = build_safety_process(untendable_counter: 3)
         stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true) # stop is gated on active bleeding
         game_state = build_game_state
 
         instance.execute(game_state)
@@ -1907,6 +1908,7 @@ RSpec.describe SafetyProcess do
       it 'does not stop hunt below default threshold' do
         instance = build_safety_process(untendable_counter: 2)
         stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true) # bleeding so the threshold (not the not-bleeding reset) is what is tested
         game_state = build_game_state
 
         instance.execute(game_state)
@@ -1917,6 +1919,7 @@ RSpec.describe SafetyProcess do
       it 'stops hunt at custom threshold of 1' do
         instance = build_safety_process(safety_untendable_threshold: 1, untendable_counter: 1)
         stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true) # stop is gated on active bleeding
         game_state = build_game_state
 
         instance.execute(game_state)
@@ -1927,6 +1930,7 @@ RSpec.describe SafetyProcess do
       it 'requires stop_on_bleeding to be true' do
         instance = build_safety_process(untendable_counter: 3, stop_on_bleeding: false)
         stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true) # bleeding so stop_on_bleeding=false is what prevents the stop
         game_state = build_game_state
 
         instance.execute(game_state)

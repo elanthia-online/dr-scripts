@@ -9,7 +9,7 @@
 # resolves in the same scope a bare eval would have used.
 def ct_safe_eval(expression, context)
   eval(expression, context)
-rescue StandardError => e
+rescue SyntaxError, StandardError => e
   DRC.message("combat-trainer: error evaluating conditional #{expression.inspect}: #{e.message}")
   false
 end
@@ -1280,6 +1280,9 @@ class SafetyProcess
   end
 
   def execute(game_state)
+    # Reset the failure count whenever we are not actively bleeding, so a stale
+    # count from an earlier, since-resolved bleed cannot trip the stop below.
+    @untendable_counter = 0 unless bleeding?
     if @untendable_counter >= @safety_untendable_threshold && @stop_on_bleeding
       echo('Skipping tendme check due to untendable backoff') if $debug_mode_ct
       echo("Couldn't tend bleeders after trying #{@safety_untendable_threshold} time(s). Stopping hunt. Get healed!")
@@ -2998,7 +3001,7 @@ class AbilityProcess
       # break apart the blob into OG cooldown timer and the new optional conditional string using a fake && as a delimiter
       blob_array = blob.to_s.split(/ && /, 2)
       cooldown = blob_array[0].to_i
-      conditional = blob_array[1][1..-2] # strip out the leading and following double quotes
+      conditional = blob_array[1]&.[](1..-2) # strip out the leading and following double quotes (nil for cooldown-only entries)
 
       next unless !timer || (Time.now - timer).to_i > cooldown
 
@@ -4689,7 +4692,8 @@ class GameState
       stance_list = @stances[key]
       unless (stance_list & %w[evasion parry shield]).empty?
         DRC.message 'Please update to the latest version of stance: settings!'
-        stance_list.map! { |x| { 'parry' => 'Parry Ability', 'shield' => 'Shield Usage', 'evasion' => 'Evasion' }[x] }
+        legacy_stances = { 'parry' => 'Parry Ability', 'shield' => 'Shield Usage', 'evasion' => 'Evasion' }
+        stance_list.map! { |x| legacy_stances.fetch(x, x) } # keep already-canonical names as-is
       end
       (['Evasion', 'Shield Usage', 'Parry Ability'] - stance_list).each { |x| stance_list << x }
       unless stance_list.size == 3
@@ -5529,13 +5533,15 @@ class GameState
   end
 
   def charged_maneuver_off_cooldown?(maneuver)
+    return false unless maneuver # a missing maneuver is not "off cooldown"
+
     # All guilds can perform a maneuver every 90 seconds.
     # Some guilds have a chance to reduce some maneuvers to every 60 seconds.
     # To account for the adjustable cooldown, the timer we store
     # for maneuvers is the future time when it'll be ready rather
     # than the start time as we do with other ability timers.
     # This allows us to shorten or lengthen the "time when it'll be ready".
-    timer = @cooldown_timers[maneuver&.downcase]
+    timer = @cooldown_timers[maneuver.downcase]
     timer.nil? || (Time.now > timer)
   end
 
