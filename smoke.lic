@@ -12,6 +12,8 @@
 =end
 
 class Smoker
+  VERSION = '1.0'
+
   def initialize
     Flags.add('new-cig', 'That was the last of your', 'goes out and crumbles away'); Flags['new-cig'] = true
     @full_image_list = ['deer', 'dragon', 'rabbit', 'pixie', 'kitten', 'troll', 'horse', 'paladin', 'whip', 'cloak', 'stump', 'fleas', 'daisies', 'unicorn', 'rams', 'bandit', 'ship', 'grave', 'fish', 'web', 'phoenix', 'bracelet', 'skeleton', 'tart', 'almanac', 'dartboard', 'wolf', 'vine', 'forge', 'moongate', 'mage', 'violin', 'altar', 'trader']
@@ -47,6 +49,12 @@ class Smoker
 
     args            = parse_args(arg_definitions)
     @smoke_settings = get_settings.smoke
+    unless @smoke_settings
+      DRC.message("=== Smoke Settings Validation Failed ===")
+      DRC.message("No 'smoke:' block found in your YAML settings.")
+      DRC.message("Add a smoke: section with at minimum 'container' set. See the user guide for all options.")
+      exit
+    end
     @equipmanager   = EquipmentManager.new
     images          = args.image || @smoke_settings['smoke_images'] || UserVars.smoke_images_known
     @bag            = @smoke_settings['container']
@@ -56,8 +64,11 @@ class Smoker
     @cigar          = args.cigar
     @time_between   = @smoke_settings['time_between_exhales'] || 1
 
+    validate_settings(args)
+
     if args.light_only
       quick_light(args.smoke)
+      DRC.message("Light only mode complete.")
       exit
     end
 
@@ -81,6 +92,47 @@ class Smoker
     else
       smoke_loop(images.to_a, 1)
     end
+  end
+
+  def validate_settings(args)
+    # reset_known only needs the smoke settings block to exist (already checked), no equipment
+    return if args.reset_known
+
+    errors = []
+    warnings = []
+
+    # Container is required for all equipment modes
+    errors << "'container' is not set. Specify the container holding your smoking supplies (e.g., 'smoking jacket')." unless @bag
+
+    # Pipe-specific validation. Anything that is not an explicit cigar run uses
+    # the pipe (bare ;smoke, image-only, and ;smoke pipe all default to @pipe).
+    using_cigar = args.cigar || (args.smoke && args.smoke =~ /cigar/i)
+    needs_pipe = !using_cigar
+    errors << "'pipe' is not set. Specify the noun/adjective of your pipe (e.g., 'glitvire pipe')." if needs_pipe && !@pipe
+
+    # Lighting chain validation - all smoking modes need a way to light
+    unless DRStats.warrior_mage?
+      if @lighter
+        # lighter configured, good
+      elsif @smoke_settings['blade']
+        if @blade
+          warnings << "No 'lighter' configured. Will use flint and steel with '#{@smoke_settings['blade']}'."
+        else
+          errors << "'blade' is set to '#{@smoke_settings['blade']}' but no matching item found in EquipmentManager. Register the item or correct the setting."
+        end
+      else
+        errors << "No way to light tobacco. Set 'lighter', or set 'blade' for flint and steel. Warrior Mages light automatically."
+      end
+    end
+
+    warnings.each { |w| DRC.message("Warning: #{w}") }
+    return if errors.empty?
+
+    DRC.message("=== Smoke Settings Validation Failed ===")
+    DRC.message("Missing or invalid settings under 'smoke:' in your YAML:")
+    errors.each { |e| DRC.message("  - #{e}") }
+    DRC.message("Fix your YAML settings and try again.")
+    exit
   end
 
   def smoke_loop(images, number)
@@ -114,7 +166,7 @@ class Smoker
       quick_light(args.smoke)
       @smoker = 'cigar'
     end
-    send(args.teach + '_loop', images, args.player)
+    send(args.teach + '_loop', images, args.player.capitalize)
   end
 
   def teach_loop(images, player)
@@ -131,21 +183,40 @@ class Smoker
       end
       Flags.reset('smoke-image-learned')
     end
+    DRC.message("Teaching complete.")
     exit
   end
 
   def learn_loop(_images, player)
     @time_between = 0
     loop do
+      unless DRRoom.pcs.include?(player)
+        DRC.message("=== #{player} is no longer in the room ===")
+        DRC.message("Learning session ended. Stowing equipment.")
+        DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
+        exit
+      end
       if /make a (?<image>\w+) smoke image/ =~ DRC.bput("Listen #{player}", /^You start paying attention to #{player.capitalize}'s advice on how to make a (?<image>\w+) smoke image/, /^#{player.capitalize} isn't teaching a class/)
         image = Regexp.last_match[:image]
       else
-        pause 1 until Flags['time-to-listen']
+        pause 1 until Flags['time-to-listen'] || !DRRoom.pcs.include?(player)
+        unless DRRoom.pcs.include?(player)
+          DRC.message("=== #{player} is no longer in the room ===")
+          DRC.message("Learning session ended. Stowing equipment.")
+          DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
+          exit
+        end
         image = Flags['time-to-listen'][:image]
         DRC.bput("Listen #{player}", /You start paying attention to/)
       end
       until Flags['smoke-image-learned']
-        pause 1 until Flags['teacher-smoked'] || Flags['smoke-image-learned']
+        pause 1 until Flags['teacher-smoked'] || Flags['smoke-image-learned'] || !DRRoom.pcs.include?(player)
+        unless DRRoom.pcs.include?(player)
+          DRC.message("=== #{player} left the room mid-lesson ===")
+          DRC.message("Learning session ended. Stowing equipment.")
+          DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
+          exit
+        end
         Flags.reset('teacher-smoked')
         break if Flags['smoke-image-learned']
 
@@ -171,13 +242,20 @@ class Smoker
   end
 
   def load_pipe
-    exit unless DRCI.get_item_if_not_held?(@pipe, @bag)
+    unless DRCI.get_item_if_not_held?(@pipe, @bag)
+      DRC.message("Could not get #{@pipe} from #{@bag}.")
+      exit
+    end
     contents = DRC.bput("look in my #{@pipe}", /^In the .* you see (a|an|some) .*/, /^There is nothing in there/)
     case contents
     when /burning/
       return true
     when /There is nothing/
-      DRCI.get_item?('tobacco', @bag)
+      unless DRCI.get_item?('tobacco', @bag)
+        DRC.message("No tobacco found in #{@bag}.")
+        DRCI.put_away_item?(@pipe, @bag)
+        exit
+      end
       DRCI.put_away_item?('tobacco', @pipe)
     end
     light_tobacco("tobacco in pipe")
@@ -189,7 +267,10 @@ class Smoker
     when /pipe/
       load_pipe
     when /cigar/
-      exit unless DRCI.get_item_if_not_held?(smoker, @bag)
+      unless DRCI.get_item_if_not_held?(smoker, @bag)
+        DRC.message("Could not get #{smoker} from #{@bag}.")
+        exit
+      end
       light_tobacco(smoker)
     end
   end
@@ -219,7 +300,7 @@ class Smoker
       DRCI.put_away_item?(@lighter, @bag)
     else # flint
       unless DRCI.get_item?("flint")
-        DRC.message("Missing flint, scoot to your local shop and pick some up, every adventurer should have flint and steel")
+        DRC.message("Could not get flint. Buy flint from a general store.")
         DRCI.put_away_item?(DRC.right_hand, @bag)
         exit
       end
@@ -246,7 +327,7 @@ class Smoker
 
   def inhale(image)
     if /out of your lungs first/ =~ DRC.bput("inhale my #{@smoker}", /^You take/, /out of your lungs first/)
-      exhale_smoke(image, true)
+      exhale_smoke(image)
       return inhale(image)
     end
   end
@@ -305,7 +386,7 @@ class Smoker
       images -= (images - images_you_know) # creates an array of images we don't know, and removes them from our list of images we were hoping to smoke
     end
     # Here we might want to just smoke a curated list of images, regardless of whether we've mastered one or more
-    # TODO: support for non-halfling mastery?
+    # Note: Olvi (Halflings) use different intermediate tier names but share the 'master*' indicator with all races
     return images unless @smoke_settings['clean_list_of_mastered']
 
     # Here we're using the originally generated list like a hash
@@ -313,7 +394,7 @@ class Smoker
                       .select { |image_and_mastery| image_and_mastery.include?('master*') } # selecting only those images we've fully mastered.
                       .join(' ') # making a string of image names, dashes, and 'master*'
                       .split # creating a new array with all of those items as elements
-                      .reject { |item| item =~ /-|master*/ } # removing the dashes and 'master*' elements, leaving us with just an array of images we've mastered
+                      .reject { |item| item =~ /-|master\*/ } # removing the dashes and 'master*' elements, leaving us with just an array of images we've mastered
                       .select { |image| images.include?(image) } # then comparing our original images list to the list of mastered images, and removing any matches.
     DRC.message("Removing already mastered images: #{images_mastered.join(' ')}") unless images_mastered.empty? # images_mastered here means images from our variable 'images' that we sent this method
     UserVars.smoke_images_mastered |= images_mastered # here we're adding any mastered images we found on our list of mastered to our uservar, but only if they're not already present.
