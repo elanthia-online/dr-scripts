@@ -32,7 +32,7 @@ class Clerk
       area = settings.custom_clerk_tools[custom_toolset][:area]
       @belt = nil
     elsif args.toolset == 'engineering'
-      tools = settings.shaping_tools
+      tools = settings.engineering_tools
       area = 'shaping'
       @belt = settings.engineering_belt
     elsif args.toolset == 'outfitting'

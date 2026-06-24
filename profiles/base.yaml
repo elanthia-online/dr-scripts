@@ -1045,6 +1045,7 @@ workorders_materials:
   metal_type: bronze
   stone_type: alabaster
   wood_type: maple
+  mechanism_ingot_type: bronze # Currently the only automatic one for the Tinkering workorder.
 
 # Following settings, including herb_container:, are required to override workorders for remedies
 # container used for raw herbs foraged - used by alchemy.lic script

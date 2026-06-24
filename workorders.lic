@@ -76,7 +76,7 @@ class WorkOrders
   def initialize
     arg_definitions = [
       [
-        { name: 'discipline', options: %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing], description: 'What type of workorder to do?' },
+        { name: 'discipline', options: %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing tinkering], description: 'What type of workorder to do?' },
         { name: 'repair', regex: /repair/i, optional: true, description: 'repair tools instead of crafting' },
         { name: 'turnin', regex: /turnin/i, optional: true, description: 'get work order and turn it in immediately with items already on hand' }
       ]
@@ -117,6 +117,8 @@ class WorkOrders
 
     info = crafting_data[discipline][@hometown]
     info = crafting_data['blacksmithing'][@hometown] if discipline == 'weaponsmithing'
+    # Tinkering uses the Engineering guild (shaping) NPC and logbook
+    info = crafting_data['shaping'][@hometown] if discipline == 'tinkering'
 
     recipes = if @recipe_overrides[discipline]
                 get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && @recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
@@ -175,7 +177,7 @@ class WorkOrders
       materials_info = crafting_data['stock'][@workorders_materials['wood_type']]
       skill = 'Engineering'
       @engineering_room = @settings.engineering_room
-      tools = @settings.shaping_tools
+      tools = @settings.engineering_tools
       @belt = @settings.engineering_belt
       craft_method = :shape_items
     when 'carving'
@@ -186,7 +188,7 @@ class WorkOrders
                        end
       skill = 'Engineering'
       @engineering_room = @settings.engineering_room
-      tools = @settings.carving_tools
+      tools = @settings.engineering_tools
       @belt = @settings.engineering_belt
       craft_method = :carve_items
     when 'remedies'
@@ -201,6 +203,13 @@ class WorkOrders
       tools = @settings.enchanting_tools
       @belt = @settings.enchanting_belt
       craft_method = :enchanting_items
+    when 'tinkering'
+      materials_info = crafting_data['stock'][@workorders_materials['wood_type'] || 'maple']
+      skill = 'Engineering'
+      @engineering_room = @settings.engineering_room
+      tools = @settings.engineering_tools
+      @belt = @settings.engineering_belt
+      craft_method = :tinker_items
     else
       Lich::Messaging.msg('bold', 'WorkOrders: No discipline found')
       return
@@ -255,6 +264,9 @@ class WorkOrders
   end
 
   def repair_items(info, tools)
+    skip = Array(@settings.workorders_no_repair_tools)
+    tools = tools.reject { |t| skip.any? { |s| t.include?(s) } } unless skip.empty?
+
     if @settings.workorders_repair_own_tools
       current = Room.current.id
       DRCM.ensure_copper_on_hand(1500, @settings, @hometown)
@@ -806,6 +818,108 @@ class WorkOrders
     unless DRCI.put_away_item?('deed')
       Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow deed')
     end
+  end
+
+  def tinker_items(info, materials_info, item, quantity)
+    recipe = find_recipe(materials_info, item, quantity).first
+    mechanism_ingot = @workorders_materials['mechanism_ingot_type'] || 'bronze'
+
+    info['trash-room'] = nil if @worn_trashcan && @worn_trashcan_verb
+
+    DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
+
+    if recipe['part']
+      recipe['part'].reject { |p| p =~ /mechanism/i }.uniq.each do |part|
+        total_needed = recipe['part'].count { |p| p == part } * quantity
+        existing = DRCI.count_items_in_container(part, @bag)
+        deficit = total_needed - existing
+        order_parts([part], deficit) if deficit.positive?
+      end
+
+      mechanisms_needed = recipe['part'].count { |p| p =~ /mechanism/i } * quantity
+      if mechanisms_needed.positive?
+        mech_name = "#{mechanism_ingot} mechanisms"
+        consolidate_mechanisms(mech_name)
+        existing = count_mechanisms
+        deficit = mechanisms_needed - existing
+        if deficit > 0
+          mechanism_press_speed = (@workorders_materials['mechanism_press_speed'] || 5).to_i
+          num_presses = (deficit.to_f / 3).ceil
+          buy_mechanism_ingots(mechanism_ingot, num_presses)
+          DRCC.create_mechanisms(@settings, mechanism_ingot, num_presses, mechanism_press_speed)
+          consolidate_mechanisms(mech_name)
+        end
+      end
+    end
+
+    quantity.times do |count|
+      DRCI.stow_hands if count.positive?
+
+      DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
+      DRCT.order_item(info['stock-room'], materials_info['stock-number'])
+      while DRC.bput("count my #{materials_info['stock-name']} lumber", 'You count.*\d+', 'I could not find').scan(/\d+/).first.to_i < recipe['volume']
+        DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
+        DRCT.order_item(info['stock-room'], materials_info['stock-number'])
+        DRC.bput('combine', 'combine')
+      end
+      DRCC.stow_crafting_item("#{materials_info['stock-name']} lumber", @bag, @belt)
+
+      DRCC.find_shaping_room(@hometown, @engineering_room)
+      DRC.wait_for_script_to_complete('cm_tinker', [recipe['chapter'], recipe['name'], materials_info['stock-name'], recipe['noun']])
+      bundle_item(recipe['noun'], info['logbook'])
+    end
+
+    DRCI.stow_hands
+    lumber_name = "#{materials_info['stock-name']} lumber"
+    while DRCI.exists?(lumber_name)
+      DRCT.dispose(lumber_name, info['trash-room'], @worn_trashcan, @worn_trashcan_verb)
+    end
+  end
+
+  def word_count_to_i(str)
+    ones = %w[zero one two three four five six seven eight nine ten eleven
+              twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen]
+    tens = { 'twenty' => 20, 'thirty' => 30, 'forty' => 40, 'fifty' => 50,
+             'sixty' => 60, 'seventy' => 70, 'eighty' => 80, 'ninety' => 90 }
+    str.downcase.gsub('-', ' ').split.sum { |w| ones.index(w) || tens[w] || 0 }
+  end
+
+  def buy_mechanism_ingots(material, count)
+    crafting_data = get_data('crafting')
+    stock = crafting_data['stock'] || {}
+    candidates = stock.select { |_k, v| v.is_a?(Hash) && v['stock-name'] == material }
+    return if candidates.empty?
+    _key, entry = candidates.min_by { |_k, v| (v['volume'].to_i - 5).abs }
+    stock_room = crafting_data['blacksmithing'][@hometown]['stock-room']
+    existing = DRCI.count_items_in_container("#{material} ingot", @bag).to_i
+    to_buy = count - existing
+    to_buy.times do
+      DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
+      DRCT.order_item(stock_room, entry['stock-number'])
+      DRCC.stow_crafting_item("#{material} ingot", @bag, nil)
+    end
+  end
+
+  def consolidate_mechanisms(mech_name)
+    loop do
+      break unless DRC.bput("get my #{mech_name} from my #{@bag}", /^You get/, /^I could not find/, /^What were/) =~ /^You get/
+      got_second = DRC.bput("get my #{mech_name} from my #{@bag}", /^You get/, /^I could not find/, /^What were/) =~ /^You get/
+      fput('combine') if got_second
+      DRCC.stow_crafting_item(mech_name, @bag, nil)
+      break unless got_second
+    end
+  end
+
+  def count_mechanisms
+    material = @workorders_materials['mechanism_ingot_type'] || 'bronze'
+    result = DRC.bput("count #{material} mechanisms in my #{@bag}",
+                      /There are .+ mechanisms left/i,
+                      /There is .+ mechanism left/i,
+                      /I could not find/i,
+                      /What were/i)
+    return 0 unless result =~ /There are (.+?) mechanisms left|There is (.+?) mechanism/i
+
+    word_count_to_i((Regexp.last_match(1) || Regexp.last_match(2)).strip)
   end
 
   def enchanting_items(info, _materials_info, recipe, quantity)
