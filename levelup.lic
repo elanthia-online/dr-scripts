@@ -73,7 +73,8 @@ class LevelUp
                     'Esuin starts to speak and then looks at you with concern',
                     'Excellent.  The inner fire burns bright within',
                     'Anything to make a Dokora',
-                    'means to congratulate you for rising another circle')
+                    'means to congratulate you for rising another circle',
+                    'Mortom looks up from admiring himself in a nearby mirror.')
       when 'you still have an outstanding task which you must complete', "you don't deserve to ever get promoted again"
         DRC.message('*** Unable to circle, do you need to complete a quest? ***')
         break
