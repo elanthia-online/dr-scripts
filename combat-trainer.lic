@@ -2,6 +2,18 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#combat-trainer
 =end
 
+# Safely evaluate a user-supplied conditional string from YAML config
+# (e.g. must_be_true / buff_nonspells conditionals). A malformed expression
+# would otherwise raise and abort the combat loop, so failures are logged
+# and treated as false. The caller's binding is passed so the expression
+# resolves in the same scope a bare eval would have used.
+def ct_safe_eval(expression, context)
+  eval(expression, context)
+rescue SyntaxError, StandardError => e
+  DRC.message("combat-trainer: error evaluating conditional #{expression.inspect}: #{e.message}")
+  false
+end
+
 class SetupProcess
   def initialize(settings, equipment_manager)
     @equipment_manager = equipment_manager
@@ -614,10 +626,12 @@ class LootProcess
 
   def execute(game_state)
     waitrt?
-    if DRRoom.room_objs.include?("junk")
-      @dump_item_count -= 3
-    end
-    if (Time.now - @dump_timer > 300) && @dump_junk && DRRoom.room_objs.count >= @dump_item_count
+    room_objs = DRRoom.room_objs
+    # A "junk" pile lowers the threshold so we dump sooner, but this must be a
+    # per-tick local; mutating @dump_item_count compounded it every tick.
+    dump_threshold = @dump_item_count
+    dump_threshold -= 3 if room_objs.include?("junk")
+    if (Time.now - @dump_timer > 300) && @dump_junk && room_objs.count >= dump_threshold
       fput 'DUMP JUNK'
       @dump_timer = Time.now
     end
@@ -1145,7 +1159,7 @@ class LootProcess
       @dissect = false
       return false
     when 'would probably object', "should be left alone."
-      dissected?('', game_state)
+      return dissected?('', game_state)
     end
     return false
   end
@@ -1266,6 +1280,9 @@ class SafetyProcess
   end
 
   def execute(game_state)
+    # Reset the failure count whenever we are not actively bleeding, so a stale
+    # count from an earlier, since-resolved bleed cannot trip the stop below.
+    @untendable_counter = 0 unless bleeding?
     if @untendable_counter >= @safety_untendable_threshold && @stop_on_bleeding
       echo('Skipping tendme check due to untendable backoff') if $debug_mode_ct
       echo("Couldn't tend bleeders after trying #{@safety_untendable_threshold} time(s). Stopping hunt. Get healed!")
@@ -1291,10 +1308,15 @@ class SafetyProcess
     # If no heal-over-time spells are active then attempt to tend bleeders using ;tendme
     elsif bleeding? && !Script.running?('tendme') && !(DRSpells.active_spells['Devour'] || DRSpells.active_spells['Heal'] || DRSpells.active_spells['Regenerate'])
       echo('Checking for tendable bleeders...') if $debug_mode_ct
-      if DRCH.has_tendable_bleeders?
-        DRC.wait_for_script_to_complete('tendme')
+      DRC.wait_for_script_to_complete('tendme') if DRCH.has_tendable_bleeders?
+      # Only count a failed attempt if still bleeding afterwards, and reset once
+      # bleeding clears so separate, fully-tended episodes earlier in the hunt do
+      # not accumulate toward the stop threshold.
+      if bleeding?
+        @untendable_counter += 1
+      else
+        @untendable_counter = 0
       end
-      @untendable_counter += 1
     end
 
     fput 'exit' if DRStats.health < @health_threshold
@@ -2004,7 +2026,7 @@ class SpellProcess
       next false if data['any_celestial_object'] && !DRCMM.any_celestial_object?
       next false if data['no_bright_celestial_object'] && DRCMM.bright_celestial_object?
       next false if data['no_celestial_object'] && DRCMM.any_celestial_object?
-      next false if data['must_be_true'] && !eval(data['must_be_true'])
+      next false if data['must_be_true'] && !ct_safe_eval(data['must_be_true'], binding)
 
       true
     end
@@ -2065,7 +2087,7 @@ class SpellProcess
       next false if data['night'] && !UserVars.sun['night']
       next false if data['day'] && !UserVars.sun['day']
       next false if data['starlight_threshold'] && !enough_starlight?(game_state, data)
-      next false if data['must_be_true'] && !eval(data['must_be_true'])
+      next false if data['must_be_true'] && !ct_safe_eval(data['must_be_true'], binding)
       next false if data['cyclic'] && DRSpells.active_spells.include?(data['name']) && !data['recast_every']
 
       true
@@ -2073,7 +2095,7 @@ class SpellProcess
 
     name, data = recastable_buffs.find do |name, data|
       if data['pet_type']
-        check_spell_timer?(data) && DRRoom.npcs.include?(data['pet_type'])
+        check_spell_timer?(data) && game_state.npcs.include?(data['pet_type'])
       elsif data['recast_every']
         check_spell_timer?(data)
       elsif data['expire']
@@ -2132,7 +2154,7 @@ class SpellProcess
       return
     end
 
-    if Time.now - @perc_health_timer > 30 && @empath_spells['FOC'] || @empath_spells['HEAL']
+    if Time.now - @perc_health_timer > 30 && (@empath_spells['FOC'] || @empath_spells['HEAL'])
       @perc_health_timer = Time.now
       @wounds = DRCH.perceive_health['wounds']
     end
@@ -2317,7 +2339,7 @@ class SpellProcess
       next false if spell['any_celestial_object'] && !DRCMM.any_celestial_object?
       next false if spell['no_bright_celestial_object'] && DRCMM.bright_celestial_object?
       next false if spell['no_celestial_object'] && DRCMM.any_celestial_object?
-      next false if spell['must_be_true'] && !eval(spell['must_be_true'])
+      next false if spell['must_be_true'] && !ct_safe_eval(spell['must_be_true'], binding)
 
       true
     end
@@ -2570,7 +2592,7 @@ class PetProcess
     when 'zombie shambles off with a groan'
       echo('  Zombie is no longer present') if $debug_mode_ct
       @is_present = false
-    when /shift into a \w+ stance/
+    when /shift into an? \w+ stance/
       echo("  Zombie stance set to #{@zombie['stance']}") if $debug_mode_ct
       @current_stance = @zombie['stance']
     when /you sense your .+ behavior shift/
@@ -2644,7 +2666,7 @@ class AbilityProcess
     echo("  @warhorn_nouns: #{@warhorn_nouns}") if $debug_mode_ct
 
     # Allows user to set the warhorn cooldown
-    @warhorn_cooldown = settings.warhorn_cooldown.to_i || 1200
+    @warhorn_cooldown = (settings.warhorn_cooldown || 1200).to_i
     echo("  @warhorn_cooldown: #{@warhorn_cooldown}") if $debug_mode_ct
 
     @stomp_on_cooldown = settings.war_stomp_on_cooldown
@@ -2979,14 +3001,14 @@ class AbilityProcess
       # break apart the blob into OG cooldown timer and the new optional conditional string using a fake && as a delimiter
       blob_array = blob.to_s.split(/ && /, 2)
       cooldown = blob_array[0].to_i
-      conditional = blob_array[1][1..-2] # strip out the leading and following double quotes
+      conditional = blob_array[1]&.[](1..-2) # strip out the leading and following double quotes (nil for cooldown-only entries)
 
       next unless !timer || (Time.now - timer).to_i > cooldown
 
       game_state.cooldown_timers[action] = Time.now
 
       # do action if there is no conditional (OG behaviour), or do action if there is a conditional and it evaluated as true
-      if conditional.nil? || (conditional && eval(conditional))
+      if conditional.nil? || (conditional && ct_safe_eval(conditional, binding))
         fput action
         waitrt?
       end
@@ -3049,7 +3071,7 @@ class AbilityProcess
       end
   end
 
-  def check_battle_cries(game_state)
+  def check_battle_cries(game_state, retries = 0)
     timer = game_state.cooldown_timers['Battle Cry']
     return unless !timer || (Time.now - timer).to_i > @battle_cry_cooldown
     return unless game_state.can_face?
@@ -3084,8 +3106,8 @@ class AbilityProcess
         # Oops, you're not actually facing an enemy to roar/scream at
         case DRC.bput('face next', 'You turn', 'There is nothing else to face', 'Face what')
         when 'You turn'
-          # Let's try that again...
-          check_battle_cries(game_state)
+          # Let's try that again... (bounded so a long face-next chain can't recurse unboundedly)
+          check_battle_cries(game_state, retries + 1) if retries < 5
         else
           # Nothing to roar/scream at, maybe next time
           return
@@ -3213,6 +3235,7 @@ class TrainerProcess
     # Skill check that you can summon an elemental domain
     summoning_ranks = DRSkill.getrank('Summoning')
     @training_abilities
+      .keys
       .select { |ability| ability =~ /Summon .* Domain/i }
       .each do |ability|
         if summoning_ranks < 200
@@ -3439,11 +3462,13 @@ class TrainerProcess
     return if DRSkill.getxp('Stealth') >= 34
 
     if DRC.hide?(@hide_type) && !@dont_stalk && !game_state.npcs.empty? && @hide_type == 'hide'
-      stalked = DRC.bput('stalk', 'Stalk what',
-                         'Try being out of sight',
-                         'You move into position',
-                         'already stalking',
-                         'discovers you, ruining your hiding place') == ('You move into position' || 'already stalking')
+      stalked = ['You move into position', 'already stalking'].include?(
+        DRC.bput('stalk', 'Stalk what',
+                 'Try being out of sight',
+                 'You move into position',
+                 'already stalking',
+                 'discovers you, ruining your hiding place')
+      )
       DRC.bput('stop stalk', "You're not stalking anything though", 'You stop stalking') if stalked
     end
     DRC.bput('unhide', 'You come out of hiding', 'You slip out of hiding', 'But you are not', 'You try to creep out of hiding but your injuries cause you to stumble and crash to the ground!') if (game_state.npcs.empty? || @force_unhide) && hidden
@@ -3592,7 +3617,7 @@ class TrainerProcess
     end
 
     if DRC.hide?
-      DRC.bput('ambush stun', { 'timeout' => 0, 'suppress_no_match' => true }, 'Wouldn\'t it be better if you used a melee weapon?', 'You must be hidden or invisible to ambush', 'You aren\'t close enough to attack', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'Roundtime', 'is already out cold')
+      DRC.bput('ambush stun', 'Wouldn\'t it be better if you used a melee weapon?', 'You must be hidden or invisible to ambush', 'You aren\'t close enough to attack', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'Roundtime', 'is already out cold')
       waitrt?
     end
 
@@ -3790,7 +3815,7 @@ class TrainerProcess
   def reset_ability(game_state, ability_name, offset = 0)
     ability_info = @training_abilities.find { |name, _| name == ability_name }.last
     cooldown = ability_info.is_a?(Hash) ? ability_info[:cooldown] : ability_info.to_i
-    game_state.cooldown_timers[ability_name] = Time.now - [(cooldown - offset), 0].min
+    game_state.cooldown_timers[ability_name] = Time.now - [(cooldown - offset), 0].max
   end
 
   def select_ability(game_state)
@@ -3963,7 +3988,7 @@ class AttackProcess
         end
       end
 
-      DRC.bput(command, { 'timeout' => 0, 'suppress_no_match' => true }, 'Wouldn\'t it be better if you used a melee weapon?', 'You need two hands to wield this weapon', 'You turn to face', 'Face What?', 'Roundtime', "You aren't close enough to attack", 'It would help if you were closer', 'There is nothing else to face!', 'You must be hidden', 'flying too high for you to attack', 'You can\'t coldcock', 'while it is flying', 'Novel idea, but it\'s a ghost!', 'Bumbling, you slip', 'You can not slam with that', 'You must be hidden or invisible to ambush', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'is already out cold')
+      DRC.bput(command, 'Wouldn\'t it be better if you used a melee weapon?', 'You need two hands to wield this weapon', 'You turn to face', 'Face What?', 'Roundtime', "You aren't close enough to attack", 'It would help if you were closer', 'There is nothing else to face!', 'You must be hidden', 'flying too high for you to attack', 'You can\'t coldcock', 'while it is flying', 'Novel idea, but it\'s a ghost!', 'Bumbling, you slip', 'You can not slam with that', 'You must be hidden or invisible to ambush', 'You don\'t have enough focus', 'You don\'t think you have enough focus', 'You can\'t backstab that', 'is already out cold')
     end
 
     waitrt?
@@ -4663,15 +4688,16 @@ class GameState
     @stances = settings.stances
     echo("  @stances: #{@stances}") if $debug_mode_ct
 
-    @stances.keys do |key|
-      settings = @stances[key]
-      unless (settings & %w[evasion parry shield]).empty?
+    @stances.each_key do |key|
+      stance_list = @stances[key]
+      unless (stance_list & %w[evasion parry shield]).empty?
         DRC.message 'Please update to the latest version of stance: settings!'
-        settings.map! { |x| { 'parry' => 'Parry Ability', 'shield' => 'Shield Usage', 'evasion' => 'Evasion' }[x] }
+        legacy_stances = { 'parry' => 'Parry Ability', 'shield' => 'Shield Usage', 'evasion' => 'Evasion' }
+        stance_list.map! { |x| legacy_stances.fetch(x, x) } # keep already-canonical names as-is
       end
-      (['Evasion', 'Shield Usage', 'Parry Ability'] - settings).each { |x| settings << x }
-      unless settings.size == 3
-        DRC.message "Error: stance settings #{settings} include invalid stance."
+      (['Evasion', 'Shield Usage', 'Parry Ability'] - stance_list).each { |x| stance_list << x }
+      unless stance_list.size == 3
+        DRC.message "Error: stance settings #{stance_list} include invalid stance."
         exit
       end
     end
@@ -5085,6 +5111,8 @@ class GameState
       false
     when /You are not ready to perform another War Stomp/, /You are too fatigued to perform a War Stomp/
       false
+    when /^What are you trying to attack/
+      false
     else
       Flags.reset('war-stomp-ready')
       if DRSpells.active_spells.include?('Heitak')
@@ -5289,9 +5317,13 @@ class GameState
   end
 
   def dance
-    if @dynamic_dance_skill
+    # Recompute the dynamic dance skill at most every few seconds rather than every
+    # tick -- relative learning rates barely move in that window, and re-picking each
+    # tick churns getxp/getrank and can thrash the wielded weapon.
+    if @dynamic_dance_skill && (@dance_skill_timer.nil? || Time.now - @dance_skill_timer > 5)
       filtered_skills = weapon_training.keys.reject { |skill| $non_dance_skills.include?(skill) }
       @dance_skill = sort_by_rate_then_rank(filtered_skills).first
+      @dance_skill_timer = Time.now
     end
     update_weapon_info(@dance_skill)
   end
@@ -5501,13 +5533,15 @@ class GameState
   end
 
   def charged_maneuver_off_cooldown?(maneuver)
+    return false unless maneuver # a missing maneuver is not "off cooldown"
+
     # All guilds can perform a maneuver every 90 seconds.
     # Some guilds have a chance to reduce some maneuvers to every 60 seconds.
     # To account for the adjustable cooldown, the timer we store
     # for maneuvers is the future time when it'll be ready rather
     # than the start time as we do with other ability timers.
     # This allows us to shorten or lengthen the "time when it'll be ready".
-    timer = @cooldown_timers[maneuver]
+    timer = @cooldown_timers[maneuver.downcase]
     timer.nil? || (Time.now > timer)
   end
 
@@ -5537,8 +5571,9 @@ class GameState
     maneuver
   end
 
-  def use_charged_maneuver(maneuver)
+  def use_charged_maneuver(maneuver, attempts = 0)
     return false unless maneuver
+    return false if attempts >= 3 # bound the out-of-range / retreat-retry recursion below
 
     Flags.reset('ct-powershot-ammo')
     Flags.reset('ct-maneuver-cooldown-reduced')
@@ -5600,7 +5635,7 @@ class GameState
 
     if Flags['ct-attack-out-of-range']
       engage
-      return use_charged_maneuver(maneuver)
+      return use_charged_maneuver(maneuver, attempts + 1)
     end
 
     case attempt
@@ -5609,7 +5644,7 @@ class GameState
       # could have reduced it to anywhere between 45-55 seconds.
       # We optimistically assumed 45 seconds. If that wasn't enough then
       # we'll wait another 15 seconds and retry.
-      @cooldown_timers[maneuver] += 15
+      @cooldown_timers[maneuver.downcase] += 15
       return false
     when *maneuver_failure_messages
       return false
@@ -5617,12 +5652,12 @@ class GameState
       if maneuver.casecmp?('rush')
         if @rush_retreat_skip
           # Skip retreat and delay the next rush attempt
-          @cooldown_timers[maneuver] = Time.now + 10
+          @cooldown_timers[maneuver.downcase] = Time.now + 10
           echo "Rush failed due to engagement. Skipping retreat and retrying in 10 seconds."
           return true
         else
           DRC.retreat
-          return use_charged_maneuver(maneuver)
+          return use_charged_maneuver(maneuver, attempts + 1)
         end
       else
         return false
@@ -5635,11 +5670,11 @@ class GameState
         # We'll be optimistic and hope we got the shorter cooldown.
         # If we didn't then next time around we'll add a few more seconds
         # to finish out a 60 second cooldown.
-        @cooldown_timers[maneuver] = Time.now + 45
+        @cooldown_timers[maneuver.downcase] = Time.now + 45
         Flags.reset('ct-maneuver-cooldown-reduced')
       else
         # No special favors for you. Full cooldown!
-        @cooldown_timers[maneuver] = Time.now + 90
+        @cooldown_timers[maneuver.downcase] = Time.now + 90
       end
 
       # Toggle off using charged maneuvers until
