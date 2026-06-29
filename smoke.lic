@@ -73,6 +73,8 @@ class Smoker
     @blade          = @equipmanager.items.find { |gear| gear.short_regex =~ @smoke_settings['blade'] || gear.name =~ /\b#{@smoke_settings['blade']}\b/i }
     @cigar          = args.cigar
     @time_between   = @smoke_settings['time_between_exhales'] || 1
+    # An explicitly requested image is trained even if mastered; otherwise honor the setting.
+    @clean_mastered = @smoke_settings['clean_list_of_mastered'] && !args.image
 
     validate_settings(args)
 
@@ -433,8 +435,8 @@ class Smoker
     DRC.message("Removing unknown images: #{unknown.join(', ')}") unless unknown.empty?
     @image_pool &= known_names
 
-    # Filter mastered if configured
-    if @smoke_settings['clean_list_of_mastered']
+    # Filter mastered if configured, but never drop an explicitly requested image.
+    if @clean_mastered
       mastered = entries
                  .select { |_, tier| tier == 'master*' }
                  .map(&:first)
