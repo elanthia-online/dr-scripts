@@ -1,0 +1,263 @@
+=begin
+  Imports game session logs into the status-monitor SQLite database
+  to pre-populate the corpus of seen messages.
+
+  Walks the character's log directory, processes .log and .log.gz files,
+  strips timestamps and residual XML, applies similarity scrubbing,
+  and batch-inserts into the seen_messages database.
+
+  Tracks processed files so it can be safely re-run without duplicating work.
+
+  SYNTAX:  ;status-monitor-import
+           ;status-monitor-import --character=Mahtra    - import for a specific character
+           ;status-monitor-import --limit=100           - limit to N files (for testing)
+           ;status-monitor-import --reset               - re-process all files
+
+  @see https://elanthipedia.play.net/Lich_script_repository#status-monitor
+=end
+
+require 'sqlite3'
+require 'zlib'
+
+arg_definitions = [
+  [
+    { name: 'character', regex: /character=(\w+)/i, optional: true },
+    { name: 'limit', regex: /limit=(\d+)/i, optional: true },
+    { name: 'reset', regex: /reset/i, optional: true }
+  ]
+]
+
+args = parse_args(arg_definitions)
+
+module StatusMonitorImport
+  TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[^:]*: /
+  BARE_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?(\s+\S+)?$/
+  XML_TAG_PATTERN = /<[^>]+>/
+  REGET_MARKER = /<!-- Above contents from reget/
+  CURRENCY_SCRUB = [/[0-9]+/, /(kronars|lirums|dokoras)/i].freeze
+
+  # Lines matching these patterns are not useful for the seen corpus.
+  SKIP_PATTERNS = [
+    /^$/,
+    /^>/, # upstream commands
+  ].freeze
+
+  # Opens or creates the seen_messages SQLite database.
+  # Schema must stay in sync with StatusMonitor::MessageStore#open_database.
+  #
+  # @param character_name [String] character name for database filename
+  # @return [SQLite3::Database] database connection
+  def self.open_database(character_name)
+    db_path = "seen_messages_#{character_name}.db"
+    db = SQLite3::Database.new(db_path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA synchronous=NORMAL')
+    db.execute(<<~SQL)
+      CREATE TABLE IF NOT EXISTS seen_messages (
+        line_text TEXT PRIMARY KEY,
+        first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        source TEXT DEFAULT 'live'
+      )
+    SQL
+    db.execute(<<~SQL)
+      CREATE TABLE IF NOT EXISTS import_log (
+        file_path TEXT PRIMARY KEY,
+        lines_imported INTEGER,
+        imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    SQL
+    db
+  end
+
+  # Checks whether a file has already been imported.
+  #
+  # @param db [SQLite3::Database] database connection
+  # @param path [String] file path to check
+  # @return [Boolean] true if already imported
+  def self.already_imported?(db, path)
+    db.get_first_value('SELECT 1 FROM import_log WHERE file_path = ?', [path]) ? true : false
+  end
+
+  # Records that a file has been imported.
+  #
+  # @param db [SQLite3::Database] database connection
+  # @param path [String] file path
+  # @param count [Integer] number of lines imported
+  # @return [void]
+  def self.record_import(db, path, count)
+    db.execute('INSERT OR REPLACE INTO import_log (file_path, lines_imported) VALUES (?, ?)', [path, count])
+  end
+
+  # Scrubs a line for similarity comparison, removing numbers and currency.
+  # Must stay in sync with StatusMonitor::MessageFilter#similarity_scrub.
+  #
+  # @param line [String] cleaned line
+  # @return [String] scrubbed line
+  def self.similarity_scrub(line)
+    result = line.dup
+    CURRENCY_SCRUB.each { |pattern| result.gsub!(pattern, '') }
+    result
+  end
+
+  # Cleans a raw log line by stripping timestamps, XML tags, and whitespace.
+  #
+  # @param line [String] raw log line
+  # @return [String, nil] cleaned line, or nil if it should be skipped
+  def self.clean_line(line)
+    line = line.strip
+    return nil if SKIP_PATTERNS.any? { |p| p.match?(line) }
+    return nil if line.match?(BARE_TIMESTAMP_PATTERN)
+    return nil if line.match?(REGET_MARKER)
+
+    line = line.sub(TIMESTAMP_PATTERN, '')
+    line = line.gsub(XML_TAG_PATTERN, '')
+    line = line.strip
+    return nil if line.empty?
+
+    line
+  end
+
+  # Processes a single log file and imports its lines into the database.
+  #
+  # @param db [SQLite3::Database] database connection
+  # @param path [String] path to the log file
+  # @return [Integer] number of new lines imported
+  def self.import_file(db, path)
+    count = 0
+    batch = []
+    batch_size = 10_000
+
+    reader = if path.end_with?('.gz')
+               Zlib::GzipReader.open(path)
+             else
+               File.open(path, 'r')
+             end
+
+    reader.each_line do |raw_line|
+      cleaned = clean_line(raw_line)
+      next unless cleaned
+
+      scrubbed = similarity_scrub(cleaned).strip
+      next if scrubbed.empty?
+
+      batch << scrubbed
+      if batch.size >= batch_size
+        count += flush_batch(db, batch)
+        batch.clear
+      end
+    end
+
+    count += flush_batch(db, batch) unless batch.empty?
+    count
+  ensure
+    reader&.close
+  end
+
+  # Inserts a batch of lines into the database in a single transaction.
+  #
+  # @param db [SQLite3::Database] database connection
+  # @param lines [Array<String>] lines to insert
+  # @return [Integer] number of lines inserted (approximate)
+  def self.flush_batch(db, lines)
+    db.transaction do
+      lines.each do |line|
+        db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, 'import'])
+      end
+    end
+    lines.size
+  end
+
+  # Discovers all log files for a character.
+  #
+  # @param character_name [String] character name
+  # @return [Array<String>] sorted list of log file paths
+  def self.find_log_files(character_name)
+    log_dir = File.join(LICH_DIR, 'logs', "DR-#{character_name}")
+    unless File.directory?(log_dir)
+      echo "Log directory not found: #{log_dir}"
+      return []
+    end
+
+    files = Dir.glob(File.join(log_dir, '**', '*.log')) +
+            Dir.glob(File.join(log_dir, '**', '*.log.gz'))
+    files.sort
+  end
+
+  # Main entry point for the import process.
+  #
+  # @param character_name [String] character to import for
+  # @param limit [Integer, nil] max files to process
+  # @param reset [Boolean] if true, re-process all files
+  # @return [void]
+  def self.run(character_name, limit: nil, reset: false)
+    db = open_database(character_name)
+
+    if reset
+      db.execute("DELETE FROM seen_messages WHERE source = 'import'")
+      db.execute('DELETE FROM import_log')
+      echo 'Import log and imported entries cleared -- will re-process all files.'
+    end
+
+    files = find_log_files(character_name)
+    if files.empty?
+      echo 'No log files found.'
+      return
+    end
+
+    files = files.first(limit.to_i) if limit
+
+    total_files = files.size
+    total_lines = 0
+    skipped = 0
+    processed = 0
+    errors = 0
+    start_time = Time.now
+
+    count_before = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
+
+    echo "Found #{total_files} log files for #{character_name}."
+
+    files.each_with_index do |file, _idx|
+      if already_imported?(db, file)
+        skipped += 1
+        next
+      end
+
+      begin
+        lines = import_file(db, file)
+        record_import(db, file, lines)
+        total_lines += lines
+        processed += 1
+      rescue Zlib::GzipFile::Error, EOFError, SystemCallError => e
+        echo "Skipping #{file}: #{e.class}: #{e.message}"
+        errors += 1
+        next
+      end
+
+      if (processed % 50).zero?
+        elapsed = Time.now - start_time
+        rate = processed / elapsed
+        remaining = ((total_files - skipped - processed) / rate).round
+        echo "Progress: #{processed}/#{total_files - skipped} files, #{total_lines} lines scanned, ~#{remaining}s remaining"
+      end
+    end
+
+    count_after = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
+    elapsed = (Time.now - start_time).round(1)
+
+    echo "Import complete in #{elapsed}s."
+    echo "  Files: #{processed} processed, #{skipped} skipped (already imported), #{errors} errors"
+    echo "  Lines scanned: #{total_lines}"
+    echo "  New unique entries: #{count_after - count_before}"
+    echo "  Total corpus size: #{count_after}"
+  ensure
+    db&.close
+  end
+end
+
+character = args.character || checkname
+StatusMonitorImport.run(
+  character,
+  limit: args.limit,
+  reset: args.reset
+)
