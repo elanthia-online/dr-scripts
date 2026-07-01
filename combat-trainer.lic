@@ -3394,6 +3394,13 @@ class TrainerProcess
       end
     when /^Stealth$/i
       hide_action(game_state)
+    when /^Confidence$/i
+      if DRStats.guild == 'Thief'
+        hide_action(game_state)
+      else
+        DRC.message("Confidence is only for thieves, removing from training_abilities.")
+        @training_abilities.delete('Confidence')
+      end
     when /^(Ret|Retreat) Stealth$/i
       DRC.retreat
       hide_action(game_state)
@@ -3459,8 +3466,6 @@ class TrainerProcess
   private
 
   def hide_action(game_state)
-    return if DRSkill.getxp('Stealth') >= 34
-
     if DRC.hide?(@hide_type) && !@dont_stalk && !game_state.npcs.empty? && @hide_type == 'hide'
       stalked = ['You move into position', 'already stalking'].include?(
         DRC.bput('stalk', 'Stalk what',
