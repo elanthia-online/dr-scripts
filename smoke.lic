@@ -14,6 +14,16 @@
 class Smoker
   VERSION = '1.0'
 
+  TIER_ORDER = {
+    'learning' => 0,
+    'wheezer' => 1, 'beginner' => 1,
+    'sneezer' => 2, 'amateur' => 2,
+    'whiffler' => 3, 'adequate' => 3,
+    'streamer' => 4, 'competent' => 4,
+    'master' => 5,
+    'master*' => 6
+  }.freeze
+
   def initialize
     Flags.add('new-cig', 'That was the last of your', 'goes out and crumbles away'); Flags['new-cig'] = true
     @full_image_list = ['deer', 'dragon', 'rabbit', 'pixie', 'kitten', 'troll', 'horse', 'paladin', 'whip', 'cloak', 'stump', 'fleas', 'daisies', 'unicorn', 'rams', 'bandit', 'ship', 'grave', 'fish', 'web', 'phoenix', 'bracelet', 'skeleton', 'tart', 'almanac', 'dartboard', 'wolf', 'vine', 'forge', 'moongate', 'mage', 'violin', 'altar', 'trader']
@@ -63,6 +73,8 @@ class Smoker
     @blade          = @equipmanager.items.find { |gear| gear.short_regex =~ @smoke_settings['blade'] || gear.name =~ /\b#{@smoke_settings['blade']}\b/i }
     @cigar          = args.cigar
     @time_between   = @smoke_settings['time_between_exhales'] || 1
+    # An explicitly requested image is trained even if mastered; otherwise honor the setting.
+    @clean_mastered = @smoke_settings['clean_list_of_mastered'] && !args.image
 
     validate_settings(args)
 
@@ -78,7 +90,10 @@ class Smoker
     unless args.image
       images = check_images(images)
       if UserVars.smoke_images_known.size == UserVars.smoke_images_mastered.size
-        DRC.message("All known images mastered, sampling from your known list")
+        DRC.message("=== All #{UserVars.smoke_images_mastered.size} known images have reached master* ===")
+        DRC.message("Mastered: #{UserVars.smoke_images_mastered.join(', ')}")
+        DRC.message("Nothing left to practice. Learn new images and run ;smoke reset_known to continue.")
+        exit
       elsif images.empty?
         DRC.message("No valid images selected")
         exit
@@ -86,7 +101,7 @@ class Smoker
     end
 
     if args.until_out
-      smoke_loop(images.to_a, 99)
+      smoke_loop(images.to_a, :until_out)
     elsif args.repeat
       smoke_loop(images.to_a, args.repeat.to_i)
     else
@@ -136,22 +151,87 @@ class Smoker
   end
 
   def smoke_loop(images, number)
+    @image_pool = images
+    @image_queue = build_priority_queue
+    if @image_queue.empty?
+      DRC.message("=== All #{UserVars.smoke_images_mastered.size} images have reached master* ===")
+      DRC.message("Mastered: #{UserVars.smoke_images_mastered.join(', ')}")
+      DRC.message("Nothing left to practice. Learn new images and run ;smoke reset_known to continue.")
+      exit
+    end
+    until_out = (number == :until_out)
+    max_rounds = until_out ? Float::INFINITY : number
+    DRC.message(until_out ? "Starting smoke loop: until out of tobacco or images" : "Starting smoke loop: #{number} round(s)")
     DRCT.walk_to(@smoke_settings['smoke_room'])
-    number.times do
+    rounds_completed = 0
+    round = 0
+    while round < max_rounds
+      round += 1
       if @cigar && Flags['new-cig']
         Flags.reset('new-cig')
-        quick_light(@cigar)
+        break if until_out && !quick_light_safe(@cigar)
+
+        quick_light(@cigar) unless until_out
         @smoker = @cigar
       elsif @pipe && Flags['new-cig']
         Flags.reset('new-cig')
-        quick_light(@pipe)
+        break if until_out && !quick_light_safe(@pipe)
+
+        quick_light(@pipe) unless until_out
         @smoker = @pipe
       end
-      smoke(images) until Flags['new-cig']
-      images = check_images(images) if @smoke_settings['clean_list_of_mastered']
+      if Flags['new-cig']
+        if until_out
+          DRC.message("=== Out of tobacco ===")
+          break
+        end
+        DRC.message("Round #{round}/#{number}: tobacco exhausted before smoking. Skipping.")
+        next
+      end
+      smoke until Flags['new-cig']
+      rounds_completed += 1
+      DRC.message(until_out ? "Round #{rounds_completed} complete, tobacco exhausted." : "Round #{round}/#{number} complete, tobacco exhausted.")
+      # Refresh tier data between rounds to detect advancements
+      @image_queue = build_priority_queue
+      if @image_queue.empty?
+        DRC.message("=== All #{UserVars.smoke_images_mastered.size} images have reached master* ===")
+        DRC.message("Mastered: #{UserVars.smoke_images_mastered.join(', ')}")
+        DRC.message("Finished #{rounds_completed} round(s). Nothing left to practice.")
+        DRC.message("Learn new images and run ;smoke reset_known to continue.")
+        DRCI.put_away_item?(@pipe, @bag) if DRCI.in_hands?(@pipe)
+        exit
+      end
     end
     DRCI.put_away_item?(@pipe, @bag) if DRCI.in_hands?(@pipe)
-    DRC.message("Smoker Complete!")
+    DRC.message("Smoker Complete! Finished #{rounds_completed} round(s).")
+  end
+
+  def quick_light_safe(smoker)
+    case smoker
+    when /pipe/
+      return false unless DRCI.get_item_if_not_held?(@pipe, @bag)
+
+      contents = DRC.bput("look in my #{@pipe}", /^In the .* you see (a|an|some) .*/, /^There is nothing in there/)
+      case contents
+      when /burning/
+        return true
+      when /There is nothing/
+        unless DRCI.get_item?('tobacco', @bag)
+          DRC.message("=== Out of tobacco ===")
+          return false
+        end
+        DRCI.put_away_item?('tobacco', @pipe)
+      end
+      light_tobacco("tobacco in pipe")
+      true
+    when /cigar/
+      unless DRCI.get_item_if_not_held?(smoker, @bag)
+        DRC.message("=== Out of cigars ===")
+        return false
+      end
+      light_tobacco(smoker)
+      true
+    end
   end
 
   def smoke_teach(args, images)
@@ -332,9 +412,73 @@ class Smoker
     end
   end
 
-  def smoke(images)
-    # pull a random image from our list of images
-    image = images.to_a.sample
+  def parse_smoke_list
+    entries = []
+    fput 'smoke list'
+    loop do
+      line = get
+      break if line =~ /Total images known/
+      break if line =~ /You don't know any smoke images/
+      next if line.include?('IMAGE - SKILL')
+      entries.concat(line.scan(/(\w+)\s+-\s+(\w+\*?)/))
+    end
+    entries # array of [image_name, tier_name] pairs
+  end
+
+  def build_priority_queue
+    entries = parse_smoke_list
+    known_names = entries.map(&:first)
+    UserVars.smoke_images_known = known_names
+
+    # Filter pool to only images we actually know
+    unknown = @image_pool - known_names
+    DRC.message("Removing unknown images: #{unknown.join(', ')}") unless unknown.empty?
+    @image_pool &= known_names
+
+    # Filter mastered if configured, but never drop an explicitly requested image.
+    if @clean_mastered
+      mastered = entries
+                 .select { |_, tier| tier == 'master*' }
+                 .map(&:first)
+                 .select { |name| @image_pool.include?(name) }
+      DRC.message("Removing mastered images: #{mastered.join(', ')}") unless mastered.empty?
+      UserVars.smoke_images_mastered |= mastered
+      @image_pool -= mastered
+    end
+
+    return [] if @image_pool.empty?
+
+    # Group by tier
+    pool_entries = entries.select { |name, _| @image_pool.include?(name) }
+    grouped = pool_entries.group_by { |_, tier| TIER_ORDER[tier.downcase] || 99 }
+    sorted_tiers = grouped.sort_by(&:first)
+
+    # Log all tiers for visibility
+    tier_summary = sorted_tiers.map { |_, imgs|
+      "#{imgs.first[1]}(#{imgs.size})"
+    }.join(' > ')
+    DRC.message("Image tiers: #{tier_summary}")
+
+    # Build queue from ONLY the lowest tier
+    _, lowest_imgs = sorted_tiers.first
+    @lowest_tier_pool = lowest_imgs.map(&:first)
+    queue = @lowest_tier_pool.shuffle
+    DRC.message("Practicing #{lowest_imgs.first[1]} tier: #{queue.join(', ')}")
+
+    queue
+  end
+
+  def next_image
+    if @image_queue.empty?
+      @image_queue = @lowest_tier_pool.shuffle
+      DRC.message("Reshuffled: #{@image_queue.join(', ')}")
+    end
+    @image_queue.shift
+  end
+
+  def smoke(image = nil)
+    image ||= next_image
+    DRC.message("Practicing image: #{image}")
     inhale(image)
     pause 1
     exhale_smoke(image)
