@@ -16,7 +16,8 @@ class Lichbot
     @last_dump_junk = Time.now
     @last_teacher = nil
     @inventory = []
-    refresh_inventory
+    # Only needed to answer whisper inventory/give commands (service mode).
+    refresh_inventory if @settings.lichbot_service_mode
 
     fput('avoid !all')
     fput('avoid whispering')
@@ -225,6 +226,8 @@ arg_definitions = [
 
 args = parse_args(arg_definitions)
 
+service_mode = get_settings.lichbot_service_mode
+
 lichbot = Lichbot.new(args.sleep)
 validator = CharacterValidator.new(args.announce, args.sleep, args.greet, 'Lichbot')
 
@@ -232,6 +235,21 @@ validator = CharacterValidator.new(args.announce, args.sleep, args.greet, 'Lichb
 loop do
   line = script.gets?
   pause 0.05 unless line
+
+  # The Slack-token handshake is always answered, even for a passive bot.
+  if line =~ /^\[Private\]-.*:(.*): "RequestSlackToken"/
+    character = Regexp.last_match(1)
+    validator.confirm(character)
+    validator.send_slack_token(character)
+    next
+  end
+
+  # Passive mode: only train while idle. Skip occupant validation, item offers,
+  # and whisper command handling.
+  unless service_mode
+    lichbot.ping
+    next
+  end
 
   if DRRoom.pcs != @last_room_list
     (DRRoom.pcs - @last_room_list).each { |name| validator.validate(name) }
@@ -294,10 +312,6 @@ loop do
     character = Regexp.last_match(1)
 
     validator.confirm(character)
-  when /^\[Private\]-.*:(.*): "RequestSlackToken"/
-    character = Regexp.last_match(1)
-    validator.confirm(character)
-    validator.send_slack_token(character)
   else
     lichbot.ping
   end

@@ -1632,6 +1632,12 @@ line_similarity_percentage: 70
 lichbot_buffs:
 lichbot_train_when_idle: false
 lichbot_compost: false
+# When true (default), lichbot runs as a full service bot: it validates room
+# occupants, accepts item offers, and answers whisper commands (help/inv/give/
+# buff). Set false for a passive bot that only trains while idle and answers the
+# Slack-token handshake -- it will not validate occupants, accept items, or
+# respond to whispers.
+lichbot_service_mode: true
 
 lockpick_buff_bot:
 
