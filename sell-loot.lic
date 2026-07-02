@@ -183,9 +183,22 @@ class SellLoot
     has_loot
   end
 
-  def has_gems_to_sell?(container)
+  # Opens a gem pouch and reports whether its contents are reachable.
+  #
+  # @param container [String] the gem pouch noun to open
+  # @return [Boolean] true if the pouch is open (or already was), false if it is
+  #   tied off or cannot be found
+  def open_gem_pouch?(container)
     case DRC.bput("open my #{container}", 'You open your', 'You open a', 'has been tied off', 'What were you referring to', 'That is already open')
     when 'has been tied off', 'What were you referring to'
+      false
+    else
+      true
+    end
+  end
+
+  def has_gems_to_sell?(container)
+    unless open_gem_pouch?(container)
       DRC.message("Unable to open gem pouch: #{container}")
       return false
     end
@@ -197,24 +210,36 @@ class SellLoot
     false
   end
 
-  def has_metals_to_sell?(container)
+  # Item descriptions in +container+ reduced to the "<material> <noun>" phrases
+  # the gemshop buys (e.g. "iron bar"), after removing anything on the configured
+  # ignore list. Safe to call on an unreadable or empty container.
+  #
+  # @param container [String] the container noun to inspect
+  # @return [Array<String>] sellable "<material> <noun>" phrases; empty if none
+  def sellable_metal_and_stone_items(container)
     item_data = get_data('items')
     material_types = (item_data['metal_types'] || []) + (item_data['stone_types'] || [])
-    return false if material_types.empty?
+    return [] if material_types.empty?
 
     ignore_types = @settings.sell_loot_ignored_metals_and_stones || []
-
     materials_regex = /^(?<size>\w+) (?<material>#{material_types.join('|')}) (?<noun>nugget|bar)$/i
     ignored_regex = /\b#{ignore_types.join('|')}\b/i unless ignore_types.empty?
 
     items = DRCI.get_item_list(container)
-    return false if items.nil? || items.empty?
+    return [] if items.nil? || items.empty?
 
-    sellable_items = items
-                     .select { |item| item =~ materials_regex }
-                     .reject { |item| ignored_regex ? item =~ ignored_regex : false }
+    items
+      .select { |item| item =~ materials_regex }
+      .reject { |item| ignored_regex ? item =~ ignored_regex : false }
+      .map do |item|
+        # Reduce "small iron bar" to the "iron bar" phrase the shop sells.
+        item =~ materials_regex
+        "#{Regexp.last_match[:material]} #{Regexp.last_match[:noun]}"
+      end
+  end
 
-    !sellable_items.empty?
+  def has_metals_to_sell?(container)
+    !sellable_metal_and_stone_items(container).empty?
   rescue StandardError => e
     DRC.message("Error checking metals/stones in #{container}: #{e.message}")
     false
@@ -334,21 +359,25 @@ class SellLoot
     clerks.is_a?(String) ? clerks : clerks.find { |clerk| DRRoom.npcs.include?(clerk) }
   end
 
+  # Walks to the town gemshop.
+  #
+  # @return [Boolean] true if the town has a gemshop and the walk succeeded
+  def walk_to_gemshop
+    gemshop_id = @hometown.dig('gemshop', 'id')
+    return false unless gemshop_id
+
+    DRCT.walk_to(gemshop_id)
+  end
+
   def sell_gems(container)
     DRC.release_invisibility
-    case DRC.bput("open my #{container}", 'You open your', 'You open a', 'has been tied off', 'What were you referring to', 'That is already open')
-    when 'has been tied off', 'What were you referring to'
-      return
-    end
+    return unless open_gem_pouch?(container)
 
     gems = DRC.get_gems(container)
     unless gems.empty?
-      gemshop_id = @hometown.dig('gemshop', 'id')
-      return unless gemshop_id
-      return unless DRCT.walk_to(gemshop_id)
+      return unless walk_to_gemshop
 
       clerk = which_clerk(@hometown.dig('gemshop', 'name'))
-
       gems.each do |gem|
         fput("get my #{gem} from my #{container}")
         fput("sell my #{gem} to #{clerk}")
@@ -361,40 +390,14 @@ class SellLoot
   def sell_metals_and_stones(container)
     DRC.release_invisibility
 
-    item_data = get_data('items')
-    material_types = (item_data['metal_types'] || []) + (item_data['stone_types'] || [])
-    return if material_types.empty?
+    items = sellable_metal_and_stone_items(container)
+    return if items.empty?
+    return unless walk_to_gemshop
 
-    ignore_types = @settings.sell_loot_ignored_metals_and_stones || []
-
-    materials_regex = /^(?<size>\w+) (?<material>#{material_types.join('|')}) (?<noun>nugget|bar)$/i
-    ignored_regex = /\b#{ignore_types.join('|')}\b/i unless ignore_types.empty?
-
-    raw_items = DRCI.get_item_list(container)
-    return if raw_items.nil? || raw_items.empty?
-
-    items = raw_items
-            .select { |item| item =~ materials_regex }
-            .reject { |item| ignored_regex ? item =~ ignored_regex : false }
-            .map do |item|
-              # Do regex then grab matches for details.
-              item =~ materials_regex
-              material = Regexp.last_match[:material]
-              noun = Regexp.last_match[:noun]
-              "#{material} #{noun}"
-            end
-
-    unless items.empty?
-      gemshop_id = @hometown.dig('gemshop', 'id')
-      return unless gemshop_id
-      return unless DRCT.walk_to(gemshop_id)
-
-      clerk = which_clerk(@hometown.dig('gemshop', 'name'))
-
-      items.each do |item|
-        fput("get my #{item} from my #{container}")
-        fput("sell my #{item} to #{clerk}")
-      end
+    clerk = which_clerk(@hometown.dig('gemshop', 'name'))
+    items.each do |item|
+      fput("get my #{item} from my #{container}")
+      fput("sell my #{item} to #{clerk}")
     end
   end
 

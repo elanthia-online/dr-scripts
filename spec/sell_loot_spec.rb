@@ -659,6 +659,59 @@ RSpec.describe SellLoot do
   end
 
   # =========================================================================
+  # Extracted helpers (PR2 DRY refactor) -- shared by detection and selling
+  # =========================================================================
+  describe '#open_gem_pouch?' do
+    it 'is true when the pouch opens or is already open' do
+      stub_bput('open my soft pouch' => 'That is already open')
+      expect(build_instance.open_gem_pouch?('soft pouch')).to be true
+    end
+
+    it 'is false when the pouch is tied off' do
+      stub_bput('open my soft pouch' => 'has been tied off')
+      expect(build_instance.open_gem_pouch?('soft pouch')).to be false
+    end
+
+    it 'is false when the container cannot be found' do
+      stub_bput('open my soft pouch' => 'What were you referring to')
+      expect(build_instance.open_gem_pouch?('soft pouch')).to be false
+    end
+  end
+
+  describe '#sellable_metal_and_stone_items' do
+    before { $test_data.items = items_data }
+
+    it 'reduces matching descriptions to the "material noun" phrase the shop buys' do
+      allow(DRCI).to receive(:get_item_list).and_return(['small iron bar', 'large yellow gold nugget', 'a rock'])
+      expect(build_instance.sellable_metal_and_stone_items('sack')).to eq(['iron bar', 'yellow gold nugget'])
+    end
+
+    it 'returns an empty array (not nil) when the container is unreadable' do
+      allow(DRCI).to receive(:get_item_list).and_return(nil)
+      expect(build_instance.sellable_metal_and_stone_items('sack')).to eq([])
+    end
+
+    it 'drops items whose material is on the ignore list' do
+      instance = build_instance(settings: make_settings(sell_loot_ignored_metals_and_stones: %w[iron]))
+      allow(DRCI).to receive(:get_item_list).and_return(['small iron bar', 'small jade nugget'])
+      expect(instance.sellable_metal_and_stone_items('sack')).to eq(['jade nugget'])
+    end
+  end
+
+  describe '#walk_to_gemshop' do
+    it 'walks to the configured gemshop and reports success' do
+      expect(DRCT).to receive(:walk_to).with(200).and_return(true)
+      expect(build_instance.walk_to_gemshop).to be true
+    end
+
+    it 'does not walk and returns false when the town has no gemshop' do
+      instance = build_instance(hometown: make_hometown('gemshop' => nil))
+      expect(DRCT).not_to receive(:walk_to)
+      expect(instance.walk_to_gemshop).to be false
+    end
+  end
+
+  # =========================================================================
   # .new orchestration -- the PR1 pre-flight guarantee and guards
   # =========================================================================
   describe 'orchestration' do
