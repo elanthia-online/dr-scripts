@@ -222,8 +222,10 @@ class SellLoot
     return [] if material_types.empty?
 
     ignore_types = @settings.sell_loot_ignored_metals_and_stones || []
-    materials_regex = /^(?<size>\w+) (?<material>#{material_types.join('|')}) (?<noun>nugget|bar)$/i
-    ignored_regex = /\b#{ignore_types.join('|')}\b/i unless ignore_types.empty?
+    # Escape config-driven values so a stray metacharacter cannot raise
+    # RegexpError or match unexpectedly.
+    materials_regex = /^(?<size>\w+) (?<material>#{material_types.map { |type| Regexp.escape(type) }.join('|')}) (?<noun>nugget|bar)$/i
+    ignored_regex = /\b#{ignore_types.map { |type| Regexp.escape(type) }.join('|')}\b/i unless ignore_types.empty?
 
     items = DRCI.get_item_list(container)
     return [] if items.nil? || items.empty?

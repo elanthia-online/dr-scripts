@@ -696,6 +696,17 @@ RSpec.describe SellLoot do
       allow(DRCI).to receive(:get_item_list).and_return(['small iron bar', 'small jade nugget'])
       expect(instance.sellable_metal_and_stone_items('sack')).to eq(['jade nugget'])
     end
+
+    it 'does not crash when material or ignore config contains regex metacharacters' do
+      # Unbalanced paren/bracket would raise RegexpError if interpolated raw.
+      $test_data.items = { 'metal_types' => ['iron', 'weird(metal'], 'stone_types' => [] }
+      instance = build_instance(settings: make_settings(sell_loot_ignored_metals_and_stones: ['bad[stone']))
+      allow(DRCI).to receive(:get_item_list).and_return(['small iron bar'])
+
+      result = nil
+      expect { result = instance.sellable_metal_and_stone_items('sack') }.not_to raise_error
+      expect(result).to eq(['iron bar'])
+    end
   end
 
   describe '#walk_to_gemshop' do
