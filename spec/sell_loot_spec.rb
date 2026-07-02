@@ -476,12 +476,12 @@ RSpec.describe SellLoot do
       end
     end
 
-    it 'does not raise when the container cannot be read (nil list)', :aggregate_failures do
-      # BUG: unlike has_metals_to_sell?, this method chains .select on the
-      # possibly-nil result of get_item_list and crashes on rummage failure.
-      # Marked pending until the nil guard is added (candidate for PR2).
-      pending('sell_metals_and_stones lacks the nil guard that detection has')
+    it 'does not raise or walk when the container cannot be read (nil list)' do
+      # Regression: get_item_list is documented to return nil on rummage
+      # failure, and container state can change between the preflight check and
+      # this call, so the sell path must guard nil the same way detection does.
       allow(DRCI).to receive(:get_item_list).and_return(nil)
+      expect(DRCT).not_to receive(:walk_to)
       expect { build_instance.sell_metals_and_stones('sack') }.not_to raise_error
     end
   end

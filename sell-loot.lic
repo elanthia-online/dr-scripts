@@ -370,16 +370,19 @@ class SellLoot
     materials_regex = /^(?<size>\w+) (?<material>#{material_types.join('|')}) (?<noun>nugget|bar)$/i
     ignored_regex = /\b#{ignore_types.join('|')}\b/i unless ignore_types.empty?
 
-    items = DRCI.get_item_list(container)
-                .select { |item| item =~ materials_regex }
-                .reject { |item| ignored_regex ? item =~ ignored_regex : false }
-                .map do |item|
-                  # Do regex then grab matches for details.
-                  item =~ materials_regex
-                  material = Regexp.last_match[:material]
-                  noun = Regexp.last_match[:noun]
-                  "#{material} #{noun}"
-                end
+    raw_items = DRCI.get_item_list(container)
+    return if raw_items.nil? || raw_items.empty?
+
+    items = raw_items
+            .select { |item| item =~ materials_regex }
+            .reject { |item| ignored_regex ? item =~ ignored_regex : false }
+            .map do |item|
+              # Do regex then grab matches for details.
+              item =~ materials_regex
+              material = Regexp.last_match[:material]
+              noun = Regexp.last_match[:noun]
+              "#{material} #{noun}"
+            end
 
     unless items.empty?
       gemshop_id = @hometown.dig('gemshop', 'id')
