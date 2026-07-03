@@ -386,6 +386,10 @@ class SellLoot
     return clerks if clerks.is_a?(String)
 
     candidates = Array(clerks)
+    # No configured clerk (nil or empty list) will never resolve -- bail
+    # immediately rather than burning CLERK_MAX_ATTEMPTS pauses on it.
+    return nil if candidates.empty?
+
     attempt = 0
     loop do
       attempt += 1
@@ -395,7 +399,7 @@ class SellLoot
       if attempt >= CLERK_MAX_ATTEMPTS
         waited = (attempt - 1) * CLERK_RETRY_PAUSE
         DRC.message("***ERROR: gave up looking for a gem-shop clerk in #{DRRoom.title} " \
-                    "(room #{Room.current&.id}) after #{attempt} attempts over #{waited / 60} minute(s). " \
+                    "(room #{Room.current&.id}) after #{attempt} attempts over #{waited} seconds. " \
                     "Tried #{candidates.join(' and ')}; none were present. Skipping gem-shop sales.***")
         return nil
       end

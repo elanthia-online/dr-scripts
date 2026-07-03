@@ -279,6 +279,13 @@ RSpec.describe SellLoot do
       expect(build_instance.wait_for_clerk(%w[Wickett attendant])).to be_nil
     end
 
+    it 'returns nil immediately without waiting when the clerk list is nil or empty' do
+      instance = build_instance
+      expect(instance).not_to receive(:pause)
+      expect(instance.wait_for_clerk(nil)).to be_nil
+      expect(instance.wait_for_clerk([])).to be_nil
+    end
+
     it 'emits a verbose give-up message naming who and where it tried' do
       DRRoom.npcs = []
       messages = []
