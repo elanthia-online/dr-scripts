@@ -1543,8 +1543,8 @@ Fang Cove:
   gemshop:
     id: 8386
     name:
-    - Wickett
-    - attendant
+      - Wickett
+      - attendant
   tannery:
     id: 8394
     name: Gorund
