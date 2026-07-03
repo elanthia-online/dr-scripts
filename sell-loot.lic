@@ -349,7 +349,9 @@ class SellLoot
     return unless gemshop_id
 
     DRCT.walk_to(gemshop_id)
-    clerk = which_clerk(@hometown.dig('gemshop', 'name'))
+    clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+    return unless clerk
+
     DRC.release_invisibility
     (@spare_gem_pouch_target - current_count).times do
       fput("ask #{clerk} for #{adj} pouch")
@@ -359,6 +361,49 @@ class SellLoot
 
   def which_clerk(clerks)
     clerks.is_a?(String) ? clerks : clerks.find { |clerk| DRRoom.npcs.include?(clerk) }
+  end
+
+  # Number of times to look for a gem-shop clerk before giving up, and how long
+  # to wait between attempts. Some shops are staffed by more than one possible
+  # NPC (configured as a list under gemshop.name), and there can be a gap where
+  # none of them is in the room.
+  CLERK_MAX_ATTEMPTS = 5
+  CLERK_RETRY_PAUSE = 60
+
+  # Resolves a gem-shop clerk that is currently in the room, tolerating the gap
+  # when a shop rotates between multiple possible NPCs.
+  #
+  # A single named clerk (String) is returned immediately -- there is nobody to
+  # fail over to. For a list of candidates, every name is checked against the
+  # room each attempt; if none is present, we pause CLERK_RETRY_PAUSE seconds and
+  # try again, up to CLERK_MAX_ATTEMPTS times. On give-up a verbose message
+  # reports where we are, who we tried, how long we waited, and how many attempts
+  # were made, and nil is returned so the caller can skip gem-shop sales.
+  #
+  # @param clerks [String, Array<String>] the configured clerk name(s)
+  # @return [String, nil] a clerk present in the room, or nil after giving up
+  def wait_for_clerk(clerks)
+    return clerks if clerks.is_a?(String)
+
+    candidates = Array(clerks)
+    attempt = 0
+    loop do
+      attempt += 1
+      clerk = which_clerk(candidates)
+      return clerk if clerk
+
+      if attempt >= CLERK_MAX_ATTEMPTS
+        waited = (attempt - 1) * CLERK_RETRY_PAUSE
+        DRC.message("***ERROR: gave up looking for a gem-shop clerk in #{DRRoom.title} " \
+                    "(room #{Room.current&.id}) after #{attempt} attempts over #{waited / 60} minute(s). " \
+                    "Tried #{candidates.join(' and ')}; none were present. Skipping gem-shop sales.***")
+        return nil
+      end
+
+      DRC.message("No gem-shop clerk (#{candidates.join(' or ')}) in #{DRRoom.title}; " \
+                  "attempt #{attempt}/#{CLERK_MAX_ATTEMPTS}, waiting #{CLERK_RETRY_PAUSE}s before retrying.")
+      pause CLERK_RETRY_PAUSE
+    end
   end
 
   # Walks to the town gemshop.
@@ -379,10 +424,12 @@ class SellLoot
     unless gems.empty?
       return unless walk_to_gemshop
 
-      clerk = which_clerk(@hometown.dig('gemshop', 'name'))
-      gems.each do |gem|
-        fput("get my #{gem} from my #{container}")
-        fput("sell my #{gem} to #{clerk}")
+      clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+      if clerk
+        gems.each do |gem|
+          fput("get my #{gem} from my #{container}")
+          fput("sell my #{gem} to #{clerk}")
+        end
       end
     end
 
@@ -396,7 +443,9 @@ class SellLoot
     return if items.empty?
     return unless walk_to_gemshop
 
-    clerk = which_clerk(@hometown.dig('gemshop', 'name'))
+    clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+    return unless clerk
+
     items.each do |item|
       fput("get my #{item} from my #{container}")
       fput("sell my #{item} to #{clerk}")

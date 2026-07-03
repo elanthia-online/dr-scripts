@@ -261,6 +261,46 @@ RSpec.describe SellLoot do
   end
 
   # =========================================================================
+  # #wait_for_clerk  (failover + retry across multiple gem-shop NPCs)
+  # =========================================================================
+  describe '#wait_for_clerk' do
+    it 'returns a single named clerk immediately without checking the room' do
+      expect(DRRoom).not_to receive(:npcs)
+      expect(build_instance.wait_for_clerk('Grishna')).to eq('Grishna')
+    end
+
+    it 'returns whichever configured candidate is present in the room' do
+      DRRoom.npcs = ['attendant']
+      expect(build_instance.wait_for_clerk(%w[Wickett attendant])).to eq('attendant')
+    end
+
+    it 'gives up and returns nil after exhausting all attempts when none appear' do
+      DRRoom.npcs = ['some shopper']
+      expect(build_instance.wait_for_clerk(%w[Wickett attendant])).to be_nil
+    end
+
+    it 'emits a verbose give-up message naming who and where it tried' do
+      DRRoom.npcs = []
+      messages = []
+      allow(DRC).to receive(:message) { |m| messages << m }
+      build_instance.wait_for_clerk(%w[Wickett attendant])
+      give_up = messages.find { |m| m.include?('gave up') }
+      expect(give_up).to include('Wickett and attendant')
+      expect(give_up).to include('gem-shop')
+    end
+
+    it 'retries CLERK_MAX_ATTEMPTS times, pausing between each, before giving up' do
+      DRRoom.npcs = []
+      # pause is a no-op in the harness; count how many times it is asked to wait.
+      pauses = 0
+      allow_any_instance_of(SellLoot).to receive(:pause) { pauses += 1 }
+      build_instance.wait_for_clerk(%w[Wickett attendant])
+      # One fewer pause than attempts: the final attempt gives up instead of waiting.
+      expect(pauses).to eq(SellLoot::CLERK_MAX_ATTEMPTS - 1)
+    end
+  end
+
+  # =========================================================================
   # #has_gems_to_sell?
   # =========================================================================
   describe '#has_gems_to_sell?' do
@@ -436,6 +476,16 @@ RSpec.describe SellLoot do
       expect(DRCT).not_to receive(:walk_to)
       build_instance.sell_gems('soft pouch')
     end
+
+    it 'skips selling but still closes the pouch when no clerk is present' do
+      instance = build_instance(hometown: make_hometown('gemshop' => { 'id' => 200, 'name' => %w[Wickett attendant] }))
+      DRRoom.npcs = []
+      stub_bput('open my soft pouch' => 'You open your')
+      allow(DRC).to receive(:get_gems).and_return(%w[ruby])
+      commands = capture_commands { instance.sell_gems('soft pouch') }
+      expect(commands.none? { |c| c.start_with?('sell my') }).to be true
+      expect(commands).to include('close my soft pouch')
+    end
   end
 
   # =========================================================================
@@ -483,6 +533,14 @@ RSpec.describe SellLoot do
       allow(DRCI).to receive(:get_item_list).and_return(nil)
       expect(DRCT).not_to receive(:walk_to)
       expect { build_instance.sell_metals_and_stones('sack') }.not_to raise_error
+    end
+
+    it 'does not sell when no configured clerk is present' do
+      instance = build_instance(hometown: make_hometown('gemshop' => { 'id' => 200, 'name' => %w[Wickett attendant] }))
+      DRRoom.npcs = []
+      allow(DRCI).to receive(:get_item_list).and_return(['small iron bar'])
+      commands = capture_commands { instance.sell_metals_and_stones('sack') }
+      expect(commands.none? { |c| c.start_with?('sell my') }).to be true
     end
   end
 
@@ -570,6 +628,17 @@ RSpec.describe SellLoot do
       # "soft pouch" shorthand matched differently and mis-restocked.
       expect(DRCI).to receive(:count_items_in_container).with('soft gem pouch', 'sack').and_return(5)
       build_instance(spare_gem_pouch_target: 5).check_spare_pouch('sack', 'soft')
+    end
+
+    it 'does not ask for pouches when no configured clerk is present' do
+      instance = build_instance(
+        spare_gem_pouch_target: 5,
+        hometown: make_hometown('gemshop' => { 'id' => 200, 'name' => %w[Wickett attendant] })
+      )
+      allow(DRCI).to receive(:count_items_in_container).and_return(0)
+      DRRoom.npcs = []
+      commands = capture_commands { instance.check_spare_pouch('sack', 'soft') }
+      expect(commands.none? { |c| c.start_with?('ask') }).to be true
     end
   end
 
