@@ -1422,7 +1422,7 @@ Boar Clan:
     id: 12173
     name: Gudthar
   npc_empath: *hib_empath
-  locksmithing: *sephina_locksmithing # Ain Ghazal
+  locksmithing: *sephina_locksmithing
   theurgy_supplies:
     id:
   favor_altar:
