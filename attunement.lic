@@ -183,7 +183,7 @@ class Attunement
 
   def perceived?
     if is_sigil_walk?
-      while /Roundtime/ =~ DRC.bput(get_perceive_command, SECONDARY_SIGILS_PATTERN, 'Having recently been searched, this area contains no traces of sigils', "Roundtime",)
+      while /Roundtime/ =~ DRC.bput(get_perceive_command, SECONDARY_SIGILS_PATTERN, 'Having recently been searched, this area contains no traces of sigils', /^You recall having already identified .* sigil in this area/, "Roundtime",)
         waitrt?
       end
       return true
