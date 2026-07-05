@@ -80,6 +80,7 @@ module DRCM
 
     def check_wealth(*_args); 0; end
     def deposit_coins(*_args); end
+    def get_total_wealth; { 'kronars' => 0, 'lirums' => 0, 'dokoras' => 0 }; end
   end
 end
 
@@ -799,6 +800,36 @@ RSpec.describe SellLoot do
   end
 
   # =========================================================================
+  # #coins_to_bank?
+  # =========================================================================
+  describe '#coins_to_bank?' do
+    it 'is true when local currency exceeds the keep-on-hand amount' do
+      allow(DRCM).to receive(:get_total_wealth).and_return('kronars' => 500, 'lirums' => 0, 'dokoras' => 0)
+      expect(build_instance(local_currency: 'kronars').coins_to_bank?(300)).to be true
+    end
+
+    it 'is false when local currency is at or below the keep-on-hand amount' do
+      allow(DRCM).to receive(:get_total_wealth).and_return('kronars' => 300, 'lirums' => 0, 'dokoras' => 0)
+      expect(build_instance(local_currency: 'kronars').coins_to_bank?(300)).to be false
+    end
+
+    it 'is true when only foreign currency is on hand (something to exchange)' do
+      allow(DRCM).to receive(:get_total_wealth).and_return('kronars' => 0, 'lirums' => 250, 'dokoras' => 0)
+      expect(build_instance(local_currency: 'kronars').coins_to_bank?(300)).to be true
+    end
+
+    it 'matches the local currency case-insensitively' do
+      allow(DRCM).to receive(:get_total_wealth).and_return('kronars' => 0, 'lirums' => 1000, 'dokoras' => 0)
+      # Muspar'i stores its currency as "Lirums"; the wealth hash keys are lower.
+      expect(build_instance(local_currency: 'Lirums').coins_to_bank?(300)).to be true
+    end
+
+    it 'is false when nothing is on hand' do
+      expect(build_instance(local_currency: 'kronars').coins_to_bank?(300)).to be false
+    end
+  end
+
+  # =========================================================================
   # .new orchestration -- the PR1 pre-flight guarantee and guards
   # =========================================================================
   describe 'orchestration' do
@@ -816,14 +847,29 @@ RSpec.describe SellLoot do
       SellLoot.new
     end
 
-    it 'never moves when the pre-flight finds no loot' do
+    it 'never moves when there is neither loot to sell nor excess coins to bank' do
       $test_settings = make_settings
       $test_data.town = { 'Crossing' => make_hometown }
       $test_data.items = items_data
       allow(DRC).to receive(:get_town_name).and_return('Crossing')
       allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
+      # DRCM.get_total_wealth defaults to all zeros.
       expect(DRCT).not_to receive(:walk_to)
+      expect(DRCM).not_to receive(:deposit_coins)
       expect_any_instance_of(SellLoot).not_to receive(:sell_gems)
+      SellLoot.new
+    end
+
+    it 'still exchanges and deposits excess coins even when there is no loot to sell' do
+      # Regression: the old preflight bailed the whole run on no loot, stranding
+      # coins already on hand instead of banking them.
+      $test_settings = make_settings
+      $test_data.town = { 'Crossing' => make_hometown }
+      $test_data.items = items_data
+      allow(DRC).to receive(:get_town_name).and_return('Crossing')
+      allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
+      allow(DRCM).to receive(:get_total_wealth).and_return('kronars' => 5000, 'lirums' => 0, 'dokoras' => 0)
+      expect(DRCM).to receive(:deposit_coins)
       SellLoot.new
     end
 

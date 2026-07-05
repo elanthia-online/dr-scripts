@@ -58,35 +58,38 @@ class SellLoot
       return
     end
 
-    # Check for loot before doing any movement
-    unless has_loot_to_sell?
-      DRC.message("No loot to sell, exiting")
-      return
-    end
+    # Sell physical loot only when there is some -- no reason to walk to every
+    # shop for nothing. Whether or not there was loot, we still fall through to
+    # banking below so coins already on hand get exchanged and deposited.
+    # (Regression: a bare "return" here when has_loot_to_sell? was false skipped
+    # banking entirely, stranding excess coins, and any single missing loot type
+    # -- e.g. no bundle -- could take the whole run down with it.)
+    if has_loot_to_sell?
+      sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
+      check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective) if @settings.spare_gem_pouch_container
 
-    # Sell loot items
-    sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
-    check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective) if @settings.spare_gem_pouch_container
-
-    if @settings.sell_loot_metals_and_stones
-      if @settings.sell_loot_metals_and_stones_container.is_a?(String)
-        sell_metals_and_stones(@settings.sell_loot_metals_and_stones_container)
-      elsif @settings.sell_loot_metals_and_stones_container.is_a?(Array)
-        @settings.sell_loot_metals_and_stones_container.each do |container|
-          sell_metals_and_stones(container)
+      if @settings.sell_loot_metals_and_stones
+        if @settings.sell_loot_metals_and_stones_container.is_a?(String)
+          sell_metals_and_stones(@settings.sell_loot_metals_and_stones_container)
+        elsif @settings.sell_loot_metals_and_stones_container.is_a?(Array)
+          @settings.sell_loot_metals_and_stones_container.each do |container|
+            sell_metals_and_stones(container)
+          end
+        else
+          DRC.message("sell_loot_metals_and_stones_container is: #{@settings.sell_loot_metals_and_stones_container}")
+          DRC.message("This is invalid. Skipping selling stones and metals.")
         end
-      else
-        DRC.message("sell_loot_metals_and_stones_container is: #{@settings.sell_loot_metals_and_stones_container}")
-        DRC.message("This is invalid. Skipping selling stones and metals.")
+        if @autoloot_container && @autoloot_metals
+          sell_metals_and_stones(@autoloot_container)
+        end
       end
-      if @autoloot_container && @autoloot_metals
-        sell_metals_and_stones(@autoloot_container)
-      end
+
+      sell_bundle if @settings.sell_loot_bundle
+
+      sell_traps(@settings.pick['component_container'] || @settings.component_container) if @settings.sell_loot_traps
+    else
+      DRC.message("No loot to sell")
     end
-
-    sell_bundle if @settings.sell_loot_bundle
-
-    sell_traps(@settings.pick['component_container'] || @settings.component_container) if @settings.sell_loot_traps
 
     # Handle banking
     return if skip_bank && !@bankbot_enabled
@@ -98,6 +101,10 @@ class SellLoot
       end
       return
     end
+
+    # Only make the trip to the exchange/bank when we are actually carrying more
+    # than we keep on hand -- no loot and no excess coins means nothing to do.
+    return unless coins_to_bank?(keep_coppers_bank)
 
     exchange_coins unless skip_exchange
     if @bankbot_enabled
@@ -262,6 +269,20 @@ class SellLoot
   rescue StandardError => e
     DRC.message("Error checking traps in #{container}: #{e.message}")
     false
+  end
+
+  # Whether we are carrying coins worth a trip to the exchange/bank: either
+  # local currency above the amount we keep on hand, or any foreign currency
+  # that could be exchanged into local. Used to avoid walking to the bank on a
+  # run that had no loot and no excess coins.
+  #
+  # @param keep_copper [Integer] copper to keep on hand in local currency
+  # @return [Boolean] true if there is anything to exchange or deposit
+  def coins_to_bank?(keep_copper)
+    wealth = DRCM.get_total_wealth
+    local = wealth[@local_currency.to_s.downcase].to_i
+    foreign = wealth.sum { |currency, copper| currency.to_s.casecmp?(@local_currency.to_s) ? 0 : copper }
+    local > keep_copper || foreign.positive?
   end
 
   def exchange_coins
