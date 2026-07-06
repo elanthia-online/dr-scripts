@@ -339,20 +339,27 @@ RSpec.describe ShockQuest do
   # #ensure_seed
   # ===========================================================================
   describe '#ensure_seed' do
-    it 'does nothing when the seed is already on hand' do
+    it 'succeeds without travelling when the seed is already on hand' do
       allow(quest).to receive(:seed_on_hand?).and_return(true)
       allow(quest).to receive(:acquire_seed)
-      quest.ensure_seed
+      expect(quest.ensure_seed).to be true
       expect(drct).not_to have_received(:walk_to)
       expect(quest).not_to have_received(:acquire_seed)
     end
 
-    it 'travels to Nadigo and acquires a seed when none is on hand' do
+    it 'travels to Nadigo and succeeds when a seed is acquired' do
       allow(quest).to receive(:seed_on_hand?).and_return(false)
-      allow(quest).to receive(:acquire_seed)
-      quest.ensure_seed
+      allow(quest).to receive(:acquire_seed).and_return(true)
+      expect(quest.ensure_seed).to be true
       expect(drct).to have_received(:walk_to).with(ShockQuest::NADIGO_ROOM)
       expect(quest).to have_received(:acquire_seed)
+    end
+
+    it 'fails fast when Nadigo never hands over a seed' do
+      allow(quest).to receive(:seed_on_hand?).and_return(false)
+      allow(quest).to receive(:acquire_seed).and_return(false)
+      expect(quest.ensure_seed).to be false
+      expect(drc).to have_received(:message).with(/aborting/i)
     end
   end
 
@@ -366,9 +373,9 @@ RSpec.describe ShockQuest do
       allow(quest).to receive(:exit)
     end
 
-    it 'waits for the medallion line when Nadigo agrees' do
+    it 'waits for the medallion line and reports success when Nadigo agrees' do
       allow(drc).to receive(:bput).and_return('gazes at you searchingly, then nods')
-      quest.acquire_seed
+      expect(quest.acquire_seed).to be true
       expect(quest).to have_received(:waitfor).with('strung on a medallion')
       expect(quest).not_to have_received(:exit)
     end
@@ -384,9 +391,17 @@ RSpec.describe ShockQuest do
         'gives a slight nod of his head',
         'gazes at you searchingly, then nods'
       )
-      quest.acquire_seed
+      expect(quest.acquire_seed).to be true
       expect(drc).to have_received(:bput).twice
       expect(quest).to have_received(:waitfor).with('strung on a medallion')
+    end
+
+    it 'reports failure when Nadigo never agrees within the retry budget' do
+      quest.instance_variable_set(:@max_retries, 3)
+      allow(drc).to receive(:bput).and_return('gives a slight nod of his head')
+      expect(quest.acquire_seed).to be false
+      expect(drc).to have_received(:bput).exactly(3).times
+      expect(quest).not_to have_received(:waitfor)
     end
   end
 
@@ -395,12 +410,12 @@ RSpec.describe ShockQuest do
   # ===========================================================================
   describe '#ensure_empath' do
     it 'returns true for an Empath' do
-      DRStats.guild = 'Empath'
+      allow(DRStats).to receive(:empath?).and_return(true)
       expect(quest.ensure_empath).to be true
     end
 
     it 'returns false and warns for a non-Empath' do
-      DRStats.guild = 'Barbarian'
+      allow(DRStats).to receive(:empath?).and_return(false)
       expect(quest.ensure_empath).to be false
       expect(drc).to have_received(:message).with(/Empath/)
     end

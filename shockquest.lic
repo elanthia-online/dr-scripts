@@ -147,12 +147,12 @@ class ShockQuest
   # @return [void]
   def run
     return unless ensure_empath
-    ensure_seed
+    return unless ensure_seed
     charge_seed
   end
 
-  # Verifies the character is an Empath (only empaths and former empaths can
-  # bond a seed).
+  # Verifies the character is an Empath. Guild membership cannot change in
+  # DragonRealms, so this is the only eligibility check the quest needs.
   #
   # @return [Boolean] true if the quest may proceed.
   def ensure_empath
@@ -164,13 +164,17 @@ class ShockQuest
 
   # Ensures a vela'tohr seed is on hand, fetching one from Nadigo if absent.
   #
-  # @return [void]
+  # @return [Boolean] true if a seed is available to charge; false if one could
+  #   not be obtained (the quest must not continue in a no-seed state).
   def ensure_seed
-    return if seed_on_hand?
+    return true if seed_on_hand?
 
     DRC.message('No seed detected - heading to Nadigo.')
     DRCT.walk_to(NADIGO_ROOM)
-    acquire_seed
+    return true if acquire_seed
+
+    DRC.message('Could not obtain a seed from Nadigo - aborting quest.')
+    false
   end
 
   # Checks whether the character is already carrying/wearing the seed.
@@ -186,7 +190,9 @@ class ShockQuest
   # Asks Nadigo for the seed, handling his multi-step dialogue and the
   # "too soon to try again" refusal.
   #
-  # @return [void]
+  # @return [Boolean] true once Nadigo hands over the seed; false if he never
+  #   agrees within the retry budget. Exits the script outright on the
+  #   "too soon" refusal.
   def acquire_seed
     @max_retries.times do
       case DRC.bput('ask nadigo for shock',
@@ -196,12 +202,13 @@ class ShockQuest
                     /It is still too soon/)
       when /gazes at you searchingly, then nods/
         waitfor 'strung on a medallion'
-        return
+        return true
       when /It is still too soon/
         DRC.message('You cannot start this quest again so soon - exiting.')
         return exit
       end
     end
+    false
   end
 
   # Walks the meditation route, bonding the seed until it is full or the route
