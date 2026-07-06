@@ -1,17 +1,19 @@
 # frozen_string_literal: true
 
 require 'tmpdir'
+require 'fileutils'
 require 'ostruct'
 require 'yaml'
 
-# Test suite for dependency.lic (v4.1.0+)
+# Test suite for dependency.lic (v4.2.0+)
 #
 # Covers the runtime helper functions that remain after all gated
 # code was removed (core lich 5.18.0+ provides ArgParser, SetupFiles,
 # ScriptManager, map overrides, and DR startup natively).
 #
 # verify_script now lives in core as DRC.verify_script; the dead
-# reportbot/format helpers were removed in v4.1.0.
+# reportbot/format helpers were removed in v4.1.0. v4.2.0 added
+# obsolete-script detection (DR_OBSOLETE_SCRIPTS / warn_obsolete_scripts).
 
 # Stub constants and globals before loading methods
 SCRIPT_DIR = Dir.mktmpdir('dr-scripts-test') unless defined?(SCRIPT_DIR)
@@ -75,7 +77,22 @@ end
   send_slackbot_message
   shift_hometown
   clear_hometown
+  obsolete_script_dirs
+  warn_obsolete_scripts
 ].each { |fn| extract_method(dep_lines, dep_path, fn) }
+
+# Extract the frozen DR_OBSOLETE_SCRIPTS constant (assignment line through the
+# terminating ".freeze"); extract_method only handles def bodies.
+obsolete_const_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_SCRIPTS\s*=/ }
+raise 'Could not find DR_OBSOLETE_SCRIPTS in dependency.lic' unless obsolete_const_start
+
+obsolete_const_offset = dep_lines[obsolete_const_start..].index { |l| l =~ /\.freeze\s*$/ }
+raise 'Could not find .freeze terminating DR_OBSOLETE_SCRIPTS' unless obsolete_const_offset
+
+eval(
+  dep_lines[obsolete_const_start..obsolete_const_start + obsolete_const_offset].join,
+  TOPLEVEL_BINDING, dep_path, obsolete_const_start + 1
+)
 
 # --- Bankbot ---
 
@@ -248,8 +265,8 @@ end
 
 RSpec.describe 'Dependency Structure' do
   describe 'version' do
-    it 'declares version 4.1.0' do
-      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.1.0'")
+    it 'declares version 4.2.0' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.2.0'")
     end
 
     it 'requires minimum lich version 5.18.0' do
@@ -308,6 +325,167 @@ RSpec.describe 'Dependency Structure' do
     ].each do |fn_name|
       it "does not define #{fn_name}" do
         expect(DEP_SOURCE).not_to match(/^def #{Regexp.escape(fn_name)}[\s(]/)
+      end
+    end
+  end
+end
+
+# --- Obsolete script detection (v4.2.0) ---
+#
+# dependency.lic warns at startup about scripts superseded by native core lich
+# functionality (DR_OBSOLETE_SCRIPTS) so a lingering copy on disk can be found
+# and deleted before it duplicates work core lich now performs. roomnumbers.lic
+# is the first such script. SCRIPT_DIR (from the harness above) is a real temp
+# directory, so File.file? checks exercise the actual filesystem.
+
+RSpec.describe 'Obsolete Script Detection' do
+  let(:main_dir) { SCRIPT_DIR }
+  let(:custom_dir) { File.join(SCRIPT_DIR, 'custom') }
+
+  # Create a real file so File.file? checks have something to find.
+  def write_script(dir, filename)
+    FileUtils.mkdir_p(dir)
+    path = File.join(dir, filename)
+    File.write(path, "# placeholder for testing\n")
+    path
+  end
+
+  before do
+    $respond_messages = []
+    # Start each example from a clean SCRIPT_DIR (this includes custom/).
+    FileUtils.rm_rf(Dir.glob(File.join(SCRIPT_DIR, '*')))
+  end
+
+  describe 'the DR_OBSOLETE_SCRIPTS constant' do
+    it 'lists roomnumbers as an obsolete script' do
+      expect(DR_OBSOLETE_SCRIPTS).to include('roomnumbers')
+    end
+
+    it 'is frozen so it cannot be mutated at runtime' do
+      expect(DR_OBSOLETE_SCRIPTS).to be_frozen
+    end
+
+    it 'stores base names with no .lic extension' do
+      expect(DR_OBSOLETE_SCRIPTS).to all(satisfy { |name| !name.include?('.lic') })
+    end
+  end
+
+  describe '#obsolete_script_dirs' do
+    it 'searches the custom directory before the main script directory' do
+      expect(obsolete_script_dirs).to eq([custom_dir, main_dir])
+    end
+  end
+
+  describe '#warn_obsolete_scripts' do
+    context 'when no obsolete script exists on disk' do
+      it 'returns an empty array' do
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'emits no warnings' do
+        warn_obsolete_scripts
+        expect($respond_messages).to be_empty
+      end
+    end
+
+    context 'when an obsolete script lingers in the main script directory' do
+      before { write_script(main_dir, 'roomnumbers.lic') }
+
+      it 'returns the offending script name' do
+        expect(warn_obsolete_scripts).to eq(['roomnumbers'])
+      end
+
+      it 'warns that the file is obsolete and should be deleted' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include("'roomnumbers.lic' is obsolete")
+      end
+
+      it 'names the main script directory in the warning' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include(main_dir)
+      end
+    end
+
+    context 'when an obsolete script lingers only in the custom directory' do
+      before { write_script(custom_dir, 'roomnumbers.lic') }
+
+      it 'still detects and returns it' do
+        expect(warn_obsolete_scripts).to eq(['roomnumbers'])
+      end
+
+      it 'names the custom directory in the warning' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include(custom_dir)
+      end
+    end
+
+    context 'when an obsolete script exists in both the custom and main directories' do
+      before do
+        write_script(custom_dir, 'roomnumbers.lic')
+        write_script(main_dir, 'roomnumbers.lic')
+      end
+
+      it 'reports the script only once' do
+        warn_obsolete_scripts
+        expect($respond_messages.length).to eq(1)
+      end
+
+      it 'reports the higher-priority custom directory' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include(custom_dir)
+      end
+    end
+
+    context 'when a non-obsolete script shares the directory' do
+      before { write_script(main_dir, 'combat-trainer.lic') }
+
+      it 'ignores it and returns an empty array' do
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'emits no warnings' do
+        warn_obsolete_scripts
+        expect($respond_messages).to be_empty
+      end
+    end
+
+    context 'with an explicitly injected obsolete list' do
+      before { write_script(main_dir, 'legacy-thing.lic') }
+
+      it 'checks the provided names instead of the default constant' do
+        expect(warn_obsolete_scripts(['legacy-thing'])).to eq(['legacy-thing'])
+      end
+
+      it 'does not mutate the frozen default constant' do
+        warn_obsolete_scripts(['legacy-thing'])
+        expect(DR_OBSOLETE_SCRIPTS).to eq(['roomnumbers'])
+      end
+    end
+
+    describe 'adversarial inputs' do
+      it 'returns an empty array for an empty obsolete list' do
+        write_script(main_dir, 'roomnumbers.lic')
+        expect(warn_obsolete_scripts([])).to eq([])
+      end
+
+      it 'does not match a file whose name lacks the .lic extension' do
+        write_script(main_dir, 'roomnumbers') # no extension
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'does not match a directory that shares the script name' do
+        FileUtils.mkdir_p(File.join(main_dir, 'roomnumbers.lic'))
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'does not raise when the custom directory is absent' do
+        FileUtils.rm_rf(custom_dir)
+        expect { warn_obsolete_scripts }.not_to raise_error
+      end
+
+      it 'does not warn for a script whose name is only a substring of a present file' do
+        write_script(main_dir, 'roomnumbers-extra.lic')
+        expect(warn_obsolete_scripts).to eq([])
       end
     end
   end
