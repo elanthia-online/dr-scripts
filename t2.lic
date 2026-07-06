@@ -146,15 +146,16 @@ class T2
           next
         end
 
+        # Track before waiting so before_dying can stop the script even if
+        # T2 exits while wait_for_script_to_complete is still running.
+        @launched_scripts << script_name unless @launched_scripts.include?(script_name)
+
         script_handle = DRC.wait_for_script_to_complete(script_name, action_parts)
 
         if script_handle.nil?
           DRC.message("ERROR: Failed to start script '#{script_name}', skipping")
           next
         end
-
-        # Track successfully launched scripts for cleanup on exit
-        @launched_scripts << script_name unless @launched_scripts.include?(script_name)
       rescue StandardError => e
         DRC.message("ERROR executing #{script_name}: #{e.message}")
         DRC.message("Skipping to next action...")
