@@ -73,6 +73,17 @@ class Healer
   EMERGENCY_VIT_THRESHOLD = 30 # Fall to break all links if health drops below this %
   PATIENT_VIT_THRESHOLD = 80   # Only transfer vit if patient below this % (100 = always)
 
+  # Resume another vit round once own health recovers to this % (was hard-coded 90;
+  # a lower gate keeps throughput up without dipping toward the floor).
+  VIT_RESUME_THRESHOLD = 75
+
+  # Controlled stacking: run up to this many concurrent vit-transfer streams to
+  # speed healing. Stacking multiplies drain speed, so the count scales with spare
+  # vitality -- each extra stream requires VIT_STACK_HEADROOM% of headroom above the
+  # floor. When headroom is thin we fall back to a single, safe stream.
+  MAX_VIT_STACKS = 3
+  VIT_STACK_HEADROOM = 12
+
   # Spell slot timeout (seconds) - prevents permanent lock on stuck tasks
   SPELL_SLOT_TIMEOUT = 45
 
@@ -159,6 +170,7 @@ class Healer
     @last_health_check = nil
     @last_ready_result = false
     @emergency_recovery = false
+    @self_dead = false
     @drain_landed = false
     @healing_waggle_set = @settings.healer_waggle_set || 'healme'
     @cambrinth_item = Array(@settings.cambrinth).first
@@ -213,13 +225,15 @@ class Healer
     Lich::Messaging.msg('bold', 'Healer: Link Unity available') if @unity_available
   end
 
-  # Checks if character knows Heal + Adaptive Curing for passive healing.
+  # Checks for a passive self-heal: Regenerate (the empath capstone self-heal,
+  # which supersedes Heal), or Heal + Adaptive Curing together.
   # @return [Boolean] true if passive healing is available
   def validate_healing_spells
+    knows_regenerate = DRSpells.known_spells['Regenerate']
     knows_heal = DRSpells.known_spells['Heal']
     knows_adc = DRSpells.known_spells['Adaptive Curing']
 
-    if knows_heal && knows_adc
+    if knows_regenerate || (knows_heal && knows_adc)
       spell = active_healing_spell
       if spell
         Lich::Messaging.msg('bold', "Healer: Using passive healing (#{spell})")
@@ -228,10 +242,7 @@ class Healer
       end
       true
     else
-      missing = []
-      missing << 'Heal' unless knows_heal
-      missing << 'Adaptive Curing' unless knows_adc
-      Lich::Messaging.msg('bold', "Healer: Using healme script (missing: #{missing.join(', ')})")
+      Lich::Messaging.msg('bold', 'Healer: Using healme script (no Regenerate, or missing Heal + Adaptive Curing)')
       false
     end
   end
@@ -301,6 +312,39 @@ class Healer
   # @return [Symbol] normalized key
   def name_key(name)
     name.to_s.downcase.to_sym
+  end
+
+  # A scar is cosmetic -- it never impairs taking, redirecting, or transferring
+  # wounds, and passive healing (Regenerate/Heal) fades it on its own. Excluding
+  # scars keeps the healer from stalling while it waits for its own scars to fade.
+  # @param wound [Wound, #scar?] a wound object
+  # @return [Boolean] true if the wound is only a scar
+  def cosmetic_wound?(wound)
+    wound.respond_to?(:scar?) && wound.scar?
+  end
+
+  # True for a real (non-cosmetic) wound severe enough to block taking more wounds.
+  # Ignores scars entirely and trivial severity-1 abrasions, which self-heal in
+  # seconds and never impede a transfer.
+  # @param wound [Wound] a wound object
+  # @return [Boolean] true if the wound should block wound transfers
+  def blocking_self_wound?(wound)
+    return false unless wound.respond_to?(:severity) && wound.severity
+    return false if cosmetic_wound?(wound)
+
+    wound.severity > 1
+  end
+
+  # Weighted score counting only real (non-cosmetic) wounds. Used so passive-heal
+  # waits resolve as soon as real wounds are gone, not lingering on scars.
+  # @param health [HealthResult, nil] a health result
+  # @return [Integer] weighted real-wound score
+  def real_wound_score(health)
+    return 0 unless health.respond_to?(:wounds) && health.wounds
+
+    health.wounds.values.flatten.reject { |w| cosmetic_wound?(w) }.sum do |w|
+      w.respond_to?(:severity) && w.severity ? w.severity**2 : 0
+    end
   end
 
   # ============================================================
@@ -388,8 +432,11 @@ class Healer
     wounds = health.wounds
     return HEAL_LOCATIONS.dup unless wounds&.any?
 
+    # Prefer parts with no real wounds. Scars are ignored -- redirecting onto a
+    # scarred part is fine, and counting scars would spread wounds across every
+    # part until none are "available".
     wounded_parts = wounds.values.flatten.select { |w|
-      w.respond_to?(:body_part) && w.respond_to?(:severity) && w.severity > 0
+      w.respond_to?(:body_part) && w.respond_to?(:severity) && w.severity && w.severity > 0 && !cosmetic_wound?(w)
     }.map(&:body_part)
 
     available = HEAL_LOCATIONS.reject { |loc| wounded_parts.include?(loc) }
@@ -517,7 +564,7 @@ class Healer
       return false
     end
 
-    has_wounds = health.wounds&.values&.flatten&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
+    has_wounds = health.wounds&.values&.flatten&.any? { |w| blocking_self_wound?(w) }
 
     ready = !(
       health.diseased ||
@@ -544,11 +591,12 @@ class Healer
   # @return [void]
   def heal_self
     return if Script.running?('healme')
+    return if dead? # can't heal while a ghost -- avoids spamming dead commands
 
-    # If vitality is low but no wounds, cast VH on self
+    # If vitality is low but no real wounds, cast VH on self
     if DRStats.health < 70 && @vh_available && !spell_conflict?
       health = DRCH.check_health
-      has_wounds = health&.wounds&.values&.flatten&.any? { |w| w.respond_to?(:severity) && w.severity > 0 }
+      has_wounds = health&.wounds&.values&.flatten&.any? { |w| blocking_self_wound?(w) }
       unless has_wounds || health&.poisoned || health&.diseased
         heal_own_vitality
         return
@@ -589,15 +637,15 @@ class Healer
   def wait_for_passive_healing
     elapsed = 0
     health = DRCH.check_health
-    initial_score = health&.score || 0
+    initial_score = real_wound_score(health)
 
     return if initial_score.zero?
 
-    log("Waiting for passive healing (score: #{initial_score})")
+    log("Waiting for passive healing (real-wound score: #{initial_score})")
 
     loop do
       health = DRCH.check_health
-      current_score = health&.score || 0
+      current_score = real_wound_score(health)
 
       break if current_score.zero?
 
@@ -623,6 +671,7 @@ class Healer
   # @return [void]
   def heal_own_vitality
     return unless @vh_available
+    return if dead? # can't prep/cast while a ghost
 
     log("Own vitality low (#{DRStats.health}%), casting VH on self")
     Lich::Messaging.msg('bold', "Healer: Healing own vitality (#{DRStats.health}%)")
@@ -1004,9 +1053,24 @@ class Healer
     end
   end
 
+  # Number of concurrent vit-transfer streams to run this round. Stacking transfers
+  # multiplies drain speed, so the count scales with how much spare vitality we have
+  # above the floor (each stream needs VIT_STACK_HEADROOM% of headroom), capped at
+  # MAX_VIT_STACKS. Thin headroom -> a single, safe stream.
+  # @return [Integer] stacks between 1 and MAX_VIT_STACKS
+  def vit_stack_count
+    headroom = DRStats.health - SELF_VIT_FLOOR
+    return 1 if headroom <= 0
+
+    [[headroom / VIT_STACK_HEADROOM, 1].max, MAX_VIT_STACKS].min
+  end
+
   # State machine for vitality healing via VH spell.
   # Prep-first approach: preps VH before transferring so it can cast immediately
-  # when damage lands. Single transfer per round to prevent runaway drain.
+  # when damage lands. Controlled stacking: runs 1..MAX_VIT_STACKS concurrent drain
+  # streams scaled to spare vitality, then casts VH to refill and re-rounds once own
+  # health recovers to VIT_RESUME_THRESHOLD -- faster than one-per-round without
+  # letting the drain outrun the refill.
   # Phases: :start -> :prepping -> :awaiting_drain -> :recovering (loops)
   # @return [void]
   def process_vitality_slot
@@ -1045,8 +1109,10 @@ class Healer
         return
       end
 
-      # Send vit transfer and check result before advancing.
+      # Controlled stacking: open as many drain streams as our headroom allows.
+      # The first transfer must land; if the patient is gone, bail immediately.
       @drain_landed = false
+      stacks = vit_stack_count
       result = DRC.bput("transfer #{task[:patient]} vit quick", *TRANSFER_RESPONSES)
 
       if result =~ TRANSFER_NOT_FOUND_PATTERN
@@ -1055,8 +1121,16 @@ class Healer
         return
       end
 
-      log("Transferred vitality from #{task[:patient]}, waiting for drain to land")
-      DRC.log_window("Healer: Transferring vitality from #{task[:patient]}", "familiar")
+      # Additional streams (only while still above the floor) to speed the heal.
+      (stacks - 1).times do
+        break if DRStats.health < SELF_VIT_FLOOR
+
+        waitrt?
+        DRC.bput("transfer #{task[:patient]} vit quick", *TRANSFER_RESPONSES)
+      end
+
+      log("Transferred vitality from #{task[:patient]} (#{stacks} stream(s)), waiting for drain to land")
+      DRC.log_window("Healer: Transferring vitality from #{task[:patient]} (#{stacks}x)", "familiar")
       @spell_task[:phase] = :awaiting_drain
       @spell_task[:drain_sent_at] = Time.now
       @spell_task[:timer] = Time.now
@@ -1072,8 +1146,8 @@ class Healer
       end
 
     when :recovering
-      if DRStats.health >= 90
-        # Stable -- check if patient needs more vitality
+      if DRStats.health >= VIT_RESUME_THRESHOLD
+        # Recovered enough -- check if patient needs another round
         victim_health = DRCH.perceive_health_other(task[:patient])
         needs_more = victim_health &&
                      victim_health.vitality &&
@@ -1103,17 +1177,23 @@ class Healer
   end
 
   # Preps the VH spell with mana and cambrinth charges.
-  # Uses fput for each step (brief blocking per command, not full-cycle blocking).
+  # Waits out roundtime/cast-RT before each step so preps aren't swallowed by a
+  # "...wait N seconds" (which previously left nothing prepared and caused repeated
+  # prep attempts). Brief blocking per command, not full-cycle blocking.
   # @return [void]
   def prep_vh_spell
     return unless @vh_spell
 
+    waitrt?
+    waitcastrt?
     fput("prep #{VH_ABBREVIATION} #{@vh_spell[:mana]}")
 
     if @vh_spell[:cambrinth]&.any? && @cambrinth_item
       @vh_spell[:cambrinth].each do |charge|
+        waitrt?
         fput("charge my #{@cambrinth_item} #{charge}")
       end
+      waitrt?
       fput("invoke my #{@cambrinth_item}")
     end
   end
@@ -1164,6 +1244,27 @@ class Healer
   #   2. Wound/patient processing (gated by ready_to_heal_wounds?)
   # @return [void]
   def process_queue
+    # Self-death mode: while a ghost we can't cast, transfer, fall, or perceive --
+    # every command bounces off "You are a ghost!". Idle until resurrected instead
+    # of spamming failed commands (health/prep/cast).
+    if dead?
+      unless @self_dead
+        @self_dead = true
+        Lich::Messaging.msg('bold', 'Healer: You are dead -- waiting for resurrection.')
+        DRC.log_window('Healer: DEAD -- waiting for resurrection', 'familiar')
+      end
+      return
+    end
+
+    if @self_dead
+      @self_dead = false
+      @last_health_check = nil
+      @spell_task = nil
+      @spell_queue.clear
+      Lich::Messaging.msg('bold', 'Healer: Resurrected -- resuming healing.')
+      DRC.log_window('Healer: Resurrected -- resuming', 'familiar')
+    end
+
     # Emergency check -- break all links if health is critically low
     check_emergency_fall
 
