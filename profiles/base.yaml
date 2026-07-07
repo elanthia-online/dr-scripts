@@ -2659,10 +2659,6 @@ runestone_harness: 30
 ### Uses restock section.
 runestone_purchase: false
 
-### Roomnumbers.lic Settings:
-roomnumbers_display_exits: true
-roomnumbers_display_stringproc_exits: false
-
 # ESP Settings
 # List the channels you want to subscribe to when `esp` script runs.
 # You'll unsubscribe from any channels not listed.
@@ -2843,7 +2839,6 @@ script_watch_ignored_scripts:
   - events
   - skill-recorder
   - moonwatch
-  - roomnumbers
   - textsubs
 # lower number means faster updates, but could have performance impact
 script_watch_cycle_time: 5

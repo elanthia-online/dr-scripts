@@ -12,9 +12,14 @@
   upstreamed into core lich. verify_script now lives in core as
   DRC.verify_script and the dead reportbot/format helpers have
   been removed.
+
+  Dependency also warns at startup about scripts that have been
+  superseded by native core lich functionality (see
+  DR_OBSOLETE_SCRIPTS) so a lingering copy on disk can be found
+  and deleted before it duplicates work core now performs.
 =end
 
-$DEPENDENCY_VERSION = '4.1.0'
+$DEPENDENCY_VERSION = '4.2.0'
 $DR_SCRIPTS_DISCORD_LINK = 'https://discord.gg/f8ne99pVva'
 $MIN_LICH_VERSION = '5.18.0'
 
@@ -37,7 +42,63 @@ unless XMLData.game =~ /^DR/
   exit
 end
 
+# --- Obsolete script detection ---
+
+# Scripts that have been superseded by native core lich functionality and
+# should no longer be run. A lingering copy on disk can still be launched
+# (for example via a stale autostart entry) and will duplicate the work core
+# lich now performs, so Dependency warns about any that remain.
+#
+# Stored frozen so the canonical list cannot be mutated at runtime.
+#
+# roomnumbers.lic was retired once core lich gained room-number, room-exit,
+# and StringProc-exit display (toggled by Lich.display_lichid,
+# Lich.display_uid, Lich.display_exits, and Lich.display_stringprocs).
+#
+# @return [Array<String>] obsolete script base names, without the ".lic" extension
+DR_OBSOLETE_SCRIPTS = %w[
+  roomnumbers
+].freeze
+
+# Directories searched for a lingering copy of an obsolete script, in
+# descending priority. A script only has to exist in one of these to be
+# launchable, so #warn_obsolete_scripts reports the first match and stops.
+#
+# The custom directory is checked first because a user's local copy there
+# shadows the shipped one and is the more likely culprit.
+#
+# @return [Array<String>] absolute directory paths, highest priority first
+def obsolete_script_dirs
+  [File.join(SCRIPT_DIR, 'custom'), SCRIPT_DIR]
+end
+
+# Emit a warning for each obsolete script that still exists on disk.
+#
+# Presence on disk is the signal that matters: a script must exist to be run,
+# so a missing file needs no warning while a present one can cause problems
+# regardless of how it is launched. Each script is reported at most once,
+# against the highest-priority directory in which it is found.
+#
+# @param obsolete [Array<String>] base names to check; defaults to
+#   DR_OBSOLETE_SCRIPTS. Injectable so callers (and specs) can supply their
+#   own list without mutating the frozen constant.
+# @return [Array<String>] the base names that were found and warned about, in
+#   the order they appear in +obsolete+ (empty when nothing was found)
+def warn_obsolete_scripts(obsolete = DR_OBSOLETE_SCRIPTS)
+  obsolete.select do |name|
+    dir = obsolete_script_dirs.find { |d| File.file?(File.join(d, "#{name}.lic")) }
+    next false unless dir
+
+    _respond Lich::Messaging.monsterbold(
+      "--- Lich: WARNING: '#{name}.lic' is obsolete and should be deleted from #{dir}. " \
+      'It is superseded by core lich and may cause duplicate output or other problems.'
+    )
+    true
+  end
+end
+
 echo("Dependency version #{$DEPENDENCY_VERSION}")
+warn_obsolete_scripts
 
 # --- Runtime helpers ---
 

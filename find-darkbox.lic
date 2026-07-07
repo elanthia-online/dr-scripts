@@ -18,11 +18,6 @@ hollow_eve_loot_container = settings.hollow_eve_loot_container
 worn_trashcan = settings.worn_trashcan
 worn_trashcan_verb = settings.worn_trashcan_verb
 
-if Script.running?('roomnumbers')
-  stop_script('roomnumbers')
-  before_dying { start_script('roomnumbers') }
-end
-
 rooms = [16_150, 16_153, 16_154, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293,
          16_294, 16_295, 16_296, 16_159, 16_161, 16_166, 16_169, 16_174, 16_185, 16_217,
          16_221, 16_224, 16_226, 16_227, 16_235, 16_188, 16_195, 16_203, 16_204, 16_205,
