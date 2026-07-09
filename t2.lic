@@ -6,7 +6,12 @@
 =end
 
 class T2
+  # Seconds T2 sleeps when it finds nothing to train on a given tick.
   IDLE_SLEEP_DURATION = 60
+
+  # Case-sensitive keyword accepted in the +t2_no_kill+ setting. When present,
+  # every script this T2 instance launched is spared from cleanup on shutdown.
+  KILL_ALL_KEYWORD = 'ALL'
 
   def initialize
     arg_definitions = [
@@ -22,6 +27,9 @@ class T2
     @shutdown = false
 
     @counter = 0
+    # Names of scripts this T2 instance has started, in launch order. Used by
+    # #stop_launched_scripts during shutdown so T2 only ever cleans up after
+    # itself and never kills scripts the user started independently.
     @launched_scripts = []
     @equipment_manager = EquipmentManager.new
 
@@ -194,15 +202,47 @@ class T2
     DRC.message("T2 training_list reloaded.")
     echo @settings.training_list.to_yaml if debug
   end
+
+  # Script names the operator has opted out of shutdown cleanup, taken from the
+  # +t2_no_kill+ setting. The setting mirrors +cyclic_no_release+: it accepts a
+  # single value or a list, either of which is normalized to an array here so
+  # every shape (unset, scalar, list) is handled uniformly.
+  #
+  # @return [Array<String>] script names to spare, or +[KILL_ALL_KEYWORD]+ when
+  #   the operator asked to spare everything.
+  def scripts_to_spare
+    Array(@settings.t2_no_kill)
+  end
+
+  # Whether the operator asked to spare every launched script from cleanup via
+  # the case-sensitive {KILL_ALL_KEYWORD} keyword in +t2_no_kill+.
+  #
+  # @return [Boolean]
+  def spare_all_scripts?
+    scripts_to_spare.include?(KILL_ALL_KEYWORD)
+  end
+
+  # Stops the scripts this T2 instance launched, honoring +t2_no_kill+.
+  #
+  # T2 only ever stops scripts it started itself; scripts the operator started
+  # independently are never touched because they are absent from
+  # +@launched_scripts+. Within that set, any script named in +t2_no_kill+ is
+  # spared, and the {KILL_ALL_KEYWORD} keyword spares all of them. Scripts that
+  # are not currently running are skipped.
+  #
+  # @return [void]
+  def stop_launched_scripts
+    return if spare_all_scripts?
+
+    spared = scripts_to_spare
+    @launched_scripts
+      .reject { |script_name| spared.include?(script_name) }
+      .each { |script_name| stop_script(script_name) if Script.running?(script_name) }
+  end
 end
 
 before_dying do
-  # Clean up only the scripts this T2 instance actually launched
-  if $T2 && $T2.instance_variable_defined?(:@launched_scripts)
-    $T2.instance_variable_get(:@launched_scripts).each do |script_name|
-      stop_script(script_name) if Script.running?(script_name)
-    end
-  end
+  $T2&.stop_launched_scripts
   DRCA.release_cyclics(get_settings.cyclic_no_release)
 end
 

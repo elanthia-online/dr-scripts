@@ -49,6 +49,13 @@ t2_skip_awaken: false
 # This allows one to auto-start t2 safely.
 t2_startup_delay: 0
 
+# Scripts T2 launched that should NOT be stopped when T2 exits. Works like
+# cyclic_no_release: by default T2 stops every script it started itself on
+# shutdown (it never touches scripts you started independently). List script
+# names here to spare them, or use the case-sensitive keyword ALL to spare
+# every script T2 launched.
+t2_no_kill: []
+
 # Combat settings
 # https://elanthipedia.play.net/Lich_script_repository#combat-trainer
 aim_fillers:
