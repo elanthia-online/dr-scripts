@@ -25,9 +25,10 @@
   - Scholarship teaching when friends arrive
   - Familiar window logging
 
-  Safety thresholds:
-  - SELF_VIT_FLOOR (60%): won't take vitality from patients if own health below this
-  - EMERGENCY_VIT_THRESHOLD (30%): fall to break all links, enter recovery mode
+  Safety thresholds (vit floor + emergency line are pinned above afk.lic's
+  health_threshold at init, so the healer bails before afk logs you out):
+  - self vit floor (>= afk_quit + 20, baseline 60%): won't take vitality below this
+  - emergency line (>= afk_quit + 12, baseline 30%): fall to break all links
   - PATIENT_VIT_THRESHOLD (80%): only transfer vit if patient below this %
 
   Settings (in your yaml):
@@ -68,20 +69,28 @@ class Healer
   PASSIVE_HEAL_POLL_INTERVAL = 5
   PASSIVE_HEAL_MAX_WAIT = 30
 
-  # Vitality safety thresholds
-  SELF_VIT_FLOOR = 60 # Never take vit if own health below this %
-  EMERGENCY_VIT_THRESHOLD = 30 # Fall to break all links if health drops below this %
+  # Vitality safety thresholds (baseline minimums). The effective floor/emergency
+  # lines are computed at init from afk.lic's health_threshold so the healer always
+  # stops taking vit -- and falls to break links -- BEFORE afk logs us out. See
+  # @self_vit_floor / @emergency_vit_threshold / @vit_resume_threshold in #initialize.
+  SELF_VIT_FLOOR = 60 # Baseline: never take vit if own health below this %
+  EMERGENCY_VIT_THRESHOLD = 30 # Baseline: fall to break all links below this %
   PATIENT_VIT_THRESHOLD = 80   # Only transfer vit if patient below this % (100 = always)
 
-  # Resume another vit round once own health recovers to this % (was hard-coded 90;
-  # a lower gate keeps throughput up without dipping toward the floor).
+  # Resume another vit round once own health recovers to this % (baseline).
   VIT_RESUME_THRESHOLD = 75
 
-  # Controlled stacking: run up to this many concurrent vit-transfer streams to
-  # speed healing. Stacking multiplies drain speed, so the count scales with spare
-  # vitality -- each extra stream requires VIT_STACK_HEADROOM% of headroom above the
-  # floor. When headroom is thin we fall back to a single, safe stream.
-  MAX_VIT_STACKS = 3
+  # Margins above afk.lic's health_threshold. The emergency fall must fire high
+  # enough above afk's quit line that the fall (plus loop-tick latency) still lands
+  # before afk exits; the floor sits above that so we stop taking vit even earlier.
+  AFK_EMERGENCY_MARGIN = 12
+  AFK_FLOOR_MARGIN = 20
+
+  # Concurrent vit-transfer streams. Each "transfer vit quick" is a CONTINUOUS drain,
+  # so stacking multiplies the drain rate and can outrun both the VH refill and every
+  # safety check (this once tripped afk.lic's low-health logout). Kept at 1 -- a single
+  # stream already refills fine and stays controllable.
+  MAX_VIT_STACKS = 1
   VIT_STACK_HEADROOM = 12
 
   # Spell slot timeout (seconds) - prevents permanent lock on stuck tasks
@@ -174,6 +183,15 @@ class Healer
     @drain_landed = false
     @healing_waggle_set = @settings.healer_waggle_set || 'healme'
     @cambrinth_item = Array(@settings.cambrinth).first
+
+    # Pin our vitality safety lines above afk.lic's quit threshold so the healer
+    # stops taking vit (and falls to break links) before afk logs the character out.
+    afk_quit = @settings.health_threshold.to_i
+    afk_quit = 50 if afk_quit <= 0 # afk.lic's own effective default
+    @emergency_vit_threshold = [afk_quit + AFK_EMERGENCY_MARGIN, EMERGENCY_VIT_THRESHOLD].max
+    @self_vit_floor = [afk_quit + AFK_FLOOR_MARGIN, SELF_VIT_FLOOR].max
+    @vit_resume_threshold = [@self_vit_floor + 5, VIT_RESUME_THRESHOLD].max
+    log("Vit safety: afk_quit=#{afk_quit}, emergency=#{@emergency_vit_threshold}, floor=#{@self_vit_floor}, resume=#{@vit_resume_threshold}")
 
     # Startup validations
     validate_link_unity
@@ -1053,13 +1071,14 @@ class Healer
     end
   end
 
-  # Number of concurrent vit-transfer streams to run this round. Stacking transfers
-  # multiplies drain speed, so the count scales with how much spare vitality we have
-  # above the floor (each stream needs VIT_STACK_HEADROOM% of headroom), capped at
-  # MAX_VIT_STACKS. Thin headroom -> a single, safe stream.
+  # Number of concurrent vit-transfer streams to run this round. Currently pinned to
+  # a single stream (MAX_VIT_STACKS = 1) because each "transfer vit quick" is a
+  # continuous drain and stacking multiplies the rate past what the refill and the
+  # safety checks can handle. The headroom scaling is retained for the day a safe
+  # stacking scheme exists, but stays clamped to MAX_VIT_STACKS.
   # @return [Integer] stacks between 1 and MAX_VIT_STACKS
   def vit_stack_count
-    headroom = DRStats.health - SELF_VIT_FLOOR
+    headroom = DRStats.health - @self_vit_floor
     return 1 if headroom <= 0
 
     [[headroom / VIT_STACK_HEADROOM, 1].max, MAX_VIT_STACKS].min
@@ -1067,10 +1086,10 @@ class Healer
 
   # State machine for vitality healing via VH spell.
   # Prep-first approach: preps VH before transferring so it can cast immediately
-  # when damage lands. Controlled stacking: runs 1..MAX_VIT_STACKS concurrent drain
-  # streams scaled to spare vitality, then casts VH to refill and re-rounds once own
-  # health recovers to VIT_RESUME_THRESHOLD -- faster than one-per-round without
-  # letting the drain outrun the refill.
+  # when damage lands. Runs a single drain stream (see vit_stack_count), casts VH to
+  # refill, then re-rounds once own health recovers to @vit_resume_threshold. The
+  # floor/emergency lines are pinned above afk.lic's quit threshold so a runaway drain
+  # is stopped (and links broken) before afk logs us out.
   # Phases: :start -> :prepping -> :awaiting_drain -> :recovering (loops)
   # @return [void]
   def process_vitality_slot
@@ -1079,8 +1098,8 @@ class Healer
     case task[:phase]
     when :start
       # Safety: don't take vit if our own is low
-      if DRStats.health < SELF_VIT_FLOOR
-        log("Own vitality #{DRStats.health}% < #{SELF_VIT_FLOOR}% floor, skipping vit transfer for #{task[:patient]}")
+      if DRStats.health < @self_vit_floor
+        log("Own vitality #{DRStats.health}% < #{@self_vit_floor}% floor, skipping vit transfer for #{task[:patient]}")
         Lich::Messaging.msg('bold', "Healer: Own vitality too low (#{DRStats.health}%), skipping vit for #{task[:patient]}")
         update_patient(task[:patient], vh_attempted: true)
         release_spell_slot
@@ -1101,7 +1120,7 @@ class Healer
       return unless prep_elapsed >= (@vh_spell[:prep_time] || 3)
 
       # Re-check health before transferring (may have taken wounds since :start)
-      if DRStats.health < SELF_VIT_FLOOR
+      if DRStats.health < @self_vit_floor
         log("Own vitality #{DRStats.health}% dropped below floor before vit transfer, bailing")
         Lich::Messaging.msg('bold', "Healer: Own vitality too low (#{DRStats.health}%), skipping vit for #{task[:patient]}")
         update_patient(task[:patient], vh_attempted: true)
@@ -1123,7 +1142,7 @@ class Healer
 
       # Additional streams (only while still above the floor) to speed the heal.
       (stacks - 1).times do
-        break if DRStats.health < SELF_VIT_FLOOR
+        break if DRStats.health < @self_vit_floor
 
         waitrt?
         DRC.bput("transfer #{task[:patient]} vit quick", *TRANSFER_RESPONSES)
@@ -1136,6 +1155,15 @@ class Healer
       @spell_task[:timer] = Time.now
 
     when :awaiting_drain
+      # The drain is a continuous stream. Don't block on waitrt?/waitcastrt? while
+      # critically low -- that once let the drain outrun every check. If we've fallen
+      # to the emergency line, abandon the cast and let check_emergency_fall break the
+      # link on the next (unblocked) tick.
+      if DRStats.health < @emergency_vit_threshold
+        log("Vitality #{DRStats.health}% at/below emergency during drain, abandoning cast for fall")
+        return
+      end
+
       if @drain_landed || Time.now - (task[:drain_sent_at] || Time.now) > 8
         waitrt?
         waitcastrt?
@@ -1146,14 +1174,14 @@ class Healer
       end
 
     when :recovering
-      if DRStats.health >= VIT_RESUME_THRESHOLD
+      if DRStats.health >= @vit_resume_threshold
         # Recovered enough -- check if patient needs another round
         victim_health = DRCH.perceive_health_other(task[:patient])
         needs_more = victim_health &&
                      victim_health.vitality &&
                      victim_health.vitality < PATIENT_VIT_THRESHOLD
 
-        if needs_more && DRStats.health >= SELF_VIT_FLOOR
+        if needs_more && DRStats.health >= @self_vit_floor
           # Another controlled round -- prep VH first again
           log("Patient #{task[:patient]} still needs vit (#{victim_health.vitality}%), another round")
           prep_vh_spell
@@ -1165,7 +1193,7 @@ class Healer
           update_patient(task[:patient], vh_attempted: true)
           release_spell_slot
         end
-      elsif DRStats.health < SELF_VIT_FLOOR
+      elsif DRStats.health < @self_vit_floor
         # Our health is too low to continue -- bail
         log("Own vitality dropped to #{DRStats.health}% during recovery, stopping vit for #{task[:patient]}")
         Lich::Messaging.msg('bold', "Healer: Own vitality too low (#{DRStats.health}%), stopping vit for #{task[:patient]}")
@@ -1209,9 +1237,9 @@ class Healer
   # @return [void]
   def check_emergency_fall
     return if @emergency_recovery
-    return if DRStats.health >= EMERGENCY_VIT_THRESHOLD
+    return if DRStats.health >= @emergency_vit_threshold
 
-    Lich::Messaging.msg('bold', "Healer: EMERGENCY - vitality #{DRStats.health}% below #{EMERGENCY_VIT_THRESHOLD}%, falling to break all links!")
+    Lich::Messaging.msg('bold', "Healer: EMERGENCY - vitality #{DRStats.health}% below #{@emergency_vit_threshold}%, falling to break all links!")
     DRC.log_window("Healer: EMERGENCY FALL at #{DRStats.health}% vitality", "familiar")
     fput('fall')
 
