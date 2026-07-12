@@ -186,11 +186,18 @@ class Healer
 
     # Pin our vitality safety lines above afk.lic's quit threshold so the healer
     # stops taking vit (and falls to break links) before afk logs the character out.
+    # afk.lic reads health_threshold.to_i with no default, so an unset value is 0 and
+    # afk never quits on health -- 50 is the healer's own conservative fallback.
     afk_quit = @settings.health_threshold.to_i
-    afk_quit = 50 if afk_quit <= 0 # afk.lic's own effective default
-    @emergency_vit_threshold = [afk_quit + AFK_EMERGENCY_MARGIN, EMERGENCY_VIT_THRESHOLD].max
-    @self_vit_floor = [afk_quit + AFK_FLOOR_MARGIN, SELF_VIT_FLOOR].max
-    @vit_resume_threshold = [@self_vit_floor + 5, VIT_RESUME_THRESHOLD].max
+    afk_quit = 50 if afk_quit <= 0 # healer fallback (afk does no health quit when unset)
+
+    # Clamp the upper end too: DRStats.health caps at 100, so a high health_threshold
+    # could otherwise push a threshold past what health can reach (floor >= 100 =>
+    # never take vit; resume > 100 => :recovering never completes). Keep them strictly
+    # ordered and reachable: emergency < floor < resume <= 95.
+    @self_vit_floor = [[afk_quit + AFK_FLOOR_MARGIN, SELF_VIT_FLOOR].max, 90].min
+    @emergency_vit_threshold = [[afk_quit + AFK_EMERGENCY_MARGIN, EMERGENCY_VIT_THRESHOLD].max, @self_vit_floor - 5].min
+    @vit_resume_threshold = [[@self_vit_floor + 5, VIT_RESUME_THRESHOLD].max, 95].min
     log("Vit safety: afk_quit=#{afk_quit}, emergency=#{@emergency_vit_threshold}, floor=#{@self_vit_floor}, resume=#{@vit_resume_threshold}")
 
     # Startup validations
