@@ -719,6 +719,19 @@ RSpec.describe StatusMonitor::AlertHandler do
       handler.fire('a plain line', 'counts')
       expect(Lich::DragonRealms::SlackBot.instances).to be_empty
     end
+
+    it 'does not construct a SlackBot at initialize time (lazy, avoids blocking startup)' do
+      described_class.new(make_alert_settings(slack: 'someuser'))
+      expect(Lich::DragonRealms::SlackBot.instances).to be_empty
+    end
+
+    it 'constructs the SlackBot only once across multiple alerts' do
+      handler = described_class.new(make_alert_settings(slack: 'someuser'))
+      handler.fire('first', 'counts1')
+      handler.fire('second', 'counts2')
+      expect(Lich::DragonRealms::SlackBot.instances.size).to eq(1)
+      expect(Lich::DragonRealms::SlackBot.instances.first.dm_calls.size).to eq(2)
+    end
   end
 end
 

@@ -387,8 +387,8 @@ module StatusMonitor
       @settings = settings
       @responses = ["'Hmmm?", "'Yes", "'Ok?"].shuffle
       @quit_on_flag = settings.quit_on_status_warning
+      @slack_enabled = !@settings.slack_username.nil? && !@settings.slack_username.to_s.strip.empty?
       @slackbot = nil
-      init_slackbot
     end
 
     # Fires an alert: beeps, auto-responds, notifies Slack, optionally quits.
@@ -412,14 +412,22 @@ module StatusMonitor
 
     private
 
-    # @return [void]
-    def init_slackbot
-      username = @settings.slack_username
-      return if username.nil? || username.to_s.strip.empty?
+    # Lazily constructs the SlackBot on first use.
+    #
+    # SlackBot.new can block for several seconds (lnet startup, users.list
+    # fetch, jitter/backoff). Building it here rather than in the constructor
+    # keeps script startup and the status window responsive, and defers the
+    # connection until an alert actually needs to be sent (by which point lnet
+    # is far more likely to be up).
+    #
+    # @return [Lich::DragonRealms::SlackBot, nil] the bot, or nil if construction failed
+    def slackbot
+      return @slackbot if @slackbot
 
       @slackbot = Lich::DragonRealms::SlackBot.new
     rescue => e
       echo "SlackBot init failed: #{e.message}"
+      nil
     end
 
     # @param message [String] message body to send
@@ -431,9 +439,12 @@ module StatusMonitor
     #   attempt failed (e.g. lnet not up yet at login), because the self-healing
     #   reconnect path inside direct_message would never be reached.
     def send_slack(message)
-      return unless @slackbot
+      return unless @slack_enabled
 
-      @slackbot.direct_message(@settings.slack_username, message.to_s)
+      bot = slackbot
+      return unless bot
+
+      bot.direct_message(@settings.slack_username, message.to_s)
     rescue => e
       echo "SlackBot error: #{e.message}"
     end
