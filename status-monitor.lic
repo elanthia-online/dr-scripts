@@ -29,6 +29,10 @@ module StatusMonitor
   #
   # @note File paths are scoped per character via checkname.
   class MessageStore
+    # Seconds a line stays in the in-memory recent cache before migrate_recent
+    # flushes it to the persistent store (the "10 minutes" referenced above).
+    RECENT_TTL_SECONDS = 600
+
     # @param character_name [String] character name for scoping storage files
     def initialize(character_name)
       @db_path = "seen_messages_#{character_name}.db"
@@ -49,11 +53,11 @@ module StatusMonitor
       true
     end
 
-    # Migrates recent lines older than 10 minutes into the database.
+    # Migrates recent lines older than RECENT_TTL_SECONDS into the database.
     #
     # @return [void]
     def migrate_recent
-      expired = @recent_seen_lines.select { |_, timestamp| Time.now - timestamp > 600 }
+      expired = @recent_seen_lines.select { |_, timestamp| Time.now - timestamp > RECENT_TTL_SECONDS }
       return if expired.empty?
 
       @db.transaction do
@@ -153,6 +157,7 @@ module StatusMonitor
   #
   # @note Uses status_tags mode to receive raw XML from the game stream.
   class MessageFilter
+    # @return [String, nil] the last raw "Also here:" room players component line seen
     attr_reader :last_player_line
 
     FILTERED_STREAMS = %w[assess ooc atmospherics thoughts talk death group percWindow logons shopWindow].freeze
