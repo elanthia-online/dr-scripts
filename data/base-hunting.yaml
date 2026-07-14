@@ -3609,12 +3609,13 @@ hunting_zones:
   - 15410
   # https://elanthipedia.play.net/Scaly_seordmaor                        400-530
   # swarmy, immune to electricity, have strong magics
-  scaly_seordmoar_fornsted:
+  scaly_seordmaor_fornsted: &scaly_seordmaor_fornsted
   - 3685
   - 3677
   - 3682
   - 3684
   - 3686
+  scaly_seordmoar_fornsted: *scaly_seordmaor_fornsted # Backwards compatibility for typo
   scaly_seordmaor_hara:
   - 11405
   - 11406
