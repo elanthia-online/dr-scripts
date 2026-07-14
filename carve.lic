@@ -7,7 +7,7 @@ class Carve
     @settings = get_settings
     @bag = @settings.crafting_container
     @bag_items = @settings.crafting_items_in_container
-    @belt = @settings.engineering_belt
+    @belt = @settings.carving_belt || @settings.engineering_belt # carving_belt, falls back to engineering_belt (#1420)
     @stamp = @settings.mark_crafted_goods
 
     arg_definitions = [
