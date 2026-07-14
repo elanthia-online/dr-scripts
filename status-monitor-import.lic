@@ -50,6 +50,10 @@ module StatusMonitorImport
   def self.open_database(character_name)
     db_path = "seen_messages_#{character_name}.db"
     db = SQLite3::Database.new(db_path)
+    # Wait up to 5s on a locked db so a concurrent writer (e.g. a running
+    # status-monitor writing to the same per-character db) doesn't raise
+    # SQLITE_BUSY on transient contention.
+    db.busy_timeout = 5000
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA synchronous=NORMAL')
     db.execute(<<~SQL)

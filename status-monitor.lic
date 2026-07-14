@@ -105,6 +105,10 @@ module StatusMonitor
     # @return [SQLite3::Database] initialized database connection
     def open_database
       db = SQLite3::Database.new(@db_path)
+      # Wait up to 5s on a locked db so a concurrent writer (e.g. a
+      # status-monitor-import run on the same per-character db) doesn't raise
+      # SQLITE_BUSY on transient contention.
+      db.busy_timeout = 5000
       db.execute('PRAGMA journal_mode=WAL')
       db.execute('PRAGMA synchronous=NORMAL')
       db.execute(<<~SQL)
@@ -410,8 +414,12 @@ module StatusMonitor
       CommandDetector.check(line)
       fput @responses.first if @settings.status_monitor_respond
       echo(line)
-      send_slack(counts)
+      # Queue the auto-quit before send_slack: constructing the SlackBot on the
+      # first alert can block for several seconds, and we do not want that to
+      # delay logout when quit_on_status_warning is set. The exit command is
+      # queued to the game, so the Slack notification still goes out afterward.
       fput('exit') if @quit_on_flag
+      send_slack(counts)
       @responses.rotate!
       pause 2
     end
