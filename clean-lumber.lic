@@ -32,14 +32,7 @@ class CleanLumber
         end
         size = DRC.right_hand.split.last
       end
-      unless DRCC.get_crafting_item('saw', @bag, @bag_items, @belt) != /woodcutting saw|wood saw/
-        DRCC.stow_crafting_item('saw', @bag, @belt)
-        case DRC.bput("get saw from #{@bag}", 'You get', 'What were')
-        when /What were/
-          echo('No saw found')
-          exit
-        end
-      end
+      ensure_wood_saw
       until DRC.bput("cut #{size} with my saw", 'roundtime', 'you complete', 'ready to be carved') =~ /you complete|ready to be carved/
         waitrt?
       end
@@ -64,6 +57,26 @@ class CleanLumber
       end
 
       size = 'deed' if was_deed
+    end
+  end
+
+  # Puts a wood-cutting saw in hand, never a bone saw. get_crafting_item('saw')
+  # matches the first item whose noun is "saw", which can be a bone saw; the
+  # original guard compared its String result to a Regexp (always true) so the
+  # check never ran (issue #3167). If the saw in hand is not a wood saw, stow it
+  # and fetch one by name -- "wood saw" matches woodcutting/wood/woodbutt saws
+  # (adjective prefix match) but never a bone saw.
+  # @return [void]
+  def ensure_wood_saw
+    DRCC.get_crafting_item('saw', @bag, @bag_items, @belt)
+    held_saw = [DRC.right_hand, DRC.left_hand].compact.find { |item| item =~ /saw/i }
+    return if held_saw =~ /wood\w* saw/i
+
+    DRCC.stow_crafting_item('saw', @bag, @belt) if held_saw
+    case DRC.bput("get wood saw from my #{@bag}", 'You get', 'What were')
+    when /What were/
+      echo('No wood saw found - check your engineering/carving/shaping belt or bag')
+      exit
     end
   end
 end
