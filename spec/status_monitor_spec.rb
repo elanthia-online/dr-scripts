@@ -541,6 +541,22 @@ RSpec.describe StatusMonitor::CommandDetector do
       expect($fput_commands).to include('jump')
     end
 
+    it 'does not auto-execute denylisted destructive commands' do
+      described_class.check('you must QUIT and SELL and DROP now')
+      expect($fput_commands).to be_empty
+    end
+
+    it 'does not execute a denylisted command even when obfuscated' do
+      described_class.check('try Q_U_I_T now')
+      expect($fput_commands).not_to include('quit')
+    end
+
+    it 'still executes safe commands in a line that also contains a denylisted one' do
+      described_class.check('you should JUMP but do not QUIT')
+      expect($fput_commands).to include('jump')
+      expect($fput_commands).not_to include('quit')
+    end
+
     it 'detects obfuscated commands with separators' do
       described_class.check('try J_U_M_P now')
       expect($fput_commands).to include('jump')
