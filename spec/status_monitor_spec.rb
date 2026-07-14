@@ -620,13 +620,15 @@ RSpec.describe StatusMonitor::CommandDetector do
 
   describe 'adversarial evasion' do
     it 'misses commands with Cyrillic lookalike letters (known gap, needs transliteration)' do
-      line = "JUМP here"
+      cyrillic_em = 0x041C.chr(Encoding::UTF_8) # lookalike for Latin capital M
+      line = "JU#{cyrillic_em}P here"
       described_class.check(line)
       expect($fput_commands).not_to include('jump')
     end
 
     it 'detects commands despite zero-width characters inserted' do
-      line = "JU​MP here"
+      zero_width_space = 0x200B.chr(Encoding::UTF_8)
+      line = "JU#{zero_width_space}MP here"
       described_class.check(line)
       expect($fput_commands).to include('jump')
     end
