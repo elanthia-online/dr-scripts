@@ -34,6 +34,38 @@ module UserVars
   def self.players_online; nil; end
 end unless defined?(UserVars)
 
+# Minimal fake SlackBot so AlertHandler's delivery path can be exercised
+# without any network or lnet dependency. Records direct_message calls and
+# lets a test dictate whether the bot reports itself as initialized.
+module Lich
+  module DragonRealms
+    class SlackBot
+      class << self
+        attr_accessor :next_initialized
+        attr_reader :instances
+      end
+      @instances = []
+
+      attr_reader :dm_calls
+
+      def initialize
+        @initialized = self.class.next_initialized
+        @dm_calls = []
+        self.class.instances << self
+      end
+
+      def initialized?
+        @initialized
+      end
+
+      def direct_message(username, message)
+        @dm_calls << [username, message]
+        { 'ok' => true }
+      end
+    end
+  end
+end unless defined?(Lich::DragonRealms::SlackBot)
+
 # Extract the StatusMonitor module from the .lic file (lines 22-561).
 # Skip the top-level Lich runtime code (status_tags, parse_args, etc).
 monitor_path = File.join(File.dirname(__FILE__), '..', 'status-monitor.lic')
@@ -666,6 +698,27 @@ RSpec.describe StatusMonitor::AlertHandler do
     handler = described_class.new(make_alert_settings(quit: false))
     handler.fire('a plain line', 'counts')
     expect($fput_commands).not_to include('exit')
+  end
+
+  describe 'Slack delivery' do
+    before { Lich::DragonRealms::SlackBot.instances.clear }
+
+    it 'delivers the alert even when the bot reports it is not initialized' do
+      # Regression: gating on initialized? here would suppress delivery forever
+      # after a failed first connect. direct_message reconnects on its own.
+      Lich::DragonRealms::SlackBot.next_initialized = false
+      handler = described_class.new(make_alert_settings(slack: 'someuser'))
+      handler.fire('a plain line', 'counts info')
+      bot = Lich::DragonRealms::SlackBot.instances.last
+      expect(bot).not_to be_nil
+      expect(bot.dm_calls.last).to eq(['someuser', 'counts info'])
+    end
+
+    it 'does not construct a SlackBot when no username is configured' do
+      handler = described_class.new(make_alert_settings(slack: nil))
+      handler.fire('a plain line', 'counts')
+      expect(Lich::DragonRealms::SlackBot.instances).to be_empty
+    end
   end
 end
 

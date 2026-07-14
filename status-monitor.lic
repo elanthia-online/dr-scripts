@@ -424,8 +424,14 @@ module StatusMonitor
 
     # @param message [String] message body to send
     # @return [void]
+    #
+    # @note Delegates the connection check to SlackBot#direct_message, which
+    #   reconnects itself when not yet initialized. Gating on #initialized?
+    #   here would permanently suppress delivery whenever the first connection
+    #   attempt failed (e.g. lnet not up yet at login), because the self-healing
+    #   reconnect path inside direct_message would never be reached.
     def send_slack(message)
-      return unless @slackbot&.initialized?
+      return unless @slackbot
 
       @slackbot.direct_message(@settings.slack_username, message.to_s)
     rescue => e
