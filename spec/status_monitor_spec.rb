@@ -25,8 +25,12 @@ def pause(_duration = 0)
 end
 
 $fput_commands = []
+# Ordered log of observable side effects (fput and Slack sends), used to assert
+# relative ordering across the two sinks.
+$event_log = []
 def fput(cmd)
   $fput_commands << cmd
+  $event_log << [:fput, cmd]
 end
 
 module UserVars
@@ -60,6 +64,7 @@ module Lich
 
       def direct_message(username, message)
         @dm_calls << [username, message]
+        $event_log << [:slack, message]
         { 'ok' => true }
       end
     end
@@ -526,6 +531,12 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(mode).to eq('wal')
       db.close
     end
+
+    it 'sets a busy_timeout so a concurrent writer waits instead of erroring' do
+      store = described_class.new('Testchar')
+      db = store.instance_variable_get(:@db)
+      expect(db.get_first_value('PRAGMA busy_timeout')).to eq(5000)
+    end
   end
 end
 
@@ -719,7 +730,20 @@ RSpec.describe StatusMonitor::AlertHandler do
   end
 
   describe 'Slack delivery' do
-    before { Lich::DragonRealms::SlackBot.instances.clear }
+    before do
+      Lich::DragonRealms::SlackBot.instances.clear
+      $event_log.clear
+    end
+
+    it 'queues the auto-quit before the (possibly blocking) Slack send' do
+      handler = described_class.new(make_alert_settings(quit: true, slack: 'someuser'))
+      handler.fire('a plain line', 'counts')
+      exit_at = $event_log.index([:fput, 'exit'])
+      slack_at = $event_log.index { |kind, _| kind == :slack }
+      expect(exit_at).not_to be_nil
+      expect(slack_at).not_to be_nil
+      expect(exit_at).to be < slack_at
+    end
 
     it 'delivers the alert even when the bot reports it is not initialized' do
       # Regression: gating on initialized? here would suppress delivery forever
@@ -926,13 +950,20 @@ RSpec.describe StatusMonitor::Monitor do
     FileUtils.rm_rf(tmpdir)
   end
 
-  # get_data must be defined at top level for Monitor to call it
-  it 'detector runs before unseen? gate (spam detection regression test)' do
-    # Define get_data in scope
+  # Monitor#load_filter_strings calls the top-level get_data. Define a default
+  # (empty filter_strings) around every example and always remove it afterward.
+  # An example that needs specific filters redefines get_data before it
+  # constructs the Monitor; the hook still removes it in the ensure.
+  around do |example|
     Object.send(:define_method, :get_data) do |_type|
       OpenStruct.new('filter_strings' => [])
     end
+    example.run
+  ensure
+    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
+  end
 
+  it 'detector runs before unseen? gate (spam detection regression test)' do
     monitor = described_class.new(settings)
     # Send the same clean line repeatedly -- detector must see all of them
     4.times { monitor.process(+'A mysterious voice whispers to you') }
@@ -940,45 +971,26 @@ RSpec.describe StatusMonitor::Monitor do
     # With threshold 3, the 4th should trigger (first is unseen, 2-4 are repeats
     # but detector still gets them)
     expect(monitor.spam_line).not_to be_nil, "SpamDetector should have fired after 4 repeats with threshold 3"
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 
   it 'process returns false for nil lines' do
-    Object.send(:define_method, :get_data) do |_type|
-      OpenStruct.new('filter_strings' => [])
-    end
-
     monitor = described_class.new(settings)
     expect(monitor.process(nil)).to be false
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 
   it 'process returns false for empty lines' do
-    Object.send(:define_method, :get_data) do |_type|
-      OpenStruct.new('filter_strings' => [])
-    end
-
     monitor = described_class.new(settings)
     expect(monitor.process('')).to be false
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 
   it 'returns false for lines that scrub to whitespace' do
-    Object.send(:define_method, :get_data) do |_type|
-      OpenStruct.new('filter_strings' => [])
-    end
-
     monitor = described_class.new(settings)
     result = monitor.process(+'42 kronars')
     expect(result).to be false
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 
   it 'returns false for lines matching a filter pattern' do
+    # Override the shared default with a non-empty filter for this example only.
     Object.send(:define_method, :get_data) do |_type|
       OpenStruct.new('filter_strings' => ['gold coins'])
     end
@@ -986,21 +998,13 @@ RSpec.describe StatusMonitor::Monitor do
     monitor = described_class.new(settings)
     result = monitor.process(+'you see gold coins on the ground')
     expect(result).to be false
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 
   it 'consume_spam_line clears the spam line' do
-    Object.send(:define_method, :get_data) do |_type|
-      OpenStruct.new('filter_strings' => [])
-    end
-
     monitor = described_class.new(settings)
     monitor.instance_variable_set(:@spam_line, 'test spam')
     consumed = monitor.consume_spam_line
     expect(consumed).to eq('test spam')
     expect(monitor.spam_line).to be_nil
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 end

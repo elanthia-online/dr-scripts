@@ -537,4 +537,8 @@ RSpec.describe 'StatusMonitorImport.pending_files' do
     files.each { |f| StatusMonitorImport.record_import(db, f, 1) }
     expect(StatusMonitorImport.pending_files(db, files, limit: 3)).to eq([])
   end
+
+  it 'opens the database with a busy_timeout so concurrent writers wait' do
+    expect(db.get_first_value('PRAGMA busy_timeout')).to eq(5000)
+  end
 end
