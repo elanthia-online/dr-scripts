@@ -801,7 +801,13 @@ class Trade
     contract
   end
 
-  def find_contracts(container) # returns an array of the contracts in the container
+  # Reads the contract container and returns only actual contracts. Matches on
+  # the item noun rather than a substring so a "contract case" (noun: "case")
+  # is not mistaken for a contract (noun: "contract") -- see issue #4201.
+  # Reopens the container and retries once if it reports as closed.
+  # @param container [String] noun of the worn contract container to search
+  # @return [Array<String>] descriptions of the contracts found (empty if none)
+  def find_contracts(container)
     result = DRC.bput("look in my #{container}", 'That is closed', 'you see .*', 'While it\'s closed', 'I could not find', 'There is nothing')
     case result
     when 'That is closed'
@@ -809,7 +815,7 @@ class Trade
       return find_contracts(container)
     end
     text = result.match(/you see (.*)\.$/).to_a[1]
-    DRC.list_to_array(text).select { |item| item.include?('contract') }
+    DRC.list_to_array(text).select { |item| DRC.get_noun(item) == 'contract' }
   end
 
   def count_grass # sets @current_grass_count of grass in feedbag
