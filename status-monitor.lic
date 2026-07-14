@@ -183,8 +183,10 @@ module StatusMonitor
 
     # Cleans a raw game line by stripping tags and filtering known sources.
     #
+    # Does not mutate its argument: tag stripping returns a new String.
+    #
     # @param line [String] raw game stream line with XML tags
-    # @return [String, nil] cleaned line, or nil if it should be ignored
+    # @return [String, nil] a new cleaned line, or nil if it should be ignored
     def clean(line)
       update_players(line)
       update_stream_state(line)
@@ -197,8 +199,7 @@ module StatusMonitor
         players_to_check = UserVars.players_online - [checkname, 'Endith']
         return nil if players_to_check.any? { |name| line.include?(name) }
       end
-      line.gsub!(/<[^>]+>/, '')
-      line
+      line.gsub(/<[^>]+>/, '')
     end
 
     # Checks whether a cleaned line matches any configured filter patterns.
@@ -514,6 +515,9 @@ module StatusMonitor
   class Monitor
     attr_reader :spam_line
 
+    # @return [String, nil] the most recent cleaned line (tags stripped), for debug logging
+    attr_reader :last_clean_line
+
     # @param settings [OpenStruct] user settings from get_settings
     def initialize(settings)
       @store = MessageStore.new(checkname)
@@ -521,6 +525,7 @@ module StatusMonitor
       @detector = SpamDetector.new(settings)
       @alerter = AlertHandler.new(settings)
       @spam_line = nil
+      @last_clean_line = nil
     end
 
     # Processes a single raw game line through the full pipeline.
@@ -533,6 +538,7 @@ module StatusMonitor
     def process(line)
       @store.migrate_recent
       cleaned = @filter.clean(line)
+      @last_clean_line = cleaned
       return false if cleaned.nil?
       return false if @filter.filtered?(cleaned)
 
@@ -609,14 +615,14 @@ def update_health_bar(entry)
   entry.text = "#{hp}%"
 end
 
-# @param back [String, nil] original line before processing
-# @param line [String] cleaned line
+# @param raw [String, nil] original raw line as received from the game stream
+# @param cleaned [String, nil] the line after tag stripping and source filtering
 # @param player_line [String, nil] last room players component
 # @return [void]
-def write_debug_log(back, line, player_line)
+def write_debug_log(raw, cleaned, player_line)
   File.open("status-monitor-debug-#{checkname}.txt", 'a') do |f|
-    f.puts(back)
-    f.puts(line)
+    f.puts(raw)
+    f.puts(cleaned)
     f.puts(player_line)
   end
 end
@@ -631,9 +637,8 @@ end
 if nowindow
   loop do
     line = script.gets
-    back = line.dup if args.debug
-    if monitor.process(line)
-      write_debug_log(back, line, monitor.last_player_line) if args.debug
+    if monitor.process(line) && args.debug
+      write_debug_log(line, monitor.last_clean_line, monitor.last_player_line)
     end
     monitor.consume_spam_line
   end
@@ -708,15 +713,14 @@ begin
 
   loop do
     line = script.gets?
-    back = line.dup if args.debug
     if prev_health != health
       prev_health = health
       Gtk.queue { update_health_bar(healthbar_et) }
     end
     if monitor.process(line)
-      write_debug_log(back, line, monitor.last_player_line) if args.debug
+      write_debug_log(line, monitor.last_clean_line, monitor.last_player_line) if args.debug
     else
-      pause 0.1 unless back
+      pause 0.1 unless args.debug && line
     end
     if (spam = monitor.consume_spam_line)
       Gtk.queue do

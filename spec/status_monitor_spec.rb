@@ -806,6 +806,17 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(result).to eq('bold text and more')
     end
 
+    it 'does not mutate its argument' do
+      original = +"<b>bold text</b> and more"
+      before = original.dup
+      filter.clean(original)
+      expect(original).to eq(before)
+    end
+
+    it 'does not raise on a frozen input line' do
+      expect { filter.clean("<b>frozen</b> line".freeze) }.not_to raise_error
+    end
+
     it 'returns nil for empty lines' do
       expect(filter.clean(+'')).to be_nil
     end
