@@ -482,7 +482,7 @@ class Trade
     return Room.current.id if outpost_from_name(@emergency_delivery_town) == Room.current.id
 
     rooms = @trading_towns.to_h.values.select { |data| data['trader_outpost'] }
-                          .map { |data| data['trader_outpost']['id'] }
+                                      .map { |data| data['trader_outpost']['id'] }
     target_list = rooms.collect(&:to_i)
     _previous, shortest_distances = Map.dijkstra(outpost_from_name(@emergency_delivery_town))
     target_list.delete_if { |room_num| shortest_distances[room_num].nil? && room_num == Room.current.id }
@@ -1910,7 +1910,7 @@ class Trade
       @crafted_item = 'a cloth artisan\'s belt'
     end
     recipes = @recipe_data.crafting_recipes.select { |recipe| recipe['type'] =~ /tailoring/i }
-                          .reject { |recipe| recipe['chapter'] == 7 }
+                                           .reject { |recipe| recipe['chapter'] == 7 }
     echo @crafted_item
     recipe = DRCC.recipe_lookup(recipes, @crafted_item)
 
@@ -2231,29 +2231,34 @@ class Trade
     return_to_caravan
     inventory = get_storage_inventory
     town = closest_town
-    @crafting_override.select { |_discipline, data| inventory.group_by(&:itself)[data['recipe'].split.last].length > 4 }
-                      .select { |discipline, _data| @crafting_data[discipline][town] && time_to_room(Room.current.id, @crafting_data[discipline][town]['stock-room']) < 10.0 }
-                      .select { |_discipline, data| data['workorder'] }
-                      .each do  |discipline, data|
-      info = @crafting_data[discipline][town]
-      recipes = @recipe_data.crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && /#{@crafting_override[discipline]['recipe']}/ =~ recipe['name'] }
-      echo recipes
-      item_name, quantity = request_work_order(recipes, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], data['difficulty'])
-      if item_name.nil?
-        @crafting_override[discipline]['workorder'] = false
-        DRC.message('Could not find a workorder for the item')
-        return turn_in_items
-      end
+    # Handle one eligible override per call, then recurse. The previous .each
+    # unconditionally returned on its first iteration (Lint/UnreachableLoop);
+    # taking .first preserves that single-iteration behaviour explicitly.
+    selected = @crafting_override.select { |_discipline, data| inventory.group_by(&:itself)[data['recipe'].split.last].length > 4 }
+                                 .select { |discipline, _data| @crafting_data[discipline][town] && time_to_room(Room.current.id, @crafting_data[discipline][town]['stock-room']) < 10.0 }
+                                 .select { |_discipline, data| data['workorder'] }
+                                 .first
+    return unless selected
 
-      return_to_caravan
-      quantity.times do
-        break unless get_item_from_storage_box?(data['recipe'].split.last)
-
-        DRCC.logbook_item(info['logbook'], data['recipe'].split.last, @craft_bag)
-      end
-      complete_work_order(info)
+    discipline, data = selected
+    info = @crafting_data[discipline][town]
+    recipes = @recipe_data.crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && /#{@crafting_override[discipline]['recipe']}/ =~ recipe['name'] }
+    echo recipes
+    item_name, quantity = request_work_order(recipes, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], data['difficulty'])
+    if item_name.nil?
+      @crafting_override[discipline]['workorder'] = false
+      DRC.message('Could not find a workorder for the item')
       return turn_in_items
     end
+
+    return_to_caravan
+    quantity.times do
+      break unless get_item_from_storage_box?(data['recipe'].split.last)
+
+      DRCC.logbook_item(info['logbook'], data['recipe'].split.last, @craft_bag)
+    end
+    complete_work_order(info)
+    turn_in_items
   end
 
   def complete_work_order(info)
