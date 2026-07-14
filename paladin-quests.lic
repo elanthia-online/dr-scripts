@@ -3,6 +3,26 @@
 =end
 
 class PaladinQuests
+  # Game response confirming the paladin selected the correct reward from the
+  # Glyph of Bonding fountain. Used both to auto-detect a successful `get` and
+  # to wait out a manual selection.
+  #
+  # @see #choose_fountain_item
+  # @see #bonding
+  CHOSE_WISELY = 'chosen wisely'.freeze
+
+  # Nouns of the known-correct rewards to take from the Glyph of Bonding
+  # fountain. The quest presents an ornate/valuable item alongside a humble one,
+  # and the paladin must "choose wisely" by taking the humble reward.
+  #
+  # Nouns are gathered from player-reported quest logs. For example, GitHub
+  # issue #7461 reported a plain lead "cup" as correct over "The Helm of
+  # Awakening". Add new confirmed-correct nouns here as they are reported.
+  #
+  # @see #choose_fountain_item
+  # @see https://github.com/elanthia-online/dr-scripts/issues/7461
+  BONDING_FOUNTAIN_ITEMS = %w[cup].freeze
+
   def initialize
     unless DRStats.paladin?
       DRC.message '***MUST BE A PALADIN***'
@@ -118,11 +138,32 @@ class PaladinQuests
       exit
     end
 
-    DRC.message '***YOU ARE TAKING CHARGE AGAIN!. You need to look at each item in the fountain and choose wisely between them.' \
-         ' Clue: Paladin defend those that are unable to defend themselves***'
-    waitfor('chosen wisely')
-    DRC.message '***PLEASE SUBMIT AN ISSUE ON GITHUB WITH YOUR FOUNTAIN ITEMS***'
-    DRC.message '***CONGRATS YOU NOW KNOW THE GLYPH OF BONDING***'
+    if choose_fountain_item
+      DRC.message '***CONGRATS YOU NOW KNOW THE GLYPH OF BONDING***'
+    else
+      DRC.message '***COULD NOT AUTO-SELECT A KNOWN REWARD. YOU ARE TAKING CHARGE AGAIN!. You need to look at each item in the' \
+           ' fountain and choose wisely between them. Clue: Paladin defend those that are unable to defend themselves***'
+      waitfor(CHOSE_WISELY)
+      DRC.message '***PLEASE SUBMIT AN ISSUE ON GITHUB WITH YOUR FOUNTAIN ITEMS SO THEY CAN BE ADDED TO THE AUTO-SELECT LIST***'
+      DRC.message '***CONGRATS YOU NOW KNOW THE GLYPH OF BONDING***'
+    end
+  end
+
+  # Attempts to take a known-correct reward from the Glyph of Bonding fountain.
+  #
+  # Each noun in {BONDING_FOUNTAIN_ITEMS} is offered to the game in turn; the
+  # first one present is taken, completing the quest. Nouns that are absent from
+  # this particular fountain fail harmlessly and are skipped, letting the caller
+  # fall back to a manual selection when none of the known items are found.
+  #
+  # @return [Boolean] true once the paladin has "chosen wisely"; false when none
+  #   of the known items were present.
+  # @see BONDING_FOUNTAIN_ITEMS
+  def choose_fountain_item
+    BONDING_FOUNTAIN_ITEMS.any? do |item|
+      result = DRC.bput("get #{item}", CHOSE_WISELY, 'What were you referring', 'I could not find')
+      result&.include?(CHOSE_WISELY)
+    end
   end
 
   def light
