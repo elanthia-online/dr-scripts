@@ -11,8 +11,6 @@
 # @see PaladinQuests#choose_fountain_item
 # @see https://github.com/elanthia-online/dr-scripts/issues/7461
 
-require 'ostruct'
-
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 include Harness
 
