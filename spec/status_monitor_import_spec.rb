@@ -494,3 +494,47 @@ RSpec.describe 'StatusMonitorImport.find_log_files' do
     expect($echo_messages.any? { |m| m.include?('No log directories found') }).to be true
   end
 end
+
+# ---------------------------------------------------------------------------
+# pending_files -- limit applies to not-yet-imported files
+# ---------------------------------------------------------------------------
+RSpec.describe 'StatusMonitorImport.pending_files' do
+  let(:tmpdir) { Dir.mktmpdir('status-monitor-pending') }
+  let(:db) { StatusMonitorImport.open_database('pending') }
+  let(:files) { (1..5).map { |i| "file#{i}.log" } }
+
+  before do
+    @orig_dir = Dir.pwd
+    Dir.chdir(tmpdir)
+  end
+
+  after do
+    db.close
+    Dir.chdir(@orig_dir)
+    FileUtils.rm_rf(tmpdir)
+  end
+
+  it 'excludes already-imported files' do
+    StatusMonitorImport.record_import(db, 'file1.log', 10)
+    StatusMonitorImport.record_import(db, 'file2.log', 10)
+    expect(StatusMonitorImport.pending_files(db, files)).to eq(%w[file3.log file4.log file5.log])
+  end
+
+  it 'applies the limit to not-yet-imported files, not the raw list' do
+    # Regression: slicing before filtering meant a resumed --limit run could
+    # select only already-imported files and make zero progress.
+    StatusMonitorImport.record_import(db, 'file1.log', 10)
+    StatusMonitorImport.record_import(db, 'file2.log', 10)
+    result = StatusMonitorImport.pending_files(db, files, limit: 2)
+    expect(result).to eq(%w[file3.log file4.log])
+  end
+
+  it 'returns all pending files when no limit is given' do
+    expect(StatusMonitorImport.pending_files(db, files)).to eq(files)
+  end
+
+  it 'returns [] when everything is already imported' do
+    files.each { |f| StatusMonitorImport.record_import(db, f, 1) }
+    expect(StatusMonitorImport.pending_files(db, files, limit: 3)).to eq([])
+  end
+end

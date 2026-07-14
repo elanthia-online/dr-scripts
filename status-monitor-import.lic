@@ -192,10 +192,26 @@ module StatusMonitorImport
     files.sort
   end
 
+  # Selects the files still needing import, honoring an optional limit.
+  #
+  # The limit caps the number of NOT-yet-imported files. Applying it here,
+  # after filtering out already-imported files, means a resumed run with a
+  # limit keeps making forward progress instead of re-slicing (and then
+  # skipping) files that were already imported on a previous run.
+  #
+  # @param db [SQLite3::Database] database connection
+  # @param files [Array<String>] all candidate file paths
+  # @param limit [Integer, nil] max not-yet-imported files to return
+  # @return [Array<String>] files to import this run
+  def self.pending_files(db, files, limit: nil)
+    pending = files.reject { |file| already_imported?(db, file) }
+    limit ? pending.first(limit.to_i) : pending
+  end
+
   # Main entry point for the import process.
   #
   # @param character_name [String] character to import for
-  # @param limit [Integer, nil] max files to process
+  # @param limit [Integer, nil] max not-yet-imported files to process
   # @param reset [Boolean] if true, re-process all files
   # @return [void]
   def self.run(character_name, limit: nil, reset: false)
@@ -213,25 +229,25 @@ module StatusMonitorImport
       return
     end
 
-    files = files.first(limit.to_i) if limit
+    pending = pending_files(db, files, limit: limit)
+    already_done = files.size - files.reject { |file| already_imported?(db, file) }.size
 
-    total_files = files.size
+    if pending.empty?
+      echo "Found #{files.size} log files for #{character_name}; all already imported. Nothing to do."
+      return
+    end
+
+    total_files = pending.size
     total_lines = 0
-    skipped = 0
     processed = 0
     errors = 0
     start_time = Time.now
 
     count_before = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
 
-    echo "Found #{total_files} log files for #{character_name}."
+    echo "Found #{files.size} log files for #{character_name}; #{already_done} already imported, #{total_files} to process."
 
-    files.each_with_index do |file, _idx|
-      if already_imported?(db, file)
-        skipped += 1
-        next
-      end
-
+    pending.each do |file|
       begin
         lines = import_file(db, file)
         record_import(db, file, lines)
@@ -246,8 +262,8 @@ module StatusMonitorImport
       if (processed % 50).zero?
         elapsed = Time.now - start_time
         rate = processed / elapsed
-        remaining = ((total_files - skipped - processed) / rate).round
-        echo "Progress: #{processed}/#{total_files - skipped} files, #{total_lines} lines scanned, ~#{remaining}s remaining"
+        remaining = ((total_files - processed) / rate).round
+        echo "Progress: #{processed}/#{total_files} files, #{total_lines} lines scanned, ~#{remaining}s remaining"
       end
     end
 
@@ -255,7 +271,7 @@ module StatusMonitorImport
     elapsed = (Time.now - start_time).round(1)
 
     echo "Import complete in #{elapsed}s."
-    echo "  Files: #{processed} processed, #{skipped} skipped (already imported), #{errors} errors"
+    echo "  Files: #{processed} processed, #{already_done} skipped (already imported), #{errors} errors"
     echo "  Lines scanned: #{total_lines}"
     echo "  New unique entries: #{count_after - count_before}"
     echo "  Total corpus size: #{count_after}"
