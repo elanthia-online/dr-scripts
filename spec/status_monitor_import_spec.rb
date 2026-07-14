@@ -450,3 +450,47 @@ RSpec.describe 'StatusMonitorImport database operations' do
     end
   end
 end
+
+# ---------------------------------------------------------------------------
+# find_log_files -- multi-instance log directory discovery
+# ---------------------------------------------------------------------------
+RSpec.describe 'StatusMonitorImport.find_log_files' do
+  def make_log(dir_name, file_name)
+    dir = File.join(LICH_DIR, 'logs', dir_name)
+    FileUtils.mkdir_p(dir)
+    File.write(File.join(dir, file_name), "some line\n")
+    dir
+  end
+
+  it 'discovers logs across all game instances, not just DR-' do
+    dirs = %w[DR-Zzchar DRT-Zzchar DRX-Zzchar GSIV-Zzchar].map { |name| make_log(name, 'a.log') }
+    expect(StatusMonitorImport.find_log_files('Zzchar').size).to eq(4)
+  ensure
+    dirs&.each { |dir| FileUtils.rm_rf(dir) }
+  end
+
+  it 'includes both .log and .log.gz files' do
+    dir = make_log('DR-Zzchar', 'a.log')
+    File.write(File.join(dir, 'b.log.gz'), "some line\n")
+    files = StatusMonitorImport.find_log_files('Zzchar')
+    expect(files.map { |f| File.basename(f) }).to contain_exactly('a.log', 'b.log.gz')
+  ensure
+    FileUtils.rm_rf(dir)
+  end
+
+  it 'does not match a different character whose name is a superstring' do
+    exact = make_log('DR-Zz', 'exact.log')
+    other = make_log('DR-Zzextra', 'other.log')
+    files = StatusMonitorImport.find_log_files('Zz')
+    expect(files.map { |f| File.basename(f) }).to eq(['exact.log'])
+  ensure
+    FileUtils.rm_rf(exact)
+    FileUtils.rm_rf(other)
+  end
+
+  it 'returns [] and reports when no directories match' do
+    $echo_messages.clear
+    expect(StatusMonitorImport.find_log_files('NoSuchChar')).to eq([])
+    expect($echo_messages.any? { |m| m.include?('No log directories found') }).to be true
+  end
+end

@@ -167,19 +167,28 @@ module StatusMonitorImport
     lines.size
   end
 
-  # Discovers all log files for a character.
+  # Discovers all log files for a character across every game instance.
+  #
+  # Lich names per-character log directories "<GAMECODE>-<Character>", e.g.
+  # DR-Mahtra (prime), DRT-Mahtra (test), DRX-Mahtra (platinum), GSIV-Mahtra.
+  # The live seen-messages database is scoped by character only (not by
+  # instance), so the corpus already mixes instances; import all of them by
+  # globbing every "*-<Character>" directory rather than hardcoding "DR-".
   #
   # @param character_name [String] character name
   # @return [Array<String>] sorted list of log file paths
   def self.find_log_files(character_name)
-    log_dir = File.join(LICH_DIR, 'logs', "DR-#{character_name}")
-    unless File.directory?(log_dir)
-      echo "Log directory not found: #{log_dir}"
+    logs_root = File.join(LICH_DIR, 'logs')
+    char_dirs = Dir.glob(File.join(logs_root, "*-#{character_name}")).select { |path| File.directory?(path) }
+
+    if char_dirs.empty?
+      echo "No log directories found for #{character_name} under #{logs_root} (looked for *-#{character_name})."
       return []
     end
 
-    files = Dir.glob(File.join(log_dir, '**', '*.log')) +
-            Dir.glob(File.join(log_dir, '**', '*.log.gz'))
+    files = char_dirs.flat_map do |dir|
+      Dir.glob(File.join(dir, '**', '*.log')) + Dir.glob(File.join(dir, '**', '*.log.gz'))
+    end
     files.sort
   end
 
