@@ -3,6 +3,12 @@
 =end
 
 class ShopRestock
+  # Maximum recipe volume that fits within a single steel ingot.
+  # A `makesteel 21 h refine` ingot holds 168 volume, which is also the
+  # largest ingot makesteel can produce (its count arg is capped at 21).
+  # Override per-character with a `max_steel_ingot_volume` YAML setting.
+  MAX_STEEL_INGOT_VOLUME = 168
+
   def initialize
     @settings = get_settings
 
@@ -62,21 +68,75 @@ class ShopRestock
   def restock_steel(missing_items)
     return if missing_items.empty?
 
-    volume = ((total_volume_of(missing_items) * 1.25) / 10.0).ceil
+    max_volume = (@settings.max_steel_ingot_volume || MAX_STEEL_INGOT_VOLUME).to_i
+
+    batches = batch_by_ingot_volume(missing_items, max_volume)
+    return if batches.empty?
+
+    respond "Steel items split into #{batches.length} ingot batch(es)." if batches.length > 1
+
+    batches.each_with_index do |batch, index|
+      respond "-- Steel batch #{index + 1} of #{batches.length} (#{total_volume_of(batch)} volume) --" if batches.length > 1
+      forge_steel_batch(batch)
+    end
+
+    DRC.wait_for_script_to_complete('workorders', %w[blacksmithing repair])
+  end
+
+  # Forge a single batch of steel items from one freshly-made ingot,
+  # then dispose of whatever ingot metal is left over.
+  def forge_steel_batch(batch)
+    volume = ((total_volume_of(batch) * 1.25) / 10.0).ceil
     return if volume.zero?
 
     DRC.wait_for_script_to_complete('makesteel', [volume, 'refine'])
 
-    missing_items.each do |item|
+    batch.each do |item|
       DRC.wait_for_script_to_complete('smith', ['steel', item['recipe'], 'stamp', 'temper'])
       go_to_shop
       sell(item)
     end
 
-    DRC.wait_for_script_to_complete('workorders', %w[blacksmithing repair])
+    dispose_leftover_ingot
+  end
+
+  # Retrieve and trash any leftover steel ingot before starting the next batch,
+  # so ingots from separate batches don't accumulate in the crafting container.
+  def dispose_leftover_ingot
     DRCT.walk_to(get_data('crafting')[:blacksmithing][@town]['trash-room'])
     DRCC.get_crafting_item('steel ingot', @bag, @belt, @belt)
     DRCI.dispose_trash('steel ingot', @worn_trashcan, @worn_trashcan_verb)
+  end
+
+  # Greedily pack the missing items into batches so that no batch's total
+  # recipe volume exceeds a single steel ingot's capacity (max_volume).
+  # Items whose own volume exceeds one ingot cannot be forged from a single
+  # ingot and are skipped with a warning.
+  def batch_by_ingot_volume(items, max_volume)
+    batches = []
+    current = []
+    current_volume = 0
+
+    items.each do |item|
+      item_volume = volume_of(item)
+
+      if item_volume > max_volume
+        respond "*** Skipping #{item['full_name']}: needs #{item_volume} volume, exceeds single steel ingot capacity of #{max_volume}. ***"
+        next
+      end
+
+      if current_volume + item_volume > max_volume
+        batches << current unless current.empty?
+        current = []
+        current_volume = 0
+      end
+
+      current << item
+      current_volume += item_volume
+    end
+
+    batches << current unless current.empty?
+    batches
   end
 
   def restock_burlap(missing_items)
@@ -255,11 +315,14 @@ class ShopRestock
     DRCC.stow_crafting_item('stamp', @bag, @belt)
   end
 
+  def volume_of(item)
+    DRCC.recipe_lookup(@recipes.select { |recipe| recipe['noun'] == item['noun'] }, item['recipe'])['volume']
+  end
+
   def total_volume_of(items)
     return 0 if items.empty?
 
-    items.map { |item| DRCC.recipe_lookup(@recipes.select { |recipe| recipe['noun'] == item['noun'] }, item['recipe'])['volume'] }
-         .inject(&:+)
+    items.map { |item| volume_of(item) }.inject(&:+)
   end
 end
 
