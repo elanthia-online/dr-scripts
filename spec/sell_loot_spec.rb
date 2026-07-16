@@ -860,6 +860,19 @@ RSpec.describe SellLoot do
       SellLoot.new
     end
 
+    it 'restocks spare gem pouches even when there is no loot to sell' do
+      # Regression: pouch restocking used to live inside the has_loot_to_sell?
+      # branch, so a run with nothing to sell silently let the spare pouches run
+      # dry. Restocking must be checked on its own, independent of selling.
+      $test_settings = make_settings(spare_gem_pouch_container: 'sack')
+      $test_data.town = { 'Crossing' => make_hometown }
+      $test_data.items = items_data
+      allow(DRC).to receive(:get_town_name).and_return('Crossing')
+      allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
+      expect_any_instance_of(SellLoot).to receive(:check_spare_pouch).with('sack', 'soft')
+      SellLoot.new
+    end
+
     it 'still exchanges and deposits excess coins even when there is no loot to sell' do
       # Regression: the old preflight bailed the whole run on no loot, stranding
       # coins already on hand instead of banking them.

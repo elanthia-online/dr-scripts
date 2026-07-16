@@ -66,7 +66,6 @@ class SellLoot
     # -- e.g. no bundle -- could take the whole run down with it.)
     if has_loot_to_sell?
       sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
-      check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective) if @settings.spare_gem_pouch_container
 
       if @settings.sell_loot_metals_and_stones
         if @settings.sell_loot_metals_and_stones_container.is_a?(String)
@@ -90,6 +89,15 @@ class SellLoot
     else
       DRC.message("No loot to sell")
     end
+
+    # Restock spare gem pouches independently of whether there was loot to sell.
+    # Each thing sell-loot does has to be checked on its own -- pouch restocking
+    # must not be gated behind having gems/metals/etc. to sell, or the pouches
+    # silently run dry on any run that happens to have nothing to sell.
+    # check_spare_pouch short-circuits (no travel) when already at target and
+    # walks itself to the gem shop when it does need to restock, so calling it
+    # unconditionally here is safe.
+    check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective) if @settings.spare_gem_pouch_container
 
     # Handle banking
     return if skip_bank && !@bankbot_enabled
