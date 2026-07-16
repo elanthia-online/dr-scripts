@@ -4,8 +4,19 @@
 
 class ShopRestock
   # Maximum recipe volume that fits within a single steel ingot.
-  # A `makesteel 21 h refine` ingot holds 168 volume, which is also the
-  # largest ingot makesteel can produce (its count arg is capped at 21).
+  #
+  # makesteel produces a raw ingot of (count x 10) volume: `makesteel 1 h` -> 10,
+  # `makesteel 21 h` -> 210. 210 is the game's hard cap on ingot volume, so the
+  # largest raw ingot makesteel can make is 210 (count 21).
+  #
+  # restock_steel always refines the ingot, which raises quality but reduces
+  # volume. With the steel-refining tech a 210 ingot yields 168; without that
+  # tech it yields only 105. This cap assumes the tech (168), and the count
+  # formula in forge_steel_batch bakes in the same assumption -- its x1.25
+  # factor is 210/168, the reciprocal of the refine loss. A character without
+  # the tech should set max_steel_ingot_volume: 105 (and would need the factor
+  # raised to 2.0, since 210/105 = 2.0).
+  #
   # Override per-character with a `max_steel_ingot_volume` YAML setting.
   MAX_STEEL_INGOT_VOLUME = 168
 
