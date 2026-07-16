@@ -96,8 +96,13 @@ class SellLoot
     # silently run dry on any run that happens to have nothing to sell.
     # check_spare_pouch short-circuits (no travel) when already at target and
     # walks itself to the gem shop when it does need to restock, so calling it
-    # unconditionally here is safe.
-    check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective) if @settings.spare_gem_pouch_container
+    # unconditionally here is safe. Require gem_pouch_adjective too: unlike the
+    # sell_loot_pouch path, validate_settings does not guarantee it is set when
+    # only spare_gem_pouch_container is configured, and a nil adjective would ask
+    # the clerk for " pouch" and count " gem pouch" -- malformed game commands.
+    if @settings.spare_gem_pouch_container && @settings.gem_pouch_adjective
+      check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective)
+    end
 
     # Handle banking
     return if skip_bank && !@bankbot_enabled

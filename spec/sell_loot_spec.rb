@@ -873,6 +873,19 @@ RSpec.describe SellLoot do
       SellLoot.new
     end
 
+    it 'does not restock when a spare container is set but the gem pouch adjective is unset' do
+      # validate_settings only guarantees gem_pouch_adjective when sell_loot_pouch
+      # is on; a nil adjective would ask the clerk for " pouch" and count
+      # " gem pouch" -- malformed commands -- so restocking must be skipped.
+      $test_settings = make_settings(spare_gem_pouch_container: 'sack', gem_pouch_adjective: nil)
+      $test_data.town = { 'Crossing' => make_hometown }
+      $test_data.items = items_data
+      allow(DRC).to receive(:get_town_name).and_return('Crossing')
+      allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
+      expect_any_instance_of(SellLoot).not_to receive(:check_spare_pouch)
+      SellLoot.new
+    end
+
     it 'still exchanges and deposits excess coins even when there is no loot to sell' do
       # Regression: the old preflight bailed the whole run on no loot, stranding
       # coins already on hand instead of banking them.
