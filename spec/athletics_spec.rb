@@ -2,30 +2,7 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 module DRC
   class << self
@@ -40,16 +17,6 @@ module DRCT
     def walk_to(_room_id); end
   end
 end unless defined?(DRCT)
-
-Harness::DRSkill.define_singleton_method(:_xp_store) { @_xp_store ||= {} }
-Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[skillname] = val }
-Harness::DRSkill.define_singleton_method(:_reset_xp) { @_xp_store = {} }
-Harness::DRSkill.define_singleton_method(:getxp) { |skillname| _xp_store[skillname] || 0 }
-
-Harness::DRSkill.define_singleton_method(:_modrank_store) { @_modrank_store ||= {} }
-Harness::DRSkill.define_singleton_method(:_set_modrank) { |skillname, val| _modrank_store[skillname] = val }
-Harness::DRSkill.define_singleton_method(:_reset_modrank) { @_modrank_store = {} }
-Harness::DRSkill.define_singleton_method(:getmodrank) { |skillname| _modrank_store[skillname] || 0 }
 
 load_lic_class('athletics.lic', 'Athletics')
 

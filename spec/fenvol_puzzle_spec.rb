@@ -2,8 +2,7 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
+require_relative 'spec_helper'
 
 def stub_flags_class
   stub_const('Flags', Class.new do
@@ -42,28 +41,6 @@ def stub_flags_class
   end)
 end
 
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
 module DRC
   def self.right_hand
     $right_hand
@@ -79,14 +56,6 @@ module DRC
 
   def self.get_noun(long_name)
     long_name.to_s.strip.scan(/[a-z\-']+$/i).first
-  end
-end
-
-module GameObj
-  @right_hand = nil
-
-  class << self
-    attr_accessor :right_hand
   end
 end
 
@@ -116,62 +85,27 @@ module Lich
   end
 end
 
-module XMLData
-  @room_title = 'Test Room'
-
-  class << self
-    attr_accessor :room_title
-  end
-end
-
-def fput(*_args); end
-
-def echo(*_args); end
-
-def _respond(*_args); end
-
-def get
-  ''
-end
-
-def move(*_args); end
-
-def pause(*_args); end
-
-def waitfor(*_args); end
-
-def parse_args(*_args)
-  OpenStruct.new
-end
-
-def get_settings
-  OpenStruct.new
-end
-
-def before_dying(&_block); end
-
 def set_right_hand(name, noun = nil)
   $right_hand = name
   noun ||= name&.to_s&.split&.last
-  GameObj.right_hand = noun ? OpenStruct.new(noun: noun) : nil
+  # fenvol-puzzle.lic reads GameObj.right_hand&.noun and treats a nil hand as
+  # empty, so stub it directly rather than routing through the harness wrapper
+  # (which reports an empty hand as an 'Empty' OpenStruct, never nil).
+  allow(GameObj).to receive(:right_hand).and_return(noun ? OpenStruct.new(noun: noun) : nil)
 end
 
 load_lic_class('fenvol-puzzle.lic', 'FenvolPuzzle')
-
-RSpec.configure do |config|
-  config.before do
-    reset_data
-    $right_hand = nil
-    $left_hand = nil
-    GameObj.right_hand = nil
-    XMLData.room_title = 'Test Room'
-  end
-end
 
 RSpec.describe FenvolPuzzle do
   let(:instance) { FenvolPuzzle.allocate }
 
   before do
+    # World state this spec assumes (reset_data runs first, via spec_helper).
+    $right_hand = nil
+    $left_hand = nil
+    allow(GameObj).to receive(:right_hand).and_return(nil)
+    XMLData.room_title = 'Test Room'
+
     instance.instance_variable_set(:@repeat_mode, nil)
     instance.instance_variable_set(:@repeat_count, nil)
     instance.instance_variable_set(:@containers, [])
@@ -366,14 +300,17 @@ RSpec.describe FenvolPuzzle do
     end
 
     it 'normalizes curly quotes and apostrophes to spaces' do
-      result = instance.send(:normalize_text, "author’s tome")
-      expect(result).not_to include("’")
+      # Build the non-ASCII input at runtime so the source stays ASCII-only.
+      curly_apostrophe = 0x2019.chr(Encoding::UTF_8)
+      result = instance.send(:normalize_text, "author#{curly_apostrophe}s tome")
+      expect(result).not_to include(curly_apostrophe)
       expect(result).to eq('author s tome')
     end
 
     it 'normalizes em dashes to spaces' do
-      result = instance.send(:normalize_text, "fire—water")
-      expect(result).not_to include("—")
+      em_dash = 0x2014.chr(Encoding::UTF_8)
+      result = instance.send(:normalize_text, "fire#{em_dash}water")
+      expect(result).not_to include(em_dash)
     end
   end
 
@@ -1678,7 +1615,7 @@ RSpec.describe FenvolPuzzle do
 
       it 'falls back to split.last when GameObj.right_hand is nil' do
         $right_hand = 'ornate silver ring'
-        GameObj.right_hand = nil
+        allow(GameObj).to receive(:right_hand).and_return(nil)
         instance.instance_variable_set(:@containers, ['backpack'])
         expect(DRCI).to receive(:put_away_item?).with('ring', ['backpack']).and_return(true)
         instance.send(:stow_reward)
@@ -1800,7 +1737,7 @@ RSpec.describe FenvolPuzzle do
         obj = double('item', to_s: 'fancy dress', empty?: false)
         allow(obj).to receive(:downcase).and_return('fancy dress')
         $right_hand = obj
-        GameObj.right_hand = OpenStruct.new(noun: 'dress')
+        allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(noun: 'dress'))
         instance.instance_variable_set(:@discard_list, ['dress'])
         allow(instance).to receive(:echo)
         expect(DRCI).to receive(:put_away_item_unsafe?).with('my dress', 'bucket').and_return(true)

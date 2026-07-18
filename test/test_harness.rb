@@ -22,6 +22,14 @@ module Harness
     def self.active_spells
       @@_data_store['active_spells'] || {}
     end
+
+    def self._set_known_spells(val)
+      @@_data_store['known_spells'] = val
+    end
+
+    def self.known_spells
+      @@_data_store['known_spells'] || {}
+    end
   end
 
   class DRStats
@@ -275,9 +283,13 @@ module Harness
 
   class DRSkill
     @@_data_store = {}
+    @@_xp_store = {}
+    @@_modrank_store = {}
 
     def self._reset
       @@_data_store = {}
+      @@_xp_store = {}
+      @@_modrank_store = {}
     end
 
     def self._set_rank(skillname, val)
@@ -286,6 +298,30 @@ module Harness
 
     def self.getrank(skillname)
       @@_data_store[skillname] || 100
+    end
+
+    def self._set_xp(skillname, val)
+      @@_xp_store[skillname] = val
+    end
+
+    def self._reset_xp
+      @@_xp_store = {}
+    end
+
+    def self.getxp(skillname)
+      @@_xp_store[skillname] || 0
+    end
+
+    def self._set_modrank(skillname, val)
+      @@_modrank_store[skillname] = val
+    end
+
+    def self._reset_modrank
+      @@_modrank_store = {}
+    end
+
+    def self.getmodrank(skillname)
+      @@_modrank_store[skillname] || 0
     end
   end
 
@@ -450,6 +486,14 @@ module Harness
       $running_scripts.include?(script_name)
     end
 
+    def self.current
+      OpenStruct.new(name: 'test-script')
+    end
+
+    def self.exists?(_name)
+      false
+    end
+
     def self.at_exit(&_block); end
   end
 
@@ -524,12 +568,19 @@ module Harness
   end
 
   class EquipmentManager
+    def empty_hands; end
+
+    def remove_gear_by; end
+
+    def wear_items(_items); end
+
+    def wear_equipment_set?(_set_name); end
   end
 
   class Room
     def self.current
       Map.new(
-        :id => 1,
+        :id    => 1,
         :wayto => {
           2 => nil
         }
@@ -567,8 +618,18 @@ module Harness
   end
 
   class XMLData
+    @@_room_title = nil
+
+    def self._reset
+      @@_room_title = nil
+    end
+
     def self.room_title
-      'Middle of Nowhere'
+      @@_room_title || 'Middle of Nowhere'
+    end
+
+    def self.room_title=(val)
+      @@_room_title = val
     end
   end
 
@@ -598,7 +659,7 @@ module Harness
     # See test_bput as an example.
   end
 
-  def parse_args(data, flex_args = false)
+  def parse_args(_data, _flex_args = false)
     args = OpenStruct.new($parsed_args.dup || {})
     args.flex = 'test'
     args
@@ -637,6 +698,17 @@ module Harness
     $displayed_messages = []
     $running_scripts = []
 
+    # Captures for the Lich script seams (respond/start_script/stop_script).
+    $respond_messages = []
+    $started_scripts = []
+    $stopped_scripts = []
+
+    # Overridable character/state flags (default to a safe, inert value).
+    $sitting = false
+    $stunned = false
+    $bleeding = false
+    $charname = nil
+
     # Uses a queue for thread safety.
     # See assert_sends_messages method for usage.
     $sent_messages = Queue.new
@@ -658,6 +730,7 @@ module Harness
     DRSkill._reset
     DRRoom._reset
     Map._reset
+    XMLData._reset
   end
 
   def echo(message)
@@ -724,6 +797,43 @@ module Harness
 
   def sent_messages
     $sent_messages
+  end
+
+  # Raw Lich respond. Captured so specs can assert on script output.
+  def _respond(message = '')
+    $respond_messages << message
+  end
+
+  # Script lifecycle helpers. start_script/stop_script capture their calls so
+  # specs can assert which scripts were launched or killed; move/waitfor are
+  # inert seams that scripts call during navigation.
+  def start_script(name, *args)
+    $started_scripts << [name, *args]
+  end
+
+  def stop_script(name)
+    $stopped_scripts << name
+  end
+
+  def move(*_args); end
+
+  def waitfor(*_args); end
+
+  # Character/state seams with test-overridable globals.
+  def checkname
+    $charname || 'Testchar'
+  end
+
+  def sitting?
+    $sitting || false
+  end
+
+  def stunned?
+    $stunned || false
+  end
+
+  def bleeding?
+    $bleeding || false
   end
 
   def health=(health)
@@ -798,10 +908,6 @@ module Harness
 
   def send_slackbot_message(message); end
 
-  def get
-    get?
-  end
-
   def clear; end
 
   def get_character_setting
@@ -841,7 +947,7 @@ module Harness
   end
 
   # Copied from lich.rbw
-  def force_start_script(script_name, cli_vars=[], flags={})
+  def force_start_script(script_name, cli_vars = [], flags = {})
   end
 
   def assert_sends_messages(expected_messages)
@@ -871,7 +977,7 @@ module Harness
   end
 
   def assert_displayed_messages_include_any(phrases)
-    proc do |error|
+    proc do |_error|
       result = $displayed_messages.any? do |message|
         phrases.any? do |phrase|
           message.include?(phrase)
@@ -887,5 +993,4 @@ module Harness
       assert(error.message.include?(error_message))
     end
   end
-
 end

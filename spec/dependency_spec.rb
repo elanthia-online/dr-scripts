@@ -27,30 +27,7 @@ module Lich
   end
 end
 
-$respond_messages = []
-def _respond(msg)
-  $respond_messages << msg
-end
-
-module Script
-  def self.current
-    OpenStruct.new(name: 'test-script')
-  end
-
-  def self.exists?(_name)
-    false
-  end
-end
-
 $clean_lich_char = ';'
-
-def checkname
-  'Testchar'
-end
-
-def echo(_msg)
-  # no-op in tests
-end
 
 # --- Extract methods from dependency.lic ---
 dep_path = File.join(File.dirname(__FILE__), '..', 'dependency.lic')

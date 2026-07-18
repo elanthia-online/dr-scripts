@@ -13,43 +13,7 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
-# -- Module/method stubs --
-# T2's cleanup path calls Script.running? and the top-level stop_script.
-# Both default to safe values; individual tests override via allow().
-
-module Script
-  # Default to "running" so #stop_launched_scripts attempts a kill unless a
-  # test says otherwise. This makes the "spares"/"stops" assertions meaningful.
-  def self.running?(*_args) = true
-end
-
-# Top-level Lich global. Defined so it can be stubbed on a specific instance.
-def stop_script(*_args) = nil
+require_relative 'spec_helper'
 
 load_lic_class('t2.lic', 'T2')
 
@@ -126,6 +90,10 @@ end
 # T2#stop_launched_scripts -- the shutdown cleanup behavior
 # ===================================================================
 RSpec.describe 'T2#stop_launched_scripts' do
+  # Treat every launched script as running so stop_launched_scripts attempts a
+  # kill unless the spare logic opts out.
+  before(:each) { allow(Script).to receive(:running?).and_return(true) }
+
   # Wire a fresh instance whose stop_script calls are recorded.
   def build_and_watch(no_kill: nil, launched: [])
     t2 = build_t2(no_kill: no_kill, launched: launched)

@@ -11,36 +11,7 @@
 # @see PaladinQuests#choose_fountain_item
 # @see https://github.com/elanthia-online/dr-scripts/issues/7461
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Loads a class definition out of a .lic file without executing the top-level
-# code (e.g. `PaladinQuests.new`) that would otherwise drive the live quest.
-#
-# @param filename [String] the .lic file relative to the repo root
-# @param class_name [String] the class to extract and eval
-# @return [void]
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 module DRC
   class << self

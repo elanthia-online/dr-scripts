@@ -1,5 +1,7 @@
 require_relative 'spec_helper'
 
+load_lic_class('sigilharvest.lic', 'SigilHarvest')
+
 # SigilHarvest's initialize method interacts heavily with the game environment
 # (DRC.bput, get_settings, parse_args, etc.), so we cannot call .new directly.
 # Instead, we allocate a bare instance and inject the minimum instance variables

@@ -1,32 +1,7 @@
 require 'ostruct'
 require 'time'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction.
 # These must be defined before loading the Sew class so that
@@ -85,12 +60,6 @@ module DRCA
   def self.crafting_magic_routine(*_args); end
 end
 
-module DRSkill
-  def self.getrank(*_args)
-    0
-  end
-end
-
 module Lich
   module Messaging
     def self.msg(*_args); end
@@ -105,12 +74,6 @@ end
 
 # Load Sew class definition (without executing top-level code)
 load_lic_class('sew.lic', 'Sew')
-
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data
-  end
-end
 
 RSpec.describe Sew do
   # Allocate a bare instance without calling initialize, then inject
@@ -128,6 +91,9 @@ RSpec.describe Sew do
     sew.instance_variable_set(:@worn_trashcan_verb, nil)
     sew.instance_variable_set(:@settings, OpenStruct.new(crafting_training_spells: []))
     sew.instance_variable_set(:@info, { 'tool-room' => 1, 'stock-room' => 2 })
+
+    # Default skill rank of 0 (individual examples override via .with(...)).
+    allow(DRSkill).to receive(:getrank).and_return(0)
 
     # Prevent actual exit and stub helper methods
     allow(sew).to receive(:exit)
@@ -429,7 +395,7 @@ RSpec.describe Sew do
       $left_hand = nil
       allow(DRCC).to receive(:stow_crafting_item)
       allow(DRCC).to receive(:logbook_item)
-      expect(Lich::Messaging).to receive(:msg).with('plain', 'Sew script finished (rucksack, finish: log).')
+      expect(Lich::Messaging).to receive(:msg).with('plain', a_string_matching(/\Asew: Completed .*rucksack.* finish: log\z/))
 
       sew.send(:finish)
     end
@@ -1625,7 +1591,7 @@ RSpec.describe Sew do
     it '#finish always prints a finish message' do
       allow(DRCC).to receive(:stow_crafting_item)
       allow(DRCC).to receive(:logbook_item)
-      expect(Lich::Messaging).to receive(:msg).with('plain', 'Sew script finished (rucksack, finish: log).')
+      expect(Lich::Messaging).to receive(:msg).with('plain', a_string_matching(/\Asew: Completed .*rucksack.* finish: log\z/))
 
       sew.send(:finish)
     end
@@ -1682,7 +1648,7 @@ RSpec.describe Sew do
       $left_hand = nil
       allow(DRCC).to receive(:logbook_item)
 
-      expect(Lich::Messaging).to receive(:msg).with('plain', 'Sew script finished (rucksack, finish: log).')
+      expect(Lich::Messaging).to receive(:msg).with('plain', a_string_matching(/\Asew: Completed .*rucksack.* finish: log\z/))
 
       sew.send(:finish)
     end

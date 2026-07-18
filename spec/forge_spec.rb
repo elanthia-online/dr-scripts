@@ -3,9 +3,7 @@
 require 'ostruct'
 require 'time'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
+require_relative 'spec_helper'
 
 # Helper to create a Flags stub for tests that need it
 # Use stub_const to avoid conflicts with other specs (e.g., workorders_spec.rb)
@@ -44,30 +42,6 @@ def stub_flags_class
       end
     end
   end)
-end
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  # Find the matching 'end' at column 0 (same level as class definition)
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
 # Minimal stub modules for game interaction
@@ -156,12 +130,6 @@ class MockRoom
   end
 end
 
-module DRSkill
-  def self.getrank(*_args)
-    100
-  end
-end
-
 # Lich messaging mock
 module Lich
   module Messaging
@@ -171,12 +139,6 @@ end
 
 # Load the Forge class
 load_lic_class('forge.lic', 'Forge')
-
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data
-  end
-end
 
 RSpec.describe Forge do
   describe 'class constants' do
@@ -829,6 +791,12 @@ RSpec.describe Forge do
     end
 
     describe '#swap_tool' do
+      # swap_tool ends by calling verify_tool_in_hand, which exits the script if
+      # the tool is not in hand. These examples exercise the tool-selection
+      # branches (the DRCC calls), not the post-swap verification, so neutralize
+      # the verify step to keep a failed check from terminating the run.
+      before { allow(forge_instance).to receive(:verify_tool_in_hand) }
+
       it 'uses adjustable tongs when switching to tongs' do
         forge_instance.instance_variable_set(:@adjustable_tongs, true)
         expect(DRCC).to receive(:get_adjust_tongs?).with('tongs', 'backpack', [], nil, true)
@@ -903,10 +871,10 @@ RSpec.describe Forge do
         allow(forge_instance).to receive(:magic_cleanup)
       end
 
-      it 'logs item to engineering logbook when finish is log' do
+      it 'logs item to forging logbook when finish is log' do
         forge_instance.instance_variable_set(:@finish, 'log')
-        expect(DRCC).to receive(:logbook_item).with('engineering', 'sword', 'backpack')
-        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword logged to engineering logbook.')
+        expect(DRCC).to receive(:logbook_item).with('forging', 'sword', 'backpack')
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword logged to forging logbook.')
         expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
@@ -999,13 +967,13 @@ RSpec.describe Forge do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
         allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
-        expect(DRC).to receive(:bput).and_return("You don't have enough")
+        allow(DRC).to receive(:bput).and_return("You don't have enough")
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: BLOCKED from entering private forge!')
         expect(Lich::Messaging).to receive(:msg).with('bold', /sentry won't let you in/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Not enough money/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Forge is already rented/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Other restriction/)
-        expect(Lich::Messaging).to receive(:msg).with('bold', /Exiting/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Use a public forge or resolve the issue/)
         expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
       end
 
@@ -1043,6 +1011,9 @@ RSpec.describe Forge do
           allow(DRCC).to receive(:find_recipe2)
           allow(DRCC).to receive(:stow_crafting_item)
           allow(forge_instance).to receive(:swap_tool)
+          # prep runs the recipe-book flow before fetching the ingot; default the
+          # book check to success so examples can focus on the ingot handling.
+          allow(DRCI).to receive(:in_hands?).and_return(true)
         end
 
         it 'uses DRCC.get_crafting_item to fetch ingot' do

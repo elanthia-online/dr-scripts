@@ -2,32 +2,7 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Define stub modules only if not already defined
 module DRC
@@ -90,28 +65,12 @@ module Lich
       def issue_command(*_args); end
     end
   end
-end unless defined?(Lich::Messaging)
-
-# Define Lich::Util separately in case Lich::Messaging was already defined
-module Lich
-  module Util
-    class << self
-      def issue_command(*_args); end
-    end
-  end
-end unless defined?(Lich::Util)
+end
 
 # Add methods to Harness classes that astrology.lic needs
 Harness::EquipmentManager.class_eval do
   def empty_hands; end
 end
-
-# DRSkill needs getxp for training routines
-# Use singleton methods to avoid class variable issues in Ruby 4.0
-Harness::DRSkill.define_singleton_method(:_xp_store) { @_xp_store ||= {} }
-Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[skillname] = val }
-Harness::DRSkill.define_singleton_method(:_reset_xp) { @_xp_store = {} }
-Harness::DRSkill.define_singleton_method(:getxp) { |skillname| _xp_store[skillname] || 0 }
 
 class Room
   class << self
@@ -134,16 +93,6 @@ class UserVars
     def astral_plane_exp_timer=(_val); end
   end
 end unless defined?(UserVars)
-
-def sitting?
-  false
-end
-
-def stunned?
-  false
-end
-
-def pause(*_args); end
 
 load_lic_class('astrology.lic', 'Astrology')
 

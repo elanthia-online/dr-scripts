@@ -3,33 +3,7 @@
 require 'ostruct'
 require 'time'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  # Find the matching 'end' at column 0 (same level as class definition)
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction
 module DRC
@@ -126,35 +100,6 @@ module DRCM
   def self.ensure_copper_on_hand(*_args); end
 end
 
-module DRSkill
-  def self.getxp(*_args)
-    0
-  end
-end
-
-module DRRoom
-  def self.npcs
-    $room_npcs || []
-  end
-end
-
-class Room
-  def self.current
-    OpenStruct.new(id: $room_id || 1)
-  end
-end
-
-module XMLData
-  def self.room_title
-    $room_title || ''
-  end
-end
-
-module Flags
-  def self.add(*_args); end
-  def self.delete(*_args); end
-end
-
 module Lich
   module Messaging
     def self.msg(*_args); end
@@ -178,22 +123,17 @@ $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth 
 # Load WorkOrders class definition (without executing top-level code)
 load_lic_class('workorders.lic', 'WorkOrders')
 
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data if defined?(reset_data)
-    $right_hand = nil
-    $left_hand = nil
-    $room_npcs = []
-    $room_id = 1
-    $room_title = ''
-  end
-end
-
 RSpec.describe WorkOrders do
   # Allocate a bare instance without calling initialize
   let(:workorders) { described_class.allocate }
 
   before(:each) do
+    # World state this spec assumes (reset_data runs first, via spec_helper).
+    $right_hand = nil
+    $left_hand = nil
+    DRRoom.npcs = []
+    XMLData.room_title = ''
+
     workorders.instance_variable_set(:@settings, OpenStruct.new(
                                                    crafting_container: 'backpack',
                                                    crafting_items_in_container: [],
@@ -343,7 +283,7 @@ RSpec.describe WorkOrders do
     let(:room_list) { [100, 101, 102] }
 
     context 'when NPC is in current room' do
-      before { $room_npcs = ['Jakke'] }
+      before { DRRoom.npcs = ['Jakke'] }
 
       it 'returns true without walking' do
         expect(DRCT).not_to receive(:walk_to)
@@ -367,7 +307,7 @@ RSpec.describe WorkOrders do
     end
 
     context 'when NPC is not in any room' do
-      before { $room_npcs = [] }
+      before { DRRoom.npcs = [] }
 
       it 'walks to all rooms and returns false' do
         expect(DRCT).to receive(:walk_to).exactly(3).times

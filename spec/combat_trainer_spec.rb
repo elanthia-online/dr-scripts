@@ -11,30 +11,7 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # -- Module stubs --
 # Each stub provides the minimum interface combat-trainer calls.
@@ -140,10 +117,6 @@ module DRCTH
   end
 end
 
-module Script
-  def self.running?(*_args) = false
-end
-
 # Unified UserVars store. Backs every UserVars key the combat-trainer code
 # and the merged specs touch (moons, sun, discerns, friends, warhorn,
 # almanac_last_use, yiamura, paladin_last_badge_use, combat_trainer_debug,
@@ -242,12 +215,6 @@ load_lic_class('combat-trainer.lic', 'SafetyProcess')
 load_lic_class('combat-trainer.lic', 'SpellProcess')
 load_lic_class('combat-trainer.lic', 'PetProcess')
 load_lic_class('combat-trainer.lic', 'TrainerProcess')
-
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data
-  end
-end
 
 # Shared setup for combat-trainer tests that need game state stubs.
 # Include in each describe block via: before(:each) { ct_setup }

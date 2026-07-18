@@ -2,32 +2,7 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction
 module DRC
@@ -114,6 +89,9 @@ RSpec.describe Enchant do
     instance.instance_variable_set(:@bag_items, ['burin'])
     instance.instance_variable_set(:@belt, 'toolbelt')
     instance.instance_variable_set(:@brazier, 'brazier')
+    # @brazier_ref is derived in initialize (which these specs bypass); the
+    # command-building methods interpolate it directly.
+    instance.instance_variable_set(:@brazier_ref, 'brazier')
     instance.instance_variable_set(:@fount, 'fount')
     instance.instance_variable_set(:@loop, 'aug loop')
     instance.instance_variable_set(:@imbue_wand, 'rod')

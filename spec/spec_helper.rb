@@ -15,23 +15,37 @@
 # Lich runtime isolation:
 #   - Scripts (.lic files) cannot be required directly -- they depend on the full
 #     Lich runtime. Extract constants and methods via eval of specific line ranges
-#     (see dependency_spec.rb for the pattern).
+#     (see load_lic_class below and dependency_spec.rb for the method-level pattern).
 #   - Mock only what you need: UserVars, Settings, Script.current, _respond, etc.
 #   - Use the test harness (test/test_harness.rb) for specs that need game objects.
+#
+# Shared setup:
+#   - This file is loaded before every spec via .rspec (--require spec_helper). It
+#     loads the test harness, includes Harness at the top level, provides the
+#     load_lic_class extraction helper, and registers the single global
+#     before(:each) { reset_data } hook.
+#   - Registering reset_data here (rather than in individual specs via
+#     RSpec.configure) is deliberate: config-level before hooks registered while a
+#     spec file loads run AFTER that spec's own group-level before hooks. A
+#     per-spec global reset_data would therefore run last and clobber the
+#     per-example world (guild, settings, hands, room) that other specs set up in
+#     their own before blocks. Because spec_helper is required first, its hook
+#     registers first and always runs before every group hook.
 
 require 'ostruct'
 
 # Load the test harness which provides mock game objects:
-# Flags, DRStats, DRSkill, DRRoom, Room, Map, GameObj, etc.
+# Flags, DRStats, DRSkill, DRRoom, Room, Map, GameObj, Script, XMLData, etc.
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 
 include Harness
 
-# Load SigilHarvest class definition without executing the top-level code
-# (before_dying block and SigilHarvest.new) at the bottom of the .lic file.
+# Extract and eval a class from a .lic file without executing the top-level code
+# (before_dying blocks, Klass.new, etc.) that sits outside the class body.
 #
-# Strategy: read the file, extract lines from the `class SigilHarvest` opening
-# through the matching `end` at column 0, then eval only that slice.
+# Strategy: read the file, extract lines from the `class <ClassName>` opening
+# through the matching `end` at column 0, then eval only that slice. The
+# const_defined? guard makes repeated calls (across co-running specs) idempotent.
 def load_lic_class(filename, class_name)
   return if Object.const_defined?(class_name)
 
@@ -41,7 +55,6 @@ def load_lic_class(filename, class_name)
   start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
   raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
 
-  # Find the matching end: first line after start that is exactly "end" at column 0
   end_idx = nil
   (start_idx + 1...lines.size).each do |i|
     if lines[i] =~ /^end\s*$/
@@ -54,8 +67,6 @@ def load_lic_class(filename, class_name)
   class_source = lines[start_idx..end_idx].join
   eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
-
-load_lic_class('sigilharvest.lic', 'SigilHarvest')
 
 RSpec.configure do |config|
   config.before(:each) do
