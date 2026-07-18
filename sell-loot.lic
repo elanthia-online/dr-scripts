@@ -376,7 +376,8 @@ class SellLoot
     # count by "<adjective> gem pouch". Asking for / stowing "<adjective> pouch"
     # below is just the accepted shorthand for the same item -- do not "simplify"
     # this count to "<adjective> pouch" or it will match differently.
-    current_count = DRCI.count_items_in_container("#{adj} gem pouch", container).to_i
+    adj == "gem" ? pouch_type = "#{adj} pouch" : pouch_type = "#{adj} gem pouch"
+    current_count = DRCI.count_items_in_container(pouch_type, container).to_i
     return if current_count >= @spare_gem_pouch_target
 
     gemshop_id = @hometown.dig('gemshop', 'id')
