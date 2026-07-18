@@ -2,18 +2,6 @@
 
 require_relative 'spec_helper'
 
-def load_lic_constant(filename, const_name)
-  return if Object.const_defined?(const_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  line = lines.find { |l| l =~ /^#{const_name}\s*=/ }
-  raise "Could not find '#{const_name}' in #{filename}" unless line
-
-  eval(line, TOPLEVEL_BINDING, filepath)
-end
-
 module DRC
   class << self
     def bput(*_args); end

@@ -68,6 +68,21 @@ def load_lic_class(filename, class_name)
   eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
+# Extract and eval a single top-level constant assignment (CONST = ...) from a
+# .lic file without executing the rest of the file. The const_defined? guard
+# makes repeated calls (across co-running specs) idempotent.
+def load_lic_constant(filename, const_name)
+  return if Object.const_defined?(const_name)
+
+  filepath = File.join(File.dirname(__FILE__), '..', filename)
+  lines = File.readlines(filepath)
+
+  line = lines.find { |l| l =~ /^#{const_name}\s*=/ }
+  raise "Could not find '#{const_name}' in #{filename}" unless line
+
+  eval(line, TOPLEVEL_BINDING, filepath)
+end
+
 RSpec.configure do |config|
   config.before(:each) do
     reset_data
