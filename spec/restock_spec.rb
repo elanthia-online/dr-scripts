@@ -4,51 +4,6 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-# Minimal stub modules for game interaction
-module DRC
-  class << self
-    def bput(*_args); 'I could not find what you were referring to.'; end
-
-    def text2num(text)
-      %w[zero one two three four five six seven eight nine ten].index(text) || text.to_i
-    end
-  end
-end
-
-module DRCT
-  class << self
-    def walk_to(*_args); end
-    def buy_item(*_args); end
-  end
-end
-
-module DRCI
-  class << self
-    def open_container?(*_args); true; end
-    def stow_hands; end
-    def put_away_item?(*_args); true; end
-    def count_items_in_container(*_args); 0; end
-  end
-end
-
-module DRCM
-  class << self
-    def convert_to_copper(amount, denom)
-      amount.to_i * case denom
-                    when 'copper' then 1
-                    when 'bronze' then 10
-                    when 'silver' then 100
-                    when 'gold' then 1000
-                    when 'platinum' then 10_000
-                    else 1
-                    end
-    end
-
-    def ensure_copper_on_hand(*_args); end
-    def deposit_coins(*_args); end
-  end
-end
-
 $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth].freeze
 
 load_lic_class('restock.lic', 'Restock')

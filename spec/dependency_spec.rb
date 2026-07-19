@@ -19,14 +19,6 @@ require 'yaml'
 SCRIPT_DIR = Dir.mktmpdir('dr-scripts-test') unless defined?(SCRIPT_DIR)
 LICH_DIR = Dir.mktmpdir('lich-test') unless defined?(LICH_DIR)
 
-module Lich
-  module Messaging
-    def self.monsterbold(msg)
-      msg
-    end
-  end
-end
-
 $clean_lich_char = ';'
 
 # --- Extract methods from dependency.lic ---

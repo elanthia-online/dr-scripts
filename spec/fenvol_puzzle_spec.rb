@@ -41,50 +41,6 @@ def stub_flags_class
   end)
 end
 
-module DRC
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.bput(*_args)
-    ''
-  end
-
-  def self.get_noun(long_name)
-    long_name.to_s.strip.scan(/[a-z\-']+$/i).first
-  end
-end
-
-module DRCI
-  def self.get_item?(*_args)
-    true
-  end
-
-  def self.put_away_item?(*_args)
-    true
-  end
-
-  def self.put_away_item_unsafe?(*_args)
-    true
-  end
-
-  def self.stow_hands
-    true
-  end
-end
-
-module Lich
-  module Messaging
-    def self.monsterbold(text)
-      text
-    end
-  end
-end
-
 def set_right_hand(name, noun = nil)
   $right_hand = name
   noun ||= name&.to_s&.split&.last

@@ -4,69 +4,6 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-# Define stub modules only if not already defined
-module DRC
-  class << self
-    def bput(*_args); end
-    def left_hand; end
-    def right_hand; end
-    def message(_msg); end
-    def wait_for_script_to_complete(*_args); end
-    def fix_standing; end
-  end
-end unless defined?(DRC)
-
-module DRCI
-  class << self
-    def in_hands?(_item); end
-  end
-end unless defined?(DRCI)
-
-module DRCMM
-  class << self
-    def observe(_thing); end
-    def predict(_thing); end
-    def study_sky; end
-    def align(_skill); end
-    def roll_bones(_storage); end
-    def use_div_tool(_tool); end
-    def get_telescope?(_name, _storage); end
-    def store_telescope?(_name, _storage); end
-    def store_div_tool?(_tool); end
-    def center_telescope(_target); end
-    def peer_telescope; end
-  end
-end unless defined?(DRCMM)
-
-module DRCA
-  class << self
-    def cast_spell(_data, _settings); end
-    def check_discern(_data, _settings); end
-    def cast_spells(_spells, _settings); end
-    def perc_mana; end
-  end
-end unless defined?(DRCA)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-  end
-end unless defined?(DRCT)
-
-module Lich
-  module Messaging
-    class << self
-      def msg(*_args); end
-    end
-  end
-
-  module Util
-    class << self
-      def issue_command(*_args); end
-    end
-  end
-end
-
 # Add methods to Harness classes that astrology.lic needs
 Harness::EquipmentManager.class_eval do
   def empty_hands; end

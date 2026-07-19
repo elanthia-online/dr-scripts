@@ -4,53 +4,6 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-# Minimal stub modules for game interaction
-module DRC
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.bput(*_args)
-    'Roundtime'
-  end
-
-  def self.message(*_args); end
-end
-
-module DRCI
-  def self.in_hands?(*_args)
-    false
-  end
-
-  def self.remove_item?(*_args)
-    true
-  end
-
-  def self.wear_item?(*_args)
-    true
-  end
-
-  def self.put_away_item?(*_args)
-    true
-  end
-
-  def self.get_item_if_not_held?(*_args)
-    true
-  end
-end
-
-module Lich
-  module Util
-    def self.issue_command(*_args)
-      []
-    end
-  end
-end
-
 # Load Knackstone class definition (without executing top-level code)
 load_lic_class('knackstone.lic', 'Knackstone')
 

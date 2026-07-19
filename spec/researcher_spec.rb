@@ -2,22 +2,9 @@
 
 require_relative 'spec_helper'
 
-module DRC
-  class << self
-    def bput(*_args); end
-    def message(_msg); end
-  end
-end unless defined?(DRC)
-
 def get_settings(*)
   {}
 end unless defined?(get_settings)
-
-module DRCA
-  class << self
-    def cast_spell(*_args); end
-  end
-end unless defined?(DRCA)
 
 class UserVars
   @@_data = {}

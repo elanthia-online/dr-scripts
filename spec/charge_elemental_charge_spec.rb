@@ -4,36 +4,6 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-module DRC
-  class << self
-    def bput(*_args)
-      'default'
-    end
-
-    def message(*_args); end
-  end
-end
-
-module DRCT
-  class << self
-    def walk_to(*_args); end
-  end
-end
-
-module DRCA
-  class << self
-    def check_elemental_charge
-      0
-    end
-  end
-end
-
-module DRCS
-  class << self
-    def summon_admittance; end
-  end
-end
-
 load_lic_class('charge-elemental-charge.lic', 'ChargeElementalCharge')
 
 RSpec.describe ChargeElementalCharge do

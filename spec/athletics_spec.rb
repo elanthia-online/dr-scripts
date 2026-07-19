@@ -4,20 +4,6 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-module DRC
-  class << self
-    def bput(*_args); end
-    def wait_for_script_to_complete(*_args); end
-    def message(_msg); end
-  end
-end unless defined?(DRC)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-  end
-end unless defined?(DRCT)
-
 load_lic_class('athletics.lic', 'Athletics')
 
 RSpec.describe Athletics do

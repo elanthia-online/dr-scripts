@@ -7,53 +7,6 @@ require_relative 'spec_helper'
 # The commons layer (DRC/DRCT/DRCI/DRCM) is not loadable in specs, so provide
 # minimal stub modules with safe defaults. Individual tests override specific
 # methods with `allow(...).to receive(...)`.
-module DRC
-  class << self
-    def bput(*_args); ''; end
-    def get_gems(*_args); []; end
-    def get_town_name(name); name; end
-    def release_invisibility; end
-    def left_hand; nil; end
-    def right_hand; nil; end
-    def message(*_args); end
-  end
-end
-
-module DRCT
-  class << self
-    def walk_to(*_args); true; end
-  end
-end
-
-module DRCI
-  class << self
-    def exists?(*_args); false; end
-    def get_item_list(*_args); []; end
-    def count_items_in_container(*_args); 0; end
-    def put_away_item?(*_args); true; end
-    def wear_item?(*_args); true; end
-  end
-end
-
-module DRCM
-  class << self
-    def convert_to_copper(amount, denom)
-      amount.to_i * case denom
-                    when 'copper' then 1
-                    when 'bronze' then 10
-                    when 'silver' then 100
-                    when 'gold' then 1000
-                    when 'platinum' then 10_000
-                    else 1
-                    end
-    end
-
-    def check_wealth(*_args); 0; end
-    def deposit_coins(*_args); end
-    def get_total_wealth; { 'kronars' => 0, 'lirums' => 0, 'dokoras' => 0 }; end
-  end
-end
-
 # The .lic instantiates EquipmentManager and calls empty_hands during init.
 class EquipmentManager
   def empty_hands; end

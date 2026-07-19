@@ -4,41 +4,11 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-module DRC
-  class << self
-    def bput(*_args); end
-    def collect(*_args); end
-    def forage?(*_args); end
-    def retreat(*_args); end
-    def wait_for_script_to_complete(*_args); end
-    def message(_msg); end
-  end
-end unless defined?(DRC)
-
 DRC.define_singleton_method(:collect) { |*_args| } unless DRC.respond_to?(:collect)
 DRC.define_singleton_method(:forage?) { |*_args| } unless DRC.respond_to?(:forage?)
 DRC.define_singleton_method(:retreat) { |*_args| } unless DRC.respond_to?(:retreat)
 
-module DRCI
-  class << self
-    def in_hands?(_item); false; end
-    def dispose_trash(*_args); end
-  end
-end unless defined?(DRCI)
-
 DRCI.define_singleton_method(:dispose_trash) { |*_args| } unless DRCI.respond_to?(:dispose_trash)
-
-module DRCA
-  class << self
-    def crafting_magic_routine(*_args); end
-  end
-end unless defined?(DRCA)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-  end
-end unless defined?(DRCT)
 
 Harness::DRSkill.define_singleton_method(:_xp_store) { @_xp_store ||= {} }
 Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[skillname] = val }

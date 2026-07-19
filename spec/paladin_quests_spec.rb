@@ -13,13 +13,6 @@
 
 require_relative 'spec_helper'
 
-module DRC
-  class << self
-    def bput(*_args); end
-    def message(_msg); end
-  end
-end unless defined?(DRC)
-
 load_lic_class('paladin-quests.lic', 'PaladinQuests')
 
 RSpec.describe PaladinQuests do

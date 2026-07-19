@@ -5,48 +5,6 @@ require 'ostruct'
 require_relative 'spec_helper'
 
 # Stub modules
-module DRC
-  class << self
-    def bput(*_args); end
-    def left_hand; end
-    def right_hand; end
-    def message(_msg); end
-    def wait_for_script_to_complete(*_args); end
-    def fix_standing; end
-    def release_invisibility; end
-    def beep; end
-  end
-end unless defined?(DRC)
-
-module DRCI
-  class << self
-    def exists?(*_args); end
-    def stow_hands; end
-    def count_items_in_container(*_args); end
-  end
-end unless defined?(DRCI)
-
-module DRCH
-  class << self
-    def check_health; end
-  end
-end unless defined?(DRCH)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-    def sort_destinations(_ids); end
-  end
-end unless defined?(DRCT)
-
-module DRCM
-  class << self
-    def ensure_copper_on_hand(*_args); end
-    def wealth(*_args); 0; end
-    def minimize_coins(_amount); []; end
-  end
-end unless defined?(DRCM)
-
 class CharacterValidator
   def initialize(*_args); end
   def in_game?(_name); false; end

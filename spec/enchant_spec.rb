@@ -5,54 +5,6 @@ require 'ostruct'
 require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction
-module DRC
-  def self.bput(*_args)
-    $mock_bput_result || 'Roundtime'
-  end
-
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.wait_for_script_to_complete(*_args); end
-end
-
-module DRCC
-  def self.get_crafting_item(*_args); end
-
-  def self.stow_crafting_item(*_args); end
-
-  def self.find_recipe2(*_args); end
-end
-
-module DRCI
-  def self.exists?(*_args)
-    $mock_drci_exists.nil? ? true : $mock_drci_exists
-  end
-
-  def self.get_item?(*_args)
-    $mock_drci_get_item.nil? ? true : $mock_drci_get_item
-  end
-
-  def self.dispose_trash(*_args); end
-end
-
-module DRCA
-  def self.cast_spell?(*_args)
-    $mock_drca_cast_spell.nil? ? true : $mock_drca_cast_spell
-  end
-end
-
-module Lich
-  module Messaging
-    def self.msg(*_args); end
-  end
-end
-
 class EquipmentManager
   def empty_hands; end
 end

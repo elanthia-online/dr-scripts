@@ -45,82 +45,6 @@ def stub_flags_class
 end
 
 # Minimal stub modules for game interaction
-module DRC
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.bput(*_args)
-    'Roundtime'
-  end
-
-  def self.message(*_args); end
-
-  def self.wait_for_script_to_complete(*_args); end
-end
-
-module DRCC
-  def self.stow_crafting_item(*_args)
-    true
-  end
-
-  def self.get_crafting_item(*_args); end
-
-  def self.get_adjust_tongs?(*_args)
-    true
-  end
-
-  def self.find_grindstone(*_args); end
-
-  def self.check_consumables(*_args); end
-
-  def self.find_recipe2(*_args); end
-
-  def self.logbook_item(*_args); end
-end
-
-module DRCI
-  def self.in_hands?(*_args)
-    false
-  end
-
-  def self.in_left_hand?(*_args)
-    false
-  end
-
-  def self.in_right_hand?(*_args)
-    false
-  end
-
-  def self.get_item?(*_args)
-    true
-  end
-
-  def self.put_away_item?(*_args)
-    true
-  end
-
-  def self.dispose_trash(*_args); end
-end
-
-module DRCA
-  def self.crafting_magic_routine(*_args); end
-end
-
-module DRCM
-  def self.ensure_copper_on_hand(*_args)
-    true
-  end
-end
-
-module DRCT
-  def self.walk_to(*_args); end
-end
-
 # MockRoom for private forge testing - Room is defined in test_harness.rb
 class MockRoom
   attr_accessor :id
@@ -131,12 +55,6 @@ class MockRoom
 end
 
 # Lich messaging mock
-module Lich
-  module Messaging
-    def self.msg(*_args); end
-  end
-end
-
 # Load the Forge class
 load_lic_class('forge.lic', 'Forge')
 

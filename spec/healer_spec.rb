@@ -5,44 +5,6 @@ require 'ostruct'
 require_relative 'spec_helper'
 
 # Minimal module stubs for modules not provided by the test harness
-module DRC
-  class << self
-    def bput(*_args)
-      ''
-    end
-
-    def wait_for_script_to_complete(*_args); end
-
-    def fix_standing; end
-
-    def log_window(_msg, _window = nil); end
-  end
-end unless defined?(DRC)
-
-module DRCH
-  class << self
-    def check_health
-      OpenStruct.new(wounds: {}, poisoned: false, diseased: false, score: 0, dead: false)
-    end
-
-    def perceive_health_other(_target)
-      OpenStruct.new(wounds: {}, parasites: {}, poisoned: false, diseased: false, score: 0, dead: false)
-    end
-  end
-end unless defined?(DRCH)
-
-module Lich
-  module Messaging
-    def self.msg(_style, _message); end
-  end
-
-  module Util
-    def self.issue_command(*_args)
-      []
-    end
-  end
-end
-
 load_lic_class('healer.lic', 'Healer')
 
 # Helper to build a Healer instance bypassing startup validations.
