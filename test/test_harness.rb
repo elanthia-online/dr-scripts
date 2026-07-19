@@ -998,15 +998,20 @@ module Harness
   # Commons command-module stubs (DRC, DRCI, DRCC, ...).
   #
   # The commons layer cannot be loaded in specs, so these modules provide the
-  # union of the methods the scripts call, with neutral defaults:
-  #   - "is it present / did it happen" predicates default to false,
-  #   - "did the action succeed" predicates default to true,
-  #   - list/count accessors default to [] / 0,
-  #   - everything else is an inert nil-returning seam.
+  # union of the methods the scripts call, with neutral defaults (heuristics --
+  # a few methods return domain values like DRC.bput -> 'Roundtime'):
+  #   - presence / "did it happen" predicates default to false,
+  #   - "did the action succeed" checks default to true,
+  #   - collection / count accessors default to [] / 0 / {},
+  #   - most other methods are an inert nil-returning seam.
   # Individual specs override the handful of returns they assert on with
   # per-example `allow(...).to receive(...)`. Centralizing them here (rather
   # than redefining them in each spec) keeps a single, consistent stub surface
   # so co-running specs cannot clobber each other's game doubles.
+  #
+  # Add new commons methods here (matching the default conventions above); do
+  # not stub them in a single spec. See the "Shared game doubles" section in
+  # spec/spec_helper.rb for the full rationale.
   # ---------------------------------------------------------------------------
 
   # Derive the trailing noun of an item long-name (mirrors DRC.get_noun).
