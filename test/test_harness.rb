@@ -8,6 +8,26 @@ module Harness
   # Indicate to scripts that we are in test mode
   $_TEST_MODE_ = true
 
+  # Lich core constant mapping long direction names to their short forms
+  # (mirrors lich/constants.rb). Scripts index it as SHORTDIR['north'] => 'n'.
+  SHORTDIR = {
+    'out'       => 'out',
+    'northeast' => 'ne',
+    'southeast' => 'se',
+    'southwest' => 'sw',
+    'northwest' => 'nw',
+    'up'        => 'up',
+    'down'      => 'down',
+    'north'     => 'n',
+    'east'      => 'e',
+    'south'     => 's',
+    'west'      => 'w',
+  }.freeze
+
+  # Lich global list of ordinal words used to disambiguate duplicate items/npcs
+  # (e.g. "second guard"). Some specs re-assign this at load; harmless for a global.
+  $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth].freeze
+
   class DRSpells
     @@_data_store = {}
 
