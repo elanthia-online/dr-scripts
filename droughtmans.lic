@@ -551,7 +551,9 @@ class Droughtmans
   # key, freeze them for it. Used as a fallback when no nemesis is announced.
   # @return [void]
   def check_key_holders
-    DRRoom.pcs.each do |person|
+    # Iterate a snapshot: deleting from the live DRRoom.pcs mid-loop would skip
+    # the next occupant and leave a visible key-holder unchecked this tick.
+    DRRoom.pcs.dup.each do |person|
       result = DRC.bput("look #{person}", /(?:Sh|H)e is holding.*/, /I could not find/, /concealing all but.*/)
       if result =~ /golden key/
         wave(person)

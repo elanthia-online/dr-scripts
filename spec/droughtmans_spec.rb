@@ -278,6 +278,25 @@ RSpec.describe Droughtmans do
   end
 
   # ===========================================================================
+  # check_key_holders: must not skip a PC while pruning the live room list
+  # ===========================================================================
+  describe '#check_key_holders' do
+    it 'checks every player even as each is removed from the live pcs list' do
+      DRRoom.pcs = %w[Alice Bob]
+      bot.instance_variable_set(:@nemesis, nil)
+      allow(DRC).to receive(:bput).and_return('He is holding a golden key and a wand')
+      allow(bot).to receive(:wave)
+
+      bot.check_key_holders
+
+      # Iterating the live array while deleting would skip Bob after Alice.
+      expect(bot).to have_received(:wave).with('Alice')
+      expect(bot).to have_received(:wave).with('Bob')
+      expect(DRRoom.pcs).to be_empty
+    end
+  end
+
+  # ===========================================================================
   # pull_rope: restored trap routing (and the injury short-circuit)
   # ===========================================================================
   describe '#pull_rope' do
