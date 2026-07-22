@@ -518,7 +518,11 @@ class Smoker
   # @param image [String] image to exhale
   # @return [void]
   def exhale_smoke(image)
-    case DRC.bput("exhale line #{image}", /^Roundtime/, /^You are untrained in the ways of making that image./, /^You now know the basics of making/)
+    case DRC.bput("exhale line #{image}",
+                  /^Roundtime/,
+                  /^You are untrained in the ways of making that image./,
+                  /You need to observe your teacher performing/,
+                  /^You now know the basics of making/)
     when /untrained/
       fput 'exhale ring'
     when /You need to observe your teacher performing/

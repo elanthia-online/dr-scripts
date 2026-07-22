@@ -11,6 +11,17 @@ require_relative 'spec_helper'
 # predicates, settings validation (which aborts), and the queue reshuffle.
 load_lic_class('smoke.lic', 'Smoker')
 
+# UserVars is per-script config -- provide the constant (only if no other spec
+# defined it) so build_priority_queue's reads/writes can be stubbed per example.
+class UserVars
+  class << self
+    def smoke_images_known; @smoke_images_known; end
+    def smoke_images_known=(value); @smoke_images_known = value; end
+    def smoke_images_mastered; @smoke_images_mastered; end
+    def smoke_images_mastered=(value); @smoke_images_mastered = value; end
+  end
+end unless defined?(UserVars)
+
 RSpec.describe Smoker do
   subject(:smoker) { described_class.allocate }
 
@@ -201,6 +212,18 @@ RSpec.describe Smoker do
       expect(smoker.find_blade('serrated parazonium')).to eq(blade)
     end
 
+    it 'matches an item by name when the short_regex does not match' do
+      dagger = double('dagger', short_regex: /nomatch/, name: 'fine steel dagger')
+      smoker.instance_variable_set(:@equipmanager, double('eq', items: [dagger]))
+      expect(smoker.find_blade('dagger')).to eq(dagger)
+    end
+
+    it 'does not match a name substring across a word boundary' do
+      dagger = double('dagger', short_regex: /nomatch/, name: 'fine steel dagger')
+      smoker.instance_variable_set(:@equipmanager, double('eq', items: [dagger]))
+      expect(smoker.find_blade('dagg')).to be_nil
+    end
+
     it 'returns nil when nothing matches' do
       expect(smoker.find_blade('nonexistent halberd')).to be_nil
     end
@@ -245,6 +268,11 @@ RSpec.describe Smoker do
     it 'does not require a pipe for an explicit cigar run' do
       smoker.instance_variable_set(:@pipe, nil)
       expect { smoker.validate_settings(args(cigar: 'fine cigar')) }.not_to raise_error
+    end
+
+    it 'does not require a pipe when the cigar is given via the smoke arg' do
+      smoker.instance_variable_set(:@pipe, nil)
+      expect { smoker.validate_settings(args(smoke: 'fine cigar')) }.not_to raise_error
     end
 
     it 'passes for a warrior mage with no lighter or blade' do
@@ -306,6 +334,141 @@ RSpec.describe Smoker do
       smoker.instance_variable_set(:@image_queue, [])
       smoker.instance_variable_set(:@lowest_tier_pool, nil)
       expect(smoker.next_image).to be_nil
+    end
+  end
+
+  # ===========================================================================
+  # exhale_smoke -- outcome branches, including the observe-teacher abort
+  # ===========================================================================
+  describe '#exhale_smoke' do
+    it 'exhales a ring when untrained in the image' do
+      allow(DRC).to receive(:bput).and_return('You are untrained in the ways of making that image.')
+      expect(smoker).to receive(:fput).with('exhale ring')
+      smoker.exhale_smoke('deer')
+    end
+
+    it 'reports when the image is just learned' do
+      allow(DRC).to receive(:bput).and_return('You now know the basics of making')
+      expect(DRC).to receive(:message).with(/Image learned/)
+      smoker.exhale_smoke('deer')
+    end
+
+    it 'registers the observe-teacher line as a bput match (so the branch is reachable)' do
+      captured = nil
+      allow(DRC).to receive(:bput) { |_cmd, *patterns| captured = patterns; 'Roundtime' }
+      smoker.exhale_smoke('deer')
+      expect(captured.any? { |p| p.is_a?(Regexp) && p =~ 'You need to observe your teacher performing to do that' }).to be(true)
+    end
+
+    it 'aborts when told to observe the teacher first' do
+      allow(DRC).to receive(:bput).and_return('You need to observe your teacher performing')
+      expect { smoker.exhale_smoke('deer') }.to raise_error(SystemExit)
+    end
+
+    it 'does nothing extra on a normal roundtime exhale' do
+      allow(DRC).to receive(:bput).and_return('Roundtime: 3 sec.')
+      expect(smoker).not_to receive(:fput)
+      expect { smoker.exhale_smoke('deer') }.not_to raise_error
+    end
+  end
+
+  # ===========================================================================
+  # offer_lesson -- teaching handshake branches, including the unresponsive exit
+  # ===========================================================================
+  describe '#offer_lesson' do
+    it 'is true when the student starts paying attention' do
+      allow(DRC).to receive(:bput).and_return('Bob starts paying attention to your advice on how to make')
+      expect(smoker.offer_lesson('deer', 'Bob')).to be(true)
+    end
+
+    it 'is true when the student nods' do
+      allow(DRC).to receive(:bput).and_return('Bob nods to you')
+      expect(smoker.offer_lesson('deer', 'Bob')).to be(true)
+    end
+
+    it 'is false when the student already knows the image' do
+      allow(DRC).to receive(:bput).and_return('already knows how to make that smoke image')
+      expect(smoker.offer_lesson('deer', 'Bob')).to be(false)
+    end
+
+    it 'aborts when the student is unresponsive (no match)' do
+      allow(DRC).to receive(:bput).and_return('')
+      expect { smoker.offer_lesson('deer', 'Bob') }.to raise_error(SystemExit)
+    end
+  end
+
+  # ===========================================================================
+  # quick_light_safe -- the true/false returns that drive the until_out break
+  # ===========================================================================
+  describe '#quick_light_safe' do
+    before do
+      smoker.instance_variable_set(:@pipe, 'glitvire pipe')
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      allow(smoker).to receive(:light_tobacco) # isolate: don't run real lighting I/O
+    end
+
+    it 'returns false when the pipe cannot be retrieved' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(false)
+      expect(smoker.quick_light_safe('pipe')).to be(false)
+    end
+
+    it 'returns true when the pipe is already burning' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('In the pipe you see a burning wad of tobacco')
+      expect(smoker.quick_light_safe('pipe')).to be(true)
+    end
+
+    it 'loads tobacco and returns true when the pipe is empty but tobacco remains' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('There is nothing in there')
+      allow(DRCI).to receive(:get_item?).with('tobacco', 'smoking jacket').and_return(true)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      expect(smoker.quick_light_safe('pipe')).to be(true)
+    end
+
+    it 'returns false when the pipe is empty and no tobacco remains' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('There is nothing in there')
+      allow(DRCI).to receive(:get_item?).with('tobacco', 'smoking jacket').and_return(false)
+      expect(smoker.quick_light_safe('pipe')).to be(false)
+    end
+
+    it 'returns false when out of cigars' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(false)
+      expect(smoker.quick_light_safe('fine cigar')).to be(false)
+    end
+
+    it 'returns true when a cigar is retrieved' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      expect(smoker.quick_light_safe('fine cigar')).to be(true)
+    end
+  end
+
+  # ===========================================================================
+  # build_priority_queue -- the I/O wrapper's UserVars writes + empty return
+  # ===========================================================================
+  describe '#build_priority_queue' do
+    before do
+      smoker.instance_variable_set(:@clean_mastered, true)
+      allow(UserVars).to receive(:smoke_images_known=)
+      allow(UserVars).to receive(:smoke_images_mastered).and_return([])
+      allow(UserVars).to receive(:smoke_images_mastered=)
+    end
+
+    it 'returns the lowest trainable tier and records known images' do
+      smoker.instance_variable_set(:@image_pool, %w[deer tart])
+      allow(smoker).to receive(:read_smoke_list).and_return([%w[deer learning], %w[tart master*]])
+
+      expect(UserVars).to receive(:smoke_images_known=).with(%w[deer tart])
+      expect(smoker.build_priority_queue).to eq(['deer'])
+      expect(smoker.instance_variable_get(:@lowest_tier_pool)).to eq(['deer'])
+    end
+
+    it 'returns an empty queue when everything is mastered' do
+      smoker.instance_variable_set(:@image_pool, %w[deer tart])
+      allow(smoker).to receive(:read_smoke_list).and_return([%w[deer master*], %w[tart master*]])
+
+      expect(smoker.build_priority_queue).to eq([])
     end
   end
 end
