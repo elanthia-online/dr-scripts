@@ -855,13 +855,126 @@ RSpec.describe Smoker do
   end
 
   # ===========================================================================
-  # smoke_loop -- the nothing-to-train boundary (full round loop is integration)
+  # smoke_loop -- the full round loop, driving the new-cig tobacco flag
   # ===========================================================================
   describe '#smoke_loop' do
+    before do
+      smoker.instance_variable_set(:@pipe, 'glitvire pipe')
+      smoker.instance_variable_set(:@cigar, nil)
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      smoker.instance_variable_set(:@smoke_settings, {})
+      allow(smoker).to receive(:quick_light)
+      allow(smoker).to receive(:stow_pipe)
+      allow(DRC).to receive(:message)
+      Flags['new-cig'] = true # a fresh, unlit smoker
+    end
+
     it 'announces and exits when the first queue is already empty' do
       allow(smoker).to receive(:build_priority_queue).and_return([])
       expect(smoker).to receive(:announce_all_mastered)
       expect { smoker.smoke_loop(%w[deer], 1) }.to raise_error(SystemExit)
+    end
+
+    it 'runs exactly the requested number of rounds then completes' do
+      allow(smoker).to receive(:build_priority_queue).and_return(['deer'])
+      # Each smoke cycle ends by exhausting the tobacco (sets new-cig), ending the
+      # inner `smoke until Flags['new-cig']` after one call per round.
+      expect(smoker).to(receive(:smoke).exactly(2).times { Flags['new-cig'] = true })
+      expect(smoker).to receive(:stow_pipe)
+      expect(DRC).to receive(:message).with(/Smoker Complete! Finished 2 round/)
+      expect { smoker.smoke_loop(['deer'], 2) }.not_to raise_error
+    end
+
+    it 'walks to the configured smoke room before training' do
+      smoker.instance_variable_set(:@smoke_settings, { 'smoke_room' => 1234 })
+      allow(smoker).to receive(:build_priority_queue).and_return(['deer'])
+      allow(smoker).to receive(:smoke) { Flags['new-cig'] = true }
+      expect(DRCT).to receive(:walk_to).with(1234)
+      smoker.smoke_loop(['deer'], 1)
+    end
+
+    it 'stops in until_out mode when tobacco runs out' do
+      allow(smoker).to receive(:build_priority_queue).and_return(['deer'])
+      allow(smoker).to receive(:quick_light_safe).and_return(false)
+      expect(smoker).not_to receive(:smoke)
+      expect { smoker.smoke_loop(['deer'], :until_out) }.not_to raise_error
+    end
+
+    it 'exits in until_out mode once everything becomes mastered' do
+      allow(smoker).to receive(:build_priority_queue).and_return(['deer'], [])
+      allow(smoker).to receive(:quick_light_safe).and_return(true)
+      allow(smoker).to receive(:smoke) { Flags['new-cig'] = true }
+      expect(smoker).to receive(:announce_all_mastered).with(/Finished 1 round/)
+      expect { smoker.smoke_loop(['deer'], :until_out) }.to raise_error(SystemExit)
+    end
+  end
+
+  # ===========================================================================
+  # initialize -- argument routing / dispatch (collaborators stubbed)
+  # ===========================================================================
+  describe '#initialize (dispatch)' do
+    let(:yaml_smoke) { { 'container' => 'smoking jacket', 'pipe' => 'glitvire pipe', 'smoke_images' => %w[deer tart] } }
+
+    # Build a bare instance with every collaborator stubbed, then run initialize.
+    def boot(args_opts, smoke: yaml_smoke)
+      instance = described_class.allocate
+      allow(instance).to receive(:parse_args).and_return(OpenStruct.new(args_opts))
+      allow(instance).to receive(:get_settings).and_return(double('settings', smoke: smoke))
+      allow(EquipmentManager).to receive(:new).and_return(double('eq'))
+      allow(instance).to receive(:find_blade).and_return(nil)
+      allow(instance).to receive(:validate_settings)
+      allow(instance).to receive(:quick_light)
+      allow(instance).to receive(:reset_known)
+      allow(instance).to receive(:smoke_teach)
+      allow(instance).to receive(:smoke_loop)
+      instance
+    end
+
+    it 'aborts when there is no smoke settings block' do
+      instance = boot({}, smoke: nil)
+      expect { instance.send(:initialize) }.to raise_error(SystemExit)
+    end
+
+    it 'light_only lights the requested utensil and exits' do
+      instance = boot({ light_only: 'light_only', smoke: 'pipe' })
+      expect(instance).to receive(:quick_light).with('pipe')
+      expect { instance.send(:initialize) }.to raise_error(SystemExit)
+    end
+
+    it 'defaults to a single round' do
+      instance = boot({})
+      expect(instance).to receive(:smoke_loop).with(%w[deer tart], 1)
+      instance.send(:initialize)
+    end
+
+    it 'passes :until_out through to the loop' do
+      instance = boot({ until_out: 'until_out' })
+      expect(instance).to receive(:smoke_loop).with(%w[deer tart], :until_out)
+      instance.send(:initialize)
+    end
+
+    it 'passes an explicit repeat count through to the loop' do
+      instance = boot({ repeat: '3' })
+      expect(instance).to receive(:smoke_loop).with(%w[deer tart], 3)
+      instance.send(:initialize)
+    end
+
+    it 'runs reset_known when requested' do
+      instance = boot({ reset_known: 'reset_known' })
+      expect(instance).to receive(:reset_known)
+      instance.send(:initialize)
+    end
+
+    it 'dispatches to teaching when requested' do
+      instance = boot({ teach: 'teach' })
+      expect(instance).to receive(:smoke_teach)
+      instance.send(:initialize)
+    end
+
+    it 'trains a single explicitly-requested image' do
+      instance = boot({ image: 'deer' })
+      expect(instance).to receive(:smoke_loop).with(['deer'], 1)
+      instance.send(:initialize)
     end
   end
 end
