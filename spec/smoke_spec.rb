@@ -471,4 +471,397 @@ RSpec.describe Smoker do
       expect(smoker.build_priority_queue).to eq([])
     end
   end
+
+  # ===========================================================================
+  # Smoke-list I/O helpers -- collect_smoke_list_lines / read_smoke_list
+  # ===========================================================================
+  describe '#collect_smoke_list_lines' do
+    before { allow(smoker).to receive(:fput) }
+
+    it 'collects lines up to the "Total images known" terminator' do
+      allow(smoker).to receive(:get).and_return('deer - learning', 'tart - master*', 'Total images known: 2')
+      expect(smoker.collect_smoke_list_lines).to eq(['deer - learning', 'tart - master*'])
+    end
+
+    it 'stops on a nil line (stream end) rather than looping forever' do
+      allow(smoker).to receive(:get).and_return('deer - learning', nil)
+      expect(smoker.collect_smoke_list_lines).to eq(['deer - learning'])
+    end
+
+    it 'stops immediately when no smoke images are known' do
+      allow(smoker).to receive(:get).and_return("You don't know any smoke images")
+      expect(smoker.collect_smoke_list_lines).to eq([])
+    end
+  end
+
+  describe '#read_smoke_list' do
+    it 'parses the collected lines into image/tier pairs' do
+      allow(smoker).to receive(:collect_smoke_list_lines).and_return(['deer - learning', 'tart - master*'])
+      expect(smoker.read_smoke_list).to eq([%w[deer learning], %w[tart master*]])
+    end
+  end
+
+  # ===========================================================================
+  # Lighting dispatch -- light_tobacco routes to the right method
+  # ===========================================================================
+  describe '#light_tobacco' do
+    it 'uses the warrior mage cantrip when applicable' do
+      allow(DRStats).to receive(:warrior_mage?).and_return(true)
+      expect(smoker).to receive(:light_warrior_mage).with('tobacco in pipe')
+      smoker.light_tobacco('tobacco in pipe')
+    end
+
+    it 'uses the configured lighter for non-warrior-mages' do
+      allow(DRStats).to receive(:warrior_mage?).and_return(false)
+      smoker.instance_variable_set(:@lighter, 'lava drake')
+      expect(smoker).to receive(:light_with_lighter).with('fine cigar')
+      smoker.light_tobacco('fine cigar')
+    end
+
+    it 'falls back to flint when there is no lighter and no cantrip' do
+      allow(DRStats).to receive(:warrior_mage?).and_return(false)
+      smoker.instance_variable_set(:@lighter, nil)
+      expect(smoker).to receive(:light_with_flint).with('fine cigar')
+      smoker.light_tobacco('fine cigar')
+    end
+  end
+
+  describe '#light_warrior_mage' do
+    it 'preps the cantrip then gestures at the target' do
+      expect(DRC).to receive(:bput).with('prep c b t', anything).ordered
+      expect(DRC).to receive(:bput).with('gesture tobacco in pipe', anything, anything).ordered
+      smoker.light_warrior_mage('tobacco in pipe')
+    end
+  end
+
+  # ===========================================================================
+  # light_with_lighter -- success paths AND the flint fallbacks
+  # ===========================================================================
+  describe '#light_with_lighter' do
+    before do
+      smoker.instance_variable_set(:@lighter, 'lava drake')
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      allow(DRStats).to receive(:warrior_mage?).and_return(false)
+      allow(DRC).to receive(:bput) # the "point" command
+    end
+
+    it 'points an untied lighter and stows it on success' do
+      smoker.instance_variable_set(:@smoke_settings, {})
+      allow(DRCI).to receive(:get_item?).with('lava drake').and_return(true)
+      expect(smoker).not_to receive(:light_with_flint)
+      expect(DRCI).to receive(:put_away_item?).with('lava drake', 'smoking jacket')
+      smoker.light_with_lighter('fine cigar')
+    end
+
+    it 'reties a tied lighter and does not stow it' do
+      smoker.instance_variable_set(:@smoke_settings, { 'lighter_tied_to' => 'belt' })
+      allow(DRCI).to receive(:untie_item?).and_return(true)
+      allow(DRCI).to receive(:tie_item?).and_return(true)
+      expect(DRCI).not_to receive(:put_away_item?)
+      smoker.light_with_lighter('fine cigar')
+    end
+
+    it 'stows the lighter when re-tying fails' do
+      smoker.instance_variable_set(:@smoke_settings, { 'lighter_tied_to' => 'belt' })
+      allow(DRCI).to receive(:untie_item?).and_return(true)
+      allow(DRCI).to receive(:tie_item?).and_return(false)
+      expect(DRCI).to receive(:put_away_item?).with('lava drake', 'smoking jacket')
+      smoker.light_with_lighter('fine cigar')
+    end
+
+    it 'falls back to flint (and disables the lighter) when it cannot be retrieved' do
+      smoker.instance_variable_set(:@smoke_settings, {})
+      allow(DRCI).to receive(:get_item?).with('lava drake').and_return(false)
+      expect(smoker).to receive(:light_with_flint).with('fine cigar')
+      smoker.light_with_lighter('fine cigar')
+      expect(smoker.instance_variable_get(:@lighter)).to be(false)
+    end
+
+    it 'falls back to flint when a tied lighter cannot be untied' do
+      smoker.instance_variable_set(:@smoke_settings, { 'lighter_tied_to' => 'belt' })
+      allow(DRCI).to receive(:untie_item?).and_return(false)
+      expect(smoker).to receive(:light_with_flint).with('fine cigar')
+      smoker.light_with_lighter('fine cigar')
+    end
+  end
+
+  describe '#light_with_flint' do
+    before do
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      smoker.instance_variable_set(:@blade, double('blade'))
+      smoker.instance_variable_set(:@equipmanager, double('eq', get_item?: true, return_held_gear: nil))
+      allow(DRC).to receive(:bput)
+      allow(DRCI).to receive(:lower_item?)
+      allow(DRCI).to receive(:stow_item?)
+      allow(DRCI).to receive(:lift?)
+    end
+
+    it 'aborts when flint cannot be obtained' do
+      allow(DRCI).to receive(:get_item?).with('flint').and_return(false)
+      allow(DRC).to receive(:right_hand).and_return('right thing')
+      allow(DRCI).to receive(:put_away_item?)
+      expect { smoker.light_with_flint('fine cigar') }.to raise_error(SystemExit)
+    end
+
+    it 'strikes flint against the blade and cleans up on success' do
+      allow(DRCI).to receive(:get_item?).with('flint').and_return(true)
+      expect(DRCI).to receive(:stow_item?).with('flint')
+      expect { smoker.light_with_flint('tobacco in pipe') }.not_to raise_error
+    end
+  end
+
+  # ===========================================================================
+  # load_pipe / quick_light -- retrieval, tobacco, and abort paths
+  # ===========================================================================
+  describe '#load_pipe' do
+    before do
+      smoker.instance_variable_set(:@pipe, 'glitvire pipe')
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      allow(smoker).to receive(:light_tobacco)
+      allow(DRCI).to receive(:put_away_item?)
+    end
+
+    it 'aborts when the pipe cannot be retrieved' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(false)
+      expect { smoker.load_pipe }.to raise_error(SystemExit)
+    end
+
+    it 'returns true when the pipe is already burning' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('In the pipe you see a burning wad of tobacco')
+      expect(smoker.load_pipe).to be(true)
+    end
+
+    it 'aborts when empty and no tobacco remains' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('There is nothing in there')
+      allow(DRCI).to receive(:get_item?).with('tobacco', 'smoking jacket').and_return(false)
+      expect { smoker.load_pipe }.to raise_error(SystemExit)
+    end
+
+    it 'loads tobacco and lights when empty but tobacco remains' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      allow(DRC).to receive(:bput).and_return('There is nothing in there')
+      allow(DRCI).to receive(:get_item?).with('tobacco', 'smoking jacket').and_return(true)
+      expect(smoker).to receive(:light_tobacco).with('tobacco in pipe')
+      smoker.load_pipe
+    end
+  end
+
+  describe '#quick_light' do
+    before { smoker.instance_variable_set(:@bag, 'smoking jacket') }
+
+    it 'loads the pipe for a pipe smoker' do
+      smoker.instance_variable_set(:@pipe, 'glitvire pipe')
+      expect(smoker).to receive(:load_pipe)
+      smoker.quick_light('pipe')
+    end
+
+    it 'aborts when a cigar cannot be retrieved' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(false)
+      expect { smoker.quick_light('fine cigar') }.to raise_error(SystemExit)
+    end
+
+    it 'lights a retrieved cigar' do
+      allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+      expect(smoker).to receive(:light_tobacco).with('fine cigar')
+      smoker.quick_light('fine cigar')
+    end
+  end
+
+  # ===========================================================================
+  # inhale -- clears the lungs (recursing) then inhales cleanly
+  # ===========================================================================
+  describe '#inhale' do
+    before { smoker.instance_variable_set(:@smoker, 'glitvire pipe') }
+
+    it 'exhales and re-inhales when the lungs must be cleared first' do
+      allow(DRC).to receive(:bput).and_return('out of your lungs first', 'You take')
+      expect(smoker).to receive(:exhale_smoke).with('deer')
+      smoker.inhale('deer')
+    end
+
+    it 'does nothing extra on a clean inhale' do
+      allow(DRC).to receive(:bput).and_return('You take a long draw')
+      expect(smoker).not_to receive(:exhale_smoke)
+      smoker.inhale('deer')
+    end
+  end
+
+  # ===========================================================================
+  # smoke -- one practice cycle, pulling from the queue only when needed
+  # ===========================================================================
+  describe '#smoke' do
+    before do
+      smoker.instance_variable_set(:@time_between, 0)
+      allow(smoker).to receive(:inhale)
+      allow(smoker).to receive(:exhale_smoke)
+    end
+
+    it 'pulls the next image from the queue when none is given' do
+      allow(smoker).to receive(:next_image).and_return('deer')
+      expect(smoker).to receive(:inhale).with('deer')
+      expect(smoker).to receive(:exhale_smoke).with('deer')
+      smoker.smoke
+    end
+
+    it 'practices the given image without touching the queue' do
+      expect(smoker).not_to receive(:next_image)
+      expect(smoker).to receive(:exhale_smoke).with('tart')
+      smoker.smoke('tart')
+    end
+  end
+
+  # ===========================================================================
+  # stow_pipe / announce_all_mastered -- small state/reporting helpers
+  # ===========================================================================
+  describe '#stow_pipe' do
+    before { smoker.instance_variable_set(:@bag, 'smoking jacket') }
+
+    it 'stows the pipe when it is in hand' do
+      smoker.instance_variable_set(:@pipe, 'glitvire pipe')
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      expect(DRCI).to receive(:put_away_item?).with('glitvire pipe', 'smoking jacket')
+      smoker.stow_pipe
+    end
+
+    it 'does nothing when the pipe is not in hand' do
+      smoker.instance_variable_set(:@pipe, 'glitvire pipe')
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+      expect(DRCI).not_to receive(:put_away_item?)
+      smoker.stow_pipe
+    end
+
+    it 'does nothing on a cigar run (no pipe configured)' do
+      smoker.instance_variable_set(:@pipe, nil)
+      expect(DRCI).not_to receive(:put_away_item?)
+      smoker.stow_pipe
+    end
+  end
+
+  describe '#announce_all_mastered' do
+    it 'reports the mastered set and includes the optional prefix' do
+      allow(UserVars).to receive(:smoke_images_mastered).and_return(%w[deer tart])
+      expect(DRC).to receive(:message).with(/All 2 images have reached master/)
+      expect(DRC).to receive(:message).with(/Mastered: deer, tart/)
+      expect(DRC).to receive(:message).with(/Finished 3 round\(s\)\. Nothing left/)
+      smoker.announce_all_mastered('Finished 3 round(s). ')
+    end
+  end
+
+  # ===========================================================================
+  # abort_lesson -- clean teardown of a teach/learn session
+  # ===========================================================================
+  describe '#abort_lesson' do
+    it 'stows the active smoker and exits' do
+      smoker.instance_variable_set(:@smoker, 'glitvire pipe')
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      expect(DRCI).to receive(:put_away_item?).with('glitvire pipe', 'smoking jacket')
+      expect { smoker.abort_lesson('teacher gone') }.to raise_error(SystemExit)
+    end
+
+    it 'exits even when nothing is held' do
+      smoker.instance_variable_set(:@smoker, nil)
+      expect(DRCI).not_to receive(:put_away_item?)
+      expect { smoker.abort_lesson('teacher gone') }.to raise_error(SystemExit)
+    end
+  end
+
+  # ===========================================================================
+  # smoke_teach -- lights up and dispatches to the teach/learn loop
+  # ===========================================================================
+  describe '#smoke_teach' do
+    before { smoker.instance_variable_set(:@pipe, 'glitvire pipe') }
+
+    it 'dispatches to learn_loop for a learn request' do
+      args = OpenStruct.new(smoke: 'pipe', teach: 'learn', player: 'bob')
+      expect(smoker).to receive(:learn_loop).with(['deer'], 'Bob')
+      smoker.smoke_teach(args, ['deer'])
+    end
+
+    it 'dispatches to teach_loop for a teach request' do
+      args = OpenStruct.new(smoke: 'pipe', teach: 'teach', player: 'bob')
+      expect(smoker).to receive(:teach_loop).with(['deer'], 'Bob')
+      smoker.smoke_teach(args, ['deer'])
+    end
+  end
+
+  # ===========================================================================
+  # teach_loop -- image iteration + completion exit
+  # ===========================================================================
+  describe '#teach_loop' do
+    it 'completes and exits when there is nothing to teach' do
+      expect { smoker.teach_loop([], 'Bob') }.to raise_error(SystemExit)
+    end
+
+    it 'skips an image the student already knows, then completes' do
+      allow(smoker).to receive(:offer_lesson).with('deer', 'Bob').and_return(false)
+      expect(smoker).not_to receive(:smoke)
+      expect { smoker.teach_loop(['deer'], 'Bob') }.to raise_error(SystemExit)
+    end
+  end
+
+  # ===========================================================================
+  # learn_loop -- the teacher-leaves-the-room guards (its whole reason to exist)
+  # ===========================================================================
+  describe '#learn_loop' do
+    before do
+      smoker.instance_variable_set(:@smoker, 'glitvire pipe')
+      smoker.instance_variable_set(:@bag, 'smoking jacket')
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCI).to receive(:put_away_item?)
+    end
+
+    it 'aborts immediately when the teacher is not in the room' do
+      allow(DRRoom).to receive(:pcs).and_return([])
+      expect { smoker.learn_loop([], 'Bob') }.to raise_error(SystemExit)
+    end
+
+    it 'aborts when the teacher leaves while waiting to be taught' do
+      allow(DRRoom).to receive(:pcs).and_return(['Bob'], [])
+      allow(DRC).to receive(:bput).and_return("Bob isn't teaching a class")
+      expect { smoker.learn_loop([], 'Bob') }.to raise_error(SystemExit)
+    end
+
+    it 'aborts when the teacher leaves mid-lesson' do
+      allow(DRRoom).to receive(:pcs).and_return(['Bob'], [])
+      allow(DRC).to receive(:bput).and_return("You start paying attention to Bob's advice on how to make a deer smoke image")
+      expect { smoker.learn_loop([], 'Bob') }.to raise_error(SystemExit)
+    end
+  end
+
+  # ===========================================================================
+  # reset_known -- rebuild from the master list and report (then exit)
+  # ===========================================================================
+  describe '#reset_known' do
+    before do
+      smoker.instance_variable_set(:@full_image_list, %w[deer tart])
+      allow(UserVars).to receive(:smoke_images_known=)
+      allow(UserVars).to receive(:smoke_images_mastered=)
+    end
+
+    it 'reports the new training list and exits' do
+      allow(smoker).to receive(:read_smoke_list).and_return([%w[deer learning], %w[tart master*]])
+      expect(DRC).to receive(:message).with(/New Training List/)
+      expect { smoker.reset_known }.to raise_error(SystemExit)
+    end
+
+    it 'reports when everything is already mastered and exits' do
+      allow(smoker).to receive(:read_smoke_list).and_return([%w[deer master*], %w[tart master*]])
+      expect(DRC).to receive(:message).with(/All known images are mastered/)
+      expect { smoker.reset_known }.to raise_error(SystemExit)
+    end
+  end
+
+  # ===========================================================================
+  # smoke_loop -- the nothing-to-train boundary (full round loop is integration)
+  # ===========================================================================
+  describe '#smoke_loop' do
+    it 'announces and exits when the first queue is already empty' do
+      allow(smoker).to receive(:build_priority_queue).and_return([])
+      expect(smoker).to receive(:announce_all_mastered)
+      expect { smoker.smoke_loop(%w[deer], 1) }.to raise_error(SystemExit)
+    end
+  end
 end
