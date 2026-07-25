@@ -11,15 +11,6 @@ require_relative 'spec_helper'
 # self-contained and reads top-to-bottom (DAMP).
 load_lic_class('droughtmans.lic', 'Droughtmans')
 
-# UserVars is per-script config (the harness deliberately omits it), so define it
-# here guarded against the definitions other specs provide. parse_configuration
-# reads droughtmans_debug; examples override it with allow(...) as needed.
-class UserVars
-  def self.droughtmans_debug
-    nil
-  end
-end unless defined?(UserVars)
-
 RSpec.describe Droughtmans do
   let(:bot) { Droughtmans.allocate }
 
