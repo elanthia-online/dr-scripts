@@ -110,6 +110,10 @@ class Droughtmans
     @friends = settings.hunting_buddies
     @worn_trashcan = settings.worn_trashcan
     @worn_trashcan_verb = settings.worn_trashcan_verb
+    # Where won loot is deposited when cashing in a package. Defaults to the
+    # canvas sack fetched from the compound dwarf; override with any carried
+    # container (e.g. a worn backpack) via the droughtmans_loot_container setting.
+    @loot_container = settings.droughtmans_loot_container || 'canvas sack'
 
     # Randomize the wall-follow hand so repeated runs explore different paths.
     @current_direction_map = [CLOCKWISE_MAP, COUNTER_CLOCKWISE_MAP].sample
@@ -168,7 +172,7 @@ class Droughtmans
   def enter_maze_if_needed
     unless DRRoom.title.match?(/Droughtman's Compound, The Maze/)
       DRC.log_window("Starting run at #{Time.now}", 'familiar', true)
-      get_sack
+      fetch_loot_container_if_needed
       DRCT.walk_to(WAND_ROOM)
       redeem_pass_if_present
       fput('ask spiel about access')
@@ -457,6 +461,14 @@ class Droughtmans
     DRCI.get_item_unsafe('golden key')
   end
 
+  # Fetch the loot destination before a run, but only for the default canvas
+  # sack: a user-configured container is assumed to be carried already, and the
+  # compound dwarf only hands out canvas sacks.
+  # @return [void]
+  def fetch_loot_container_if_needed
+    get_sack if @loot_container == 'canvas sack'
+  end
+
   # Fetch a canvas sack from the compound dwarf unless one is already carried.
   # @return [void]
   def get_sack
@@ -468,22 +480,45 @@ class Droughtmans
     DRCI.put_away_item?('sack')
   end
 
-  # Cash in a won prize package: transfer loot, trash the wrapper, exit the
-  # winner's circle, return to the wand room, and stop the script.
+  # Cash in a won prize package: transfer loot into the configured container,
+  # trash the wrapper only once it is empty, exit the winner's circle, return to
+  # the wand room, and stop the script.
   # @return [void]
   # @note Terminates the script on completion.
   def package
     DRC.bput('open my package', /You open/)
     DRCI.stow_hands
     DRCI.put_away_item?('wand')
-    DRC.wait_for_script_to_complete('transfer-items', ['package', 'canvas sack'])
-    DRCI.dispose_trash('package', @worn_trashcan, @worn_trashcan_verb)
-    if DRRoom.title.match?(/Droughtman's Maze, Winner's Circle/)
-      fput('go oval')
-      fput('go oval')
-    end
+    DRC.wait_for_script_to_complete('transfer-items', ['package', @loot_container])
+    dispose_empty_package
+    leave_winners_circle
     DRCT.walk_to(WAND_ROOM)
     exit
+  end
+
+  # Trash the prize wrapper only when the loot transfer emptied it. If any loot
+  # remains (no/full loot container, an item that would not fit), the package is
+  # kept instead so a prize is never thrown away. An unreadable package (nil
+  # contents) is treated as "not verified empty" and is likewise kept.
+  # @return [void]
+  def dispose_empty_package
+    contents = DRCI.get_item_list('package', 'look')
+    if contents && contents.empty?
+      DRCI.dispose_trash('package', @worn_trashcan, @worn_trashcan_verb)
+    else
+      DRC.message("droughtmans: package still holds loot (check your #{@loot_container}) - keeping it instead of trashing")
+      DRCI.put_away_item?('package')
+    end
+  end
+
+  # Step out of the winner's circle back onto the main maze floor, if we are in
+  # it. No-op when the cash-in happened elsewhere.
+  # @return [void]
+  def leave_winners_circle
+    return unless DRRoom.title.match?(/Droughtman's Maze, Winner's Circle/)
+
+    fput('go oval')
+    fput('go oval')
   end
 
   # Freeze every npc in the room, expanding duplicate types into ordinal targets

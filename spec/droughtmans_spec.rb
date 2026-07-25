@@ -11,6 +11,15 @@ require_relative 'spec_helper'
 # self-contained and reads top-to-bottom (DAMP).
 load_lic_class('droughtmans.lic', 'Droughtmans')
 
+# UserVars is per-script config (the harness deliberately omits it), so define it
+# here guarded against the definitions other specs provide. parse_configuration
+# reads droughtmans_debug; examples override it with allow(...) as needed.
+class UserVars
+  def self.droughtmans_debug
+    nil
+  end
+end unless defined?(UserVars)
+
 RSpec.describe Droughtmans do
   let(:bot) { Droughtmans.allocate }
 
@@ -381,6 +390,103 @@ RSpec.describe Droughtmans do
       bot.instance_variable_set(:@current_direction_map, Droughtmans::COUNTER_CLOCKWISE_MAP)
       bot.change_direction_map
       expect(bot.instance_variable_get(:@current_direction_map)).to be(Droughtmans::CLOCKWISE_MAP)
+    end
+  end
+
+  # ===========================================================================
+  # dispose_empty_package: never trash a package that still holds loot
+  # ===========================================================================
+  describe '#dispose_empty_package' do
+    before do
+      bot.instance_variable_set(:@worn_trashcan, 'backpack')
+      bot.instance_variable_set(:@worn_trashcan_verb, 'stuff')
+      bot.instance_variable_set(:@loot_container, 'canvas sack')
+    end
+
+    it 'trashes the wrapper only once the loot transfer has emptied it' do
+      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return([])
+      allow(DRCI).to receive(:put_away_item?)
+      expect(DRCI).to receive(:dispose_trash).with('package', 'backpack', 'stuff')
+
+      bot.dispose_empty_package
+
+      expect(DRCI).not_to have_received(:put_away_item?)
+    end
+
+    it 'keeps a package that still holds loot instead of trashing it' do
+      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
+      allow(DRCI).to receive(:dispose_trash)
+      expect(DRCI).to receive(:put_away_item?).with('package')
+      expect(DRC).to receive(:message).with(/still holds loot/)
+
+      bot.dispose_empty_package
+
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'never trashes a package whose contents could not be read (nil)' do
+      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(nil)
+      allow(DRCI).to receive(:put_away_item?)
+      expect(DRCI).not_to receive(:dispose_trash)
+
+      bot.dispose_empty_package
+    end
+  end
+
+  # ===========================================================================
+  # fetch_loot_container_if_needed: only chase the dwarf's sack for the default
+  # ===========================================================================
+  describe '#fetch_loot_container_if_needed' do
+    it 'asks the compound dwarf for a canvas sack when using the default container' do
+      bot.instance_variable_set(:@loot_container, 'canvas sack')
+      expect(bot).to receive(:get_sack)
+
+      bot.fetch_loot_container_if_needed
+    end
+
+    it 'does not fetch a sack when a custom loot container is configured' do
+      bot.instance_variable_set(:@loot_container, 'worn backpack')
+      expect(bot).not_to receive(:get_sack)
+
+      bot.fetch_loot_container_if_needed
+    end
+  end
+
+  # ===========================================================================
+  # parse_configuration: the configurable loot destination
+  # ===========================================================================
+  describe '#parse_configuration (loot container)' do
+    before { allow(UserVars).to receive(:droughtmans_debug).and_return(nil) }
+
+    it 'defaults the loot container to a canvas sack when unset' do
+      $test_settings = OpenStruct.new
+      bot.parse_configuration
+      expect(bot.instance_variable_get(:@loot_container)).to eq('canvas sack')
+    end
+
+    it 'honors a configured droughtmans_loot_container override' do
+      $test_settings = OpenStruct.new(droughtmans_loot_container: 'worn backpack')
+      bot.parse_configuration
+      expect(bot.instance_variable_get(:@loot_container)).to eq('worn backpack')
+    end
+  end
+
+  # ===========================================================================
+  # leave_winners_circle: step out only when actually in the circle
+  # ===========================================================================
+  describe '#leave_winners_circle' do
+    it 'walks out of the oval twice when standing in the winner\'s circle' do
+      DRRoom.title = "Droughtman's Maze, Winner's Circle"
+      expect(bot).to receive(:fput).with('go oval').twice
+
+      bot.leave_winners_circle
+    end
+
+    it 'does nothing when the cash-in happened outside the winner\'s circle' do
+      DRRoom.title = "Droughtman's Compound, The Maze"
+      expect(bot).not_to receive(:fput)
+
+      bot.leave_winners_circle
     end
   end
 end
