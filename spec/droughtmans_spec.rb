@@ -688,6 +688,38 @@ RSpec.describe Droughtmans do
   end
 
   # ===========================================================================
+  # handle_lever: wand rivals BEFORE pulling (mirrors the rope guard)
+  # ===========================================================================
+  describe '#handle_lever' do
+    it 'freezes rivals in the room BEFORE pulling the lever' do
+      DRRoom.room_objs = ['blue lever']
+      allow(bot).to receive(:fput)
+      expect(bot).to receive(:check_for_npcs).ordered
+      expect(bot).to receive(:fput).with('Pull blue lever').ordered
+
+      bot.handle_lever
+    end
+
+    it 'does not wand the room when there is no lever to pull' do
+      DRRoom.room_objs = ['rope']
+      expect(bot).not_to receive(:check_for_npcs)
+      expect(bot).not_to receive(:fput)
+
+      bot.handle_lever
+    end
+
+    it 'forgets the lever after pulling so it is not re-pulled this tick' do
+      DRRoom.room_objs = ['blue lever']
+      allow(bot).to receive(:check_for_npcs)
+      allow(bot).to receive(:fput)
+
+      bot.handle_lever
+
+      expect(DRRoom.room_objs).not_to include('blue lever')
+    end
+  end
+
+  # ===========================================================================
   # leave_winners_circle: step out only when actually in the circle
   # ===========================================================================
   describe '#leave_winners_circle' do

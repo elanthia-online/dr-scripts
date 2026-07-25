@@ -591,11 +591,16 @@ class Droughtmans
     DRRoom.room_objs.delete(rope)
   end
 
-  # Pull a lever if one is present, then forget it so we do not re-pull this tick.
+  # Freeze any rivals, pull a lever if one is present, then forget it so we do
+  # not re-pull this tick.
   # @return [void]
   def handle_lever
     return unless (lever = DRRoom.room_objs.find { |obj| obj =~ /lever/ })
 
+    # Freeze any rivals in the room BEFORE pulling: like the key-dropping rope,
+    # lingering on a lever pull lets a present rival wand-freeze us first (and
+    # then flee before we can wave back).
+    check_for_npcs
     fput("Pull #{lever}")
     DRRoom.room_objs.delete(lever)
   end
