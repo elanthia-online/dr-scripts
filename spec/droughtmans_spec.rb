@@ -688,6 +688,89 @@ RSpec.describe Droughtmans do
   end
 
   # ===========================================================================
+  # handle_lever: wand rivals BEFORE pulling (mirrors the rope guard)
+  # ===========================================================================
+  describe '#handle_lever' do
+    it 'freezes rivals in the room BEFORE pulling the lever' do
+      DRRoom.room_objs = ['blue lever']
+      allow(bot).to receive(:fput)
+      expect(bot).to receive(:check_for_npcs).ordered
+      expect(bot).to receive(:fput).with('Pull blue lever').ordered
+
+      bot.handle_lever
+    end
+
+    it 'does not wand the room when there is no lever to pull' do
+      DRRoom.room_objs = ['rope']
+      expect(bot).not_to receive(:check_for_npcs)
+      expect(bot).not_to receive(:fput)
+
+      bot.handle_lever
+    end
+
+    it 'forgets the lever after pulling so it is not re-pulled this tick' do
+      DRRoom.room_objs = ['blue lever']
+      allow(bot).to receive(:check_for_npcs)
+      allow(bot).to receive(:fput)
+
+      bot.handle_lever
+
+      expect(DRRoom.room_objs).not_to include('blue lever')
+    end
+  end
+
+  # ===========================================================================
+  # run_tick: one pass of the main loop -- rivals frozen before any action
+  # ===========================================================================
+  describe '#run_tick' do
+    before do
+      # Neutralize every per-tick collaborator; each example asserts only the
+      # ordering/branch it cares about.
+      %i[
+        waitrt? handle_package_if_held ensure_wand absorb_unfrozen_npcs
+        handle_dark_room zap_nemesis check_for_npcs track_white_door
+        handle_key_or_search handle_lever set_or_unset_nemesis handle_doors
+        handle_reposition maintain_khri_buffs maybe_change_direction
+        wander backtrack
+      ].each { |m| allow(bot).to receive(m) }
+      allow(DRC).to receive(:fix_standing)
+      bot.instance_variable_set(:@backtrack_to_white_door, false)
+    end
+
+    it 'freezes rivals BEFORE acting on the room (key/rope, lever, doors)' do
+      expect(bot).to receive(:check_for_npcs).ordered
+      expect(bot).to receive(:handle_key_or_search).ordered
+      expect(bot).to receive(:handle_lever).ordered
+      expect(bot).to receive(:handle_doors).ordered
+
+      bot.run_tick
+    end
+
+    it 'freezes rivals after resolving the nemesis (so a fresh nemesis is set first)' do
+      expect(bot).to receive(:zap_nemesis).ordered
+      expect(bot).to receive(:check_for_npcs).ordered
+
+      bot.run_tick
+    end
+
+    it 'wanders when not backtracking to the white door' do
+      bot.instance_variable_set(:@backtrack_to_white_door, false)
+      expect(bot).to receive(:wander)
+      expect(bot).not_to receive(:backtrack)
+
+      bot.run_tick
+    end
+
+    it 'backtracks (not wanders) when armed for the white door' do
+      bot.instance_variable_set(:@backtrack_to_white_door, true)
+      expect(bot).to receive(:backtrack)
+      expect(bot).not_to receive(:wander)
+
+      bot.run_tick
+    end
+  end
+
+  # ===========================================================================
   # leave_winners_circle: step out only when actually in the circle
   # ===========================================================================
   describe '#leave_winners_circle' do
