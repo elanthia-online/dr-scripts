@@ -17,20 +17,6 @@ class Room
   end
 end unless defined?(Room)
 
-class UserVars
-  class << self
-    def astrology_debug
-      false
-    end
-
-    def astral_plane_exp_timer
-      nil
-    end
-
-    def astral_plane_exp_timer=(_val); end
-  end
-end unless defined?(UserVars)
-
 load_lic_class('astrology.lic', 'Astrology')
 
 RSpec.describe Astrology do
