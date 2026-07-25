@@ -254,7 +254,7 @@ Crossing:
     noun: basin
   primer_npc: shaman
 
-Haven:
+Riverhaven:
   wine_shop:
     id: 12048
     price: 300
@@ -270,7 +270,7 @@ Haven:
     id: 7792
     price: 115
   altar:
-    id: 438
+    id: 440
   favor_altars:
     Divyaush:
       id: 440

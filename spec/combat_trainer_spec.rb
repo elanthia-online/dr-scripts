@@ -17,47 +17,19 @@ require_relative 'spec_helper'
 # Each stub provides the minimum interface combat-trainer calls.
 # Methods default to safe no-ops; tests override via allow().
 
-# Unified UserVars store. Backs every UserVars key the combat-trainer code
-# and the merged specs touch (moons, sun, discerns, friends, warhorn,
-# almanac_last_use, yiamura, paladin_last_badge_use, combat_trainer_debug,
-# ...) via a dynamic data hash. moons reads back a sane default so the
-# slivers specs see { 'visible' => [] } when unset, and _set_moons/_reset
-# match the helpers those specs call.
-class UserVars
-  @data = {}
-
+# The generic UserVars store lives in the harness (Harness::UserVars); reopen it
+# here to add combat-trainer's one domain default: moons reads back an empty
+# visible set so the slivers specs see { 'visible' => [] } when it is unset.
+# _set_moons mirrors the helper those specs call. Everything else (sun, discerns,
+# friends, warhorn, almanac_last_use, ...) is handled by the shared store.
+class Harness::UserVars
   class << self
-    def _data
-      @data ||= {}
-    end
-
-    def _reset
-      @data = {}
-    end
-
     def moons
-      _data[:moons] || { 'visible' => [] }
-    end
-
-    def moons=(val)
-      _data[:moons] = val
+      _store[:moons] || { 'visible' => [] }
     end
 
     def _set_moons(val)
-      _data[:moons] = val
-    end
-
-    def method_missing(name, *args)
-      key = name.to_s
-      if key.end_with?('=')
-        _data[key.chomp('=').to_sym] = args.first
-      else
-        _data[name.to_sym]
-      end
-    end
-
-    def respond_to_missing?(name, _include_private = false)
-      name.to_s.end_with?('=') || _data.key?(name.to_sym) || super
+      _store[:moons] = val
     end
   end
 end
