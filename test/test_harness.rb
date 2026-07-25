@@ -695,6 +695,43 @@ module Harness
     $test_data[dummy.to_sym]
   end
 
+  # Generic per-script configuration store (Lich's UserVars). Different scripts
+  # read and write different, script-specific keys (astrology_debug, researcher,
+  # smoke_images_known, almanac_last_use, droughtmans_loot_container, ...), so
+  # this backs any getter/setter dynamically: an unset key reads back nil,
+  # assignment stores the value, and _reset (called by reset_data before every
+  # example) clears the store.
+  #
+  # Override a key for one example with allow(UserVars).to receive(:key)..., or
+  # set a value directly with UserVars.key = value. A script that needs a domain
+  # default (e.g. combat-trainer's moons) reopens Harness::UserVars to add it.
+  class UserVars
+    @store = {}
+
+    class << self
+      def _store
+        @store ||= {}
+      end
+
+      def _reset
+        @store = {}
+      end
+
+      def method_missing(name, *args)
+        key = name.to_s
+        if key.end_with?('=')
+          _store[key.chomp('=').to_sym] = args.first
+        else
+          _store[name.to_sym]
+        end
+      end
+
+      def respond_to_missing?(_name, _include_private = false)
+        true
+      end
+    end
+  end
+
   # After tests run, we need to wipe out/reset
   # constants and other contextual data so that
   # each test doesn't interfere with the others.
@@ -751,6 +788,7 @@ module Harness
     DRRoom._reset
     Map._reset
     XMLData._reset
+    UserVars._reset
   end
 
   def echo(message)
@@ -1143,6 +1181,28 @@ module Harness
   end
 
   module DRCH
+    # Mirrors the tend-response pattern constants from lich-5 common-healing-data.rb
+    # so scripts that reimplement a guarded tend (e.g. tendme's tend_wound_safely)
+    # can reference them in tests.
+    TEND_SUCCESS_PATTERNS = [
+      /You work carefully at tending/,
+      /You work carefully at binding/,
+      /That area has already been tended to/,
+      /That area is not bleeding/
+    ].freeze
+
+    TEND_FAILURE_PATTERNS = [
+      /You fumble/,
+      /too injured for you to do that/,
+      /TEND allows for the tending of wounds/,
+      /^You must have a hand free/
+    ].freeze
+
+    TEND_DISLODGE_PATTERNS = [
+      /^You \w+ remove (a|the|some) (.*) from/,
+      /^As you reach for the clay fragment/
+    ].freeze
+
     class << self
       def check_health(*_args); { 'score' => 0, 'bleeders' => [], 'poisoned' => false, 'diseased' => false }; end
       def has_tendable_bleeders?(*_args); false; end
