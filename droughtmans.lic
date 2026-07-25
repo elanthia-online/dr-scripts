@@ -499,7 +499,9 @@ class Droughtmans
   # Trash the prize wrapper only when the loot transfer emptied it. If any loot
   # remains (no/full loot container, an item that would not fit), the package is
   # kept instead so a prize is never thrown away. An unreadable package (nil
-  # contents) is treated as "not verified empty" and is likewise kept.
+  # contents) is treated as "not verified empty" and is likewise kept. The kept
+  # package is only re-stowed when still in hand -- by this point stow_hands has
+  # usually already put it away, so stowing again would just echo "Stow what?".
   # @return [void]
   def dispose_empty_package
     contents = DRCI.get_item_list('package', 'look')
@@ -507,7 +509,7 @@ class Droughtmans
       DRCI.dispose_trash('package', @worn_trashcan, @worn_trashcan_verb)
     else
       DRC.message("droughtmans: package still holds loot (check your #{@loot_container}) - keeping it instead of trashing")
-      DRCI.put_away_item?('package')
+      DRCI.put_away_item?('package') if DRCI.in_hands?('package')
     end
   end
 

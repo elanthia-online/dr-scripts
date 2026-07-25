@@ -406,13 +406,34 @@ RSpec.describe Droughtmans do
 
     it 'keeps a package that still holds loot instead of trashing it' do
       allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
+      allow(DRCI).to receive(:in_hands?).with('package').and_return(false)
       allow(DRCI).to receive(:dispose_trash)
-      expect(DRCI).to receive(:put_away_item?).with('package')
+      allow(DRCI).to receive(:put_away_item?)
       expect(DRC).to receive(:message).with(/still holds loot/)
 
       bot.dispose_empty_package
 
       expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'does not re-stow a kept package that has already been put away' do
+      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
+      allow(DRCI).to receive(:in_hands?).with('package').and_return(false)
+      allow(DRCI).to receive(:dispose_trash)
+      allow(DRC).to receive(:message)
+      expect(DRCI).not_to receive(:put_away_item?)
+
+      bot.dispose_empty_package
+    end
+
+    it 'stows a kept package that is still in hand' do
+      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
+      allow(DRCI).to receive(:in_hands?).with('package').and_return(true)
+      allow(DRCI).to receive(:dispose_trash)
+      allow(DRC).to receive(:message)
+      expect(DRCI).to receive(:put_away_item?).with('package')
+
+      bot.dispose_empty_package
     end
 
     it 'never trashes a package whose contents could not be read (nil)' do
