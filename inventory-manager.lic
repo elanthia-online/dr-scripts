@@ -276,7 +276,7 @@ class InventoryManager
           item.concat(" (attached to #{container})")
         end
       elsif inventory_type == 'ticket'
-        if captures = item.match(/^([A-Za-z\-' ]+) - (.*)\./).captures
+        if (captures = item.match(/^([A-Za-z\-' ]+) - (.*)\./).captures)
           item = "#{captures[0]}: #{captures[1]}"
         end
       end
