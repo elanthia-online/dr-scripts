@@ -114,6 +114,12 @@ class Droughtmans
     # canvas sack fetched from the compound dwarf; override with any carried
     # container (e.g. a worn backpack) via the droughtmans_loot_container setting.
     @loot_container = settings.droughtmans_loot_container || 'canvas sack'
+    # Optional pause (seconds) after each successful step. Movement is otherwise
+    # throttled only by roundtime, which in the maze is often near-zero, so the
+    # solver can move fast enough to stumble/fall every few rooms. Set
+    # droughtmans_step_delay to a small value (e.g. 1) to pace it; 0 keeps the
+    # historical un-throttled behavior.
+    @step_delay = (settings.droughtmans_step_delay || 0).to_f
 
     # Randomize the wall-follow hand so repeated runs explore different paths.
     @current_direction_map = [CLOCKWISE_MAP, COUNTER_CLOCKWISE_MAP].sample
@@ -291,6 +297,7 @@ class Droughtmans
       waitrt?
       zap_nemesis
       @wandercounter += 1 if log_move
+      throttle_movement
     when /^Rushing through/, /^Noticing your attempt to leave/
       waitrt?
       DRC.fix_standing
@@ -309,6 +316,7 @@ class Droughtmans
       waitrt?
       zap_nemesis
       @wandercounter += 1 if log_move
+      throttle_movement
     else
       echo('move failed - clearing exits and retrying next tick')
       @last_move = ''
@@ -319,6 +327,14 @@ class Droughtmans
       waitrt?
       zap_nemesis
     end
+  end
+
+  # Pause briefly after a successful step when a step delay is configured, so the
+  # solver does not move fast enough to stumble and fall (which is especially
+  # costly while carrying the key). No-op when droughtmans_step_delay is 0.
+  # @return [void]
+  def throttle_movement
+    pause @step_delay if @step_delay.positive?
   end
 
   # Choose and execute the next wander step using the wall-follow rules, with
@@ -712,6 +728,12 @@ class Droughtmans
   def handle_dark_room
     return unless Flags['dark-room']
 
+    relight_room
+  end
+
+  # Shake the wand for light and clear the dark-room flag.
+  # @return [void]
+  def relight_room
     fput('shake wand')
     Flags.reset('dark-room')
   end
@@ -747,6 +769,9 @@ class Droughtmans
 
       check_key_holders unless DRRoom.pcs.empty?
       if (rope = DRRoom.room_objs.find { |obj| obj =~ /rope/ })
+        # Freeze any rivals in the room BEFORE pulling: the rope drops the key on
+        # the floor, and an unfrozen npc will snatch it before we can grab it.
+        check_for_npcs
         pull_rope(rope)
       end
     end
@@ -762,11 +787,18 @@ class Droughtmans
     @last_door_entered ||= door
     return unless @last_door_entered != door || @wandercounter > 40 || have_key?
 
-    case DRC.bput("go #{door}", /^Obvious/, /^You can't go there/, /You smash your nose/)
+    case DRC.bput("go #{door}", /^Obvious/, /^You can't go there/, /You smash your nose/, /It's pitch dark and you can't see a thing/)
     when /^Obvious/
       echo('went through a colored door')
       DRRoom.room_objs.delete(door)
       init_maze
+    when /It's pitch dark and you can't see a thing/
+      # A dark room makes GO resolve to nothing, so bput would otherwise block for
+      # its full timeout (the reported 15-second hang). Re-light and skip this
+      # tick; the door is retried once the room is lit again.
+      echo('colored door in the dark - relighting, will retry once lit')
+      relight_room
+      return
     when /^You can't go there/
       echo("Couldn't go through the #{door}")
     end

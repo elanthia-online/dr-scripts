@@ -465,7 +465,7 @@ RSpec.describe Droughtmans do
   end
 
   # ===========================================================================
-  # parse_configuration: the configurable loot destination
+  # parse_configuration: the configurable loot destination and step pacing
   # ===========================================================================
   describe '#parse_configuration (loot container)' do
     before { allow(UserVars).to receive(:droughtmans_debug).and_return(nil) }
@@ -480,6 +480,210 @@ RSpec.describe Droughtmans do
       $test_settings = OpenStruct.new(droughtmans_loot_container: 'worn backpack')
       bot.parse_configuration
       expect(bot.instance_variable_get(:@loot_container)).to eq('worn backpack')
+    end
+  end
+
+  describe '#parse_configuration (step delay)' do
+    before { allow(UserVars).to receive(:droughtmans_debug).and_return(nil) }
+
+    it 'defaults the step delay to 0 (unthrottled) when unset' do
+      $test_settings = OpenStruct.new
+      bot.parse_configuration
+      expect(bot.instance_variable_get(:@step_delay)).to eq(0.0)
+    end
+
+    it 'coerces a configured droughtmans_step_delay to a float' do
+      $test_settings = OpenStruct.new(droughtmans_step_delay: 2)
+      bot.parse_configuration
+      expect(bot.instance_variable_get(:@step_delay)).to eq(2.0)
+    end
+
+    it 'accepts a fractional step delay' do
+      $test_settings = OpenStruct.new(droughtmans_step_delay: 0.5)
+      bot.parse_configuration
+      expect(bot.instance_variable_get(:@step_delay)).to eq(0.5)
+    end
+  end
+
+  # ===========================================================================
+  # throttle_movement: opt-in pacing so the solver stops falling every few rooms
+  # ===========================================================================
+  describe '#throttle_movement' do
+    it 'pauses for the configured delay when one is set' do
+      bot.instance_variable_set(:@step_delay, 1.5)
+      expect(bot).to receive(:pause).with(1.5)
+
+      bot.throttle_movement
+    end
+
+    it 'does not pause at all when the delay is zero (default)' do
+      bot.instance_variable_set(:@step_delay, 0.0)
+      expect(bot).not_to receive(:pause)
+
+      bot.throttle_movement
+    end
+
+    it 'does not pause on a negative (misconfigured) delay' do
+      bot.instance_variable_set(:@step_delay, -1.0)
+      expect(bot).not_to receive(:pause)
+
+      bot.throttle_movement
+    end
+  end
+
+  # ===========================================================================
+  # do_move: pacing is applied end-to-end only on a genuinely successful step
+  # ===========================================================================
+  describe '#do_move pacing' do
+    before do
+      bot.instance_variable_set(:@wandercounter, 0)
+      bot.instance_variable_set(:@move_history_short, [])
+      bot.instance_variable_set(:@move_history_since_init, [])
+      bot.instance_variable_set(:@backtrack_to_white_door, false)
+      bot.instance_variable_set(:@reverse_dir, false)
+      bot.instance_variable_set(:@next_move, '')
+      bot.instance_variable_set(:@nemesis, nil)
+      bot.instance_variable_set(:@step_delay, 2.0)
+      DRRoom.room_objs = []
+      DRRoom.npcs = []
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+    end
+
+    it 'paces a successful step by the configured delay' do
+      allow(DRC).to receive(:bput).and_return('Obvious paths: north, south.')
+      expect(bot).to receive(:pause).with(2.0)
+
+      bot.do_move('n')
+    end
+
+    it 'does not pace a failed step (no matching move response)' do
+      allow(DRC).to receive(:bput).and_return('You slam into a wall.')
+      expect(bot).not_to receive(:pause)
+
+      bot.do_move('n')
+    end
+  end
+
+  # ===========================================================================
+  # relight_room / handle_dark_room: shared wand-relight behavior
+  # ===========================================================================
+  describe '#relight_room' do
+    it 'shakes the wand for light' do
+      expect(bot).to receive(:fput).with('shake wand')
+
+      bot.relight_room
+    end
+  end
+
+  describe '#handle_dark_room' do
+    it 'relights the room when the dark-room flag is set' do
+      allow(Flags).to receive(:[]).with('dark-room').and_return(true)
+      expect(bot).to receive(:relight_room)
+
+      bot.handle_dark_room
+    end
+
+    it 'does nothing when the room is not dark' do
+      allow(Flags).to receive(:[]).with('dark-room').and_return(nil)
+      expect(bot).not_to receive(:relight_room)
+
+      bot.handle_dark_room
+    end
+  end
+
+  # ===========================================================================
+  # handle_doors: colored-door traversal, plus the dark-room hang fix
+  # ===========================================================================
+  describe '#handle_doors' do
+    before do
+      # wandercounter > 40 forces an attempt regardless of the anti-repeat guard.
+      bot.instance_variable_set(:@wandercounter, 41)
+      bot.instance_variable_set(:@last_door_entered, 'green door')
+      DRRoom.room_objs = ['green door']
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+    end
+
+    it 'reinitializes the map after stepping through a colored door' do
+      allow(DRC).to receive(:bput).and_return('Obvious exits: north, south.')
+      expect(bot).to receive(:init_maze)
+
+      bot.handle_doors
+
+      expect(DRRoom.room_objs).not_to include('green door')
+    end
+
+    it 'relights and skips (never hangs) when the colored-door room is dark' do
+      allow(DRC).to receive(:bput).and_return("It's pitch dark and you can't see a thing!")
+      expect(bot).to receive(:relight_room)
+      expect(bot).not_to receive(:init_maze)
+
+      bot.handle_doors
+    end
+
+    it 'does not reinitialize when the door refuses entry' do
+      allow(DRC).to receive(:bput).and_return("You can't go there.")
+      expect(bot).not_to receive(:init_maze)
+
+      bot.handle_doors
+    end
+
+    it 'does nothing before enough rooms have been explored (wandercounter <= 15)' do
+      bot.instance_variable_set(:@wandercounter, 10)
+      expect(DRC).not_to receive(:bput)
+
+      bot.handle_doors
+    end
+
+    it 'does nothing when no colored door is present' do
+      DRRoom.room_objs = ['rope']
+      expect(DRC).not_to receive(:bput)
+
+      bot.handle_doors
+    end
+
+    it 'avoids re-entering the same colored door until wandering further' do
+      # Same door as last entered, and not yet past the wandercounter-40 threshold.
+      bot.instance_variable_set(:@wandercounter, 20)
+      bot.instance_variable_set(:@last_door_entered, 'green door')
+      expect(DRC).not_to receive(:bput)
+
+      bot.handle_doors
+    end
+  end
+
+  # ===========================================================================
+  # handle_key_or_search: wand rivals BEFORE pulling the key-dropping rope
+  # ===========================================================================
+  describe '#handle_key_or_search (rope branch)' do
+    before do
+      bot.instance_variable_set(:@nemesis, nil)
+      bot.instance_variable_set(:@whitedoorseen, -1)
+      DRRoom.pcs = []
+      DRRoom.room_objs = ['rope']
+      allow(DRCI).to receive(:in_hands?).and_return(false) # no key in hand
+    end
+
+    it 'freezes rivals in the room BEFORE pulling the rope' do
+      expect(bot).to receive(:check_for_npcs).ordered
+      expect(bot).to receive(:pull_rope).with('rope').ordered
+
+      bot.handle_key_or_search
+    end
+
+    it 'does not wand the room when there is no rope to pull' do
+      DRRoom.room_objs = []
+      expect(bot).not_to receive(:check_for_npcs)
+      expect(bot).not_to receive(:pull_rope)
+
+      bot.handle_key_or_search
+    end
+
+    it 'skips pulling (and wanding) entirely while a nemesis is set' do
+      bot.instance_variable_set(:@nemesis, 'Cherisse')
+      expect(bot).not_to receive(:check_for_npcs)
+      expect(bot).not_to receive(:pull_rope)
+
+      bot.handle_key_or_search
     end
   end
 
