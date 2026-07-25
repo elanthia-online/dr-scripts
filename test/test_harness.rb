@@ -1181,6 +1181,28 @@ module Harness
   end
 
   module DRCH
+    # Mirrors the tend-response pattern constants from lich-5 common-healing-data.rb
+    # so scripts that reimplement a guarded tend (e.g. tendme's tend_wound_safely)
+    # can reference them in tests.
+    TEND_SUCCESS_PATTERNS = [
+      /You work carefully at tending/,
+      /You work carefully at binding/,
+      /That area has already been tended to/,
+      /That area is not bleeding/
+    ].freeze
+
+    TEND_FAILURE_PATTERNS = [
+      /You fumble/,
+      /too injured for you to do that/,
+      /TEND allows for the tending of wounds/,
+      /^You must have a hand free/
+    ].freeze
+
+    TEND_DISLODGE_PATTERNS = [
+      /^You \w+ remove (a|the|some) (.*) from/,
+      /^As you reach for the clay fragment/
+    ].freeze
+
     class << self
       def check_health(*_args); { 'score' => 0, 'bleeders' => [], 'poisoned' => false, 'diseased' => false }; end
       def has_tendable_bleeders?(*_args); false; end
