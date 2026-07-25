@@ -678,34 +678,48 @@ class Droughtmans
   # Main loop and its per-tick steps.
   # ---------------------------------------------------------------------------
 
-  # Drive the maze forever: each tick recovers state, handles the key/nemesis,
-  # traverses doors, and then either backtracks (key in hand, white door seen) or
-  # wanders. Exits via {#package} on a win or {#wave} on wand loss.
+  # Drive the maze forever by running one {#run_tick} per iteration. Exits via
+  # {#package} on a win or {#wave} on wand loss.
   # @return [void]
   def main_loop
-    loop do
-      waitrt?
-      DRC.fix_standing
-      handle_package_if_held
-      ensure_wand
-      absorb_unfrozen_npcs
-      handle_dark_room
-      zap_nemesis
-      track_white_door
-      handle_key_or_search
-      handle_lever
-      set_or_unset_nemesis
-      handle_doors
-      handle_reposition
-      maintain_khri_buffs
-      maybe_change_direction
-      check_for_npcs
+    loop { run_tick }
+  end
 
-      if @backtrack_to_white_door
-        backtrack
-      else
-        wander
-      end
+  # One pass of the main loop: recover state, freeze rivals, act on the room
+  # (key/nemesis, lever, doors), then either backtrack (key in hand, white door
+  # seen) or wander. Extracted from {#main_loop} so the per-tick sequence is
+  # unit-testable without the infinite loop.
+  #
+  # Rivals are frozen (via {#check_for_npcs}) BEFORE any provocative action --
+  # not at the end of the tick as before. On arrival {#do_move} only froze the
+  # previous room's occupants, so a rival waiting in the new room could wand-
+  # freeze us while we pulled a rope/lever or stepped through a door (and even in
+  # a room with nothing to pull). Freezing first closes that window; the per-
+  # action guards in {#handle_key_or_search}/{#handle_lever} remain as the tight
+  # freeze right before the key drops, and {#do_move} still freezes before moving.
+  # @return [void]
+  def run_tick
+    waitrt?
+    DRC.fix_standing
+    handle_package_if_held
+    ensure_wand
+    absorb_unfrozen_npcs
+    handle_dark_room
+    zap_nemesis
+    check_for_npcs
+    track_white_door
+    handle_key_or_search
+    handle_lever
+    set_or_unset_nemesis
+    handle_doors
+    handle_reposition
+    maintain_khri_buffs
+    maybe_change_direction
+
+    if @backtrack_to_white_door
+      backtrack
+    else
+      wander
     end
   end
 
