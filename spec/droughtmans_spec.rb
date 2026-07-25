@@ -165,8 +165,12 @@ RSpec.describe Droughtmans do
       expect(bot.parse_exits('west')).to eq(%w[w])
     end
 
-    it 'yields nil for an unknown direction token (documents the SHORTDIR gap)' do
-      expect(bot.parse_exits('north, sideways')).to eq(['n', nil])
+    it 'drops an unknown direction token rather than leaking a nil' do
+      expect(bot.parse_exits('north, sideways')).to eq(['n'])
+    end
+
+    it 'drops every token when none are recognized (empty, not [nil, nil])' do
+      expect(bot.parse_exits('sideways, yonder')).to eq([])
     end
   end
 
@@ -201,6 +205,28 @@ RSpec.describe Droughtmans do
 
       bot.wave('Bandit')
 
+      expect(bot.instance_variable_get(:@nemesis)).to be_nil
+    end
+
+    it 'listens for a key-drop of any gender, not just "his"' do
+      # bput only returns a line it was asked to match; verify the patterns
+      # cover her/its drops so a female/neuter rival's dropped key is caught
+      # in-game (a plain and_return stub would pass even with the old pattern).
+      captured = nil
+      allow(DRC).to receive(:bput) { |_cmd, *patterns| captured = patterns; 'Roundtime' }
+
+      bot.wave('Bandit')
+
+      expect(captured.any? { |p| 'Bandit drops her golden key!' =~ p }).to be(true)
+      expect(captured.any? { |p| 'The owlbear drops its golden key!' =~ p }).to be(true)
+    end
+
+    it 'still handles the male drop line' do
+      bot.instance_variable_set(:@nemesis, 'Bandit')
+      DRRoom.room_objs = []
+      allow(DRC).to receive(:bput).and_return('drops his golden key')
+
+      expect { bot.wave('Bandit') }.not_to raise_error
       expect(bot.instance_variable_get(:@nemesis)).to be_nil
     end
 
@@ -720,6 +746,82 @@ RSpec.describe Droughtmans do
   end
 
   # ===========================================================================
+  # search_wand: self-correcting injury latch (no permanent give-up)
+  # ===========================================================================
+  describe '#search_wand' do
+    it 'latches injured/no-rope when the dowse fails for condition' do
+      bot.instance_variable_set(:@injured, false)
+      bot.instance_variable_set(:@norope, false)
+      allow(DRC).to receive(:bput).and_return("You're not in any condition to be searching around")
+
+      bot.search_wand
+
+      expect(bot.instance_variable_get(:@injured)).to be(true)
+      expect(bot.instance_variable_get(:@norope)).to be(true)
+    end
+
+    it 'clears the injury latch when a dowse succeeds (recovers after healing)' do
+      bot.instance_variable_set(:@injured, true)
+      bot.instance_variable_set(:@norope, true)
+      allow(DRC).to receive(:bput).and_return('Roundtime: 5 sec.')
+
+      bot.search_wand
+
+      expect(bot.instance_variable_get(:@injured)).to be(false)
+      expect(bot.instance_variable_get(:@norope)).to be(false)
+    end
+
+    it 'still attempts the dowse when previously injured (not a permanent latch)' do
+      bot.instance_variable_set(:@injured, true)
+      expect(DRC).to receive(:bput).and_return('Roundtime')
+
+      bot.search_wand
+    end
+  end
+
+  # ===========================================================================
+  # check_for_npcs: ordinal expansion + full removal of frozen duplicates
+  # ===========================================================================
+  describe '#check_for_npcs' do
+    it 'is a no-op when the room has no npcs' do
+      DRRoom.npcs = []
+      expect(bot).not_to receive(:wave)
+
+      bot.check_for_npcs
+    end
+
+    it 'waves at a single npc by its base name' do
+      DRRoom.npcs = %w[hunter]
+      allow(bot).to receive(:wave)
+
+      bot.check_for_npcs
+
+      expect(bot).to have_received(:wave).with('hunter')
+    end
+
+    it 'expands duplicates into ordinal targets' do
+      DRRoom.npcs = %w[guard guard]
+      allow(bot).to receive(:wave)
+
+      bot.check_for_npcs
+
+      expect(bot).to have_received(:wave).with('guard')
+      expect(bot).to have_received(:wave).with('second guard')
+    end
+
+    it 'fully clears frozen duplicates so they are not re-waved next tick' do
+      # Regression: wave cannot delete an ordinal alias ("second guard"), so the
+      # extra instances used to linger in DRRoom.npcs.
+      DRRoom.npcs = %w[guard guard troll]
+      allow(bot).to receive(:wave)
+
+      bot.check_for_npcs
+
+      expect(DRRoom.npcs).to be_empty
+    end
+  end
+
+  # ===========================================================================
   # run_tick: one pass of the main loop -- rivals frozen before any action
   # ===========================================================================
   describe '#run_tick' do
@@ -746,7 +848,14 @@ RSpec.describe Droughtmans do
       bot.run_tick
     end
 
-    it 'freezes rivals after resolving the nemesis (so a fresh nemesis is set first)' do
+    it 'resolves the nemesis flag BEFORE zapping (so a freshly-announced nemesis is zapped this tick)' do
+      expect(bot).to receive(:set_or_unset_nemesis).ordered
+      expect(bot).to receive(:zap_nemesis).ordered
+
+      bot.run_tick
+    end
+
+    it 'freezes rivals after resolving/zapping the nemesis' do
       expect(bot).to receive(:zap_nemesis).ordered
       expect(bot).to receive(:check_for_npcs).ordered
 
