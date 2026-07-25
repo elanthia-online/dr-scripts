@@ -145,7 +145,6 @@ class InventoryManager
   def get_item_data(inventory_type)
     if @item_data[@active_character]
       @item_data[@active_character] = @item_data[@active_character].select { |line| !line.include? "(#{inventory_type})" }
-      echo @item_data[@active_character].inspect
     else
       @item_data[@active_character] = []
     end
