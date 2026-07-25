@@ -302,7 +302,7 @@ class InventoryManager
   def add_ticket
     check_inventory("ticket", /^You take a moment/, 'ticket')
   end
-  
+
   def add_vault_standard
     check_inventory("vault standard", /^Vault Inventory:/, 'vault')
   end
