@@ -11,17 +11,6 @@ require_relative 'spec_helper'
 # predicates, settings validation (which aborts), and the queue reshuffle.
 load_lic_class('smoke.lic', 'Smoker')
 
-# UserVars is per-script config -- provide the constant (only if no other spec
-# defined it) so build_priority_queue's reads/writes can be stubbed per example.
-class UserVars
-  class << self
-    def smoke_images_known; @smoke_images_known; end
-    def smoke_images_known=(value); @smoke_images_known = value; end
-    def smoke_images_mastered; @smoke_images_mastered; end
-    def smoke_images_mastered=(value); @smoke_images_mastered = value; end
-  end
-end unless defined?(UserVars)
-
 RSpec.describe Smoker do
   subject(:smoker) { described_class.allocate }
 

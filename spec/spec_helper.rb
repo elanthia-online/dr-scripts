@@ -46,9 +46,12 @@
 #   - Need a commons method the harness does not have yet? Add it to
 #     test/test_harness.rb following the conventions above -- do not stub it
 #     locally in one spec.
-#   - UserVars is the deliberate exception: it is per-script configuration (each
-#     script reads different keys with script-specific meanings), so stub it
-#     per-spec, not in the harness.
+#   - UserVars is a generic dynamic store in the harness: any getter reads back
+#     nil until set, any setter stores, and it is cleared before each example.
+#     Override a key with allow(UserVars).to receive(:key)... or set it directly
+#     with UserVars.key = value -- do NOT redefine the class in a spec. A script
+#     that needs a domain default (e.g. combat-trainer's moons) reopens
+#     Harness::UserVars to add just that default (see combat_trainer_spec).
 #   - If a .lic method calls exit on a guard, drive it with
 #     `expect { ... }.to raise_error(SystemExit)` (or stub exit on the instance).
 #     A stray unwrapped exit terminates the whole run, not just the example.
