@@ -720,6 +720,11 @@ class Droughtmans
     DRC.fix_standing
     handle_package_if_held
     ensure_wand
+    # Retry the dowse while latched injured: once a wound is tended, search_wand
+    # succeeds and clears @injured/@norope, re-enabling rope pulls mid-run. Without
+    # this the tarzan-rope retry is unreachable (pull_rope early-returns on
+    # @norope), so the latch would otherwise persist until the next boot.
+    search_wand if @injured
     absorb_unfrozen_npcs
     handle_dark_room
     set_or_unset_nemesis

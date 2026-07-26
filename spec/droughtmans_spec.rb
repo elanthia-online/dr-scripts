@@ -877,6 +877,43 @@ RSpec.describe Droughtmans do
 
       bot.run_tick
     end
+
+    it 'does not re-dowse when not injured' do
+      bot.instance_variable_set(:@injured, false)
+      expect(bot).not_to receive(:search_wand)
+
+      bot.run_tick
+    end
+
+    it 'retries the dowse each tick while injured' do
+      bot.instance_variable_set(:@injured, true)
+      expect(bot).to receive(:search_wand)
+
+      bot.run_tick
+    end
+
+    # End-to-end: injury latch -> recovery via the per-tick retry -> rope pull
+    # works again. search_wand runs for real here (it is not stubbed) so the
+    # latch is genuinely cleared, then pull_rope is exercised against it.
+    it 'recovers from the injury latch mid-run so rope pulls resume' do
+      bot.instance_variable_set(:@injured, true)
+      bot.instance_variable_set(:@norope, true)
+      # Character has recovered: the dowse now succeeds.
+      allow(DRC).to receive(:bput).with('search wand', any_args).and_return('Roundtime: 5 sec.')
+
+      bot.run_tick
+
+      expect(bot.instance_variable_get(:@injured)).to be(false)
+      expect(bot.instance_variable_get(:@norope)).to be(false)
+
+      # A subsequent rope pull now proceeds instead of early-returning on @norope.
+      DRRoom.room_objs = ['rope']
+      allow(DRC).to receive(:bput).with('pull rope', any_args).and_return('A loud CLICK echoes from above')
+
+      bot.pull_rope('rope')
+
+      expect(DRC).to have_received(:bput).with('pull rope', any_args)
+    end
   end
 
   # ===========================================================================
