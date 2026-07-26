@@ -417,7 +417,7 @@ class Droughtmans
   #   which means the wand has been lost and the bot can no longer function.
   def wave(person)
     case DRC.bput("wave wand at #{person}",
-                  /^Roundtime/, /already frozen/, /drops his golden key/,
+                  /^Roundtime/, /already frozen/, /drops (?:his|her|its) golden key/,
                   /Wave at what\?/, /I could not find/, /I do not understand/)
     when /golden key/
       @nemesis = nil
@@ -541,13 +541,21 @@ class Droughtmans
 
   # Freeze every npc in the room, expanding duplicate types into ordinal targets
   # (e.g. two guards -> "guard", "second guard").
+  #
+  # After freezing all instances of a type, drop that type from the live npc
+  # list: wave can delete a base name it froze but not an ordinal alias ("second
+  # guard"), so without this the extra instances lingered and were re-waved
+  # ("already frozen") every tick.
   # @return [void]
   def check_for_npcs
     return unless DRRoom.npcs.any?
 
-    DRRoom.npcs.group_by(&:itself).flat_map { |npc_type, quantity|
-      quantity.size.times.map { |number| number.zero? ? npc_type : "#{$ORDINALS[number]} #{npc_type}" }
-    }.each { |npc| wave(npc) }
+    DRRoom.npcs.group_by(&:itself).each do |npc_type, instances|
+      instances.each_index do |number|
+        wave(number.zero? ? npc_type : "#{$ORDINALS[number]} #{npc_type}")
+      end
+      DRRoom.npcs.delete(npc_type)
+    end
   end
 
   # Dowse the wand to reveal the key location, ensuring the wand is in hand first.
@@ -557,16 +565,23 @@ class Droughtmans
     search_wand
   end
 
-  # Dowse the wand for the key. Latches an injured state on failure so we stop
-  # searching and pulling ropes while wounded.
+  # Dowse the wand for the key, re-evaluating the injured state each time.
+  #
+  # A failed dowse (too wounded) sets the injured/no-rope latches so we stop
+  # dowsing and pulling ropes; a successful dowse clears them. This is
+  # deliberately re-evaluated on every call (rather than a permanent latch that
+  # never recovered) so that once a crossbow wound is tended, the next dowse --
+  # at boot or after a tarzan-rope reset -- lifts the latch and rope-pulling
+  # resumes for the rest of the run.
   # @return [void]
   def search_wand
-    return if @injured
-
     case DRC.bput('search wand', /^Roundtime/, /You're not in any condition to be searching around/)
     when /not in any condition/
       @injured = true
       @norope = true
+    else
+      @injured = false
+      @norope = false
     end
   end
 
@@ -668,10 +683,12 @@ class Droughtmans
   end
 
   # Convert a comma-separated long-direction exit list into short directions.
+  # Unknown tokens (not in SHORTDIR) are dropped rather than left as nil, so
+  # @exits never feeds a nil into a move.
   # @param text [String] e.g. "north, southeast, out"
   # @return [Array<String>] e.g. ["n", "se", "out"]
   def parse_exits(text)
-    text.split(', ').map { |dir| SHORTDIR[dir] }
+    text.split(', ').map { |dir| SHORTDIR[dir] }.compact
   end
 
   # ---------------------------------------------------------------------------
@@ -703,14 +720,19 @@ class Droughtmans
     DRC.fix_standing
     handle_package_if_held
     ensure_wand
+    # Retry the dowse while latched injured: once a wound is tended, search_wand
+    # succeeds and clears @injured/@norope, re-enabling rope pulls mid-run. Without
+    # this the tarzan-rope retry is unreachable (pull_rope early-returns on
+    # @norope), so the latch would otherwise persist until the next boot.
+    search_wand if @injured
     absorb_unfrozen_npcs
     handle_dark_room
+    set_or_unset_nemesis
     zap_nemesis
     check_for_npcs
     track_white_door
     handle_key_or_search
     handle_lever
-    set_or_unset_nemesis
     handle_doors
     handle_reposition
     maintain_khri_buffs
