@@ -1,145 +1,1223 @@
+# frozen_string_literal: true
+
 =begin
+  Script: stack-scrolls
+  Author: Mahtra (refactored from original)
+
   Documentation: https://elanthipedia.play.net/Lich_script_repository#stack-scrolls
+
+  Changelog:
+    3.1.3 (2026-07-27) - Review fixes (PR #7478)
+      - FIX: the STACKER OVERVIEW "Spells" column counted non-empty slots, so a
+        spell split across slots (or across stackers, in the TOTALS row) was
+        over-counted. It now counts distinct spell names: per stacker, and
+        globally in the TOTALS row (matching the SPELL STATISTICS unique count).
+      - CLEANUP: stack_new_scroll locates its empty slot with slot_empty? (which
+        also treats a nil slot as empty), matching update_target_cache and
+        find_stacker_with_empty_slot, instead of an exact index([]) lookup.
+      - CLEANUP: the display and search paths reuse the memoized spell_data
+        helper (shared lookup + error handling) instead of repeating
+        get_data('spells').spell_data with an inline rescue.
+    3.1.2 (2026-07-27) - Clearer consolidation leftover messaging (PR #7478)
+      - CHANGE: when `consolidate` cannot fit every scroll (targets fill up on a
+        tightly packed pass), it no longer tells you to "re-run consolidate" --
+        that only re-reads the stackers and would ignore the loose leftovers.
+        The closing note now reports how many scrolls are stowed, where they are
+        (labeled and intact, never destroyed), and the remedy that actually
+        works: re-stack them with `;stack-scrolls <container>`. The tightly
+        packed heads-up and the per-scroll lines are softened (no more WARNING
+        spam for the safe, by-design stow). Messaging only; no behavior change.
+    3.1.1 (2026-07-22) - Review fixes from in-game smoke test (PR #7478)
+      - BUGFIX: `consolidate confirm` could not move scrolls. The planner
+        describes the FINAL distribution, but moves were executed in a fixed
+        (alphabetical) order, so an inbound push into a stacker that was still
+        full -- because the sections leaving it were scheduled later -- hit
+        "no more room" and the run stalled on the first move. Execution now
+        goes through a capacity-aware ordering (order_consolidation_moves) that
+        only pushes into a target with room (an existing section to merge into,
+        or a free slot), freeing source slots to unblock the rest.
+      - BUGFIX: the consolidation push phase issued `turn <stacker> to <spell>`
+        before pushing. For a brand-new section the game replies "That spell
+        does not appear to be available", which is not a turn-failure pattern,
+        so each new-section push blocked for the full 15s bput timeout. The turn
+        is unnecessary (a push auto-files the scroll into its section), so it was
+        removed -- matching the container-stacking path that never turns.
+      - CHANGE: `worn_trashcan` / `worn_trashcan_verb` are read from the SHARED
+        top-level settings (as other scripts do), not from a `stack_scrolls:`
+        bucket; the migration guide no longer tells you to move or remove them.
+    3.1.0 (2026-07-22) - Upstream-reconciliation for EO submission
+      - CHANGE: excess (unstackable) scrolls now STOW by default; set
+        trash_excess_scrolls: true to trash them instead (was trash-by-default)
+      - CHANGE: keep_scrolls / discard_scrolls now match a spell's full NAME or
+        ABBREVIATION EXACTLY (case-insensitive); substring matching is gone, so
+        'Fire' no longer matches 'Fireball'
+      - CHANGE: `clean` is now simulate-then-confirm (`clean` previews, `clean
+        confirm` executes); removed the blocking yes/no prompt that read the
+        game stream to gate a destructive operation
+      - CHANGE: per-run statistics logging is now opt-in (log_statistics: true)
+    3.0.0 (2026-06-22) - DRY/SOLID/YARD overhaul + adversarial spec suite
+      - REFACTOR: extracted pure, side-effect-free seams (limit math, plan
+        computation, scroll-list parsing, settings migration, keep/discard
+        filtering, bucket timing) so they are unit-testable without the game
+      - REFACTOR: DRYed the duplicated stacker I/O preamble, pull loop, and
+        statistics bookkeeping into named private helpers
+      - REFACTOR: full YARD documentation on every method
+      - BUGFIX (B1): find_stacker_with_empty_slot and the free-slot counter no
+        longer crash on a nil slot (matched the nil-safe sibling helpers)
+      - BUGFIX (B2): identify_scroll_spell dispatched on exact String equality
+        of bput output, so the glyph-scroll read path never fired and look-
+        described scrolls were dropped; now uses case-insensitive regex parsing
+      - BUGFIX (B3): a blank entry in discard_scrolls (or keep_scrolls) matched
+        every scroll; blank patterns are now ignored so they cannot trash data
+      - BUGFIX (B5): the prune "Scrolls to KEEP" total omitted the retained
+        portion of over-limit spells; it now counts them
+      - CHANGE (Q1): the per-slot limit no longer trashes a scroll outright when
+        another (non-full or empty) slot can hold it
+      - HARDENING: a successful stack returns immediately so kept counts cannot
+        be double-incremented; limit/count seams guard a nil stacker cache
+
+    2.2.0 (2026-02-16) - Consolidate feature
+    2.1.0 (2026-02-16) - Prune feature
+    2.0.0 (2026-02-16) - Major refactor (discard_scrolls fix, Regexp.escape,
+      blacklist mode, with_stacker helper)
 =end
 
+# Scroll-stacker management suite for DragonRealms. Reads the contents of one or
+# more scroll stackers into a cached map (UserVars.stackers), then stacks loose
+# scrolls from a container, retrieves single copies, reports inventory, and runs
+# simulate-then-confirm maintenance plans (prune, consolidate, clean).
+#
+# @note Settings (NEW nested format under `stack_scrolls:`):
+#   - `stackers` [Array<String>] the stacker items, e.g. ["scroll.folio"] (required)
+#   - `stacker_container` [String] container the stackers live in (optional)
+#   - `keep_scrolls` [Array<String>] whitelist; empty means keep all (optional)
+#   - `discard_scrolls` [Array<String>] blacklist; takes priority over keep (optional)
+#   - `trash_excess_scrolls` [Boolean] trash (true) or stow (false) excess that
+#     will not fit in the stackers; default false (stow)
+#   - `max_scrolls_per_spell` [Integer] global cap on copies of any one spell (optional)
+#   - `max_scrolls_per_slot` [Integer] cap on copies in a single section (optional, game max 125)
+#   - `log_statistics` [Boolean] write a per-run stats log under LOG_DIR; default false
+#
+# @note `worn_trashcan` and `worn_trashcan_verb` are SHARED base-yaml settings
+#   used by many scripts, so they are read from the TOP LEVEL of your profile,
+#   never from a stack-scrolls bucket. Leave them where your other scripts read
+#   them; do not move them under `stack_scrolls:`.
+#
+# @note Filter logic. Matching is EXACT on a spell's full name OR abbreviation,
+#   case-insensitive -- e.g. 'Fire' matches only the spell named/abbreviated
+#   "Fire", never "Fireball":
+#   - discard_scrolls match  -> TRASH (blacklist wins)
+#   - keep_scrolls empty     -> KEEP all (except blacklisted)
+#   - keep_scrolls non-empty -> KEEP only matches (whitelist), TRASH the rest
+#
+# @note LEGACY top-level format (scroll_stackers:, keep_scrolls:, ...) is still
+#   read and triggers a migration warning; the limit features require the new
+#   nested format.
+#
+# @example Stack every scroll found in a haversack
+#   ;stack-scrolls haversack
+# @example Pull one copy of a spell out of the stackers
+#   ;stack-scrolls get Fireball
+# @example Show a verbose overview with mana types
+#   ;stack-scrolls summary
+# @example Simulate, then perform, a prune
+#   ;stack-scrolls prune
+#   ;stack-scrolls prune confirm
 class ScrollStack
+  VERSION = '3.1.3'
+
+  # --- Game-text patterns ---------------------------------------------------
+  SECTION_HAS_PATTERN = /The (?<spell>.*) section has (?<count>\d+)/.freeze
+  SECTION_EMPTY_PATTERN = /Section \d+/.freeze
+  SECTION_EMPTY_VERIFY_PATTERN = /Section \d+ is empty/.freeze
+  # Capture the quoted label regardless of whether the sentence period falls
+  # inside ("<name>.") or after ("<name>".) the closing quote; a trailing period
+  # is stripped in spell_from_look.
+  LABELED_SCROLL_PATTERN = /It is labeled "(?<spell>[^"]*)"/i.freeze
+  SPELL_DESCRIPTION_PATTERN = /of the (?<spell>.*) spell/.freeze
+  GLYPH_SCROLL_PATTERN = /three-dimensional shapes cover much of the/i.freeze
+  TURN_SUCCESS_PATTERN = /^You turn/.freeze
+  TURN_FAIL_PATTERNS = [/I could not find/, /What were you referring/].freeze
+  PUSH_NEW_SUCCESS_PATTERN = /Not finding a match/i.freeze
+  PUSH_EXISTING_SUCCESS_PATTERN = /you find room/i.freeze
+  PUSH_FULL_PATTERN = /you realize there/i.freeze
+  PUSH_FAIL_PATTERNS = [/You can't/, /I could not find/].freeze
+  PULL_LAST_PATTERN = /This was the last copy/i.freeze
+  PULL_SUCCESS_PATTERN = /Carefully/i.freeze
+  PULL_EMPTY_PATTERN = /This section is empty/i.freeze
+
+  # --- Configuration constants ----------------------------------------------
+  FLIP_TIMEOUT = 3
+  READ_TIMEOUT = 5
+  PUSH_TIMEOUT = 5
+  MAX_RETRIES = 2
+  LOG_DIR = "#{$data_dir}/scroll-stacker-logs".freeze
+  BUCKET_SCROLL_LIMIT = 30
+  BUCKET_TIME_LIMIT = 30
+  MESSAGE_PREFIX = 'stack-scrolls'.freeze
+
+  # ==========================================================================
+  # Settings loading + migration
+  # ==========================================================================
+
+  # Loads settings and normalizes them across the new and legacy formats.
+  #
+  # @param settings [Object] the object returned by get_settings
+  # @return [Hash, nil] a normalized config hash, or nil when no settings exist
+  def load_and_migrate_settings(settings)
+    @using_legacy_settings = false
+
+    return normalize_new_config(settings.stack_scrolls, settings) if settings.stack_scrolls.is_a?(Hash)
+
+    if settings.scroll_stackers
+      @using_legacy_settings = true
+      return normalize_legacy_config(settings)
+    end
+
+    nil
+  end
+
+  # Transforms a new-format `stack_scrolls:` hash into the internal config shape.
+  # Pure: no I/O, accepts either string or symbol keys. The worn-trashcan keys
+  # are read from the SHARED top-level +settings+ (not the nested block) because
+  # many scripts share one trash receptacle.
+  #
+  # @param stack_config [Hash] the nested settings hash
+  # @param settings [Object, nil] the top-level settings object (responds to
+  #   worn_trashcan / worn_trashcan_verb); nil leaves the trashcan unset
+  # @return [Hash] normalized config
+  # @example
+  #   normalize_new_config('stackers' => ['scroll.folio'], 'max_scrolls_per_spell' => 100)
+  #   # => { scroll_stackers: ['scroll.folio'], ..., max_scrolls_per_spell: 100, ... }
+  def normalize_new_config(stack_config, settings = nil)
+    {
+      scroll_stackers: pick(stack_config, 'stackers'),
+      stacker_container: pick(stack_config, 'stacker_container'),
+      keep_scrolls: pick(stack_config, 'keep_scrolls') || [],
+      discard_scrolls: pick(stack_config, 'discard_scrolls') || [],
+      trash_excess_scrolls: resolve_bool_setting(stack_config, 'trash_excess_scrolls', false),
+      worn_trashcan: settings&.worn_trashcan,
+      worn_trashcan_verb: settings&.worn_trashcan_verb,
+      max_scrolls_per_spell: pick(stack_config, 'max_scrolls_per_spell'),
+      max_scrolls_per_slot: pick(stack_config, 'max_scrolls_per_slot'),
+      log_statistics: resolve_bool_setting(stack_config, 'log_statistics', false)
+    }
+  end
+
+  # Transforms a legacy top-level settings object into the internal config shape.
+  # Limit settings are unavailable in the legacy format and default to nil.
+  #
+  # @param settings [Object] the settings object (responds to the legacy keys)
+  # @return [Hash] normalized config
+  def normalize_legacy_config(settings)
+    {
+      scroll_stackers: settings.scroll_stackers,
+      stacker_container: settings.stacker_container,
+      keep_scrolls: settings.keep_scrolls || [],
+      discard_scrolls: settings.discard_scrolls || [],
+      trash_excess_scrolls: settings.trash_excess_scrolls.nil? ? false : settings.trash_excess_scrolls,
+      worn_trashcan: settings.worn_trashcan,
+      worn_trashcan_verb: settings.worn_trashcan_verb,
+      max_scrolls_per_spell: nil,
+      max_scrolls_per_slot: nil,
+      log_statistics: false
+    }
+  end
+
+  # Fetches a key from a hash trying the string then the symbol form. Pure.
+  #
+  # @param hash [Hash] source hash
+  # @param key [String] the string key to look up (symbol tried as fallback)
+  # @return [Object, nil] the value, or nil when absent under either form
+  def pick(hash, key)
+    hash[key] || hash[key.to_sym]
+  end
+
+  # Resolves a boolean setting, honoring an explicit false and falling back to a
+  # default only when unset under both the string and symbol key. Pure.
+  #
+  # @param config [Hash] settings hash
+  # @param key [String] the string key
+  # @param default [Boolean] value used when the key is absent
+  # @return [Object] the configured value or the default
+  # @example
+  #   resolve_bool_setting({ 'trash_excess_scrolls' => false }, 'trash_excess_scrolls', true) # => false
+  def resolve_bool_setting(config, key, default)
+    string_val = config[key]
+    symbol_val = config[key.to_sym]
+    return string_val unless string_val.nil?
+    return symbol_val unless symbol_val.nil?
+
+    default
+  end
+
+  # Prints the deprecation guide that converts legacy settings to the new format.
+  #
+  # @param config [Hash] the normalized config (used to echo current values)
+  # @return [void]
+  def display_migration_warning(config)
+    msg('')
+    msg('=' * 70)
+    msg('  DEPRECATED SETTINGS FORMAT DETECTED')
+    msg('=' * 70)
+    msg('')
+    msg('You are using the OLD (deprecated) top-level settings format.')
+    msg('Please migrate to the NEW nested format for access to new features.')
+    msg('')
+    msg('INSTRUCTIONS:')
+    msg('  1. Add the following to your YAML profile:')
+    msg('  2. Remove the old top-level keys listed at the bottom')
+    msg('')
+    msg('-' * 70)
+    msg('ADD THIS TO YOUR YAML:')
+    msg('-' * 70)
+
+    respond('stack_scrolls:')
+    respond('  stackers:')
+    if config[:scroll_stackers].is_a?(Array)
+      config[:scroll_stackers].each { |stacker| respond("    - #{stacker}") }
+    else
+      respond('    - scroll.folio')
+      respond('    - abyssal-black.codex')
+    end
+
+    respond("  stacker_container: #{config[:stacker_container] || 'haversack'}")
+
+    respond('  keep_scrolls:')
+    if config[:keep_scrolls] && !config[:keep_scrolls].empty?
+      config[:keep_scrolls].each { |spell| respond("    - #{spell}") }
+    else
+      respond('    []  # Empty list means keep all scrolls')
+    end
+
+    respond('  discard_scrolls:')
+    if config[:discard_scrolls] && !config[:discard_scrolls].empty?
+      config[:discard_scrolls].each { |spell| respond("    - #{spell}") }
+    else
+      respond('    []')
+    end
+
+    respond("  trash_excess_scrolls: #{config[:trash_excess_scrolls]}")
+    respond('')
+    respond('  # NOTE: worn_trashcan / worn_trashcan_verb are SHARED settings used by')
+    respond('  # other scripts. Leave them at the TOP LEVEL of your YAML; do NOT move')
+    respond('  # them under stack_scrolls.')
+    respond('')
+    respond('  # Limit settings')
+    respond('  max_scrolls_per_spell: 100  # Global max copies for any spell')
+    respond('  max_scrolls_per_slot: 125   # Max copies per section (game max is 125)')
+
+    msg('-' * 70)
+    msg('REMOVE THESE OLD KEYS FROM YOUR YAML:')
+    msg('-' * 70)
+    %w[scroll_stackers stacker_container keep_scrolls discard_scrolls
+       trash_excess_scrolls].each do |key|
+      respond("  - #{key}")
+    end
+    respond('  # (keep worn_trashcan / worn_trashcan_verb at the top level)')
+
+    msg('-' * 70)
+    msg('NOTE: Script will continue to work with old format, but new')
+    msg('      features (limits, tracking) require the new nested format.')
+    msg('=' * 70)
+    msg('')
+  end
+
+  # ==========================================================================
+  # Lifecycle
+  # ==========================================================================
+
+  # Loads settings, initializes state, and dispatches to the requested command.
+  #
+  # @return [void]
   def initialize
     settings = get_settings
-    scroll_stackers = settings.scroll_stackers
-    @discard_scrolls = settings.discard_scrolls
-    @keep_scrolls = settings.keep_scrolls
-    stacker_container = settings.stacker_container
-    @worn_trashcan = settings.worn_trashcan
-    @worn_trashcan_verb = settings.worn_trashcan_verb
 
-    arg_definitions =
+    unless settings
+      msg('ERROR: Unable to load settings.')
+      return
+    end
+
+    config = load_and_migrate_settings(settings)
+
+    unless config
+      msg('ERROR: No scroll stacker settings found.')
+      msg("Please add 'stack_scrolls:' settings to your YAML profile.")
+      return
+    end
+
+    scroll_stackers = config[:scroll_stackers]
+
+    if scroll_stackers.nil? || scroll_stackers.empty?
+      msg('ERROR: No scroll stackers defined in settings.')
+      return
+    end
+
+    display_migration_warning(config) if @using_legacy_settings
+
+    @discard_scrolls = config[:discard_scrolls] || []
+    @keep_scrolls = config[:keep_scrolls] || []
+    @stacker_container = config[:stacker_container]
+    @scroll_stackers = scroll_stackers
+    @worn_trashcan = config[:worn_trashcan]
+    @worn_trashcan_verb = config[:worn_trashcan_verb]
+    @trash_scrolls = config[:trash_excess_scrolls]
+
+    @max_scrolls_per_spell = config[:max_scrolls_per_spell]
+    @max_scrolls_per_slot = config[:max_scrolls_per_slot]
+    @log_statistics = config[:log_statistics]
+
+    @stats = new_stats
+    @scrolls_in_bucket = 0
+    @last_bucket_tap = nil
+    @excess_scrolls = []
+
+    run_command_handler
+  end
+
+  # Builds a fresh statistics accumulator. Pure.
+  #
+  # @return [Hash] zeroed run statistics with a defaulting per-spell sub-hash
+  def new_stats
+    {
+      processed: 0,
+      kept: 0,
+      trashed: 0,
+      stowed: 0,
+      rejected_by_limit: 0,
+      by_spell: Hash.new { |h, k| h[k] = { processed: 0, kept: 0, trashed: 0, stowed: 0, rejected: 0 } }
+    }
+  end
+
+  # Parses command arguments and routes to the matching command.
+  #
+  # @return [void]
+  def run_command_handler
+    arg_definitions = [
       [
-        [
-          { name: 'container', regex: /\w+/i, optional: true, description: 'The container to collect scrolls from' }
-        ],
-        [
-          { name: 'get', regex: /get/i, description: 'get one copy of a specific spell' },
-          { name: 'query', regex: /^[A-z\s\-']+$/i, description: 'spell to search for, use quotes for multiple words' }
-        ],
-        [
-          { name: 'mana', regex: /mana/i, description: 'find scrolls of a specific mana type' },
-          { name: 'query', regex: /(lunar|holy|life|arcane|ap|elemental)/i, description: 'mana type to search for' }
-        ]
-      ]
+        { name: 'get', regex: /^get$/i, description: 'get one copy of a specific spell' },
+        { name: 'query', regex: /.+/i, description: 'spell to search for, use quotes for multiple words' }
+      ],
+      [
+        { name: 'mana', regex: /^mana$/i, description: 'find scrolls of a specific mana type' },
+        { name: 'query', regex: /^(lunar|holy|life|arcane|ap|elemental)$/i, description: 'mana type to search for' }
+      ],
+      [
+        { name: 'summary', regex: /^summary$/i, description: 'display verbose overview of all stackers with mana types' }
+      ],
+      [
+        { name: 'reset', regex: /^reset$/i, description: 'clear cache and repopulate stacker data' }
+      ],
+      [
+        { name: 'clean', regex: /^clean$/i, description: 'consolidate scrolls and remove unwanted scrolls (simulates unless confirm given)' },
+        { name: 'keep', regex: /^keep$/i, optional: true, description: 'stow removed scrolls instead of trashing them' },
+        { name: 'confirm', regex: /^confirm$/i, optional: true, description: 'actually execute the clean (without this, only simulates)' }
+      ],
+      [
+        { name: 'prune', regex: /^prune$/i, description: 'remove scrolls not in keep_scrolls or exceeding limits' },
+        { name: 'confirm', regex: /^confirm$/i, optional: true, description: 'actually execute the prune (without this, only simulates)' }
+      ],
+      [
+        { name: 'consolidate', regex: /^consolidate$/i, description: 'move all scrolls to the first stacker (if they fit)' },
+        { name: 'confirm', regex: /^confirm$/i, optional: true, description: 'actually execute the consolidate (without this, only simulates)' }
+      ],
+      [
+        { name: 'container', regex: /^(?!summary$|clean$|get$|mana$|reset$|prune$|consolidate$).+/i, description: 'The container to collect scrolls from' }
+      ],
+      []
+    ]
 
     args = parse_args(arg_definitions)
 
     unless args.container
-      if args.get
-        search_scrolls(args.query, stacker_container)
-      elsif args.mana
-        display_scrolls(scroll_stackers, stacker_container, args.query)
-      else
-        display_scrolls(scroll_stackers, stacker_container)
-      end
-      exit
+      handle_display_command(args)
+      return
+    end
+
+    if args.container.strip.empty?
+      msg('ERROR: Container name cannot be empty.')
+      return
     end
 
     DRCI.stow_hands
-    populate_stackers(scroll_stackers, stacker_container)
-    search_container(args.container, stacker_container)
+    populate_stackers(force_refresh: true)
+    search_container(args.container)
+    display_summary
+    save_statistics_log if @log_statistics
   end
 
-  def display_scrolls(scroll_stackers, stacker_container = '', mana_type = '')
+  # Dispatches the non-container (display/maintenance) commands.
+  #
+  # @param args [Object] parsed command arguments
+  # @return [void]
+  def handle_display_command(args)
+    if args.get
+      if blank?(args.query)
+        msg("ERROR: Query cannot be empty for 'get' command.")
+        return
+      end
+      search_scrolls(args.query)
+    elsif args.mana
+      unless args.query
+        msg("ERROR: Mana type required for 'mana' command.")
+        return
+      end
+      display_scrolls(mana_type: args.query)
+    elsif args.summary
+      display_stacker_summary(verbose: true)
+    elsif args.reset
+      msg('Clearing stacker cache and repopulating...')
+      UserVars.stackers = nil
+      DRCI.stow_hands
+      populate_stackers(force_refresh: true)
+      msg('Stacker data refreshed successfully!')
+      display_scrolls
+    elsif args.clean
+      clean_stackers(keep_excess: args.keep, confirm: args.confirm)
+    elsif args.prune
+      prune_stackers(confirm: args.confirm)
+    elsif args.consolidate
+      consolidate_stackers(confirm: args.confirm)
+    else
+      display_scrolls
+    end
+  end
+
+  # ==========================================================================
+  # Small pure helpers
+  # ==========================================================================
+
+  # Treats nil and blank/whitespace strings as "absent". Pure.
+  #
+  # @param value [Object] a value (commonly String or nil)
+  # @return [Boolean] true when nil or an empty/whitespace string
+  def blank?(value)
+    value.nil? || (value.respond_to?(:strip) && value.strip.empty?)
+  end
+
+  # Whether a stacker content slot represents an empty section. Pure and
+  # nil-safe (a missing slot counts as empty). (B1)
+  #
+  # @param data [Array, nil] a slot entry: [spell, count] or [] or nil
+  # @return [Boolean] true when the slot holds no scroll
+  def slot_empty?(data)
+    data.nil? || data.empty?
+  end
+
+  # Whether a scroll is still held in either hand.
+  #
+  # @return [Boolean]
+  def scroll_in_hand?
+    checkleft || checkright
+  end
+
+  # Standardized prefixed message output.
+  #
+  # @param text [String] message body
+  # @return [void]
+  def msg(text)
+    DRC.message("#{MESSAGE_PREFIX}: #{text}")
+  end
+
+  # ==========================================================================
+  # Stacker resource handling
+  # ==========================================================================
+
+  # Retrieves a stacker into hand, reporting failure.
+  #
+  # @param stacker_name [String] the stacker item
+  # @return [Boolean] true when held
+  def get_stacker(stacker_name)
+    success = if @stacker_container
+                DRCI.get_item?(stacker_name, @stacker_container)
+              else
+                DRCI.get_item?(stacker_name)
+              end
+
+    msg("ERROR: Failed to retrieve stacker: #{stacker_name}") unless success
+    success
+  end
+
+  # Returns a stacker to its container (or stows it).
+  #
+  # @param stacker_name [String] the stacker item
+  # @return [Boolean]
+  def put_stacker(stacker_name)
+    if @stacker_container
+      DRCI.put_away_item?(stacker_name, @stacker_container)
+    else
+      DRCI.put_away_item?(stacker_name)
+    end
+  end
+
+  # Runs a block with a stacker in hand, guaranteeing it is put back even if the
+  # block raises or returns early.
+  #
+  # @param stacker_name [String] the stacker item
+  # @yield with the stacker in hand
+  # @return [Object, false] the block's value, or false if the stacker was not held
+  def with_stacker(stacker_name)
+    return false unless get_stacker(stacker_name)
+
+    begin
+      yield
+    ensure
+      put_stacker(stacker_name)
+    end
+  end
+
+  # Opens a stacker for section access (adjust + open). Shared preamble.
+  #
+  # @param stacker_name [String] the stacker item
+  # @return [void]
+  def open_stacker(stacker_name)
+    fput("adjust my #{stacker_name}")
+    fput("open my #{stacker_name}")
+    waitrt?
+  end
+
+  # Turns a stacker to a spell's section, reporting via the return value.
+  #
+  # @param stacker_name [String] the stacker item
+  # @param spell_name [String] the spell section to turn to
+  # @return [Boolean] true on a successful turn
+  def turn_to_spell(stacker_name, spell_name)
+    result = DRC.bput("turn #{DRC.get_noun(stacker_name)} to #{spell_name}",
+                      TURN_SUCCESS_PATTERN, *TURN_FAIL_PATTERNS)
+    result.match?(TURN_SUCCESS_PATTERN)
+  end
+
+  # Pulls one scroll from the currently selected section.
+  #
+  # @param stacker_name [String] the stacker item
+  # @return [String] the matched bput response
+  def pull_scroll(stacker_name)
+    DRC.bput("pull my #{stacker_name}", PULL_LAST_PATTERN, PULL_SUCCESS_PATTERN, PULL_EMPTY_PATTERN)
+  end
+
+  # ==========================================================================
+  # Keep/discard filtering
+  # ==========================================================================
+
+  # Whether a spell should be kept under this run's keep/discard lists.
+  #
+  # @param spell_name [String] candidate spell
+  # @return [Boolean]
+  def should_keep_spell?(spell_name)
+    keep_spell?(spell_name, abbrev: spell_abbrev(spell_name),
+                            keep_list: @keep_scrolls, discard_list: @discard_scrolls)
+  end
+
+  # Decides keep vs trash. Pure: blacklist wins, then whitelist (empty whitelist
+  # keeps all). Matching is EXACT against the spell's full name OR abbreviation
+  # (case-insensitive); blank patterns are ignored so they cannot match
+  # everything. (B3)
+  #
+  # @param spell_name [String] candidate spell
+  # @param keep_list [Array<String>] whitelist patterns (exact name/abbrev)
+  # @param discard_list [Array<String>] blacklist patterns (exact name/abbrev)
+  # @param abbrev [String, nil] the spell's abbreviation, if known
+  # @return [Boolean] true to keep
+  # @example
+  #   keep_spell?('Fireball', keep_list: ['Fire'], discard_list: []) # => false (no substring)
+  #   keep_spell?('Fire', keep_list: ['Fire'], discard_list: []) # => true (exact name)
+  #   keep_spell?('Heal', abbrev: 'heal', keep_list: ['HEAL'], discard_list: []) # => true (abbrev)
+  def keep_spell?(spell_name, keep_list:, discard_list:, abbrev: nil)
+    return false if matches_any_pattern?(spell_name, discard_list, abbrev: abbrev)
+
+    keep = effective_patterns(keep_list)
+    return true if keep.empty?
+
+    matches_any_pattern?(spell_name, keep, abbrev: abbrev)
+  end
+
+  # Non-blank patterns from a list. Pure. (B3)
+  #
+  # @param patterns [Array<String>, nil] raw pattern list
+  # @return [Array<String>] patterns with blanks removed
+  def effective_patterns(patterns)
+    Array(patterns).reject { |pattern| blank?(pattern) }
+  end
+
+  # Whether a spell's name or abbreviation EXACTLY equals any (non-blank) pattern,
+  # case-insensitively (surrounding whitespace ignored). Pure.
+  #
+  # @param name [String] the spell name
+  # @param patterns [Array<String>, nil] patterns to test
+  # @param abbrev [String, nil] the spell's abbreviation, if known
+  # @return [Boolean]
+  def matches_any_pattern?(name, patterns, abbrev: nil)
+    candidates = [name, abbrev].reject { |candidate| blank?(candidate) }.map(&:strip)
+    return false if candidates.empty?
+
+    effective_patterns(patterns).any? do |pattern|
+      stripped = pattern.strip
+      candidates.any? { |candidate| candidate.casecmp?(stripped) }
+    end
+  end
+
+  # The abbreviation for a spell name from the spells data, if any. Isolated I/O.
+  #
+  # @param spell_name [String] the spell name
+  # @return [String, nil] the abbreviation, or nil when unknown
+  def spell_abbrev(spell_name)
+    info = spell_data && spell_data[spell_name]
+    info && info['abbrev']
+  end
+
+  # Memoized spells data map (spell name => info). Returns nil when unavailable.
+  #
+  # @return [Hash, nil]
+  def spell_data
+    return @spell_data if defined?(@spell_data)
+
+    @spell_data = begin
+      get_data('spells').spell_data
+    rescue StandardError
+      nil
+    end
+  end
+
+  # ==========================================================================
+  # Trash bucket management
+  # ==========================================================================
+
+  # Whether the worn trash bucket should be emptied now. Pure.
+  #
+  # @param count [Integer] scrolls currently in the bucket
+  # @param first_tap_time [Time, nil] when the first scroll since last empty went in
+  # @param now [Time] the current time
+  # @return [Boolean] true when the scroll- or time-limit is reached
+  # @example
+  #   bucket_full?(30, Time.now, Time.now) # => true (scroll limit)
+  def bucket_full?(count, first_tap_time, now)
+    return false if count.zero?
+    return false if first_tap_time.nil?
+
+    count >= BUCKET_SCROLL_LIMIT || (now - first_tap_time) >= BUCKET_TIME_LIMIT
+  end
+
+  # Empties the worn trash bucket if it has reached a limit.
+  #
+  # @return [void]
+  def check_and_tap_bucket
+    return unless @worn_trashcan && @worn_trashcan_verb
+    return unless bucket_full?(@scrolls_in_bucket, @last_bucket_tap, Time.now)
+
+    reason = @scrolls_in_bucket >= BUCKET_SCROLL_LIMIT ? 'scroll limit' : 'time limit'
+    msg("Emptying trash bucket (#{reason})")
+    fput("#{@worn_trashcan_verb} my #{@worn_trashcan}")
+    waitrt?
+    fput("#{@worn_trashcan_verb} my #{@worn_trashcan}")
+    waitrt?
+    @scrolls_in_bucket = 0
+    @last_bucket_tap = nil
+  end
+
+  # Disposes of a scroll, tracking bucket fill for periodic emptying.
+  #
+  # @param scroll [String] the scroll noun/ref in hand
+  # @return [void]
+  def dispose_scroll(scroll)
+    DRCI.dispose_trash(scroll, @worn_trashcan)
+
+    @last_bucket_tap = Time.now if @scrolls_in_bucket.zero?
+    @scrolls_in_bucket += 1
+    check_and_tap_bucket
+  end
+
+  # ==========================================================================
+  # Display
+  # ==========================================================================
+
+  # Displays the flat scroll list, optionally filtered by mana type.
+  #
+  # @param mana_type [String] mana type filter, or '' for all
+  # @return [void]
+  def display_scrolls(mana_type: '')
     unless UserVars.stackers
       DRCI.stow_hands
-      populate_stackers(scroll_stackers, stacker_container)
+      populate_stackers
     end
+
+    unless UserVars.stackers.is_a?(Array)
+      msg('ERROR: Failed to populate stackers.')
+      return
+    end
+
     normalized_data = normalize_stacker_data
 
-    unless mana_type == ''
-      spells = get_data('spells').spell_data
-      normalized_data.select! { |data| spells[data.first]['mana_type'] == mana_type }
+    unless mana_type.empty?
+      spells = spell_data
+      if spells
+        normalized_data.select! do |data|
+          spell_info = spells[data.first]
+          spell_info && spell_info['mana_type'] == mana_type.downcase
+        end
+      else
+        msg('WARNING: Unable to load spell data for mana filtering.')
+      end
     end
 
-    normalized_data.each do |data|
-      respond("  #{data.first.to_s.ljust(30)} #{data[1].to_s.ljust(30)}#{data[2].to_s.ljust(15)} Page:#{data[3]}")
+    if normalized_data.empty?
+      respond("\n#{'=' * 80}")
+      respond("  No scrolls found#{mana_type.empty? ? '' : " for mana type: #{mana_type.capitalize}"}")
+      respond("#{'=' * 80}\n")
+    else
+      respond("\n#{'=' * 80}")
+      respond("  SCROLLS#{mana_type.empty? ? '' : " - Mana Type: #{mana_type.capitalize}"}")
+      respond('=' * 80)
+      respond("  #{'Spell Name'.ljust(40)} #{'Count'.rjust(7)} #{'Stacker'.ljust(20)} #{'Page'.rjust(6)}")
+      respond('-' * 80)
+
+      spells_data = spell_data
+
+      normalized_data.each do |data|
+        spell_name, count, stacker, page = data
+
+        display_name = spell_name
+        if spells_data&.dig(spell_name, 'abbrev')
+          abbrev = spells_data[spell_name]['abbrev']
+          display_name = "#{spell_name} (#{abbrev})" unless abbrev.empty?
+        end
+
+        respond("  #{display_name.ljust(40)} #{count.to_s.rjust(7)} #{stacker.ljust(20)} #{page.to_s.rjust(6)}")
+      end
+
+      respond('-' * 80)
+      respond("  Total: #{normalized_data.size} scroll type(s)")
+      respond("#{'=' * 80}\n")
     end
 
-    respond("  Free Slots Remaining: #{UserVars.stackers.flat_map { |stacker| stacker['contents'] }.select(&:empty?).size}")
+    free_slots = UserVars.stackers.flat_map { |stacker| stacker['contents'] || [] }.count { |data| slot_empty?(data) }
+    respond("  Free Slots Remaining: #{free_slots}")
   end
 
-  def search_scrolls(query, stacker_container)
-    target = UserVars.stackers.find { |stacker| stacker['contents'].find { |data| data.first =~ /#{query}/i } }
+  # Flattens the stacker cache into sorted [spell, count, stacker, page] rows.
+  # Pure (reads only the cache); nil-safe.
+  #
+  # @return [Array<Array>] rows sorted by spell name
+  def normalize_stacker_data
+    temp = []
+    return temp unless UserVars.stackers.is_a?(Array)
+
+    UserVars.stackers.each do |stacker|
+      next unless stacker && stacker['contents'] && stacker['name']
+
+      stacker['contents'].each_with_index do |data, index|
+        next if slot_empty?(data)
+
+        temp << [data.first, data.last, stacker['name'], index + 1]
+      end
+    end
+    temp.reject { |data| blank?(data.first) }.sort_by(&:first)
+  end
+
+  # Prints the post-run statistics summary.
+  #
+  # @return [void]
+  def display_summary
+    respond("\n#{'=' * 60}")
+    respond('  SCROLL STACKING SUMMARY')
+    respond('=' * 60)
+    respond("  Total Processed:      #{@stats[:processed]}")
+    respond("  Kept (Stacked):       #{@stats[:kept]}")
+    respond("  Trashed:              #{@stats[:trashed]}")
+    respond("  Stowed (Excess):      #{@stats[:stowed]}")
+    respond("  Rejected by Limits:   #{@stats[:rejected_by_limit]}")
+    respond('-' * 60)
+
+    spell_stats = @stats[:by_spell].select { |_, data| data[:processed] > 0 }
+    unless spell_stats.empty?
+      respond('  Per-Spell Breakdown:')
+      spell_stats.sort_by { |name, _| name }.each do |spell_name, data|
+        respond("    #{spell_name.ljust(25)} P:#{data[:processed]} K:#{data[:kept]} T:#{data[:trashed]} S:#{data[:stowed]} R:#{data[:rejected]}")
+      end
+      respond('-' * 60)
+    end
+
+    multi_slot_scrolls = find_multi_slot_scrolls
+    unless multi_slot_scrolls.empty?
+      respond('  Scrolls with Multiple Copies:')
+      multi_slot_scrolls.each do |spell_name, count|
+        respond("    #{spell_name.ljust(30)} Total: #{count}")
+      end
+      respond('-' * 60)
+    end
+
+    respond("#{'=' * 60}\n")
+  end
+
+  # Spells with more than one total copy, descending by count. Pure; nil-safe.
+  #
+  # @return [Array<Array(String, Integer)>] [spell, total] pairs
+  def find_multi_slot_scrolls
+    totals_by_spell.select { |_, count| count > 1 }.sort_by { |_, count| -count }
+  end
+
+  # Sums copies per spell across the whole cache. Pure; nil-safe.
+  #
+  # @return [Hash{String=>Integer}] spell => total copies
+  def totals_by_spell
+    totals = Hash.new(0)
+    each_slot { |_stacker, data, _idx| totals[data[0]] += data[1] }
+    totals
+  end
+
+  # Yields every occupied slot in the cache. Pure iteration helper; nil-safe.
+  #
+  # @yield [stacker, data, index] each occupied slot
+  # @yieldparam stacker [Hash] the owning stacker entry
+  # @yieldparam data [Array(String, Integer)] the [spell, count] slot
+  # @yieldparam index [Integer] the slot index within the stacker
+  # @return [void]
+  def each_slot
+    return unless UserVars.stackers.is_a?(Array)
+
+    UserVars.stackers.each do |stacker|
+      next unless stacker['contents']
+
+      stacker['contents'].each_with_index do |data, idx|
+        next if slot_empty?(data)
+
+        yield stacker, data, idx
+      end
+    end
+  end
+
+  # Prints the verbose stacker overview (per-stacker + per-spell breakdowns).
+  #
+  # @param verbose [Boolean] include mana types and location detail
+  # @return [void]
+  def display_stacker_summary(verbose: false)
+    unless UserVars.stackers
+      DRCI.stow_hands
+      populate_stackers
+    end
+
+    unless UserVars.stackers.is_a?(Array)
+      msg('ERROR: Failed to populate stackers.')
+      return
+    end
+
+    spell_totals = Hash.new(0)
+    spell_locations = Hash.new { |h, k| h[k] = [] }
+
+    each_slot do |stacker, data, _idx|
+      spell_name = data[0]
+      count = data[1]
+      spell_totals[spell_name] += count
+      spell_locations[spell_name] << { stacker: stacker['name'], count: count }
+    end
+
+    respond("\n#{'=' * 80}")
+    respond('  STACKER OVERVIEW')
+    respond('=' * 80)
+    respond("  #{'Stacker'.ljust(20)} #{'Total'.rjust(6)} #{'Used'.rjust(6)} #{'Empty'.rjust(6)} #{'Spells'.rjust(7)} #{'Multi'.rjust(7)}")
+    respond('-' * 80)
+
+    UserVars.stackers.each do |stacker|
+      total_slots = stacker['contents']&.size || 0
+      occupied = stacker['contents']&.count { |data| !slot_empty?(data) } || 0
+      empty = total_slots - occupied
+      unique_spells = stacker['contents']&.reject { |data| slot_empty?(data) }&.map { |data| data.first }&.uniq&.size || 0
+      multi_copy = stacker['contents']&.count { |data| !slot_empty?(data) && data[1] > 1 } || 0
+
+      respond("  #{stacker['name'].ljust(20)} #{total_slots.to_s.rjust(6)} #{occupied.to_s.rjust(6)} #{empty.to_s.rjust(6)} #{unique_spells.to_s.rjust(7)} #{multi_copy.to_s.rjust(7)}")
+    end
+
+    respond('-' * 80)
+
+    total_slots = UserVars.stackers.sum { |s| s['contents']&.size || 0 }
+    total_occupied = UserVars.stackers.sum { |s| s['contents']&.count { |d| !slot_empty?(d) } || 0 }
+    total_empty = total_slots - total_occupied
+    total_spells = UserVars.stackers.flat_map { |s| (s['contents'] || []).reject { |d| slot_empty?(d) }.map { |d| d.first } }.uniq.size
+    total_multi = UserVars.stackers.sum { |s| s['contents']&.count { |d| !slot_empty?(d) && d[1] > 1 } || 0 }
+
+    respond("  #{'TOTALS'.ljust(20)} #{total_slots.to_s.rjust(6)} #{total_occupied.to_s.rjust(6)} #{total_empty.to_s.rjust(6)} #{total_spells.to_s.rjust(7)} #{total_multi.to_s.rjust(7)}")
+    respond('=' * 80)
+
+    display_per_stacker_details
+    display_spell_statistics(spell_totals, spell_locations, verbose)
+  end
+
+  # Prints each stacker's scrolls and empty-slot tally.
+  #
+  # @return [void]
+  def display_per_stacker_details
+    respond('')
+    respond('  PER-STACKER DETAILS')
+    respond('=' * 80)
+
+    UserVars.stackers.each do |stacker|
+      next unless stacker['contents']
+
+      scrolls = stacker['contents'].reject { |data| slot_empty?(data) }
+      empty_slots = stacker['contents'].count { |data| slot_empty?(data) }
+      total_slots = stacker['contents'].size
+
+      respond('')
+      respond("  #{stacker['name']}:")
+      respond('  ' + ('-' * 78))
+
+      if scrolls.empty?
+        respond("    (All #{total_slots} slots empty)")
+      else
+        scrolls.sort_by { |data| data[0] }.each do |data|
+          respond("    #{data[0].ljust(40)} Count: #{data[1].to_s.rjust(3)}")
+        end
+
+        if empty_slots > 0
+          respond('')
+          respond("    Empty slots: #{empty_slots} of #{total_slots}")
+        end
+      end
+    end
+  end
+
+  # Prints the spell statistics table.
+  #
+  # @param spell_totals [Hash{String=>Integer}] spell => total copies
+  # @param spell_locations [Hash{String=>Array<Hash>}] spell => [{stacker:, count:}]
+  # @param verbose [Boolean] include mana types
+  # @return [void]
+  def display_spell_statistics(spell_totals, spell_locations, verbose)
+    respond('')
+    respond('')
+    respond("  SPELL STATISTICS (#{spell_totals.size} unique spells)")
+    respond('=' * 80)
+
+    if verbose
+      spells_data = spell_data
+      respond("  #{'Spell Name'.ljust(35)} #{'Mana'.ljust(10)} #{'Total'.rjust(6)} #{'Locs'.rjust(5)}")
+      respond('-' * 80)
+
+      spell_totals.sort_by { |name, _| name }.each do |spell_name, total|
+        locations = spell_locations[spell_name]
+        location_count = locations.size
+
+        mana_type = 'Unknown'
+        if spells_data&.dig(spell_name, 'mana_type')
+          mana_type = spells_data[spell_name]['mana_type'].capitalize
+        end
+
+        respond("  #{spell_name.ljust(35)} #{mana_type.ljust(10)} #{total.to_s.rjust(6)} #{location_count.to_s.rjust(5)}")
+
+        next unless location_count > 1
+
+        locations.each do |loc|
+          respond("    ->#{loc[:stacker].ljust(25)} x#{loc[:count]}")
+        end
+      end
+    else
+      respond("  #{'Spell Name'.ljust(40)} #{'Total'.rjust(8)} #{'Locations'.rjust(12)}")
+      respond('-' * 80)
+
+      spell_totals.sort_by { |name, _| name }.each do |spell_name, total|
+        locations = spell_locations[spell_name]
+        location_count = locations.size
+
+        respond("  #{spell_name.ljust(40)} #{total.to_s.rjust(8)} #{location_count.to_s.rjust(12)}")
+
+        next unless location_count > 1
+
+        locations.each do |loc|
+          respond("    ->#{loc[:stacker]}: #{loc[:count]}")
+        end
+      end
+    end
+
+    respond("#{'=' * 80}\n")
+  end
+
+  # ==========================================================================
+  # Stacker population
+  # ==========================================================================
+
+  # Reads each configured stacker's sections into UserVars.stackers.
+  #
+  # @param force_refresh [Boolean] rebuild even if a cache already exists
+  # @return [void]
+  def populate_stackers(force_refresh: false)
+    return if UserVars.stackers && !UserVars.stackers.empty? && !force_refresh
+
+    UserVars.stackers = []
+
+    @scroll_stackers.each do |stacker|
+      new_stacker = { 'name' => stacker, 'contents' => [] }
+
+      next unless get_stacker(stacker)
+
+      begin
+        fput("flip my #{stacker}")
+        pause 0.5
+
+        loop do
+          line = get?
+          break unless line
+
+          slot = parse_section_line(line)
+          new_stacker['contents'] << slot unless slot.nil?
+        end
+
+        UserVars.stackers << new_stacker
+        fput("open my #{stacker}")
+      ensure
+        put_stacker(stacker)
+      end
+    end
+
+    msg('ERROR: No stackers were successfully populated.') if UserVars.stackers.empty?
+  end
+
+  # Parses one line of flip output into a slot entry. Pure.
+  #
+  # @param line [String, nil] a line from "flip my <stacker>"
+  # @return [Array, nil] [spell, count] for a populated section, [] for an empty
+  #   section, or nil for an unrelated line
+  # @example
+  #   parse_section_line('The Fireball section has 5 scrolls') # => ['Fireball', 5]
+  #   parse_section_line('Section 3 is empty') # => []
+  def parse_section_line(line)
+    return nil if line.nil?
+
+    if (match = line.match(SECTION_HAS_PATTERN))
+      [match[:spell], match[:count].to_i]
+    elsif line.match?(SECTION_EMPTY_PATTERN)
+      []
+    end
+  end
+
+  # ==========================================================================
+  # Search / retrieve
+  # ==========================================================================
+
+  # Finds and pulls one copy of a spell (by name or abbreviation).
+  #
+  # @param query [String] spell name or abbreviation
+  # @return [void]
+  def search_scrolls(query)
+    unless UserVars.stackers.is_a?(Array)
+      msg('ERROR: Stackers not initialized. Run without arguments first.')
+      return
+    end
+
+    spells_data = spell_data
+
+    target = nil
+    matching_spell_name = nil
+
+    each_slot do |stacker, data, _idx|
+      next if target
+
+      spell_name = data.first
+
+      if spell_name.downcase == query.downcase
+        target = stacker
+        matching_spell_name = spell_name
+        next
+      end
+
+      next unless spells_data&.dig(spell_name, 'abbrev')
+
+      abbrev = spells_data[spell_name]['abbrev']
+      next unless abbrev&.downcase == query.downcase
+
+      target = stacker
+      matching_spell_name = spell_name
+    end
+
     unless target
-      echo("No scroll found matching: #{query}")
-      exit
+      msg("No scroll found matching: #{query}")
+      return
     end
 
-    if stacker_container
-      DRCI.get_item?(target['name'], stacker_container)
-    else
-      DRCI.stow_item?(target['name'])
+    retrieve_scroll_from_stacker(target, matching_spell_name)
+  end
+
+  # Pulls a single copy of a spell from a specific stacker (smallest stack first).
+  #
+  # @param target [Hash] the stacker cache entry
+  # @param spell_name [String] the spell to pull
+  # @return [void]
+  def retrieve_scroll_from_stacker(target, spell_name)
+    with_stacker(target['name']) do
+      fput("adjust my #{target['name']}")
+      fput("flip my #{target['name']}")
+      waitrt?
+      fput("open my #{target['name']}")
+      waitrt?
+
+      matching_slots = target['contents'].each_with_index.select do |data, _idx|
+        !slot_empty?(data) && data.first == spell_name
+      end
+
+      if matching_slots.empty?
+        msg("ERROR: No matching slots found for #{spell_name}")
+        return false
+      end
+
+      _slot_data, slot = matching_slots.min_by { |data, _idx| data[1] }
+
+      unless slot
+        msg("ERROR: Slot index not found for #{spell_name}")
+        return false
+      end
+
+      unless turn_to_spell(target['name'], spell_name)
+        msg("ERROR: Failed to turn to #{spell_name} in #{target['name']}")
+        return false
+      end
+      waitrt?
+
+      result = DRC.bput("pull my #{target['name']}", PULL_LAST_PATTERN, PULL_SUCCESS_PATTERN, /You can't/)
+
+      case result
+      when PULL_LAST_PATTERN
+        target['contents'][slot] = []
+      when PULL_SUCCESS_PATTERN
+        data = target['contents'][slot]
+        data[1] = [data[1] - 1, 0].max
+      else
+        msg('WARNING: Failed to pull scroll from stacker')
+        return false
+      end
+
+      true
     end
-    fput("flip my #{target['name']}")
-    fput("open my #{target['name']}")
 
-    slot = target['contents'].find_index { |data| data.first =~ /#{query}/i }
-
-    DRC.bput("turn #{DRC.get_noun(target['name'])} to #{query}", /^You turn/)
-
-    case DRC.bput("pull my #{target['name']}", /This was the last copy/, /Carefully/)
-    when /This was the last/
-      target['contents'][slot] = []
-    when /Carefully/
-      data = target['contents'][slot]
-      data[1] = data[1] - 1
-    end
-
-    if stacker_container
-      DRCI.put_away_item?(target['name'], stacker_container)
-    else
-      DRCI.put_away_item?(target['name'])
-    end
     fput('look my scroll')
   end
 
-  def normalize_stacker_data
-    temp = []
-    UserVars.stackers.each do |stacker|
-      stacker['contents'].each_with_index { |data, index| temp << [data.first, data.last, stacker['name'], index + 1] }
-    end
-    temp.reject { |data| data.first.nil? }.sort_by(&:first)
-  end
+  # ==========================================================================
+  # Container processing (the default ;stack-scrolls <container> flow)
+  # ==========================================================================
 
-  def populate_stackers(stackers, stacker_container)
-    UserVars.stackers = []
-    stackers.each do |stacker|
-      new_stacker = { 'name' => stacker, 'contents' => [] }
-      if stacker_container
-        DRCI.get_item?(stacker, stacker_container)
-      else
-        DRCI.get_item?(stacker)
-      end
-      fput("flip my #{stacker}")
-      pause
-      while (line = get?)
-        case line
-        when /The (.*) section has (\d+)/
-          new_stacker['contents'] << [Regexp.last_match(1), Regexp.last_match(2).to_i]
-        when /Section \d+/
-          new_stacker['contents'] << []
-        end
-      end
-      UserVars.stackers << new_stacker
-      fput("open my #{stacker}")
-      if stacker_container
-        DRCI.put_away_item?(stacker, stacker_container)
-      else
-        DRCI.put_away_item?(stacker)
-      end
-    end
-  end
-
-  def search_container(container, stacker_container)
+  # Stacks every scroll found loose in a container.
+  #
+  # @param container [String] container to draw scrolls from
+  # @return [void]
+  def search_container(container)
     @excess_scrolls = []
-    DRCI.get_scroll_list_in_container(container).each do |scroll|
-      stack_scrolls(container, scroll, stacker_container)
+
+    scroll_list = DRCI.get_scroll_list_in_container(container)
+
+    unless scroll_list.is_a?(Array)
+      msg("ERROR: Failed to get scroll list from container: #{container}")
+      return
+    end
+
+    if scroll_list.empty?
+      msg("No scrolls found in container: #{container}")
+      return
+    end
+
+    msg("Found #{scroll_list.size} scroll(s) to process")
+
+    scroll_list.each do |scroll|
+      next if blank?(scroll)
+
+      stack_scroll(container, scroll)
     end
 
     return if @excess_scrolls.empty?
@@ -147,82 +1225,1436 @@ class ScrollStack
     respond("  No room for: #{@excess_scrolls.join(', ')}")
   end
 
-  private
-
-  def stack_scrolls(container, scroll, stacker_container)
+  # Retrieves, identifies, and processes a single scroll.
+  #
+  # @param container [String] the source container
+  # @param scroll [String] the scroll noun/ref
+  # @return [void]
+  def stack_scroll(container, scroll)
     unless DRCI.get_item?(scroll, container)
-      DRC.message("Could not get scroll: #{scroll} from #{container}. Exiting.")
-      exit
+      msg("WARNING: Could not get scroll: #{scroll} from #{container}. Skipping.")
+      return
     end
-    case DRC.bput("look my #{scroll}", 'It is labeled ".*\."', '.* of the \w*\s*\w* spell.', 'three-dimensional shapes cover much of the', 'You see nothing unusual.', 'I could not find what you were referring to')
-    when 'three-dimensional shapes cover much of the'
-      /of the (.*) spell/ =~ DRC.bput("read my #{scroll}", 'The .* contains a complete description of the .* spell')
-      spell_name = Regexp.last_match(1)
-    when /It is labeled "(.*)\."/i
-      spell_name = Regexp.last_match(1)
+
+    spell_name = identify_scroll_spell(scroll)
+
+    unless spell_name
+      msg('WARNING: Failed to identify scroll spell. Returning to container.')
+      DRCI.put_away_item?(scroll, container)
+      return
     end
+
+    process_identified_scroll(container, scroll, spell_name)
+  end
+
+  # Identifies a scroll's spell by looking (and reading glyph scrolls). (B2)
+  #
+  # @param scroll [String] the scroll noun/ref in hand
+  # @return [String, nil] the spell name, or nil if unidentifiable
+  def identify_scroll_spell(scroll)
+    look_result = DRC.bput("look my #{scroll}",
+                           'It is labeled "[^"]*"',
+                           '.* of the \w*\s*\w* spell.',
+                           'three-dimensional shapes cover much of the',
+                           'You see nothing unusual.',
+                           'I could not find what you were referring to')
+
+    spell_name =
+      if glyph_scroll?(look_result)
+        read_result = DRC.bput("read my #{scroll}",
+                               'The .* contains a complete description of the .* spell',
+                               'I could not find',
+                               "You can't read")
+        spell_from_read(read_result)
+      else
+        spell_from_look(look_result)
+      end
+
     waitrt?
 
-    if @discard_scrolls.find { |discard| spell_name == discard } || (@keep_scrolls.any? && !@keep_scrolls.any?(/#{spell_name}/i))
-      DRC.message("Scroll in discards, or not in keep list.")
-      DRC.message("Scroll is #{spell_name}")
-      DRCI.dispose_trash(scroll, @worn_trashcan, @worn_trashcan_verb)
-    elsif (target = UserVars.stackers.find { |stacker| stacker['contents'].find { |data| data.first == spell_name } })
-      stack_existing_scroll(target, scroll, spell_name, stacker_container)
-    elsif (target = UserVars.stackers.find { |stacker| stacker['contents'].find(&:empty?) })
-      stack_new_scroll(target, scroll, spell_name, stacker_container)
+    blank?(spell_name) ? nil : spell_name
+  end
+
+  # Whether a look result is a glyph scroll (must be read, not looked). Pure. (B2)
+  #
+  # @param line [String, nil] the look result
+  # @return [Boolean]
+  def glyph_scroll?(line)
+    !blank?(line) && line.match?(GLYPH_SCROLL_PATTERN)
+  end
+
+  # Extracts a spell name from a "look" result (labeled or described). Pure. (B2)
+  #
+  # @param line [String, nil] the look result
+  # @return [String, nil] the spell name, or nil
+  # @example
+  #   spell_from_look('It is labeled "Rage of the Clans".') # => 'Rage of the Clans'
+  #   spell_from_look('a scroll of the Heal spell.') # => 'Heal'
+  def spell_from_look(line)
+    return nil if blank?(line)
+
+    if (match = line.match(LABELED_SCROLL_PATTERN))
+      return match[:spell].sub(/\.\z/, '') # drop a period captured inside the quotes
     end
 
-    return unless checkleft || checkright
+    if (match = line.match(SPELL_DESCRIPTION_PATTERN))
+      return match[:spell]
+    end
 
-    DRCI.put_away_item?(scroll)
+    nil
+  end
+
+  # Extracts a spell name from a "read" result. Pure. (B2)
+  #
+  # @param line [String, nil] the read result
+  # @return [String, nil] the spell name, or nil
+  # @example
+  #   spell_from_read('The scroll contains a complete description of the Heal spell') # => 'Heal'
+  def spell_from_read(line)
+    return nil if blank?(line)
+
+    match = line.match(SPELL_DESCRIPTION_PATTERN)
+    match ? match[:spell] : nil
+  end
+
+  # Applies filter, limit, and placement rules to an identified scroll.
+  #
+  # @param container [String] the source container
+  # @param scroll [String] the scroll noun/ref in hand
+  # @param spell_name [String] the identified spell
+  # @return [void]
+  def process_identified_scroll(container, scroll, spell_name)
+    bump_stat(spell_name, :processed, :processed)
+
+    unless should_keep_spell?(spell_name)
+      msg("Spell #{spell_name} filtered by keep/discard lists. Trashing.")
+      dispose_scroll(scroll)
+      bump_stat(spell_name, :trashed, :trashed)
+      return
+    end
+
+    unless passes_limits?(spell_name)
+      msg("Spell #{spell_name} exceeds configured limits. Trashing.")
+      dispose_scroll(scroll)
+      bump_stat(spell_name, :rejected_by_limit, :rejected)
+      return
+    end
+
+    # Try an existing stack first; a successful push consumes the scroll and we
+    # return immediately so kept counts cannot be double-incremented. (hardening)
+    target = find_stacker_with_spell(spell_name)
+    if target
+      msg("Adding #{spell_name} to existing stack")
+      if stack_existing_scroll(target, scroll, spell_name)
+        bump_stat(spell_name, :kept, :kept)
+        return
+      end
+    end
+
+    return unless scroll_in_hand?
+
+    target = find_stacker_with_empty_slot
+    if target
+      msg("Creating new stack for #{spell_name}")
+      if stack_new_scroll(target, scroll, spell_name)
+        bump_stat(spell_name, :kept, :kept)
+        return
+      end
+    else
+      msg("No available stacker slots for #{spell_name}")
+    end
+
+    handle_excess_scroll(container, scroll, spell_name) if scroll_in_hand?
+  end
+
+  # Increments a global stat and its per-spell counterpart. DRY helper.
+  #
+  # @param spell_name [String] the spell whose per-spell stat to bump
+  # @param global_key [Symbol] key in @stats
+  # @param spell_key [Symbol] key in @stats[:by_spell][spell_name]
+  # @return [void]
+  def bump_stat(spell_name, global_key, spell_key)
+    @stats[global_key] += 1
+    @stats[:by_spell][spell_name][spell_key] += 1
+  end
+
+  # First stacker already holding the spell. Pure; nil-safe.
+  #
+  # @param spell_name [String] the spell to find
+  # @return [Hash, nil] the stacker cache entry, or nil
+  def find_stacker_with_spell(spell_name)
+    return nil unless UserVars.stackers.is_a?(Array)
+
+    UserVars.stackers.find do |stacker|
+      stacker['contents']&.any? { |data| data&.first == spell_name }
+    end
+  end
+
+  # First stacker with an empty slot. Pure; nil-safe. (B1)
+  #
+  # @return [Hash, nil] the stacker cache entry, or nil
+  def find_stacker_with_empty_slot
+    return nil unless UserVars.stackers.is_a?(Array)
+
+    UserVars.stackers.find do |stacker|
+      stacker['contents']&.any? { |data| slot_empty?(data) }
+    end
+  end
+
+  # Disposes of or stows a scroll that could not be stacked.
+  #
+  # @param container [String] the source container
+  # @param scroll [String] the scroll noun/ref in hand
+  # @param spell_name [String] the identified spell
+  # @return [void]
+  def handle_excess_scroll(container, scroll, spell_name)
+    if @trash_scrolls
+      msg("Trashing excess scroll: #{spell_name}")
+      dispose_scroll(scroll)
+      bump_stat(spell_name, :trashed, :trashed)
+    else
+      msg("Keeping excess scroll: #{spell_name}")
+      DRCI.put_away_item?(scroll, container)
+      bump_stat(spell_name, :stowed, :stowed)
+    end
     @excess_scrolls << spell_name
   end
 
-  def stack_new_scroll(target, scroll, spell_name, stacker_container)
-    if stacker_container
-      DRCI.get_item?(target['name'], stacker_container)
-    else
-      DRCI.get_item?(target['name'])
-    end
-    case DRC.bput("push my #{target['name']} with my #{scroll}", 'Not finding a match', 'you realize there')
-    when /you realize/i
-      echo('Unexpected, please report error')
-      exit
-    when /not finding/i
-      slot = target['contents'].index([])
-      target['contents'][slot] = [spell_name, 1]
-      if stacker_container
-        DRCI.put_away_item?(target['name'], stacker_container)
+  # Pushes a scroll into a stacker's empty slot, creating a new section.
+  #
+  # @param target [Hash] the stacker cache entry
+  # @param scroll [String] the scroll noun/ref in hand
+  # @param spell_name [String] the spell being stacked
+  # @return [Boolean] true on success
+  def stack_new_scroll(target, scroll, spell_name)
+    stacked = false
+
+    with_stacker(target['name']) do
+      waitrt?
+
+      result = DRC.bput("push my #{target['name']} with my #{scroll}",
+                        PUSH_NEW_SUCCESS_PATTERN, PUSH_FULL_PATTERN, *PUSH_FAIL_PATTERNS, PUSH_TIMEOUT)
+
+      case result
+      when PUSH_FULL_PATTERN
+        msg('ERROR: Stacker is full when it should have empty slots. Data may be out of sync.')
+      when PUSH_NEW_SUCCESS_PATTERN
+        slot = target['contents'].index { |data| slot_empty?(data) }
+        if slot
+          target['contents'][slot] = [spell_name, 1]
+        else
+          msg('WARNING: No empty slot found in stacker, but push succeeded')
+          target['contents'] << [spell_name, 1]
+        end
+        stacked = true
       else
-        DRCI.put_away_item?(target['name'])
+        msg('ERROR: Failed to push scroll into stacker')
       end
+    end
+
+    stacked
+  end
+
+  # Pushes a scroll into a stacker's existing section for the spell.
+  #
+  # @param target [Hash] the stacker cache entry
+  # @param scroll [String] the scroll noun/ref in hand
+  # @param spell_name [String] the spell being stacked
+  # @return [Boolean] true on success
+  def stack_existing_scroll(target, scroll, spell_name)
+    stacked = false
+
+    with_stacker(target['name']) do
+      waitrt?
+
+      result = DRC.bput("push my #{target['name']} with my #{scroll}",
+                        PUSH_EXISTING_SUCCESS_PATTERN, PUSH_FULL_PATTERN,
+                        PUSH_NEW_SUCCESS_PATTERN, *PUSH_FAIL_PATTERNS, PUSH_TIMEOUT)
+
+      case result
+      when PUSH_FULL_PATTERN
+        msg("WARNING: Stacker for #{spell_name} is full")
+      when PUSH_EXISTING_SUCCESS_PATTERN
+        target['contents'].each_with_index do |data, index|
+          next unless data.first == spell_name
+
+          target['contents'][index] = [data.first, data.last + 1]
+          stacked = true
+          break
+        end
+
+        msg("WARNING: Pushed scroll but couldn't find #{spell_name} in stacker data") unless stacked
+      else
+        msg("ERROR: Failed to push scroll into stacker for #{spell_name}")
+      end
+    end
+
+    stacked
+  end
+
+  # ==========================================================================
+  # Limit checking
+  # ==========================================================================
+
+  # Whether a scroll may be kept under the configured limits.
+  #
+  # @param spell_name [String] candidate spell
+  # @return [Boolean]
+  def passes_limits?(spell_name)
+    within_limits?(spell_name, UserVars.stackers,
+                   max_per_spell: @max_scrolls_per_spell,
+                   max_per_slot: @max_scrolls_per_slot)
+  end
+
+  # Pure limit math. The global per-spell cap rejects once total copies reach it.
+  # The per-slot cap rejects ONLY when every existing slot for the spell is full
+  # AND there is no empty slot to start a fresh stack -- so a scroll is never
+  # trashed while a non-full or empty slot can take it. (Q1)
+  #
+  # @param spell_name [String] candidate spell
+  # @param stackers [Array, nil] the stacker cache
+  # @param max_per_spell [Integer, nil] global cap, or nil to disable
+  # @param max_per_slot [Integer, nil] per-section cap, or nil to disable
+  # @return [Boolean] true when the scroll may be kept
+  # @example
+  #   # one full slot but another has room -> keep
+  #   within_limits?('Heal', [{ 'name' => 'f', 'contents' => [['Heal', 125], ['Heal', 5]] }],
+  #                  max_per_spell: nil, max_per_slot: 125) # => true
+  def within_limits?(spell_name, stackers, max_per_spell:, max_per_slot:)
+    if max_per_spell
+      return false if count_scrolls_for_spell(spell_name, stackers) >= max_per_spell
+    end
+
+    return true unless max_per_slot
+
+    counts = slot_counts_for_spell(spell_name, stackers)
+    return true if counts.empty?                                # brand-new spell -> new slot
+    return true if counts.any? { |count| count < max_per_slot } # a non-full stack exists
+
+    has_empty_slot?(stackers)                                   # all full -> need an empty slot
+  end
+
+  # Per-slot copy counts for a spell across the cache. Pure; nil-safe.
+  #
+  # @param spell_name [String] the spell
+  # @param stackers [Array, nil] the stacker cache
+  # @return [Array<Integer>] one count per slot holding the spell
+  def slot_counts_for_spell(spell_name, stackers)
+    counts = []
+    return counts unless stackers.is_a?(Array)
+
+    stackers.each do |stacker|
+      next unless stacker['contents']
+
+      stacker['contents'].each do |data|
+        next if slot_empty?(data)
+
+        counts << data[1] if data[0] == spell_name
+      end
+    end
+    counts
+  end
+
+  # Whether any stacker has an empty slot. Pure; nil-safe.
+  #
+  # @param stackers [Array, nil] the stacker cache
+  # @return [Boolean]
+  def has_empty_slot?(stackers)
+    return false unless stackers.is_a?(Array)
+
+    stackers.any? { |stacker| stacker['contents']&.any? { |data| slot_empty?(data) } }
+  end
+
+  # Total copies of a spell across the cache. Pure; nil-safe.
+  #
+  # @param spell_name [String] the spell
+  # @param stackers [Array, nil] the stacker cache (defaults to the live cache)
+  # @return [Integer] total copies
+  def count_scrolls_for_spell(spell_name, stackers = UserVars.stackers)
+    slot_counts_for_spell(spell_name, stackers).sum
+  end
+
+  # ==========================================================================
+  # Logging
+  # ==========================================================================
+
+  # Writes a timestamped statistics log for the run.
+  #
+  # @return [void]
+  def save_statistics_log
+    Dir.mkdir(LOG_DIR) unless Dir.exist?(LOG_DIR)
+
+    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
+    log_file = "#{LOG_DIR}/stack_scrolls_#{timestamp}.log"
+
+    File.open(log_file, 'w') do |f|
+      f.puts "Scroll Stacking Log - #{Time.now.strftime('%Y-%m-%d %H:%M:%S')}"
+      f.puts '=' * 60
+      f.puts "Total Processed: #{@stats[:processed]}"
+      f.puts "Kept (Stacked): #{@stats[:kept]}"
+      f.puts "Trashed: #{@stats[:trashed]}"
+      f.puts "Stowed (Excess): #{@stats[:stowed]}"
+      f.puts "Rejected by Limits: #{@stats[:rejected_by_limit]}"
+      f.puts '-' * 60
+      f.puts "\nPer-Spell Breakdown:"
+      @stats[:by_spell].sort_by { |name, _| name }.each do |spell_name, data|
+        next if data[:processed].zero?
+
+        f.puts "  #{spell_name}:"
+        f.puts "    Processed: #{data[:processed]}, Kept: #{data[:kept]}, Trashed: #{data[:trashed]}, Stowed: #{data[:stowed]}, Rejected: #{data[:rejected]}"
+      end
+
+      multi_slot = find_multi_slot_scrolls
+      unless multi_slot.empty?
+        f.puts "\n#{'-' * 60}"
+        f.puts 'Scrolls with Multiple Copies:'
+        multi_slot.each do |spell_name, count|
+          f.puts "  #{spell_name}: #{count}"
+        end
+      end
+    end
+
+    msg("Statistics saved to: #{log_file}")
+  rescue StandardError => e
+    msg("WARNING: Failed to save statistics log: #{e.message}")
+  end
+
+  # ==========================================================================
+  # Clean (consolidate duplicates + trash unwanted), interactive
+  # ==========================================================================
+
+  # Consolidates duplicate stacks and removes unwanted scrolls, stowing removed
+  # scrolls instead of trashing when requested. Simulate-then-confirm: previews
+  # the plan unless +confirm+ is true.
+  #
+  # @param keep_excess [Boolean] stow removed scrolls instead of trashing
+  # @param confirm [Boolean] actually execute (false simulates only)
+  # @return [void]
+  def clean_stackers(keep_excess: false, confirm: false)
+    DRCI.stow_hands
+
+    msg('Resetting stacker data...')
+    UserVars.stackers = nil
+    populate_stackers(force_refresh: true)
+
+    spell_inventory = build_spell_inventory
+
+    consolidatable = spell_inventory.select { |_, locations| locations.size > 1 }
+    unwanted = spell_inventory.select { |spell_name, _| !should_keep_spell?(spell_name) }
+
+    unless consolidatable.any? || unwanted.any?
+      msg('No scrolls found that need cleaning.')
+      return
+    end
+
+    display_cleaning_plan(consolidatable, unwanted, keep_excess)
+
+    unless confirm
+      respond('')
+      respond('  This was a SIMULATION. No scrolls were changed.')
+      keep_suffix = keep_excess ? ' keep' : ''
+      respond("  To actually clean, run: ;stack-scrolls clean#{keep_suffix} confirm")
+      respond('')
+      return
+    end
+
+    execute_unwanted_removal(unwanted, keep_excess) unless unwanted.empty?
+    execute_consolidation(consolidatable) unless consolidatable.empty?
+
+    msg('Cleaning complete!')
+
+    UserVars.stackers = nil
+    populate_stackers(force_refresh: true)
+  end
+
+  # Maps every spell to its slot locations. Pure; nil-safe.
+  #
+  # @return [Hash{String=>Array<Hash>}] spell => [{stacker:, stacker_obj:, slot:, count:}]
+  def build_spell_inventory
+    spell_inventory = Hash.new { |h, k| h[k] = [] }
+
+    each_slot do |stacker, data, idx|
+      spell_inventory[data[0]] << {
+        stacker: stacker['name'],
+        stacker_obj: stacker,
+        slot: idx,
+        count: data[1]
+      }
+    end
+
+    spell_inventory
+  end
+
+  # Prints the cleaning plan (unwanted removals + consolidation).
+  #
+  # @param consolidatable [Hash] spell => locations (more than one location)
+  # @param unwanted [Hash] spell => locations (filtered out)
+  # @param keep_excess [Boolean] whether excess is stowed rather than trashed
+  # @return [void]
+  def display_cleaning_plan(consolidatable, unwanted, keep_excess)
+    respond("\n#{'=' * 80}")
+    respond('  CLEANING PLAN')
+    respond('=' * 80)
+
+    unless unwanted.empty?
+      respond('')
+      respond('  UNWANTED SCROLLS (not in keep list or in discard list):')
+      respond('-' * 80)
+      unwanted.sort_by { |name, _| name }.each do |spell_name, locations|
+        total_count = locations.sum { |loc| loc[:count] }
+        action = keep_excess ? 'stowed' : 'trashed'
+        respond("  #{spell_name}: #{total_count} scroll(s) will be #{action}")
+        locations.each do |loc|
+          respond("    #{loc[:stacker]} [slot #{loc[:slot] + 1}]: #{loc[:count]}")
+        end
+      end
+    end
+
+    unless consolidatable.empty?
+      respond('')
+      respond('  CONSOLIDATION (duplicate spell slots):')
+      respond('-' * 80)
+      consolidatable.sort_by { |name, _| name }.each do |spell_name, locations|
+        total_count = locations.sum { |loc| loc[:count] }
+        sorted_locs = locations.sort_by { |loc| -loc[:count] }
+        target_loc = sorted_locs.first
+
+        respond('')
+        respond("  #{spell_name}:")
+        respond("    Total scrolls: #{total_count}")
+        respond("    Locations: #{locations.size}")
+        sorted_locs.each do |loc|
+          marker = loc == target_loc ? ' (TARGET)' : ''
+          respond("      #{loc[:stacker]} [slot #{loc[:slot] + 1}]: #{loc[:count]}#{marker}")
+        end
+
+        next unless @max_scrolls_per_spell && total_count > @max_scrolls_per_spell
+
+        excess = total_count - @max_scrolls_per_spell
+        action = @trash_scrolls ? 'trashed' : 'kept'
+        respond("    Max limit: #{@max_scrolls_per_spell} (#{excess} excess will be #{action})")
+      end
+    end
+
+    respond('=' * 80)
+    respond('')
+    respond('Review the cleaning plan above.')
+    respond('')
+  end
+
+  # Removes unwanted scrolls slot by slot.
+  #
+  # @param unwanted [Hash] spell => locations
+  # @param keep_excess [Boolean] stow instead of trash
+  # @return [void]
+  def execute_unwanted_removal(unwanted, keep_excess)
+    msg('Removing unwanted scrolls...')
+
+    total_removed = 0
+    total_stowed = 0
+
+    unwanted.each do |spell_name, locations|
+      locations.each do |loc|
+        stacker = loc[:stacker_obj]
+        count = loc[:count]
+
+        with_stacker(stacker['name']) do
+          open_stacker(stacker['name'])
+
+          unless turn_to_spell(stacker['name'], spell_name)
+            msg("ERROR: Failed to turn to #{spell_name} in #{stacker['name']}")
+            next
+          end
+          waitrt?
+
+          flip_result = DRC.bput("flip my #{stacker['name']}", SECTION_HAS_PATTERN, SECTION_EMPTY_VERIFY_PATTERN)
+
+          if (match = flip_result.match(SECTION_HAS_PATTERN))
+            if match[:spell] != spell_name
+              msg("ERROR: Expected #{spell_name} but found #{match[:spell]}. Skipping.")
+              next
+            end
+            count = match[:count].to_i if match[:count].to_i != count
+          elsif flip_result.match?(SECTION_EMPTY_VERIFY_PATTERN)
+            msg("WARNING: #{stacker['name']} slot for #{spell_name} is empty")
+            next
+          end
+
+          count.times do
+            result = pull_scroll(stacker['name'])
+
+            break if result.match?(PULL_EMPTY_PATTERN)
+
+            if keep_excess
+              if @stacker_container
+                DRCI.put_away_item?('scroll', @stacker_container)
+              else
+                DRCI.stow_item?('scroll')
+              end
+              total_stowed += 1
+            else
+              dispose_scroll('scroll')
+              total_removed += 1
+            end
+          end
+
+          loc[:stacker_obj]['contents'][loc[:slot]] = []
+        end
+      end
+    end
+
+    msg("Unwanted scrolls: #{total_removed} trashed, #{total_stowed} stowed")
+  end
+
+  # Merges duplicate stacks of each spell into the largest stack, honoring the
+  # per-spell cap. Two-phase per source so both hands are never needed at once:
+  # pull the source's copies into the pack, put the source down, then push them
+  # into the target.
+  #
+  # @param consolidatable [Hash] spell => locations
+  # @return [void]
+  def execute_consolidation(consolidatable)
+    consolidatable.each do |spell_name, locations|
+      msg("Consolidating #{spell_name}...")
+
+      sorted_locs = locations.sort_by { |loc| -loc[:count] }
+      target_loc = sorted_locs.first
+      source_locs = sorted_locs[1..] || []
+
+      moved = 0
+
+      source_locs.each do |source|
+        next if source[:count].zero?
+
+        pulled = pull_slot_into_pack(source[:stacker_obj], source[:slot], spell_name, source[:count])
+        next if pulled.zero?
+
+        room = @max_scrolls_per_spell ? [@max_scrolls_per_spell - target_loc[:count], 0].max : pulled
+        to_push = [pulled, room].min
+
+        pushed = push_pack_into_target(target_loc[:stacker_obj], spell_name, to_push)
+        target_loc[:count] += pushed
+        moved += pushed
+
+        dispose_leftover_from_pack(pulled - pushed)
+      end
+
+      msg("  #{spell_name}: Moved #{moved}")
     end
   end
 
-  def stack_existing_scroll(target, scroll, spell_name, stacker_container)
-    if stacker_container
-      DRCI.get_item?(target['name'], stacker_container)
-    else
-      DRCI.get_item?(target['name'])
+  # ==========================================================================
+  # Two-phase move helpers (pull source -> pack, then push pack -> target),
+  # shared by clean-consolidation and the consolidate command. Keeping the two
+  # stacker interactions separate means only one stacker plus one scroll is ever
+  # in hand at a time.
+  # ==========================================================================
+
+  # Pulls up to +count+ copies of a spell out of one source slot and stows them
+  # in the pack, updating the source cache slot. The source stacker is the only
+  # item in hand during this phase.
+  #
+  # @param stacker [Hash] the source stacker cache entry
+  # @param slot_idx [Integer] the source slot index
+  # @param spell_name [String] the spell to pull
+  # @param count [Integer] how many copies to pull
+  # @return [Integer] the number actually pulled into the pack
+  def pull_slot_into_pack(stacker, slot_idx, spell_name, count)
+    return 0 if count <= 0
+
+    pulled = 0
+
+    with_stacker(stacker['name']) do
+      open_stacker(stacker['name'])
+
+      if turn_to_spell(stacker['name'], spell_name)
+        waitrt?
+
+        count.times do
+          result = pull_scroll(stacker['name'])
+          break if result.match?(PULL_EMPTY_PATTERN)
+
+          stow_pulled_scroll
+          pulled += 1
+
+          if result.match?(PULL_LAST_PATTERN)
+            stacker['contents'][slot_idx] = []
+            break
+          else
+            stacker['contents'][slot_idx][1] -= 1
+          end
+        end
+      else
+        msg("ERROR: Failed to turn to #{spell_name} in #{stacker['name']}")
+      end
     end
-    case DRC.bput("push my #{target['name']} with my #{scroll}", 'you find room', 'you realize there')
-    when /you realize/i
-      # todo
-    when /you find room/i
-      target['contents'].each_with_index do |data, index|
-        if data.first == spell_name
-          target['contents'][index] = [data.first, data.last + 1]
+
+    pulled
+  end
+
+  # Pushes up to +count+ pack scrolls into the target stacker, updating the
+  # target cache. The target stacker is the only stacker in hand during this
+  # phase; a scroll is fetched from the pack immediately before each push.
+  #
+  # Deliberately does NOT `turn` to the spell's section first: a push auto-files
+  # the scroll into the matching section (creating it when absent), exactly like
+  # the container-stacking path. Turning to a not-yet-existing section instead
+  # draws "That spell does not appear to be available", which is not a
+  # turn-failure pattern, so every new-section push would block for the full bput
+  # timeout.
+  #
+  # @param target_stacker [Hash] the target stacker cache entry
+  # @param spell_name [String] the spell being pushed
+  # @param count [Integer] how many to push
+  # @return [Integer] the number actually pushed
+  def push_pack_into_target(target_stacker, spell_name, count)
+    return 0 if count <= 0
+
+    pushed = 0
+
+    with_stacker(target_stacker['name']) do
+      open_stacker(target_stacker['name'])
+
+      count.times do
+        break unless get_pulled_scroll
+
+        result = DRC.bput("push my #{target_stacker['name']} with my scroll",
+                          PUSH_EXISTING_SUCCESS_PATTERN, PUSH_NEW_SUCCESS_PATTERN,
+                          PUSH_FULL_PATTERN, *PUSH_FAIL_PATTERNS, PUSH_TIMEOUT)
+
+        if result.match?(PUSH_EXISTING_SUCCESS_PATTERN) || result.match?(PUSH_NEW_SUCCESS_PATTERN)
+          pushed += 1
+          update_target_cache(target_stacker, spell_name)
+        else
+          msg("Could not fit #{spell_name} into #{target_stacker['name']} (it filled up).")
+          stow_pulled_scroll
           break
         end
       end
     end
 
-    if stacker_container
-      DRCI.put_away_item?(target['name'], stacker_container)
+    pushed
+  end
+
+  # Increments the target cache for a just-pushed scroll, creating a new slot
+  # entry when the spell is not already present. Pure cache mutation.
+  #
+  # @param target_stacker [Hash] the target stacker cache entry
+  # @param spell_name [String] the spell that was pushed
+  # @return [void]
+  def update_target_cache(target_stacker, spell_name)
+    existing = target_stacker['contents'].find { |data| data&.first == spell_name }
+    if existing
+      existing[1] += 1
     else
-      DRCI.put_away_item?(target['name'])
+      empty_idx = target_stacker['contents'].index { |data| slot_empty?(data) }
+      target_stacker['contents'][empty_idx] = [spell_name, 1] if empty_idx
     end
+  end
+
+  # Stows the scroll currently in hand into the pack (or stacker container).
+  #
+  # @return [Boolean]
+  def stow_pulled_scroll
+    if @stacker_container
+      DRCI.put_away_item?('scroll', @stacker_container)
+    else
+      DRCI.stow_item?('scroll')
+    end
+  end
+
+  # Fetches one stowed scroll back into hand from the pack (or stacker container).
+  #
+  # @return [Boolean] true when a scroll was retrieved
+  def get_pulled_scroll
+    if @stacker_container
+      DRCI.get_item?('scroll', @stacker_container)
+    else
+      DRCI.get_item?('scroll')
+    end
+  end
+
+  # Disposes of scrolls left in the pack after a move (over-cap or push-failed).
+  # Only trashes when trash_excess_scrolls is set; otherwise they stay stowed.
+  #
+  # @param count [Integer] how many leftover scrolls to trash
+  # @return [void]
+  def dispose_leftover_from_pack(count)
+    return if count <= 0
+    return unless @trash_scrolls
+
+    count.times do
+      break unless get_pulled_scroll
+
+      dispose_scroll('scroll')
+    end
+  end
+
+  # ==========================================================================
+  # Prune (remove unwanted + over-limit excess), simulate-then-confirm
+  # ==========================================================================
+
+  # Simulates, then (with confirm) executes, removal of unwanted and over-limit
+  # scrolls.
+  #
+  # @param confirm [Boolean] actually remove (false simulates only)
+  # @return [void]
+  def prune_stackers(confirm: false)
+    DRCI.stow_hands
+
+    msg('Analyzing stacker contents...')
+    UserVars.stackers = nil
+    populate_stackers(force_refresh: true)
+
+    unless UserVars.stackers.is_a?(Array) && !UserVars.stackers.empty?
+      msg('ERROR: Failed to populate stackers.')
+      return
+    end
+
+    prune_plan = build_prune_plan
+
+    if prune_plan[:unwanted].empty? && prune_plan[:over_limit].empty?
+      msg('Nothing to prune! All scrolls are in keep_scrolls and within limits.')
+      return
+    end
+
+    display_prune_plan(prune_plan)
+
+    unless confirm
+      respond('')
+      respond('  This was a SIMULATION. No scrolls were removed.')
+      respond('  To actually prune, run: ;stack-scrolls prune confirm')
+      respond('')
+      return
+    end
+
+    execute_prune(prune_plan)
+  end
+
+  # Categorizes every slot into unwanted/over-limit/keep using live settings.
+  #
+  # @return [Hash] { unwanted: [slot_info], over_limit: [slot_info], keep: [slot_info] }
+  def build_prune_plan
+    compute_prune_plan(UserVars.stackers,
+                       keep_list: @keep_scrolls,
+                       discard_list: @discard_scrolls,
+                       max_per_spell: @max_scrolls_per_spell,
+                       abbrevs: abbrev_map(UserVars.stackers))
+  end
+
+  # Maps each occupied spell name to its abbreviation, for exact-match filtering.
+  # Nil-safe.
+  #
+  # @param stackers [Array, nil] the stacker cache
+  # @return [Hash{String=>String}] spell name => abbreviation (nil when unknown)
+  def abbrev_map(stackers)
+    map = {}
+    return map unless stackers.is_a?(Array)
+
+    stackers.each do |stacker|
+      next unless stacker['contents']
+
+      stacker['contents'].each do |data|
+        next if slot_empty?(data)
+
+        name = data[0]
+        map[name] = spell_abbrev(name) unless map.key?(name)
+      end
+    end
+    map
+  end
+
+  # Pure prune categorization over a cache + settings.
+  #
+  # @param stackers [Array, nil] the stacker cache
+  # @param keep_list [Array<String>] whitelist patterns
+  # @param discard_list [Array<String>] blacklist patterns
+  # @param max_per_spell [Integer, nil] global cap, or nil to disable
+  # @param abbrevs [Hash{String=>String}] spell name => abbreviation, for exact
+  #   name-or-abbrev keep/discard matching (defaults to none)
+  # @return [Hash] { unwanted:, over_limit:, keep: } arrays of slot_info hashes
+  def compute_prune_plan(stackers, keep_list:, discard_list:, max_per_spell:, abbrevs: {})
+    plan = { unwanted: [], over_limit: [], keep: [] }
+    return plan unless stackers.is_a?(Array)
+
+    spell_totals = Hash.new(0)
+    stackers.each do |stacker|
+      next unless stacker['contents']
+
+      stacker['contents'].each do |data|
+        next if slot_empty?(data)
+
+        spell_totals[data[0]] += data[1]
+      end
+    end
+
+    stackers.each do |stacker|
+      next unless stacker['contents']
+
+      stacker['contents'].each_with_index do |data, idx|
+        next if slot_empty?(data)
+
+        spell_name = data[0]
+        count = data[1]
+
+        slot_info = {
+          spell: spell_name,
+          stacker: stacker['name'],
+          stacker_obj: stacker,
+          slot: idx,
+          count: count,
+          total: spell_totals[spell_name]
+        }
+
+        unless keep_spell?(spell_name, keep_list: keep_list, discard_list: discard_list, abbrev: abbrevs[spell_name])
+          slot_info[:reason] = 'Not in keep_scrolls or in discard_scrolls'
+          slot_info[:remove_count] = count
+          plan[:unwanted] << slot_info
+          next
+        end
+
+        if max_per_spell && spell_totals[spell_name] > max_per_spell
+          slot_info[:reason] = "Exceeds max_scrolls_per_spell (#{max_per_spell})"
+          slot_info[:excess] = spell_totals[spell_name] - max_per_spell
+          plan[:over_limit] << slot_info
+        else
+          plan[:keep] << slot_info
+        end
+      end
+    end
+
+    plan
+  end
+
+  # Computes the headline totals for a prune plan, including the retained portion
+  # of over-limit spells in the KEEP count. Pure. (B5)
+  #
+  # @param plan [Hash] a prune plan from {#compute_prune_plan}
+  # @param max_per_spell [Integer, nil] the per-spell cap
+  # @return [Hash] { unwanted_total:, over_limit_total:, keep_count:, keep_spell_types:, remove_total:, slots_freed: }
+  # @example
+  #   # 150 copies, cap 100 -> 100 kept, 50 removed
+  #   summarize_prune_plan({ unwanted: [], keep: [],
+  #     over_limit: [{ spell: 'Heal', count: 150, total: 150 }] }, max_per_spell: 100)[:keep_count] # => 100
+  def summarize_prune_plan(plan, max_per_spell:)
+    unwanted_total = plan[:unwanted].sum { |slot| slot[:count] }
+
+    over_groups = plan[:over_limit].group_by { |slot| slot[:spell] }
+    over_limit_total = over_groups.sum { |_, slots| [slots.first[:total] - max_per_spell.to_i, 0].max }
+    over_kept = over_groups.sum { |_, slots| [[max_per_spell.to_i, slots.first[:total]].min, 0].max }
+
+    keep_count = plan[:keep].sum { |slot| slot[:count] } + over_kept
+    keep_spell_types = (plan[:keep].map { |slot| slot[:spell] } + over_groups.keys).uniq.size
+
+    {
+      unwanted_total: unwanted_total,
+      over_limit_total: over_limit_total,
+      keep_count: keep_count,
+      keep_spell_types: keep_spell_types,
+      remove_total: unwanted_total + over_limit_total,
+      slots_freed: plan[:unwanted].size
+    }
+  end
+
+  # Prints the prune plan and its summary.
+  #
+  # @param plan [Hash] a prune plan from {#build_prune_plan}
+  # @return [void]
+  def display_prune_plan(plan)
+    respond("\n#{'=' * 80}")
+    respond('  PRUNE PLAN')
+    respond('=' * 80)
+
+    unless plan[:unwanted].empty?
+      respond('')
+      respond('  UNWANTED SCROLLS (will be completely removed):')
+      respond('-' * 80)
+      respond("  #{'Spell'.ljust(35)} #{'Stacker'.ljust(20)} #{'Count'.rjust(6)}")
+      respond('-' * 80)
+
+      plan[:unwanted].sort_by { |s| s[:spell] }.each do |slot|
+        respond("  #{slot[:spell].ljust(35)} #{slot[:stacker].ljust(20)} #{slot[:count].to_s.rjust(6)}")
+      end
+
+      respond('-' * 80)
+      respond("  Subtotal: #{plan[:unwanted].sum { |s| s[:count] }} scroll(s) to remove")
+    end
+
+    unless plan[:over_limit].empty?
+      respond('')
+      respond("  OVER LIMIT (max_scrolls_per_spell: #{@max_scrolls_per_spell}):")
+      respond('-' * 80)
+      respond("  #{'Spell'.ljust(35)} #{'Total'.rjust(6)} #{'Limit'.rjust(6)} #{'Excess'.rjust(6)}")
+      respond('-' * 80)
+
+      by_spell = plan[:over_limit].group_by { |s| s[:spell] }
+      by_spell.sort_by { |name, _| name }.each do |spell_name, slots|
+        total = slots.first[:total]
+        excess = total - @max_scrolls_per_spell
+
+        respond("  #{spell_name.ljust(35)} #{total.to_s.rjust(6)} #{@max_scrolls_per_spell.to_s.rjust(6)} #{excess.to_s.rjust(6)}")
+        slots.each do |slot|
+          respond("    ->#{slot[:stacker].ljust(25)} #{slot[:count].to_s.rjust(4)} copies")
+        end
+      end
+
+      respond('-' * 80)
+      over_limit_total = by_spell.sum { |_, slots| slots.first[:total] - @max_scrolls_per_spell }
+      respond("  Subtotal: #{over_limit_total} scroll(s) to remove (excess above limit)")
+    end
+
+    summary = summarize_prune_plan(plan, max_per_spell: @max_scrolls_per_spell)
+
+    respond('')
+    respond('=' * 80)
+    respond('  SUMMARY')
+    respond('=' * 80)
+    respond("  Scrolls to KEEP:   #{summary[:keep_count]} (#{summary[:keep_spell_types]} spell types)")
+    respond("  Scrolls to REMOVE: #{summary[:remove_total]}")
+    respond("    - Unwanted:      #{summary[:unwanted_total]}")
+    respond("    - Over limit:    #{summary[:over_limit_total]}")
+    respond("  Slots to FREE:     #{summary[:slots_freed]}")
+    respond('=' * 80)
+  end
+
+  # Executes a prune plan: removes unwanted slots, then trims over-limit excess
+  # from the smallest stacks first.
+  #
+  # @param plan [Hash] a prune plan from {#build_prune_plan}
+  # @return [void]
+  def execute_prune(plan)
+    msg('Executing prune...')
+
+    total_removed = 0
+    slots_freed = 0
+
+    plan[:unwanted].each do |slot|
+      removed = remove_scrolls_from_slot(slot[:stacker_obj], slot[:slot], slot[:spell], slot[:count])
+      total_removed += removed
+      slots_freed += 1 if removed > 0
+    end
+
+    by_spell = plan[:over_limit].group_by { |s| s[:spell] }
+    by_spell.each do |spell_name, slots|
+      excess_to_remove = slots.first[:total] - @max_scrolls_per_spell
+      next if excess_to_remove <= 0
+
+      sorted_slots = slots.sort_by { |s| s[:count] }
+
+      sorted_slots.each do |slot|
+        break if excess_to_remove <= 0
+
+        remove_count = [slot[:count], excess_to_remove].min
+        removed = remove_scrolls_from_slot(slot[:stacker_obj], slot[:slot], spell_name, remove_count)
+        total_removed += removed
+        excess_to_remove -= removed
+
+        slots_freed += 1 if removed == slot[:count]
+      end
+    end
+
+    msg("Prune complete! Removed #{total_removed} scroll(s), freed #{slots_freed} slot(s)")
+
+    UserVars.stackers = nil
+    populate_stackers(force_refresh: true)
+  end
+
+  # Pulls and trashes up to N scrolls from one slot, updating the cache.
+  #
+  # @param stacker [Hash] the stacker cache entry
+  # @param slot_idx [Integer] the slot index
+  # @param spell_name [String] the spell in the slot
+  # @param count_to_remove [Integer] how many to remove
+  # @return [Integer] number actually removed
+  def remove_scrolls_from_slot(stacker, slot_idx, spell_name, count_to_remove)
+    return 0 if count_to_remove <= 0
+
+    removed = 0
+
+    with_stacker(stacker['name']) do
+      open_stacker(stacker['name'])
+
+      unless turn_to_spell(stacker['name'], spell_name)
+        msg("ERROR: Failed to turn to #{spell_name} in #{stacker['name']}")
+        return 0
+      end
+      waitrt?
+
+      count_to_remove.times do
+        result = pull_scroll(stacker['name'])
+
+        break if result.match?(PULL_EMPTY_PATTERN)
+
+        dispose_scroll('scroll')
+        removed += 1
+
+        if result.match?(PULL_LAST_PATTERN)
+          stacker['contents'][slot_idx] = []
+          break
+        else
+          stacker['contents'][slot_idx][1] -= 1
+        end
+      end
+    end
+
+    msg("  Removed #{removed} #{spell_name} from #{stacker['name']}") if removed > 0
+    removed
+  end
+
+  # ==========================================================================
+  # Consolidate (fill fewer stackers), simulate-then-confirm
+  # ==========================================================================
+
+  # Simulates, then (with confirm) executes, packing all scrolls into as few
+  # stackers as possible.
+  #
+  # @param confirm [Boolean] actually move (false simulates only)
+  # @return [void]
+  def consolidate_stackers(confirm: false)
+    DRCI.stow_hands
+
+    msg('Analyzing stacker contents for consolidation...')
+    UserVars.stackers = nil
+    populate_stackers(force_refresh: true)
+
+    unless UserVars.stackers.is_a?(Array) && UserVars.stackers.size > 1
+      msg('ERROR: Need at least 2 stackers to consolidate.')
+      return
+    end
+
+    plan = build_consolidation_plan
+
+    if plan[:moves].empty?
+      msg('Nothing to consolidate! Scrolls are already optimally distributed.')
+      return
+    end
+
+    display_consolidation_plan(plan)
+
+    unless confirm
+      respond('')
+      respond('  This was a SIMULATION. No scrolls were moved.')
+      respond('  To actually consolidate, run: ;stack-scrolls consolidate confirm')
+      respond('')
+      return
+    end
+
+    execute_consolidation_plan(plan)
+  end
+
+  # Builds a consolidation plan, reporting if capacity is exceeded.
+  #
+  # @return [Hash] the plan (see {#compute_consolidation_plan})
+  def build_consolidation_plan
+    plan = compute_consolidation_plan(UserVars.stackers)
+    msg("ERROR: Not enough stacker capacity for all #{plan[:total_spells]} spell types!") if plan[:overflow]
+    plan
+  end
+
+  # Pure consolidation planning: assigns each spell to a target stacker, filling
+  # stackers in order, and records the moves needed. Nil-safe.
+  #
+  # @param stackers [Array, nil] the stacker cache
+  # @return [Hash] plan with keys :moves, :stacker_assignments, :stackers_needed,
+  #   :total_spells, :total_scrolls, :overflow
+  def compute_consolidation_plan(stackers)
+    plan = {
+      moves: [],
+      stacker_assignments: {},
+      stackers_needed: 0,
+      total_spells: 0,
+      total_scrolls: 0,
+      overflow: false
+    }
+    return plan unless stackers.is_a?(Array)
+
+    all_spells = {}
+    stackers.each do |stacker|
+      next unless stacker['contents']
+
+      stacker['contents'].each_with_index do |data, idx|
+        next if slot_empty?(data)
+
+        all_spells[data[0]] ||= []
+        all_spells[data[0]] << {
+          stacker_obj: stacker,
+          stacker_name: stacker['name'],
+          slot: idx,
+          count: data[1]
+        }
+      end
+    end
+
+    plan[:total_spells] = all_spells.size
+    plan[:total_scrolls] = all_spells.values.flatten.sum { |loc| loc[:count] }
+
+    current_target_idx = 0
+    slots_used_on_current = 0
+
+    all_spells.keys.sort.each do |spell_name|
+      locations = all_spells[spell_name]
+      target_stacker = stackers[current_target_idx]
+      target_capacity = target_stacker['contents']&.size || 40
+
+      if slots_used_on_current >= target_capacity
+        current_target_idx += 1
+        if current_target_idx >= stackers.size
+          plan[:overflow] = true
+          plan[:stackers_needed] = stackers.size
+          return plan
+        end
+        target_stacker = stackers[current_target_idx]
+        slots_used_on_current = 0
+      end
+
+      plan[:stacker_assignments][spell_name] = {
+        stacker_obj: target_stacker,
+        stacker_name: target_stacker['name']
+      }
+      slots_used_on_current += 1
+
+      locations.each do |loc|
+        next if loc[:stacker_name] == target_stacker['name']
+
+        plan[:moves] << {
+          spell: spell_name,
+          count: loc[:count],
+          source_stacker_obj: loc[:stacker_obj],
+          source_stacker_name: loc[:stacker_name],
+          source_slot: loc[:slot],
+          target_stacker_obj: target_stacker,
+          target_stacker_name: target_stacker['name']
+        }
+      end
+    end
+
+    plan[:stackers_needed] = current_target_idx + 1
+    plan
+  end
+
+  # Prints the consolidation plan.
+  #
+  # @param plan [Hash] a plan from {#build_consolidation_plan}
+  # @return [void]
+  def display_consolidation_plan(plan)
+    respond("\n#{'=' * 80}")
+    respond('  CONSOLIDATION PLAN')
+    respond('=' * 80)
+
+    respond('')
+    respond("  Total spell types: #{plan[:total_spells]}")
+    respond("  Total scrolls: #{plan[:total_scrolls]}")
+    respond("  Stackers needed after consolidation: #{plan[:stackers_needed]} of #{UserVars.stackers.size}")
+    respond('')
+
+    respond('  TARGET DISTRIBUTION:')
+    respond('-' * 80)
+
+    stacker_counts = Hash.new(0)
+    plan[:stacker_assignments].each do |_spell, assignment|
+      stacker_counts[assignment[:stacker_name]] += 1
+    end
+
+    UserVars.stackers.each_with_index do |stacker, idx|
+      capacity = stacker['contents']&.size || 40
+      assigned = stacker_counts[stacker['name']]
+      status = assigned > 0 ? "#{assigned}/#{capacity} slots" : '(empty after consolidation)'
+      marker = idx < plan[:stackers_needed] ? '' : ' <- can be removed'
+      respond("  #{stacker['name'].ljust(25)} #{status}#{marker}")
+    end
+
+    respond('')
+
+    unless plan[:moves].empty?
+      respond('  MOVES:')
+      respond('-' * 80)
+      respond("  #{'Spell'.ljust(30)} #{'From'.ljust(18)} #{'To'.ljust(18)} #{'Count'.rjust(6)}")
+      respond('-' * 80)
+
+      plan[:moves].sort_by { |m| [m[:target_stacker_name], m[:spell]] }.each do |move|
+        respond("  #{move[:spell].ljust(30)} #{move[:source_stacker_name].ljust(18)} #{move[:target_stacker_name].ljust(18)} #{move[:count].to_s.rjust(6)}")
+      end
+
+      respond('-' * 80)
+      respond("  Total scrolls to move: #{plan[:moves].sum { |m| m[:count] }}")
+      respond("  Slots to free: #{plan[:moves].size}")
+    end
+
+    respond('')
+    respond('=' * 80)
+
+    if plan[:stackers_needed] < UserVars.stackers.size
+      removable = UserVars.stackers.size - plan[:stackers_needed]
+      respond('')
+      respond("  After consolidation, you can remove #{removable} stacker(s):")
+      UserVars.stackers[plan[:stackers_needed]..].each do |stacker|
+        respond("    - #{stacker['name']}")
+      end
+    end
+
+    respond('=' * 80)
+  end
+
+  # Reorders consolidation moves into a capacity-safe execution sequence.
+  #
+  # The planner ({#compute_consolidation_plan}) describes the FINAL distribution,
+  # but the moves cannot be executed in an arbitrary order. A stacker that is
+  # full at the start (because the sections leaving it are scheduled later) will
+  # reject an inbound push with "no more room", stalling the run. This greedily
+  # emits, at each step, only a move whose target currently has room -- either it
+  # already holds the spell's section (a merge needs no new slot) or it has a
+  # free slot -- while a simulated occupancy model frees each source slot so that
+  # later moves unblock. Pure and nil-safe; never mutates its inputs.
+  #
+  # @param moves [Array<Hash>, nil] moves from a consolidation plan
+  # @param stackers [Array, nil] the stacker cache, for initial occupancy
+  # @return [Hash] { ordered: Array<Hash>, safe: Boolean } -- +ordered+ is always
+  #   a permutation of +moves+ (nothing is dropped). +safe+ is false only when a
+  #   dependency cycle with no free slot anywhere prevented a fully capacity-safe
+  #   ordering; the unplaceable remainder is appended in its original order.
+  def order_consolidation_moves(moves, stackers)
+    moves = Array(moves)
+    return { ordered: [], safe: true } if moves.empty?
+
+    occupancy = {}          # stacker name -> occupied slot count
+    capacity  = {}          # stacker name -> total slots (nil = unbounded)
+    sections  = {}          # [stacker name, spell] -> true when a section exists
+
+    Array(stackers).each do |stacker|
+      name = stacker['name']
+      contents = stacker['contents'] || []
+      capacity[name] = contents.size
+      occupancy[name] = contents.count { |data| !slot_empty?(data) }
+      contents.each do |data|
+        sections[[name, data[0]]] = true unless slot_empty?(data)
+      end
+    end
+
+    pending = moves.dup
+    ordered = []
+
+    loop do
+      progressed = false
+      pending.reject! do |move|
+        next false unless move_target_has_room?(move, occupancy, capacity, sections)
+
+        apply_move_to_model(move, occupancy, sections)
+        ordered << move
+        progressed = true
+        true
+      end
+      break if pending.empty? || !progressed
+    end
+
+    ordered.concat(pending) # cycle remainder (rare); appended so nothing is lost
+    { ordered: ordered, safe: pending.empty? }
+  end
+
+  # Whether a move's target can accept a push right now under the simulated
+  # model: an existing section merges without a new slot; otherwise a free slot
+  # is required (an unknown/unbounded capacity always has room). Pure.
+  #
+  # @param move [Hash] a consolidation move
+  # @param occupancy [Hash{String=>Integer}] simulated occupied-slot counts
+  # @param capacity [Hash{String=>Integer}] slot capacity per stacker
+  # @param sections [Hash{Array=>Boolean}] existing [stacker, spell] sections
+  # @return [Boolean]
+  def move_target_has_room?(move, occupancy, capacity, sections)
+    target = move[:target_stacker_name]
+    return true if sections[[target, move[:spell]]]
+
+    cap = capacity[target]
+    cap.nil? || occupancy.fetch(target, 0) < cap
+  end
+
+  # Advances the simulated model for one executed move: the source slot is freed
+  # and, when the target did not already hold the spell, a new section consumes a
+  # target slot. Pure mutation of the passed-in model hashes. (Mirrors the real
+  # I/O so {#order_consolidation_moves} stays capacity-accurate.)
+  #
+  # @param move [Hash] a consolidation move
+  # @param occupancy [Hash{String=>Integer}] simulated occupied-slot counts
+  # @param sections [Hash{Array=>Boolean}] existing [stacker, spell] sections
+  # @return [void]
+  def apply_move_to_model(move, occupancy, sections)
+    source = move[:source_stacker_name]
+    target = move[:target_stacker_name]
+
+    occupancy[source] -= 1 if occupancy[source] && occupancy[source] > 0
+
+    key = [target, move[:spell]]
+    return if sections[key]
+
+    occupancy[target] = occupancy.fetch(target, 0) + 1
+    sections[key] = true
+  end
+
+  # Builds the closing advisory for a consolidation run that could not place
+  # every scroll (targets filled up mid-run). The leftovers are stowed loose and
+  # labeled, so they are recovered by RE-STACKING them -- not by re-running
+  # consolidate, which reads only the stackers and would ignore loose scrolls.
+  # Pure; returns [] when nothing was left stowed.
+  #
+  # @param stowed_count [Integer] scrolls left stowed after the run
+  # @param container [String, nil] the container leftovers were stowed in
+  #   (nil = the character's default stow location / pack)
+  # @return [Array<String>] advisory lines, or [] when stowed_count <= 0
+  def consolidation_leftover_advice(stowed_count, container)
+    return [] if stowed_count.to_i <= 0
+
+    where = container ? "your #{container}" : 'your pack'
+    source = container || '<container>'
+    [
+      "#{stowed_count} scroll(s) did not fit and are stowed safely in #{where},",
+      'labeled and intact -- nothing was destroyed.',
+      "To file them back into the stackers, run: ;stack-scrolls #{source}"
+    ]
+  end
+
+  # Executes a consolidation plan, moving each scroll to its target stacker.
+  # Moves are run in a capacity-safe order ({#order_consolidation_moves}) so an
+  # inbound push never lands on a stacker that has not yet been freed. Two-phase
+  # per move (pull source -> pack, then push pack -> target) so both stackers are
+  # never needed in hand simultaneously.
+  #
+  # @param plan [Hash] a plan from {#build_consolidation_plan}
+  # @return [void]
+  def execute_consolidation_plan(plan)
+    msg('Executing consolidation...')
+
+    scrolls_moved = 0
+    slots_freed = 0
+    scrolls_stowed = 0
+
+    schedule = order_consolidation_moves(plan[:moves], UserVars.stackers)
+    unless schedule[:safe]
+      msg('NOTE: Stackers are tightly packed, so a few moves may not fit on this')
+      msg('      pass. Anything that does not fit is stowed safely -- labeled and')
+      msg('      intact, never destroyed (recovery steps are shown at the end).')
+    end
+
+    schedule[:ordered].each do |move|
+      msg("Moving #{move[:count]} #{move[:spell]}: #{move[:source_stacker_name]} -> #{move[:target_stacker_name]}...")
+
+      pulled = pull_slot_into_pack(move[:source_stacker_obj], move[:source_slot], move[:spell], move[:count])
+      next if pulled.zero?
+
+      pushed = push_pack_into_target(move[:target_stacker_obj], move[:spell], pulled)
+      scrolls_moved += pushed
+      slots_freed += 1
+
+      # Anything pulled but not accepted by the target stays stowed in the pack
+      # (never silently destroyed); trash only when explicitly configured.
+      leftover = pulled - pushed
+      scrolls_stowed += leftover unless @trash_scrolls
+      dispose_leftover_from_pack(leftover)
+    end
+
+    msg("Consolidation complete! Moved #{scrolls_moved} scroll(s), freed #{slots_freed} slot(s)")
+    consolidation_leftover_advice(scrolls_stowed, @stacker_container).each { |line| msg(line) }
+
+    UserVars.stackers = nil
+    populate_stackers(force_refresh: true)
   end
 end
 
