@@ -7,6 +7,17 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#stack-scrolls
 
   Changelog:
+    3.1.3 (2026-07-27) - Review fixes (PR #7478)
+      - FIX: the STACKER OVERVIEW "Spells" column counted non-empty slots, so a
+        spell split across slots (or across stackers, in the TOTALS row) was
+        over-counted. It now counts distinct spell names: per stacker, and
+        globally in the TOTALS row (matching the SPELL STATISTICS unique count).
+      - CLEANUP: stack_new_scroll locates its empty slot with slot_empty? (which
+        also treats a nil slot as empty), matching update_target_cache and
+        find_stacker_with_empty_slot, instead of an exact index([]) lookup.
+      - CLEANUP: the display and search paths reuse the memoized spell_data
+        helper (shared lookup + error handling) instead of repeating
+        get_data('spells').spell_data with an inline rescue.
     3.1.2 (2026-07-27) - Clearer consolidation leftover messaging (PR #7478)
       - CHANGE: when `consolidate` cannot fit every scroll (targets fill up on a
         tightly packed pass), it no longer tells you to "re-run consolidate" --
@@ -113,7 +124,7 @@
 #   ;stack-scrolls prune
 #   ;stack-scrolls prune confirm
 class ScrollStack
-  VERSION = '3.1.2'
+  VERSION = '3.1.3'
 
   # --- Game-text patterns ---------------------------------------------------
   SECTION_HAS_PATTERN = /The (?<spell>.*) section has (?<count>\d+)/.freeze
@@ -737,7 +748,7 @@ class ScrollStack
     normalized_data = normalize_stacker_data
 
     unless mana_type.empty?
-      spells = get_data('spells').spell_data
+      spells = spell_data
       if spells
         normalized_data.select! do |data|
           spell_info = spells[data.first]
@@ -759,7 +770,7 @@ class ScrollStack
       respond("  #{'Spell Name'.ljust(40)} #{'Count'.rjust(7)} #{'Stacker'.ljust(20)} #{'Page'.rjust(6)}")
       respond('-' * 80)
 
-      spells_data = get_data('spells').spell_data rescue nil
+      spells_data = spell_data
 
       normalized_data.each do |data|
         spell_name, count, stacker, page = data
@@ -909,7 +920,7 @@ class ScrollStack
       total_slots = stacker['contents']&.size || 0
       occupied = stacker['contents']&.count { |data| !slot_empty?(data) } || 0
       empty = total_slots - occupied
-      unique_spells = stacker['contents']&.reject { |data| slot_empty?(data) }&.size || 0
+      unique_spells = stacker['contents']&.reject { |data| slot_empty?(data) }&.map { |data| data.first }&.uniq&.size || 0
       multi_copy = stacker['contents']&.count { |data| !slot_empty?(data) && data[1] > 1 } || 0
 
       respond("  #{stacker['name'].ljust(20)} #{total_slots.to_s.rjust(6)} #{occupied.to_s.rjust(6)} #{empty.to_s.rjust(6)} #{unique_spells.to_s.rjust(7)} #{multi_copy.to_s.rjust(7)}")
@@ -920,7 +931,7 @@ class ScrollStack
     total_slots = UserVars.stackers.sum { |s| s['contents']&.size || 0 }
     total_occupied = UserVars.stackers.sum { |s| s['contents']&.count { |d| !slot_empty?(d) } || 0 }
     total_empty = total_slots - total_occupied
-    total_spells = UserVars.stackers.sum { |s| s['contents']&.reject { |d| slot_empty?(d) }&.size || 0 }
+    total_spells = UserVars.stackers.flat_map { |s| (s['contents'] || []).reject { |d| slot_empty?(d) }.map { |d| d.first } }.uniq.size
     total_multi = UserVars.stackers.sum { |s| s['contents']&.count { |d| !slot_empty?(d) && d[1] > 1 } || 0 }
 
     respond("  #{'TOTALS'.ljust(20)} #{total_slots.to_s.rjust(6)} #{total_occupied.to_s.rjust(6)} #{total_empty.to_s.rjust(6)} #{total_spells.to_s.rjust(7)} #{total_multi.to_s.rjust(7)}")
@@ -977,7 +988,7 @@ class ScrollStack
     respond('=' * 80)
 
     if verbose
-      spells_data = get_data('spells').spell_data rescue nil
+      spells_data = spell_data
       respond("  #{'Spell Name'.ljust(35)} #{'Mana'.ljust(10)} #{'Total'.rjust(6)} #{'Locs'.rjust(5)}")
       respond('-' * 80)
 
@@ -1091,7 +1102,7 @@ class ScrollStack
       return
     end
 
-    spells_data = get_data('spells').spell_data rescue nil
+    spells_data = spell_data
 
     target = nil
     matching_spell_name = nil
@@ -1428,7 +1439,7 @@ class ScrollStack
       when PUSH_FULL_PATTERN
         msg('ERROR: Stacker is full when it should have empty slots. Data may be out of sync.')
       when PUSH_NEW_SUCCESS_PATTERN
-        slot = target['contents'].index([])
+        slot = target['contents'].index { |data| slot_empty?(data) }
         if slot
           target['contents'][slot] = [spell_name, 1]
         else
