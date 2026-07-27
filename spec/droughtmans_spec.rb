@@ -1,937 +1,712 @@
 require_relative 'spec_helper'
 
 # Droughtmans#initialize depends on the full Lich runtime (parse_args,
-# get_settings, walking into the maze, the infinite main_loop), so we extract the
+# get_settings, walking into the maze, the infinite run loop), so we extract the
 # class with load_lic_class and exercise individual methods on bare-allocated
 # instances (Droughtmans.allocate) with state injected via instance_variable_set.
 #
-# The focus is the deterministic navigation logic and the safety branches the
-# fork historically got wrong (the wave -> exit footgun, rope-trap routing, the
-# release-invisibility grab, and the non-fatal pass redemption). Every example is
+# The focus is the deterministic navigation/dowsing logic and the safety
+# branches that matter most: the wave -> exit footgun, keyholder-only wanding,
+# the never-trash-a-non-empty-package guarantee, pass-is-money stow safety,
+# drag-aware key recovery, and dead-reckoning move selection. Every example is
 # self-contained and reads top-to-bottom (DAMP).
 load_lic_class('droughtmans.lic', 'Droughtmans')
 
 RSpec.describe Droughtmans do
   let(:bot) { Droughtmans.allocate }
 
+  # Route Flags through a plain hash so examples can arm/clear game events.
+  def stub_flags(store)
+    allow(Flags).to receive(:[]) { |k| store[k] }
+    allow(Flags).to receive(:reset) { |k| store.delete(k) }
+    allow(Flags).to receive(:add)
+    allow(Flags).to receive(:delete)
+  end
+
+  before do
+    # Actions fired by nearly every method; neutralize them by default.
+    allow(DRC).to receive(:release_invisibility)
+    allow(DRC).to receive(:fix_standing)
+  end
+
   # ===========================================================================
   # Compass direction tables (pure constants -- catch a single typo'd entry)
   # ===========================================================================
   describe 'direction tables' do
     it 'reverses every direction back to itself (involution)' do
-      Droughtmans::REVERSE_DIRECTION_MAP.each do |dir, reversed|
-        expect(Droughtmans::REVERSE_DIRECTION_MAP[reversed]).to eq(dir)
+      Droughtmans::REVERSE_DIRECTION.each do |dir, reversed|
+        expect(Droughtmans::REVERSE_DIRECTION[reversed]).to eq(dir)
       end
     end
 
-    it 'covers all eight compass points in every rotation table' do
-      eight = %w[n ne e se s sw w nw].sort
-      expect(Droughtmans::REVERSE_DIRECTION_MAP.keys.sort).to eq(eight)
-      expect(Droughtmans::CLOCKWISE_MAP.keys.sort).to eq(eight)
-      expect(Droughtmans::COUNTER_CLOCKWISE_MAP.keys.sort).to eq(eight)
+    it 'covers all eight compass points in the reverse and offset tables' do
+      eight = Droughtmans::DIRECTIONS.sort
+      expect(Droughtmans::REVERSE_DIRECTION.keys.sort).to eq(eight)
+      expect(Droughtmans::DIR_OFFSETS.keys.sort).to eq(eight)
     end
 
-    it 'makes clockwise and counter-clockwise exact inverses of each other' do
-      Droughtmans::CLOCKWISE_MAP.each do |dir, cw|
-        expect(Droughtmans::COUNTER_CLOCKWISE_MAP[cw]).to eq(dir)
+    it 'gives opposite directions negated grid offsets' do
+      Droughtmans::REVERSE_DIRECTION.each do |dir, reversed|
+        fwd = Droughtmans::DIR_OFFSETS[dir]
+        rev = Droughtmans::DIR_OFFSETS[reversed]
+        expect(rev).to eq([-fwd[0], -fwd[1]])
       end
     end
+  end
 
-    it 'only ever rotates to a real compass point (values are a full permutation)' do
-      eight = %w[n ne e se s sw w nw].sort
-      expect(Droughtmans::CLOCKWISE_MAP.values.sort).to eq(eight)
-      expect(Droughtmans::COUNTER_CLOCKWISE_MAP.values.sort).to eq(eight)
+  # ===========================================================================
+  # Pure grid math
+  # ===========================================================================
+  describe '#chebyshev' do
+    it 'is the chessboard distance (max of the axis deltas)' do
+      expect(bot.chebyshev([0, 0], [3, 1])).to eq(3)
+      expect(bot.chebyshev([0, 0], [-2, -5])).to eq(5)
+      expect(bot.chebyshev([2, 2], [2, 2])).to eq(0)
+    end
+  end
+
+  describe '#next_pos' do
+    it 'applies the direction offset to the current position' do
+      bot.instance_variable_set(:@pos, [4, 4])
+      expect(bot.next_pos('north')).to eq([4, 5])
+      expect(bot.next_pos('southwest')).to eq([3, 3])
+    end
+
+    it 'stays put for an unknown direction (defensive [0,0] offset)' do
+      bot.instance_variable_set(:@pos, [1, 1])
+      expect(bot.next_pos('out')).to eq([1, 1])
+    end
+  end
+
+  describe '#record_position' do
+    it 'advances the position, marks it visited, and bumps the counters' do
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      bot.instance_variable_set(:@section_move_count, 4)
+      bot.instance_variable_set(:@moves_since_rest, 4)
+
+      bot.record_position('east')
+
+      expect(bot.instance_variable_get(:@pos)).to eq([1, 0])
+      expect(bot.instance_variable_get(:@visited)[[1, 0]]).to eq(1)
+      expect(bot.instance_variable_get(:@last_direction)).to eq('east')
+      expect(bot.instance_variable_get(:@section_move_count)).to eq(5)
+      expect(bot.instance_variable_get(:@moves_since_rest)).to eq(5)
     end
   end
 
   # ===========================================================================
-  # get_next_move: wall-following selection with a defensive fallback
+  # Dowse bearing math
   # ===========================================================================
-  describe '#get_next_move' do
-    before { bot.instance_variable_set(:@current_direction_map, Droughtmans::CLOCKWISE_MAP) }
-
-    it 'turns toward the first reachable wall-follow direction' do
-      # last_dir 'n' -> reverse 's' -> clockwise 'sw'; 'sw' is available, so take it.
-      expect(bot.get_next_move('n', %w[sw w])).to eq('sw')
+  describe '#compass_preferences' do
+    it 'lists the diagonal satisfying both axes first, then each single axis' do
+      expect(bot.compass_preferences(%w[north east])).to eq(%w[northeast north east])
     end
 
-    it 'keeps rotating clockwise until it finds an available exit' do
-      # From 'sw' it rotates sw -> w -> nw -> n; only 'n' is open here.
-      expect(bot.get_next_move('n', %w[n])).to eq('n')
+    it 'returns just the single axis when only one is present' do
+      expect(bot.compass_preferences(%w[north])).to eq(%w[north])
     end
 
-    it 'honors the counter-clockwise table when that hand is selected' do
-      bot.instance_variable_set(:@current_direction_map, Droughtmans::COUNTER_CLOCKWISE_MAP)
-      # last_dir 'n' -> reverse 's' -> counter-clockwise 'se'.
-      expect(bot.get_next_move('n', %w[se e])).to eq('se')
+    it 'is empty for no compass words' do
+      expect(bot.compass_preferences([])).to eq([])
+    end
+  end
+
+  describe '#hint_directions' do
+    it 'is empty without a dowse hint' do
+      bot.instance_variable_set(:@dowse_hint, nil)
+      expect(bot.hint_directions).to eq([])
     end
 
-    it 'falls back to n rather than looping forever when nothing is reachable' do
-      expect(bot.get_next_move('n', [])).to eq('n')
+    it 'expands the stored bearing into best-first directions' do
+      bot.instance_variable_set(:@dowse_hint, { dirs: %w[south west] })
+      expect(bot.hint_directions).to eq(%w[southwest south west])
+    end
+  end
+
+  describe '#direction_toward' do
+    before { bot.instance_variable_set(:@pos, [0, 0]) }
+
+    it 'picks the exit that reduces distance to the target' do
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      expect(bot.direction_toward([3, 0], %w[east west])).to eq('east')
+    end
+
+    it 'returns nil when no exit makes progress' do
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      expect(bot.direction_toward([3, 0], %w[west])).to be_nil
+    end
+
+    it 'breaks ties toward the less-visited room' do
+      visited = Hash.new(0)
+      visited[[1, 1]] = 5 # northeast destination already worn
+      bot.instance_variable_set(:@visited, visited)
+      # Both northeast and east reduce distance to [3, 3] equally on the x-axis;
+      # northeast also gains on y, so it wins on distance despite being visited.
+      expect(bot.direction_toward([3, 3], %w[northeast east])).to eq('northeast')
     end
   end
 
   # ===========================================================================
-  # detect_loop?: recognizing a walked square
+  # read_dowse_results: turning the vision text into steering state
   # ===========================================================================
-  describe '#detect_loop?' do
-    it 'is true for a known four-move loop square' do
-      bot.instance_variable_set(:@move_history_short, %w[e s w n])
-      expect(bot.detect_loop?).to be(true)
-    end
-
-    it 'is false with fewer than four moves recorded (boundary)' do
-      bot.instance_variable_set(:@move_history_short, %w[e s w])
-      expect(bot.detect_loop?).to be(false)
-    end
-
-    it 'is false for a near-miss that is not an actual loop' do
-      bot.instance_variable_set(:@move_history_short, %w[e s w s])
-      expect(bot.detect_loop?).to be(false)
-    end
-
-    it 'considers only the four most recent moves when history is longer' do
-      bot.instance_variable_set(:@move_history_short, %w[e s w n ne nw])
-      expect(bot.detect_loop?).to be(true)
-    end
-  end
-
-  # ===========================================================================
-  # record_move_history: dual histories + loop arming
-  # ===========================================================================
-  describe '#record_move_history' do
+  describe '#read_dowse_results' do
     before do
-      bot.instance_variable_set(:@backtrack_to_white_door, false)
-      bot.instance_variable_set(:@reverse_dir, false)
-      bot.instance_variable_set(:@next_move, 'pending')
-      bot.instance_variable_set(:@move_history_since_init, [])
+      bot.instance_variable_set(:@whitelist, [])
+      bot.instance_variable_set(:@searched_quadrants, [])
+      bot.instance_variable_set(:@no_attack, [])
+      bot.instance_variable_set(:@dowse_hint, nil)
     end
 
-    it 'records a fresh move onto both histories and clears the pending move' do
-      bot.instance_variable_set(:@move_history_short, [])
-      bot.record_move_history('e')
-
-      expect(bot.instance_variable_get(:@move_history_short)).to eq(%w[e])
-      expect(bot.instance_variable_get(:@move_history_since_init)).to eq(%w[e])
-      expect(bot.instance_variable_get(:@last_successful_move)).to eq('e')
-      expect(bot.instance_variable_get(:@next_move)).to eq('')
+    it 'derives the quadrant from the center bearing (opposite corner)' do
+      stub_flags('dm-dowse-center' => { where: 'far to the north and east' })
+      bot.read_dowse_results
+      expect(bot.instance_variable_get(:@current_quadrant)).to eq(:southwest)
+      expect(bot.instance_variable_get(:@center_hint)).to eq(dirs: %w[north east], range: :far)
     end
 
-    it 'caps the short history at four, dropping the oldest move' do
-      bot.instance_variable_set(:@move_history_short, %w[a b c d])
-      bot.record_move_history('e')
-
-      expect(bot.instance_variable_get(:@move_history_short)).to eq(%w[e a b c])
+    it 'whitelists a named holder and stores the key bearing' do
+      stub_flags('dm-dowse-key' => { holder: 'bob', where: ' to the north' })
+      bot.read_dowse_results
+      expect(bot.instance_variable_get(:@whitelist)).to include('Bob')
+      expect(bot.instance_variable_get(:@dowse_hint)).to eq(dirs: %w[north])
+      expect(bot.instance_variable_get(:@key_in_play)).to be(true)
     end
 
-    it 'arms reverse mode when capping produces a loop square' do
-      # Four already recorded, so the >3 branch runs: pop x, push e -> [e s w n].
-      bot.instance_variable_set(:@move_history_short, %w[s w n x])
-      bot.record_move_history('e')
-
-      expect(bot.instance_variable_get(:@move_history_short)).to eq(%w[e s w n])
-      expect(bot.instance_variable_get(:@reverse_dir)).to be(true)
+    it 'never whitelists a no_attack friend even when the vision names them' do
+      bot.instance_variable_set(:@no_attack, ['Bob'])
+      stub_flags('dm-dowse-key' => { holder: 'bob', where: ' to the north' })
+      bot.read_dowse_results
+      expect(bot.instance_variable_get(:@whitelist)).to be_empty
     end
 
-    it 'does NOT arm reverse when the loop only appears at exactly four moves' do
-      # count is 3 at entry, so the else branch runs and detect_loop? is skipped,
-      # even though the result [e s w n] is a loop square.
-      bot.instance_variable_set(:@move_history_short, %w[s w n])
-      bot.record_move_history('e')
-
-      expect(bot.instance_variable_get(:@move_history_short)).to eq(%w[e s w n])
-      expect(bot.instance_variable_get(:@reverse_dir)).to be(false)
-    end
-
-    it 'skips the backtrack history while backtracking to the white door' do
-      bot.instance_variable_set(:@move_history_short, [])
-      bot.instance_variable_set(:@move_history_since_init, %w[old])
-      bot.instance_variable_set(:@backtrack_to_white_door, true)
-      bot.record_move_history('e')
-
-      expect(bot.instance_variable_get(:@move_history_since_init)).to eq(%w[old])
+    it 'clears the bearing and key state when there is no key vision' do
+      bot.instance_variable_set(:@dowse_hint, { dirs: %w[north] })
+      bot.instance_variable_set(:@key_in_play, true)
+      stub_flags({})
+      bot.read_dowse_results
+      expect(bot.instance_variable_get(:@dowse_hint)).to be_nil
+      expect(bot.instance_variable_get(:@key_in_play)).to be(false)
     end
   end
 
   # ===========================================================================
-  # parse_exits: long-direction text -> short directions
+  # process_flags: event ordering and state updates
   # ===========================================================================
-  describe '#parse_exits' do
-    it 'maps a comma-separated exit list to short directions' do
-      expect(bot.parse_exits('north, southeast, out')).to eq(%w[n se out])
+  describe '#process_flags' do
+    before do
+      bot.instance_variable_set(:@whitelist, [])
+      bot.instance_variable_set(:@looked, {})
+      bot.instance_variable_set(:@dowse_hint, nil)
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      bot.instance_variable_set(:@blocked, {})
+      bot.instance_variable_set(:@known_frozen, {})
     end
 
-    it 'handles a single exit' do
-      expect(bot.parse_exits('west')).to eq(%w[w])
+    it 'handles a prevail by dropping the winner and invalidating key intel' do
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      bot.instance_variable_set(:@looked, 'Bob' => Time.now)
+      bot.instance_variable_set(:@dowse_hint, { dirs: %w[north] })
+      bot.instance_variable_set(:@key_in_play, true)
+      stub_flags('dm-prevailed' => { who: 'bob' })
+
+      bot.process_flags
+
+      expect(bot.instance_variable_get(:@whitelist)).to be_empty
+      expect(bot.instance_variable_get(:@key_in_play)).to be(false)
+      expect(bot.instance_variable_get(:@dowse_hint)).to be_nil
     end
 
-    it 'drops an unknown direction token rather than leaking a nil' do
-      expect(bot.parse_exits('north, sideways')).to eq(['n'])
+    it 'whitelists a fresh key finder and clears stale suspects' do
+      allow(bot).to receive(:have_key?).and_return(false)
+      bot.instance_variable_set(:@whitelist, %w[Stale])
+      stub_flags('dm-key-found' => { who: 'carol' })
+
+      bot.process_flags
+
+      expect(bot.instance_variable_get(:@whitelist)).to eq(%w[Carol])
+      expect(bot.instance_variable_get(:@key_in_play)).to be(true)
+      expect(bot.instance_variable_get(:@dowse_wanted)).to be(true)
     end
 
-    it 'drops every token when none are recognized (empty, not [nil, nil])' do
-      expect(bot.parse_exits('sideways, yonder')).to eq([])
+    it 'applies a drag to the position BEFORE recovering a key dropped in the same RT' do
+      allow(bot).to receive(:recover_dropped_key)
+      stub_flags('dm-key-dropped' => true, 'dm-dragged' => { dir: 'north' })
+
+      bot.process_flags
+
+      # The drag moved us north first, so recovery reasons from the new room.
+      expect(bot.instance_variable_get(:@pos)).to eq([0, 1])
+      expect(bot).to have_received(:recover_dropped_key).with(be_truthy, 'north')
+    end
+
+    it 'marks a risen wall blocked at the current position' do
+      stub_flags('dm-wall-rises' => { dir: 'east' })
+      bot.process_flags
+      expect(bot.instance_variable_get(:@blocked)[[[0, 0], 'east']]).to be(true)
     end
   end
 
   # ===========================================================================
-  # wave: the stale-target footgun and the drop-key branch
+  # Movement selection (dead-reckoning, visited-aware)
+  # ===========================================================================
+  describe '#key_return_direction' do
+    before do
+      allow(bot).to receive(:have_key?).and_return(true)
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      bot.instance_variable_set(:@center_hint, nil)
+    end
+
+    it 'heads toward the remembered white door when one is known' do
+      bot.instance_variable_set(:@white_door_pos, [2, 0])
+      expect(bot.key_return_direction(%w[east west])).to eq('east')
+    end
+
+    it 'falls back to the center bearing when no white door is remembered' do
+      bot.instance_variable_set(:@white_door_pos, nil)
+      bot.instance_variable_set(:@center_hint, { dirs: %w[north], range: :bit })
+      expect(bot.key_return_direction(%w[north south])).to eq('north')
+    end
+
+    it 'returns nil (defer to exploration) when keyless' do
+      allow(bot).to receive(:have_key?).and_return(false)
+      bot.instance_variable_set(:@white_door_pos, [2, 0])
+      expect(bot.key_return_direction(%w[east])).to be_nil
+    end
+  end
+
+  describe '#bearing_direction' do
+    before do
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@visited, Hash.new(0))
+    end
+
+    it 'follows the dowse bearing onto a matching exit' do
+      bot.instance_variable_set(:@dowse_hint, { dirs: %w[north] })
+      expect(bot.bearing_direction(%w[north south])).to eq('north')
+    end
+
+    it 'declines the bearing when it only leads into worn-out rooms' do
+      visited = Hash.new(0)
+      visited[[0, 1]] = 9 # the bearing (north) is heavily revisited
+      visited[[0, -1]] = 0
+      bot.instance_variable_set(:@visited, visited)
+      bot.instance_variable_set(:@dowse_hint, { dirs: %w[north] })
+      expect(bot.bearing_direction(%w[north south])).to be_nil
+    end
+  end
+
+  describe '#move_random' do
+    before do
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      bot.instance_variable_set(:@rest_interval, 0)
+      bot.instance_variable_set(:@last_direction, nil)
+      allow(bot).to receive(:key_return_direction).and_return(nil)
+      allow(bot).to receive(:bearing_direction).and_return(nil)
+      allow(bot).to receive(:do_move)
+    end
+
+    it 'prefers the least-visited destination' do
+      visited = Hash.new(0)
+      visited[[1, 0]] = 3  # east worn
+      visited[[0, 1]] = 0  # north fresh
+      bot.instance_variable_set(:@visited, visited)
+      allow(bot).to receive(:available_exits).and_return(%w[east north])
+      bot.move_random
+      expect(bot).to have_received(:do_move).with('north')
+    end
+
+    it 'avoids immediately doubling back when another equal choice exists' do
+      bot.instance_variable_set(:@last_direction, 'north') # we arrived going north
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      allow(bot).to receive(:available_exits).and_return(%w[south east])
+      bot.move_random
+      # south == reverse of north; with east equally fresh it must not be chosen.
+      expect(bot).to have_received(:do_move).with('east')
+    end
+  end
+
+  describe '#do_move' do
+    before do
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@visited, Hash.new(0))
+      bot.instance_variable_set(:@section_move_count, 0)
+      bot.instance_variable_set(:@moves_since_rest, 0)
+      bot.instance_variable_set(:@blocked, {})
+      bot.instance_variable_set(:@step_delay, 0)
+      bot.instance_variable_set(:@key_step_delay, 0)
+      bot.instance_variable_set(:@last_direction, nil)
+      allow(bot).to receive(:get_key)
+      allow(bot).to receive(:freeze_npcs)
+      allow(bot).to receive(:have_key?).and_return(false)
+      stub_flags({})
+    end
+
+    it 'records the new position on a successful arrival' do
+      allow(DRC).to receive(:bput).and_return('Obvious paths: north, south.')
+      bot.do_move('north')
+      expect(bot.instance_variable_get(:@pos)).to eq([0, 1])
+    end
+
+    it 'marks the exit blocked when the game refuses it' do
+      allow(DRC).to receive(:bput).and_return("You can't go there.")
+      bot.do_move('north')
+      expect(bot.instance_variable_get(:@blocked)[[[0, 0], 'north']]).to be(true)
+      expect(bot.instance_variable_get(:@pos)).to eq([0, 0])
+    end
+
+    it 'bails out at the recursion guard' do
+      expect(DRC).not_to receive(:bput)
+      bot.do_move('north', 5)
+    end
+  end
+
+  # ===========================================================================
+  # colored-door budgeting
+  # ===========================================================================
+  describe '#colored_door_budget' do
+    before do
+      bot.instance_variable_set(:@section_moves, 24)
+      bot.instance_variable_set(:@searched_quadrants, [])
+      bot.instance_variable_set(:@current_quadrant, nil)
+      bot.instance_variable_set(:@white_door_quadrant, nil)
+      bot.instance_variable_set(:@center_hint, nil)
+    end
+
+    it 'is the full section budget while searching a fresh quadrant keyless' do
+      allow(bot).to receive(:have_key?).and_return(false)
+      expect(bot.colored_door_budget).to eq(24)
+    end
+
+    it 'is zero with the key when the exit is known to be in another quadrant' do
+      allow(bot).to receive(:have_key?).and_return(true)
+      bot.instance_variable_set(:@current_quadrant, :northeast)
+      bot.instance_variable_set(:@white_door_quadrant, :southwest)
+      expect(bot.colored_door_budget).to eq(0)
+    end
+
+    it 'is zero with the key when the center bearing says the exit is far' do
+      allow(bot).to receive(:have_key?).and_return(true)
+      bot.instance_variable_set(:@center_hint, { dirs: %w[north], range: :far })
+      expect(bot.colored_door_budget).to eq(0)
+    end
+  end
+
+  # ===========================================================================
+  # Player wanding: keyholder-only policy
+  # ===========================================================================
+  describe '#scan_players' do
+    before do
+      allow(bot).to receive(:in_maze?).and_return(true)
+      allow(bot).to receive(:have_key?).and_return(false)
+      bot.instance_variable_set(:@whitelist, [])
+      bot.instance_variable_set(:@no_attack, [])
+      bot.instance_variable_set(:@looked, {})
+      DRRoom.pcs = []
+    end
+
+    it 'waves a whitelisted holder without a verifying look' do
+      DRRoom.pcs = ['Bob']
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      allow(bot).to receive(:wave)
+      bot.scan_players
+      expect(bot).to have_received(:wave).with('Bob', is_keyholder: true)
+    end
+
+    it 'never wands a friend on the no_attack list' do
+      DRRoom.pcs = ['Bob']
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      bot.instance_variable_set(:@no_attack, %w[Bob])
+      expect(bot).not_to receive(:wave)
+      bot.scan_players
+    end
+
+    it 'does nothing while carrying the key (run for the door, do not fight)' do
+      allow(bot).to receive(:have_key?).and_return(true)
+      DRRoom.pcs = ['Bob']
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      expect(bot).not_to receive(:wave)
+      bot.scan_players
+    end
+  end
+
+  describe '#check_player_for_key' do
+    before do
+      bot.instance_variable_set(:@whitelist, [])
+      bot.instance_variable_set(:@looked, {})
+      DRRoom.pcs = ['Bob']
+    end
+
+    it 'whitelists and attacks a LOOK-confirmed key holder' do
+      allow(DRC).to receive(:bput).and_return('He is holding a golden key.')
+      allow(bot).to receive(:wave)
+      bot.check_player_for_key('Bob')
+      expect(bot.instance_variable_get(:@whitelist)).to include('Bob')
+      expect(bot).to have_received(:wave).with('Bob', is_keyholder: true)
+    end
+
+    it 'prunes a whitelisted suspect that a LOOK shows is not holding it' do
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      allow(DRC).to receive(:bput).and_return('He is wearing some leathers.')
+      bot.check_player_for_key('Bob')
+      expect(bot.instance_variable_get(:@whitelist)).not_to include('Bob')
+    end
+
+    it 'rate-limits repeat looks at the same player' do
+      bot.instance_variable_set(:@looked, 'Bob' => Time.now)
+      expect(DRC).not_to receive(:bput)
+      bot.check_player_for_key('Bob')
+    end
+  end
+
+  # ===========================================================================
+  # wave: the historical footguns
   # ===========================================================================
   describe '#wave' do
-    it 'does not kill the script when the target is not actually present' do
-      DRRoom.npcs = %w[goblin]
-      allow(DRC).to receive(:bput).and_return('I could not find')
-
-      expect { bot.wave('second goblin') }.not_to raise_error
-    end
-
-    it 'treats "Wave at what?" as a skip, never an exit' do
-      DRRoom.npcs = %w[goblin]
-      allow(DRC).to receive(:bput).and_return('Wave at what?')
-
-      expect { bot.wave('goblin') }.not_to raise_error
-    end
-
-    it 'exits only when the wand itself is gone (command not understood)' do
-      allow(DRC).to receive(:bput).and_return('I do not understand')
-
-      expect { bot.wave('goblin') }.to raise_error(SystemExit)
-    end
-
-    it 'clears the nemesis when a wave makes the holder drop the golden key' do
-      bot.instance_variable_set(:@nemesis, 'Bandit')
-      DRRoom.room_objs = [] # nothing to actually pick up
-      allow(DRC).to receive(:bput).and_return('drops his golden key')
-
-      bot.wave('Bandit')
-
-      expect(bot.instance_variable_get(:@nemesis)).to be_nil
-    end
-
-    it 'listens for a key-drop of any gender, not just "his"' do
-      # bput only returns a line it was asked to match; verify the patterns
-      # cover her/its drops so a female/neuter rival's dropped key is caught
-      # in-game (a plain and_return stub would pass even with the old pattern).
-      captured = nil
-      allow(DRC).to receive(:bput) { |_cmd, *patterns| captured = patterns; 'Roundtime' }
-
-      bot.wave('Bandit')
-
-      expect(captured.any? { |p| 'Bandit drops her golden key!' =~ p }).to be(true)
-      expect(captured.any? { |p| 'The owlbear drops its golden key!' =~ p }).to be(true)
-    end
-
-    it 'still handles the male drop line' do
-      bot.instance_variable_set(:@nemesis, 'Bandit')
-      DRRoom.room_objs = []
-      allow(DRC).to receive(:bput).and_return('drops his golden key')
-
-      expect { bot.wave('Bandit') }.not_to raise_error
-      expect(bot.instance_variable_get(:@nemesis)).to be_nil
-    end
-
-    it 'removes a successfully frozen npc from the room list' do
-      DRRoom.npcs = %w[goblin troll]
-      allow(DRC).to receive(:bput).and_return('Roundtime: 3 sec.')
-
-      bot.wave('goblin')
-
-      expect(DRRoom.npcs).to eq(%w[troll])
-    end
-  end
-
-  # ===========================================================================
-  # get_key: release invisibility before grabbing, and guard clauses
-  # ===========================================================================
-  describe '#get_key' do
-    it 'does nothing (and does not release invisibility) when already held' do
-      allow(DRCI).to receive(:in_hands?).with('golden key').and_return(true)
-      expect(DRC).not_to receive(:release_invisibility)
-      expect(DRCI).not_to receive(:get_item_unsafe)
-
-      bot.get_key
-    end
-
-    it 'does nothing when the key is not in the room' do
-      allow(DRCI).to receive(:in_hands?).with('golden key').and_return(false)
-      DRRoom.room_objs = []
-      expect(DRCI).not_to receive(:get_item_unsafe)
-
-      bot.get_key
-    end
-
-    it 'releases invisibility before grabbing a key that is on the floor' do
-      allow(DRCI).to receive(:in_hands?).with('golden key').and_return(false)
-      DRRoom.room_objs = ['golden key']
-      expect(DRC).to receive(:release_invisibility)
-      expect(DRCI).to receive(:get_item_unsafe).with('golden key')
-
-      bot.get_key
-    end
-  end
-
-  # ===========================================================================
-  # zap_nemesis: boundary conditions around nil and friendly nemeses
-  # ===========================================================================
-  describe '#zap_nemesis' do
-    it 'is a no-op when there is no nemesis' do
-      bot.instance_variable_set(:@nemesis, nil)
-      bot.instance_variable_set(:@friends, [])
-      expect(bot).not_to receive(:wave)
-
-      bot.zap_nemesis
-    end
-
-    it 'never waves at a nemesis who is on the friends list' do
-      bot.instance_variable_set(:@nemesis, 'Bob')
-      bot.instance_variable_set(:@friends, %w[Bob])
-      expect(bot).not_to receive(:wave)
-      expect(bot).not_to receive(:get_key)
-
-      bot.zap_nemesis
-    end
-
-    it 'waves at a non-friend nemesis who is present without the key' do
-      bot.instance_variable_set(:@nemesis, 'Bob')
-      bot.instance_variable_set(:@friends, %w[Alice])
-      allow(bot).to receive(:get_key)
-      allow(bot).to receive(:have_key?).and_return(false)
-      DRRoom.pcs = %w[Bob]
-      expect(bot).to receive(:wave).with('Bob')
-
-      bot.zap_nemesis
-    end
-  end
-
-  # ===========================================================================
-  # check_key_holders: must not skip a PC while pruning the live room list
-  # ===========================================================================
-  describe '#check_key_holders' do
-    it 'checks every player even as each is removed from the live pcs list' do
-      DRRoom.pcs = %w[Alice Bob]
-      bot.instance_variable_set(:@nemesis, nil)
-      allow(DRC).to receive(:bput).and_return('He is holding a golden key and a wand')
-      allow(bot).to receive(:wave)
-
-      bot.check_key_holders
-
-      # Iterating the live array while deleting would skip Bob after Alice.
-      expect(bot).to have_received(:wave).with('Alice')
-      expect(bot).to have_received(:wave).with('Bob')
-      expect(DRRoom.pcs).to be_empty
-    end
-  end
-
-  # ===========================================================================
-  # pull_rope: restored trap routing (and the injury short-circuit)
-  # ===========================================================================
-  describe '#pull_rope' do
     before do
-      bot.instance_variable_set(:@norope, false)
-      bot.instance_variable_set(:@nemesis, nil)
-      DRRoom.room_objs = ['rope']
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@known_frozen, {})
+      bot.instance_variable_set(:@whitelist, [])
+      stub_flags({})
     end
 
-    it 'does not pull at all while injured' do
-      bot.instance_variable_set(:@norope, true)
-      expect(DRC).not_to receive(:bput)
-
-      bot.pull_rope('rope')
+    it 'stops the whole script only when the wand is gone (wave not understood)' do
+      allow(DRC).to receive(:bput).and_return('I do not understand what you are trying to do.')
+      expect { bot.wave('guard') }.to raise_error(SystemExit)
     end
 
-    it 'tends wounds when the rope springs the crossbow trap' do
-      allow(DRC).to receive(:bput).and_return('With the grinding sound of stone moving against stone an opening appears in the wall next to you')
-      expect(DRC).to receive(:wait_for_script_to_complete).with('tendme')
-
-      bot.pull_rope('rope')
+    it 'recovers from a reflected wave and prunes the bad suspect' do
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      allow(DRC).to receive(:bput).and_return('The wand circles around Bob and returns to you, freezing you in place.')
+      allow(bot).to receive(:wait_for_self_thaw)
+      bot.wave('Bob')
+      expect(bot.instance_variable_get(:@whitelist)).not_to include('Bob')
+      expect(bot).to have_received(:wait_for_self_thaw)
     end
 
-    it 're-dowses after a tarzan-rope maze reset' do
-      allow(DRC).to receive(:bput).and_return('A gentle breeze begins to blow through the area')
-      expect(bot).to receive(:search_wand)
-
-      bot.pull_rope('rope')
-    end
-
-    it 'grabs the key and clears the nemesis when the rope drops it' do
-      bot.instance_variable_set(:@nemesis, 'Bob')
-      allow(DRC).to receive(:bput).and_return('A golden key falls to the floor with a loud CLANK')
+    it 'grabs the key when a wave makes the holder drop it' do
+      allow(DRC).to receive(:bput).and_return('Bob drops his golden key!')
       allow(bot).to receive(:get_key)
-
-      bot.pull_rope('rope')
-
+      bot.wave('Bob', is_keyholder: true)
       expect(bot).to have_received(:get_key)
-      expect(bot.instance_variable_get(:@nemesis)).to be_nil
     end
 
-    it 'forgets the rope after pulling so it is not re-pulled this tick' do
-      allow(DRC).to receive(:bput).and_return('A loud CLICK echoes from above')
-
-      bot.pull_rope('rope')
-
-      expect(DRRoom.room_objs).not_to include('rope')
-    end
-  end
-
-  # ===========================================================================
-  # redeem_pass_if_present: non-fatal when no pass (regression vs the old exit)
-  # ===========================================================================
-  describe '#redeem_pass_if_present' do
-    it 'does nothing and never exits when no pass is carried' do
-      allow(DRCI).to receive(:get_item?).with('pass').and_return(false)
-      expect(DRC).not_to receive(:bput)
-
-      expect { bot.redeem_pass_if_present }.not_to raise_error
+    it 'records a successful freeze in the known-frozen ledger' do
+      allow(DRC).to receive(:bput).and_return('You wave an icy blue wand at the guard.')
+      bot.wave('guard')
+      expect(bot.instance_variable_get(:@known_frozen)).to have_key([[0, 0], 'guard'])
     end
 
-    it 'redeems the pass twice when one is carried' do
-      allow(DRCI).to receive(:get_item?).with('pass').and_return(true)
-      allow(DRCI).to receive(:in_hands?).with('pass').and_return(false)
-      expect(DRC).to receive(:bput).with('redeem my pass', anything, anything).twice
-
-      bot.redeem_pass_if_present
+    it 'camps a confirmed holder found already frozen' do
+      allow(DRC).to receive(:bput).and_return('The guard is already frozen.')
+      allow(bot).to receive(:camp_frozen_keyholder)
+      bot.wave('Bob', is_keyholder: true)
+      expect(bot).to have_received(:camp_frozen_keyholder).with('Bob')
     end
   end
 
   # ===========================================================================
-  # change_direction_map: toggling the wall-follow hand
+  # freeze_npcs: ordinals + the known-frozen ledger
   # ===========================================================================
-  describe '#change_direction_map' do
-    it 'flips clockwise to counter-clockwise' do
-      bot.instance_variable_set(:@current_direction_map, Droughtmans::CLOCKWISE_MAP)
-      bot.change_direction_map
-      expect(bot.instance_variable_get(:@current_direction_map)).to be(Droughtmans::COUNTER_CLOCKWISE_MAP)
-    end
-
-    it 'flips counter-clockwise back to clockwise' do
-      bot.instance_variable_set(:@current_direction_map, Droughtmans::COUNTER_CLOCKWISE_MAP)
-      bot.change_direction_map
-      expect(bot.instance_variable_get(:@current_direction_map)).to be(Droughtmans::CLOCKWISE_MAP)
-    end
-  end
-
-  # ===========================================================================
-  # dispose_empty_package: never trash a package that still holds loot
-  # ===========================================================================
-  describe '#dispose_empty_package' do
+  describe '#freeze_npcs' do
     before do
-      bot.instance_variable_set(:@worn_trashcan, 'backpack')
-      bot.instance_variable_set(:@worn_trashcan_verb, 'stuff')
-      bot.instance_variable_set(:@loot_container, 'canvas sack')
+      allow(bot).to receive(:in_maze?).and_return(true)
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@known_frozen, {})
     end
 
-    it 'trashes the wrapper only once the loot transfer has emptied it' do
-      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return([])
-      allow(DRCI).to receive(:put_away_item?)
-      expect(DRCI).to receive(:dispose_trash).with('package', 'backpack', 'stuff')
+    it 'waves duplicate maze mobs by ordinal (warrior, second warrior)' do
+      DRRoom.npcs = %w[warrior warrior]
+      allow(bot).to receive(:wave)
+      bot.freeze_npcs
+      expect(bot).to have_received(:wave).with('warrior')
+      expect(bot).to have_received(:wave).with('second warrior')
+    end
 
-      bot.dispose_empty_package
+    it 'only freezes recognized maze mobs, not incidental creatures' do
+      DRRoom.npcs = %w[squirrel]
+      expect(bot).not_to receive(:wave)
+      bot.freeze_npcs
+    end
 
+    it 'skips a mob confirmed frozen within the TTL' do
+      DRRoom.npcs = %w[warrior]
+      bot.instance_variable_set(:@known_frozen, [[0, 0], 'warrior'] => Time.now)
+      expect(bot).not_to receive(:wave)
+      bot.freeze_npcs
+    end
+
+    it 'ignores the ledger for the hard pre-move safety sweep' do
+      DRRoom.npcs = %w[warrior]
+      bot.instance_variable_set(:@known_frozen, [[0, 0], 'warrior'] => Time.now)
+      allow(bot).to receive(:wave)
+      bot.freeze_npcs(ignore_ledger: true)
+      expect(bot).to have_received(:wave).with('warrior')
+    end
+  end
+
+  # ===========================================================================
+  # Key recovery
+  # ===========================================================================
+  describe '#recover_dropped_key' do
+    before do
+      stub_flags({})
+      allow(bot).to receive(:grab_key)
+    end
+
+    it 'backtracks the reverse of a drag to reclaim a swept-away key' do
+      allow(bot).to receive(:have_key?).and_return(true)
+      allow(bot).to receive(:do_move)
+      bot.recover_dropped_key(true, 'north')
+      expect(bot).to have_received(:do_move).with('south')
+      expect(bot).to have_received(:grab_key)
+    end
+
+    it 'chases the new holder when a plain drop was snatched by someone else' do
+      allow(bot).to receive(:have_key?).and_return(false)
+      allow(bot).to receive(:get_key)
+      allow(bot).to receive(:process_flags)
+      allow(bot).to receive(:scan_players)
+      bot.recover_dropped_key(false, nil)
+      expect(bot).to have_received(:scan_players)
+    end
+  end
+
+  # ===========================================================================
+  # Looting safety
+  # ===========================================================================
+  describe '#noun_candidates' do
+    it 'takes the last word of a plain "adjective noun" phrase' do
+      expect(bot.noun_candidates('a sturdy backpack').first).to eq('backpack')
+    end
+
+    it 'takes the head noun before a preposition, not the trailing pronoun' do
+      phrase = 'a circle of colorful wool with a wool rug on it'
+      expect(bot.noun_candidates(phrase)).to eq(%w[circle])
+    end
+
+    it 'drops pronoun stopwords entirely' do
+      expect(bot.noun_candidates('them')).to eq([])
+    end
+  end
+
+  describe '#trash?' do
+    it 'matches a configured trash substring case-insensitively' do
+      bot.instance_variable_set(:@trash, %w[blouse])
+      expect(bot.trash?('a lacy Blouse')).to be_truthy
+    end
+
+    it 'is false with nothing configured' do
+      bot.instance_variable_set(:@trash, [])
+      expect(bot.trash?('a lacy blouse')).to be(false)
+    end
+  end
+
+  describe '#stash_or_trash' do
+    before do
+      bot.instance_variable_set(:@trash, [])
+      bot.instance_variable_set(:@loot_containers, %w[backpack])
+      allow(DRCI).to receive(:stow_item?)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+    end
+
+    it 'always stows a pass personally, never through a droppable container' do
+      bot.stash_or_trash('a copper pass')
+      expect(DRCI).to have_received(:stow_item?).with('pass')
       expect(DRCI).not_to have_received(:put_away_item?)
     end
 
-    it 'keeps a package that still holds loot instead of trashing it' do
-      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
-      allow(DRCI).to receive(:in_hands?).with('package').and_return(false)
-      allow(DRCI).to receive(:dispose_trash)
-      allow(DRCI).to receive(:put_away_item?)
-      expect(DRC).to receive(:message).with(/still holds loot/)
-
-      bot.dispose_empty_package
-
-      expect(DRCI).not_to have_received(:dispose_trash)
+    it 'drops a trash-listed item' do
+      bot.instance_variable_set(:@trash, %w[blouse])
+      allow(bot).to receive(:fput)
+      bot.stash_or_trash('a lacy blouse')
+      expect(bot).to have_received(:fput).with('drop my blouse')
     end
 
-    it 'does not re-stow a kept package that has already been put away' do
-      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
-      allow(DRCI).to receive(:in_hands?).with('package').and_return(false)
-      allow(DRCI).to receive(:dispose_trash)
-      allow(DRC).to receive(:message)
-      expect(DRCI).not_to receive(:put_away_item?)
-
-      bot.dispose_empty_package
+    it 'routes winnings into the first loot container that accepts them' do
+      bot.stash_or_trash('a shimmering gem')
+      expect(DRCI).to have_received(:put_away_item?).with('gem', 'backpack')
     end
 
-    it 'stows a kept package that is still in hand' do
-      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(['leaves'])
+    it 'stows personally when no container accepts the item' do
+      allow(DRCI).to receive(:put_away_item?).and_return(false)
+      bot.stash_or_trash('a shimmering gem')
+      expect(DRCI).to have_received(:stow_item?).with('gem')
+    end
+  end
+
+  describe '#dispose_package' do
+    it 'refuses to dispose of a package that still holds loot and stops the script' do
       allow(DRCI).to receive(:in_hands?).with('package').and_return(true)
-      allow(DRCI).to receive(:dispose_trash)
-      allow(DRC).to receive(:message)
-      expect(DRCI).to receive(:put_away_item?).with('package')
-
-      bot.dispose_empty_package
+      allow(DRCI).to receive(:stow_item?)
+      allow(bot).to receive(:grab_from_package).and_return(false)
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        cmd == 'look in my package' ? 'In the runner package you see a gemstone.' : ''
+      end
+      expect { bot.dispose_package }.to raise_error(SystemExit)
     end
 
-    it 'never trashes a package whose contents could not be read (nil)' do
-      allow(DRCI).to receive(:get_item_list).with('package', 'look').and_return(nil)
-      allow(DRCI).to receive(:put_away_item?)
-      expect(DRCI).not_to receive(:dispose_trash)
-
-      bot.dispose_empty_package
-    end
-  end
-
-  # ===========================================================================
-  # fetch_loot_container_if_needed: only chase the dwarf's sack for the default
-  # ===========================================================================
-  describe '#fetch_loot_container_if_needed' do
-    it 'asks the compound dwarf for a canvas sack when using the default container' do
-      bot.instance_variable_set(:@loot_container, 'canvas sack')
-      expect(bot).to receive(:get_sack)
-
-      bot.fetch_loot_container_if_needed
-    end
-
-    it 'does not fetch a sack when a custom loot container is configured' do
-      bot.instance_variable_set(:@loot_container, 'worn backpack')
-      expect(bot).not_to receive(:get_sack)
-
-      bot.fetch_loot_container_if_needed
-    end
-  end
-
-  # ===========================================================================
-  # parse_configuration: the configurable loot destination and step pacing
-  # ===========================================================================
-  describe '#parse_configuration (loot container)' do
-    before { allow(UserVars).to receive(:droughtmans_debug).and_return(nil) }
-
-    it 'defaults the loot container to a canvas sack when unset' do
-      $test_settings = OpenStruct.new
-      bot.parse_configuration
-      expect(bot.instance_variable_get(:@loot_container)).to eq('canvas sack')
-    end
-
-    it 'honors a configured droughtmans_loot_container override' do
-      $test_settings = OpenStruct.new(droughtmans_loot_container: 'worn backpack')
-      bot.parse_configuration
-      expect(bot.instance_variable_get(:@loot_container)).to eq('worn backpack')
-    end
-  end
-
-  describe '#parse_configuration (step delay)' do
-    before { allow(UserVars).to receive(:droughtmans_debug).and_return(nil) }
-
-    it 'defaults the step delay to 0 (unthrottled) when unset' do
-      $test_settings = OpenStruct.new
-      bot.parse_configuration
-      expect(bot.instance_variable_get(:@step_delay)).to eq(0.0)
-    end
-
-    it 'coerces a configured droughtmans_step_delay to a float' do
-      $test_settings = OpenStruct.new(droughtmans_step_delay: 2)
-      bot.parse_configuration
-      expect(bot.instance_variable_get(:@step_delay)).to eq(2.0)
-    end
-
-    it 'accepts a fractional step delay' do
-      $test_settings = OpenStruct.new(droughtmans_step_delay: 0.5)
-      bot.parse_configuration
-      expect(bot.instance_variable_get(:@step_delay)).to eq(0.5)
-    end
-  end
-
-  # ===========================================================================
-  # throttle_movement: opt-in pacing so the solver stops falling every few rooms
-  # ===========================================================================
-  describe '#throttle_movement' do
-    it 'pauses for the configured delay when one is set' do
-      bot.instance_variable_set(:@step_delay, 1.5)
-      expect(bot).to receive(:pause).with(1.5)
-
-      bot.throttle_movement
-    end
-
-    it 'does not pause at all when the delay is zero (default)' do
-      bot.instance_variable_set(:@step_delay, 0.0)
-      expect(bot).not_to receive(:pause)
-
-      bot.throttle_movement
-    end
-
-    it 'does not pause on a negative (misconfigured) delay' do
-      bot.instance_variable_set(:@step_delay, -1.0)
-      expect(bot).not_to receive(:pause)
-
-      bot.throttle_movement
-    end
-  end
-
-  # ===========================================================================
-  # do_move: pacing is applied end-to-end only on a genuinely successful step
-  # ===========================================================================
-  describe '#do_move pacing' do
-    before do
-      bot.instance_variable_set(:@wandercounter, 0)
-      bot.instance_variable_set(:@move_history_short, [])
-      bot.instance_variable_set(:@move_history_since_init, [])
-      bot.instance_variable_set(:@backtrack_to_white_door, false)
-      bot.instance_variable_set(:@reverse_dir, false)
-      bot.instance_variable_set(:@next_move, '')
-      bot.instance_variable_set(:@nemesis, nil)
-      bot.instance_variable_set(:@step_delay, 2.0)
-      DRRoom.room_objs = []
-      DRRoom.npcs = []
-      allow(DRCI).to receive(:in_hands?).and_return(false)
-    end
-
-    it 'paces a successful step by the configured delay' do
-      allow(DRC).to receive(:bput).and_return('Obvious paths: north, south.')
-      expect(bot).to receive(:pause).with(2.0)
-
-      bot.do_move('n')
-    end
-
-    it 'does not pace a failed step (no matching move response)' do
-      allow(DRC).to receive(:bput).and_return('You slam into a wall.')
-      expect(bot).not_to receive(:pause)
-
-      bot.do_move('n')
-    end
-  end
-
-  # ===========================================================================
-  # relight_room / handle_dark_room: shared wand-relight behavior
-  # ===========================================================================
-  describe '#relight_room' do
-    it 'shakes the wand for light' do
-      expect(bot).to receive(:fput).with('shake wand')
-
-      bot.relight_room
-    end
-  end
-
-  describe '#handle_dark_room' do
-    it 'relights the room when the dark-room flag is set' do
-      allow(Flags).to receive(:[]).with('dark-room').and_return(true)
-      expect(bot).to receive(:relight_room)
-
-      bot.handle_dark_room
-    end
-
-    it 'does nothing when the room is not dark' do
-      allow(Flags).to receive(:[]).with('dark-room').and_return(nil)
-      expect(bot).not_to receive(:relight_room)
-
-      bot.handle_dark_room
-    end
-  end
-
-  # ===========================================================================
-  # handle_doors: colored-door traversal, plus the dark-room hang fix
-  # ===========================================================================
-  describe '#handle_doors' do
-    before do
-      # wandercounter > 40 forces an attempt regardless of the anti-repeat guard.
-      bot.instance_variable_set(:@wandercounter, 41)
-      bot.instance_variable_set(:@last_door_entered, 'green door')
-      DRRoom.room_objs = ['green door']
-      allow(DRCI).to receive(:in_hands?).and_return(false)
-    end
-
-    it 'reinitializes the map after stepping through a colored door' do
-      allow(DRC).to receive(:bput).and_return('Obvious exits: north, south.')
-      expect(bot).to receive(:init_maze)
-
-      bot.handle_doors
-
-      expect(DRRoom.room_objs).not_to include('green door')
-    end
-
-    it 'relights and skips (never hangs) when the colored-door room is dark' do
-      allow(DRC).to receive(:bput).and_return("It's pitch dark and you can't see a thing!")
-      expect(bot).to receive(:relight_room)
-      expect(bot).not_to receive(:init_maze)
-
-      bot.handle_doors
-    end
-
-    it 'does not reinitialize when the door refuses entry' do
-      allow(DRC).to receive(:bput).and_return("You can't go there.")
-      expect(bot).not_to receive(:init_maze)
-
-      bot.handle_doors
-    end
-
-    it 'does nothing before enough rooms have been explored (wandercounter <= 15)' do
-      bot.instance_variable_set(:@wandercounter, 10)
+    it 'is a no-op when the package is not in hand' do
+      allow(DRCI).to receive(:in_hands?).with('package').and_return(false)
       expect(DRC).not_to receive(:bput)
-
-      bot.handle_doors
-    end
-
-    it 'does nothing when no colored door is present' do
-      DRRoom.room_objs = ['rope']
-      expect(DRC).not_to receive(:bput)
-
-      bot.handle_doors
-    end
-
-    it 'avoids re-entering the same colored door until wandering further' do
-      # Same door as last entered, and not yet past the wandercounter-40 threshold.
-      bot.instance_variable_set(:@wandercounter, 20)
-      bot.instance_variable_set(:@last_door_entered, 'green door')
-      expect(DRC).not_to receive(:bput)
-
-      bot.handle_doors
+      bot.dispose_package
     end
   end
 
   # ===========================================================================
-  # handle_key_or_search: wand rivals BEFORE pulling the key-dropping rope
+  # Pass redemption: non-fatal missing pass, fatal out-of-passes
   # ===========================================================================
-  describe '#handle_key_or_search (rope branch)' do
+  describe '#redeem_pass' do
     before do
-      bot.instance_variable_set(:@nemesis, nil)
-      bot.instance_variable_set(:@whitedoorseen, -1)
-      DRRoom.pcs = []
-      DRRoom.room_objs = ['rope']
-      allow(DRCI).to receive(:in_hands?).and_return(false) # no key in hand
-    end
-
-    it 'freezes rivals in the room BEFORE pulling the rope' do
-      expect(bot).to receive(:check_for_npcs).ordered
-      expect(bot).to receive(:pull_rope).with('rope').ordered
-
-      bot.handle_key_or_search
-    end
-
-    it 'does not wand the room when there is no rope to pull' do
-      DRRoom.room_objs = []
-      expect(bot).not_to receive(:check_for_npcs)
-      expect(bot).not_to receive(:pull_rope)
-
-      bot.handle_key_or_search
-    end
-
-    it 'skips pulling (and wanding) entirely while a nemesis is set' do
-      bot.instance_variable_set(:@nemesis, 'Cherisse')
-      expect(bot).not_to receive(:check_for_npcs)
-      expect(bot).not_to receive(:pull_rope)
-
-      bot.handle_key_or_search
-    end
-  end
-
-  # ===========================================================================
-  # handle_lever: wand rivals BEFORE pulling (mirrors the rope guard)
-  # ===========================================================================
-  describe '#handle_lever' do
-    it 'freezes rivals in the room BEFORE pulling the lever' do
-      DRRoom.room_objs = ['blue lever']
+      bot.instance_variable_set(:@pass_adjective, nil)
+      bot.instance_variable_set(:@multiplier, false)
+      allow(bot).to receive(:cast_buffs)
       allow(bot).to receive(:fput)
-      expect(bot).to receive(:check_for_npcs).ordered
-      expect(bot).to receive(:fput).with('Pull blue lever').ordered
-
-      bot.handle_lever
     end
 
-    it 'does not wand the room when there is no lever to pull' do
-      DRRoom.room_objs = ['rope']
-      expect(bot).not_to receive(:check_for_npcs)
-      expect(bot).not_to receive(:fput)
-
-      bot.handle_lever
+    it 'stops cleanly when there is no pass left to get (out of passes)' do
+      allow(DRC).to receive(:bput).and_return('What were you referring to?')
+      expect { bot.redeem_pass }.to raise_error(SystemExit)
     end
+  end
 
-    it 'forgets the lever after pulling so it is not re-pulled this tick' do
-      DRRoom.room_objs = ['blue lever']
-      allow(bot).to receive(:check_for_npcs)
-      allow(bot).to receive(:fput)
-
-      bot.handle_lever
-
-      expect(DRRoom.room_objs).not_to include('blue lever')
+  describe '#out_of_passes' do
+    it 'stops the script' do
+      expect { bot.out_of_passes }.to raise_error(SystemExit)
     end
   end
 
   # ===========================================================================
-  # search_wand: self-correcting injury latch (no permanent give-up)
+  # Small state helpers
   # ===========================================================================
-  describe '#search_wand' do
-    it 'latches injured/no-rope when the dowse fails for condition' do
-      bot.instance_variable_set(:@injured, false)
-      bot.instance_variable_set(:@norope, false)
-      allow(DRC).to receive(:bput).and_return("You're not in any condition to be searching around")
-
-      bot.search_wand
-
-      expect(bot.instance_variable_get(:@injured)).to be(true)
-      expect(bot.instance_variable_get(:@norope)).to be(true)
+  describe '#lurk_here?' do
+    it 'lurks only when camping is explicitly enabled (no auto-ambush)' do
+      bot.instance_variable_set(:@camp, false)
+      expect(bot.lurk_here?).to be(false)
+      bot.instance_variable_set(:@camp, true)
+      expect(bot.lurk_here?).to be(true)
     end
+  end
 
-    it 'clears the injury latch when a dowse succeeds (recovers after healing)' do
+  describe '#tend_trap_wounds' do
+    it 'clears the injured latch when HEALTH shows no bleeding parts' do
       bot.instance_variable_set(:@injured, true)
-      bot.instance_variable_set(:@norope, true)
-      allow(DRC).to receive(:bput).and_return('Roundtime: 5 sec.')
-
-      bot.search_wand
-
+      allow(DRC).to receive(:bput).and_return('You have no significant injuries.')
+      bot.tend_trap_wounds
       expect(bot.instance_variable_get(:@injured)).to be(false)
-      expect(bot.instance_variable_get(:@norope)).to be(false)
     end
 
-    it 'still attempts the dowse when previously injured (not a permanent latch)' do
+    it 'tends each named bleeding part and lifts the latch on success' do
       bot.instance_variable_set(:@injured, true)
-      expect(DRC).to receive(:bput).and_return('Roundtime')
-
-      bot.search_wand
-    end
-  end
-
-  # ===========================================================================
-  # check_for_npcs: ordinal expansion + full removal of frozen duplicates
-  # ===========================================================================
-  describe '#check_for_npcs' do
-    it 'is a no-op when the room has no npcs' do
-      DRRoom.npcs = []
-      expect(bot).not_to receive(:wave)
-
-      bot.check_for_npcs
-    end
-
-    it 'waves at a single npc by its base name' do
-      DRRoom.npcs = %w[hunter]
-      allow(bot).to receive(:wave)
-
-      bot.check_for_npcs
-
-      expect(bot).to have_received(:wave).with('hunter')
-    end
-
-    it 'expands duplicates into ordinal targets' do
-      DRRoom.npcs = %w[guard guard]
-      allow(bot).to receive(:wave)
-
-      bot.check_for_npcs
-
-      expect(bot).to have_received(:wave).with('guard')
-      expect(bot).to have_received(:wave).with('second guard')
-    end
-
-    it 'fully clears frozen duplicates so they are not re-waved next tick' do
-      # Regression: wave cannot delete an ordinal alias ("second guard"), so the
-      # extra instances used to linger in DRRoom.npcs.
-      DRRoom.npcs = %w[guard guard troll]
-      allow(bot).to receive(:wave)
-
-      bot.check_for_npcs
-
-      expect(DRRoom.npcs).to be_empty
-    end
-  end
-
-  # ===========================================================================
-  # run_tick: one pass of the main loop -- rivals frozen before any action
-  # ===========================================================================
-  describe '#run_tick' do
-    before do
-      # Neutralize every per-tick collaborator; each example asserts only the
-      # ordering/branch it cares about.
-      %i[
-        waitrt? handle_package_if_held ensure_wand absorb_unfrozen_npcs
-        handle_dark_room zap_nemesis check_for_npcs track_white_door
-        handle_key_or_search handle_lever set_or_unset_nemesis handle_doors
-        handle_reposition maintain_khri_buffs maybe_change_direction
-        wander backtrack
-      ].each { |m| allow(bot).to receive(m) }
-      allow(DRC).to receive(:fix_standing)
-      bot.instance_variable_set(:@backtrack_to_white_door, false)
-    end
-
-    it 'freezes rivals BEFORE acting on the room (key/rope, lever, doors)' do
-      expect(bot).to receive(:check_for_npcs).ordered
-      expect(bot).to receive(:handle_key_or_search).ordered
-      expect(bot).to receive(:handle_lever).ordered
-      expect(bot).to receive(:handle_doors).ordered
-
-      bot.run_tick
-    end
-
-    it 'resolves the nemesis flag BEFORE zapping (so a freshly-announced nemesis is zapped this tick)' do
-      expect(bot).to receive(:set_or_unset_nemesis).ordered
-      expect(bot).to receive(:zap_nemesis).ordered
-
-      bot.run_tick
-    end
-
-    it 'freezes rivals after resolving/zapping the nemesis' do
-      expect(bot).to receive(:zap_nemesis).ordered
-      expect(bot).to receive(:check_for_npcs).ordered
-
-      bot.run_tick
-    end
-
-    it 'wanders when not backtracking to the white door' do
-      bot.instance_variable_set(:@backtrack_to_white_door, false)
-      expect(bot).to receive(:wander)
-      expect(bot).not_to receive(:backtrack)
-
-      bot.run_tick
-    end
-
-    it 'backtracks (not wanders) when armed for the white door' do
-      bot.instance_variable_set(:@backtrack_to_white_door, true)
-      expect(bot).to receive(:backtrack)
-      expect(bot).not_to receive(:wander)
-
-      bot.run_tick
-    end
-
-    it 'does not re-dowse when not injured' do
-      bot.instance_variable_set(:@injured, false)
-      expect(bot).not_to receive(:search_wand)
-
-      bot.run_tick
-    end
-
-    it 'retries the dowse each tick while injured' do
-      bot.instance_variable_set(:@injured, true)
-      expect(bot).to receive(:search_wand)
-
-      bot.run_tick
-    end
-
-    # End-to-end: injury latch -> recovery via the per-tick retry -> rope pull
-    # works again. search_wand runs for real here (it is not stubbed) so the
-    # latch is genuinely cleared, then pull_rope is exercised against it.
-    it 'recovers from the injury latch mid-run so rope pulls resume' do
-      bot.instance_variable_set(:@injured, true)
-      bot.instance_variable_set(:@norope, true)
-      # Character has recovered: the dowse now succeeds.
-      allow(DRC).to receive(:bput).with('search wand', any_args).and_return('Roundtime: 5 sec.')
-
-      bot.run_tick
-
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        cmd == 'health' ? 'You have a deep wound to the right arm.' : 'You are able to stop the bleeding.'
+      end
+      bot.tend_trap_wounds
+      expect(DRC).to have_received(:bput).with('tend my right arm', any_args)
       expect(bot.instance_variable_get(:@injured)).to be(false)
-      expect(bot.instance_variable_get(:@norope)).to be(false)
-
-      # A subsequent rope pull now proceeds instead of early-returning on @norope.
-      DRRoom.room_objs = ['rope']
-      allow(DRC).to receive(:bput).with('pull rope', any_args).and_return('A loud CLICK echoes from above')
-
-      bot.pull_rope('rope')
-
-      expect(DRC).to have_received(:bput).with('pull rope', any_args)
-    end
-  end
-
-  # ===========================================================================
-  # leave_winners_circle: step out only when actually in the circle
-  # ===========================================================================
-  describe '#leave_winners_circle' do
-    it 'walks out of the oval twice when standing in the winner\'s circle' do
-      DRRoom.title = "Droughtman's Maze, Winner's Circle"
-      expect(bot).to receive(:fput).with('go oval').twice
-
-      bot.leave_winners_circle
-    end
-
-    it 'does nothing when the cash-in happened outside the winner\'s circle' do
-      DRRoom.title = "Droughtman's Compound, The Maze"
-      expect(bot).not_to receive(:fput)
-
-      bot.leave_winners_circle
     end
   end
 end
