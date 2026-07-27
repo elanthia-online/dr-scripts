@@ -7,6 +7,15 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#stack-scrolls
 
   Changelog:
+    3.1.2 (2026-07-27) - Clearer consolidation leftover messaging (PR #7478)
+      - CHANGE: when `consolidate` cannot fit every scroll (targets fill up on a
+        tightly packed pass), it no longer tells you to "re-run consolidate" --
+        that only re-reads the stackers and would ignore the loose leftovers.
+        The closing note now reports how many scrolls are stowed, where they are
+        (labeled and intact, never destroyed), and the remedy that actually
+        works: re-stack them with `;stack-scrolls <container>`. The tightly
+        packed heads-up and the per-scroll lines are softened (no more WARNING
+        spam for the safe, by-design stow). Messaging only; no behavior change.
     3.1.1 (2026-07-22) - Review fixes from in-game smoke test (PR #7478)
       - BUGFIX: `consolidate confirm` could not move scrolls. The planner
         describes the FINAL distribution, but moves were executed in a fixed
@@ -104,7 +113,7 @@
 #   ;stack-scrolls prune
 #   ;stack-scrolls prune confirm
 class ScrollStack
-  VERSION = '3.1.1'
+  VERSION = '3.1.2'
 
   # --- Game-text patterns ---------------------------------------------------
   SECTION_HAS_PATTERN = /The (?<spell>.*) section has (?<count>\d+)/.freeze
@@ -1906,7 +1915,7 @@ class ScrollStack
           pushed += 1
           update_target_cache(target_stacker, spell_name)
         else
-          msg("WARNING: Could not push #{spell_name} into #{target_stacker['name']}; leaving it stowed")
+          msg("Could not fit #{spell_name} into #{target_stacker['name']} (it filled up).")
           stow_pulled_scroll
           break
         end
@@ -2569,6 +2578,28 @@ class ScrollStack
     sections[key] = true
   end
 
+  # Builds the closing advisory for a consolidation run that could not place
+  # every scroll (targets filled up mid-run). The leftovers are stowed loose and
+  # labeled, so they are recovered by RE-STACKING them -- not by re-running
+  # consolidate, which reads only the stackers and would ignore loose scrolls.
+  # Pure; returns [] when nothing was left stowed.
+  #
+  # @param stowed_count [Integer] scrolls left stowed after the run
+  # @param container [String, nil] the container leftovers were stowed in
+  #   (nil = the character's default stow location / pack)
+  # @return [Array<String>] advisory lines, or [] when stowed_count <= 0
+  def consolidation_leftover_advice(stowed_count, container)
+    return [] if stowed_count.to_i <= 0
+
+    where = container ? "your #{container}" : 'your pack'
+    source = container || '<container>'
+    [
+      "#{stowed_count} scroll(s) did not fit and are stowed safely in #{where},",
+      'labeled and intact -- nothing was destroyed.',
+      "To file them back into the stackers, run: ;stack-scrolls #{source}"
+    ]
+  end
+
   # Executes a consolidation plan, moving each scroll to its target stacker.
   # Moves are run in a capacity-safe order ({#order_consolidation_moves}) so an
   # inbound push never lands on a stacker that has not yet been freed. Two-phase
@@ -2582,12 +2613,13 @@ class ScrollStack
 
     scrolls_moved = 0
     slots_freed = 0
+    scrolls_stowed = 0
 
     schedule = order_consolidation_moves(plan[:moves], UserVars.stackers)
     unless schedule[:safe]
-      msg('WARNING: Some moves could not be ordered safely (stackers are tightly')
-      msg('         packed). They will be attempted last; re-run consolidate if any')
-      msg('         scrolls are left stowed.')
+      msg('NOTE: Stackers are tightly packed, so a few moves may not fit on this')
+      msg('      pass. Anything that does not fit is stowed safely -- labeled and')
+      msg('      intact, never destroyed (recovery steps are shown at the end).')
     end
 
     schedule[:ordered].each do |move|
@@ -2602,10 +2634,13 @@ class ScrollStack
 
       # Anything pulled but not accepted by the target stays stowed in the pack
       # (never silently destroyed); trash only when explicitly configured.
-      dispose_leftover_from_pack(pulled - pushed)
+      leftover = pulled - pushed
+      scrolls_stowed += leftover unless @trash_scrolls
+      dispose_leftover_from_pack(leftover)
     end
 
     msg("Consolidation complete! Moved #{scrolls_moved} scroll(s), freed #{slots_freed} slot(s)")
+    consolidation_leftover_advice(scrolls_stowed, @stacker_container).each { |line| msg(line) }
 
     UserVars.stackers = nil
     populate_stackers(force_refresh: true)

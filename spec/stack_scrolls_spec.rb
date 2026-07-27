@@ -778,6 +778,48 @@ RSpec.describe ScrollStack do
   end
 
   # ===========================================================================
+  # consolidation_leftover_advice -- the closing note when a tightly packed run
+  # cannot place every scroll. The old advice ("re-run consolidate") was wrong:
+  # a re-run reads only the stackers, so it never picks the loose leftovers back
+  # up. PR #7478 replaces it with the remedy that works (re-stack the container).
+  # This is a pure, message-building seam.
+  # ===========================================================================
+  describe '#consolidation_leftover_advice' do
+    it 'is empty when nothing was left stowed' do
+      expect(script.consolidation_leftover_advice(0, 'haversack')).to eq([])
+      expect(script.consolidation_leftover_advice(0, nil)).to eq([])
+    end
+
+    it 'is empty for a negative or nil count (never advises on a clean run)' do
+      expect(script.consolidation_leftover_advice(-3, 'haversack')).to eq([])
+      expect(script.consolidation_leftover_advice(nil, 'haversack')).to eq([])
+    end
+
+    it 'reports the count and names the stacker container as the re-stack source' do
+      lines = script.consolidation_leftover_advice(4, 'haversack')
+      expect(lines.join(' ')).to include('4 scroll(s)')
+      expect(lines.join(' ')).to include('your haversack')
+      expect(lines.last).to eq('To file them back into the stackers, run: ;stack-scrolls haversack')
+    end
+
+    it 'falls back to the pack / a placeholder when no container is configured' do
+      lines = script.consolidation_leftover_advice(1, nil)
+      expect(lines.join(' ')).to include('your pack')
+      expect(lines.last).to eq('To file them back into the stackers, run: ;stack-scrolls <container>')
+    end
+
+    it 'never tells the player to re-run consolidate (the advice that does not work)' do
+      lines = script.consolidation_leftover_advice(10, nil)
+      expect(lines.join(' ')).not_to match(/re-run|consolidate/i)
+    end
+
+    it 'reassures that nothing was destroyed' do
+      lines = script.consolidation_leftover_advice(2, 'sack')
+      expect(lines.join(' ')).to match(/labeled and intact.*nothing was destroyed/i)
+    end
+  end
+
+  # ===========================================================================
   # Cache readers (each_slot / normalize_stacker_data / totals) -- via UserVars
   # ===========================================================================
   describe '#normalize_stacker_data' do
