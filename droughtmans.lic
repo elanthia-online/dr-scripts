@@ -162,7 +162,7 @@ class Droughtmans
     @blackdoor      = user.fetch('blackdoor', false) == true # strict opt-in
     @camp           = user.fetch('camp', false) == true
     @multiplier     = user.fetch('multiplier', false) == true
-    @dowse          = user.fetch('dowse', true)
+    @dowse          = user.fetch('dowse', true) == true # strict; default on
     @section_moves  = user.fetch('section_moves', 25).to_i
     @section_moves  = 25 if @section_moves < 5
     @pass_adjective = user['pass_adjective']
@@ -459,8 +459,8 @@ class Droughtmans
 
   EVENT_FLAGS = %w[dm-key-found dm-prevailed dm-earned dm-npc-unfrozen dm-dark
                    dm-key-dropped dm-key-loose dm-wall-rises dm-self-thawed
-                   dm-self-frozen dm-other-thawed dm-repositioned dm-dragged
-                   dm-dowse-key dm-dowse-center].freeze
+                   dm-self-frozen dm-other-thawed dm-light-faded dm-repositioned
+                   dm-dragged dm-dowse-key dm-dowse-center].freeze
 
   # Reset run-scoped state. A previous run's unconsumed flags (e.g. the Recovery
   # Room "You have earned 8..." win line) must not trigger on this run.
@@ -622,7 +622,11 @@ class Droughtmans
   # GO DOOR until we are verifiably inside the maze. Fire-and-forget entry is how
   # a runner once ended up running maze logic in the Contestant's Box (laughing
   # fits leave you kneeling and the door refuses non-standers).
-  # @return [Boolean] whether we made it inside
+  #
+  # The boolean return is ADVISORY, not a hard stop: gear_up_and_enter ignores it
+  # and maze_loop re-enters the maze on its own whenever it finds itself still in
+  # the Contestant's Box, so a false here just means "not confirmed inside yet."
+  # @return [Boolean] whether we confirmed we made it inside (advisory)
   def enter_the_maze
     attempt = 0
     5.times do
@@ -701,13 +705,14 @@ class Droughtmans
       return :winner   if DRRoom.room_objs.any? { |o| o =~ /golden arch/ }
       return :finished if DRRoom.title =~ /Recovery Room/
 
-      # Optional early-out through the black door.
+      # Optional early-out through the black door. This ENDS the run without a
+      # win (no prize box), so finish as :finished, not :winner.
       if @blackdoor && room_has?(/black door/)
         fput('go black door')
         pause 0.2
         fput('go black door')
         pause 0.2
-        return :winner
+        return :finished
       end
 
       ensure_wand
@@ -838,12 +843,20 @@ class Droughtmans
       if center_dirs.empty?
         debug("Center of maze is #{where}")
       else
-        # Center to the NW means we are in the SE quadrant, etc.
+        # Center to the NW means we are in the SE quadrant, etc. Only a bearing
+        # with BOTH a N/S and an E/W component pins a real quadrant; a single
+        # axis is just a hint (kept in @center_hint) and must NOT be stored as a
+        # quadrant, or it pollutes @searched_quadrants and quadrant comparisons.
         corner = center_dirs.map { |d| REVERSE_DIRECTION[d] }
-        corner = (corner & %w[north south]) + (corner & %w[east west])
-        @current_quadrant = corner.join('').to_sym
-        already = @searched_quadrants.include?(@current_quadrant) ? ' (already searched!)' : ''
-        echo("*** DOWSE: we are in the #{@current_quadrant.to_s.upcase} quadrant#{already}")
+        ns = corner & %w[north south]
+        ew = corner & %w[east west]
+        if ns.any? && ew.any?
+          @current_quadrant = (ns + ew).join('').to_sym
+          already = @searched_quadrants.include?(@current_quadrant) ? ' (already searched!)' : ''
+          echo("*** DOWSE: we are in the #{@current_quadrant.to_s.upcase} quadrant#{already}")
+        else
+          debug("Center bearing is #{where} (single axis) - keeping as a hint, not a quadrant")
+        end
       end
     end
 
@@ -966,7 +979,7 @@ class Droughtmans
 
     freeze_npcs
     DRC.release_invisibility
-    case DRC.bput("go #{door}", /^Obvious (?:exits|paths)/, /It's pitch dark/, /^You can't go there/, /You smash your nose/, /^Where are you trying to go/)
+    case DRC.bput("go #{color} door", /^Obvious (?:exits|paths)/, /It's pitch dark/, /^You can't go there/, /You smash your nose/, /^Where are you trying to go/)
     when /^Obvious/, /pitch dark/
       if !have_key? && @current_quadrant && @section_move_count >= 5 && !@searched_quadrants.include?(@current_quadrant)
         @searched_quadrants << @current_quadrant
@@ -1067,6 +1080,10 @@ class Droughtmans
 
     announced_lurk = false
     result = nil
+    # Bound consecutive ambushes at the door so a repeating freeze/drop cannot
+    # spin the retry loop forever. Reset (below) whenever a non-ambush response
+    # comes back, so a real attempt in between refreshes the budget.
+    ambush_attempts = 0
     begin
       loop do
         if have_key?
@@ -1097,7 +1114,14 @@ class Droughtmans
           when /freezing you in place|drop your golden key/
             # Ambushed mid-attempt -- someone froze us and/or the key hit the
             # floor. Let process_flags run the thaw wait and/or key recovery,
-            # then retry from the top instead of assuming the door is gone.
+            # then retry from the top instead of assuming the door is gone --
+            # but only a finite number of times before we bail out.
+            ambush_attempts += 1
+            if ambush_attempts > 3
+              echo('*** Ambushed at the white door too many times - abandoning this attempt.')
+              result = have_key? ? :gone : :no_key
+              break
+            end
             echo('*** AMBUSHED AT THE WHITE DOOR! Recovering before retrying...')
             process_flags
             next
@@ -1105,6 +1129,8 @@ class Droughtmans
             result = :gone
             break
           end
+          # A non-ambush response got through -- refresh the ambush budget.
+          ambush_attempts = 0
         elsif !lurk_here?
           result = :no_key
           break
@@ -1221,6 +1247,10 @@ class Droughtmans
       wave(name, is_keyholder: true)
     when /I could not find/, /^Look at what/
       DRRoom.pcs.delete(name)
+    when /concealing all but/
+      # We could not actually see their hands -- this is UNKNOWN, not proof they
+      # lack the key. Leave the whitelist untouched; the rate limiter retries.
+      debug("#{name} is concealing their items - can't confirm, will re-check later")
     else
       if @whitelist.delete(name)
         debug("#{name} is whitelisted but NOT holding the key - stale intel pruned")
@@ -2288,9 +2318,7 @@ end
 
 before_dying do
   fput('flag description on') # restore room descriptions
-  %w[dm-key-found dm-prevailed dm-earned dm-npc-unfrozen dm-dark dm-key-dropped
-     dm-key-loose dm-wall-rises dm-self-thawed dm-other-thawed dm-self-frozen
-     dm-repositioned dm-dragged dm-dowse-key dm-dowse-center].each { |flag| Flags.delete(flag) }
+  Droughtmans::EVENT_FLAGS.each { |flag| Flags.delete(flag) }
 end
 
 Droughtmans.new

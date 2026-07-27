@@ -141,9 +141,10 @@ RSpec.describe Droughtmans do
       visited = Hash.new(0)
       visited[[1, 1]] = 5 # northeast destination already worn
       bot.instance_variable_set(:@visited, visited)
-      # Both northeast and east reduce distance to [3, 3] equally on the x-axis;
-      # northeast also gains on y, so it wins on distance despite being visited.
-      expect(bot.direction_toward([3, 3], %w[northeast east])).to eq('northeast')
+      # Target due north of us: from [0, 0] both northeast -> [1, 1] and
+      # northwest -> [-1, 1] cut the Chebyshev distance to [0, 3] to 2 equally --
+      # a genuine tie that must break toward the less-visited northwest room.
+      expect(bot.direction_toward([0, 3], %w[northeast northwest])).to eq('northwest')
     end
   end
 
@@ -670,6 +671,18 @@ RSpec.describe Droughtmans do
     it 'stops cleanly when there is no pass left to get (out of passes)' do
       allow(DRC).to receive(:bput).and_return('What were you referring to?')
       expect { bot.redeem_pass }.to raise_error(SystemExit)
+    end
+
+    it 'carries on when a pass is in hand but REDEEM finds none (existing access)' do
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+      allow(bot).to receive(:echo)
+      # The GET succeeds (we hold a pass), but REDEEM comes back "What were you
+      # referring to?" -- non-fatal: rely on existing access and finish normally.
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        cmd.start_with?('get my') ? 'You get a copper pass.' : 'What were you referring to?'
+      end
+      expect { bot.redeem_pass }.not_to raise_error
+      expect(bot).to have_received(:echo).with(/No pass in hand to redeem/)
     end
   end
 
