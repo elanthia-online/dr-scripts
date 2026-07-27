@@ -73,7 +73,8 @@
     ;moonwatch log          - Enable event logging + auto-observe moons at rise
     ;moonwatch nolog        - Disable moon event logging and auto-observe
     ;moonwatch reset        - Reset all offsets to zero
-    ;moonwatch alias        - Add 'moon' alias for quick status
+    ;moonwatch alias        - Add 'moon' alias (reports when moonwatch is not
+                              running; self-updates on start once enabled)
 
   Data exposed via UserVars:
     UserVars.moons['katamba']['visible']  - Boolean, is moon up?
@@ -83,9 +84,12 @@
     UserVars.moons['katamba']['next_phase'] - Upcoming lunar phase name
     UserVars.moons['katamba']['next_phase_seconds'] - Approx seconds to next phase
     UserVars.moons['katamba']['t']        - Fractional progress across current arc (0..1)
+    UserVars.moons['running']             - Boolean, is moonwatch maintaining this data?
     UserVars.sun['visible']               - Boolean, is sun up?
     UserVars.sun['time_of_day']           - Current time period description
+    UserVars.sun['running']               - Boolean, is moonwatch maintaining this data?
     UserVars.calendar['date_string']      - Formatted DR date "446-01-15 06:12"
+    UserVars.calendar['running']          - Boolean, is moonwatch maintaining this data?
 =end
 
 no_pause_all
@@ -983,6 +987,88 @@ module MoonwatchMessaging
   #
   def self.error(message)
     Lich::Messaging.msg('bold', "#{PREFIX}: #{message}")
+  end
+end
+
+# =============================================================================
+# MODULE: MoonwatchAlias - The 'moon' Quick-Status Alias
+# =============================================================================
+# Single Responsibility: build and manage the optional global 'moon' alias.
+#
+# The alias body is Ruby executed via Lich's `eq` (exec quiet). It checks whether
+# moonwatch is actually running before reading UserVars, so a stale alias never
+# echoes old data silently -- when moonwatch is not running it tells the user how
+# to start it. This check is crash-proof: it does not depend on any exit cleanup.
+#
+# Aliases are frontend-managed and cannot be read back from Lich, so we cannot
+# introspect the installed body. Instead we self-track opt-in and a body version
+# in CharSettings; on startup a previously-enabled alias is silently re-installed
+# whenever the shipped VERSION is newer than what the user last installed. We
+# NEVER create the alias unless the user explicitly asked (;moonwatch alias).
+#
+module MoonwatchAlias
+  # Bump whenever `body` changes so enabled users get the new body on next start.
+  VERSION = 1
+
+  # The `;eq` Ruby body run when the user types `moon`.
+  #
+  # NOTE: \#{...} is escaped so interpolation happens at INVOCATION time inside
+  # eq, not when this string is built or when the alias is defined. Only the
+  # lich char (#{lich_char}) is interpolated now, at build time.
+  #
+  # @param lich_char [String] the clean lich command character (e.g. ';')
+  # @return [String] the eq command that forms the alias body
+  #
+  def self.body(lich_char)
+    running = %{respond("\#{UserVars.moons['katamba']['pretty']} : } +
+              %{\#{UserVars.moons['yavash']['pretty']} : \#{UserVars.moons['xibar']['pretty']}")}
+    stopped = %{respond("moonwatch is not running - start it with #{lich_char}moonwatch")}
+    "#{lich_char}eq Script.running?('moonwatch') ? #{running} : #{stopped}"
+  end
+
+  # The full `alias add --global` command string that installs the alias.
+  #
+  # @param lich_char [String] the clean lich command character
+  # @return [String] the alias-add command
+  #
+  def self.command(lich_char)
+    "#{lich_char}alias add --global moon = #{body(lich_char)}"
+  end
+
+  # Pure decision: should startup re-install the alias? Only when the user opted
+  # in AND the stored body version is behind the shipped VERSION. Disabled or
+  # unset always returns false, so we never auto-create an alias.
+  #
+  # @param enabled [Boolean, nil] the persisted opt-in flag
+  # @param stored_version [Integer, nil] the persisted body version
+  # @return [Boolean]
+  #
+  def self.should_resync?(enabled:, stored_version:)
+    enabled == true && (stored_version.nil? || stored_version < VERSION)
+  end
+
+  # Install (or overwrite) the alias and record opt-in + current body version.
+  #
+  # @param lich_char [String] the clean lich command character
+  # @return [void]
+  #
+  def self.install(lich_char)
+    UpstreamHook.run("<c>#{command(lich_char)}")
+    CharSettings['moon_alias_enabled'] = true
+    CharSettings['moon_alias_version'] = VERSION
+  end
+
+  # Startup re-sync: silently refresh a previously-enabled alias when its body
+  # version is behind. No-op when the user never opted in.
+  #
+  # @param lich_char [String] the clean lich command character
+  # @return [void]
+  #
+  def self.resync(lich_char)
+    return unless should_resync?(enabled: CharSettings['moon_alias_enabled'],
+                                 stored_version: CharSettings['moon_alias_version'])
+
+    install(lich_char)
   end
 end
 
@@ -1946,6 +2032,21 @@ class MoonwatchUI
     setup_window if @window_enabled
   end
 
+  # Mark the published UserVars as fresh (true) or stale (false) without deleting
+  # any keys existing consumers read. Set true at startup and false on exit so
+  # other scripts can tell whether moonwatch is still maintaining the data. The
+  # 'moon' alias does not rely on this (it checks Script.running? directly), so a
+  # hard crash that skips the exit hook still yields a correct alias response.
+  #
+  # @param running [Boolean] whether moonwatch is actively updating UserVars
+  # @return [void]
+  #
+  def self.set_running(running)
+    UserVars.moons['running'] = running if UserVars.moons.is_a?(Hash)
+    UserVars.sun['running'] = running if UserVars.sun.is_a?(Hash)
+    UserVars.calendar['running'] = running if UserVars.calendar.is_a?(Hash)
+  end
+
   # Update UserVars with current moon positions.
   #
   # @param offset_manager [MoonwatchOffsetManager] For getting offsets
@@ -2210,6 +2311,12 @@ UserVars.moons = { 'katamba' => {}, 'yavash' => {}, 'xibar' => {}, 'visible' => 
 UserVars.sun = {}
 UserVars.calendar = {}
 
+# Freshness flag: mark the published data as live now, and stale on exit. This is
+# non-destructive (no keys removed), so consumers reading moon/sun/calendar keys
+# are unaffected; they may additionally check ['running'] to detect stale data.
+MoonwatchUI.set_running(true)
+before_dying { MoonwatchUI.set_running(false) }
+
 # Clear window cache
 CharSettings['moon_window_cache'] = nil
 
@@ -2227,15 +2334,17 @@ end
 instance_notice = MoonwatchInstance.calibration_notice(XMLData.game)
 MoonwatchMessaging.info(instance_notice) if instance_notice
 
-# Handle alias command
-# NOTE: The %{} string uses \#{} to PREVENT Ruby interpolation - the # becomes
-# a literal character that will be interpolated later when the alias is executed.
+# Handle alias command. MoonwatchAlias builds a self-aware alias that reports when
+# moonwatch is not running, and records opt-in + body version so startup can keep
+# an enabled alias up to date (see MoonwatchAlias.resync below).
 if args.alias
-  alias_cmd = "#{$clean_lich_char}alias add --global moon = #{$clean_lich_char}" +
-              %{eq respond("\#{UserVars.moons['katamba']['pretty']} : \#{UserVars.moons['yavash']['pretty']} : \#{UserVars.moons['xibar']['pretty']}")}
-  UpstreamHook.run("<c>#{alias_cmd}")
+  MoonwatchAlias.install($clean_lich_char)
   MoonwatchMessaging.info("Added 'moon' alias for quick status.")
 end
+
+# Re-sync a previously-enabled alias to the current body version. No-op unless the
+# user opted in via ;moonwatch alias, so we never auto-create an alias.
+MoonwatchAlias.resync($clean_lich_char)
 
 # -----------------------------------------------------------------------------
 # Initial Calculations

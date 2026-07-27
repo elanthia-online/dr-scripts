@@ -88,6 +88,7 @@ load_lic_module('moonwatch.lic', 'DRTime')
 load_lic_module('moonwatch.lic', 'Moons')
 load_lic_module('moonwatch.lic', 'MoonwatchInstance')
 load_lic_module('moonwatch.lic', 'MoonwatchMessaging')
+load_lic_module('moonwatch.lic', 'MoonwatchAlias')
 load_lic_class('moonwatch.lic', 'MoonwatchOffsetManager')
 load_lic_class('moonwatch.lic', 'MoonwatchLogger')
 load_lic_class('moonwatch.lic', 'ServerResetTracker')
@@ -1035,6 +1036,122 @@ RSpec.describe 'moonwatch.lic' do
         joined = $mw_msgs.map(&:last).join("\n")
         expect(joined).to match(/sun visible=/)
         expect(joined).to match(/calendar:/)
+      end
+    end
+
+    describe '.set_running' do
+      it 'marks all three UserVars structures as running without dropping keys' do
+        @moons['katamba']['pretty'] = 'katamba is up for 30 minutes'
+        described_class.set_running(true)
+        expect(@moons['running']).to be true
+        expect(@sun['running']).to be true
+        expect(@calendar['running']).to be true
+        # existing keys are untouched (non-destructive)
+        expect(@moons['katamba']['pretty']).to eq('katamba is up for 30 minutes')
+      end
+
+      it 'marks stale (false) on exit without dropping keys' do
+        @moons['katamba']['pretty'] = 'katamba is up for 30 minutes'
+        described_class.set_running(false)
+        expect(@moons['running']).to be false
+        expect(@sun['running']).to be false
+        expect(@calendar['running']).to be false
+        expect(@moons['katamba']['pretty']).to eq('katamba is up for 30 minutes')
+      end
+    end
+  end
+
+  # =========================================================================
+  # MoonwatchAlias -- the self-aware 'moon' quick-status alias
+  # =========================================================================
+  describe MoonwatchAlias do
+    describe '.body' do
+      let(:body) { described_class.body(';') }
+
+      it 'gates on Script.running? so a dead moonwatch is detected' do
+        expect(body).to include("Script.running?('moonwatch')")
+      end
+
+      it 'reads all three moon pretty strings when running' do
+        expect(body).to include("UserVars.moons['katamba']['pretty']")
+        expect(body).to include("UserVars.moons['yavash']['pretty']")
+        expect(body).to include("UserVars.moons['xibar']['pretty']")
+      end
+
+      it 'prompts the user to start moonwatch when not running' do
+        expect(body).to include('moonwatch is not running - start it with ;moonwatch')
+      end
+
+      it 'leaves interpolation for invocation time (not resolved at build time)' do
+        # The pretty reads must survive as literal #{...} so eq interpolates them
+        # when the alias fires, not when we build the string here.
+        expect(body).to include('#{UserVars.moons')
+      end
+
+      it 'honors a non-default lich char' do
+        expect(described_class.body('.')).to include('.eq ')
+        expect(described_class.body('.')).to include('start it with .moonwatch')
+      end
+    end
+
+    describe '.command' do
+      it 'wraps the body in a global alias-add command' do
+        cmd = described_class.command(';')
+        expect(cmd).to start_with(';alias add --global moon = ;eq ')
+        expect(cmd).to include(described_class.body(';'))
+      end
+    end
+
+    describe '.should_resync?' do
+      it 'is false when the user never opted in' do
+        expect(described_class.should_resync?(enabled: nil, stored_version: nil)).to be false
+        expect(described_class.should_resync?(enabled: false, stored_version: 0)).to be false
+      end
+
+      it 'is true when enabled but no version has been recorded yet' do
+        expect(described_class.should_resync?(enabled: true, stored_version: nil)).to be true
+      end
+
+      it 'is true when enabled and the stored version is behind' do
+        expect(described_class.should_resync?(enabled: true, stored_version: MoonwatchAlias::VERSION - 1)).to be true
+      end
+
+      it 'is false when enabled and already at the current version' do
+        expect(described_class.should_resync?(enabled: true, stored_version: MoonwatchAlias::VERSION)).to be false
+      end
+    end
+
+    describe '.install' do
+      it 'records opt-in and the current body version in CharSettings' do
+        described_class.install(';')
+        expect(CharSettings['moon_alias_enabled']).to be true
+        expect(CharSettings['moon_alias_version']).to eq(MoonwatchAlias::VERSION)
+      end
+
+      it 'emits the alias-add command upstream' do
+        captured = []
+        UpstreamHook.add('moonwatch_spec_capture', proc { |s| captured << s; s })
+        described_class.install(';')
+        UpstreamHook.remove('moonwatch_spec_capture')
+        expect(captured.join).to include('alias add --global moon = ')
+      end
+    end
+
+    describe '.resync' do
+      it 'installs when a previously-enabled alias is behind' do
+        CharSettings['moon_alias_enabled'] = true
+        CharSettings['moon_alias_version'] = MoonwatchAlias::VERSION - 1
+        described_class.resync(';')
+        expect(CharSettings['moon_alias_version']).to eq(MoonwatchAlias::VERSION)
+      end
+
+      it 'does nothing when the user never opted in' do
+        captured = []
+        UpstreamHook.add('moonwatch_spec_capture', proc { |s| captured << s; s })
+        described_class.resync(';')
+        UpstreamHook.remove('moonwatch_spec_capture')
+        expect(captured).to be_empty
+        expect(CharSettings['moon_alias_enabled']).to be_nil
       end
     end
   end
