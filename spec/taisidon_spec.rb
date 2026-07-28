@@ -613,6 +613,16 @@ RSpec.describe Taisidon do
       expect { taisidon.send(:redeem_and_board) }.to raise_error(SystemExit)
     end
 
+    it 'aborts (exit) on the first unrecognized/timeout response (empty string)' do
+      # bput returns '' after its 15s timeout; no case matches, so the else branch aborts
+      # immediately -- exactly one attempt, not the full retry loop.
+      allow(DRC).to receive(:bput).and_return('')
+      allow(DRC).to receive(:message)
+
+      expect { taisidon.send(:redeem_and_board) }.to raise_error(SystemExit)
+      expect(DRC).to have_received(:bput).once
+    end
+
     it 'is bounded: gives up (exit) after MAX_REDEEM_ATTEMPTS repeat prompts' do
       allow(DRC).to receive(:bput).and_return('Once you redeem this')
       allow(DRC).to receive(:message)
