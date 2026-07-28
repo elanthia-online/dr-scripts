@@ -1760,11 +1760,11 @@ class SpellProcess
       if retry_count == 0
         lunar_magic_rank = DRSkill.getrank('Lunar Magic')
         if lunar_magic_rank >= 400
-          moonblade_spell['prep_time'] = 1
-        elsif lunar_magic_rank >= 300
           moonblade_spell['prep_time'] = 2
-        elsif lunar_magic_rank >= 200
+        elsif lunar_magic_rank >= 300
           moonblade_spell['prep_time'] = 3
+        elsif lunar_magic_rank >= 200
+          moonblade_spell['prep_time'] = 4
         end
       end
       # Only break a moonblade we actually just summoned. If this cast fails

@@ -3065,22 +3065,8 @@ RSpec.describe SpellProcess do
           .and_return('The slivers drift about')
       end
 
-      it 'uses prep_time 1 for Lunar Magic >= 400' do
+      it 'uses prep_time 2 for Lunar Magic >= 400' do
         DRSkill._set_rank('Lunar Magic', 450)
-        allow(DRCA).to receive(:cast_spell).and_return(true)
-
-        instance = build_spell_process
-        game_state = build_game_state
-
-        instance.send(:check_slivers, game_state)
-
-        expect(DRCA).to have_received(:cast_spell) do |spell_data, _settings|
-          expect(spell_data['prep_time']).to eq(1)
-        end
-      end
-
-      it 'uses prep_time 2 for Lunar Magic 300-399' do
-        DRSkill._set_rank('Lunar Magic', 350)
         allow(DRCA).to receive(:cast_spell).and_return(true)
 
         instance = build_spell_process
@@ -3093,8 +3079,8 @@ RSpec.describe SpellProcess do
         end
       end
 
-      it 'uses prep_time 3 for Lunar Magic 200-299' do
-        DRSkill._set_rank('Lunar Magic', 250)
+      it 'uses prep_time 3 for Lunar Magic 300-399' do
+        DRSkill._set_rank('Lunar Magic', 350)
         allow(DRCA).to receive(:cast_spell).and_return(true)
 
         instance = build_spell_process
@@ -3104,6 +3090,20 @@ RSpec.describe SpellProcess do
 
         expect(DRCA).to have_received(:cast_spell) do |spell_data, _settings|
           expect(spell_data['prep_time']).to eq(3)
+        end
+      end
+
+      it 'uses prep_time 4 for Lunar Magic 200-299' do
+        DRSkill._set_rank('Lunar Magic', 250)
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state)
+
+        expect(DRCA).to have_received(:cast_spell) do |spell_data, _settings|
+          expect(spell_data['prep_time']).to eq(4)
         end
       end
 
