@@ -46,6 +46,12 @@
   to the startup debug summary, and exposes next_phase / next_phase_seconds via
   UserVars. Phase buckets last roughly a real day (see next_phase_seconds).
 
+  v4.4.2 broadens observe capture: it scopes on the "You scan the skies" line and
+  matches any phase wording (not just "... is ..."), mapping each via
+  Moons::OBSERVED_PHASE_MAP. Four wordings are mapped and model-validated (waxing
+  crescent, waxing gibbous, full, waning crescent); unmapped wordings are logged
+  raw so the remaining four phases can be added as they are seen.
+
   v4.5.0 makes instance-awareness explicit. The moon periods are game-code
   constants (cross-validated against the DR client's own hard-coded sidereal
   periods to within ~0.05s), so they are identical on every instance; offsets
@@ -111,12 +117,18 @@ MOON_SET_PATTERN = /^(?<moon>Katamba|Xibar|Yavash) sets/i.freeze
 # @example "Katamba slowly rises above the horizon"
 MOON_RISE_PATTERN = /^(?<moon>Katamba|Xibar|Yavash) slowly rises/i.freeze
 
-# Moon phase readout from the `observe <moon>` verb. Captures the game's raw
-# phase wording so it can be logged against the computed phase for validation.
-# The colour adjective before "moon" varies per moon, so it is matched loosely.
+# The `observe <moon>` response opens with "You scan the skies ...". We use it to
+# scope phase-line capture so ambient sky text is never mistaken for a reading.
+MOON_SCAN_PATTERN = /^You scan the skies/i.freeze
+
+# Moon phase readout from the `observe <moon>` verb, captured after a scan line.
+# DR varies the wording per phase (e.g. "... is a growing crescent of light.",
+# "... forms a perfect circle in the heavens."), so we match the whole clause
+# after "moon <M>" and let Moons.observed_phase_name map it. The colour adjective
+# before "moon" varies per moon, so it is matched loosely.
 # @example "The black moon Katamba is a growing crescent of light."
-# @example "The red moon Yavash is a growing crescent of light."
-MOON_OBSERVE_PATTERN = /^The .+ moon (?<moon>Katamba|Xibar|Yavash) is (?<phase_desc>.+?)\.\s*$/i.freeze
+# @example "The moon Katamba forms a perfect circle in the heavens."
+MOON_PHASE_LINE_PATTERN = /^The\b.*\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.*)\.\s*$/i.freeze
 
 # Sun rise event patterns - multiple variations exist in-game
 # These cover dawn/sunrise messages across different weather conditions and locations
@@ -888,6 +900,18 @@ module Moons
     'waning crescent'
   ].freeze
 
+  # Maps DR's observed phase wording (the clause after "moon <M>") to a phase
+  # name, so observations can be validated against the computed phase. Each regex
+  # matches a distinctive fragment of one wording. Four are model-validated so
+  # far; the remaining four (new, first quarter, waning gibbous, third quarter)
+  # are added as their wordings are seen (unmapped clauses are logged raw).
+  OBSERVED_PHASE_MAP = [
+    [/growing crescent/i, 'waxing crescent'],
+    [/nearly turned its full face/i, 'waxing gibbous'],
+    [/perfect circle/i, 'full'],
+    [/waned to a narrow crescent/i, 'waning crescent']
+  ].freeze
+
   # Compute a moon's lunar phase at a given time.
   #
   # @param moon [String] Moon name ('katamba', 'xibar', or 'yavash')
@@ -934,6 +958,16 @@ module Moons
       next_name: PHASE_NAMES[next_index],
       seconds_to_next: seconds_to_next
     }
+  end
+
+  # Map an observed DR phase phrase to a phase name via OBSERVED_PHASE_MAP.
+  #
+  # @param observed_phrase [String] the clause captured from an observe reading
+  # @return [String, nil] the phase name, or nil if the wording is unmapped
+  #
+  def self.observed_phase_name(observed_phrase)
+    entry = OBSERVED_PHASE_MAP.find { |rx, _name| observed_phrase =~ rx }
+    entry&.last
   end
 end
 
@@ -1595,9 +1629,16 @@ class MoonwatchLogger
     date = DRTime.calculate_date(game_time)
     write_phase_csv(moon, observed_phase, computed, game_time, date)
 
+    mapped = Moons.observed_phase_name(observed_phase)
+    verdict = if mapped.nil?
+                'unmapped phrasing (record for map)'
+              elsif mapped == computed[:name]
+                'MATCH'
+              else
+                "MISMATCH model=#{computed[:name]}"
+              end
     MoonwatchMessaging.debug(
-      "phase obs #{moon}: observed='#{observed_phase}' computed='#{computed[:name]}' " \
-      "(phase_angle=#{computed[:phase_angle]})",
+      "phase obs #{moon}: '#{observed_phase}' -> #{mapped || '?'} vs model #{computed[:name]} [#{verdict}]",
       @debug_enabled
     )
   end
@@ -2416,6 +2457,10 @@ ui.log_initial_status($debug_mode_mm)
 # =============================================================================
 # Monitors game output for astronomical events and updates predictions.
 #
+# Tracks whether we are inside an observe response (set by MOON_SCAN_PATTERN) so
+# the moon phase line is only captured as a reading during an actual observation.
+awaiting_phase = false
+
 loop do
   line = script.gets?
 
@@ -2474,17 +2519,26 @@ loop do
 
     # Auto-observe on rise to capture the phase readout (when logging is on). The
     # rise broadcast only reaches us outdoors, so the moon is observable now; the
-    # response is caught below by MOON_OBSERVE_PATTERN and logged. Note: observe
-    # carries roundtime and trains a skill, so this only runs while logging.
+    # response is caught below (scan line then phase line) and logged. Note:
+    # observe carries roundtime and trains a skill, so this only runs while logging.
     put "observe #{moon_name}" if $moon_logging
 
-  when MOON_OBSERVE_PATTERN
-    # Moon phase readout from `observe <moon>` - logs observed vs computed phase
-    moon_name = Regexp.last_match[:moon].downcase
-    phase_desc = Regexp.last_match[:phase_desc].strip
-    game_time = XMLData.server_time
-    MoonwatchMessaging.debug("phase_obs #{moon_name}: #{phase_desc}", $debug_mode_mm)
-    logger.log_phase_observation(moon_name, phase_desc, game_time)
+  when MOON_SCAN_PATTERN
+    # An observe has begun; the next moon phase line is a reading to capture.
+    awaiting_phase = true
+
+  when MOON_PHASE_LINE_PATTERN
+    # Phase readout from an observe, scoped by the scan line above so ambient sky
+    # text is not logged. DR varies the wording per phase; we capture the whole
+    # clause and let the logger map/validate it.
+    if awaiting_phase
+      awaiting_phase = false
+      moon_name = Regexp.last_match[:moon].downcase
+      phase_desc = Regexp.last_match[:phase_desc].strip
+      game_time = XMLData.server_time
+      MoonwatchMessaging.debug("phase_obs #{moon_name}: #{phase_desc}", $debug_mode_mm)
+      logger.log_phase_observation(moon_name, phase_desc, game_time)
+    end
 
   when SUN_RISE_COMBINED_PATTERN
     # Sun rise event

@@ -407,6 +407,24 @@ RSpec.describe 'moonwatch.lic' do
         expect { Moons.phase('luna', now) }.to raise_error(KeyError)
       end
     end
+
+    describe '.observed_phase_name' do
+      it 'maps each known DR observe wording to its phase' do
+        expect(Moons.observed_phase_name('is a growing crescent of light')).to eq('waxing crescent')
+        expect(Moons.observed_phase_name('has nearly turned its full face upon Elanthia')).to eq('waxing gibbous')
+        expect(Moons.observed_phase_name('forms a perfect circle in the heavens')).to eq('full')
+        expect(Moons.observed_phase_name('has waned to a narrow crescent of light')).to eq('waning crescent')
+      end
+
+      it 'matches case-insensitively and within a larger clause' do
+        expect(Moons.observed_phase_name('The black moon Katamba FORMS A PERFECT CIRCLE')).to eq('full')
+      end
+
+      it 'returns nil for an unmapped wording' do
+        expect(Moons.observed_phase_name('looks down from above')).to be_nil
+        expect(Moons.observed_phase_name('')).to be_nil
+      end
+    end
   end
 
   # =========================================================================
