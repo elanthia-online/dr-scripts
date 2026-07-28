@@ -1,464 +1,2065 @@
-# Droughtman's Maze solver.
-#
-# An autonomous wall-following maze solver for Droughtman's Maze. The bot enters
-# the maze (redeeming a pass when one is held, otherwise asking the spieler for
-# access), navigates by keeping one "hand" on a wall (a clockwise or
-# counter-clockwise rotation of the compass), grabs the golden key, backtracks to
-# the white door, and cashes in the prize package.
-#
-# It layers several recovery behaviors on top of the core wall-follow:
-#   * loop detection (reverse out of a detected cycle),
-#   * dark-room recovery (shake the wand for light, re-read exits),
-#   * current-drag recovery (retrace the drag),
-#   * repositioning recovery (re-initialize the map when the maze shuffles you),
-#   * colored-door traversal (change maze regions once enough rooms are explored),
-#   * nemesis handling (freeze the announced key-holder with the wand),
-#   * rope/lever handling with trap awareness (tend crossbow wounds, re-dowse on a
-#     tarzan-rope reset).
-#
-# @note This script preserves a personal work flow (stops a personal script set,
-#   logs to a "familiar" window, fetches a canvas sack, walks to hard-coded
-#   compound rooms). See the leading constants to retune those.
+# quiet
+=begin
+  Droughtman's Maze solver.
+
+  An autonomous Droughtman's Maze runner. It starts from the maze spieler, the
+  Contestant's Box, the Recovery Room, or anywhere inside the maze itself;
+  redeems a pass (and optionally a multiplier), gears up, and enters the maze.
+
+  NAVIGATION: dead-reckons its own grid position from the moves it makes and
+  steers toward rooms it has not visited yet, so it will not orbit the same
+  square of rooms. It explores the current maze section for a configurable
+  number of rooms (section_moves), then deliberately takes a colored door to the
+  next section -- preferring a different door color than the one it entered
+  through so it does not bounce between the same two quadrants. Repositions
+  (WHOOSH), current drags, and tarzan-rope maze resets all restart the local map
+  correctly.
+
+  WAND DOWSING: event-driven and stingy with roundtime. One dowse when a key
+  enters play (found/picked-up announcements, or one probe on maze entry), then
+  the saved bearing steers movement with NO re-dowsing -- a fresh dowse happens
+  only when the bearing is invalidated (colored door to another section, WHOOSH
+  reposition, or maze reset). Never dowses with maze mobs in the room (they thaw
+  during the roundtime). Anyone seen holding the key in the vision is whitelisted
+  for wanding before we ever meet them.
+
+  WHITE DOOR MEMORY: remembers where it last saw the white door; once the key is
+  in hand it navigates straight back to that spot, falling back to exploration if
+  the maze has shifted it away.
+
+  PLAYER WANDING: KEY HOLDERS ONLY. The whitelist is built from "just found a
+  golden key!" announcements, dowse visions, and LOOKing at players; the wand is
+  only waved at players confirmed to be holding the golden key. hunting_buddies
+  (and any droughtmans:no_attack_list) are NEVER wanded, even holding the key.
+
+  SELF CARE: latches an injured state -- while too wounded to search it skips
+  dowsing and rope pulls, resuming after a successful tend. Trap wounds are tended
+  by the specific bleeding body part (falling back to the tendme script). Thief
+  Khri buffs are checked against active spells and recast if dropped.
+
+  While carrying the key it stops attacking players, ignores ropes, hunts for the
+  white door, and paces its movement (a trip while carrying the key drops it).
+
+  Opens the prize box, loots the runner package (coins + items, with a
+  never-trash-a-non-empty-package safety net), stows winnings in loot_containers
+  (tried in order, else a plain stow), and exits. Loops for another run until out
+  of passes when loop: true.
+
+  This solver's design merges ideas from two community rewrites (a dead-reckoning
+  grid runner and a graph-solver race build) onto the upstream droughtmans script.
+
+  USAGE:
+    ;droughtmans            normal run
+    ;droughtmans debug      extra debug output
+
+  YAML SETTINGS (all optional). New options live under a droughtmans: block;
+  the shared keys hunting_buddies / worn_trashcan / worn_trashcan_verb are read
+  at top level as usual. The older flat keys droughtmans_loot_container and
+  droughtmans_step_delay are still honored for backward compatibility.
+
+    hunting_buddies:        # NEVER wanded, even holding the key
+      - Somefriend
+
+    droughtmans:
+      loop: false           # keep running until out of passes
+      blackdoor: false      # take the black door early-out when seen
+      camp: false           # wait at a closed/keyless white door
+      multiplier: false     # also redeem a multiplier after the pass
+      dowse: true           # SEARCH the wand (once per key event) to home in
+      section_moves: 25     # rooms to explore before taking a colored door
+      step_delay: 0         # extra seconds paused after each successful move
+      key_step_delay: 2     # extra seconds paused after a move WHILE holding the
+                            # key (a trip drops the key -- pacing avoids trips)
+      rest_interval: 0      # pause for a breather every N rooms (0 = disabled)
+      rest_pause: 3         # seconds to pause during that periodic breather
+      pass_adjective:       # e.g. copper -- used as "get my copper pass"
+      store_package: false  # stow the runner package UNOPENED instead of looting
+      loot_containers:      # winnings are stowed in these, tried in order
+        - encompassing shadows
+      trash:                # items to drop instead of keeping
+        - blouse
+      no_attack_list:       # extra never-wand names (on top of hunting_buddies)
+        - Somefriend
+      thief_stealth: false  # thieves cycle Khri Vanish/Silence while keyless
+
+  SPELL/KHRI CASTING (optional): add a waggle_sets:droughtmans: block (a
+  top-level YAML key, sibling to droughtmans:) to have the shared buff script
+  cast your buffs right before each pass redemption.
+=end
+
 class Droughtmans
-  # Opposite of each cardinal/ordinal direction. Used to work out "where I came
-  # from" and to retrace drags/backtracks.
-  REVERSE_DIRECTION_MAP = {
-    'e'  => 'w',  'w'  => 'e',
-    's'  => 'n',  'n'  => 's',
-    'ne' => 'sw', 'sw' => 'ne',
-    'nw' => 'se', 'se' => 'nw'
-  }.freeze
+  # Maze NPC mobs that get frozen on sight.
+  MAZE_NPCS = /\b(?:healer|scholar|warrior|mage|hunter|scoundrel|maiden|gentleman|farmer)\b/i
 
-  # Clockwise rotation of the compass, for right-hand wall following.
-  CLOCKWISE_MAP = {
-    'n' => 'ne', 'ne' => 'e', 'e' => 'se', 'se' => 's',
-    's' => 'sw', 'sw' => 'w', 'w' => 'nw', 'nw' => 'n'
-  }.freeze
+  # Verbs that can pop the prize box open (one random verb is the answer).
+  PRIZE_BOX_VERBS = %w[shake turn poke pull prod push yank tap chew].freeze
 
-  # Counter-clockwise rotation of the compass, for left-hand wall following.
-  COUNTER_CLOCKWISE_MAP = {
-    'n' => 'nw', 'nw' => 'w', 'w' => 'sw', 'sw' => 's',
-    's' => 'se', 'se' => 'e', 'e' => 'ne', 'ne' => 'n'
-  }.freeze
+  # Trailing words that are never a usable game noun (pronouns, etc.).
+  NOUN_STOPWORDS = %w[it them him her that this one there here].freeze
 
-  # Four-move sequences that indicate we have walked a full square (a loop) and
-  # should reverse out. Compared against the most-recent-four move history.
-  LOOP_PATTERNS = [
-    %w[e s w n], %w[n w s e], %w[n e s w], %w[w s e n]
-  ].freeze
+  # How long a "confirmed frozen" ledger entry is trusted before it is treated as
+  # stale. Dead-reckoned position is only a rough heuristic in this non-Euclidean
+  # maze (loops, drags, shifting walls), so two genuinely different rooms can end
+  # up computing to the same tracked coordinate over a long run. An expiration
+  # keeps a same-visit re-wave suppressed without permanently blinding us to a
+  # brand new, unfrozen mob that happens to land on a reused coordinate.
+  KNOWN_FROZEN_TTL = 20 # seconds; comfortably longer than one room visit
 
-  # Maximum times {#do_move} will retry the same step (wand-lift, roundtime, drag
-  # recovery) before giving up, to prevent unbounded recursion / stack overflow on
-  # a persistently failing move.
-  MAX_MOVE_ATTEMPTS = 6
+  PREPOSITIONS = %w[of with in on from for bearing wearing holding depicting
+                    showing containing wrapped etched carved adorned].freeze
 
-  # Compound room where the wand is fetched and where a completed run returns to.
-  WAND_ROOM = 16357
-  # Compound room where the canvas sack is requested from the dwarf.
-  SACK_ROOM = 16356
-
-  # Personal scripts that must not run while the maze bot drives movement.
+  # Scripts that must not run while the maze bot drives movement.
   SCRIPTS_TO_STOP = %w[play buff-watcher afk almanac tarantula sanowret-crystal heroic-tattoo wand-watcher].freeze
 
-  # Every game line {#pull_rope} waits on. Most are informational; only the
-  # golden-key drop, the tarzan-rope reset, and the crossbow trap drive behavior.
-  ROPE_RESPONSES = [
-    /A golden key falls to the floor with a loud CLANK/,                                                                # key dropped
-    /A gentle breeze begins to blow through the area/,                                                                  # tarzan rope: maze reset
-    /A loud CLICK echoes from above/,                                                                                   # nothing obvious
-    /A bell begins to loudly ring, echoing off the walls of the area/,                                                  # money bell: harmless
-    /A cloud of sweet smelling multi-hued mist floods the area/,                                                        # laughter mist: stun
-    /With the grinding sound of stone moving against stone an opening appears in the wall next to you/,                 # crossbow bolts trap
-    /There is a sudden flash of greenish light, and a huge electrical charge sends you flying backwards through the air/, # electrical zap
-    /I'm afraid that you can't pull that/, /What were you referring/, /I could not find/,                               # no rope here
-    /A faint fizzling sound comes from the rope/, /The rope begins to expand before your very eyes/,
-    /The rope falls to the floor where it begins to writhe around/                                                      # already pulled
-  ].freeze
+  # Long-form compass directions, used for both movement commands and the
+  # dead-reckoning grid. XMLData.room_exits / DRRoom.exits are long-form.
+  DIRECTIONS = %w[north northeast east southeast south southwest west northwest].freeze
 
-  # Boot the bot: read config, prep buffs, enter the maze, wire up flags, dowse
-  # for the key, then run the main loop forever (until a package is cashed in or
-  # the wand is lost).
-  # @return [void]
+  REVERSE_DIRECTION = {
+    'north' => 'south',     'south' => 'north',
+    'east'  => 'west',      'west'  => 'east',
+    'northeast' => 'southwest', 'southwest' => 'northeast',
+    'northwest' => 'southeast', 'southeast' => 'northwest'
+  }.freeze
+
+  # Grid offsets for dead-reckoning our position inside a maze section.
+  DIR_OFFSETS = {
+    'north' => [0, 1],   'south' => [0, -1],
+    'east'  => [1, 0],   'west'  => [-1, 0],
+    'northeast' => [1, 1],  'southwest' => [-1, -1],
+    'northwest' => [-1, 1], 'southeast' => [1, -1]
+  }.freeze
+
+  # Boot the bot: read config, wire flags, then run (loops per pass).
   def initialize
     parse_configuration
-    init_maze
-    stop_conflicting_scripts
-    DRC.wait_for_script_to_complete('buff', ['droughtman'])
-    prepare_khri_buffs
-    fput('flag description off')
-    enter_maze_if_needed
     setup_flags
-    @last_door_entered = nil
-    check_for_key_location
-    main_loop
+    announce_start
+    run
   end
 
-  # Parse args, load settings, seed run-scoped state (wall-follow direction,
-  # injury latches). Persists across {#init_maze} calls.
+  # --------------------------------------------------------------------------
+  # Configuration
+  # --------------------------------------------------------------------------
+
+  # Parse args and load settings. New options come from a nested droughtmans:
+  # hash; older flat keys and shared keys are honored for backward compatibility.
   # @return [void]
   def parse_configuration
     arg_definitions = [
-      [
-        { name: 'debug', regex: /debug/i, optional: true, description: 'Enable debug output' }
-      ]
+      [{ name: 'debug', regex: /debug/i, optional: true, description: 'Enable debug output' }]
     ]
-
     args = parse_args(arg_definitions)
-    $droughtmans_debug = UserVars.droughtmans_debug || args.debug || false
+    @debug = args.debug ? true : false
 
     settings = get_settings
-    @friends = settings.hunting_buddies
-    @worn_trashcan = settings.worn_trashcan
+    user = settings.droughtmans
+    user = {} unless user.is_a?(Hash)
+    # Allow either string or symbol keys in the YAML block.
+    user = user.each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+
+    @loop           = user.fetch('loop', false) == true
+    @blackdoor      = user.fetch('blackdoor', false) == true # strict opt-in
+    @camp           = user.fetch('camp', false) == true
+    @multiplier     = user.fetch('multiplier', false) == true
+    @dowse          = user.fetch('dowse', true) == true # strict; default on
+    @section_moves  = user.fetch('section_moves', 25).to_i
+    @section_moves  = 25 if @section_moves < 5
+    @pass_adjective = user['pass_adjective']
+    @store_package  = user.fetch('store_package', false) == true # strict opt-in
+    @thief_stealth  = user.fetch('thief_stealth', false) == true
+
+    # step_delay / key_step_delay: nested wins, then the legacy flat key, then 0.
+    @step_delay = user.fetch('step_delay', settings.droughtmans_step_delay || 0).to_f
+    @step_delay = 0 if @step_delay < 0
+    @key_step_delay = user.fetch('key_step_delay', 2).to_f
+    @key_step_delay = 0 if @key_step_delay < 0
+
+    @rest_interval = user.fetch('rest_interval', 0).to_i
+    @rest_interval = 0 if @rest_interval < 0
+    @rest_pause    = user.fetch('rest_pause', 3).to_f
+    @rest_pause    = 3 if @rest_pause < 0
+
+    # Loot containers: nested list wins; else the legacy flat single-container
+    # key; else default to a personal stow (empty list -> stash_or_trash stows).
+    @loot_containers = Array(user['loot_containers']).map(&:to_s).reject(&:empty?)
+    if @loot_containers.empty? && settings.droughtmans_loot_container
+      @loot_containers = [settings.droughtmans_loot_container.to_s]
+    end
+
+    @trash = Array(user['trash']).map(&:to_s).reject(&:empty?)
+
+    # Never-wand list: the shared hunting_buddies plus any nested no_attack_list.
+    @no_attack = (Array(settings.hunting_buddies) + Array(user['no_attack_list']))
+                 .map { |n| n.to_s.capitalize }.reject(&:empty?).uniq
+
+    @worn_trashcan      = settings.worn_trashcan
     @worn_trashcan_verb = settings.worn_trashcan_verb
-    # Where won loot is deposited when cashing in a package. Defaults to the
-    # canvas sack fetched from the compound dwarf; override with any carried
-    # container (e.g. a worn backpack) via the droughtmans_loot_container setting.
-    @loot_container = settings.droughtmans_loot_container || 'canvas sack'
-    # Optional pause (seconds) after each successful step. Movement is otherwise
-    # throttled only by roundtime, which in the maze is often near-zero, so the
-    # solver can move fast enough to stumble/fall every few rooms. Set
-    # droughtmans_step_delay to a small value (e.g. 1) to pace it; 0 keeps the
-    # historical un-throttled behavior.
-    @step_delay = (settings.droughtmans_step_delay || 0).to_f
 
-    # Randomize the wall-follow hand so repeated runs explore different paths.
-    @current_direction_map = [CLOCKWISE_MAP, COUNTER_CLOCKWISE_MAP].sample
-    @injured = false
-    @norope = false
+    # Optional spell/Khri casting via a shared waggle_sets:droughtmans: block.
+    @waggle_spells = settings.respond_to?(:waggle_sets) && settings.waggle_sets ? settings.waggle_sets['droughtmans'] : nil
+    @has_waggle = !@waggle_spells.nil? && !@waggle_spells.empty?
   end
 
-  # Reset all per-maze navigation state. Called at boot and whenever the maze
-  # shuffles us (repositioned, or after stepping through a colored door).
-  # @return [void]
-  def init_maze
-    echo('*** initializing map data') if $droughtmans_debug
-
-    @exits = nil
-    @last_move = ''
-    @next_move = ''
-    @last_successful_move = ''
-    @move_history_short = []
-    @move_history_since_init = []
-
-    @reverse_dir = false
-    @reverse_count = 0
-    @whitedoorseen = -1
-    @backtrack_to_white_door = false
-    @backtrack_count = 0
-
-    @wandercounter = 0
-    @wandercounter_change_dir_target = 80
+  def announce_start
+    echo('===========================================')
+    echo("*** DROUGHTMANS - Droughtman's Maze automation")
+    echo('*** Player wanding: KEY HOLDERS ONLY')
+    echo("*** Never wanding: #{@no_attack.empty? ? '(none)' : @no_attack.join(', ')}")
+    echo('===========================================')
   end
 
-  # Stop personal scripts that would fight the bot for the game input stream.
+  # Stop any user-listed scripts that would fight the bot for the input stream
+  # (movement, roundtime) while it drives the maze.
   # @return [void]
   def stop_conflicting_scripts
-    SCRIPTS_TO_STOP.each { |script| stop_script(script) if Script.running?(script) }
-  end
+    SCRIPTS_TO_STOP.each do |script|
+      next unless Script.running?(script)
 
-  # Cast the thief Khri buffs used inside the maze, once, at boot. No-op for
-  # non-thieves. Each Khri is checked independently so a partial buff set is
-  # topped up rather than skipped.
-  # @return [void]
-  def prepare_khri_buffs
-    return unless DRStats.thief?
-
-    %w[Sight Cunning Hasten].each do |khri|
-      next if DRSpells.active_spells["Khri #{khri}"]
-
-      fput("Khri #{khri}")
-      waitrt
+      echo("*** Stopping conflicting script: #{script}")
+      stop_script(script)
     end
   end
 
-  # Walk to the compound and enter the maze unless we are already inside it.
-  # Redeems a pass when one is held; otherwise relies on prior access. Always
-  # ends with a look so the first loop iteration has a room to reason about.
-  # @return [void]
-  def enter_maze_if_needed
-    unless DRRoom.title.match?(/Droughtman's Compound, The Maze/)
-      DRC.log_window("Starting run at #{Time.now}", 'familiar', true)
-      fetch_loot_container_if_needed
-      DRCT.walk_to(WAND_ROOM)
-      redeem_pass_if_present
-      fput('ask spiel about access')
-      fput('get wand') unless DRCI.in_hands?('wand')
-      fput('shake wand')
-      DRC.fix_standing
-      2.times { DRC.bput('go doorway', /Assuming you mean the doorway leading into the maze/) }
-      DRC.fix_standing
-    end
-
-    fput('look')
+  def debug(msg)
+    echo("[droughtmans] #{msg}") if @debug
   end
 
-  # Redeem a maze pass if the character is carrying one, then stow it back.
-  # @note Unlike the historical stand-alone maze script, a missing pass is NOT
-  #   fatal here -- the {#enter_maze_if_needed} ask-spieler path still runs, so a
-  #   character with standing access does not need a physical pass.
-  # @return [void]
-  def redeem_pass_if_present
-    return unless DRCI.get_item?('pass')
+  # --------------------------------------------------------------------------
+  # Flags (game-event triggers)
+  # --------------------------------------------------------------------------
 
-    2.times do
-      DRC.bput('redeem my pass', /Once you redeem this/, /The maze spieler takes.* your pass/)
-    end
-    DRCI.stow_item?('pass') if DRCI.in_hands?('pass')
-  end
-
-  # Register the game-event flags the loop reacts to (nemesis set/unset, thawed
-  # npcs, darkness, repositioning, drag currents).
   # @return [void]
   def setup_flags
-    Flags.add('set-nemesis', /A booming voice echoes through the maze, "(?<nemesis>\w+) just found a golden key!"/, /a vision of (?<nemesis>\w+) holding the golden key/, /(?<nemesis>\w+) picks up a golden key/)
-    Flags.add('unset-nemesis', /has prevailed over Droughtman's Maze/, /As the dowsing concludes, a vision of the golden key/, /and returns to you, freezing you in place/)
-    Flags.add('npc-unfrozen', /A(?<npc>.*) begins to move around again./)
-    Flags.add('dark-room', /It's pitch dark and you can't see a thing/)
-    Flags.add('repositioned', /A roaring WHOOSH fills your ears and you feel the ground lurch beneath you/)
-    Flags.add('dragged', /The current drags you (?<drag_direction>\w+)/)
+    # Someone found/grabbed a golden key -> whitelist them for wanding.
+    Flags.add('dm-key-found',
+              /\b(?<who>\w+) just found a golden key!/,
+              /\b(?<who>\w+) picks up a golden key/)
+    # Someone escaped with the key -> they are gone; drop them from the list.
+    Flags.add('dm-prevailed', /\b(?<who>\w+) has prevailed over Droughtman's Maze!/)
+    # Win condition announcement.
+    Flags.add('dm-earned', /^You have earned 8 Droughtman/)
+    # A frozen mob thawed -- re-add it so it gets re-frozen.
+    Flags.add('dm-npc-unfrozen', /A(?<npc>.*) begins to move around again\./)
+    # Room went dark.
+    Flags.add('dm-dark', /It's pitch dark and you can't see a thing/)
+    # We tripped/fumbled and dropped OUR key -- react before someone grabs it.
+    Flags.add('dm-key-dropped', /^You drop your golden key!/)
+    # Someone ELSE dropped the key (our wave froze them, they tripped...).
+    # Caught by flag because the drop line arrives AFTER the wave result.
+    Flags.add('dm-key-loose', /^(?<who>\w+) drops (?:his|her) golden key!/)
+    # The maze raises walls mid-run -- mark the direction blocked here.
+    Flags.add('dm-wall-rises', /an entire wall rises from the maze floor to block off (?<dir>north|south|east|west)ward passage/)
+    # Our own wand-freeze thawing out (after a reflected wave).
+    Flags.add('dm-self-thawed', /^The soft blue light slowly fades away from you\./)
+    # A THIRD PARTY thawing (not us) -- e.g. a keyholder we found already frozen
+    # by someone else. Lets us wait them out and strike the instant they are
+    # vulnerable again, instead of giving up on "already frozen".
+    Flags.add('dm-other-thawed', /^The soft blue light slowly fades away from (?<name>\w+)\./)
+    # The SAME line also means the wand's illumination burned out (not a freeze
+    # thaw) -- track it separately so we know when we need light again.
+    Flags.add('dm-light-faded', /^The soft blue light slowly fades away from you\./)
+    # WE got frozen by someone else's wand (mob ambush, player attack).
+    Flags.add('dm-self-frozen', /causing you to immediately freeze in your tracks|freezing you in place/)
+    # The maze shuffled us -- our local map is now wrong.
+    Flags.add('dm-repositioned', /A roaring WHOOSH fills your ears and you feel the ground lurch beneath you/)
+    # A current dragged us a direction -- shift our dead-reckoned position.
+    Flags.add('dm-dragged', /The current drags you (?<dir>\w+)/)
+    # Dowse results: golden key vision and maze-center bearing.
+    Flags.add('dm-dowse-key', /As the dowsing concludes, a vision of (?:(?<holder>\w+) holding )?the golden key(?<where>[^.]*?) flits across your mind's eye/)
+    Flags.add('dm-dowse-center', /you believe the center of the maze is (?<where>[^.]+)\./)
   end
 
-  # Toggle the wall-follow hand (clockwise <-> counter-clockwise) to break out of
-  # a suspected large loop.
+  # Drain and act on pending game-event flags. Ordering matters (see comments).
   # @return [void]
-  def change_direction_map
-    echo('Changing direction!')
-    @current_direction_map = if @current_direction_map == CLOCKWISE_MAP
-                               COUNTER_CLOCKWISE_MAP
-                             else
-                               CLOCKWISE_MAP
-                             end
+  def process_flags
+    # PREVAILS FIRST: the common race is <old holder prevails> immediately
+    # followed by <new key found>. Handling the prevail first lets a newer
+    # found-announcement re-arm the key state instead of being clobbered.
+    if Flags['dm-prevailed']
+      who = Flags['dm-prevailed'][:who].to_s.capitalize
+      Flags.reset('dm-prevailed')
+      @whitelist.delete(who)
+      @looked.delete(who)
+      # The key left the maze with the winner -- every piece of key intel is now
+      # stale, including a dowse vision captured just before the win.
+      Flags.reset('dm-dowse-key')
+      @key_in_play = false
+      @dowse_wanted = false
+      if @dowse_hint
+        echo("*** #{who} escaped with the key - clearing the dowse bearing.")
+        @dowse_hint = nil
+      end
+    end
+
+    if Flags['dm-key-found']
+      who = Flags['dm-key-found'][:who].to_s.capitalize
+      Flags.reset('dm-key-found')
+      unless who.empty?
+        # There is only ONE golden key in the maze at a time. A fresh "just found
+        # a golden key!" announcement means anyone ELSE still on the whitelist is
+        # now provably wrong -- clear stale suspects before adding the real one,
+        # or they can get wanded on sight for no reason.
+        stale = @whitelist.reject { |name| name == who }
+        unless stale.empty?
+          debug("New key holder announced - clearing stale suspects: #{stale.join(', ')}")
+          @whitelist -= stale
+        end
+        unless @whitelist.include?(who)
+          @whitelist << who
+          echo("*** Adding #{who} to wand whitelist!")
+        end
+      end
+      @key_in_play = true
+      @dowse_wanted = true unless have_key? # one dowse to get a bearing
+    end
+
+    if Flags['dm-npc-unfrozen']
+      npc = Flags['dm-npc-unfrozen'][:npc].to_s.split.last
+      Flags.reset('dm-npc-unfrozen')
+      unless npc.nil? || npc.empty?
+        # A frozen mob thawed out -- re-freeze it on the spot. Clear its known-
+        # frozen memory first (it is NOT frozen anymore) so the wave below fires.
+        echo("*** A #{npc} thawed out - re-freezing it!")
+        @known_frozen.reject! { |(pos, target), _v| pos == @pos && target.to_s =~ /#{Regexp.escape(npc)}/i }
+        DRRoom.npcs << npc unless DRRoom.npcs.include?(npc)
+        wave(npc)
+      end
+    end
+
+    if Flags['dm-self-frozen']
+      Flags.reset('dm-self-frozen')
+      if Flags['dm-self-thawed']
+        # The freeze came AND went while we were busy -- both lines are already
+        # behind us. Nothing to wait for.
+        Flags.reset('dm-self-thawed')
+        debug('Was frozen and already thawed while busy - carrying on')
+      else
+        echo('*** WE GOT FROZEN! Waiting for the thaw...')
+        wait_for_self_thaw
+      end
+    end
+
+    # Peek before processing: if we dropped OUR key and got dragged away in the
+    # SAME roundtime, the drag must be applied FIRST so @pos reflects where we
+    # actually are -- otherwise key recovery searches the wrong room.
+    swept_away = Flags['dm-key-dropped'] && Flags['dm-dragged']
+    # A drag is exactly ONE room in a KNOWN direction -- capture which way before
+    # the drag block below resets the flag.
+    drag_dir_for_recovery = Flags['dm-dragged'][:dir].to_s.downcase if swept_away
+
+    if Flags['dm-wall-rises']
+      dir = Flags['dm-wall-rises'][:dir].to_s
+      Flags.reset('dm-wall-rises')
+      unless dir.empty?
+        @blocked[[@pos, dir]] = true
+        debug("A wall rose blocking #{dir} here - marking it off")
+      end
+    end
+
+    if Flags['dm-repositioned']
+      Flags.reset('dm-repositioned')
+      echo('*** Repositioned by the maze - resetting local map.')
+      reset_section_state
+      @dowse_hint = nil
+      @dowse_wanted = true if @key_in_play && !have_key?
+    end
+
+    if Flags['dm-dragged']
+      dir = Flags['dm-dragged'][:dir].to_s.downcase
+      Flags.reset('dm-dragged')
+      if (offset = DIR_OFFSETS[dir])
+        @pos = [@pos[0] + offset[0], @pos[1] + offset[1]]
+        @visited[@pos] += 1
+        @last_direction = dir
+        debug("Dragged #{dir} - now at #{@pos.inspect}")
+      else
+        reset_section_state
+      end
+    end
+
+    recover_dropped_key(swept_away, drag_dir_for_recovery) if Flags['dm-key-dropped']
+    snatch_loose_key if Flags['dm-key-loose']
+
+    if Flags['dm-light-faded']
+      Flags.reset('dm-light-faded')
+      @wand_lit = false
+      debug('Wand light faded - will re-shake next time light is needed.')
+    end
+
+    return unless Flags['dm-dark']
+
+    # "It's pitch dark" is proof positive we are NOT lit, regardless of tracking.
+    Flags.reset('dm-dark')
+    fput('shake wand')
+    @wand_lit = true
   end
 
-  # Wall-follow selection: starting from the reverse of the last move, rotate in
-  # the current direction until an available exit is found.
-  # @param last_dir [String] the short direction of the previous move
-  # @param available_dir [Array<String>] short directions available in this room
-  # @return [String] the chosen short direction; falls back to 'n' if nothing in
-  #   +available_dir+ is reachable within a full rotation (defensive guard)
-  def get_next_move(last_dir, available_dir)
-    count = 0
-    next_move = @current_direction_map[REVERSE_DIRECTION_MAP[last_dir]]
+  # --------------------------------------------------------------------------
+  # Run control
+  # --------------------------------------------------------------------------
+
+  # @return [void]
+  def run
+    stop_conflicting_scripts
     loop do
-      return next_move if available_dir.include?(next_move)
+      reset_run_state
 
-      next_move = @current_direction_map[next_move]
+      case locate_start
+      when :maze
+        echo('*** STARTING SCRIPT FROM INSIDE MAZE')
+      when :contestant_box
+        echo('*** GEARING UP')
+        gear_up_and_enter
+      when :recovery
+        # We do NOT know whether we actually won -- we may simply have been
+        # launched here without this run ever touching the maze. Treat it like a
+        # mid-run ejection: collect whatever is here, but do NOT assume a win.
+        echo('*** Starting in the Recovery Room - collecting anything present, not assuming a win.')
+        finish_run(:finished, skip_exit_walk: false)
+        next if keep_looping?
 
-      count += 1
-      return 'n' if count == 20
+        break
+      when :spieler
+        redeem_pass
+        gear_up_and_enter
+      else
+        echo('**** ERROR! NOT IN A RECOGNIZED ROOM!')
+        echo('**** FIND THE MAZE SPIELER AND RESTART')
+        exit
+      end
+
+      result = nil
+      loop do
+        result = maze_loop
+        break unless result == :winner && in_maze? &&
+                     DRRoom.title !~ /Winner's Circle/ &&
+                     DRRoom.room_objs.none? { |o| o =~ /golden arch/ }
+
+        echo('*** Win signal while still deep in the maze - ignoring it and resuming the hunt.')
+      end
+      finish_run(result)
+
+      break unless keep_looping?
+    end
+
+    echo('**** FINISHED WITH SCRIPT')
+  end
+
+  # @return [Boolean] whether to start another run
+  def keep_looping?
+    return false unless @loop
+
+    echo('=========================================')
+    echo('LOOP IS **ON** - STARTING NEW RUN IN 10 SECONDS...')
+    echo('=========================================')
+    pause 10
+    true
+  end
+
+  EVENT_FLAGS = %w[dm-key-found dm-prevailed dm-earned dm-npc-unfrozen dm-dark
+                   dm-key-dropped dm-key-loose dm-wall-rises dm-self-thawed
+                   dm-self-frozen dm-other-thawed dm-light-faded dm-repositioned
+                   dm-dragged dm-dowse-key dm-dowse-center].freeze
+
+  # Reset run-scoped state. A previous run's unconsumed flags (e.g. the Recovery
+  # Room "You have earned 8..." win line) must not trigger on this run.
+  # @return [void]
+  def reset_run_state
+    EVENT_FLAGS.each { |flag| Flags.reset(flag) }
+    @whitelist = []
+    @looked = {}          # player name => Time last looked at (avoid look spam)
+    @stealth_timer = Time.now
+    @sections_visited = 0
+    @last_door_color = nil
+    @searched_quadrants = []
+    @white_door_quadrant = nil
+    @dowse_hint = nil     # [:dirs] toward the golden key from last dowse
+    @dowse_wanted = true  # one probe on entry to learn if a key is in play
+    @last_progress = Time.now
+    @moves_since_rest = 0
+    @wand_lit = false
+    @known_frozen = {}
+    @key_in_play = false
+    @injured = false
+    @no_exit_ticks = 0
+    @khri_check = Time.now - 999
+    reset_section_state
+  end
+
+  # Reset the dead-reckoned map for the current maze section. Called at run start
+  # and whenever our position becomes unknowable (colored-door traversal, a
+  # WHOOSH reposition, or a tarzan-rope maze reset).
+  # @return [void]
+  def reset_section_state
+    @pos = [0, 0]
+    @visited = Hash.new(0)
+    @visited[@pos] = 1
+    @section_move_count = 0
+    @last_direction = nil
+    @white_door_pos = nil
+    @center_hint = nil    # {dirs:, range:} toward maze center from the last dowse
+    @blocked = {}         # [pos, direction] => true for risen walls etc.
+    @pulled_levers = {}   # pos => true; levers are TOGGLES, pull once
+    @current_quadrant = nil
+  end
+
+  # @return [Symbol] :maze, :contestant_box, :recovery, :spieler, or :unknown
+  def locate_start
+    return :maze if DRRoom.title =~ /Droughtman's Compound, The Maze/
+    return :contestant_box if DRRoom.title =~ /Droughtman's Maze, Contestant's Box/
+    return :recovery if DRRoom.title =~ /Droughtman's Maze, Recovery Room/
+
+    # Asking about access can go two ways: the spieler just chats (still needs a
+    # pass redeemed), OR -- if access is already granted -- escorts us straight
+    # into the box on THIS command. Check the actual room afterward.
+    DRC.bput('ask spieler about access',
+             /escorting you away/,
+             /^I could not find/,
+             /^What were you referring to/,
+             /./)
+    pause 0.5
+    return :contestant_box if DRRoom.title =~ /Droughtman's Maze, Contestant's Box/
+    return :spieler if DRRoom.npcs.any? { |npc| npc =~ /spieler/ } || DRRoom.room_objs.any? { |obj| obj =~ /spieler/ }
+
+    :unknown
+  end
+
+  # --------------------------------------------------------------------------
+  # Entry: redeem + gear up
+  # --------------------------------------------------------------------------
+
+  # Cast configured spells/Khris via the shared 'buff' script, using a
+  # waggle_sets:droughtmans: profile if one is configured. No-op otherwise.
+  # @return [void]
+  def cast_buffs
+    return unless @has_waggle
+
+    DRC.wait_for_script_to_complete('buff', ['droughtmans'])
+  end
+
+  # @return [void]
+  def redeem_pass
+    cast_buffs
+    pass = @pass_adjective.to_s.empty? ? 'pass' : "#{@pass_adjective} pass"
+    DRC.release_invisibility
+
+    # This GET is the authoritative "do we still have passes at all" check. If it
+    # fails, we are OUT OF PASSES; stop cleanly rather than looping forever.
+    case DRC.bput("get my #{pass}",
+                  /^You get/,
+                  /^You are already holding/,
+                  /^You pick up/,
+                  /^What were you referring to/,
+                  /^You need a free hand/)
+    when /^What were you referring to/
+      out_of_passes
+    when /free hand/
+      off_hand = [DRC.left_hand, DRC.right_hand].compact.find { |i| i !~ /wand/i }
+      DRCI.stow_item?(off_hand) if off_hand
+      retry_result = DRC.bput("get my #{pass}", /^You get/, /^You pick up/, /^What were you referring to/)
+      out_of_passes if retry_result =~ /What were you referring to/
+    end
+    pause 0.5
+
+    2.times do
+      case DRC.bput("redeem my #{pass}",
+                    /^Once you redeem/,
+                    /takes.*your pass/,
+                    /^The REDEEM verb/,
+                    /pales and looks around with wide eyes/,
+                    /^What were you referring to/)
+      when /^What were you referring to/
+        echo('*** No pass in hand to redeem - relying on existing access.')
+        break
+      end
+      pause 0.3
+    end
+    DRCI.stow_item?('pass') if DRCI.in_hands?('pass')
+
+    if @multiplier
+      DRCI.get_item_unsafe('my multiplier')
+      pause 0.5
+      fput('redeem my multiplier')
+      pause 0.3
+      DRCI.stow_item?('multiplier') if DRCI.in_hands?('multiplier')
+    end
+
+    fput('ask spieler about access')
+    pause 0.5
+  end
+
+  # Announce out-of-passes and stop the script.
+  # @return [void]
+  def out_of_passes
+    echo('=========================================')
+    echo('*** OUT OF PASSES! No more passes to redeem.')
+    echo('*** Stopping the script - buy more passes to continue.')
+    echo('=========================================')
+    exit
+  end
+
+  # @return [void]
+  def gear_up_and_enter
+    fput('flag description off') # less text per room; restored on exit
+    fput('get wand') unless DRCI.in_hands?('wand')
+    pause 0.5
+
+    if DRStats.thief?
+      ensure_khri(%w[Silence Sight Cunning])
+    else
+      fput('shake wand')
+      @wand_lit = true
+      pause 0.5
+    end
+
+    echo('=========================================')
+    echo('**** ENTERING MAZE - GOOD LUCK!')
+    echo('=========================================')
+    enter_the_maze
+  end
+
+  # GO DOOR until we are verifiably inside the maze. Fire-and-forget entry is how
+  # a runner once ended up running maze logic in the Contestant's Box (laughing
+  # fits leave you kneeling and the door refuses non-standers).
+  #
+  # The boolean return is ADVISORY, not a hard stop: gear_up_and_enter ignores it
+  # and maze_loop re-enters the maze on its own whenever it finds itself still in
+  # the Contestant's Box, so a false here just means "not confirmed inside yet."
+  # @return [Boolean] whether we confirmed we made it inside (advisory)
+  def enter_the_maze
+    attempt = 0
+    5.times do
+      return true if in_maze?
+
+      attempt += 1
+      DRC.fix_standing
+      # The spieler's instructions can say "GO MAZE" to begin -- try that on
+      # later attempts if "go door" is not getting us in.
+      command = attempt > 2 ? 'go maze' : 'go door'
+      response = DRC.bput(command,
+                          # The entry-transition text is checked ahead of the
+                          # exits line on purpose: when the landing room is not
+                          # dark, the full room description arrives in the same
+                          # burst as this transition text, and this must win.
+                          /sealing you inside a tiny pitch-black chamber/,
+                          /Going through the black door will end your time/,
+                          /^Obvious (?:exits|paths)/,
+                          /It's pitch dark/,
+                          /^You must be standing/,
+                          /repeat the .*command in the next 15 seconds/,
+                          /leading into the maze/,
+                          /^What were you referring to/,
+                          /^Where are you trying to go/)
+      waitrt?
+      pause 0.5
+
+      # Multiple independent success signals, since DRRoom.title can lag.
+      return true if in_maze?
+      return true if response =~ /sealing you inside a tiny pitch-black chamber/
+      return true if response =~ /Going through the black door will end your time/
+      return true if room_has?(/black door/)
+
+      pause 0.5
+      return true if in_maze?
+    end
+    return true if in_maze?
+
+    echo('*** Could not get through the maze door after 5 tries - retrying from the loop.')
+    false
+  end
+
+  # --------------------------------------------------------------------------
+  # Main maze loop
+  # --------------------------------------------------------------------------
+
+  # @return [Symbol] :winner or :finished
+  def maze_loop
+    loop do
+      # Watchdog: if nothing has moved us for 60s and we are not lurking at the
+      # white door, some state is likely stale -- LOOK to force a refresh.
+      if (Time.now - @last_progress) > 60
+        @last_progress = Time.now
+        echo('*** No movement for 60s - refreshing state to self-heal.')
+        fput('look')
+        pause 1
+      end
+
+      waitrt?
+      wait_while_stunned
+      DRC.fix_standing
+      process_flags
+
+      # Still in the Contestant's Box? Entry failed (kneeling, lag).
+      if DRRoom.title =~ /Contestant's Box/
+        enter_the_maze
+        next
+      end
+
+      # Win / end conditions.
+      if Flags['dm-earned']
+        Flags.reset('dm-earned')
+        return :winner
+      end
+      return :winner   if DRRoom.title =~ /Winner's Circle/
+      return :winner   if DRRoom.room_objs.any? { |o| o =~ /golden arch/ }
+      return :finished if DRRoom.title =~ /Recovery Room/
+
+      # Optional early-out through the black door. This ENDS the run without a
+      # win (no prize box), so finish as :finished, not :winner.
+      if @blackdoor && room_has?(/black door/)
+        fput('go black door')
+        pause 0.2
+        fput('go black door')
+        pause 0.2
+        return :finished
+      end
+
+      ensure_wand
+      get_key
+      thief_stealth_cycle
+      maintain_khri
+
+      # Players: wand per policy (keyholder-only).
+      scan_players
+
+      # Maze mobs get frozen FIRST -- before ropes/levers/doors, which can each
+      # burn several seconds with an unfrozen or freshly-thawed mob right there.
+      freeze_npcs
+
+      # White door handling.
+      if room_has?(/white door/)
+        outcome = handle_white_door
+        return :winner if outcome == :winner
+
+        remember_white_door
+      elsif @white_door_pos && @pos == @white_door_pos
+        echo('*** White door is no longer where we remembered it - resuming search.')
+        @white_door_pos = nil
+      end
+
+      # Levers are TOGGLES (pulling twice undoes the first), so pull exactly once
+      # per room per map -- never spam one while stalled.
+      if !@pulled_levers[@pos] && room_has?(/lever/)
+        @pulled_levers[@pos] = true
+        DRC.release_invisibility
+        fput(room_has?(/white lever/) ? 'pull white lever' : 'pull lever')
+        pause 0.5
+      end
+
+      # Ropes -- only worth pulling while keyless.
+      pull_ropes unless have_key?
+
+      get_key
+
+      # Colored doors: only after the current section is searched out.
+      handle_colored_doors
+
+      # Maze mobs get frozen regardless of settings.
+      freeze_npcs
+
+      get_key
+      ensure_wand
+
+      dowse_for_key
+
+      # FINAL safety freeze immediately before we actually try to leave.
+      # Everything above can cost several real seconds -- long enough for an
+      # earlier freeze to wear off before we ever move.
+      freeze_npcs
+      move_random
     end
   end
 
-  # Attempt a single step. Handles wand-lift prompts, roundtime resends, drag
-  # currents, and dark rooms, recording the move and updating +@exits+ on success.
-  # @param direction [String] the short direction to move
-  # @param log_move [Boolean] whether to record this move in history / bump the
-  #   wander counter (false while recovering from a drag)
-  # @param attempt [Integer] internal recursion depth guard
+  # --------------------------------------------------------------------------
+  # Wand dowsing (SEARCH my wand)
+  # --------------------------------------------------------------------------
+
+  # One event-driven dowse per request. The vision gives a bearing toward the
+  # golden key (used to bias movement); a named holder goes on the whitelist.
   # @return [void]
-  # @note Recurses on transient failures; bails after {MAX_MOVE_ATTEMPTS} to
-  #   avoid unbounded recursion on a persistently failing step.
-  def do_move(direction, log_move = true, attempt = 0)
-    if attempt >= MAX_MOVE_ATTEMPTS
-      echo("do_move: giving up on '#{direction}' after #{attempt} retries (persistent failure)")
-      @exits = nil
+  def dowse_for_key
+    return unless in_maze?
+    return unless @dowse
+    return if @injured
+
+    if have_key?
+      @dowse_hint = nil
+      # With the key we normally skip dowsing -- unless we have NO idea where the
+      # exit is (no remembered white door, no center bearing): then one dowse for
+      # the center-of-maze bearing beats blind roaming.
+      if @white_door_pos || @center_hint
+        @dowse_wanted = false
+        return
+      end
+      @dowse_wanted = true
+    end
+    return unless @dowse_wanted
+    if maze_npcs_present?
+      debug('Dowse pending - waiting for a room without maze mobs')
       return
     end
 
-    if Flags['dragged']
-      echo('Dragged by current - getting back on course')
-      dir = Flags['dragged'][:drag_direction]
-      dir = REVERSE_DIRECTION_MAP[SHORTDIR[dir]]
-      Flags.reset('dragged')
+    Flags.reset('dm-dowse-key')
+    Flags.reset('dm-dowse-center')
+    case DRC.bput('search my wand',
+                  /glows softly as you begin to dowse/,
+                  /^Roundtime/,
+                  /^What were you referring to/,
+                  /^Search what/,
+                  /^You have no idea how/,
+                  /You're not in any condition to be searching around/)
+    when /not in any condition/
+      echo('*** Too injured to dowse or pull ropes - get tended to resume.')
+      @injured = true
+      return
+    when /begin to dowse/, /^Roundtime/
+      @dowse_wanted = false
       waitrt?
-      DRC.fix_standing
-      get_key
-      zap_nemesis
-      do_move(dir, false, attempt + 1) # log_move false so history stays on the real path
+      pause 0.3 # let the vision lines land
+      process_flags # a prevail during our roundtime invalidates the vision
+      read_dowse_results
+    when /^What were you referring to/, /^Search what/
+      ensure_wand
+    end
+    waitrt?
+  end
+
+  # @return [void]
+  def read_dowse_results
+    if Flags['dm-dowse-center']
+      where = Flags['dm-dowse-center'][:where].to_s
+      Flags.reset('dm-dowse-center')
+      center_dirs = where.scan(/\b(north|south|east|west)\b/).flatten.uniq
+      # The white door / exit is centerward. Keep the RANGE too: "far" means it
+      # is in another section; "a bit"/"right nearby" means it is in THIS one.
+      range = case where
+              when /far/    then :far
+              when /a ways/ then :ways
+              when /a bit/  then :bit
+              else               :nearby
+              end
+      @center_hint = { dirs: center_dirs, range: range }
+      if center_dirs.empty?
+        debug("Center of maze is #{where}")
+      else
+        # Center to the NW means we are in the SE quadrant, etc. Only a bearing
+        # with BOTH a N/S and an E/W component pins a real quadrant; a single
+        # axis is just a hint (kept in @center_hint) and must NOT be stored as a
+        # quadrant, or it pollutes @searched_quadrants and quadrant comparisons.
+        corner = center_dirs.map { |d| REVERSE_DIRECTION[d] }
+        ns = corner & %w[north south]
+        ew = corner & %w[east west]
+        if ns.any? && ew.any?
+          @current_quadrant = (ns + ew).join('').to_sym
+          already = @searched_quadrants.include?(@current_quadrant) ? ' (already searched!)' : ''
+          echo("*** DOWSE: we are in the #{@current_quadrant.to_s.upcase} quadrant#{already}")
+        else
+          debug("Center bearing is #{where} (single axis) - keeping as a hint, not a quadrant")
+        end
+      end
     end
 
-    get_key
-    check_for_npcs
-    case DRC.bput(direction, /^Obvious .+?: (.*)\./, /^You can't go there/, /^You can't swim in that direction/, /^Rushing through/, /^Noticing your attempt to leave/, /^You notice an icy blue wand at your feet/, /It's pitch dark and you can't see a thing/)
-    when /^You notice an icy blue wand at your feet/
-      DRCI.lift?
-      zap_nemesis
-      do_move(direction, log_move, attempt + 1)
-    when /^Obvious .+?: (.*)\./
-      @exits = parse_exits(Regexp.last_match(1))
-      # A room with no exits is unusable -- clear it and let the caller re-look.
-      if @exits.empty?
-        @exits = nil
+    # No key vision at all usually means no key is in play right now -- any old
+    # bearing is stale, so drop it and go back to exploring.
+    unless Flags['dm-dowse-key']
+      @key_in_play = false
+      if @dowse_hint
+        debug('Dowse gave no key vision - clearing old bearing')
+        @dowse_hint = nil
+      end
+      return
+    end
+
+    @key_in_play = true
+    holder = Flags['dm-dowse-key'][:holder].to_s.capitalize
+    where  = Flags['dm-dowse-key'][:where].to_s.strip
+    Flags.reset('dm-dowse-key')
+
+    unless holder.empty? || @no_attack.include?(holder)
+      stale = @whitelist.reject { |name| name == holder }
+      unless stale.empty?
+        debug("Dowse named a holder - clearing stale suspects: #{stale.join(', ')}")
+        @whitelist -= stale
+      end
+      unless @whitelist.include?(holder)
+        @whitelist << holder
+        echo('=========================================')
+        echo("*** DOWSE: #{holder} is holding the GOLDEN KEY - whitelisted!")
+        echo('=========================================')
+      end
+    end
+
+    dirs = where.scan(/\b(north|south|east|west)\b/).flatten.uniq
+    if dirs.empty?
+      @dowse_hint = nil
+      debug("Dowse gave no bearing (#{where.empty? ? 'nothing' : where}) - searching locally")
+    else
+      @dowse_hint = { dirs: dirs }
+      echo("*** DOWSE: golden key is #{where} - heading that way!")
+    end
+  end
+
+  # Remember the white door's dead-reckoned position so once we grab the key we
+  # can navigate straight back to it. Cleared with the map.
+  # @return [void]
+  def remember_white_door
+    @white_door_quadrant = @current_quadrant if @current_quadrant
+    return if @white_door_pos == @pos
+
+    @white_door_pos = @pos
+    where = @current_quadrant ? " (#{@current_quadrant.to_s.upcase} quadrant)" : ''
+    echo("*** Remembering the white door at local position #{@pos.inspect}#{where}")
+  end
+
+  # Choose the exit that brings us closest to +target+, tie-breaking toward
+  # less-visited rooms. Returns nil when no exit makes progress.
+  # @return [String, nil]
+  def direction_toward(target, exits)
+    current = chebyshev(@pos, target)
+    progress = exits.select { |dir| chebyshev(next_pos(dir), target) < current }
+    return nil if progress.empty?
+
+    progress.min_by { |dir| [chebyshev(next_pos(dir), target), @visited[next_pos(dir)]] }
+  end
+
+  # @return [Integer] Chebyshev (chessboard) distance between two grid points
+  def chebyshev(a, b)
+    [(a[0] - b[0]).abs, (a[1] - b[1]).abs].max
+  end
+
+  # @return [Array<String>] best-first direction list toward the last dowse key bearing
+  def hint_directions
+    return [] unless @dowse_hint
+
+    compass_preferences(@dowse_hint[:dirs])
+  end
+
+  # Build a best-first direction list from compass words: the diagonal satisfying
+  # both axes first, then each single axis.
+  # @return [Array<String>]
+  def compass_preferences(dirs)
+    ns = dirs & %w[north south]
+    ew = dirs & %w[east west]
+    pref = []
+    pref << "#{ns.first}#{ew.first}" if ns.any? && ew.any?
+    pref + ns + ew
+  end
+
+  # --------------------------------------------------------------------------
+  # Section rotation (colored doors)
+  # --------------------------------------------------------------------------
+
+  # Decide whether to go through a colored door this tick. The maze is four
+  # quadrants stitched together by colored doors; explore the current section
+  # until the move budget is spent, then take a door -- preferring a different
+  # color than the one entered through so we rotate instead of ping-ponging.
+  # @return [void]
+  def handle_colored_doors
+    # Tester-confirmed: RED and BLUE doors cross to another quadrant; GREEN doors
+    # teleport you randomly WITHIN the same one.
+    return if green_door_shuffle
+
+    door = DRRoom.room_objs.find { |obj| obj =~ /(?:red|blue) door/ }
+    return unless door
+
+    color = door[/red|blue/]
+    budget = colored_door_budget
+    if @section_move_count < budget
+      debug("Ignoring #{color} door - section searched #{@section_move_count}/#{budget}")
+      return
+    end
+
+    # Avoid re-taking the door color we arrived by (likely leads straight back)
+    # unless we have overstayed our welcome hunting for another one.
+    if color == @last_door_color && @section_move_count < budget + 15 && !have_key?
+      debug("Skipping #{color} door (came in that way) - looking for another color")
+      return
+    end
+
+    freeze_npcs
+    DRC.release_invisibility
+    case DRC.bput("go #{color} door", /^Obvious (?:exits|paths)/, /It's pitch dark/, /^You can't go there/, /You smash your nose/, /^Where are you trying to go/)
+    when /^Obvious/, /pitch dark/
+      if !have_key? && @current_quadrant && @section_move_count >= 5 && !@searched_quadrants.include?(@current_quadrant)
+        @searched_quadrants << @current_quadrant
+        echo("*** Marking the #{@current_quadrant.to_s.upcase} quadrant as searched (#{@searched_quadrants.size}/4)")
+      end
+      @sections_visited += 1
+      @last_door_color = color
+      reset_section_state
+      @dowse_hint = nil
+      @dowse_wanted = true if @key_in_play && !have_key?
+      echo('=========================================')
+      echo("*** SECTION SEARCHED - MOVED THROUGH THE #{color.upcase} DOOR (section ##{@sections_visited + 1})")
+      echo('=========================================')
+    else
+      debug("Couldn't go through the #{door}")
+      DRRoom.room_objs.delete(door)
+    end
+    waitrt?
+  end
+
+  # How many rooms to search this section before a red/blue door is worth taking.
+  # @return [Integer]
+  def colored_door_budget
+    if have_key?
+      if @current_quadrant && @white_door_quadrant && @current_quadrant != @white_door_quadrant
+        0 # we KNOW the door was seen in a different quadrant
+      else
+        case @center_hint && @center_hint[:range]
+        when :far
+          0 # the exit is in ANOTHER section - take a door on sight
+        when :bit, :nearby
+          @section_moves # the exit is in THIS section - stay put
+        else
+          [@section_moves / 3, 5].max # :ways / unknown - moderate
+        end
+      end
+    elsif @current_quadrant && @searched_quadrants.include?(@current_quadrant)
+      # Been here, combed it -- pass through to a fresh quadrant.
+      [@section_moves / 3, 5].max
+    else
+      @section_moves
+    end
+  end
+
+  # GREEN doors reshuffle us randomly within the CURRENT quadrant. Useless for
+  # rotation but great for getting unstuck. Returns true if we took it.
+  # @return [Boolean]
+  def green_door_shuffle
+    return false unless room_has?(/green door/)
+
+    if have_key?
+      exit_here = (@center_hint && %i[bit nearby].include?(@center_hint[:range])) ||
+                  (@current_quadrant && @white_door_quadrant == @current_quadrant)
+      return false unless exit_here && @section_move_count >= 10
+
+      reason = 'exit is in this quadrant but eluding us'
+    else
+      return false unless @current_quadrant && @searched_quadrants.include?(@current_quadrant)
+      return false unless @section_move_count >= [@section_moves / 2, 10].max
+
+      reason = 'cannot find a crossing door - reshuffling within the quadrant'
+    end
+
+    freeze_npcs
+    DRC.release_invisibility
+    case DRC.bput('go green door', /^Obvious (?:exits|paths)/, /It's pitch dark/, /^You can't go there/, /You smash your nose/, /^Where are you trying to go/)
+    when /^Obvious/, /pitch dark/
+      quadrant = @current_quadrant
+      reset_section_state
+      @current_quadrant = quadrant # green doors do NOT cross quadrants
+      @center_hint = nil
+      @dowse_hint = nil
+      @dowse_wanted = true if @key_in_play && !have_key?
+      echo("*** GREEN door reshuffle (#{reason}) - new spot, same quadrant.")
+      true
+    else
+      debug('Green door refused us')
+      false
+    end
+  end
+
+  # --------------------------------------------------------------------------
+  # White door / camping
+  # --------------------------------------------------------------------------
+
+  # @return [Symbol, nil] :winner when we passed through, else why we left
+  def handle_white_door
+    if @white_door_pos == @pos
+      debug('At the white door again' + (have_key? ? '' : ' - still no key'))
+    else
+      echo('=============================')
+      echo('*** FOUND THE WHITE DOOR!')
+      echo('=============================')
+      echo('*** BUT WE HAVE NO KEY!! :(') unless have_key?
+    end
+
+    freeze_npcs
+
+    announced_lurk = false
+    result = nil
+    # Bound consecutive ambushes at the door so a repeating freeze/drop cannot
+    # spin the retry loop forever. Reset (below) whenever a non-ambush response
+    # comes back, so a real attempt in between refreshes the budget.
+    ambush_attempts = 0
+    begin
+      loop do
+        if have_key?
+          DRC.release_invisibility
+          case DRC.bput('go white door',
+                        /^As you pass through the white door/,
+                        /^A wall of light shimmers/,
+                        /an emergent wall of light repels your passage/,
+                        /Bonk!/,
+                        /^Where are you trying to go/,
+                        /^You can't go there/,
+                        /freezing you in place|drop your golden key/)
+          when /pass through the white door/, /wall of light shimmers/
+            result = :winner
+            break
+          when /repels your passage/
+            echo('**** DOOR SAYS NO KEY?! Continuing to search...')
+            unless lurk_here?
+              result = :no_key
+              break
+            end
+          when /Bonk!/
+            echo('*** DOOR IS CLOSED!')
+            unless lurk_here?
+              result = :closed
+              break
+            end
+          when /freezing you in place|drop your golden key/
+            # Ambushed mid-attempt -- someone froze us and/or the key hit the
+            # floor. Let process_flags run the thaw wait and/or key recovery,
+            # then retry from the top instead of assuming the door is gone --
+            # but only a finite number of times before we bail out.
+            ambush_attempts += 1
+            if ambush_attempts > 3
+              echo('*** Ambushed at the white door too many times - abandoning this attempt.')
+              result = have_key? ? :gone : :no_key
+              break
+            end
+            echo('*** AMBUSHED AT THE WHITE DOOR! Recovering before retrying...')
+            process_flags
+            next
+          else
+            result = :gone
+            break
+          end
+          # A non-ambush response got through -- refresh the ambush budget.
+          ambush_attempts = 0
+        elsif !lurk_here?
+          result = :no_key
+          break
+        end
+
+        # Lurk at the exit (camp: true only). Hide, wait, and wand a confirmed
+        # holder on arrival.
+        unless announced_lurk
+          announced_lurk = true
+          echo('**** CAMPING AT THE WHITE DOOR - WAITING FOR A KEY....')
+        end
+
+        fput('hide') unless hidden?
+        pause 1
+        process_flags
+        # verify_unknowns: false -- act ONLY on tracked whitelist knowledge here.
+        # A LOOK's round-trip is exactly the delay that could let a genuine holder
+        # dart through the door while we are confirming them.
+        scan_players(verify_unknowns: false)
+        get_key
+        if hidden?
+          debug('Hidden at the white door - skipping mob freezing.')
+        else
+          echo('*** Knocked out of hiding while camping - handling any threat, then re-hiding.')
+          freeze_npcs
+          fput('hide')
+          waitrt?
+        end
+        unless room_has?(/white door/)
+          result = :gone
+          break
+        end
+
+        next if @camp || have_key?
+
+        # Not camping and keyless: we only reach here via lurk_here?==true, which
+        # is camp-only, so this is defensive.
+        result = :no_key
+        break
+      end
+    ensure
+      # Never leave hidden -- movement fails while hidden in the maze.
+      if hidden?
+        debug('Unhiding before leaving the white door.')
+        fput('unhide')
         waitrt?
+      end
+    end
+    result
+  end
+
+  # Should we stay parked at the white door? Only when camp: true. (We do NOT
+  # auto-camp merely because a key is loose -- keyholder-only, no auto-ambush.)
+  # @return [Boolean]
+  def lurk_here?
+    @camp
+  end
+
+  # --------------------------------------------------------------------------
+  # Wanding: players
+  # --------------------------------------------------------------------------
+
+  # Room scan for players. Only attacks while keyless; with the key in hand we
+  # run for the door instead of drawing attention. KEY HOLDERS ONLY: a player is
+  # wanded only when whitelisted (announced finder / dowse vision) or a LOOK
+  # confirms the golden key. verify_unknowns: false skips the LOOK on
+  # non-whitelisted players (used while camping the white door).
+  # @return [void]
+  def scan_players(verify_unknowns: true)
+    return unless in_maze?
+    return if have_key?
+    return if DRRoom.pcs.empty?
+
+    DRRoom.pcs.dup.each do |pc|
+      name = pc.to_s.split.last.to_s.capitalize
+      next if name.empty?
+
+      if @no_attack.include?(name)
+        debug("Skipping friend: #{name}")
+        next
+      end
+
+      if @whitelist.include?(name)
+        wave(name, is_keyholder: true)
+      elsif verify_unknowns
+        check_player_for_key(name)
+      end
+    end
+  end
+
+  # LOOK <player> ITEMS shows only held/worn items -- a fast, reliable way to see
+  # if they hold the golden key. Rate-limited per player so we do not spam LOOK.
+  # @return [void]
+  def check_player_for_key(name)
+    last = @looked[name]
+    return if last && (Time.now - last) < 20
+
+    @looked[name] = Time.now
+    case DRC.bput("look #{name} items",
+                  /is holding .*golden key/,
+                  /is holding/,
+                  /is wearing/,
+                  /is not (?:holding|wearing)/,
+                  /concealing all but/,
+                  /I could not find/,
+                  /^Look at what/)
+    when /is holding .*golden key/
+      echo('=========================================')
+      echo("*** #{name} has the GOLDEN KEY! Attacking!!")
+      echo('=========================================')
+      stale = @whitelist.reject { |n| n == name }
+      @whitelist -= stale unless stale.empty?
+      @whitelist << name unless @whitelist.include?(name)
+      wave(name, is_keyholder: true)
+    when /I could not find/, /^Look at what/
+      DRRoom.pcs.delete(name)
+    when /concealing all but/
+      # We could not actually see their hands -- this is UNKNOWN, not proof they
+      # lack the key. Leave the whitelist untouched; the rate limiter retries.
+      debug("#{name} is concealing their items - can't confirm, will re-check later")
+    else
+      if @whitelist.delete(name)
+        debug("#{name} is whitelisted but NOT holding the key - stale intel pruned")
+      else
+        debug("#{name} has no key... skipping")
+      end
+    end
+  end
+
+  # A confirmed keyholder found ALREADY frozen (someone else got there first).
+  # Wait for their thaw and strike again immediately -- the goal is to land the
+  # fresh freeze that drops the key, rather than letting the next passerby take it.
+  # @return [void]
+  def camp_frozen_keyholder(target)
+    simple_name = target.to_s.split.last.to_s.capitalize
+    echo("*** #{target} is frozen but holds the key - waiting for the thaw to strike again...")
+    Flags.reset('dm-other-thawed')
+    deadline = Time.now + 60
+
+    until Time.now > deadline
+      if Flags['dm-other-thawed']
+        who = Flags['dm-other-thawed'][:name].to_s.capitalize
+        Flags.reset('dm-other-thawed')
+        if who == simple_name
+          echo("*** #{target} just thawed - striking again!")
+          wave(target, is_keyholder: true)
+          return
+        end
+      end
+
+      process_flags
+      return if have_key?
+
+      unless @key_in_play
+        echo('*** Key is no longer in play - abandoning the wait.')
         return
       end
-
-      record_move_history(direction) if log_move
-      waitrt?
-      zap_nemesis
-      @wandercounter += 1 if log_move
-      throttle_movement
-    when /^Rushing through/, /^Noticing your attempt to leave/
-      waitrt?
-      DRC.fix_standing
-      get_key
-      zap_nemesis
-      do_move(direction, log_move, attempt + 1)
-    when /It's pitch dark and you can't see a thing/
-      echo('room dark - recovering with wand light')
-      waitrt?
-      DRC.fix_standing
-      @exits = look_for_exits
-      return if @exits.nil?
-
-      echo("@exits is: #{@exits}")
-      record_move_history(direction) if log_move
-      waitrt?
-      zap_nemesis
-      @wandercounter += 1 if log_move
-      throttle_movement
-    else
-      echo('move failed - clearing exits and retrying next tick')
-      @last_move = ''
-      @exits = nil
-      # If a backtrack step failed, forget we saw the white door so we resume
-      # wandering rather than backtracking into the wall.
-      @whitedoorseen = -1 if @backtrack_to_white_door
-      waitrt?
-      zap_nemesis
+      pause 1
     end
+
+    echo("*** Gave up waiting for #{target} to thaw after 60s - moving on.")
   end
 
-  # Pause briefly after a successful step when a step delay is configured, so the
-  # solver does not move fast enough to stumble and fall (which is especially
-  # costly while carrying the key). No-op when droughtmans_step_delay is 0.
+  # Freeze a target with the wand. Safe against stale targets; exits only if the
+  # wand itself is gone.
+  # @param is_keyholder [Boolean] target is a confirmed key holder (camp on thaw)
   # @return [void]
-  def throttle_movement
-    pause @step_delay if @step_delay.positive?
-  end
-
-  # Choose and execute the next wander step using the wall-follow rules, with
-  # loop-detection reversal layered on top.
-  # @return [void]
-  def wander
+  def wave(target, is_keyholder: false)
+    DRC.release_invisibility
     waitrt?
+    case DRC.bput("wave my wand at #{target}",
+                  /circles around .* and returns to you, freezing you in place/,
+                  /^Roundtime/,
+                  /^You wave/,
+                  /already frozen/,
+                  /appears immobilized/,
+                  /drops (?:his|her) golden key/,
+                  /Wave at what\?/,
+                  /I could not find/,
+                  /I do not understand/)
+    when /returns to you, freezing you in place/
+      # The wand punishes waving at a non-holder -- our intel was wrong.
+      echo("*** WAND REFLECTED! #{target} does NOT have the key - we're frozen!")
+      @whitelist.delete(target.to_s.split.last.to_s.capitalize)
+      wait_for_self_thaw
+      Flags.reset('dm-self-frozen') # handled inline; do not double-wait later
+    when /golden key/
+      get_key
+    when /^You wave/, /^Roundtime/
+      @known_frozen[[@pos, target]] = Time.now
+    when /already frozen/, /appears immobilized/
+      @known_frozen[[@pos, target]] = Time.now
+      if is_keyholder
+        camp_frozen_keyholder(target)
+      else
+        DRRoom.npcs.delete(target)
+        DRRoom.pcs.delete(target)
+      end
+    when /Wave at what\?/, /I could not find/
+      @known_frozen[[@pos, target]] = Time.now
+      DRRoom.npcs.delete(target)
+      DRRoom.pcs.delete(target)
+    when /I do not understand/
+      echo('*** "wave wand" not understood (wand lost?) - stopping')
+      exit
+    end
+    pause 0.2
+    # The "<name> drops his golden key!" line lands AFTER the wave result that
+    # bput matched on -- check the flag now, not next tick.
+    snatch_loose_key if Flags['dm-key-loose']
+  end
 
-    # Dark room with no known exits: shake the wand and re-read the room.
-    if @exits.nil?
-      @exits = look_for_exits
-      return if @exits.nil?
+  # --------------------------------------------------------------------------
+  # Wanding: maze NPC mobs (always frozen, regardless of player settings)
+  # --------------------------------------------------------------------------
 
-      echo("@exits is: #{@exits}")
+  # @return [Boolean] whether any maze mobs are present (frozen or not)
+  def maze_npcs_present?
+    DRRoom.npcs.any? { |npc| npc =~ MAZE_NPCS }
+  end
+
+  # Freeze every maze mob in the room. ignore_ledger bypasses the known-frozen
+  # memory for a hard pre-move safety sweep.
+  # @return [void]
+  def freeze_npcs(ignore_ledger: false)
+    return unless in_maze?
+
+    mobs = DRRoom.npcs.select { |npc| npc =~ MAZE_NPCS && npc !~ /immobil/i }
+    return if mobs.empty?
+
+    mobs.group_by(&:itself).each do |mob, dupes|
+      dupes.size.times do |i|
+        target = i.zero? ? mob : "#{$ORDINALS[i]} #{mob}"
+        unless ignore_ledger
+          # Confirmed-frozen memory: the game's "already frozen" response is the
+          # only reliable signal. Trust it for KNOWN_FROZEN_TTL seconds, since a
+          # reused coordinate could belong to a different, unfrozen mob later.
+          frozen_at = @known_frozen[[@pos, target]]
+          next if frozen_at && (Time.now - frozen_at) < KNOWN_FROZEN_TTL
+        end
+
+        wave(target)
+      end
+    end
+  end
+
+  # --------------------------------------------------------------------------
+  # Ropes (ordinal-rope logic: pull deepest rope first)
+  # --------------------------------------------------------------------------
+
+  # Pull every rope in the room (deepest ordinal first), reacting to each outcome:
+  # grab a dropped key, reset the map on a tarzan-rope reshuffle, or tend traps.
+  # @return [void]
+  def pull_ropes
+    return unless in_maze?
+    return if @injured
+
+    rope_count = DRRoom.room_objs.count { |obj| obj =~ /\brope\b/ }
+    return if rope_count.zero?
+
+    DRC.release_invisibility
+    rope_count.downto(1) do |n|
+      break if have_key?
+
+      target = n == 1 ? 'rope' : "#{$ORDINALS[n - 1]} rope"
+      case DRC.bput("pull #{target}",
+                    /A golden key falls to the floor with a loud CLANK/,
+                    /A gentle breeze begins to blow through the area/,
+                    /With the grinding sound of stone moving against stone/,
+                    /There is a sudden flash of greenish light/,
+                    /A loud CLICK echoes from above/,
+                    /A bell begins to loudly ring/,
+                    /A cloud of sweet smelling multi-hued mist floods the area/,
+                    /A faint fizzling sound comes from the rope/,
+                    /The rope begins to expand before your very eyes/,
+                    /The rope falls to the floor where it begins to writhe around/,
+                    /a sudden explosion knocks you across the room/,
+                    /I'm afraid that you can't pull that/,
+                    /What were you referring/,
+                    /I could not find/)
+      when /golden key/
+        # A rope-dropped key can lag behind in DRRoom.room_objs; the drop line is
+        # definitive proof it is on the floor now, so grab directly.
+        waitrt?
+        grab_key
+      when /gentle breeze/
+        # Tarzan rope: the maze itself reshuffles -- our local map is junk.
+        echo('*** Maze reset (tarzan rope) - resetting local map.')
+        waitrt?
+        reset_section_state
+        @searched_quadrants = []
+        @white_door_quadrant = nil
+        @dowse_hint = nil
+        @dowse_wanted = true if @key_in_play && !have_key?
+      when /grinding sound/
+        # Crossbow trap -- patch up before continuing.
+        waitrt?
+        tend_trap_wounds
+      when /sudden flash of greenish light/
+        waitrt?
+        DRC.fix_standing
+      when /sudden explosion knocks you across the room/
+        # Bomb trap -- knocks the wand out of hand and does real damage.
+        echo('*** BOMB TRAP! Recovering wand and tending wounds.')
+        waitrt?
+        DRC.fix_standing
+        fput('lift') unless DRCI.in_hands?('wand') # wand fell to our feet
+        ensure_wand
+        tend_trap_wounds
+      end
+      waitrt?
+      pause 0.3
+    end
+  end
+
+  # Tend trap bleeding. Read HEALTH, tend each named bleeding body part directly
+  # (fast, precise), and fall back to the tendme script if nothing parses or a
+  # part cannot be tended. Clears @injured on success so dowsing/ropes resume.
+  # @return [void]
+  def tend_trap_wounds
+    waitrt?
+    DRC.fix_standing
+    result = DRC.bput('health',
+                      /^You have no significant injuries/i,
+                      /^You have .*\./i,
+                      /You are a ghost/i)
+    parts = result.to_s.scan(/\b(?:right|left) (?:hand|eye|arm|leg|foot|ear)\b|\b(?:head|neck|chest|back|abdomen)\b/i)
+                  .map(&:downcase).uniq
+
+    if parts.empty?
+      @injured = false
+      return
     end
 
-    # First move of a fresh maze: just take the first available exit.
-    @next_move = @exits.first if @last_move == ''
-
-    # Otherwise wall-follow from the last successful move.
-    if @next_move == ''
-      @next_move = get_next_move(@last_successful_move, @exits)
-      @exits = nil
+    tended_any = false
+    parts.each do |location|
+      waitrt?
+      tend_result = DRC.bput("tend my #{location}",
+                             /able to stop the bleeding/i,
+                             /You have no wounds/i,
+                             /cannot be tended/i,
+                             /too injured for you to do that/i,
+                             /^Roundtime/i)
+      tended_any ||= tend_result =~ /able to stop the bleeding|You have no wounds/i
+      break if tend_result =~ /too injured for you to do that/i
     end
 
-    # Begin reversing out of a detected loop.
-    if @reverse_dir == true && @reverse_count == 0
-      echo("reversing as we have a loop detected! Count: #{@reverse_count}")
-      @next_move = REVERSE_DIRECTION_MAP[@move_history_short[@reverse_count]]
-      echo("reverse direction = #{@next_move}")
+    # If we could not tend directly, defer to the comprehensive tendme script.
+    if !tended_any && Script.exists?('tendme')
+      DRC.wait_for_script_to_complete('tendme')
+      tended_any = true
     end
 
-    # Cancel the reverse once we diverge from the retrace path.
-    if @reverse_dir == true && @reverse_count > 1
-      if @next_move != REVERSE_DIRECTION_MAP[@move_history_short[@reverse_count]]
-        @reverse_dir = false
-        echo("Canceling Reverse at Count: #{@reverse_count}")
-        @reverse_count = 0
-        @move_history_short = []
+    @injured = false if tended_any
+  end
+
+  # --------------------------------------------------------------------------
+  # Movement (visited-aware wandering)
+  # --------------------------------------------------------------------------
+
+  # @return [Array<String>] long-form exits not marked blocked at this position
+  def available_exits
+    raw_exits.reject { |dir| @blocked[[@pos, dir]] }
+  end
+
+  # @return [Array<String>] long-form exits from the room (re-lighting if dark)
+  def raw_exits
+    exits = DRRoom.exits.select { |dir| DIRECTIONS.include?(dir) }
+    return exits unless exits.empty?
+
+    # Dark room / no compass: shake the wand for light and LOOK. Outside the maze
+    # an exitless room is not darkness -- do not spam the wand.
+    return [] unless in_maze?
+
+    unless @wand_lit
+      fput('shake wand')
+      @wand_lit = true
+    end
+    result = DRC.bput('look', /Obvious (?:exits|paths): (.*)\./, /You can't see anything/, /It's pitch dark/)
+    if result =~ /^It's pitch dark/
+      @wand_lit = false
+      fput('shake wand')
+      @wand_lit = true
+      result = DRC.bput('look', /Obvious (?:exits|paths): (.*)\./, /You can't see anything/, /It's pitch dark/)
+    end
+    if result =~ /Obvious (?:exits|paths): (.*)\./
+      # This LOOK refreshed the room -- the same staleness could have hidden a
+      # mob from the earlier freeze sweep. Freeze with fresh data before the
+      # caller acts on these exits.
+      freeze_npcs
+      Regexp.last_match(1).split(', ').select { |d| DIRECTIONS.include?(d) }
+    else
+      []
+    end
+  end
+
+  # @return [Array(Integer, Integer)] dead-reckoned coordinate one step in +direction+
+  def next_pos(direction)
+    offset = DIR_OFFSETS[direction] || [0, 0]
+    [@pos[0] + offset[0], @pos[1] + offset[1]]
+  end
+
+  # Record a successful step: update position, mark it visited, bump counters.
+  # @return [void]
+  def record_position(direction)
+    @last_progress = Time.now
+    @last_direction = direction
+    @pos = next_pos(direction)
+    @visited[@pos] += 1
+    @section_move_count += 1
+    @moves_since_rest += 1
+    debug("At #{@pos.inspect} (visits: #{@visited[@pos]}, section moves: #{@section_move_count}, rooms seen: #{@visited.size})")
+  end
+
+  # Pick and take the next step. Priority: (1) toward the remembered white door
+  # with the key, (2) centerward with the key, (3) the dowse bearing, (4) the
+  # least-visited exit, avoiding an immediate backtrack. This is what keeps the
+  # bot from orbiting the same square of rooms.
+  # @return [void]
+  def move_random
+    # Experimental: a deliberate breather every N rooms, testing whether letting
+    # fatigue recover periodically reduces trip frequency.
+    if @rest_interval > 0 && @moves_since_rest >= @rest_interval
+      debug("Taking a #{@rest_pause}s breather after #{@moves_since_rest} rooms (rest_interval).")
+      pause @rest_pause
+      @moves_since_rest = 0
+    end
+
+    exits = available_exits
+    if exits.empty?
+      handle_no_exits
+      return
+    end
+    @no_exit_ticks = 0
+
+    if (direction = key_return_direction(exits))
+      do_move(direction)
+      return
+    end
+
+    if (direction = bearing_direction(exits))
+      do_move(direction)
+      return
+    end
+
+    # Score every exit by how many times we have visited its destination.
+    scored = exits.group_by { |dir| @visited[next_pos(dir)] }
+    best = scored[scored.keys.min] || exits
+
+    # Among the least-visited choices, avoid doubling back when possible.
+    choices = best.dup
+    choices.delete(REVERSE_DIRECTION[@last_direction]) if choices.size > 1 && @last_direction
+    choices = best if choices.empty?
+
+    do_move(choices.sample)
+  end
+
+  # With the key: head to the remembered white door, else centerward. Returns the
+  # chosen direction, or nil to fall through to exploration.
+  # @return [String, nil]
+  def key_return_direction(exits)
+    return nil unless have_key?
+
+    if @white_door_pos
+      direction = direction_toward(@white_door_pos, exits)
+      if direction
+        debug("Heading to white door: #{direction} (#{@pos.inspect} -> #{@white_door_pos.inspect})")
+        return direction
       end
     end
 
-    if @reverse_dir == true
-      @reverse_count += 1
-      echo("reverse Count: #{@reverse_count}")
+    if @center_hint && @center_hint[:dirs].any?
+      centered = compass_preferences(@center_hint[:dirs]) & exits
+      unless centered.empty?
+        direction = centered.min_by { |dir| @visited[next_pos(dir)] }
+        overall_min = exits.map { |dir| @visited[next_pos(dir)] }.min
+        if @visited[next_pos(direction)] <= overall_min + 1
+          debug("Heading centerward with the key: #{direction}")
+          return direction
+        end
+        debug("Centerward #{direction} is worn out - exploring around the wall")
+      end
     end
 
-    if @reverse_count > 3
-      echo('Unable to reverse our way out, manual navigation please!')
-      @reverse_dir = false
-      @reverse_count = 0
-    end
-
-    @last_move = @next_move
-    do_move(@next_move)
+    nil
   end
 
-  # Retrace the path back toward the white door once the key is in hand.
-  # @return [void]
-  def backtrack
-    echo("Backtracking History: #{@move_history_since_init}")
-    echo("Backtracking Count: #{@backtrack_count}")
+  # Follow the dowse bearing when an exit matches it -- but only while it is not
+  # grinding us into rooms we have already worn out. Returns nil to fall through.
+  # @return [String, nil]
+  def bearing_direction(exits)
+    hinted = hint_directions & exits
+    return nil if hinted.empty?
 
-    if @backtrack_count < @move_history_since_init.count
-      @next_move = REVERSE_DIRECTION_MAP[@move_history_since_init[@backtrack_count]]
-      @backtrack_count += 1
-      do_move(@next_move)
+    direction = hinted.min_by { |dir| [@visited[next_pos(dir)], hint_directions.index(dir)] }
+    overall_min = exits.map { |dir| @visited[next_pos(dir)] }.min
+    if @visited[next_pos(direction)] <= overall_min + 1
+      debug("Following dowse bearing: #{direction}")
+      return direction
+    end
+    debug("Bearing #{direction} is worn out (#{@visited[next_pos(direction)]} visits) - exploring around the wall")
+    nil
+  end
+
+  # No usable exits per the compass. After three straight ticks, trust a LOOK's
+  # text: forgive this room's wall blocks and walk through a parsed exit.
+  # @return [void]
+  def handle_no_exits
+    @no_exit_ticks = @no_exit_ticks.to_i + 1
+    if @no_exit_ticks >= 3
+      echo('*** No usable exits per the compass - reading them from LOOK instead.')
+      debug("title=#{DRRoom.title.inspect} exits=#{DRRoom.exits.inspect}")
+      @blocked.delete_if { |(pos, _dir), _v| pos == @pos }
+      @no_exit_ticks = 0
+      result = DRC.bput('look', /Obvious (?:exits|paths): (.*)/, /pitch dark/, /You can't see anything/)
+      if result =~ /Obvious (?:exits|paths): (.*)/
+        parsed = Regexp.last_match(1).split(/,|\band\b/).map { |d| d.strip.delete('.') }
+        parsed = parsed.select { |d| DIRECTIONS.include?(d) }
+        unless parsed.empty?
+          freeze_npcs
+          direction = parsed.min_by { |dir| @visited[next_pos(dir)] }
+          echo("*** LOOK says exits: #{parsed.join(', ')} - taking #{direction}.")
+          do_move(direction)
+          return
+        end
+      end
+    end
+    pause 0.5
+  end
+
+  # Attempt a single step. Freezes whatever is visible RIGHT NOW as the absolute
+  # last act before the move (an unfrozen mob ambushes anyone leaving), handles
+  # stumbles/wand-drops/stuns/blocked walls, and paces movement while carrying
+  # the key (a trip drops the key).
+  # @return [void]
+  def do_move(direction, attempt = 0)
+    return if attempt >= 5
+
+    # A mob thawing (or us getting frozen) mid-tick must be dealt with BEFORE we
+    # step out.
+    process_flags if Flags['dm-npc-unfrozen'] || Flags['dm-self-frozen']
+
+    get_key
+    pause @step_delay if @step_delay > 0
+
+    # HARD GATE: freeze whatever is visible now, with NO ledger shortcut. This is
+    # the absolute last thing before the move command, so nothing can happen
+    # after this check and before the move.
+    freeze_npcs(ignore_ledger: true)
+
+    # Even the freeze above involves a round-trip during which a thaw could
+    # arrive for something we just confirmed frozen. Deal with it and retry.
+    if Flags['dm-npc-unfrozen']
+      debug('A mob thawed in the instant between our freeze and moving - re-freezing.')
+      process_flags
+      return do_move(direction, attempt + 1)
+    end
+
+    case DRC.bput(direction,
+                  /^Obvious (?:exits|paths):/,
+                  /It's pitch dark and you can't see a thing/,
+                  /^You notice a\S* .*wand at your feet/,
+                  /^Rushing through/,
+                  /^Noticing your attempt to leave/,
+                  /^You can't go there/,
+                  /^You can't swim in that direction/,
+                  /^You are still stunned/,
+                  /^You must be standing/,
+                  /^You can't do that while (?:lying down|sitting|kneeling)/)
+    when /^Obvious/, /pitch dark/
+      record_position(direction)
+      # A trip while carrying the key drops it. Pace key-carrying movement so we
+      # do not stumble on the loose floor grating and hand a rival the key.
+      pause @key_step_delay if have_key? && @key_step_delay > 0
+    when /wand at your feet/
+      # Our wand was dropped (frozen); pick it back up and retry.
+      fput('lift')
+      waitrt?
+      do_move(direction, attempt + 1)
+    when /Rushing through/, /Noticing your attempt/, /still stunned/
+      waitrt?
+      wait_while_stunned
+      DRC.fix_standing
+      # Any of these mid-move events mean the direction no longer applies (world
+      # changed under us) -- let process_flags (which applies a drag's position
+      # update before key recovery) reassess rather than blindly resuming.
+      if Flags['dm-key-dropped'] || Flags['dm-key-found'] || Flags['dm-dragged']
+        debug('Key event or drag interrupted our move - reassessing')
+        process_flags
+        return
+      end
+      do_move(direction, attempt + 1)
+    when /standing/, /lying down|sitting|kneeling/
+      DRC.fix_standing
+      do_move(direction, attempt + 1)
+    when /^You can't go there/, /^You can't swim in that direction/
+      # A wall rose (or the compass is stale, or the water says no) -- never pick
+      # this exit in this room again until the map resets.
+      @blocked[[@pos, direction]] = true
+      debug("Can't go #{direction} here - marking it blocked")
+      @last_direction = nil
+      pause 0.2
     else
-      # Ran off the end of the recorded path -- reset and resume wandering.
-      echo('Resetting backtracking as we have exceeded the recorded path - check why!')
-      init_maze
+      @last_direction = nil
+      pause 0.2
     end
+    waitrt?
   end
 
-  # Freeze a person with the wand. Safe against stale/duplicate targets: a
-  # missing target is skipped, never fatal.
-  # @param person [String] the npc/pc name (may be an ordinal like "second guard")
+  # --------------------------------------------------------------------------
+  # Winning / finishing
+  # --------------------------------------------------------------------------
+
   # @return [void]
-  # @note Exits the whole script only when "wave wand" itself is not understood,
-  #   which means the wand has been lost and the bot can no longer function.
-  def wave(person)
-    case DRC.bput("wave wand at #{person}",
-                  /^Roundtime/, /already frozen/, /drops (?:his|her|its) golden key/,
-                  /Wave at what\?/, /I could not find/, /I do not understand/)
-    when /golden key/
-      @nemesis = nil
-      get_key
-    when /^Roundtime/, /already frozen/
-      DRRoom.npcs.delete(person)
-    when /Wave at what\?/, /I could not find/
-      # Target is not actually present (stale/duplicate ordinal) -- skip it.
-      DRRoom.npcs.delete(person)
-    when /I do not understand/
-      echo('droughtmans: "wave wand" not understood (wand lost?) - stopping')
+  def finish_run(result, skip_exit_walk: false)
+    DRC.release_invisibility
+    waitrt?
+
+    if result == :winner && DRRoom.title !~ /Recovery Room/
+      echo('==============================================')
+      echo('**** THE RAT HAS FOUND THE CHEESE!!! ')
+      echo('**** COLLECT THE LOOT!')
+      echo('==============================================')
+      fput('go oval')
+      pause 0.5
+      fput('go oval')
+      pause 0.5
+      fput('go hallway')
+      pause 0.5
+    else
+      echo('========================')
+      echo('**** DROUGHTMAN RUN COMPLETED!')
+      echo('========================')
+    end
+
+    stow_loose_hands
+    open_containers
+
+    if result == :winner
+      fput('get prize box')
+      pause 0.5
+      open_prize_box if DRCI.in_hands?('box')
+    end
+
+    open_runner_package
+    exit_maze_area unless skip_exit_walk
+  end
+
+  # Puzzle-box the prize open by cycling likely verbs.
+  # @return [void]
+  def open_prize_box
+    echo('**** Attempting to open the prize box')
+    PRIZE_BOX_VERBS.each do |verb|
+      break unless DRCI.in_hands?('box')
+
+      fput("#{verb} my box")
+      pause 0.7
+    end
+
+    if DRCI.in_hands?('box')
+      echo('**** COULD NOT OPEN YOUR PRIZE BOX - EXITING SCRIPT TO BE SAFE')
+      echo('**** MANUALLY OPEN YOUR PRIZE BOX AND GET YOUR LOOT')
+      echo('**** EXIT VIA THE OVAL AND THEN RESTART SCRIPT')
       exit
     end
+
+    prize = (DRC.left_hand if DRC.left_hand !~ /wand/i) || (DRC.right_hand if DRC.right_hand !~ /wand/i)
+    if prize
+      echo("**** WOOHOO! Won a #{prize}")
+      stash_or_trash(prize)
+    end
   end
 
-  # @return [Boolean] whether the most-recent-four moves form a known loop square
-  def detect_loop?
-    return false unless @move_history_short.size >= 4
+  # Item descriptions vary wildly in DR: "a sturdy backpack" wants its last word;
+  # "a circle of colorful wool with a wool rug on it" does NOT (last word is the
+  # pronoun "it"). Generate heuristic guesses, most specific first:
+  #   1. last word before the first preposition ("circle of X" -> "circle")
+  #   2. every word in the leading noun phrase, closest to any preposition first
+  #   3. last word of the whole phrase (plain "adjective noun")
+  # Stopword endings (pronouns etc.) are filtered out.
+  # @return [Array<String>]
+  def noun_candidates(phrase)
+    words = phrase.split(/\s+/).reject(&:empty?)
+    words = words[1..-1] if words.first =~ /^(?:a|an|some|the)$/i && words[1]
 
-    LOOP_PATTERNS.include?(@move_history_short[0..3])
+    prep_index = words.index { |w| PREPOSITIONS.include?(w.downcase) }
+    segment = prep_index ? words[0...prep_index] : words
+    segment = words if segment.empty?
+
+    candidates = segment.reverse + [words.last]
+    candidates.compact.map { |w| w.downcase.gsub(/[,.]/, '') }
+                      .reject { |w| w.empty? || NOUN_STOPWORDS.include?(w) }
+                      .uniq
   end
 
-  # Record a successful move: push onto the short (loop-detection) history and the
-  # since-init (backtrack) history, and arm loop reversal when a loop is detected.
-  # @param direction [String] the short direction just moved
   # @return [void]
-  def record_move_history(direction)
-    @last_successful_move = direction
-
-    if @move_history_short.count > 3
-      @move_history_short.pop
-      @move_history_short.insert(0, direction)
-      @reverse_dir = true if detect_loop?
-    else
-      @move_history_short.insert(0, direction)
+  def open_runner_package
+    unless DRCI.in_hands?('package')
+      fput('get my runner package')
+      pause 0.5
+    end
+    unless DRCI.in_hands?('package')
+      debug('No runner package found.')
+      return
     end
 
-    # Only extend the backtrack path while moving forward, not while backtracking.
-    @move_history_since_init.insert(0, direction) unless @backtrack_to_white_door
+    if @store_package
+      echo('*** Storing the runner package unopened (store_package: true).')
+      stash_or_trash('runner package')
+      return
+    end
 
-    @next_move = ''
+    DRC.bput('open my package', /^You open/, /^That is already open/, /^What were you/)
+    loot_coins_from_package
+    loot_items_from_package
+    dispose_package
+  end
+
+  # Grab coins until the package has none left.
+  # @return [void]
+  def loot_coins_from_package
+    loop do
+      response = DRC.bput('get coin from my package',
+                          /^You get/, /^You pick up/,
+                          /^What were you/, /^I could not find/,
+                          /^You need a free hand/)
+      case response
+      when /^You get/, /^You pick up/
+        pause 0.3
+      when /free hand/
+        off_hand = [DRC.left_hand, DRC.right_hand].compact.find { |i| i !~ /wand|package/i }
+        DRCI.stow_item?(off_hand) if off_hand
+      else
+        break
+      end
+    end
+  end
+
+  # Grab the prize item(s). Winner boxes can hold more than one.
+  # @return [void]
+  def loot_items_from_package
+    10.times do
+      contents = DRC.bput('look in my package',
+                          /^There is nothing in there/,
+                          /^In the .* you see (.*)\./,
+                          /^That is closed/,
+                          /^I could not find/,
+                          /^What were you/)
+      case contents
+      when /^There is nothing in there/
+        break
+      when /^That is closed/
+        fput('open my package')
+        next
+      when /^In the .* you see (.*)\./
+        item_list = Regexp.last_match(1)
+        if item_list =~ /coin/
+          3.times { fput('get coin from my package'); pause 0.3 }
+          next
+        end
+
+        phrase = item_list.split(/,| and /).map(&:strip).reject(&:empty?).first.to_s
+        break if phrase.empty?
+
+        unless grab_from_package(phrase)
+          echo("*** Could not figure out the noun for \"#{phrase}\" - leaving it in the package.")
+          break
+        end
+        pause 0.3
+        loot = (DRC.left_hand if DRC.left_hand !~ /wand|package/i) || (DRC.right_hand if DRC.right_hand !~ /wand|package/i)
+        if loot
+          echo("**** Won incidental - #{loot}")
+          stash_or_trash(loot)
+        end
+      else
+        break
+      end
+    end
+  end
+
+  # Try each candidate noun for +phrase+ until one is grabbed out of the package.
+  # @return [Boolean] whether an item was grabbed
+  def grab_from_package(phrase)
+    noun_candidates(phrase).each do |noun|
+      response = DRC.bput("get #{noun} from my package", /^You get/, /^You pick up/, /^What were you/, /^I could not find/, /^You need a free hand/)
+      return true if response =~ /^You get|^You pick up/
+
+      next unless response =~ /free hand/
+
+      off_hand = [DRC.left_hand, DRC.right_hand].compact.find { |i| i !~ /wand/i }
+      DRCI.stow_item?(off_hand) if off_hand
+      return true if DRC.bput("get #{noun} from my package", /^You get/, /^You pick up/, /^What were you/, /^I could not find/) =~ /You get|You pick up/
+    end
+    false
+  end
+
+  # Dispose of the emptied package -- but NEVER while it still holds anything.
+  # Verify empty first; if the retry cannot clear it, keep the package on our
+  # person and stop, because a wrongly-dropped package is unrecoverable.
+  # @return [void]
+  def dispose_package
+    return unless DRCI.in_hands?('package')
+
+    contents = DRC.bput('look in my package',
+                        /^There is nothing in there/,
+                        /^In the .* you see (.*)\./,
+                        /^That is closed/,
+                        /^I could not find/,
+                        /^What were you/)
+    if contents =~ /^In the .* you see (.*)\./
+      echo("*** Package still has something in it before disposal: #{Regexp.last_match(1)}")
+      echo('*** Making one more attempt to loot it rather than risk losing it.')
+      leftover = Regexp.last_match(1).split(/,| and /).map(&:strip).reject(&:empty?).first.to_s
+      unless leftover.empty?
+        if grab_from_package(leftover)
+          loot = (DRC.left_hand if DRC.left_hand !~ /wand|package/i) || (DRC.right_hand if DRC.right_hand !~ /wand|package/i)
+          stash_or_trash(loot) if loot
+        end
+      end
+
+      recheck = DRC.bput('look in my package',
+                         /^There is nothing in there/,
+                         /^In the .* you see (.*)\./,
+                         /^That is closed/,
+                         /^I could not find/,
+                         /^What were you/)
+      if recheck =~ /^In the .* you see (.*)\./
+        echo('=========================================')
+        echo("*** COULD NOT FULLY LOOT THE PACKAGE - it still has: #{Regexp.last_match(1)}")
+        echo('*** Refusing to drop/bucket it with contents inside. Keeping it on you instead.')
+        echo('*** STOPPING THE SCRIPT so you can check the package manually.')
+        echo('=========================================')
+        DRCI.stow_item?('package')
+        exit
+      end
+    elsif contents =~ /^That is closed/
+      fput('open my package')
+      pause 0.3
+    end
+
+    return unless DRCI.in_hands?('package')
+
+    if DRRoom.room_objs.any? { |obj| obj =~ /bucket of viscous gloop|waste bucket/ }
+      fput('put my package in bucket')
+    elsif @worn_trashcan
+      DRCI.dispose_trash('package', @worn_trashcan, @worn_trashcan_verb)
+    else
+      fput('drop my package')
+    end
+    pause 0.5
+  end
+
+  # @return [void]
+  def exit_maze_area
+    DRC.fix_standing
+    if DRRoom.room_objs.any? { |obj| obj =~ /shimmering silver oval/ }
+      fput('go oval')
+      pause 0.5
+      fput('go oval')
+      pause 0.5
+    end
+    DRC.fix_standing
+    fput('out')
+    pause 1
+    DRC.fix_standing
+  end
+
+  # --------------------------------------------------------------------------
+  # Loot helpers
+  # --------------------------------------------------------------------------
+
+  # @return [Boolean] whether +item+ matches the configured trash list
+  def trash?(item)
+    return false if @trash.empty?
+
+    @trash.any? { |t| item.to_s =~ /#{Regexp.escape(t)}/i }
+  end
+
+  # Stow an item into a loot container (tried in order) or a plain personal stow.
+  # Trash-listed items are dropped; passes are always stowed personally (never
+  # routed through a container that could later be dropped -- passes are money).
+  # @return [void]
+  def stash_or_trash(item)
+    noun = item.to_s.split.last
+    return if noun.nil? || noun.empty?
+
+    if item.to_s =~ /\bpass(?:es)?\b/i
+      echo("*** Stowing pass safely (never routed through a container): #{item}")
+      DRCI.stow_item?(noun)
+      return
+    end
+
+    if trash?(item)
+      echo("Dropping trash item: #{item}")
+      fput("drop my #{noun}")
+      pause 0.3
+      return
+    end
+
+    return if @loot_containers.any? { |container| DRCI.put_away_item?(noun, container) }
+
+    DRCI.stow_item?(noun)
+  end
+
+  # @return [void]
+  def stow_loose_hands
+    [DRC.right_hand, DRC.left_hand].compact.each do |item|
+      # wand/package/box are actively used elsewhere in the flow and must stay.
+      next if item =~ /wand|package|box/i
+
+      stash_or_trash(item)
+    end
+  end
+
+  # @return [void]
+  def open_containers
+    @loot_containers.each { |container| fput("open my #{container}") }
+  end
+
+  # --------------------------------------------------------------------------
+  # State helpers
+  # --------------------------------------------------------------------------
+
+  # Are we actually standing inside the maze proper? The maze can eject us
+  # mid-tick (time up -> Recovery Room), and combat/search actions must not fire
+  # at innocent bystanders wherever we land.
+  # @return [Boolean]
+  def in_maze?
+    DRRoom.title =~ /Droughtman's Compound, The Maze/
   end
 
   # @return [Boolean] whether the golden key is in hand
@@ -466,424 +2067,258 @@ class Droughtmans
     DRCI.in_hands?('golden key')
   end
 
-  # Grab the golden key from the room if it is present and not already held.
-  # Releases invisibility first so the grab is not fumbled while hidden.
+  # Grab the golden key from the room if present and not already held.
   # @return [void]
   def get_key
     return if have_key?
-    return unless DRRoom.room_objs.include?('golden key')
+    return unless room_has?(/\bkey\b/)
 
     DRC.release_invisibility
-    DRCI.get_item_unsafe('golden key')
+    grab_key
+    pause 0.2
   end
 
-  # Fetch the loot destination before a run, but only for the default canvas
-  # sack: a user-configured container is assumed to be carried already, and the
-  # compound dwarf only hands out canvas sacks.
-  # @return [void]
-  def fetch_loot_container_if_needed
-    get_sack if @loot_container == 'canvas sack'
-  end
-
-  # Fetch a canvas sack from the compound dwarf unless one is already carried.
-  # @return [void]
-  def get_sack
-    return if DRCI.exists?('canvas sack')
-
-    DRCI.stow_hands
-    DRCT.walk_to(SACK_ROOM)
-    DRC.bput('ask dwarf for sack', /^A scruffy-looking Dwarf/)
-    DRCI.put_away_item?('sack')
-  end
-
-  # Cash in a won prize package: transfer loot into the configured container,
-  # trash the wrapper only once it is empty, exit the winner's circle, return to
-  # the wand room, and stop the script.
-  # @return [void]
-  # @note Terminates the script on completion.
-  def package
-    DRC.bput('open my package', /You open/)
-    DRCI.stow_hands
-    DRCI.put_away_item?('wand')
-    DRC.wait_for_script_to_complete('transfer-items', ['package', @loot_container])
-    dispose_empty_package
-    leave_winners_circle
-    DRCT.walk_to(WAND_ROOM)
-    exit
-  end
-
-  # Trash the prize wrapper only when the loot transfer emptied it. If any loot
-  # remains (no/full loot container, an item that would not fit), the package is
-  # kept instead so a prize is never thrown away. An unreadable package (nil
-  # contents) is treated as "not verified empty" and is likewise kept. The kept
-  # package is only re-stowed when still in hand -- by this point stow_hands has
-  # usually already put it away, so stowing again would just echo "Stow what?".
-  # @return [void]
-  def dispose_empty_package
-    contents = DRCI.get_item_list('package', 'look')
-    if contents && contents.empty?
-      DRCI.dispose_trash('package', @worn_trashcan, @worn_trashcan_verb)
+  # The actual GET KEY attempt with failure handling.
+  # @return [Boolean] whether the key ended up in hand
+  def grab_key
+    case DRC.bput('get key',
+                  /^You pick up/,
+                  /^You get/,
+                  /can't pick that up with your hand that damaged/,
+                  /^You need a free hand/,
+                  /^What were you referring to/,
+                  /^I could not find/)
+    when /^You pick up/, /^You get/
+      true
+    when /hand that damaged/
+      damaged_hand_grab
+    when /free hand/
+      off_hand = [DRC.left_hand, DRC.right_hand].compact.find { |item| item !~ /wand/i }
+      DRCI.stow_item?(off_hand) if off_hand
+      DRC.bput('get key', /^You pick up/, /^You get/, /^What were you referring to/, /^I could not find/) =~ /You pick up|You get/
     else
-      DRC.message("droughtmans: package still holds loot (check your #{@loot_container}) - keeping it instead of trashing")
-      DRCI.put_away_item?('package') if DRCI.in_hands?('package')
+      false
     end
   end
 
-  # Step out of the winner's circle back onto the main maze floor, if we are in
-  # it. No-op when the cash-in happened elsewhere.
-  # @return [void]
-  def leave_winners_circle
-    return unless DRRoom.title.match?(/Droughtman's Maze, Winner's Circle/)
-
-    fput('go oval')
-    fput('go oval')
-  end
-
-  # Freeze every npc in the room, expanding duplicate types into ordinal targets
-  # (e.g. two guards -> "guard", "second guard").
-  #
-  # After freezing all instances of a type, drop that type from the live npc
-  # list: wave can delete a base name it froze but not an ordinal alias ("second
-  # guard"), so without this the extra instances lingered and were re-waved
-  # ("already frozen") every tick.
-  # @return [void]
-  def check_for_npcs
-    return unless DRRoom.npcs.any?
-
-    DRRoom.npcs.group_by(&:itself).each do |npc_type, instances|
-      instances.each_index do |number|
-        wave(number.zero? ? npc_type : "#{$ORDINALS[number]} #{npc_type}")
-      end
-      DRRoom.npcs.delete(npc_type)
+  # Our free hand is too damaged to grab with. The KEY outranks the wand: stow
+  # the wand to free the healthy hand, grab, then re-draw the wand.
+  # @return [Boolean] whether the key was grabbed
+  def damaged_hand_grab
+    echo('*** Hand too damaged to grab - stowing wand to use the other hand!')
+    got = false
+    if DRCI.in_hands?('wand') && DRCI.stow_item?('wand')
+      got = DRC.bput('get key', /^You pick up/, /^You get/, /can't pick that up/, /^What were you referring to/, /^I could not find/) =~ /You pick up|You get/
+      fput('get my wand')
+      waitrt?
     end
-  end
-
-  # Dowse the wand to reveal the key location, ensuring the wand is in hand first.
-  # @return [void]
-  def check_for_key_location
-    DRCI.get_item_if_not_held?('wand')
-    search_wand
-  end
-
-  # Dowse the wand for the key, re-evaluating the injured state each time.
-  #
-  # A failed dowse (too wounded) sets the injured/no-rope latches so we stop
-  # dowsing and pulling ropes; a successful dowse clears them. This is
-  # deliberately re-evaluated on every call (rather than a permanent latch that
-  # never recovered) so that once a crossbow wound is tended, the next dowse --
-  # at boot or after a tarzan-rope reset -- lifts the latch and rope-pulling
-  # resumes for the rest of the run.
-  # @return [void]
-  def search_wand
-    case DRC.bput('search wand', /^Roundtime/, /You're not in any condition to be searching around/)
-    when /not in any condition/
+    unless got || have_key?
+      echo('*** Could not grab with either hand - tending wounds.')
       @injured = true
-      @norope = true
-    else
-      @injured = false
-      @norope = false
+      tend_trap_wounds
     end
+    got
   end
 
-  # Pull a rope, reacting to the outcome: grab a dropped key, re-dowse after a
-  # tarzan-rope maze reset, or tend crossbow wounds. Skipped while injured.
-  # @param rope [String] the room object noun for the rope
+  # We dropped our golden key (tripped on grating, etc). Try to snatch it back;
+  # if a player already grabbed it, the pickup announcement has whitelisted them,
+  # so scan and wand them on the spot.
   # @return [void]
-  # @note Uses case-insensitive branch matching because the returned game text is
-  #   capitalized (a historical version's lower-case branches never fired).
-  def pull_rope(rope)
-    return if @norope
+  def recover_dropped_key(swept_away = false, drag_dir = nil)
+    Flags.reset('dm-key-dropped')
 
-    case DRC.bput("pull #{rope}", *ROPE_RESPONSES)
-    when /golden key/i
-      get_key
-      @nemesis = nil
-    when /gentle breeze/i
-      search_wand
-    when /grinding sound/i
-      DRC.wait_for_script_to_complete('tendme')
-    end
-    DRRoom.room_objs.delete(rope)
-  end
-
-  # Freeze any rivals, pull a lever if one is present, then forget it so we do
-  # not re-pull this tick.
-  # @return [void]
-  def handle_lever
-    return unless (lever = DRRoom.room_objs.find { |obj| obj =~ /lever/ })
-
-    # Freeze any rivals in the room BEFORE pulling: like the key-dropping rope,
-    # lingering on a lever pull lets a present rival wand-freeze us first (and
-    # then flee before we can wave back).
-    check_for_npcs
-    fput("Pull #{lever}")
-    DRRoom.room_objs.delete(lever)
-  end
-
-  # Inspect the other players in the room; if one is visibly holding the golden
-  # key, freeze them for it. Used as a fallback when no nemesis is announced.
-  # @return [void]
-  def check_key_holders
-    # Iterate a snapshot: deleting from the live DRRoom.pcs mid-loop would skip
-    # the next occupant and leave a visible key-holder unchecked this tick.
-    DRRoom.pcs.dup.each do |person|
-      result = DRC.bput("look #{person}", /(?:Sh|H)e is holding.*/, /I could not find/, /concealing all but.*/)
-      if result =~ /golden key/
-        wave(person)
-      elsif person == @nemesis
-        @nemesis = nil
+    if swept_away
+      reverse = REVERSE_DIRECTION[drag_dir]
+      unless reverse
+        echo('*** DROPPED THE KEY AND GOT SWEPT AWAY BY THE CURRENT BEFORE WE COULD GRAB IT!')
+        echo("*** Don't know which way to backtrack (drag: #{drag_dir.inspect}) - it is lost behind us.")
+        return
       end
-      DRRoom.pcs.delete(person)
+
+      # A drag is exactly ONE room in a KNOWN direction -- reversing a single
+      # known step is easy. Walk back and grab directly.
+      echo("*** DROPPED THE KEY AND GOT SWEPT #{drag_dir.upcase} BY THE CURRENT!")
+      echo("*** Backtracking #{reverse} to grab it before moving on...")
+      waitrt?
+      DRC.fix_standing
+      do_move(reverse)
+      waitrt?
+      grab_key
+      if have_key?
+        echo('*** GOT IT BACK! Resuming the hunt.')
+      else
+        echo('*** Not there anymore (someone beat us to it, or it drifted too) - resuming from here.')
+      end
+      return
     end
-  end
 
-  # Freeze the current nemesis (the announced key-holder) if present and not a
-  # friend, then try to grab the key they drop.
-  # @return [void]
-  def zap_nemesis
-    return if @nemesis.nil?
-    return unless @friends.none?(@nemesis)
-
-    get_key
-    return if have_key?
-    return unless DRRoom.pcs.include?(@nemesis)
-
-    wave(@nemesis)
-    waitrt?
-    get_key
-  end
-
-  # Apply pending nemesis set/unset game events to +@nemesis+.
-  # @return [void]
-  def set_or_unset_nemesis
-    if Flags['unset-nemesis']
-      Flags.reset('unset-nemesis')
-      echo "Nemesis Removed: #{@nemesis}"
-      @nemesis = nil
-    elsif Flags['set-nemesis']
-      @nemesis = Flags['set-nemesis'][:nemesis]
-      echo "New nemesis: #{@nemesis}"
-      Flags.reset('set-nemesis')
-    end
-  end
-
-  # Shake the wand for light and re-read the room's exits.
-  # @return [Array<String>, nil] short directions available, or nil if the room
-  #   still cannot be seen
-  def look_for_exits
-    fput('shake wand')
-    Flags.reset('dark-room')
-    result = DRC.bput('look', /(?:Obvious exits|Obvious paths): (.*)\./, /You can't see anything/)
-    if result =~ /(?:Obvious exits|Obvious paths): (.*)\./
-      parse_exits(Regexp.last_match(1))
-    else
-      echo('Failed to parse exits from look command')
-      nil
-    end
-  end
-
-  # Convert a comma-separated long-direction exit list into short directions.
-  # Unknown tokens (not in SHORTDIR) are dropped rather than left as nil, so
-  # @exits never feeds a nil into a move.
-  # @param text [String] e.g. "north, southeast, out"
-  # @return [Array<String>] e.g. ["n", "se", "out"]
-  def parse_exits(text)
-    text.split(', ').map { |dir| SHORTDIR[dir] }.compact
-  end
-
-  # ---------------------------------------------------------------------------
-  # Main loop and its per-tick steps.
-  # ---------------------------------------------------------------------------
-
-  # Drive the maze forever by running one {#run_tick} per iteration. Exits via
-  # {#package} on a win or {#wave} on wand loss.
-  # @return [void]
-  def main_loop
-    loop { run_tick }
-  end
-
-  # One pass of the main loop: recover state, freeze rivals, act on the room
-  # (key/nemesis, lever, doors), then either backtrack (key in hand, white door
-  # seen) or wander. Extracted from {#main_loop} so the per-tick sequence is
-  # unit-testable without the infinite loop.
-  #
-  # Rivals are frozen (via {#check_for_npcs}) BEFORE any provocative action --
-  # not at the end of the tick as before. On arrival {#do_move} only froze the
-  # previous room's occupants, so a rival waiting in the new room could wand-
-  # freeze us while we pulled a rope/lever or stepped through a door (and even in
-  # a room with nothing to pull). Freezing first closes that window; the per-
-  # action guards in {#handle_key_or_search}/{#handle_lever} remain as the tight
-  # freeze right before the key drops, and {#do_move} still freezes before moving.
-  # @return [void]
-  def run_tick
+    echo('*** WE DROPPED OUR GOLDEN KEY! Recovering...')
     waitrt?
     DRC.fix_standing
-    handle_package_if_held
-    ensure_wand
-    # Retry the dowse while latched injured: once a wound is tended, search_wand
-    # succeeds and clears @injured/@norope, re-enabling rope pulls mid-run. Without
-    # this the tarzan-rope retry is unreachable (pull_rope early-returns on
-    # @norope), so the latch would otherwise persist until the next boot.
-    search_wand if @injured
-    absorb_unfrozen_npcs
-    handle_dark_room
-    set_or_unset_nemesis
-    zap_nemesis
-    check_for_npcs
-    track_white_door
-    handle_key_or_search
-    handle_lever
-    handle_doors
-    handle_reposition
-    maintain_khri_buffs
-    maybe_change_direction
+    get_key
+    return if have_key?
 
-    if @backtrack_to_white_door
-      backtrack
-    else
-      wander
-    end
+    # Key is not on the floor anymore. Process pending announcements first (the
+    # "<name> picks up a golden key" line whitelists the thief), then scan+wand.
+    process_flags
+    scan_players
+    get_key
   end
 
-  # Cash in a package if we are somehow already holding one.
+  # Someone in this room just dropped the golden key -- grab it NOW, before they
+  # thaw or anyone else reacts.
   # @return [void]
-  def handle_package_if_held
-    package if DRCI.in_hands?('package')
+  def snatch_loose_key
+    Flags.reset('dm-key-loose')
+    return if have_key?
+
+    waitrt?
+    DRC.release_invisibility
+    case DRC.bput('get key',
+                  /^You pick up/,
+                  /^You get/,
+                  /can't pick that up with your hand that damaged/,
+                  /^You need a free hand/,
+                  /^What were you referring to/,
+                  /^I could not find/)
+    when /^You pick up/, /^You get/
+      echo('*** SNATCHED THE GOLDEN KEY!')
+    when /hand that damaged/
+      damaged_hand_grab
+    when /free hand/
+      off_hand = [DRC.left_hand, DRC.right_hand].compact.find { |item| item !~ /wand/i }
+      DRCI.stow_item?(off_hand) if off_hand
+      DRC.bput('get key', /^You pick up/, /^You get/, /^What were you referring to/, /^I could not find/)
+    end
+    waitrt?
   end
 
-  # Make sure the wand is in hand for movement/dowsing.
+  # Make sure the wand is in hand for movement/dowsing. No-op outside the maze
+  # (Recovery Room / Winner's Circle have no maze wand to "get").
   # @return [void]
   def ensure_wand
-    DRCI.get_item_unsafe('wand') unless DRCI.in_hands?('wand')
+    return unless in_maze?
+    return if DRCI.in_hands?('wand')
+
+    fput('get wand')
+    pause 0.3
   end
 
-  # Re-add a thawed npc to the room's npc list so it gets re-frozen.
-  # @return [void]
-  def absorb_unfrozen_npcs
-    DRRoom.npcs << Flags['npc-unfrozen'][:npc].split.last if Flags['npc-unfrozen']
-    Flags.reset('npc-unfrozen')
+  # @return [Boolean] whether any room object matches +pattern+
+  def room_has?(pattern)
+    DRRoom.room_objs.any? { |obj| obj =~ pattern }
   end
 
-  # Shake the wand when the room has gone dark.
-  # @return [void]
-  def handle_dark_room
-    return unless Flags['dark-room']
-
-    relight_room
+  # @return [Boolean] whether we are hidden
+  def hidden?
+    checkhidden
+  rescue StandardError
+    false
   end
 
-  # Shake the wand for light and clear the dark-room flag.
-  # @return [void]
-  def relight_room
-    fput('shake wand')
-    Flags.reset('dark-room')
+  # @return [Boolean] whether we are invisible
+  def invisible?
+    checkinvisible
+  rescue StandardError
+    false
   end
 
-  # Note that the white door is in this room and reset counters so backtracking
-  # will home in on it.
+  # Frozen by a reflected wave: wait for the thaw (capped so a missed line cannot
+  # park us forever), then recover footing/wand. Actively probes with STAND -- a
+  # successful stand is direct proof we are not frozen.
   # @return [void]
-  def track_white_door
-    return unless DRRoom.room_objs.include?('white door')
+  def wait_for_self_thaw
+    Flags.reset('dm-self-thawed')
+    deadline = Time.now + 60
+    check_at = Time.now + 3
 
-    echo("White Door Seen at: #{@wandercounter}")
-    @whitedoorseen = 0
-    @wandercounter = 0
-  end
+    loop do
+      break if Flags['dm-self-thawed']
+      break if Time.now > deadline
 
-  # Core key logic: if we hold the key, arm backtracking and go through the white
-  # door when it is here; otherwise (no nemesis) inspect key-holders and pull a
-  # rope.
-  # @return [void]
-  def handle_key_or_search
-    @backtrack_to_white_door = false
-
-    if have_key?
-      @nemesis = nil
-      @backtrack_to_white_door = true if @whitedoorseen != -1
-      if DRRoom.room_objs.include?('white door')
-        waitrt?
-        fput('go white door')
-        package
+      if Time.now >= check_at
+        case DRC.bput('stand',
+                      /^You stand/,
+                      /^You are already standing/,
+                      /^You .*try to stand.*fail/,
+                      /frozen/,
+                      /^You can't do that/,
+                      /^You are still stunned/)
+        when /^You stand/, /^You are already standing/
+          debug('Stand succeeded - confirmed unfrozen, ending the wait')
+          break
+        end
+        check_at = Time.now + 3
       end
-    else
-      return if @nemesis
-
-      check_key_holders unless DRRoom.pcs.empty?
-      if (rope = DRRoom.room_objs.find { |obj| obj =~ /rope/ })
-        # Freeze any rivals in the room BEFORE pulling: the rope drops the key on
-        # the floor, and an unfrozen npc will snatch it before we can grab it.
-        check_for_npcs
-        pull_rope(rope)
-      end
-    end
-  end
-
-  # Step through a colored door once enough rooms have been explored, avoiding
-  # re-entering the same color until we have wandered further (or hold the key).
-  # @return [void]
-  def handle_doors
-    return unless @wandercounter > 15
-    return unless (door = (DRRoom.room_objs & ['red door', 'blue door', 'green door']).first)
-
-    @last_door_entered ||= door
-    return unless @last_door_entered != door || @wandercounter > 40 || have_key?
-
-    case DRC.bput("go #{door}", /^Obvious/, /^You can't go there/, /You smash your nose/, /It's pitch dark and you can't see a thing/)
-    when /^Obvious/
-      echo('went through a colored door')
-      DRRoom.room_objs.delete(door)
-      init_maze
-    when /It's pitch dark and you can't see a thing/
-      # A dark room makes GO resolve to nothing, so bput would otherwise block for
-      # its full timeout (the reported 15-second hang). Re-light and skip this
-      # tick; the door is retried once the room is lit again.
-      echo('colored door in the dark - relighting, will retry once lit')
-      relight_room
-      return
-    when /^You can't go there/
-      echo("Couldn't go through the #{door}")
+      pause 0.5
     end
 
-    @last_door_entered = door
+    Flags.reset('dm-self-thawed')
+    waitrt?
+    DRC.fix_standing
+    ensure_wand
   end
 
-  # Re-initialize the map when the maze has repositioned us.
+  # Wait out a stun, with a cap and a stale-indicator self-heal (a LOOK forces
+  # the game to refresh status).
   # @return [void]
-  def handle_reposition
-    return unless Flags['repositioned']
-
-    Flags.reset('repositioned')
-    init_maze
+  def wait_while_stunned
+    deadline = Time.now + 15
+    pause 0.5 while checkstunned && Time.now < deadline
+    if checkstunned
+      debug('Stunned 15s+ - refreshing state in case the indicator is stale')
+      fput('look')
+      pause 1
+    end
+  rescue StandardError
+    nil
   end
 
-  # Keep the thief sight/cunning Khri up during the run. No-op for non-thieves.
+  # Cast each Khri that is not already active (checked via DRSpells).
   # @return [void]
-  def maintain_khri_buffs
+  def ensure_khri(khris)
     return unless DRStats.thief?
 
-    fput('Khri Sight') unless DRSpells.active_spells['Khri Sight']
-    fput('Khri Cunning') unless DRSpells.active_spells['Khri Cunning']
+    khris.each do |khri|
+      next if DRSpells.active_spells["Khri #{khri}"]
+
+      fput("khri #{khri.downcase}")
+      pause 1
+      waitrt?
+    end
   end
 
-  # Flip the wall-follow hand after wandering a long stretch, on the assumption we
-  # are stuck in a large loop.
+  # Re-up dropped Sight/Cunning during the run, at most once a minute.
   # @return [void]
-  def maybe_change_direction
-    return unless @wandercounter > @wandercounter_change_dir_target
+  def maintain_khri
+    return unless DRStats.thief?
+    return if (Time.now - @khri_check) < 60
 
-    echo('Likely in a loop - changing direction')
-    @wandercounter_change_dir_target += 80
-    change_direction_map
+    @khri_check = Time.now
+    ensure_khri(%w[Sight Cunning])
+  end
+
+  # Thief stealth cycle: while keyless, periodically vanish + silence.
+  # @return [void]
+  def thief_stealth_cycle
+    return unless @thief_stealth
+    return unless DRStats.thief?
+    return if have_key?
+    return if invisible?
+    return if (Time.now - @stealth_timer) < 30
+    return if DRStats.concentration.to_i < 80
+
+    @stealth_timer = Time.now
+    fput('khri vanish')
+    pause 0.5
+    fput('khri silence') unless invisible?
+    pause 0.3
   end
 end
 
 before_dying do
-  Flags.delete('set-nemesis')
-  Flags.delete('unset-nemesis')
-  Flags.delete('npc-unfrozen')
-  Flags.delete('repositioned')
-  Flags.delete('dark-room')
-  Flags.delete('dragged')
+  fput('flag description on') # restore room descriptions
+  Droughtmans::EVENT_FLAGS.each { |flag| Flags.delete(flag) }
 end
 
 Droughtmans.new
