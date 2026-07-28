@@ -753,7 +753,11 @@ RSpec.describe 'moonwatch.lic' do
       it 'writes a sun row with the drift column when enabled' do
         logger.log_sun_event(true, now, date, 0, 100)
         expect(File.exist?(sun_csv)).to be true
-        expect(File.readlines(sun_csv).first).to match(/expected_day_length,\s*|drift/)
+        expect(File.readlines(sun_csv).first.chomp).to eq(
+          'server_time,event,day_of_year,season,last_rise,last_set,' \
+          'day_interval,day_length,night_length,expected_day_length,' \
+          'drift,sun_offset,predicted_seconds'
+        )
       end
 
       it 'rejects an outlier day interval' do
@@ -771,6 +775,14 @@ RSpec.describe 'moonwatch.lic' do
         row = File.readlines(phase_csv).last
         expect(row).to include('growing crescent')
         expect(row).to include(Moons.phase('katamba', now)[:name])
+      end
+
+      it 'CSV-escapes an observed phase containing a comma so columns do not shift' do
+        require 'csv'
+        logger.log_phase_observation('katamba', 'bright, waxing gibbous', now)
+        row = File.readlines(phase_csv).last.chomp
+        expect(row).to include('"bright, waxing gibbous"')
+        expect(CSV.parse_line(row).length).to eq(8) # matches the 8-column header
       end
     end
 

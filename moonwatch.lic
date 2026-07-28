@@ -1776,13 +1776,27 @@ class MoonwatchLogger
         game_time,
         moon,
         date[:day_of_year],
-        observed_phase,
+        csv_field(observed_phase),
         computed[:index],
         computed[:name],
         computed[:phase_angle],
         computed[:orbital_angle]
       ].join(',')
     end
+  end
+
+  # RFC4180-style CSV escaping for a free-form field: quote and double any
+  # embedded quotes only when the value contains a comma, quote, or newline, so
+  # commas in game text (observed phase wording) do not shift later columns.
+  #
+  # @param value [Object] the field value
+  # @return [String] the CSV-safe field
+  #
+  def csv_field(value)
+    s = value.to_s
+    return s unless s =~ /[",\r\n]/
+
+    %{"#{s.gsub('"', '""')}"}
   end
 
   # Ensure phase CSV has header row.
@@ -2501,10 +2515,10 @@ loop do
     reset_tracker.log_shutdown(game_time, current_offsets)
 
   when SUN_DEBUG_KEYWORDS_PATTERN
-    # Debug: log potential sun events we might be missing
-    unless line.match?(SUN_RISE_COMBINED_PATTERN) || line.match?(SUN_SET_COMBINED_PATTERN)
-      MoonwatchMessaging.debug("potential sun event not captured: #{line}", $debug_mode_mm)
-    end
+    # Debug: log potential sun events we might be missing. Handled sun rise/set
+    # lines are caught by the earlier when-clauses, so any line reaching here is
+    # an unmatched sun-related line.
+    MoonwatchMessaging.debug("potential sun event not captured: #{line}", $debug_mode_mm)
   end
 
   # Update positions from calculations
