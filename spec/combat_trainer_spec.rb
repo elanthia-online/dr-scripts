@@ -3212,6 +3212,61 @@ RSpec.describe SpellProcess do
       end
     end
   end
+
+  # cast_ritual now routes weapon disposition through the summoned-aware
+  # GameState helpers (stow_or_store_weapon / restore_weapon) instead of its
+  # own inline break/stow + re-summon/wield branching.
+  describe '#cast_ritual' do
+    it 'stores the weapon before the ritual and restores it after' do
+      allow(DRCMM).to receive(:update_astral_data).and_return(nil)
+      instance = build_spell_process
+      gs = double('GameState')
+      allow(gs).to receive(:reset_stance=)
+      expect(gs).to receive(:stow_or_store_weapon).ordered
+      expect(gs).to receive(:restore_weapon).ordered
+      instance.send(:cast_ritual, { 'ritual' => true }, gs)
+    end
+
+    it 'performs the ritual (invoke + DRCA.ritual) when astral data is present' do
+      data = { 'ritual' => true, 'abbrev' => 'foo' }
+      allow(DRCMM).to receive(:update_astral_data).and_return(data)
+      allow(DRCA).to receive(:ritual)
+      instance = build_spell_process
+      allow(instance).to receive(:check_invoke)
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      allow(gs).to receive(:reset_stance=)
+
+      instance.send(:cast_ritual, data, gs)
+
+      expect(gs).to have_received(:stow_or_store_weapon)
+      expect(instance).to have_received(:check_invoke)
+      expect(DRCA).to have_received(:ritual).with(data, anything)
+      expect(gs).to have_received(:restore_weapon)
+    end
+
+    it 'skips the ritual body but still restores the weapon when astral data is nil' do
+      allow(DRCMM).to receive(:update_astral_data).and_return(nil)
+      allow(DRCA).to receive(:ritual)
+      instance = build_spell_process
+      allow(instance).to receive(:check_invoke)
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      allow(gs).to receive(:reset_stance=)
+
+      instance.send(:cast_ritual, { 'ritual' => true }, gs)
+
+      expect(instance).not_to have_received(:check_invoke)
+      expect(DRCA).not_to have_received(:ritual)
+      expect(gs).to have_received(:restore_weapon)
+    end
+
+    it 'resets stance after the ritual' do
+      allow(DRCMM).to receive(:update_astral_data).and_return(nil)
+      instance = build_spell_process
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      expect(gs).to receive(:reset_stance=).with(true)
+      instance.send(:cast_ritual, { 'ritual' => true }, gs)
+    end
+  end
 end
 
 # ###################################################################

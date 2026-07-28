@@ -2408,11 +2408,10 @@ class SpellProcess
   end
 
   def cast_ritual(data, game_state)
-    if (summoned = game_state.summoned_info(game_state.weapon_skill))
-      DRCS.break_summoned_weapon(game_state.weapon_name)
-    else
-      @equipment_manager.stow_weapon(game_state.weapon_name)
-    end
+    # Centralized summoned-aware disposition: a moon mage's blade is worn (not
+    # broken) so restore_weapon can re-hold it; warrior-mage / gear weapons are
+    # broken / stowed and re-summoned / re-wielded exactly as before.
+    game_state.stow_or_store_weapon
 
     data = DRCMM.update_astral_data(data, @settings)
     if data # DRCMM.update_astral_data returns nil on failure
@@ -2420,11 +2419,7 @@ class SpellProcess
       DRCA.ritual(data, @settings)
     end
 
-    if summoned
-      game_state.prepare_summoned_weapon(false)
-    else
-      @equipment_manager.wield_weapon?(game_state.weapon_name, game_state.weapon_skill)
-    end
+    game_state.restore_weapon
     game_state.reset_stance = true
   end
 
