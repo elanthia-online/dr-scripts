@@ -930,6 +930,20 @@ module Harness
     $bleeding || false
   end
 
+  # DragonRealms indicator-based globals (lib/global_defs.rb). Mirror the
+  # overridable state flags so specs can drive hidden/invisible/stunned checks.
+  def checkstunned
+    $stunned || false
+  end
+
+  def checkhidden
+    $hidden || false
+  end
+
+  def checkinvisible
+    $invisible || false
+  end
+
   def health=(health)
     $health = health
   end
