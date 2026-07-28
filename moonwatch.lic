@@ -74,7 +74,7 @@
     ;moonwatch nolog        - Disable moon event logging and auto-observe
     ;moonwatch reset        - Reset all offsets to zero
     ;moonwatch alias        - Add 'moon' alias (reports when moonwatch is not
-                              running; self-updates on start once enabled)
+                              running; an existing one auto-updates on start)
 
   Data exposed via UserVars:
     UserVars.moons['katamba']['visible']  - Boolean, is moon up?
@@ -996,19 +996,22 @@ end
 # Single Responsibility: build and manage the optional global 'moon' alias.
 #
 # The alias body is Ruby executed via Lich's `eq` (exec quiet). It checks whether
-# moonwatch is actually running before reading UserVars, so a stale alias never
+# moonwatch is actually running (Script.running?('moonwatch'), true regardless of
+# the folder the script lives in) before reading UserVars, so a stale alias never
 # echoes old data silently -- when moonwatch is not running it tells the user how
 # to start it. This check is crash-proof: it does not depend on any exit cleanup.
 #
-# Aliases are frontend-managed and cannot be read back from Lich, so we cannot
-# introspect the installed body. Instead we self-track opt-in and a body version
-# in CharSettings; on startup a previously-enabled alias is silently re-installed
-# whenever the shipped VERSION is newer than what the user last installed. We
-# NEVER create the alias unless the user explicitly asked (;moonwatch alias).
+# The core `alias` service stores --global aliases in a SQLite DB (data/alias.db3,
+# table `global`, columns trigger/target) and UPSERTs on re-add. On startup we
+# read that DB: if a `moon` alias already exists AND its body looks like one of
+# ours AND differs from the current body, we silently re-install the current body
+# (so existing users are upgraded with no action). We NEVER create a `moon` alias
+# that is not already present, and we never touch an unrelated user alias.
 #
 module MoonwatchAlias
-  # Bump whenever `body` changes so enabled users get the new body on next start.
-  VERSION = 1
+  # Substrings that identify a `moon` alias as one moonwatch installed (vs. a
+  # user's own unrelated alias that happens to be triggered by "moon").
+  OURS_MARKERS = ["UserVars.moons", "Script.running?('moonwatch')"].freeze
 
   # The `;eq` Ruby body run when the user types `moon`.
   #
@@ -1035,40 +1038,78 @@ module MoonwatchAlias
     "#{lich_char}alias add --global moon = #{body(lich_char)}"
   end
 
-  # Pure decision: should startup re-install the alias? Only when the user opted
-  # in AND the stored body version is behind the shipped VERSION. Disabled or
-  # unset always returns false, so we never auto-create an alias.
+  # Path to the core alias service's SQLite store.
   #
-  # @param enabled [Boolean, nil] the persisted opt-in flag
-  # @param stored_version [Integer, nil] the persisted body version
-  # @return [Boolean]
+  # @return [String]
   #
-  def self.should_resync?(enabled:, stored_version:)
-    enabled == true && (stored_version.nil? || stored_version < VERSION)
+  def self.alias_db_path
+    File.join(DATA_DIR, 'alias.db3')
   end
 
-  # Install (or overwrite) the alias and record opt-in + current body version.
+  # Read the current target of a global alias from the alias service DB. Returns
+  # nil if the DB, table, or row is absent, or on any error (the alias service is
+  # optional and its storage is not ours to depend on hard).
+  #
+  # @param trigger [String] the alias trigger to look up (default 'moon')
+  # @param db_path [String] override the DB path (for testing)
+  # @return [String, nil] the stored target, or nil
+  #
+  def self.existing_target(trigger = 'moon', db_path: alias_db_path)
+    require 'sqlite3'
+    return nil unless File.exist?(db_path)
+
+    db = SQLite3::Database.new(db_path)
+    db.get_first_value(
+      "SELECT target FROM global WHERE trigger=? COLLATE NOCASE;",
+      trigger.to_s.encode('UTF-8')
+    )
+  rescue StandardError, LoadError
+    nil
+  ensure
+    db&.close
+  end
+
+  # Does this stored alias target look like one moonwatch installed (vs. a user's
+  # own alias)? Used to avoid clobbering an unrelated `moon` alias.
+  #
+  # @param target [String, nil]
+  # @return [Boolean]
+  #
+  def self.ours?(target)
+    return false if target.nil?
+
+    OURS_MARKERS.any? { |marker| target.include?(marker) }
+  end
+
+  # Pure decision: should startup re-install the alias? Only when a `moon` alias
+  # already exists, is one of ours, and its body differs from the current body.
+  # Nil/absent or a user's unrelated alias always returns false.
+  #
+  # @param existing [String, nil] the currently stored target
+  # @param lich_char [String] the clean lich command character
+  # @return [Boolean]
+  #
+  def self.needs_update?(existing, lich_char)
+    ours?(existing) && existing.to_s.strip != body(lich_char).strip
+  end
+
+  # Install (or overwrite) the alias via the alias service, which UPSERTs.
   #
   # @param lich_char [String] the clean lich command character
   # @return [void]
   #
   def self.install(lich_char)
     UpstreamHook.run("<c>#{command(lich_char)}")
-    CharSettings['moon_alias_enabled'] = true
-    CharSettings['moon_alias_version'] = VERSION
   end
 
-  # Startup re-sync: silently refresh a previously-enabled alias when its body
-  # version is behind. No-op when the user never opted in.
+  # Startup re-sync: silently upgrade an existing moonwatch `moon` alias to the
+  # current body. No-op when no alias exists or it is not ours.
   #
   # @param lich_char [String] the clean lich command character
   # @return [void]
   #
   def self.resync(lich_char)
-    return unless should_resync?(enabled: CharSettings['moon_alias_enabled'],
-                                 stored_version: CharSettings['moon_alias_version'])
-
-    install(lich_char)
+    install(lich_char) if needs_update?(existing_target, lich_char)
   end
 end
 
@@ -2335,15 +2376,15 @@ instance_notice = MoonwatchInstance.calibration_notice(XMLData.game)
 MoonwatchMessaging.info(instance_notice) if instance_notice
 
 # Handle alias command. MoonwatchAlias builds a self-aware alias that reports when
-# moonwatch is not running, and records opt-in + body version so startup can keep
-# an enabled alias up to date (see MoonwatchAlias.resync below).
+# moonwatch is not running (see MoonwatchAlias). This creates or overwrites it.
 if args.alias
   MoonwatchAlias.install($clean_lich_char)
   MoonwatchMessaging.info("Added 'moon' alias for quick status.")
 end
 
-# Re-sync a previously-enabled alias to the current body version. No-op unless the
-# user opted in via ;moonwatch alias, so we never auto-create an alias.
+# Auto-upgrade an existing moonwatch 'moon' alias to the current body. Reads the
+# alias service DB; no-op if no 'moon' alias exists or it is not one of ours, so
+# we never create an alias the user did not ask for.
 MoonwatchAlias.resync($clean_lich_char)
 
 # -----------------------------------------------------------------------------

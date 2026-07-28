@@ -1102,56 +1102,99 @@ RSpec.describe 'moonwatch.lic' do
       end
     end
 
-    describe '.should_resync?' do
-      it 'is false when the user never opted in' do
-        expect(described_class.should_resync?(enabled: nil, stored_version: nil)).to be false
-        expect(described_class.should_resync?(enabled: false, stored_version: 0)).to be false
+    describe '.existing_target' do
+      it 'returns nil when the alias DB file does not exist' do
+        expect(described_class.existing_target('moon', db_path: '/no/such/alias.db3')).to be_nil
       end
 
-      it 'is true when enabled but no version has been recorded yet' do
-        expect(described_class.should_resync?(enabled: true, stored_version: nil)).to be true
+      it 'reads the stored target of a global alias, nil for a missing trigger' do
+        require 'sqlite3'
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'alias.db3')
+          db = SQLite3::Database.new(path)
+          db.execute('CREATE TABLE global (trigger TEXT NOT NULL, target TEXT NOT NULL, UNIQUE(trigger));')
+          db.execute('INSERT INTO global (trigger, target) VALUES (?, ?);', ['moon', ';eq respond("hi")'])
+          db.close
+          expect(described_class.existing_target('moon', db_path: path)).to eq(';eq respond("hi")')
+          expect(described_class.existing_target('absent', db_path: path)).to be_nil
+        end
       end
 
-      it 'is true when enabled and the stored version is behind' do
-        expect(described_class.should_resync?(enabled: true, stored_version: MoonwatchAlias::VERSION - 1)).to be true
+      it 'returns nil (does not raise) when the global table is missing' do
+        require 'sqlite3'
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'alias.db3')
+          SQLite3::Database.new(path).close # empty DB, no global table
+          expect(described_class.existing_target('moon', db_path: path)).to be_nil
+        end
+      end
+    end
+
+    describe '.ours?' do
+      it 'is false for nil or an unrelated user alias' do
+        expect(described_class.ours?(nil)).to be false
+        expect(described_class.ours?('look')).to be false
       end
 
-      it 'is false when enabled and already at the current version' do
-        expect(described_class.should_resync?(enabled: true, stored_version: MoonwatchAlias::VERSION)).to be false
+      it 'is true for a target carrying our markers' do
+        expect(described_class.ours?(described_class.body(';'))).to be true
+        expect(described_class.ours?('some old body with UserVars.moons in it')).to be true
+      end
+    end
+
+    describe '.needs_update?' do
+      it 'is false when no alias exists' do
+        expect(described_class.needs_update?(nil, ';')).to be false
+      end
+
+      it 'is false for an unrelated user alias (never clobbered)' do
+        expect(described_class.needs_update?('look', ';')).to be false
+      end
+
+      it 'is false when ours and already the current body' do
+        expect(described_class.needs_update?(described_class.body(';'), ';')).to be false
+      end
+
+      it 'is true when ours but stale (an old body)' do
+        expect(described_class.needs_update?('old UserVars.moons body', ';')).to be true
       end
     end
 
     describe '.install' do
-      it 'records opt-in and the current body version in CharSettings' do
-        described_class.install(';')
-        expect(CharSettings['moon_alias_enabled']).to be true
-        expect(CharSettings['moon_alias_version']).to eq(MoonwatchAlias::VERSION)
-      end
-
-      it 'emits the alias-add command upstream' do
+      it 'emits the self-aware alias-add command upstream' do
         captured = []
         UpstreamHook.add('moonwatch_spec_capture', proc { |s| captured << s; s })
         described_class.install(';')
         UpstreamHook.remove('moonwatch_spec_capture')
         expect(captured.join).to include('alias add --global moon = ')
+        expect(captured.join).to include("Script.running?('moonwatch')")
       end
     end
 
     describe '.resync' do
-      it 'installs when a previously-enabled alias is behind' do
-        CharSettings['moon_alias_enabled'] = true
-        CharSettings['moon_alias_version'] = MoonwatchAlias::VERSION - 1
-        described_class.resync(';')
-        expect(CharSettings['moon_alias_version']).to eq(MoonwatchAlias::VERSION)
-      end
-
-      it 'does nothing when the user never opted in' do
+      def capture_resync(existing)
+        allow(described_class).to receive(:existing_target).and_return(existing)
         captured = []
         UpstreamHook.add('moonwatch_spec_capture', proc { |s| captured << s; s })
         described_class.resync(';')
         UpstreamHook.remove('moonwatch_spec_capture')
-        expect(captured).to be_empty
-        expect(CharSettings['moon_alias_enabled']).to be_nil
+        captured.join
+      end
+
+      it 'reinstalls when an existing moonwatch alias is stale' do
+        expect(capture_resync('old UserVars.moons body')).to include('alias add --global moon = ')
+      end
+
+      it 'does nothing when no moon alias exists' do
+        expect(capture_resync(nil)).to be_empty
+      end
+
+      it 'does nothing for an unrelated user alias' do
+        expect(capture_resync('look')).to be_empty
+      end
+
+      it 'does nothing when the existing alias is already current' do
+        expect(capture_resync(described_class.body(';'))).to be_empty
       end
     end
   end
