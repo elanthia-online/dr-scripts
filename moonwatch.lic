@@ -1,233 +1,2586 @@
+# frozen_string_literal: true
+
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#moonwatch
+
+  Moonwatch v4.5.0 - Bresenham Moons + Empirical Sun Table + Lunar Phase
+  ======================================================================
+
+  This script provides real-time tracking of DragonRealms moons (Katamba, Xibar, Yavash)
+  and the sun, with self-correcting prediction based on observed astronomical events.
+
+  v4.0 uses Bresenham tick prediction: instead of predicting event times from a
+  single average constant (always wrong by up to 42s), it computes the exact 60s
+  tick boundary the game will fire on. The game quantizes all moon events to 60s
+  server ticks, and our integer constants are the game's exact periods (validated
+  by observed short/long split ratios matching (P mod 60) / 60).
+
+  v4.1 replaces the sun cosine formula with an empirical day-of-year lookup
+  table built from observed sun events (~100% rois match vs ~69% for the
+  cosine, which is kept only as a fallback). Sunrise and sunset are stored
+  independently because the game is not perfectly symmetric around midday.
+
+  v4.2 switches the moon cycle constants from rounded integers to their OLS
+  fractional periods (the game's true period). This removes the slow phase
+  drift the integer constants caused, so offsets stay near zero and the periodic
+  epoch re-centering is no longer needed. The moon epochs were re-anchored, so
+  run ;moonwatch reset once per character after updating to clear stale offsets.
+
+  v4.3 adds lunar phase (new / waxing crescent / first quarter / waxing gibbous
+  / full / waning gibbous / third quarter / waning crescent) and a sky-position
+  't' (0..1 across the current above- or below-horizon arc). Phase is computed
+  from the DR client's own sidereal orbital periods; it has been validated
+  against the in-game `observe <moon>` verb (both Katamba and Yavash matched a
+  "growing crescent" readout). Phase is model-only (there is no passive phase
+  broadcast to self-correct against); enable ;moonwatch log to record
+  observed-vs-computed phase for ongoing calibration.
+
+  v4.4 auto-observes each moon at its rise while logging is enabled: on a rise
+  broadcast the script sends `observe <moon>` and logs the game's phase wording
+  against the computed phase, building the phrase-to-phase map automatically.
+  This only runs with ;moonwatch log on (observe carries roundtime and trains a
+  skill). Rise broadcasts only reach you outdoors, so it self-gates to moments
+  when the moon is actually observable.
+
+  v4.4.1 adds each moon's current phase and an approximate next-phase countdown
+  to the startup debug summary, and exposes next_phase / next_phase_seconds via
+  UserVars. Phase buckets last roughly a real day (see next_phase_seconds).
+
+  v4.4.2 broadens observe capture: it scopes on the "You scan the skies" line and
+  matches any phase wording (not just "... is ..."), mapping each via
+  Moons::OBSERVED_PHASE_MAP. Four wordings are mapped and model-validated (waxing
+  crescent, waxing gibbous, full, waning crescent); unmapped wordings are logged
+  raw so the remaining four phases can be added as they are seen.
+
+  v4.5.0 makes instance-awareness explicit. The moon periods are game-code
+  constants (cross-validated against the DR client's own hard-coded sidereal
+  periods to within ~0.05s), so they are identical on every instance; offsets
+  persist in CharSettings, which Lich already scopes per instance AND character,
+  so each instance self-calibrates independently with no cross-instance bleed.
+  On a non-Prime instance (Platinum/Fallen/Test) the script now prints a one-time
+  notice at startup that the absolute phase self-calibrates from observed events
+  (see the MoonwatchInstance module). No per-instance constants are maintained.
+
+  Architecture (SOLID principles applied):
+  - DRTime: Single responsibility for DR calendar calculations
+  - Moons: Single responsibility for moon position calculations
+  - MoonwatchInstance: Single responsibility for game-instance awareness
+  - MoonwatchLogger: Single responsibility for event logging (CSV)
+  - MoonwatchOffsetManager: Single responsibility for offset persistence/correction
+  - MoonwatchUI: Single responsibility for display/window management
+  - Main loop: Orchestrates components, handles game events
+
+  Usage:
+    ;moonwatch              - Start tracking
+    ;moonwatch debug        - Enable debug output
+    ;moonwatch nodebug      - Disable debug output
+    ;moonwatch window       - Enable moon status window
+    ;moonwatch nowindow     - Disable moon status window
+    ;moonwatch log          - Enable event logging + auto-observe moons at rise
+    ;moonwatch nolog        - Disable moon event logging and auto-observe
+    ;moonwatch reset        - Reset all offsets to zero
+    ;moonwatch alias        - Add 'moon' alias (reports when moonwatch is not
+                              running; an existing one auto-updates on start)
+
+  Data exposed via UserVars:
+    UserVars.moons['katamba']['visible']  - Boolean, is moon up?
+    UserVars.moons['katamba']['timer']    - Minutes until next event
+    UserVars.moons['katamba']['pretty']   - Human-readable status string
+    UserVars.moons['katamba']['phase']    - Lunar phase name (e.g. 'waxing crescent')
+    UserVars.moons['katamba']['next_phase'] - Upcoming lunar phase name
+    UserVars.moons['katamba']['next_phase_seconds'] - Approx seconds to next phase
+    UserVars.moons['katamba']['t']        - Fractional progress across current arc (0..1)
+    UserVars.moons['running']             - Boolean, is moonwatch maintaining this data?
+    UserVars.sun['visible']               - Boolean, is sun up?
+    UserVars.sun['time_of_day']           - Current time period description
+    UserVars.sun['running']               - Boolean, is moonwatch maintaining this data?
+    UserVars.calendar['date_string']      - Formatted DR date "446-01-15 06:12"
+    UserVars.calendar['running']          - Boolean, is moonwatch maintaining this data?
 =end
 
 no_pause_all
 no_kill_all
 
+$MOONWATCH_VERSION = '4.5.0'
+
+# =============================================================================
+# CONSTANTS: Game Event Patterns
+# =============================================================================
+# These patterns match the game's astronomical event messages.
+# Extracted as frozen constants for clarity and testability.
+
+# Moon rise/set patterns with named capture for moon identification
+# @example "Katamba slowly rises above the horizon"
+# @example "Xibar sets behind the distant hills"
+MOON_SET_PATTERN = /^(?<moon>Katamba|Xibar|Yavash) sets/i.freeze
+
+# @example "Katamba slowly rises above the horizon"
+MOON_RISE_PATTERN = /^(?<moon>Katamba|Xibar|Yavash) slowly rises/i.freeze
+
+# The `observe <moon>` response opens with "You scan the skies ...". We use it to
+# scope phase-line capture so ambient sky text is never mistaken for a reading.
+MOON_SCAN_PATTERN = /^You scan the skies/i.freeze
+
+# Moon phase readout from the `observe <moon>` verb, captured after a scan line.
+# DR varies the wording per phase (e.g. "... is a growing crescent of light.",
+# "... forms a perfect circle in the heavens."), so we match the whole clause
+# after "moon <M>" and let Moons.observed_phase_name map it. The colour adjective
+# before "moon" varies per moon, so it is matched loosely.
+# @example "The black moon Katamba is a growing crescent of light."
+# @example "The moon Katamba forms a perfect circle in the heavens."
+MOON_PHASE_LINE_PATTERN = /^The\b.*\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.*)\.\s*$/i.freeze
+
+# Sun rise event patterns - multiple variations exist in-game
+# These cover dawn/sunrise messages across different weather conditions and locations
+SUN_RISE_PATTERNS = [
+  /heralding another fine day/,
+  /rises to create the new day/,
+  /as the sun rises, hidden/,
+  /as the sun rises behind it/,
+  /faintest hint of the rising sun/,
+  /The rising sun slowly/,
+  /Night slowly turns into day as the horizon/
+].freeze
+
+# Sun set event patterns - multiple variations exist in-game
+# These cover dusk/sunset messages across different weather conditions
+SUN_SET_PATTERNS = [
+  /The sun sinks below the horizon/,
+  /night slowly drapes its starry banner/,
+  /sun slowly sinks behind the scattered clouds and vanishes/,
+  /grey light fades into a heavy mantle of black/
+].freeze
+
+# Combined sun rise pattern for single regex matching
+SUN_RISE_COMBINED_PATTERN = Regexp.union(SUN_RISE_PATTERNS).freeze
+
+# Combined sun set pattern for single regex matching
+SUN_SET_COMBINED_PATTERN = Regexp.union(SUN_SET_PATTERNS).freeze
+
+# Debug pattern for catching potential sun events we might be missing
+# Used to log unhandled sun-related messages for future pattern additions
+SUN_DEBUG_KEYWORDS_PATTERN = /\b(sun|dawn|dusk|sunrise|sunset|daybreak|twilight|daylight)\b/i.freeze
+
+# Server shutdown detection pattern
+# @example "DragonRealms will be shutting down in 10 minutes for routine maintenance..."
+# @see design doc v2.14 "Server Reset Tracking"
+SHUTDOWN_PATTERN = /DragonRealms will be shutting down/i.freeze
+
+# =============================================================================
+# MODULE: DRTime - DragonRealms Calendar and Time Calculations
+# =============================================================================
+# Single Responsibility: All DR calendar math in one place.
+# Based on Genie4's TimeTracker plugin by Barnacus.
+#
+# The DR calendar uses a unique time system:
+# - 60 real seconds = 1 rois (DR minute)
+# - 30 rois = 1 anlas (DR hour)
+# - 12 anlas = 1 DR day
+# - 40 days = 1 DR month
+# - 10 months = 1 DR year
+# - Total: 400 DR days per year, 21600 real seconds per DR day (6 real hours)
+#
+# @example Get current DR date
+#   date = DRTime.calculate_date(XMLData.server_time)
+#   puts "Year #{date[:year]}, Month #{date[:month]}, Day #{date[:day]}"
+#
+# @example Get time of day description
+#   date = DRTime.calculate_date(XMLData.server_time)
+#   time_desc = DRTime.time_of_day(date[:seconds_in_day], date[:day_of_year])
+#   puts time_desc  # => "mid-morning"
+#
+module DRTime
+  # -------------------------------------------------------------------------
+  # Time Unit Constants
+  # -------------------------------------------------------------------------
+  # These define the relationship between real-world seconds and DR time units.
+  # All values are derived from the base: 60 real seconds = 1 rois.
+
+  # Real seconds per DR minute (rois)
+  # @return [Integer] 60 - one real minute equals one DR minute
+  SECONDS_PER_ROIS = 60
+
+  # Real seconds per DR hour (anlas)
+  # Derived: 60 seconds/rois * 30 rois/anlas = 1800 seconds
+  # @return [Integer] 1800 - 30 real minutes per DR hour
+  SECONDS_PER_ANLAS = SECONDS_PER_ROIS * 30
+
+  # Real seconds per DR day
+  # Derived: 1800 seconds/anlas * 12 anlas/day = 21600 seconds
+  # @return [Integer] 21600 - 6 real hours per DR day
+  SECONDS_PER_DAY = SECONDS_PER_ANLAS * 12
+
+  # DR days per month (constant across all months)
+  # @return [Integer] 40
+  DAYS_PER_MONTH = 40
+
+  # DR months per year
+  # @return [Integer] 10
+  MONTHS_PER_YEAR = 10
+
+  # DR days per year
+  # Derived: 40 days/month * 10 months/year = 400 days
+  # @return [Integer] 400
+  DAYS_PER_YEAR = DAYS_PER_MONTH * MONTHS_PER_YEAR
+
+  # -------------------------------------------------------------------------
+  # Epoch Calibration Constants
+  # -------------------------------------------------------------------------
+  # These anchor our calculations to a known point in time.
+
+  # Reference Unix timestamp when DR calendar was calibrated
+  # This aligns XMLData.server_time with the DR calendar system.
+  #
+  # Calibration history:
+  # - Original: 2024-12-26, derived from in-game TIME command
+  # - Recalibrated: 2025-02-20 from sunwatch_events CSV (avg drift -380s)
+  # - Recalibrated: 2026-03-12 from 82 sun events + 2 in-game TIME readings
+  #   Sun events all land on exact rois boundaries with this value.
+  #   Two "positive" TIME readings confirm calendar accuracy (rois within +/-1).
+  #
+  # @return [Integer] Unix timestamp of calibration epoch
+  CALENDAR_EPOCH = 1_688_607_948
+
+  # DR year at the calibration epoch
+  # At CALENDAR_EPOCH, it was Year 446 in the DR calendar.
+  # @return [Integer] 446
+  CALIBRATION_YEAR = 446
+
+  # -------------------------------------------------------------------------
+  # Sun Timing Formula Constants
+  # -------------------------------------------------------------------------
+  # Sunrise/sunset are predicted from empirical lookup tables keyed by day of
+  # year (SUN_RISE_ROIS_TABLE / SUN_SET_ROIS_TABLE below), built from observed
+  # sun events. The game's sun function is deterministic and stable year over
+  # year (every day observed across two DR years shares the same rise rois),
+  # so the table is exact: ~100% rois match vs ~69% for the old cosine model.
+  #
+  # Rise and set are stored independently because they are NOT perfectly
+  # symmetric. rise_rois + set_rois is 360 on ~84% of days but 358 or 361 on
+  # the rest, so set cannot be derived as ROIS_PER_DAY - rise_rois.
+  #
+  # The cosine constants below are retained only as a fallback for any
+  # day_of_year not covered by the tables (the tables span all 400 days, so
+  # this is a safety net). The fallback is the Elanthipedia form
+  # f(day) = 30 * sin(pi*(d + 100x)/200) + 75 (x=1 rise, x=3 set), which
+  # simplifies to rise_rois = round(90 + 29.51 * cos(2*pi*d/400)). On the full
+  # year dataset it reaches only ~69% exact rois match (mean error ~26s); the
+  # game curve is close to but not a true cosine, so the table supersedes it.
+
+  # Sunrise base offset in rois (equinox value: sun rises 90 rois after midnight)
+  # 90 rois x 60s = 5400s = 1.5 real hours after midnight
+  # @return [Integer] 90
+  SUN_RISE_BASE_ROIS = 90
+
+  # Sunrise seasonal amplitude in rois (half the summer-winter swing)
+  # Confirmed 2026-04 from winter solstice data (days 385-399, day 0).
+  # A=29 too low (day 399 predicted 7320, observed 7200).
+  # A=30 too high (day 389 predicted 7200, observed 7320).
+  # Constraint: B in [29.504, 29.515). 29.51 is the tightest fit.
+  # @return [Float] 29.51
+  SUN_RISE_AMPLITUDE_ROIS = 29.51
+
+  # Total rois per DR day (360 rois = 21600s / 60s)
+  # @return [Integer] 360
+  ROIS_PER_DAY = SECONDS_PER_DAY / SECONDS_PER_ROIS
+
+  # -------------------------------------------------------------------------
+  # Empirical Sun Lookup Tables (primary sun model)
+  # -------------------------------------------------------------------------
+  # Sunrise/sunset rois indexed by day_of_year (0-399): the modal observed
+  # value across all logged sun events (2 characters, ~1.2 DR years, ~1900
+  # events). Gap days with no observations (rise: 27, 123, 124, 167, 366;
+  # plus a few for set) are linearly interpolated from their neighbors.
+  # Regenerate from sunwatch_events_*.csv when more data accumulates; see the
+  # technical reference "Re deriving constants" section for the procedure.
+  #
+  # @return [Array<Integer>] 400 sunrise rois values, index = day_of_year
+  SUN_RISE_ROIS_TABLE = [
+    120, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 118, 118, 118, 118,  # day 0
+    118, 118, 118, 118, 117, 117, 117, 116, 115, 115, 115, 115, 115, 114, 114, 114, 114, 113, 113, 113,  # day 20
+    113, 112, 112, 112, 111, 111, 111, 110, 110, 110, 110, 109, 109, 109, 108, 108, 107, 107, 107, 106,  # day 40
+    106, 106, 105, 105, 104, 104, 104, 103, 103, 102, 102, 102, 101, 101, 100, 100, 99, 99, 98, 98, # day 60
+    98, 97, 97, 96, 96, 95, 95, 94, 94, 93, 93, 94, 93, 93, 92, 92, 91, 91, 90, 90,  # day 80
+    90, 90, 89, 89, 88, 88, 87, 87, 86, 86, 86, 85, 85, 84, 84, 83, 83, 82, 82, 81,  # day 100
+    81, 81, 80, 80, 80, 79, 78, 78, 77, 77, 77, 76, 76, 75, 75, 75, 74, 74, 73, 73,  # day 120
+    73, 72, 72, 72, 71, 71, 70, 70, 70, 69, 69, 69, 69, 68, 68, 68, 67, 67, 67, 66,  # day 140
+    66, 66, 66, 65, 65, 65, 65, 65, 64, 64, 64, 64, 63, 63, 63, 63, 62, 62, 62, 62,  # day 160
+    62, 62, 62, 62, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 60,  # day 180
+    60, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 61, 62, 62, 62, 62,  # day 200
+    62, 62, 62, 62, 63, 63, 63, 63, 64, 64, 64, 64, 64, 65, 65, 65, 65, 66, 66, 66,  # day 220
+    66, 67, 67, 67, 68, 68, 68, 69, 69, 69, 69, 70, 70, 70, 71, 71, 72, 72, 72, 73,  # day 240
+    73, 73, 74, 74, 75, 75, 75, 76, 76, 77, 77, 77, 78, 78, 79, 79, 80, 80, 81, 81,  # day 260
+    81, 82, 82, 83, 83, 84, 84, 85, 85, 86, 86, 86, 87, 87, 88, 88, 89, 89, 90, 90,  # day 280
+    90, 90, 91, 91, 92, 92, 93, 93, 94, 94, 94, 95, 95, 96, 96, 97, 97, 98, 98, 99,  # day 300
+    99, 99, 100, 100, 101, 101, 102, 102, 103, 103, 103, 104, 104, 105, 105, 105, 106, 106, 107, 107, # day 320
+    107, 108, 108, 108, 109, 109, 110, 110, 110, 111, 111, 111, 111, 112, 112, 112, 113, 113, 113, 114,  # day 340
+    114, 114, 114, 115, 115, 115, 116, 116, 116, 116, 116, 116, 117, 117, 117, 117, 118, 118, 118, 118,  # day 360
+    118, 118, 118, 118, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 119, 120,  # day 380
+  ].freeze
+
+  # @return [Array<Integer>] 400 sunset rois values, index = day_of_year
+  SUN_SET_ROIS_TABLE = [
+    240, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 242, 242, 242, 242,  # day 0
+    242, 242, 242, 242, 243, 243, 243, 242, 243, 243, 243, 243, 243, 244, 244, 244, 244, 245, 245, 245,  # day 20
+    245, 246, 246, 246, 247, 247, 247, 248, 248, 248, 248, 249, 249, 249, 250, 250, 251, 251, 251, 252,  # day 40
+    252, 252, 253, 253, 254, 254, 254, 255, 255, 256, 256, 256, 257, 257, 258, 258, 259, 259, 260, 260,  # day 60
+    260, 261, 261, 262, 262, 263, 263, 264, 264, 265, 265, 266, 267, 267, 268, 268, 269, 269, 270, 270,  # day 80
+    270, 270, 271, 271, 272, 272, 273, 273, 274, 274, 274, 275, 275, 276, 276, 277, 277, 278, 278, 279,  # day 100
+    279, 279, 280, 280, 281, 281, 282, 282, 283, 283, 283, 284, 284, 285, 285, 285, 286, 286, 287, 287,  # day 120
+    287, 288, 288, 288, 289, 289, 290, 290, 290, 291, 291, 291, 291, 292, 292, 292, 293, 293, 293, 294,  # day 140
+    294, 294, 294, 295, 295, 295, 296, 296, 296, 296, 296, 296, 297, 297, 297, 297, 298, 298, 298, 298,  # day 160
+    298, 298, 298, 298, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 300,  # day 180
+    300, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 299, 298, 298, 298, 298,  # day 200
+    298, 298, 298, 298, 297, 297, 297, 297, 296, 296, 296, 296, 296, 295, 295, 295, 295, 294, 294, 294,  # day 220
+    294, 293, 293, 293, 292, 292, 292, 291, 291, 291, 291, 290, 290, 290, 289, 289, 288, 288, 288, 287,  # day 240
+    287, 287, 286, 286, 285, 285, 285, 284, 284, 283, 283, 283, 282, 282, 281, 281, 280, 280, 279, 279,  # day 260
+    279, 278, 278, 277, 277, 276, 276, 275, 275, 274, 274, 274, 273, 273, 272, 272, 271, 271, 270, 270,  # day 280
+    270, 270, 269, 269, 268, 268, 267, 267, 266, 266, 266, 265, 265, 264, 264, 263, 263, 262, 262, 261,  # day 300
+    261, 261, 260, 260, 259, 259, 258, 258, 257, 257, 257, 256, 256, 255, 255, 255, 254, 254, 253, 253,  # day 320
+    253, 252, 252, 252, 251, 251, 250, 250, 250, 249, 249, 249, 249, 248, 248, 248, 247, 247, 247, 246,  # day 340
+    246, 246, 246, 245, 245, 245, 245, 244, 244, 244, 244, 244, 243, 243, 243, 243, 242, 242, 242, 242,  # day 360
+    242, 242, 242, 242, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 241, 240,  # day 380
+  ].freeze
+
+  # -------------------------------------------------------------------------
+  # Named Time Period Constants
+  # -------------------------------------------------------------------------
+
+  # Names of the 12 DR hours (anlas), indexed 0-11
+  # Anlas 0 is midnight, Anlas 6 is around dawn, Anlas 11 is late evening.
+  #
+  # @return [Array<String>] Frozen array of anlas names
+  # @example
+  #   DRTime::ANLAS_NAMES[6]  # => "Dergati's Bane" (dawn)
+  ANLAS_NAMES = [
+    'Anduwen',             # 0 - midnight
+    'Starwatch',           # 1 - early morning hours
+    "Asketi's Hunt",       # 2 - pre-dawn
+    "Berengaria's Touch",  # 3 - pre-dawn
+    "Hodierna's Blessing", # 4 - pre-dawn
+    "Peri'el's Watch",     # 5 - approaching dawn
+    "Dergati's Bane",      # 6 - dawn/sunrise
+    "Firulf's Flame",      # 7 - morning
+    "Tamsine's Toil",      # 8 - mid-day
+    "Meraud's Cloak",      # 9 - afternoon
+    "Phelim's Vigil",      # 10 - evening
+    'Revelfae'             # 11 - late evening before midnight
+  ].freeze
+
+  # Names of the 10 DR months, indexed 1-10 (index 0 unused)
+  # Each month is named after a constellation in the DR zodiac.
+  #
+  # @return [Array<String, nil>] Frozen array with nil at index 0
+  # @example
+  #   DRTime::MONTH_NAMES[3]  # => "Lirisa the Archer"
+  MONTH_NAMES = [
+    nil,                            # 0 - placeholder (months are 1-indexed)
+    'Akroeg the Ram',               # 1 - first month
+    "Ka'len the Sea Drake",         # 2
+    'Lirisa the Archer',            # 3
+    'Shorka the Cobra',             # 4
+    'Uthmor the Giant',             # 5
+    'Arhat the Fire Lion',          # 6
+    'Moliko the Balance',           # 7
+    'Skullcleaver the Dwarven Axe', # 8
+    'Dolefaren the Brigantine',     # 9
+    'Nissa the Maiden'              # 10 - last month
+  ].freeze
+
+  # Names of years in the 7-year cycle, indexed 1-7 (index 0 unused)
+  # DR years follow a repeating 7-year naming cycle.
+  #
+  # @return [Array<String, nil>] Frozen array with nil at index 0
+  # @example
+  #   DRTime.year_name(446)  # => "Year of the Emerald Dolphin" (446 % 7 = 5)
+  YEAR_NAMES = [
+    nil,                              # 0 - placeholder
+    'Year of the Bronze Wyvern',      # 1
+    'Year of the Golden Panther',     # 2
+    'Year of the Amber Phoenix',      # 3
+    'Year of the Iron Toad',          # 4
+    'Year of the Emerald Dolphin',    # 5
+    'Year of the Crystal Snow Hare',  # 6
+    'Year of the Silver Unicorn'      # 7
+  ].freeze
+
+  # -------------------------------------------------------------------------
+  # Module Methods: Sun Position Calculations
+  # -------------------------------------------------------------------------
+
+  # Calculate sunrise and sunset times for a given day of the DR year.
+  #
+  # Looks up sunrise/sunset from the empirical day-of-year tables, falling back
+  # to the cosine model only for a day not covered by the tables (they span all
+  # 400 days, so the fallback is a safety net). Rise and set come from
+  # independent tables because the game is not perfectly symmetric around
+  # midday (see SUN_RISE_ROIS_TABLE notes).
+  #
+  # Day length range:
+  # - Winter solstice (day 0):   rise=120, set=240, day_length=7200s (~2.0h)
+  # - Equinox (day 100/300):     rise=90, set=270, day_length=10800s (~3.0h)
+  # - Summer solstice (day 200): rise=60, set=300, day_length=14400s (~4.0h)
+  #
+  # @param day_of_year [Integer] Day within the DR year (0-399)
+  # @return [Hash] Sun timing information
+  # @option return [Integer] :rise Seconds into the day when sun rises
+  # @option return [Integer] :set Seconds into the day when sun sets
+  #
+  # @see SUN_RISE_BASE_ROIS
+  # @see SUN_RISE_AMPLITUDE_ROIS
+  #
+  # @example Winter solstice (shortest day)
+  #   sun = DRTime.sun_times_for_day(0)
+  #   # => { rise: 7200, set: 14400 }  (day_length = 7200s = 2.0h)
+  #
+  # @example Summer solstice (longest day)
+  #   sun = DRTime.sun_times_for_day(200)
+  #   # => { rise: 3600, set: 18000 }  (day_length = 14400s = 4.0h)
+  #
+  def self.sun_times_for_day(day_of_year)
+    in_range = day_of_year.is_a?(Integer) && day_of_year >= 0 && day_of_year < DAYS_PER_YEAR
+    rise_rois = in_range ? SUN_RISE_ROIS_TABLE[day_of_year] : nil
+    set_rois  = in_range ? SUN_SET_ROIS_TABLE[day_of_year] : nil
+
+    # Fallback: cosine model for any day outside the tables' 0-399 coverage.
+    # Sunset is assumed symmetric around midday only in this fallback path.
+    if rise_rois.nil? || set_rois.nil?
+      theta = 2 * Math::PI * day_of_year / DAYS_PER_YEAR.to_f
+      rise_rois = (SUN_RISE_BASE_ROIS + SUN_RISE_AMPLITUDE_ROIS * Math.cos(theta)).round
+      set_rois = ROIS_PER_DAY - rise_rois
+    end
+
+    { rise: rise_rois * SECONDS_PER_ROIS, set: set_rois * SECONDS_PER_ROIS }
+  end
+
+  # Calculate the complete DR date from a Unix timestamp.
+  #
+  # Converts real-world server time to DR calendar coordinates including
+  # year, month, day, anlas (hour), and rois (minute).
+  #
+  # @param game_time [Integer] Unix timestamp (typically XMLData.server_time)
+  # @param offset [Integer] Correction offset in seconds (default: 0)
+  # @return [Hash] Complete DR date information
+  # @option return [Integer] :year DR year number (e.g., 446)
+  # @option return [Integer] :month DR month (1-10)
+  # @option return [Integer] :day Day within month (1-40)
+  # @option return [Integer] :day_of_year Day within year (0-399)
+  # @option return [Integer] :anlas DR hour (0-11)
+  # @option return [Integer] :rois DR minute (0-29)
+  # @option return [Integer] :seconds_in_day Seconds elapsed in current DR day (0-21599)
+  #
+  # @example Get current DR date
+  #   date = DRTime.calculate_date(XMLData.server_time)
+  #   puts "#{date[:year]}-#{date[:month]}-#{date[:day]}"
+  #   # Output: "446-03-15"
+  #
+  # @example With calibration offset
+  #   date = DRTime.calculate_date(XMLData.server_time, -60)
+  #   # Shifts all calculations back 60 seconds
+  #
+  def self.calculate_date(game_time, offset = 0)
+    adjusted_time = game_time + offset - CALENDAR_EPOCH
+    total_seconds = adjusted_time
+
+    # Calculate time units from largest to smallest
+    seconds_per_year = SECONDS_PER_DAY * DAYS_PER_YEAR # 8,640,000
+
+    years_elapsed = (total_seconds / seconds_per_year).floor
+    remainder = total_seconds % seconds_per_year
+
+    day_of_year = (remainder / SECONDS_PER_DAY).floor  # 0-399
+    seconds_in_day = remainder % SECONDS_PER_DAY       # 0-21599
+
+    # Convert day_of_year to month and day within month
+    month = (day_of_year / DAYS_PER_MONTH).floor + 1   # 1-10
+    day = (day_of_year % DAYS_PER_MONTH) + 1           # 1-40
+
+    # Extract anlas and rois from seconds_in_day
+    anlas = (seconds_in_day / SECONDS_PER_ANLAS).floor # 0-11
+    rois = ((seconds_in_day % SECONDS_PER_ANLAS) / SECONDS_PER_ROIS).floor # 0-29
+
+    {
+      year: CALIBRATION_YEAR + years_elapsed,
+      month: month,
+      day: day,
+      day_of_year: day_of_year,
+      anlas: anlas,
+      rois: rois,
+      seconds_in_day: seconds_in_day
+    }
+  end
+
+  # Determine the season based on day of year.
+  #
+  # DR seasons span approximately 100 days each, with winter wrapping
+  # around the year boundary (days 350-399 and 0-49).
+  #
+  # @param day_of_year [Integer] Day within the DR year (0-399)
+  # @return [String] Season name: 'winter', 'spring', 'summer', or 'fall'
+  #
+  # @example
+  #   DRTime.season(25)   # => 'winter' (early year)
+  #   DRTime.season(100)  # => 'spring'
+  #   DRTime.season(200)  # => 'summer'
+  #   DRTime.season(300)  # => 'fall'
+  #   DRTime.season(375)  # => 'winter' (late year)
+  #
+  def self.season(day_of_year)
+    case day_of_year
+    when 0...50   then 'winter'
+    when 50...150 then 'spring'
+    when 150...250 then 'summer'
+    when 250...350 then 'fall'
+    else 'winter' # Days 350-399 wrap to winter
+    end
+  end
+
+  # Get a descriptive phrase for the current time of day.
+  #
+  # Returns natural-language descriptions like "mid-morning", "dusk",
+  # "late afternoon" based on the sun's position relative to sunrise/sunset.
+  # The descriptions account for seasonal variation in day/night length.
+  #
+  # @param seconds_in_day [Integer] Seconds elapsed in current DR day (0-21599)
+  # @param day_of_year [Integer] Day within the DR year (0-399) for sun timing
+  # @return [String] Time of day description
+  #
+  # @example
+  #   date = DRTime.calculate_date(XMLData.server_time)
+  #   time_desc = DRTime.time_of_day(date[:seconds_in_day], date[:day_of_year])
+  #   puts time_desc  # => "mid-morning"
+  #
+  # @note The boundaries between time periods shift with seasons due to
+  #   variable day length. A "midday" in winter is shorter than in summer.
+  #
+  def self.time_of_day(seconds_in_day, day_of_year)
+    sun = sun_times_for_day(day_of_year)
+    rise = sun[:rise]
+    set = sun[:set]
+
+    day_length = set - rise
+    night_length = SECONDS_PER_DAY - day_length
+
+    # Return time period based on position relative to sunrise/sunset
+    # Uses fractional divisions of day/night length for smooth transitions
+    if seconds_in_day < rise - (night_length / 8)
+      'night'
+    elsif seconds_in_day < rise
+      'approaching sunrise'
+    elsif seconds_in_day < rise + (night_length / 8)
+      'dawn'
+    elsif seconds_in_day < (10_800 - day_length / 4)
+      'early morning'
+    elsif seconds_in_day < (10_800 - day_length / 8)
+      'mid-morning'
+    elsif seconds_in_day < 10_800
+      'late morning'
+    elsif seconds_in_day < (10_800 + day_length / 8)
+      'midday'
+    elsif seconds_in_day < (10_800 + day_length / 4)
+      'early afternoon'
+    elsif seconds_in_day < set - (day_length / 8)
+      'mid-afternoon'
+    elsif seconds_in_day < set - (day_length / 9)
+      'late afternoon'
+    elsif seconds_in_day < set
+      'dusk'
+    elsif seconds_in_day < set + (night_length / 9)
+      'sunset'
+    elsif seconds_in_day < (SECONDS_PER_DAY - night_length / 4)
+      'early evening'
+    elsif seconds_in_day < (SECONDS_PER_DAY - night_length / 8)
+      'evening'
+    else
+      'late evening'
+    end
+  end
+
+  # Calculate sun visibility and time until next sun event.
+  #
+  # Determines whether the sun is currently up and how long until
+  # it rises or sets. Handles the day boundary correctly when
+  # calculating time until tomorrow's sunrise.
+  #
+  # @param game_time [Integer] Unix timestamp (typically XMLData.server_time)
+  # @param offset [Integer] Correction offset in seconds (default: 0)
+  # @return [Hash] Sun position information
+  # @option return [Boolean] :visible True if sun is currently up
+  # @option return [Integer] :seconds Seconds until next event
+  # @option return [String] :event Type of next event ('rise' or 'set')
+  #
+  # @example Sun is up
+  #   result = DRTime.calculate_sun_position(game_time)
+  #   if result[:visible]
+  #     puts "Sun sets in #{result[:seconds] / 60} minutes"
+  #   end
+  #
+  # @example Sun is down
+  #   result = DRTime.calculate_sun_position(game_time)
+  #   unless result[:visible]
+  #     puts "Sun rises in #{result[:seconds] / 60} minutes"
+  #   end
+  #
+  def self.calculate_sun_position(game_time, offset = 0)
+    date = calculate_date(game_time, offset)
+    sun = sun_times_for_day(date[:day_of_year])
+    seconds_in_day = date[:seconds_in_day]
+
+    if seconds_in_day >= sun[:rise] && seconds_in_day < sun[:set]
+      # Sun is currently up - calculate time until sunset
+      seconds_until_set = sun[:set] - seconds_in_day
+      { visible: true, seconds: seconds_until_set, event: 'set' }
+    elsif seconds_in_day < sun[:rise]
+      # Before sunrise today
+      seconds_until_rise = sun[:rise] - seconds_in_day
+      { visible: false, seconds: seconds_until_rise, event: 'rise' }
+    else
+      # After sunset - calculate time until tomorrow's sunrise
+      tomorrow_day = (date[:day_of_year] + 1) % DAYS_PER_YEAR
+      tomorrow_sun = sun_times_for_day(tomorrow_day)
+      seconds_until_midnight = SECONDS_PER_DAY - seconds_in_day
+      seconds_until_rise = seconds_until_midnight + tomorrow_sun[:rise]
+      { visible: false, seconds: seconds_until_rise, event: 'rise' }
+    end
+  end
+
+  # Get the cycle name for a given DR year.
+  #
+  # DR years follow a repeating 7-year naming cycle. This method
+  # calculates the position in the cycle and returns the name.
+  #
+  # @param year [Integer] DR year number (e.g., 446)
+  # @return [String] Year cycle name (e.g., "Year of the Emerald Dolphin")
+  #
+  # @example
+  #   DRTime.year_name(446)  # => "Year of the Emerald Dolphin"
+  #   DRTime.year_name(447)  # => "Year of the Crystal Snow Hare"
+  #   DRTime.year_name(448)  # => "Year of the Silver Unicorn"
+  #   DRTime.year_name(449)  # => "Year of the Bronze Wyvern" (cycle repeats)
+  #
+  def self.year_name(year)
+    cycle_position = year % 7
+    cycle_position = 7 if cycle_position.zero?
+    YEAR_NAMES[cycle_position]
+  end
+
+  # Get the name of a DR hour (anlas).
+  #
+  # @param anlas [Integer] Anlas index (0-11)
+  # @return [String] Anlas name, or 'Unknown' if out of range
+  #
+  # @example
+  #   DRTime.anlas_name(0)   # => "Anduwen" (midnight)
+  #   DRTime.anlas_name(6)   # => "Dergati's Bane" (dawn)
+  #   DRTime.anlas_name(99)  # => "Unknown"
+  #
+  def self.anlas_name(anlas)
+    ANLAS_NAMES[anlas] || 'Unknown'
+  end
+
+  # Get the name of a DR month.
+  #
+  # @param month [Integer] Month number (1-10)
+  # @return [String] Month name, or 'Unknown' if out of range
+  #
+  # @example
+  #   DRTime.month_name(1)   # => "Akroeg the Ram"
+  #   DRTime.month_name(10)  # => "Nissa the Maiden"
+  #   DRTime.month_name(0)   # => "Unknown"
+  #
+  def self.month_name(month)
+    MONTH_NAMES[month] || 'Unknown'
+  end
+end
+
+# =============================================================================
+# MODULE: Moons - Moon Position Calculations
+# =============================================================================
+# Single Responsibility: All moon position math in one place.
+#
+# Each moon has a fixed cycle duration (rise to rise) and visible duration.
+# Position is calculated using modular arithmetic from a known epoch.
+#
+# IMPORTANT: The game server fires moon events on a 60-second tick cycle.
+# Even with second-level timestamp precision, observed intervals are always
+# multiples of 60 (e.g., 20820/20880 for xibar, never 20850). The cycle
+# constants are the OLS-fit fractional periods (the game's true period), so the
+# Bresenham math lands on the correct tick with no accumulating phase drift.
+#
+# @example Get current moon positions
+#   %w[katamba xibar yavash].each do |moon|
+#     pos = Moons.calculate_position(moon, XMLData.server_time, offset)
+#     if pos[:visible]
+#       puts "#{moon} sets in #{pos[:seconds] / 60} minutes"
+#     else
+#       puts "#{moon} rises in #{pos[:seconds] / 60} minutes"
+#     end
+#   end
+#
+module Moons
+  # Moon orbital constants -- the game's true fractional-second periods.
+  #
+  # Each moon has three values:
+  # - epoch: Unix timestamp of a known rise (phase anchor for Bresenham)
+  # - cycle: Full rise-to-rise period in seconds (OLS-fit fractional value)
+  # - visible: Duration moon is visible in seconds (rise to set)
+  #
+  # The game uses integer-second arithmetic (1990s codebase) and fires events
+  # on 60s server tick boundaries. This creates a deterministic Bresenham-like
+  # pattern: each cycle is either floor(P/60) or ceil(P/60) ticks long, with
+  # long cycles appearing at frequency (P mod 60) / 60 (matches observed data).
+  #
+  # cycle is the OLS-fit fractional period (v4.1+), not the rounded integer used
+  # before. Using the true fractional period means the predicted phase does not
+  # drift, so per-character offsets stay near zero indefinitely and the periodic
+  # epoch re-centering that integer cycles required is no longer needed. epoch is
+  # the OLS intercept (a real rise time) so a fresh launch starts near zero
+  # offset. Fit from ~1900 rise events over ~1.2 DR years across 2 characters;
+  # residual std ~24s is timestamp capture jitter, absorbed by self-correction.
+  #
+  CONSTANTS = {
+    'katamba' => {
+      epoch: 1_771_558_850,   # OLS intercept (rise anchor)
+      cycle: 21_088.611,      # OLS slope; integer 21089 drifted +0.39s/cycle
+      visible: 10_602         # Observed 10560/10620, mean ~10603
+    },
+    'xibar'   => {
+      epoch: 1_771_560_044,   # OLS intercept (rise anchor)
+      cycle: 20_848.143,      # OLS slope; integer was 20848
+      visible: 10_482         # Observed 10440/10500, mean ~10482
+    },
+    'yavash'  => {
+      epoch: 1_771_555_118,   # OLS intercept (rise anchor)
+      cycle: 21_129.564,      # OLS slope; integer 21130 drifted -0.44s/cycle
+      visible: 10_624         # Observed 10620/10680, mean ~10623
+    }
+  }.freeze
+
+  # List of valid moon names for iteration and validation.
+  #
+  # @return [Array<String>] Frozen array of moon names
+  MOON_NAMES = %w[katamba xibar yavash].freeze
+
+  # Game server tick duration in seconds.
+  # All moon events fire on boundaries that are multiples of this value.
+  TICK_DURATION = 60
+
+  # Round a true (unquantized) event time to the nearest server tick boundary.
+  #
+  # @param true_time [Numeric] Unquantized event time in seconds (Integer or
+  #   Float, since cycle periods are fractional)
+  # @return [Integer] Nearest multiple of TICK_DURATION
+  #
+  def self.nearest_tick(true_time)
+    ((true_time + TICK_DURATION / 2) / TICK_DURATION).floor * TICK_DURATION
+  end
+
+  # Calculate a moon's current position and time until next event.
+  #
+  # Uses Bresenham tick prediction: computes the exact 60s tick boundary the
+  # game will fire on, rather than using a single average constant. Visibility
+  # is determined by modular position (same as pre-v4.0); the timer value is
+  # the countdown to the quantized tick time.
+  #
+  # @param moon [String] Moon name ('katamba', 'xibar', or 'yavash')
+  # @param game_time [Integer] Unix timestamp (typically XMLData.server_time)
+  # @param offset [Integer] Correction offset in seconds (default: 0)
+  # @return [Hash] Moon position information
+  # @option return [Boolean] :visible True if moon is currently up
+  # @option return [Integer] :seconds Seconds until next event (quantized to tick)
+  # @option return [String] :event Type of next event ('rise' or 'set')
+  #
+  def self.calculate_position(moon, game_time, offset = 0)
+    constants = CONSTANTS.fetch(moon)
+
+    e_eff = constants[:epoch] - offset
+    elapsed = game_time - e_eff
+    n = (elapsed / constants[:cycle]).floor # floor: cycle is fractional
+    position = elapsed % constants[:cycle]
+
+    is_visible = position < constants[:visible]
+
+    # Fractional progress through the current arc (0 at its start, ~1 at its
+    # end): rise to set when up, set to next rise when down. Handy for a
+    # position-across-sky display. Derived from existing synodic state, so it
+    # adds no new constants and carries no epoch risk.
+    segment_len = is_visible ? constants[:visible] : constants[:cycle] - constants[:visible]
+    segment_pos = is_visible ? position : position - constants[:visible]
+    t = segment_len.positive? ? (segment_pos / segment_len.to_f) : 0.0
+    t = t.clamp(0.0, 1.0).round(3)
+
+    if is_visible
+      true_set = e_eff + n * constants[:cycle] + constants[:visible]
+      tick_set = nearest_tick(true_set)
+      seconds = [tick_set - game_time, 0].max
+      { visible: true, seconds: seconds.to_i, event: 'set', t: t }
+    else
+      true_rise = e_eff + (n + 1) * constants[:cycle]
+      tick_rise = nearest_tick(true_rise)
+      seconds = [tick_rise - game_time, 0].max
+      { visible: false, seconds: seconds.to_i, event: 'rise', t: t }
+    end
+  end
+
+  # Format a duration in seconds as human-readable string.
+  #
+  # Chooses appropriate units based on magnitude:
+  # - Hours and minutes for durations >= 1 hour
+  # - Minutes and seconds for durations >= 1 minute
+  # - Seconds only for short durations
+  #
+  # @param seconds [Integer] Duration in seconds
+  # @return [String] Formatted duration string
+  #
+  # @example
+  #   Moons.format_duration(7200)  # => "2h 0m"
+  #   Moons.format_duration(150)   # => "2m 30s"
+  #   Moons.format_duration(45)    # => "45s"
+  #
+  def self.format_duration(seconds)
+    hours = seconds / 3600
+    mins = (seconds % 3600) / 60
+    secs = seconds % 60
+
+    if hours > 0
+      "#{hours}h #{mins}m"
+    elsif mins > 0
+      "#{mins}m #{secs}s"
+    else
+      "#{secs}s"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Lunar phase model
+  # ---------------------------------------------------------------------------
+  # Ported verbatim from the DR client's own moon computation. The client
+  # derives each moon's visible phase from its sidereal orbital period plus a
+  # day-of-year term, bucketed into eight named phases. This is the developers'
+  # forward model, not a game broadcast, but it has been validated against the
+  # in-game `observe <moon>` verb (Katamba and Yavash both matched a "growing
+  # crescent" readout = waxing crescent), and Elanthipedia confirms each moon
+  # cycles through exactly eight phases.
+  #
+  # Phase is intentionally model-only: it is NOT routed through the offset
+  # manager, because unlike rise/set there is no passive phase broadcast to
+  # self-correct against. The `observe` parser logs observed-vs-computed phase
+  # so the mapping (and any future correction) can be validated over time.
+  #
+  # IMPORTANT: this uses the client's OWN sidereal periods and calendar skew,
+  # NOT moonwatch's synodic cycle constants or CALENDAR_EPOCH. The client's
+  # day-of-year runs 1-2 days off moonwatch's calibrated calendar, so the phase
+  # math must stay self-contained here to reproduce the client's output.
+
+  # Sidereal orbital period in roisaen (60s each), from the client's DR_MOONS.
+  SIDEREAL_ROIS = {
+    'katamba' => 14_847,
+    'xibar'   => 9_983,
+    'yavash'  => 16_171
+  }.freeze
+
+  # Calendar skew aligning the roisaen count to the DR calendar epoch, from the
+  # client's DR_EPOCH_SKEW_SECONDS (4_853_700) divided by 60s per roisaen.
+  PHASE_EPOCH_SKEW_ROIS = 4_853_700 / 60 # 80_895
+
+  # DR days per year (matches DRTime::DAYS_PER_YEAR; duplicated to keep the phase
+  # math self-contained within Moons).
+  PHASE_DAYS_PER_YEAR = 400
+
+  # The eight lunar phase names in cycle order. Index 0 is the [0,45) bucket,
+  # which the client labels "new"; index 7 is [315,360), "waning crescent".
+  PHASE_NAMES = [
+    'new',
+    'waxing crescent',
+    'first quarter',
+    'waxing gibbous',
+    'full',
+    'waning gibbous',
+    'third quarter',
+    'waning crescent'
+  ].freeze
+
+  # Maps DR's observed phase wording (the clause after "moon <M>") to a phase
+  # name, so observations can be validated against the computed phase. Each regex
+  # matches a distinctive fragment of one wording. Four are model-validated so
+  # far; the remaining four (new, first quarter, waning gibbous, third quarter)
+  # are added as their wordings are seen (unmapped clauses are logged raw).
+  OBSERVED_PHASE_MAP = [
+    [/growing crescent/i, 'waxing crescent'],
+    [/nearly turned its full face/i, 'waxing gibbous'],
+    [/perfect circle/i, 'full'],
+    [/waned to a narrow crescent/i, 'waning crescent']
+  ].freeze
+
+  # Compute a moon's lunar phase at a given time.
+  #
+  # @param moon [String] Moon name ('katamba', 'xibar', or 'yavash')
+  # @param game_time [Integer] Unix timestamp (typically XMLData.server_time)
+  # @return [Hash] Phase information
+  # @option return [Integer] :index Phase bucket 0-7 (0 = new)
+  # @option return [String] :name Phase name from PHASE_NAMES
+  # @option return [Integer] :orbital_angle Position in orbit, 0-359 degrees
+  # @option return [Integer] :phase_angle Combined phase angle, 0-359 degrees
+  # @option return [Integer] :next_index Next phase bucket 0-7
+  # @option return [String] :next_name Next phase name
+  # @option return [Integer] :seconds_to_next Approx seconds until next phase
+  #
+  # @example
+  #   Moons.phase('katamba', XMLData.server_time)
+  #   # => { index: 1, name: 'waxing crescent', orbital_angle: 36, phase_angle: 67,
+  #   #      next_index: 2, next_name: 'first quarter', seconds_to_next: 100800 }
+  #
+  def self.phase(moon, game_time)
+    sidereal = SIDEREAL_ROIS.fetch(moon)
+    unix_minute = game_time.to_i / 60
+
+    orbital_angle = ((unix_minute % sidereal) * 360) / sidereal
+    day_of_year = ((unix_minute + PHASE_EPOCH_SKEW_ROIS) / 360) % PHASE_DAYS_PER_YEAR
+    phase_angle = (orbital_angle + (day_of_year * 360) / PHASE_DAYS_PER_YEAR) % 360
+    index = ((phase_angle * 8) / 360) % 8
+
+    # Approximate time to the next 45-degree phase boundary. phase_angle advances
+    # at the orbital rate (360/sidereal per roisaen) plus the day-of-year rate
+    # ((360/400) degrees per DR day, i.e. per 360 roisaen). The average rate is
+    # accurate to a few minutes over a ~day-long bucket, which is plenty for a
+    # display shown in hours.
+    rate = (360.0 / sidereal) + ((360.0 / PHASE_DAYS_PER_YEAR) / 360.0)
+    deg_remaining = 45 - (phase_angle % 45)
+    seconds_to_next = (deg_remaining / rate * 60).round
+    next_index = (index + 1) % 8
+
+    {
+      index: index,
+      name: PHASE_NAMES[index],
+      orbital_angle: orbital_angle,
+      phase_angle: phase_angle,
+      next_index: next_index,
+      next_name: PHASE_NAMES[next_index],
+      seconds_to_next: seconds_to_next
+    }
+  end
+
+  # Map an observed DR phase phrase to a phase name via OBSERVED_PHASE_MAP.
+  #
+  # @param observed_phrase [String] the clause captured from an observe reading
+  # @return [String, nil] the phase name, or nil if the wording is unmapped
+  #
+  def self.observed_phase_name(observed_phrase)
+    entry = OBSERVED_PHASE_MAP.find { |rx, _name| observed_phrase =~ rx }
+    entry&.last
+  end
+end
+
+# Backward compatibility alias for scripts that reference the old constant name
+MOON_CONSTANTS = Moons::CONSTANTS
+
+# =============================================================================
+# MODULE: MoonwatchMessaging - Centralized User Communication
+# =============================================================================
+# Single Responsibility: All user-facing output in one place.
+# Ensures consistent formatting and prefix usage across the script.
+#
+module MoonwatchMessaging
+  # Standard prefix for all moonwatch messages
+  PREFIX = 'moonwatch'
+
+  # Output a debug message (only when debug mode is enabled).
+  #
+  # @param message [String] The debug message to display
+  # @param debug_enabled [Boolean] Whether debug mode is on
+  # @return [void]
+  #
+  # @example
+  #   MoonwatchMessaging.debug("offset corrected by +60s", $debug_mode_mm)
+  #
+  def self.debug(message, debug_enabled)
+    return unless debug_enabled
+
+    Lich::Messaging.msg('plain', "#{PREFIX}: #{message}")
+  end
+
+  # Output an informational message to the user.
+  #
+  # @param message [String] The message to display
+  # @return [void]
+  #
+  # @example
+  #   MoonwatchMessaging.info("Debug mode enabled (persistent).")
+  #
+  def self.info(message)
+    Lich::Messaging.msg('plain', "#{PREFIX}: #{message}")
+  end
+
+  # Output an error or warning message to the user.
+  #
+  # @param message [String] The error/warning message to display
+  # @return [void]
+  #
+  # @example
+  #   MoonwatchMessaging.error("Failed to refresh server time")
+  #
+  def self.error(message)
+    Lich::Messaging.msg('bold', "#{PREFIX}: #{message}")
+  end
+end
+
+# =============================================================================
+# MODULE: MoonwatchAlias - The 'moon' Quick-Status Alias
+# =============================================================================
+# Single Responsibility: build and manage the optional global 'moon' alias.
+#
+# The alias body is Ruby executed via Lich's `eq` (exec quiet). It checks whether
+# moonwatch is actually running (Script.running?('moonwatch'), true regardless of
+# the folder the script lives in) before reading UserVars, so a stale alias never
+# echoes old data silently -- when moonwatch is not running it tells the user how
+# to start it. This check is crash-proof: it does not depend on any exit cleanup.
+#
+# The core `alias` service stores --global aliases in a SQLite DB (data/alias.db3,
+# table `global`, columns trigger/target) and UPSERTs on re-add. On startup we
+# read that DB: if a `moon` alias already exists AND its body looks like one of
+# ours AND differs from the current body, we silently re-install the current body
+# (so existing users are upgraded with no action). We NEVER create a `moon` alias
+# that is not already present, and we never touch an unrelated user alias.
+#
+module MoonwatchAlias
+  # Substrings that identify a `moon` alias as one moonwatch installed (vs. a
+  # user's own unrelated alias that happens to be triggered by "moon").
+  OURS_MARKERS = ["UserVars.moons", "Script.running?('moonwatch')"].freeze
+
+  # The `;eq` Ruby body run when the user types `moon`.
+  #
+  # NOTE: \#{...} is escaped so interpolation happens at INVOCATION time inside
+  # eq, not when this string is built or when the alias is defined. Only the
+  # lich char (#{lich_char}) is interpolated now, at build time.
+  #
+  # @param lich_char [String] the clean lich command character (e.g. ';')
+  # @return [String] the eq command that forms the alias body
+  #
+  def self.body(lich_char)
+    running = %{respond("\#{UserVars.moons['katamba']['pretty']} : } +
+              %{\#{UserVars.moons['yavash']['pretty']} : \#{UserVars.moons['xibar']['pretty']}")}
+    stopped = %{respond("moonwatch is not running - start it with #{lich_char}moonwatch")}
+    "#{lich_char}eq Script.running?('moonwatch') ? #{running} : #{stopped}"
+  end
+
+  # The full `alias add --global` command string that installs the alias.
+  #
+  # @param lich_char [String] the clean lich command character
+  # @return [String] the alias-add command
+  #
+  def self.command(lich_char)
+    "#{lich_char}alias add --global moon = #{body(lich_char)}"
+  end
+
+  # Path to the core alias service's SQLite store.
+  #
+  # @return [String]
+  #
+  def self.alias_db_path
+    File.join(DATA_DIR, 'alias.db3')
+  end
+
+  # Read the current target of a global alias from the alias service DB. Returns
+  # nil if the DB, table, or row is absent, or on any error (the alias service is
+  # optional and its storage is not ours to depend on hard).
+  #
+  # @param trigger [String] the alias trigger to look up (default 'moon')
+  # @param db_path [String] override the DB path (for testing)
+  # @return [String, nil] the stored target, or nil
+  #
+  def self.existing_target(trigger = 'moon', db_path: alias_db_path)
+    require 'sqlite3'
+    return nil unless File.exist?(db_path)
+
+    db = SQLite3::Database.new(db_path)
+    db.get_first_value(
+      "SELECT target FROM global WHERE trigger=? COLLATE NOCASE;",
+      trigger.to_s.encode('UTF-8')
+    )
+  rescue StandardError, LoadError
+    nil
+  ensure
+    db&.close
+  end
+
+  # Does this stored alias target look like one moonwatch installed (vs. a user's
+  # own alias)? Used to avoid clobbering an unrelated `moon` alias.
+  #
+  # @param target [String, nil]
+  # @return [Boolean]
+  #
+  def self.ours?(target)
+    return false if target.nil?
+
+    OURS_MARKERS.any? { |marker| target.include?(marker) }
+  end
+
+  # Pure decision: should startup re-install the alias? Only when a `moon` alias
+  # already exists, is one of ours, and its body differs from the current body.
+  # Nil/absent or a user's unrelated alias always returns false.
+  #
+  # @param existing [String, nil] the currently stored target
+  # @param lich_char [String] the clean lich command character
+  # @return [Boolean]
+  #
+  def self.needs_update?(existing, lich_char)
+    ours?(existing) && existing.to_s.strip != body(lich_char).strip
+  end
+
+  # Install (or overwrite) the alias via the alias service, which UPSERTs.
+  #
+  # @param lich_char [String] the clean lich command character
+  # @return [void]
+  #
+  def self.install(lich_char)
+    UpstreamHook.run("<c>#{command(lich_char)}")
+  end
+
+  # Startup re-sync: silently upgrade an existing moonwatch `moon` alias to the
+  # current body. No-op when no alias exists or it is not ours.
+  #
+  # @param lich_char [String] the clean lich command character
+  # @return [void]
+  #
+  def self.resync(lich_char)
+    install(lich_char) if needs_update?(existing_target, lich_char)
+  end
+end
+
+# =============================================================================
+# MODULE: MoonwatchInstance - Game Instance Awareness
+# =============================================================================
+# Single Responsibility: reason about which DragonRealms instance we are on and
+# what that means for calibration.
+#
+# The moon periods are game-code constants: they were cross-validated against the
+# DR client's own hard-coded sidereal periods to within ~0.05s (see the technical
+# reference, "External cross-validation against the DR client"), so they are
+# identical on every instance. The baked epochs anchor the absolute tick-phase,
+# which was measured on Prime; a non-Prime instance can restart independently and
+# sit on a different tick-phase. Offsets persist in CharSettings, which Lich
+# already scopes per instance AND per character (the scope key is
+# "#{XMLData.game}:#{XMLData.name}"), so every instance self-calibrates
+# independently with no cross-instance contamination. There is therefore no
+# per-instance constant to maintain -- only a one-time notice so a player on a
+# fresh non-Prime instance knows predictions converge from observed events.
+#
+# @example
+#   MoonwatchInstance.prime?('DR')            # => true
+#   MoonwatchInstance.display_name('DRX')     # => "Platinum"
+#   MoonwatchInstance.calibration_notice('DR') # => nil
+#
+module MoonwatchInstance
+  # Instance code for DR Prime, where the shipped epochs were calibrated.
+  # @return [String] 'DR'
+  PRIME = 'DR'
+
+  # Known DR instance codes mapped to their display names. Sourced from Lich's
+  # VALID_GAME_CODES (DR, DRX, DRF, DRT).
+  # @return [Hash{String=>String}]
+  NAMES = {
+    'DR'  => 'Prime',
+    'DRX' => 'Platinum',
+    'DRF' => 'Fallen',
+    'DRT' => 'Test'
+  }.freeze
+
+  # Whether the given game instance code is DR Prime.
+  #
+  # @param game [String, nil] instance code from XMLData.game
+  # @return [Boolean] true only on DR Prime
+  #
+  def self.prime?(game)
+    game == PRIME
+  end
+
+  # Human-readable name for a game instance code.
+  #
+  # @param game [String, nil] instance code from XMLData.game
+  # @return [String] display name, or the raw code if unknown/nil
+  #
+  def self.display_name(game)
+    NAMES[game] || game.to_s
+  end
+
+  # One-line startup notice for a non-Prime instance.
+  #
+  # Returns nil on Prime (no notice needed). On any other instance it returns a
+  # short message explaining that the periods are identical but the absolute
+  # phase self-calibrates from observed events, so the caller can emit it once at
+  # startup.
+  #
+  # @param game [String, nil] instance code from XMLData.game
+  # @return [String, nil] the notice, or nil on Prime
+  #
+  def self.calibration_notice(game)
+    return nil if prime?(game)
+
+    "Running on #{display_name(game)} (non-Prime). Moon and sun periods are " \
+      'identical across instances; the absolute phase self-calibrates from your ' \
+      'observed rise/set events.'
+  end
+end
+
+# =============================================================================
+# CLASS: MoonwatchOffsetManager - Offset Persistence and Correction
+# =============================================================================
+# Single Responsibility: Manage per-moon and sun calibration offsets.
+# Open/Closed: New celestial bodies can be added without modifying core logic.
+#
+# Offsets correct for drift between our mathematical model and actual game
+# events. When we observe a moon rise/set, we compare to our prediction
+# and adjust the offset to improve future predictions.
+#
+# @example Create manager and get moon offset
+#   manager = MoonwatchOffsetManager.new
+#   offset = manager.moon_offset('katamba')
+#   position = Moons.calculate_position('katamba', game_time, offset)
+#
+class MoonwatchOffsetManager
+  # Expose moon offsets hash for external scripts (e.g., moonpredict.lic)
+  attr_reader :moon_offsets
+
+  # Maximum allowed offset before auto-reset (seconds).
+  # ~50% of cycle indicates epoch mismatch, likely from different game instance.
+  MOON_OFFSET_THRESHOLD = 10_500
+
+  # Maximum allowed sun offset before auto-reset (seconds).
+  # ~50% of day indicates epoch mismatch.
+  SUN_OFFSET_THRESHOLD = 10_800
+
+  # Initialize offset manager, loading persisted values from CharSettings.
+  #
+  # @param debug_enabled [Boolean] Whether to output debug messages
+  #
+  def initialize(debug_enabled: false)
+    @debug_enabled = debug_enabled
+
+    # Load persisted moon offsets (per-character)
+    @moon_offsets = {
+      'katamba' => CharSettings['katamba_offset'] || 0,
+      'xibar'   => CharSettings['xibar_offset'] || 0,
+      'yavash'  => CharSettings['yavash_offset'] || 0
+    }
+
+    # Load persisted sun offset (per-character)
+    @sun_offset = CharSettings['sun_offset'] || 0
+  end
+
+  # Get the current offset for a moon.
+  #
+  # @param moon [String] Moon name ('katamba', 'xibar', or 'yavash')
+  # @return [Integer] Current offset in seconds
+  #
+  def moon_offset(moon)
+    @moon_offsets[moon] || 0
+  end
+
+  # Get the current sun offset.
+  #
+  # @return [Integer] Current offset in seconds
+  #
+  def sun_offset
+    @sun_offset
+  end
+
+  # Correct a moon's offset based on observed event.
+  #
+  # Uses tick-aware correction: only adjusts the offset when the Bresenham
+  # tick prediction was wrong (event fired on a different 60s tick than
+  # predicted). When the prediction was correct, the offset stays unchanged,
+  # eliminating the +/-30s sawtooth oscillation from the pre-v4.0 approach.
+  #
+  # @param moon [String] Moon name
+  # @param observed_visible [Boolean] True if moon rose, false if set
+  # @param game_time [Integer] Unix timestamp when event was observed
+  # @return [void]
+  #
+  def correct_moon_offset(moon, observed_visible, game_time)
+    constants = Moons::CONSTANTS[moon]
+    current_offset = @moon_offsets[moon]
+
+    # Calculate what we predicted at this moment
+    predicted = Moons.calculate_position(moon, game_time, current_offset)
+
+    # Calculate current position in cycle
+    position = (game_time + current_offset - constants[:epoch]) % constants[:cycle]
+
+    if predicted[:visible] != observed_visible
+      # Visibility mismatch -- full correction (cold start, server reset, large drift)
+      correction = predicted[:seconds]
+      apply_moon_correction(moon, correction, 'mismatch')
+    else
+      # Visibility correct -- check if Bresenham predicted the right tick
+      e_eff = constants[:epoch] - current_offset
+      elapsed = game_time - e_eff
+      n = (elapsed / constants[:cycle]).floor # floor: cycle is fractional
+
+      predicted_tick = if observed_visible
+                         Moons.nearest_tick(e_eff + n * constants[:cycle])
+                       else
+                         Moons.nearest_tick(e_eff + n * constants[:cycle] + constants[:visible])
+                       end
+
+      tick_error = (game_time - predicted_tick).abs
+
+      if tick_error <= Moons::TICK_DURATION / 2
+        # Tick prediction correct -- no correction needed
+        MoonwatchMessaging.debug(
+          "#{moon} tick OK (error=#{game_time - predicted_tick}s), offset stable at #{current_offset}s",
+          @debug_enabled
+        )
+      else
+        # Tick prediction wrong -- realign via standard drift correction.
+        # position is fractional (cycle is fractional), so round to keep the
+        # offset an integer second count.
+        drift = calculate_moon_drift(observed_visible, position, constants[:visible]).round
+        apply_moon_correction(moon, -drift, 'tick_realign') unless drift.zero?
+      end
+    end
+
+    # Auto-reset if offset grows too large (likely epoch mismatch)
+    check_moon_offset_threshold(moon)
+  end
+
+  # Correct sun offset based on observed event.
+  #
+  # Called when a sun rise/set is observed. Compares the actual event
+  # to our prediction and adjusts the offset.
+  #
+  # @param observed_visible [Boolean] True if sun rose, false if set
+  # @param game_time [Integer] Unix timestamp when event was observed
+  # @return [void]
+  #
+  def correct_sun_offset(observed_visible, game_time)
+    predicted = DRTime.calculate_sun_position(game_time, @sun_offset)
+    date = DRTime.calculate_date(game_time, @sun_offset)
+    sun_times = DRTime.sun_times_for_day(date[:day_of_year])
+
+    if predicted[:visible] != observed_visible
+      # Prediction was wrong - apply full correction
+      apply_sun_correction(predicted[:seconds], 'mismatch')
+    else
+      # Prediction matched but check for drift
+      expected_time = observed_visible ? sun_times[:rise] : sun_times[:set]
+      drift = date[:seconds_in_day] - expected_time
+      apply_sun_correction(-drift, 'drift') unless drift.zero?
+    end
+
+    # Auto-reset if offset grows too large
+    check_sun_offset_threshold
+  end
+
+  # Reset all offsets to zero.
+  #
+  # @return [void]
+  #
+  def reset_all_offsets
+    Moons::MOON_NAMES.each do |moon|
+      @moon_offsets[moon] = 0
+      CharSettings["#{moon}_offset"] = 0
+    end
+    @sun_offset = 0
+    CharSettings['sun_offset'] = 0
+
+    MoonwatchMessaging.info('All offsets reset to zero.')
+  end
+
+  # Log current offset values (for debug output).
+  #
+  # @return [void]
+  #
+  def log_current_offsets
+    moon_str = @moon_offsets.map { |m, o| "#{m}=#{o}" }.join(', ')
+    MoonwatchMessaging.debug("moon offsets: #{moon_str}", @debug_enabled)
+    MoonwatchMessaging.debug("sun offset: #{@sun_offset}", @debug_enabled)
+  end
+
+  private
+
+  # Calculate drift for a moon event.
+  #
+  # When an event occurs, we know exactly what position we should be at:
+  # - Rise event: position should be 0 (start of visible phase)
+  # - Set event: position should be visible_duration (start of hidden phase)
+  #
+  # @param is_rise [Boolean] True if moon just rose
+  # @param position [Integer] Current position in cycle
+  # @param visible_duration [Integer] Moon's visible duration
+  # @return [Integer] Drift amount (positive = predicted early)
+  #
+  def calculate_moon_drift(is_rise, position, visible_duration)
+    if is_rise
+      position # Should be 0, so position itself is the drift
+    else
+      position - visible_duration # Should be at visible_duration
+    end
+  end
+
+  # Apply correction to a moon's offset and persist.
+  #
+  # @param moon [String] Moon name
+  # @param correction [Integer] Correction amount in seconds
+  # @param reason [String] Reason for logging ('mismatch' or 'drift')
+  # @return [void]
+  #
+  def apply_moon_correction(moon, correction, reason)
+    @moon_offsets[moon] += correction
+    CharSettings["#{moon}_offset"] = @moon_offsets[moon]
+
+    sign = correction >= 0 ? '+' : ''
+    MoonwatchMessaging.debug(
+      "#{moon} #{reason} corrected by #{sign}#{correction}s (total: #{@moon_offsets[moon]}s)",
+      @debug_enabled
+    )
+  end
+
+  # Check if moon offset exceeds threshold and auto-reset if needed.
+  #
+  # @param moon [String] Moon name
+  # @return [void]
+  #
+  def check_moon_offset_threshold(moon)
+    return unless @moon_offsets[moon].abs > MOON_OFFSET_THRESHOLD
+
+    MoonwatchMessaging.debug(
+      "#{moon} offset exceeded #{MOON_OFFSET_THRESHOLD}s (#{@moon_offsets[moon]}s), auto-resetting to 0",
+      @debug_enabled
+    )
+    @moon_offsets[moon] = 0
+    CharSettings["#{moon}_offset"] = 0
+  end
+
+  # Apply correction to sun offset and persist.
+  #
+  # @param correction [Integer] Correction amount in seconds
+  # @param reason [String] Reason for logging
+  # @return [void]
+  #
+  def apply_sun_correction(correction, reason)
+    @sun_offset += correction
+    CharSettings['sun_offset'] = @sun_offset
+
+    sign = correction >= 0 ? '+' : ''
+    MoonwatchMessaging.debug(
+      "sun #{reason} corrected by #{sign}#{correction}s (total: #{@sun_offset}s)",
+      @debug_enabled
+    )
+  end
+
+  # Check if sun offset exceeds threshold and auto-reset if needed.
+  #
+  # @return [void]
+  #
+  def check_sun_offset_threshold
+    return unless @sun_offset.abs > SUN_OFFSET_THRESHOLD
+
+    MoonwatchMessaging.debug(
+      "sun offset exceeded #{SUN_OFFSET_THRESHOLD}s (#{@sun_offset}s), auto-resetting to 0",
+      @debug_enabled
+    )
+    @sun_offset = 0
+    CharSettings['sun_offset'] = 0
+  end
+end
+
+# =============================================================================
+# CLASS: MoonwatchLogger - Event Logging for Calibration
+# =============================================================================
+# Single Responsibility: Log astronomical events to CSV for analysis.
+#
+# Logs are per-character to avoid cross-session duplicates and support
+# multi-character calibration data collection.
+#
+# @example Enable logging and observe events
+#   logger = MoonwatchLogger.new(enabled: true, debug: false)
+#   logger.log_moon_event('katamba', true, game_time, date)
+#
+class MoonwatchLogger
+  # Data directory for log files
+  DATA_DIR = File.join($lich_dir || '.', 'data')
+
+  # Minimum interval between logging same event (deduplication)
+  DEDUP_INTERVAL_SECONDS = 60
+
+  # Initialize the logger.
+  #
+  # @param enabled [Boolean] Whether logging is enabled
+  # @param debug_enabled [Boolean] Whether to output debug messages
+  # @param character_name [String] Character name for log file naming
+  #
+  def initialize(enabled:, debug_enabled:, character_name: nil)
+    @enabled = enabled
+    @debug_enabled = debug_enabled
+    @character_name = character_name || (XMLData.name rescue 'unknown')
+
+    # Deduplication cache: tracks last logged time per event type
+    @log_cache = {}
+
+    # Interval tracking for CSV logging
+    @last_moon_events = {
+      'katamba' => { rise: nil, set: nil },
+      'xibar'   => { rise: nil, set: nil },
+      'yavash'  => { rise: nil, set: nil }
+    }
+    @last_sun_events = { rise: nil, set: nil }
+  end
+
+  # Log a moon rise/set event to CSV.
+  #
+  # Records raw intervals for post-hoc analysis plus offset/prediction
+  # for correlation studies. Includes deduplication to prevent double-logging
+  # the same event.
+  #
+  # @param moon [String] Moon name
+  # @param is_rise [Boolean] True if moon rose, false if set
+  # @param game_time [Integer] Unix timestamp of event
+  # @param date [Hash] DR date info from DRTime.calculate_date
+  # @param current_offset [Integer] Current offset for this moon
+  # @param predicted_seconds [Integer] What we predicted at this moment
+  # @return [void]
+  #
+  def log_moon_event(moon, is_rise, game_time, date, current_offset, predicted_seconds)
+    return unless @enabled
+
+    event_type = is_rise ? :rise : :set
+    return if duplicate_event?("#{moon}_#{event_type}", game_time)
+
+    # Calculate raw intervals from previous events
+    intervals = calculate_moon_intervals(moon, is_rise, game_time)
+
+    # Validate intervals - reject outliers
+    if intervals[:cycle] && !valid_moon_interval?(moon, intervals[:cycle])
+      MoonwatchMessaging.debug(
+        "rejected outlier cycle_interval #{intervals[:cycle]}s for #{moon}",
+        @debug_enabled
+      )
+      return
+    end
+
+    write_moon_csv(moon, event_type, game_time, date, intervals, current_offset, predicted_seconds)
+
+    # Update tracking after successful log
+    @last_moon_events[moon][event_type] = game_time
+
+    log_moon_debug(moon, event_type, date, current_offset, predicted_seconds, intervals)
+  end
+
+  # Log a sun rise/set event to CSV.
+  #
+  # Records raw intervals to validate CALENDAR_EPOCH and rois-level
+  # sunrise/sunset formula.
+  #
+  # @param is_rise [Boolean] True if sun rose, false if set
+  # @param game_time [Integer] Unix timestamp of event
+  # @param date [Hash] DR date info from DRTime.calculate_date
+  # @param current_offset [Integer] Current sun offset
+  # @param predicted_seconds [Integer] What we predicted at this moment
+  # @return [void]
+  #
+  def log_sun_event(is_rise, game_time, date, current_offset, predicted_seconds)
+    return unless @enabled
+
+    event_type = is_rise ? :rise : :set
+    return if duplicate_event?("sun_#{event_type}", game_time)
+
+    intervals = calculate_sun_intervals(is_rise, game_time)
+
+    # Validate day interval - reject outliers
+    if intervals[:day_interval] && !valid_sun_interval?(intervals[:day_interval])
+      MoonwatchMessaging.debug(
+        "rejected outlier day_interval #{intervals[:day_interval]}s for sun",
+        @debug_enabled
+      )
+      return
+    end
+
+    # Get expected day length for drift calculation
+    sun_times = DRTime.sun_times_for_day(date[:day_of_year])
+    expected_day_length = sun_times[:set] - sun_times[:rise]
+    drift = intervals[:day_length] ? (intervals[:day_length] - expected_day_length) : nil
+
+    write_sun_csv(event_type, game_time, date, intervals, expected_day_length, drift,
+                  current_offset, predicted_seconds)
+
+    # Update tracking after successful log
+    @last_sun_events[event_type] = game_time
+
+    log_sun_debug(event_type, date, current_offset, predicted_seconds, intervals, drift)
+  end
+
+  # Log a moon phase observation from the `observe <moon>` verb.
+  #
+  # Records the game's raw phase wording next to the model's computed phase so
+  # the phrase-to-phase mapping can be built empirically and the phase model
+  # validated over time. Phase has no passive broadcast, so this manual verb is
+  # the only ground truth available for it.
+  #
+  # @param moon [String] Moon name
+  # @param observed_phase [String] Raw phase description from the game
+  # @param game_time [Integer] Unix timestamp of the observation
+  # @return [void]
+  #
+  def log_phase_observation(moon, observed_phase, game_time)
+    return unless @enabled
+    return if duplicate_event?("#{moon}_phase_obs", game_time)
+
+    computed = Moons.phase(moon, game_time)
+    date = DRTime.calculate_date(game_time)
+    write_phase_csv(moon, observed_phase, computed, game_time, date)
+
+    mapped = Moons.observed_phase_name(observed_phase)
+    verdict = if mapped.nil?
+                'unmapped phrasing (record for map)'
+              elsif mapped == computed[:name]
+                'MATCH'
+              else
+                "MISMATCH model=#{computed[:name]}"
+              end
+    MoonwatchMessaging.debug(
+      "phase obs #{moon}: '#{observed_phase}' -> #{mapped || '?'} vs model #{computed[:name]} [#{verdict}]",
+      @debug_enabled
+    )
+  end
+
+  private
+
+  # Check if this event was recently logged (deduplication).
+  #
+  # @param cache_key [String] Unique key for this event type
+  # @param game_time [Integer] Current timestamp
+  # @return [Boolean] True if this is a duplicate
+  #
+  def duplicate_event?(cache_key, game_time)
+    last_logged = @log_cache[cache_key]
+    if last_logged && (game_time - last_logged).abs < DEDUP_INTERVAL_SECONDS
+      MoonwatchMessaging.debug("skipped duplicate log for #{cache_key}", @debug_enabled)
+      return true
+    end
+    @log_cache[cache_key] = game_time
+    false
+  end
+
+  # Calculate raw intervals from previous moon events.
+  #
+  # @param moon [String] Moon name
+  # @param is_rise [Boolean] True if moon rose
+  # @param game_time [Integer] Current timestamp
+  # @return [Hash] Interval data
+  #
+  def calculate_moon_intervals(moon, is_rise, game_time)
+    last = @last_moon_events[moon]
+
+    if is_rise
+      {
+        cycle: last[:rise] ? (game_time - last[:rise]) : nil,
+        hidden_dur: last[:set] ? (game_time - last[:set]) : nil,
+        visible_dur: nil
+      }
+    else
+      {
+        cycle: last[:set] ? (game_time - last[:set]) : nil,
+        visible_dur: last[:rise] ? (game_time - last[:rise]) : nil,
+        hidden_dur: nil
+      }
+    end
+  end
+
+  # Validate moon cycle interval is within expected range.
+  #
+  # @param moon [String] Moon name
+  # @param interval [Integer] Observed interval
+  # @return [Boolean] True if valid
+  #
+  def valid_moon_interval?(moon, interval)
+    expected = Moons::CONSTANTS[moon][:cycle]
+    interval >= expected * 0.5 && interval <= expected * 1.5
+  end
+
+  # Calculate raw intervals from previous sun events.
+  #
+  # @param is_rise [Boolean] True if sun rose
+  # @param game_time [Integer] Current timestamp
+  # @return [Hash] Interval data
+  #
+  def calculate_sun_intervals(is_rise, game_time)
+    if is_rise
+      {
+        day_interval: @last_sun_events[:rise] ? (game_time - @last_sun_events[:rise]) : nil,
+        night_length: @last_sun_events[:set] ? (game_time - @last_sun_events[:set]) : nil,
+        day_length: nil
+      }
+    else
+      {
+        day_interval: @last_sun_events[:set] ? (game_time - @last_sun_events[:set]) : nil,
+        day_length: @last_sun_events[:rise] ? (game_time - @last_sun_events[:rise]) : nil,
+        night_length: nil
+      }
+    end
+  end
+
+  # Validate sun day interval is within expected range.
+  #
+  # @param interval [Integer] Observed interval
+  # @return [Boolean] True if valid (50-150% of 21600)
+  #
+  def valid_sun_interval?(interval)
+    interval >= 10_800 && interval <= 32_400
+  end
+
+  # Write moon event to CSV file.
+  #
+  def write_moon_csv(moon, event_type, game_time, date, intervals, offset, predicted)
+    log_file = File.join(DATA_DIR, "moonwatch_events_#{@character_name}.csv")
+
+    ensure_moon_csv_header(log_file)
+
+    File.open(log_file, 'a') do |f|
+      f.puts [
+        game_time,
+        moon,
+        event_type,
+        date[:day_of_year],
+        DRTime.season(date[:day_of_year]),
+        @last_moon_events[moon][:rise] || '',
+        @last_moon_events[moon][:set] || '',
+        intervals[:cycle] || '',
+        intervals[:visible_dur] || '',
+        intervals[:hidden_dur] || '',
+        offset,
+        predicted
+      ].join(',')
+    end
+  end
+
+  # Ensure moon CSV has header row.
+  #
+  def ensure_moon_csv_header(log_file)
+    return if File.exist?(log_file)
+
+    File.open(log_file, 'w') do |f|
+      f.puts 'server_time,moon,event,day_of_year,season,last_rise,last_set,' \
+             'cycle_interval,visible_dur,hidden_dur,offset,predicted_seconds'
+    end
+  end
+
+  # Write sun event to CSV file.
+  #
+  def write_sun_csv(event_type, game_time, date, intervals, expected_day, drift, offset, predicted)
+    log_file = File.join(DATA_DIR, "sunwatch_events_#{@character_name}.csv")
+
+    ensure_sun_csv_header(log_file)
+
+    File.open(log_file, 'a') do |f|
+      f.puts [
+        game_time,
+        event_type,
+        date[:day_of_year],
+        DRTime.season(date[:day_of_year]),
+        @last_sun_events[:rise] || '',
+        @last_sun_events[:set] || '',
+        intervals[:day_interval] || '',
+        intervals[:day_length] || '',
+        intervals[:night_length] || '',
+        expected_day,
+        drift || '',
+        offset,
+        predicted
+      ].join(',')
+    end
+  end
+
+  # Ensure sun CSV has header row.
+  #
+  def ensure_sun_csv_header(log_file)
+    return if File.exist?(log_file)
+
+    File.open(log_file, 'w') do |f|
+      f.puts 'server_time,event,day_of_year,season,last_rise,last_set,' \
+             'day_interval,day_length,night_length,expected_day_length,' \
+             'drift,sun_offset,predicted_seconds'
+    end
+  end
+
+  # Write a phase observation to CSV file.
+  #
+  # Captures the game's raw phase wording alongside the model's computed phase,
+  # so the phrase-to-phase mapping can be derived and the model validated.
+  #
+  def write_phase_csv(moon, observed_phase, computed, game_time, date)
+    log_file = File.join(DATA_DIR, "moonphase_events_#{@character_name}.csv")
+
+    ensure_phase_csv_header(log_file)
+
+    File.open(log_file, 'a') do |f|
+      f.puts [
+        game_time,
+        moon,
+        date[:day_of_year],
+        csv_field(observed_phase),
+        computed[:index],
+        computed[:name],
+        computed[:phase_angle],
+        computed[:orbital_angle]
+      ].join(',')
+    end
+  end
+
+  # RFC4180-style CSV escaping for a free-form field: quote and double any
+  # embedded quotes only when the value contains a comma, quote, or newline, so
+  # commas in game text (observed phase wording) do not shift later columns.
+  #
+  # @param value [Object] the field value
+  # @return [String] the CSV-safe field
+  #
+  def csv_field(value)
+    s = value.to_s
+    return s unless s =~ /[",\r\n]/
+
+    %{"#{s.gsub('"', '""')}"}
+  end
+
+  # Ensure phase CSV has header row.
+  #
+  def ensure_phase_csv_header(log_file)
+    return if File.exist?(log_file)
+
+    File.open(log_file, 'w') do |f|
+      f.puts 'server_time,moon,day_of_year,observed_phase,' \
+             'computed_index,computed_name,phase_angle,orbital_angle'
+    end
+  end
+
+  # Output debug info for moon event.
+  #
+  def log_moon_debug(moon, event_type, date, offset, predicted, intervals)
+    return unless @debug_enabled
+
+    parts = ["logged #{moon} #{event_type}", "day_of_year=#{date[:day_of_year]}",
+             "offset=#{offset}", "pred=#{predicted}s"]
+    parts << "cycle=#{intervals[:cycle]}s" if intervals[:cycle]
+    parts << "visible=#{intervals[:visible_dur]}s" if intervals[:visible_dur]
+    parts << "hidden=#{intervals[:hidden_dur]}s" if intervals[:hidden_dur]
+
+    MoonwatchMessaging.debug(parts.join(' '), true)
+  end
+
+  # Output debug info for sun event.
+  #
+  def log_sun_debug(event_type, date, offset, predicted, intervals, drift)
+    return unless @debug_enabled
+
+    parts = ["logged sun #{event_type}", "day_of_year=#{date[:day_of_year]}",
+             "offset=#{offset}", "pred=#{predicted}s"]
+    parts << "day_interval=#{intervals[:day_interval]}s" if intervals[:day_interval]
+    parts << "day=#{intervals[:day_length]}s" if intervals[:day_length]
+    parts << "night=#{intervals[:night_length]}s" if intervals[:night_length]
+    parts << "drift=#{drift}s" if drift
+
+    MoonwatchMessaging.debug(parts.join(' '), true)
+  end
+end
+
+# =============================================================================
+# CLASS: ServerResetTracker - Server Reset Detection and Logging
+# =============================================================================
+# Single Responsibility: Track server resets and their impact on moon phases.
+#
+# Server resets are suspected of causing phase shifts in moon positions.
+# This class:
+# - Detects shutdown announcements (pre-reset)
+# - Detects restart via gap detection in moon events (post-reset)
+# - Logs all reset events to CSV for pattern analysis
+# - Compares pre/post offsets to quantify phase shifts
+#
+# @see design doc v2.14 "Server Reset Tracking"
+#
+# @example Basic usage
+#   tracker = ServerResetTracker.new(debug_enabled: true)
+#   tracker.log_shutdown(server_time, moon_offsets)
+#   # After restart detected:
+#   tracker.log_restart(moon, game_time, gap_seconds, pre_offset, post_offset)
+#
+class ServerResetTracker
+  # Data directory for log files
+  DATA_DIR = File.join($lich_dir || '.', 'data')
+
+  # Gap threshold: if time since last moon event exceeds this, restart detected
+  # Set to maximum cycle (21180) + 5 minutes buffer
+  GAP_THRESHOLD_SECONDS = 21_180 + 300
+
+  # Initialize the reset tracker.
+  #
+  # @param debug_enabled [Boolean] Whether to output debug messages
+  # @param character_name [String] Character name for log file naming
+  #
+  def initialize(debug_enabled:, character_name: nil)
+    @debug_enabled = debug_enabled
+    @character_name = character_name || (XMLData.name rescue 'unknown')
+
+    # Track last moon events for gap detection. Persisted to CharSettings so a
+    # gap that spans a script restart (a server reset relaunches the script via
+    # autostart) is still detectable. Without this the fresh process starts
+    # blank and never sees the restart gap, so restarts were never logged.
+    @last_moon_events = CharSettings['last_moon_events'] || {
+      'katamba' => nil,
+      'xibar'   => nil,
+      'yavash'  => nil
+    }
+
+    # Restore pre-shutdown offsets from CharSettings (survives script restart)
+    @pre_shutdown_offsets = CharSettings['pre_shutdown_offsets']
+    @shutdown_time = CharSettings['shutdown_time']
+  end
+
+  # Log a server shutdown announcement.
+  #
+  # Captures the current moon offsets before shutdown for later comparison.
+  # Called when SHUTDOWN_PATTERN matches.
+  #
+  # @param server_time [Integer] Unix timestamp when shutdown announced
+  # @param moon_offsets [Hash] Current moon offsets { 'katamba' => N, ... }
+  # @return [void]
+  #
+  def log_shutdown(server_time, moon_offsets)
+    @pre_shutdown_offsets = moon_offsets.dup
+    @shutdown_time = server_time
+
+    CharSettings['pre_shutdown_offsets'] = @pre_shutdown_offsets
+    CharSettings['shutdown_time'] = @shutdown_time
+
+    write_csv('shutdown', server_time, moon_offsets, nil, nil, nil)
+
+    MoonwatchMessaging.info('Server shutdown detected - offsets logged for post-reset comparison.')
+    MoonwatchMessaging.debug(
+      "pre-shutdown offsets: #{moon_offsets.map { |m, o| "#{m}=#{o}s" }.join(', ')}",
+      @debug_enabled
+    )
+  end
+
+  # Check for gap indicating restart and log if detected.
+  #
+  # Called during moon event processing. Compares time since last event
+  # for this moon to detect gaps that exceed expected cycle + buffer.
+  #
+  # @param moon [String] Moon name
+  # @param game_time [Integer] Current timestamp
+  # @param current_offset [Integer] Current offset for this moon
+  # @param all_offsets [Hash] All moon offsets for CSV recording
+  # @return [Boolean] True if restart was detected
+  #
+  def check_for_restart(moon, game_time, current_offset, all_offsets)
+    last_event = @last_moon_events[moon]
+    @last_moon_events[moon] = game_time
+    CharSettings['last_moon_events'] = @last_moon_events # persist across restarts
+
+    return false unless last_event
+
+    gap = game_time - last_event
+    return false if gap <= GAP_THRESHOLD_SECONDS
+
+    # Gap detected - this indicates we missed events (restart)
+    log_restart(moon, game_time, gap, current_offset, all_offsets)
+    true
+  end
+
+  # Get pre-shutdown offsets for comparison (if available).
+  #
+  # @return [Hash, nil] Pre-shutdown offsets or nil if no shutdown recorded
+  #
+  def pre_shutdown_offsets
+    @pre_shutdown_offsets
+  end
+
+  # Record the phase shift for one moon after a restart.
+  #
+  # Must be called AFTER the moon's offset has been corrected for its first
+  # post-restart event, so the corrected offset reflects the moon's new phase.
+  # The shift is the corrected offset minus the offset captured at shutdown.
+  # Each moon is logged once; the pre-shutdown snapshot is cleared after all
+  # three moons have re-observed (each moon detects the restart gap on its own
+  # first post-restart event).
+  #
+  # @param moon [String] Moon name
+  # @param post_offset [Integer] This moon's offset AFTER correction
+  # @param server_time [Integer] Current timestamp
+  # @return [void]
+  #
+  def record_phase_shift(moon, post_offset, server_time)
+    return unless @pre_shutdown_offsets&.key?(moon)
+
+    pre = @pre_shutdown_offsets[moon] || 0
+    shift = post_offset - pre
+
+    write_csv('phase_shift', server_time, { moon => post_offset }, { moon => shift }, nil, moon)
+
+    if shift.abs > 60
+      MoonwatchMessaging.info(
+        "Significant phase shift after reset: #{moon} #{shift >= 0 ? '+' : ''}#{shift}s"
+      )
+    end
+    MoonwatchMessaging.debug(
+      "phase shift #{moon}=#{shift >= 0 ? '+' : ''}#{shift}s (pre=#{pre}, post=#{post_offset})",
+      @debug_enabled
+    )
+
+    # Drop this moon from the snapshot; clear fully once all have re-observed.
+    @pre_shutdown_offsets.delete(moon)
+    if @pre_shutdown_offsets.empty?
+      @pre_shutdown_offsets = nil
+      @shutdown_time = nil
+      CharSettings['pre_shutdown_offsets'] = nil
+      CharSettings['shutdown_time'] = nil
+    else
+      CharSettings['pre_shutdown_offsets'] = @pre_shutdown_offsets
+    end
+  end
+
+  private
+
+  # Log restart detection event.
+  #
+  # @param moon [String] Moon that triggered detection
+  # @param game_time [Integer] Current timestamp
+  # @param gap [Integer] Gap in seconds since last event
+  # @param current_offset [Integer] Current offset for trigger moon
+  # @param all_offsets [Hash] All moon offsets at detection time
+  # @return [void]
+  #
+  def log_restart(moon, game_time, gap, current_offset, all_offsets)
+    gap_hours = (gap / 3600.0).round(1)
+
+    write_csv('restart_detected', game_time, all_offsets, nil, gap, moon)
+
+    MoonwatchMessaging.info(
+      "Restart detected via #{moon} - gap of #{gap_hours}h since last event."
+    )
+    MoonwatchMessaging.debug(
+      "restart: moon=#{moon} gap=#{gap}s current_offset=#{current_offset}s",
+      @debug_enabled
+    )
+  end
+
+  # Write event to server resets CSV file.
+  #
+  # @param event_type [String] 'shutdown', 'restart_detected', or 'phase_shift'
+  # @param server_time [Integer] Unix timestamp
+  # @param offsets [Hash, nil] Moon offsets at event time
+  # @param shifts [Hash, nil] Phase shifts (for 'phase_shift' events)
+  # @param gap [Integer, nil] Gap seconds (for 'restart_detected' events)
+  # @param trigger_moon [String, nil] Moon that triggered restart detection
+  # @return [void]
+  #
+  def write_csv(event_type, server_time, offsets, shifts, gap, trigger_moon)
+    log_file = File.join(DATA_DIR, "server_resets_#{@character_name}.csv")
+
+    ensure_csv_header(log_file)
+
+    File.open(log_file, 'a') do |f|
+      f.puts [
+        event_type,
+        server_time,
+        Time.at(server_time).strftime('%Y-%m-%d %H:%M:%S'),
+        offsets&.dig('katamba') || '',
+        offsets&.dig('xibar') || '',
+        offsets&.dig('yavash') || '',
+        shifts&.dig('katamba') || '',
+        shifts&.dig('xibar') || '',
+        shifts&.dig('yavash') || '',
+        gap || '',
+        trigger_moon || ''
+      ].join(',')
+    end
+  end
+
+  # Ensure CSV has header row.
+  #
+  # @param log_file [String] Path to log file
+  # @return [void]
+  #
+  def ensure_csv_header(log_file)
+    return if File.exist?(log_file)
+
+    File.open(log_file, 'w') do |f|
+      f.puts 'event_type,server_time,timestamp,katamba_offset,xibar_offset,yavash_offset,' \
+             'katamba_shift,xibar_shift,yavash_shift,gap_seconds,trigger_moon'
+    end
+  end
+end
+
+# =============================================================================
+# CLASS: MoonwatchUI - User Interface and Window Management
+# =============================================================================
+# Single Responsibility: All display and window output in one place.
+#
+class MoonwatchUI
+  # Initialize the UI manager.
+  #
+  # @param window_enabled [Boolean] Whether to show moon status window
+  #
+  WINDOW_REFRESH_INTERVAL = 60
+
+  def initialize(window_enabled:)
+    @window_enabled = window_enabled
+    @window_cache = nil
+    @last_window_refresh = Time.now
+
+    setup_window if @window_enabled
+  end
+
+  # Mark the published UserVars as fresh (true) or stale (false) without deleting
+  # any keys existing consumers read. Set true at startup and false on exit so
+  # other scripts can tell whether moonwatch is still maintaining the data. The
+  # 'moon' alias does not rely on this (it checks Script.running? directly), so a
+  # hard crash that skips the exit hook still yields a correct alias response.
+  #
+  # @param running [Boolean] whether moonwatch is actively updating UserVars
+  # @return [void]
+  #
+  def self.set_running(running)
+    UserVars.moons['running'] = running if UserVars.moons.is_a?(Hash)
+    UserVars.sun['running'] = running if UserVars.sun.is_a?(Hash)
+    UserVars.calendar['running'] = running if UserVars.calendar.is_a?(Hash)
+  end
+
+  # Update UserVars with current moon positions.
+  #
+  # @param offset_manager [MoonwatchOffsetManager] For getting offsets
+  # @param game_time [Integer] Current timestamp
+  # @return [void]
+  #
+  def update_moon_vars(offset_manager, game_time)
+    UserVars.moons['visible'] = []
+
+    Moons::MOON_NAMES.each do |moon|
+      offset = offset_manager.moon_offset(moon)
+      result = Moons.calculate_position(moon, game_time, offset)
+      phase = Moons.phase(moon, game_time)
+
+      timer_minutes = (result[:seconds] / 60).to_i
+
+      UserVars.moons[moon]['visible'] = result[:visible]
+      UserVars.moons[moon]['timer'] = timer_minutes
+      UserVars.moons[moon]['timer_seconds'] = result[:seconds]
+      UserVars.moons[moon]['t'] = result[:t]
+      UserVars.moons[moon]['phase'] = phase[:name]
+      UserVars.moons[moon]['phase_index'] = phase[:index]
+      UserVars.moons[moon]['next_phase'] = phase[:next_name]
+      UserVars.moons[moon]['next_phase_seconds'] = phase[:seconds_to_next]
+
+      if result[:visible]
+        UserVars.moons[moon]['pretty'] = "#{moon} is up for #{timer_minutes} minutes (#{phase[:name]})"
+        UserVars.moons[moon]['short'] = "[#{moon[0]}]+(#{timer_minutes})"
+        UserVars.moons['visible'] << moon
+      else
+        UserVars.moons[moon]['pretty'] = "#{moon} will rise in #{timer_minutes} minutes (#{phase[:name]})"
+        UserVars.moons[moon]['short'] = "[#{moon[0]}]-(#{timer_minutes})"
+      end
+    end
+  end
+
+  # Update UserVars with current sun position and calendar info.
+  #
+  # @param sun_offset [Integer] Current sun offset
+  # @param game_time [Integer] Current timestamp
+  # @return [void]
+  #
+  def update_sun_and_calendar_vars(sun_offset, game_time)
+    sun_result = DRTime.calculate_sun_position(game_time, sun_offset)
+    date = DRTime.calculate_date(game_time, sun_offset)
+    season = DRTime.season(date[:day_of_year])
+    time_of_day = DRTime.time_of_day(date[:seconds_in_day], date[:day_of_year])
+
+    timer_minutes = (sun_result[:seconds] / 60).to_i
+
+    # Sun visibility
+    UserVars.sun['day'] = sun_result[:visible]
+    UserVars.sun['night'] = !sun_result[:visible]
+    UserVars.sun['visible'] = sun_result[:visible]
+    UserVars.sun['timer'] = timer_minutes
+    UserVars.sun['timer_seconds'] = sun_result[:seconds]
+    UserVars.sun['season'] = season
+    UserVars.sun['time_of_day'] = time_of_day
+
+    # Display strings
+    if sun_result[:visible]
+      UserVars.sun['pretty'] = "sun sets in #{timer_minutes} minutes (#{time_of_day})"
+      UserVars.sun['short'] = "[S]+(#{timer_minutes})"
+    else
+      UserVars.sun['pretty'] = "sun rises in #{timer_minutes} minutes (#{time_of_day})"
+      UserVars.sun['short'] = "[S]-(#{timer_minutes})"
+    end
+
+    # Full calendar info
+    UserVars.calendar['year'] = date[:year]
+    UserVars.calendar['month'] = date[:month]
+    UserVars.calendar['day'] = date[:day]
+    UserVars.calendar['day_of_year'] = date[:day_of_year]
+    UserVars.calendar['anlas'] = date[:anlas]
+    UserVars.calendar['rois'] = date[:rois]
+    UserVars.calendar['season'] = season
+    UserVars.calendar['time_of_day'] = time_of_day
+    UserVars.calendar['year_name'] = DRTime.year_name(date[:year])
+    UserVars.calendar['month_name'] = DRTime.month_name(date[:month])
+    UserVars.calendar['anlas_name'] = DRTime.anlas_name(date[:anlas])
+    UserVars.calendar['date_string'] = format(
+      '%<year>03d-%<month>02d-%<day>02d %<anlas>02d:%<rois>02d',
+      year: date[:year], month: date[:month], day: date[:day],
+      anlas: date[:anlas], rois: date[:rois]
+    )
+  end
+
+  # Update the moon status window if enabled.
+  #
+  # @return [void]
+  #
+  def update_window
+    return unless @window_enabled
+
+    new_message = [
+      UserVars.moons['katamba']['short'],
+      UserVars.moons['yavash']['short'],
+      UserVars.moons['xibar']['short']
+    ].join(' ')
+
+    if @window_cache == new_message && Time.now - @last_window_refresh < WINDOW_REFRESH_INTERVAL
+      return
+    end
+
+    @window_cache = new_message
+    @last_window_refresh = Time.now
+    _respond('<clearStream id="moonWindow"/>')
+    _respond("<pushStream id=\"moonWindow\"/>#{new_message}")
+    _respond('<popStream/>')
+  end
+
+  # Log initial status for debug mode.
+  #
+  # @param debug_enabled [Boolean] Whether debug is on
+  # @return [void]
+  #
+  def log_initial_status(debug_enabled)
+    return unless debug_enabled
+
+    MoonwatchMessaging.debug(
+      "sun visible=#{UserVars.sun['visible']} timer=#{UserVars.sun['timer']}m " \
+      "(#{UserVars.sun['time_of_day']})",
+      true
+    )
+    MoonwatchMessaging.debug(
+      "calendar: #{UserVars.calendar['date_string']} #{UserVars.calendar['anlas_name']}",
+      true
+    )
+    MoonwatchMessaging.debug(
+      "season=#{UserVars.calendar['season']} #{UserVars.calendar['year_name']}",
+      true
+    )
+
+    Moons::MOON_NAMES.each do |moon|
+      m = UserVars.moons[moon]
+      state = m['visible'] ? "up #{m['timer']}m" : "rises in #{m['timer']}m"
+      next_change = Moons.format_duration(m['next_phase_seconds'])
+      MoonwatchMessaging.debug(
+        "#{moon}: #{state}, #{m['phase']} (-> #{m['next_phase']} in ~#{next_change})",
+        true
+      )
+    end
+  end
+
+  private
+
+  # Set up the moon status window.
+  #
+  def setup_window
+    if $frontend == 'genie'
+      _respond("<streamWindow id='moonWindow' title='moonWindow' location='center' save='true' />")
+      MoonwatchMessaging.info('Be sure to open the moonWindow window if not already open.')
+    else
+      _respond("<streamWindow id='moonWindow' title='Moons' location='center' save='true' />")
+    end
+    _respond("<exposeStream id='moonWindow'/>")
+  end
+end
+
+# =============================================================================
+# ARGUMENT PARSING AND INITIALIZATION
+# =============================================================================
+
 arg_definitions = [
   [
-    { name: 'debug', regex: /debug/i, optional: true },
-    { name: 'alias', regex: /alias/i, optional: true, description: 'Add an alias for the command moon that will display moon status.' },
-    { name: 'window', regex: /window/i, optional: true, description: 'Toggle a window for the moon status.' },
-    { name: 'correct', regex: /correct/i, optional: true, description: 'Set up a moonbot to deal with new moons' }
+    { name: 'debug', regex: /^debug$/i, optional: true,
+      description: 'Enable debug output (becomes default for future runs).' },
+    { name: 'nodebug', regex: /^nodebug$/i, optional: true,
+      description: 'Disable debug output.' },
+    { name: 'alias', regex: /^alias$/i, optional: true,
+      description: 'Add an alias for the command moon that will display moon status.' },
+    { name: 'window', regex: /^window$/i, optional: true,
+      description: 'Enable moon status window (becomes default for future runs).' },
+    { name: 'nowindow', regex: /^nowindow$/i, optional: true,
+      description: 'Disable moon status window.' },
+    { name: 'log', regex: /^log$/i, optional: true,
+      description: 'Enable event logging + auto-observe each moon at rise (this character).' },
+    { name: 'nolog', regex: /^nolog$/i, optional: true,
+      description: 'Disable moon event logging and rise auto-observe.' },
+    { name: 'reset', regex: /^reset$/i, optional: true,
+      description: 'Reset all moon offsets to zero and exit.' }
   ]
 ]
 
-unless XMLData.game == "DR"
-  _respond("This script is not intended to be used on any DR instance than Prime.")
-  _respond("Exiting.")
+args = parse_args(arg_definitions)
+
+# -----------------------------------------------------------------------------
+# Debug Mode Configuration
+# -----------------------------------------------------------------------------
+if args.debug
+  CharSettings['moon_debug'] = true
+  MoonwatchMessaging.info('Debug mode enabled (persistent).')
+end
+
+if args.nodebug
+  CharSettings['moon_debug'] = false
+  MoonwatchMessaging.info('Debug mode disabled.')
+end
+
+$debug_mode_mm = CharSettings['moon_debug'] || UserVars.moon_debug
+
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+if args.log
+  CharSettings['moon_logging'] = true
+  MoonwatchMessaging.info("Moon logging enabled for #{XMLData.name}.")
+end
+
+if args.nolog
+  CharSettings['moon_logging'] = false
+  MoonwatchMessaging.info('Moon logging disabled.')
+end
+
+$moon_logging = CharSettings['moon_logging']
+
+# -----------------------------------------------------------------------------
+# Window Configuration
+# -----------------------------------------------------------------------------
+if args.window
+  CharSettings['moon_window'] = true
+  MoonwatchMessaging.info('Moon window enabled (persistent).')
+end
+
+if args.nowindow
+  CharSettings['moon_window'] = false
+  MoonwatchMessaging.info('Moon window disabled.')
+end
+
+# -----------------------------------------------------------------------------
+# Initialize Components
+# -----------------------------------------------------------------------------
+
+# Offset manager (handles persistence and correction)
+offset_manager = MoonwatchOffsetManager.new(debug_enabled: $debug_mode_mm)
+
+# Export moon offsets as global for external scripts (moonpredict.lic)
+$moon_offsets = offset_manager.moon_offsets
+
+# Handle reset command
+if args.reset
+  MoonwatchMessaging.info("Resetting all offsets for #{XMLData.name}...")
+  offset_manager.reset_all_offsets
+  MoonwatchMessaging.info('Restart moonwatch to re-calibrate.')
   exit
 end
 
-args = parse_args(arg_definitions)
+# Logger (handles CSV event logging)
+logger = MoonwatchLogger.new(
+  enabled: $moon_logging,
+  debug_enabled: $debug_mode_mm
+)
 
-$debug_mode_mm = UserVars.moon_debug || args.debug
+# UI manager (handles UserVars and window)
+ui = MoonwatchUI.new(window_enabled: CharSettings['moon_window'])
 
-correct = args.correct || UserVars.moonwatch_correct || get_settings.moonwatch_correct
+# Server reset tracker (detects shutdowns and restarts)
+reset_tracker = ServerResetTracker.new(debug_enabled: $debug_mode_mm)
 
-FIREBASE_URL = 'https://dr-scripts.firebaseio.com/'
-
-RISE = 1
-SET = 0
-
-def load_moon_data
-  uri = URI.parse("#{FIREBASE_URL}/moon_data_v2.json")
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-  request = Net::HTTP::Get.new(uri.request_uri)
-  request['Content-Type'] = 'application/json'
-  response = http.request(request)
-  return nil if response.body.nil?
-
-  JSON.parse(response.body.chomp)
-rescue => e
-  echo("error loading moon data: #{e.inspect}")
-  nil
-end
-
-def push_moon_update(body_name, data)
-  echo("updating #{body_name} with #{data}") if $debug_mode_mm
-  uri = URI.parse("#{FIREBASE_URL}/moon_data_v2/#{body_name}.json")
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-  request = Net::HTTP::Put.new(uri.request_uri)
-  request['Content-Type'] = 'application/json'
-  request.body = data.to_json
-  http.request(request)
-end
-
+# Initialize UserVars structures
 UserVars.moons = { 'katamba' => {}, 'yavash' => {}, 'xibar' => {}, 'visible' => [] }
 UserVars.sun = {}
+UserVars.calendar = {}
 
-$moon_data = load_moon_data
-$last_moon_fetch = Time.now
-$moon_data_delay = nil
+# Freshness flag: mark the published data as live now, and stale on exit. This is
+# non-destructive (no keys removed), so consumers reading moon/sun/calendar keys
+# are unaffected; they may additionally check ['running'] to detect stale data.
+MoonwatchUI.set_running(true)
+before_dying { MoonwatchUI.set_running(false) }
 
+# Clear window cache
+CharSettings['moon_window_cache'] = nil
+
+# Debug output on startup
+if $debug_mode_mm
+  MoonwatchMessaging.debug("game=#{XMLData.game}", true)
+  MoonwatchMessaging.debug("server_time=#{XMLData.server_time}", true)
+  offset_manager.log_current_offsets
+  MoonwatchMessaging.debug("debug=#{$debug_mode_mm} logging=#{$moon_logging}", true)
+end
+
+# Instance-awareness notice: on a non-Prime instance the periods are identical
+# but the absolute phase self-calibrates from observed events (see
+# MoonwatchInstance). Shown once at startup; nil (silent) on Prime.
+instance_notice = MoonwatchInstance.calibration_notice(XMLData.game)
+MoonwatchMessaging.info(instance_notice) if instance_notice
+
+# Handle alias command. MoonwatchAlias builds a self-aware alias that reports when
+# moonwatch is not running (see MoonwatchAlias). This creates or overwrites it.
 if args.alias
-  UpstreamHook.run("<c>#{$clean_lich_char}alias add --global moon = #{$clean_lich_char}" + %{eq respond("#{UserVars.moons['katamba']['pretty']} : #{UserVars.moons['yavash']['pretty']} : #{UserVars.moons['xibar']['pretty']}")})
+  MoonwatchAlias.install($clean_lich_char)
+  MoonwatchMessaging.info("Added 'moon' alias for quick status.")
 end
 
-CharSettings['moon_window'] = !CharSettings['moon_window'] if args.window
+# Auto-upgrade an existing moonwatch 'moon' alias to the current body. Reads the
+# alias service DB; no-op if no 'moon' alias exists or it is not one of ours, so
+# we never create an alias the user did not ask for.
+MoonwatchAlias.resync($clean_lich_char)
 
-Settings['xibar'] ||= Time.now
-Settings['yavash'] ||= Time.now
-Settings['katamba'] ||= Time.now
+# -----------------------------------------------------------------------------
+# Initial Calculations
+# -----------------------------------------------------------------------------
+game_time = XMLData.server_time rescue Time.now.to_i
 
-Settings['rise'] = {}
+ui.update_moon_vars(offset_manager, game_time)
+ui.update_sun_and_calendar_vars(offset_manager.sun_offset, game_time)
+ui.update_window
+ui.log_initial_status($debug_mode_mm)
 
-Settings['rise']['yavash'] = 175 * 60
-Settings['rise']['xibar'] = 172 * 60
-Settings['rise']['katamba'] = 174 * 60
-
-# Time until moon sets after rising
-
-Settings['set'] = {}
-
-Settings['set']['yavash'] = 177 * 60
-Settings['set']['xibar'] = 174 * 60
-Settings['set']['katamba'] = 177 * 60
-
-if CharSettings['moon_window']
-  if $frontend == 'genie' # fix genie bullshit
-    _respond("<streamWindow id='moonWindow' title='moonWindow' location='center' save='true' />")
-    echo('Be sure to open the moonWindow window if not already open.')
-  else
-    _respond("<streamWindow id='moonWindow' title='Moons' location='center' save='true' />")
-  end
-  _respond("<exposeStream id='moonWindow'/>")
-  CharSettings['moon_window_cache'] = nil
-end
-
-def check_for_new_moons
-  UserVars.moons.each do |moon, data|
-    next if moon == 'visible' || data['timer'] >= 0
-
-    set = DRC.bput("perc #{moon}", 'should rise', 'roundtime') == 'should rise'
-    moon_change(moon, !set) if data[(set ? 'set' : 'rise')]
-    waitrt?
-  end
-end
-
-def update_moon_window
-  new_message = [UserVars.moons['katamba']['short'], UserVars.moons['yavash']['short'], UserVars.moons['xibar']['short']].join(' ')
-  return if CharSettings['moon_window_cache'] == new_message
-
-  CharSettings['moon_window_cache'] = new_message
-  _respond("<clearStream id=\"moonWindow\"/>\r\n")
-  _respond("<pushStream id=\"moonWindow\"/> #{new_message}\r\n<popStream/>\r\n")
-end
-
-def moon_change(moon, is_up)
-  echo("moon_change #{moon}:#{is_up}") if $debug_mode_mm
-  snapshot = Time.now
-  snapshot = (snapshot - snapshot.sec)
-  push_moon_update(moon[0], 't' => snapshot.to_i, 'e' => is_up ? RISE : SET)
-end
-
-def minutes_apart(first, second)
-  ((first - second) / 60).to_i
-end
-
-def minutes_to_next_sun_event(past, current)
-  delta = minutes_apart(current, past)
-  360 - delta - minutes_apart(Time.now, current)
-end
-
-def update_sun_info(latest_data)
-  return if latest_data.nil? || latest_data.empty?
-
-  sun_data = latest_data['s']
-  return if sun_data['s'].nil? || sun_data['r'].nil?
-
-  set_time = Time.at(sun_data['s']).localtime
-  rise_time = Time.at(sun_data['r']).localtime
-  if set_time > rise_time
-    UserVars.sun['day'] = false
-    UserVars.sun['night'] = true
-    UserVars.sun['timer'] = minutes_to_next_sun_event(rise_time, set_time)
-  else
-    UserVars.sun['day'] = true
-    UserVars.sun['night'] = false
-    UserVars.sun['timer'] = minutes_to_next_sun_event(set_time, rise_time)
-  end
-end
-
-def update_moon_info(latest_data)
-  return if latest_data.nil? || latest_data.empty?
-
-  %w[katamba yavash xibar].each do |moon|
-    data = latest_data[moon[0]]
-    event = data['e'] == RISE ? 'rise' : 'set'
-    coming_event = (%w[rise set] - [event]).first
-    snapshot = Time.at(data['t']).localtime
-
-    UserVars.moons[moon].delete(event)
-    UserVars.moons[moon][coming_event] = snapshot + Settings[coming_event][moon]
-    UserVars.moons[moon]['timer'] = minutes_apart(UserVars.moons[moon][coming_event], Time.now)
-
-    if event == 'rise'
-      UserVars.moons[moon]['pretty'] = "#{moon} is up for #{UserVars.moons[moon]['timer']} minutes"
-      UserVars.moons[moon]['short'] = "[#{moon[0]}]+(#{UserVars.moons[moon]['timer']})"
-      UserVars.moons['visible'].push(moon) unless UserVars.moons['visible'].include?(moon)
-    else
-      UserVars.moons[moon]['pretty'] = "#{moon} will rise in #{UserVars.moons[moon]['timer']} minutes"
-      UserVars.moons[moon]['short'] = "[#{moon[0]}]-(#{UserVars.moons[moon]['timer']})"
-      UserVars.moons['visible'].delete(moon) if UserVars.moons['visible'].include?(moon)
-    end
-  end
-end
-
-def seconds_until_refetch
-  return 60 unless UserVars.moons.reject { |m| m == 'visible' }.values.first['timer'] && UserVars.sun['timer']
-  return $moon_data_delay if $moon_data_delay
-
-  echo("calculating next moon data request") if $debug_mode_mm
-  all_timers = UserVars.moons.reject { |m| m == 'visible' }.values.map { |d| d['timer'] } + [UserVars.sun['timer']]
-  $moon_data_delay = ([all_timers.min * 0.8, 1].max * 60).to_i
-  echo("Next request in #{$moon_data_delay} seconds") if $debug_mode_mm
-  $moon_data_delay
-end
+# =============================================================================
+# MAIN EVENT LOOP
+# =============================================================================
+# Monitors game output for astronomical events and updates predictions.
+#
+# Tracks whether we are inside an observe response (set by MOON_SCAN_PATTERN) so
+# the moon phase line is only captured as a reading during an actual observation.
+awaiting_phase = false
 
 loop do
-  # Periodically refresh moon data from Firebase
-  if Time.now - $last_moon_fetch > seconds_until_refetch
-    $moon_data = load_moon_data
-    $last_moon_fetch = Time.now
-    $moon_data_delay = nil
-  end
-
   line = script.gets?
+
   case line
-  when /^(Katamba|Xibar|Yavash) sets/
-    moon_change(Regexp.last_match(1).downcase, false)
-  when /^(Katamba|Xibar|Yavash) slowly rises/
-    moon_change(Regexp.last_match(1).downcase, true)
-  when /heralding another fine day|rises to create the new day|as the sun rises, hidden|as the sun rises behind it|faintest hint of the rising sun|The rising sun slowly|Night slowly turns into day as the horizon/
-    old = $moon_data&.dig('s')
-    if old && old['s']
-      push_moon_update('s', 's' => old['s'], 'r' => Time.now.to_i)
+  when MOON_SET_PATTERN
+    # Moon set - extract name via named capture
+    moon_name = Regexp.last_match[:moon].downcase
+    game_time = XMLData.server_time
+    MoonwatchMessaging.debug("moon_change #{moon_name}:set at #{game_time}", $debug_mode_mm)
+
+    # Get calendar info for logging
+    date = DRTime.calculate_date(game_time, offset_manager.sun_offset)
+
+    # Log event before correction (captures pre-correction prediction)
+    current_offset = offset_manager.moon_offset(moon_name)
+    predicted = Moons.calculate_position(moon_name, game_time, current_offset)
+    logger.log_moon_event(moon_name, false, game_time, date, current_offset, predicted[:seconds])
+
+    # Check for restart gap before correction
+    current_offsets = Moons::MOON_NAMES.to_h { |m| [m, offset_manager.moon_offset(m)] }
+    restart_detected = reset_tracker.check_for_restart(moon_name, game_time, current_offset, current_offsets)
+
+    # Correct offset based on observation
+    offset_manager.correct_moon_offset(moon_name, false, game_time)
+
+    # Record the phase shift AFTER correction (the correction reveals the shift)
+    if restart_detected
+      reset_tracker.record_phase_shift(moon_name, offset_manager.moon_offset(moon_name), game_time)
     end
-  when /The sun sinks below the horizon|night slowly drapes its starry banner|sun slowly sinks behind the scattered clouds and vanishes|grey light fades into a heavy mantle of black/
-    old = $moon_data&.dig('s')
-    if old && old['r']
-      push_moon_update('s', 'r' => old['r'], 's' => Time.now.to_i)
+
+  when MOON_RISE_PATTERN
+    # Moon rise - extract name via named capture
+    moon_name = Regexp.last_match[:moon].downcase
+    game_time = XMLData.server_time
+    MoonwatchMessaging.debug("moon_change #{moon_name}:rise at #{game_time}", $debug_mode_mm)
+
+    # Get calendar info for logging
+    date = DRTime.calculate_date(game_time, offset_manager.sun_offset)
+
+    # Log event before correction
+    current_offset = offset_manager.moon_offset(moon_name)
+    predicted = Moons.calculate_position(moon_name, game_time, current_offset)
+    logger.log_moon_event(moon_name, true, game_time, date, current_offset, predicted[:seconds])
+
+    # Check for restart gap before correction
+    current_offsets = Moons::MOON_NAMES.to_h { |m| [m, offset_manager.moon_offset(m)] }
+    restart_detected = reset_tracker.check_for_restart(moon_name, game_time, current_offset, current_offsets)
+
+    # Correct offset based on observation
+    offset_manager.correct_moon_offset(moon_name, true, game_time)
+
+    # Record the phase shift AFTER correction (the correction reveals the shift)
+    if restart_detected
+      reset_tracker.record_phase_shift(moon_name, offset_manager.moon_offset(moon_name), game_time)
     end
+
+    # Auto-observe on rise to capture the phase readout (when logging is on). The
+    # rise broadcast only reaches us outdoors, so the moon is observable now; the
+    # response is caught below (scan line then phase line) and logged. Note:
+    # observe carries roundtime and trains a skill, so this only runs while logging.
+    put "observe #{moon_name}" if $moon_logging
+
+  when MOON_SCAN_PATTERN
+    # An observe has begun; the next moon phase line is a reading to capture.
+    awaiting_phase = true
+
+  when MOON_PHASE_LINE_PATTERN
+    # Phase readout from an observe, scoped by the scan line above so ambient sky
+    # text is not logged. DR varies the wording per phase; we capture the whole
+    # clause and let the logger map/validate it.
+    if awaiting_phase
+      awaiting_phase = false
+      moon_name = Regexp.last_match[:moon].downcase
+      phase_desc = Regexp.last_match[:phase_desc].strip
+      game_time = XMLData.server_time
+      MoonwatchMessaging.debug("phase_obs #{moon_name}: #{phase_desc}", $debug_mode_mm)
+      logger.log_phase_observation(moon_name, phase_desc, game_time)
+    end
+
+  when SUN_RISE_COMBINED_PATTERN
+    # Sun rise event
+    game_time = XMLData.server_time
+    MoonwatchMessaging.debug("sun_change rise at #{game_time}", $debug_mode_mm)
+
+    date = DRTime.calculate_date(game_time, offset_manager.sun_offset)
+    predicted = DRTime.calculate_sun_position(game_time, offset_manager.sun_offset)
+
+    logger.log_sun_event(true, game_time, date, offset_manager.sun_offset, predicted[:seconds])
+    offset_manager.correct_sun_offset(true, game_time)
+
+  when SUN_SET_COMBINED_PATTERN
+    # Sun set event
+    game_time = XMLData.server_time
+    MoonwatchMessaging.debug("sun_change set at #{game_time}", $debug_mode_mm)
+
+    date = DRTime.calculate_date(game_time, offset_manager.sun_offset)
+    predicted = DRTime.calculate_sun_position(game_time, offset_manager.sun_offset)
+
+    logger.log_sun_event(false, game_time, date, offset_manager.sun_offset, predicted[:seconds])
+    offset_manager.correct_sun_offset(false, game_time)
+
+  when SHUTDOWN_PATTERN
+    # Server shutdown announcement - log offsets for post-reset comparison
+    game_time = XMLData.server_time rescue Time.now.to_i
+    current_offsets = Moons::MOON_NAMES.to_h { |m| [m, offset_manager.moon_offset(m)] }
+    reset_tracker.log_shutdown(game_time, current_offsets)
+
+  when SUN_DEBUG_KEYWORDS_PATTERN
+    # Debug: log potential sun events we might be missing. Handled sun rise/set
+    # lines are caught by the earlier when-clauses, so any line reaching here is
+    # an unmatched sun-related line.
+    MoonwatchMessaging.debug("potential sun event not captured: #{line}", $debug_mode_mm)
   end
 
-  if $moon_data.nil?
-    $moon_data = load_moon_data
-    $last_moon_fetch = Time.now
-    pause unless $moon_data
-  end
+  # Update positions from calculations
+  game_time = XMLData.server_time rescue Time.now.to_i
+  ui.update_moon_vars(offset_manager, game_time)
+  ui.update_sun_and_calendar_vars(offset_manager.sun_offset, game_time)
+  ui.update_window
 
-  update_moon_info($moon_data)
-  update_sun_info($moon_data)
-  update_moon_window if CharSettings['moon_window']
-  check_for_new_moons if correct
+  # Small sleep when no input to prevent busy-waiting
   pause 0.1 unless line
 end

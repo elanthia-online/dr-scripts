@@ -639,9 +639,15 @@ module Harness
 
   class XMLData
     @@_room_title = nil
+    @@_game = nil
+    @@_server_time = nil
+    @@_name = nil
 
     def self._reset
       @@_room_title = nil
+      @@_game = nil
+      @@_server_time = nil
+      @@_name = nil
     end
 
     def self.room_title
@@ -650,6 +656,36 @@ module Harness
 
     def self.room_title=(val)
       @@_room_title = val
+    end
+
+    # DR game instance code (e.g. 'DR' Prime, 'DRX' Platinum, 'DRF' Fallen,
+    # 'DRT' Test). Defaults to 'DR' so specs that do not care about the instance
+    # see Prime.
+    def self.game
+      @@_game || 'DR'
+    end
+
+    def self.game=(val)
+      @@_game = val
+    end
+
+    # Game server timestamp used by time/astronomy scripts. Defaults to 0 (an
+    # Integer) so arithmetic in the class under test does not blow up when unset.
+    def self.server_time
+      @@_server_time || 0
+    end
+
+    def self.server_time=(val)
+      @@_server_time = val
+    end
+
+    # Current character name. Defaults to 'TestChar'.
+    def self.name
+      @@_name || 'TestChar'
+    end
+
+    def self.name=(val)
+      @@_name = val
     end
   end
 
