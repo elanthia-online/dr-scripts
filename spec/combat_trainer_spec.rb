@@ -2804,7 +2804,11 @@ RSpec.describe SpellProcess do
     defaults = {
       tk_spell: { 'abbrev' => 'tkt', 'slivers' => true },
       tk_ammo: nil,
-      settings: OpenStruct.new
+      settings: OpenStruct.new,
+      # Sliver-recreation throttle. Default the timer well into the past so the
+      # cooldown is elapsed for tests that are not specifically about throttling.
+      sliver_recast_delay: 180,
+      sliver_timer: Time.now - 1000
     }
     defaults.merge(overrides).each do |k, v|
       instance.instance_variable_set(:"@#{k}", v)
@@ -3116,6 +3120,95 @@ RSpec.describe SpellProcess do
           # prep_time should remain at the spell data default (5)
           expect(spell_data['prep_time']).to eq(5)
         end
+      end
+    end
+
+    # sliver_recast_delay throttle: at most one sliver re-creation attempt per
+    # delay window (default 180s, user-configurable; 0 disables). Prevents
+    # spamming Moonblade casts on targets that consume slivers quickly.
+    context 'sliver recast throttle' do
+      before(:each) do
+        setup_moon_mage_with_moonblade
+        allow(DRC).to receive(:bput)
+          .with('break moonblade', anything, anything, anything)
+          .and_return('The slivers drift about')
+      end
+
+      it 'does not cast again while still within the cooldown window' do
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 30)
+
+        expect(DRCA).not_to receive(:cast_spell)
+        instance.send(:check_slivers, build_game_state)
+      end
+
+      it 'casts once the cooldown window has elapsed' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 181)
+        instance.send(:check_slivers, build_game_state)
+
+        expect(DRCA).to have_received(:cast_spell)
+      end
+
+      it 'boundary: still throttled one second before the delay elapses' do
+        instance = build_spell_process(sliver_recast_delay: 100, sliver_timer: Time.now - 99)
+
+        expect(DRCA).not_to receive(:cast_spell)
+        instance.send(:check_slivers, build_game_state)
+      end
+
+      it 'respects a custom (shorter) delay that a default 180 would still block' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        # 30s since last attempt: blocked at the 180 default, allowed at 20s.
+        instance = build_spell_process(sliver_recast_delay: 20, sliver_timer: Time.now - 30)
+        instance.send(:check_slivers, build_game_state)
+
+        expect(DRCA).to have_received(:cast_spell)
+      end
+
+      it 'a delay of 0 disables the throttle entirely' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process(sliver_recast_delay: 0, sliver_timer: Time.now)
+        instance.send(:check_slivers, build_game_state)
+
+        expect(DRCA).to have_received(:cast_spell)
+      end
+
+      it 'starts the cooldown on an attempt so an immediate second call is throttled' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 1000)
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state) # attempt: sets the timer
+        instance.send(:check_slivers, game_state) # immediately after: throttled
+
+        expect(DRCA).to have_received(:cast_spell).once
+      end
+
+      it 'starts the cooldown even when every cast fails (no per-tick retry spam)' do
+        allow(DRC).to receive(:message)
+        allow(DRCA).to receive(:cast_spell).and_return(false)
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 1000)
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state) # 3 failed casts, sets the timer
+        instance.send(:check_slivers, game_state) # throttled: no new casts
+
+        expect(DRCA).to have_received(:cast_spell).exactly(3).times
+      end
+
+      it 'does not start the cooldown when no moons are visible (retries next tick)' do
+        UserVars._set_moons({ 'visible' => [] })
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 1000)
+        instance.send(:check_slivers, build_game_state)
+
+        # timer stays in the past so a later tick (with moons up) can still attempt
+        expect(instance.instance_variable_get(:@sliver_timer)).to be <= (Time.now - 1000)
       end
     end
   end

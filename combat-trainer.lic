@@ -1608,6 +1608,14 @@ class SpellProcess
     drop_tkt_ammo
     Flags.add('need-tkt-ammo', 'There is nothing here that can be thrown')
 
+    # Minimum seconds between recreating telekinetic slivers (see #check_slivers).
+    # Without a throttle, slivers are remade the instant they deplete, which can
+    # spam Moonblade casts on targets that consume slivers quickly. Default 180s;
+    # set sliver_recast_delay: 0 in your yaml to disable the throttle entirely.
+    @sliver_recast_delay = settings.sliver_recast_delay || 180
+    # Seed so the first check may create slivers immediately.
+    @sliver_timer = Time.now - @sliver_recast_delay
+
     @spell_checks = []
     @spell_checks << :check_slivers if DRStats.moon_mage? && @tk_spell&.dig('slivers')
     @spell_checks << :check_regalia if @regalia_array
@@ -1719,11 +1727,19 @@ class SpellProcess
     return unless @tk_spell&.dig('slivers')
     return if game_state.casting
     return if DRSpells.slivers
+    # Throttle sliver re-creation so a fast-depleting target (or a run of failed
+    # casts) can't re-enter and spam Moonblade every tick. sliver_recast_delay
+    # defaults to 180s and is user-configurable (0 disables the throttle).
+    return if Time.now - @sliver_timer < @sliver_recast_delay
 
     unless UserVars.moons['visible'].any?
       DRC.message "There are NO moons available and you have NO TK_AMMO set! You need to fix this!" if !@tk_ammo && $debug_mode_ct
       return
     end
+
+    # We are committing to an attempt: start the cooldown now so that whether the
+    # casts succeed or all fail, we won't try again until the delay elapses.
+    @sliver_timer = Time.now
 
     # With low skill you may fail to create the slivers
     # when breaking your moonblade. If so, keep retrying.
