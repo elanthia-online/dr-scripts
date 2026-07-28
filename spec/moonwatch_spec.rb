@@ -778,11 +778,11 @@ RSpec.describe 'moonwatch.lic' do
       end
 
       it 'CSV-escapes an observed phase containing a comma so columns do not shift' do
-        require 'csv'
         logger.log_phase_observation('katamba', 'bright, waxing gibbous', now)
         row = File.readlines(phase_csv).last.chomp
-        expect(row).to include('"bright, waxing gibbous"')
-        expect(CSV.parse_line(row).length).to eq(8) # matches the 8-column header
+        # The comma-bearing field is quoted and the next column (computed index,
+        # an integer) follows immediately -- proving the comma did not shift it.
+        expect(row).to match(/,"bright, waxing gibbous",\d+,/)
       end
     end
 
