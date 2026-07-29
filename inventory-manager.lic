@@ -1136,7 +1136,7 @@ class InventoryManagerGui
     menu.show_all
     begin
       menu.popup_at_pointer(event)
-    rescue StandardError, NoMethodError
+    rescue StandardError
       menu.popup(nil, nil, event.button, event.time)
     end
   end
@@ -1159,7 +1159,7 @@ class InventoryManagerGui
   def open_via_gtk(url)
     Gtk.show_uri_on_window(@window, url, 0)
     true
-  rescue StandardError, NoMethodError
+  rescue StandardError
     false
   end
 
@@ -1181,7 +1181,7 @@ class InventoryManagerGui
   def copy_to_clipboard(text)
     Gtk::Clipboard.get_default(Gdk::Display.default).text = text
     DRC.message("Copied: #{text}")
-  rescue StandardError, NoMethodError
+  rescue StandardError
     DRC.message("Item name: #{text}")
   end
 
