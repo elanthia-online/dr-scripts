@@ -3,7 +3,9 @@ class TaskForage
     arg_definitions = [
       [
         { name: 'town', optional: true, options: %w[crossing shard], variable: true,
-          description: 'Which town you want to run tasks in. If none provided, your hometown is used.' }
+          description: 'Which town you want to run tasks in. If none provided, your hometown is used.' },
+        { name: 'resume', optional: true, regex: /^resume$/i,
+          description: 'Pick up a task that is already in progress instead of canceling it.' }
       ]
     ]
 
@@ -128,6 +130,9 @@ class TaskForage
               'begins to advance on you!')
     Flags.add('giver-move', *@move_regex)
     Flags.add('cluttered', 'The room is too cluttered to find anything here', 'tries to forage for something, but can\'t find it with all the clutter here')
+    # Both messages mean the forage container has no room left for the item in hand
+    Flags.add('container-full', 'There isn\'t any more room in',
+              /You just can't get .+ to fit in .+ no matter how you arrange it/)
 
     @task_givers = { 'shard'    => { 'npc' => 'peddler', 'location' => @shard_path },
                      'crossing' => { 'npc' => 'Mags', 'location' => '954' } }
@@ -156,19 +161,87 @@ class TaskForage
     @tasks_completed = 0
     @tasks_failed = 0
     @item_count = 0
+    @delivered = 0
 
     echo 'UserVars:' if @debug
     echo UserVars.task_forage.to_yaml if @debug
     echo 'forage_settings:' if @debug
     echo @forage_settings.to_yaml if @debug
 
+    # Resuming reads the task journal, so it needs no trip to the giver first
+    resumed = @args.resume ? resume_task : false
+
     while determine_task_necessary
-      find_giver
-      get_task
+      unless resumed
+        find_giver
+        get_task
+      end
+      resumed = false
       gather_items
       find_giver
       complete_task
     end
+  end
+
+  # Adopt a task that's already in progress rather than canceling it. Returns false if
+  # there's nothing usable to resume, leaving the normal flow to cancel whatever is there.
+  def resume_task
+    echo 'resume_task' if @debug
+    # Match the "turn in" line, which the journal prints last, so the entry above it is
+    # already in the buffer by the time bput returns. Other task types have no such line,
+    # so they fall through to the timeout and are left alone.
+    remaining_regex = /You need to turn in (?<remaining>\d+) more/
+    no_task_regex = /You are not currently on a task/
+    result = DRC.bput('task', { 'suppress_no_match' => true, 'timeout' => 3 },
+                      remaining_regex, no_task_regex)
+    remaining_match = result.match(remaining_regex)
+    unless remaining_match
+      if result =~ no_task_regex
+        DRC.message('You are not on a task, so there is nothing to resume.')
+      else
+        DRC.message('Your in-progress task is not a foraging task. Not resuming it.')
+      end
+      return false
+    end
+    remaining = remaining_match[:remaining].to_i
+
+    # Match objects rather than Regexp.last_match -- the sub below would reset it
+    # Leading .* forces the last " in " before the verb, so a descriptor like
+    # "the peddler in red" can't be mistaken for the town
+    entry_regex = /.*\bin (?<town>.+?) wants you to retrieve (?<number>\d+) (?<item>.+?)\./
+    entry = reget(20).reverse.find { |line| line =~ entry_regex }
+    unless entry
+      DRC.message('Unable to read the task entry from your journal.')
+      return false
+    end
+
+    entry_match = entry.match(entry_regex)
+    entry_town = entry_match[:town].downcase.sub(/^the /, '')
+    entry_number = entry_match[:number].to_i
+    entry_item = entry_match[:item]
+    echo "journal entry: #{entry_number} #{entry_item} for #{entry_town}, #{remaining} remaining" if @debug
+
+    unless entry_town == @task_town
+      DRC.message("Your in-progress task is for #{entry_town}, not #{@task_town}. Not resuming it.")
+      return false
+    end
+
+    @number = entry_number
+    @item = entry_item
+    @delivered = [@number - remaining, 0].max
+    @item_count = @delivered # Items already turned in still count toward the total
+
+    # Deliberately not evaluate_item -- that declines the offer, which is the wrong verb
+    # for a task already accepted. Returning false lets the caller cancel it instead.
+    unless known_item? && mapped_item? && ready_item? && closeby_item?
+      DRC.message("Unable to resume the in-progress task for #{@item}.")
+      return false
+    end
+
+    DRC.message("Resuming task: #{@number} #{@item}, #{remaining} still to turn in.")
+    DRCI.stow_hands
+    use_stored_items
+    true
   end
 
   def follow_wanderer
@@ -304,6 +377,7 @@ class TaskForage
       case result
       when /I need (\d+) ([^.]+)/
         @item_count = 0
+        @delivered = 0
         @number = Regexp.last_match(1).to_i
         @item = Regexp.last_match(2)
         echo "Gathering #{@number} of #{@item}" if @debug
@@ -341,7 +415,20 @@ class TaskForage
     when /Remember, I need/
       echo 'Task received' if @debug
       DRCI.stow_hands
+      use_stored_items
     end
+  end
+
+  # Leftovers from an earlier task or a previous run can already be sitting in the forage
+  # container. Count those toward the task rather than foraging duplicates.
+  def use_stored_items
+    echo 'use_stored_items' if @debug
+    stored = @item_variants.sum { |noun| DRCI.count_items_in_container(noun, @forage_container) }
+    echo "stored #{@item_variants.join('/')}: #{stored}" if @debug
+    return unless stored.positive?
+
+    @item_count = [@item_count + stored, @number].min
+    DRC.message("Found #{stored} #{@item} in your #{@forage_container}. Using #{@item_count} of the #{@number} needed.")
   end
 
   def decline_task
@@ -452,6 +539,7 @@ class TaskForage
   # Check to make sure we have data on this item, and know the correct name.
   def known_item?
     echo 'known_item?' if @debug
+    @item_variants = nil
     if @foraging_data.any? { |item| item['item'] == @item }
       # no change necessary
     elsif @foraging_data.any? { |item| item['item'] == @item.chomp('s') }
@@ -471,6 +559,9 @@ class TaskForage
     elsif @item == 'pieces of wild corn'
       @item = 'corn'
     elsif @item == 'sticks, branches or limbs'
+      # Mags takes any of the three, so all three count in the container and at turn-in.
+      # Foraging still uses @item, the first entry.
+      @item_variants = %w[stick branch limb]
       @item = 'stick'
     elsif @item == 'some chamomile'
       @item = 'chamomile'
@@ -484,8 +575,15 @@ class TaskForage
       DRC.message("I don't know where to find #{@item}")
       return false
     end
-    echo 'known = true' if @debug
+    @item_variants ||= [@item]
+    echo "known = true, variants: #{@item_variants}" if @debug
     true
+  end
+
+  # Pull any of the nouns this task accepts out of the forage container.
+  # Returns the noun actually taken, or nil if none were there.
+  def get_task_item
+    @item_variants.find { |noun| DRCI.get_item?(noun, @forage_container) }
   end
 
   # Check if we have a location for the item
@@ -569,23 +667,53 @@ class TaskForage
     end
   end
 
+  # Pile up the foragables in the current room, moving on if the room is cluttered
+  def collect_pile
+    echo 'collect_pile' if @debug
+    DRC.collect(@item, false)
+    return unless Flags['cluttered']
+
+    cluttered_gathering_room
+    DRC.collect(@item, false)
+  end
+
+  # The forage container filled up mid-task. Hand over everything gathered so far so
+  # that the container has room again, then head back out for the rest.
+  def deliver_gathered_items
+    echo 'deliver_gathered_items' if @debug
+    Flags.reset('container-full')
+    DRC.message("Your #{@forage_container} is full. Turning in #{@item_count - @delivered} #{@item} before gathering more.")
+    find_giver
+    give_item # The item still in hand is the one that wouldn't fit
+    while @delivered < @item_count
+      noun = get_task_item
+      break unless noun
+
+      give_item(noun)
+    end
+    DRCT.walk_to(@item_location) if @item_count < @number
+  end
+
   # Travel to the nearest foraging spot and start to gather them
   def gather_items
     echo 'gather_items' if @debug
+    return if @item_count >= @number # Already covered by what's in the container
+
     DRCT.walk_to(@item_location)
     Flags.reset('cluttered')
     Flags.reset('combat')
+    Flags.reset('container-full')
 
     if @collect
-      DRC.collect(@item, false)
-      if Flags['cluttered']
-        cluttered_gathering_room
-        DRC.collect(@item, false)
-      end
+      collect_pile
       while @item_count < @number
         DRCI.get_item_unsafe(@item)
         if DRCI.put_away_item?(@item, @forage_container)
           @item_count += 1
+        elsif Flags['container-full']
+          @item_count += 1
+          deliver_gathered_items
+          collect_pile if @item_count < @number
         else
           DRC.message('Unable to store item.')
           cancel_task
@@ -600,6 +728,10 @@ class TaskForage
         if DRC.forage?(@item, 5)
           @item_count += 1
           unless DRCI.put_away_item?(@item, @forage_container)
+            if Flags['container-full']
+              deliver_gathered_items
+              next
+            end
             DRC.message("You need to make more room in your #{@forage_container}")
             cancel_task
             safe_exit
@@ -621,7 +753,7 @@ class TaskForage
             @tasks_failed += 1
             determine_task_necessary
             get_task
-            DRCT.walk_to(@item_location)
+            DRCT.walk_to(@item_location) if @item_count < @number # The new task may already be covered
           end
         end
       end
@@ -641,14 +773,17 @@ class TaskForage
     false
   end
 
-  def give_item
-    echo 'give_item' if @debug
-    case DRC.bput("give #{@item} to #{@task_giver}", 'and says, "Thanks,', '^What is it you\'re trying to give?',
+  def give_item(noun = @item)
+    echo "give_item: #{noun}" if @debug
+    case DRC.bput("give #{noun} to #{@task_giver}", 'and says, "Thanks,', '^What is it you\'re trying to give?',
                   ' I have a few things here for you, thank you so much for your help', 'Mags sighs and says')
     when /^What is it you're trying to give?/
       find_giver
-      give_item
+      give_item(noun)
+    when /and says, "Thanks,/
+      @delivered += 1
     when /I have a few things here for you, thank you so much for your help/
+      @delivered += 1
       @tasks_completed += 1
       @item = nil
       kill_time(2) if determine_task_necessary
@@ -661,12 +796,14 @@ class TaskForage
   def complete_task
     echo 'complete_task' if @debug
     UserVars.task_forage['item_failures'].delete(@item) unless UserVars.task_forage['item_failures'][@item].nil?
-    @number.times do
-      if !DRCI.get_item?(@item, @forage_container)
+    # Items already handed over during a mid-task container emptying don't need giving again
+    (@number - @delivered).times do
+      noun = get_task_item
+      if noun.nil?
         DRC.message('ERROR: Task item not found.')
         safe_exit
       else
-        give_item
+        give_item(noun)
       end
     end
   end
@@ -681,6 +818,7 @@ end
 before_dying do
   Flags.delete('combat')
   Flags.delete('giver-move')
+  Flags.delete('container-full')
 end
 
 TaskForage.new
