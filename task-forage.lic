@@ -130,9 +130,12 @@ class TaskForage
               'begins to advance on you!')
     Flags.add('giver-move', *@move_regex)
     Flags.add('cluttered', 'The room is too cluttered to find anything here', 'tries to forage for something, but can\'t find it with all the clutter here')
-    # Both messages mean the forage container has no room left for the item in hand
+    # All three mean the item in hand won't go into the forage container. The weight
+    # message is a capacity limit rather than a count limit, but emptying the container
+    # is the same remedy.
     Flags.add('container-full', 'There isn\'t any more room in',
-              /You just can't get .+ to fit in .+ no matter how you arrange it/)
+              /You just can't get .+ to fit in .+ no matter how you arrange it/,
+              'too heavy to go in there')
 
     @task_givers = { 'shard'    => { 'npc' => 'peddler', 'location' => @shard_path },
                      'crossing' => { 'npc' => 'Mags', 'location' => '954' } }
@@ -685,12 +688,23 @@ class TaskForage
     DRC.message("Your #{@forage_container} is full. Turning in #{@item_count - @delivered} #{@item} before gathering more.")
     find_giver
     give_item # The item still in hand is the one that wouldn't fit
+    from_container = 0
     while @delivered < @item_count
       noun = get_task_item
       break unless noun
 
       give_item(noun)
+      from_container += 1
     end
+
+    # Nothing came out of the container, so emptying it didn't actually free anything.
+    # We still make progress (one item per trip), but the user should know why it's slow.
+    if from_container.zero? && !@warned_no_room && @item_count < @number
+      @warned_no_room = true
+      DRC.message("Your #{@forage_container} had no #{@item} to turn in, so it may be too small or too heavily loaded for this task.")
+      DRC.message('Foraging will continue one item per trip. Use a roomier container to speed this up.')
+    end
+
     DRCT.walk_to(@item_location) if @item_count < @number
   end
 
