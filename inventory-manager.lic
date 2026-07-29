@@ -3,6 +3,17 @@
 =end
 
 class InventoryManager
+  # Entities the game emits inside item names. Decoded rather than deleted so
+  # "a black &amp; white cloak" stays "a black & white cloak".
+  XML_ENTITIES = {
+    'amp'  => '&',
+    'lt'   => '<',
+    'gt'   => '>',
+    'quot' => '"',
+    'apos' => "'",
+    '#39'  => "'"
+  }.freeze
+
   def initialize
     @active_character = Char.name.to_sym
     @item_db_path = "data/inventory.yaml"
@@ -223,8 +234,18 @@ class InventoryManager
     sub_container = ""
     lines.each do |line|
       line.sub!(/\(\d+\)/, '') if command == 'vault standard'
-      item = line.lstrip
+      # Game output carries XML noise (bold toggles, <d> command tags, prompts)
+      # that used to leak into inventory.yaml verbatim. Skip the structural
+      # lines outright, then strip tags and decode entities once, up front, so
+      # the item text and the indentation checks below both see clean text.
+      next if line =~ /<\/?(?:prompt|output)\b/ || line.include?('<?xml')
 
+      # Tags first, then entities -- otherwise a decoded &lt; could be mistaken
+      # for the start of a tag.
+      clean_line = line.gsub(/<[^>]*>/, '')
+                       .gsub(/&(amp|lt|gt|quot|apos|#39);/) { XML_ENTITIES[Regexp.last_match(1)] }
+
+      item = clean_line.strip
       next if item.empty?
       next if item.start_with?(*@inventory_ignores)
 
@@ -235,9 +256,9 @@ class InventoryManager
       # if the item starts with a -, it's in a container
       if item[0].eql? '-'
         item[0] = ''
-        if line =~ /\s{8,}-(?:a|an|some|the|several|clusters|one) /
+        if clean_line =~ /^\s{8,}-/
           item.concat(" (nested container - #{sub_container})")
-        elsif line =~ /\s{5}-(?:a|an|some|the|several|clusters|one) /
+        elsif clean_line =~ /^\s{5,}-/
           item.concat(" (in container - #{container})")
           sub_container = item.to_s
         else
@@ -249,9 +270,9 @@ class InventoryManager
         item.concat(' (worn)')
       elsif command == "read my storage book" || command == "read my vault book" || inventory_type == "shadow_servant"
         # Vault book, storage book and shadow servant via PG all have same output formatting
-        if line =~ /\s{8,}(?:a|an|some|the|several|clusters|one) /
+        if clean_line =~ /\s{8,}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (nested container - #{sub_container})")
-        elsif line =~ /\s{6}(?:a|an|some|the|several|clusters|one) /
+        elsif clean_line =~ /\s{6}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (in container - #{container})")
           sub_container = item.to_s
         else
@@ -259,9 +280,9 @@ class InventoryManager
         end
       elsif command == 'vault standard'
         # items in a container are prefixed by 11 spaces once the item count is removed
-        if line =~ /\s{16,}(?:a|an|some|the|several|clusters|one) /
+        if clean_line =~ /\s{16,}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (nested container - #{sub_container})")
-        elsif line =~ /\s{11}(?:a|an|some|the|several|clusters|one) /
+        elsif clean_line =~ /\s{11}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (in container - #{container})")
           sub_container = item.to_s
         else
@@ -296,8 +317,12 @@ class InventoryManager
 
   def clean_home_string(string)
     # We remove the category by finding the : in the string, plus drop the period at the end
-    colon = string.index(":") + 2
-    string[colon..-2]
+    colon = string.index(":")
+    # No category prefix means there is nothing to trim; slicing blind here used
+    # to raise on nil or lop the front off an unrelated line.
+    return string if colon.nil?
+
+    string[(colon + 2)..-2]
   end
 
   def add_ticket
