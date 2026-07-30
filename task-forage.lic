@@ -450,7 +450,7 @@ class TaskForage
       find_giver
       cancel_task
     when /I see that you no longer wish to assist me/
-      true
+      echo 'Task canceled' if @debug
     when /wish to end your current/
       echo 'Cancel step 1' if @debug
       case DRC.bput("ask #{@task_giver} for task cancel", 'I see that you no longer wish to assist',
