@@ -12,10 +12,12 @@
 
   This version runs a match-only Room.current first. Only when that returns nil
   (current_or_new WOULD create a room) does it scan for existing rooms that share
-  the same title and description. Among those twins it flags the ones that are
-  suspicious by UID (the reliable signal) and, if any, STOPS and asks you before
-  creating. Pure no-UID mazes (game and twins both UID-less) never prompt, by
-  design, so normal maze mapping is unaffected.
+  the same title and description. UID is authoritative: a same title+desc twin
+  with a DIFFERENT non-empty UID is a genuinely different room and is left alone.
+  It flags a twin only when the game reports a UID that the twin lacks entirely
+  (the twin is the likely pre-UID original) and, if any, STOPS and asks you
+  before creating. When the game reports no UID at all nothing is flagged, so
+  no-UID mazes never prompt and normal maze mapping is unaffected.
 
   Reply to a prompt with Lich commands (they never reach the game or the
   movement hook):
@@ -93,20 +95,20 @@ module AutoMap
 
   # Whether a twin looks like the duplicate source for the current location.
   #
-  # UID is the reliable signal. When the game reports a UID that no room owns, a
-  # same title+desc twin lacking that UID is the likely original. When the game
-  # reports no UID, a same title+desc twin that HAS one is the likely original;
-  # two UID-less rooms are treated as a legitimate maze and are not flagged.
+  # UID is authoritative: two rooms with different, non-empty UIDs are genuinely
+  # different rooms, not duplicates. The only ambiguous case is UID ABSENCE. So
+  # the sole duplicate signal is the game reporting a UID that a same title+desc
+  # twin lacks entirely -- the twin is the likely pre-UID original of this room.
+  # When the game reports no UID at all we cannot tie the location to any
+  # UID-bearing twin, so nothing is flagged (this also keeps no-UID mazes quiet).
   #
   # @param room [Lich::Common::Map] a candidate twin
   # @param game_uid [Integer, nil] the current game UID, 0 or nil when none
   # @return [Boolean] true if the twin should trigger a duplicate warning
   def self.suspicious_twin?(room, game_uid)
-    if game_uid.to_i.zero?
-      room.uid.any?
-    else
-      room.uid.empty? || !room.uid.include?(game_uid)
-    end
+    return false if game_uid.to_i.zero?
+
+    room.uid.empty?
   end
 
   # Warn about likely duplicates, then block until the user replies via ;send.

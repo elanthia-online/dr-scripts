@@ -130,10 +130,10 @@ RSpec.describe 'AutoMap' do
         include_examples 'a flagged twin'
       end
 
-      context 'and the twin owns a different UID' do
+      context 'and the twin owns a different UID (a genuinely different room)' do
         let(:twin) { build_room(uid: [999999]) }
 
-        include_examples 'a flagged twin'
+        include_examples 'a safe twin'
       end
 
       context 'and the twin already includes the game UID' do
@@ -145,7 +145,7 @@ RSpec.describe 'AutoMap' do
       context 'and the game UID is off by one from the twin (boundary)' do
         let(:twin) { build_room(uid: [230007]) }
 
-        include_examples 'a flagged twin'
+        include_examples 'a safe twin'
       end
     end
 
@@ -154,7 +154,7 @@ RSpec.describe 'AutoMap' do
         let(:game_uid) { 0 }
         let(:twin) { build_room(uid: [230008]) }
 
-        include_examples 'a flagged twin'
+        include_examples 'a safe twin'
       end
 
       context 'given a zero UID and a UID-less twin (legit maze)' do
