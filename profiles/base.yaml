@@ -2338,6 +2338,9 @@ inventory_manager_ignores:
   - 'in the known realms'
   - 'A notation at'
   - '...You have nothing currently stored'
+  - 'You take a moment to recall'
+  - '<output class'
+  - '<prompt time'
 
 inventory_manager_vault_surfaces:
   - 'a brass hook'
