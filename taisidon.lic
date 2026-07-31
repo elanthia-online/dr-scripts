@@ -1,139 +1,360 @@
-class Taisidon
-  def initialize
-    arg_definitions = [
-      [
-        { name: 'restart', regex: /restart/i, optional: true, description: 'Start in the Morgue instead of on the dock.' },
-      ]
-    ]
+=begin
+  Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-taisidon.lic
+=end
 
+# Solves the Taisidon Mystery murder-mystery cruise (the cruise ship is the "Morada").
+#
+# The event gives you three unknowns to identify -- the murderer, the murder weapon, and
+# the room where the murder happened -- and then you ACCUSE person WITH weapon IN room.
+# This script gathers all three clues automatically and makes the accusation:
+#
+#   1. Board: get a boarding pass, REDEEM it at the Taisidon cruise coordinator, then ASK
+#      the coordinator ABOUT ACCESS to be moved onto the Morada.
+#   2. Weapon: STUDY the corpse in the morgue. Each murder weapon leaves a unique wound
+#      description, so the wound text alone identifies the weapon (no APPRAISE needed).
+#   3. Murderer + crime scene: patrol the six cruise rooms. In each room, ASK the lone
+#      suspect ABOUT ALIBI (the guilty one answers with a nervous "tell") and SEARCH the
+#      room (the murder room shows dried blood).
+#   4. Accuse: once all three clues are known, ACCUSE person WITH weapon IN room.
+#
+# Original author: Kalinandra.
+#
+# All wound descriptions, alibi tells, search results, and the redeem/access flow encoded
+# below were verified against real event transcripts.
+#
+# @note Requirements before running:
+#   - You must be standing with the Taisidon cruise coordinator (the event representative).
+#   - You must hold, or be able to GET, a boarding pass ("get my boarding pass").
+#   - Both hands are emptied automatically at the start (via EquipmentManager).
+#
+# @example Solve a cruise from the dock (default)
+#   ;taisidon
+# @example Resume when you are already aboard, starting in the morgue
+#   ;taisidon restart
+class Taisidon
+  # Maps each corpse wound description (as returned by STUDY CORPSE) to the murder weapon
+  # that produces it. The wound text uniquely identifies the weapon, so studying the corpse
+  # is sufficient -- APPRAISE of the room weapons is never required. Patterns are the
+  # shortest fragments that are unique across all nine wound lines, so they also match the
+  # full wound sentence the game prints.
+  WEAPON_BY_WOUND = {
+    /clean edges/             => 'zills',
+    /flesh and bone/          => 'cleaver',
+    /internal bleeding/       => 'baton',
+    /severe lacerations/      => 'bottle',
+    /curved puncture wounds/  => 'corkscrew',
+    /ragged edges/            => 'knife',
+    /criss-crossed/           => 'comb',
+    /gashes and severe blunt/ => 'logbook',
+    /deep and lethal/         => 'paintbrush'
+  }.freeze
+
+  # Maps each crime-scene room id to the room name used in the ACCUSE command.
+  SCENE_BY_ROOM = {
+    '16025' => 'lounge',
+    '16026' => 'bar',
+    '16027' => 'promenade',
+    '16028' => 'buffet',
+    '16029' => 'quarterdeck',
+    '16030' => 'foredeck'
+  }.freeze
+
+  # Room ids walked while patrolling, in their original visiting order.
+  PATROL_ROOMS = %w[16030 16027 16028 16029 16025 16026].freeze
+
+  # Room id of the morgue, where the corpse is studied.
+  MORGUE_ROOM = '16031'
+
+  # Room id of the event representative / cruise coordinator (shown in the wrong-room hint).
+  REPRESENTATIVE_ROOM = '15979'
+
+  # Nervous "tells" that mark a suspect as the murderer when they ASK ABOUT ALIBI. An
+  # innocent suspect gives a plain "<race> <role> says, \"...\"" reply with none of these.
+  #
+  # NOTE the guilty steward's tell ("says, fingers tapping") itself contains a comma after
+  # "says", so it also matches the generic innocent marker /says,/. These patterns are
+  # therefore always offered to DRC.bput BEFORE /says,/ (see #question_suspect), so bput
+  # returns the specific tell rather than the generic marker for the guilty suspect.
+  GUILTY_TELLS = [
+    /says with a nervous tic/,
+    /says coughing awkwardly/,
+    /blinking excessively/,
+    /says with trembling hands/,
+    /says, fingers tapping/,
+    /shifty eyes/,
+    /tugging at their uniform/,
+    /flushed face/,
+    /pacing/
+  ].freeze
+
+  # Generic marker of an innocent (straight) alibi answer. Offered to bput after GUILTY_TELLS.
+  INNOCENT_TELL = /says,/
+
+  # Maximum REDEEM attempts before giving up. REDEEM asks you to repeat the command within a
+  # short window, so a couple of iterations are normal; this only bounds a pathological loop.
+  MAX_REDEEM_ATTEMPTS = 5
+
+  # Response fragments matched while boarding.
+  REDEEM_REPEAT  = /Once you redeem this/    # repeat REDEEM within the timing window
+  REDEEM_NO_PASS = /The REDEEM verb is used/ # you have no boarding passes
+  WRONG_ROOM     = /The representative for a short cruise/ # not standing with the coordinator
+  PASS_ACCEPTED  = /The cruise coordinator takes/         # pass consumed; access is next
+  TASK_ASSIGNED  = /Your task is to identify/             # aboard; the mystery has begun
+
+  # Response fragments matched while gathering clues.
+  SEARCH_SCENE   = /uncovers an area of/        # this room is the crime scene
+  SEARCH_EMPTY   = /fails to turn up any clues/ # not the crime scene
+  SEARCH_BROKEN  = /I could not find/           # SEARCH itself failed (something is wrong)
+  ALIBI_USAGE    = /Usage/                      # ASK ABOUT ALIBI syntax error
+  ACCUSE_SUCCESS = /coupon/                     # a correct accusation is rewarded with a coupon
+
+  # Parses arguments, empties hands, and drives the whole solve (or resumes at the morgue).
+  def initialize
     args = parse_args(arg_definitions, true)
-    EquipmentManager.new.empty_hands
+    empty_hands
     @murderer = ''
     @weapon = ''
     @crimescene = ''
-    @rooms = %w[16030 16027 16028 16029 16025 16026]
 
     if args.restart
-      DRCT.walk_to('16031')
-      morgue
+      resume_at_morgue
     else
-      DRC.bput('get my boarding pass', 'You get', 'What were')
-      start_story
+      board_and_solve
     end
   end
 
-  def start_story
-    case DRC.bput('redeem my pass', 'Once you redeem this', 'The REDEEM verb is used', 'Your task is to identify the murderer', 'The representative for a short cruise', 'The cruise coordinator takes')
-    when 'The representative for a short cruise'
-      echo "You're in the wrong room.  Go to 15979."
-    when 'The REDEEM verb is used'
-      echo "You have no passes!  Fix the things to board the Morada"
-      exit
-    when 'Once you redeem this'
-      start_story
-    when 'The cruise coordinator takes'
-      EquipmentManager.new.empty_hands
-      DRC.bput('ask coordinator about access', 'Your task is to identify')
-      morgue
-    end
+  # --- Pure clue-mapping seams (side-effect free; unit tested directly) ---
+
+  # Looks up the murder weapon implied by a corpse wound description.
+  # @param wound_text [String, nil] text returned by STUDY CORPSE
+  # @return [String, nil] the weapon noun, or nil if no wound pattern matched
+  def weapon_for(wound_text)
+    return nil if wound_text.nil?
+
+    match = WEAPON_BY_WOUND.find { |pattern, _weapon| wound_text =~ pattern }
+    match&.last
   end
 
-  def morgue
-    case DRC.bput('study corpse', /clean edges/, /flesh and bone/, /internal bleeding/, /severe lacerations/, /curved puncture wounds/,
-                  /ragged edges/, /criss-crossed/, /gashes and severe blunt/, /deep and lethal/)
-    when /clean edges/
-      @weapon = 'zills'
-    when /flesh and bone/
-      @weapon = 'cleaver'
-    when /internal bleeding/
-      @weapon = 'baton'
-    when /severe lacerations/
-      @weapon = 'bottle'
-    when /curved puncture wounds/
-      @weapon = 'corkscrew'
-    when /ragged edges/
-      @weapon = 'knife'
-    when /criss-crossed/
-      @weapon = 'comb'
-    when /gashes and severe blunt/
-      @weapon = 'logbook'
-    when /deep and lethal/
-      @weapon = 'paintbrush'
-    else
-      echo("needs new match!!")
-    end
-    echo("Weapon: #{@weapon}")
-    patrol
+  # Looks up the crime-scene name for a room id.
+  # @param room_id [String, Integer, nil] a cruise room id
+  # @return [String, nil] the scene name used in ACCUSE, or nil if the id is not a scene room
+  def scene_for(room_id)
+    SCENE_BY_ROOM[room_id.to_s]
   end
 
-  def questioning
-    return unless @murderer == ''
+  # Decides whether an alibi response indicates guilt.
+  # @param alibi_response [String, nil] text returned by ASK <suspect> ABOUT ALIBI
+  # @return [Boolean] true if any nervous tell is present
+  def guilty?(alibi_response)
+    return false if alibi_response.nil?
 
-    # check alibi
-    suspect = DRRoom.npcs.first
-    case DRC.bput("ask #{suspect} about alibi", /says with a nervous tic/, /says coughing awkwardly/, 'Usage', /blinking excessively/, /says with trembling hands/,
-                  "says, fingers tapping", /shifty eyes/, /tugging at their uniform/, /flushed face/, /pacing/, "says, \"")
-    when 'Usage'
-      echo("Something's wrong.  Check the things!")
-      exit
-    when /says with a nervous tic/, /trembling hands/, /shifty eyes/, /tugging at their uniform/, /flushed face/, /pacing/, /blinking excessively/, "says, fingers tapping", /says coughing awkwardly/
-      @murderer = suspect
-      echo("THATS THE GUY!")
-    when /says,/
-      echo("The #{suspect} is innocent.")
-    end
+    GUILTY_TELLS.any? { |tell| alibi_response =~ tell }
   end
 
-  def investigate(room)
-    return unless @crimescene == ''
+  # @return [Boolean] true once a murderer has been identified
+  def murderer_found?
+    !@murderer.to_s.empty?
+  end
 
-    case DRC.bput('search room', 'uncovers an area of', 'fails to turn up any clues', 'I could not find')
-    when 'I could not find'
-      echo("Something's wrong.  Check the things!")
-      exit
-    when 'fails to turn up any clues'
-      echo("This is not the room, keep looking.")
-    when 'uncovers an area of'
-      echo("THIS IS THE SCENE OF THE CRIME!")
-      if room == '16026'
-        @crimescene = 'bar'
-      elsif room == '16025'
-        @crimescene = 'lounge'
-      elsif room == '16028'
-        @crimescene = 'buffet'
-      elsif room == '16029'
-        @crimescene = 'quarterdeck'
-      elsif room == '16027'
-        @crimescene = 'promenade'
-      elsif room == '16030'
-        @crimescene = 'foredeck'
+  # @return [Boolean] true once a weapon has been identified
+  def weapon_found?
+    !@weapon.to_s.empty?
+  end
+
+  # @return [Boolean] true once the crime scene has been identified
+  def scene_found?
+    !@crimescene.to_s.empty?
+  end
+
+  # @return [Boolean] true only when all three clues are known
+  def solved?
+    murderer_found? && weapon_found? && scene_found?
+  end
+
+  # Builds the exact accusation command from the gathered clues.
+  # @return [String] e.g. "accuse chef with the knife in bar"
+  def accuse_command
+    "accuse #{@murderer} with the #{@weapon} in #{@crimescene}"
+  end
+
+  private
+
+  # @return [Array<Array<Hash>>] argument definitions for parse_args
+  def arg_definitions
+    [
+      [
+        { name: 'restart', regex: /restart/i, optional: true, description: 'Start in the Morgue instead of on the dock.' }
+      ]
+    ]
+  end
+
+  # Memoized equipment manager, so hands are emptied without re-instantiating it each time.
+  # @return [EquipmentManager]
+  def equipment_manager
+    @equipment_manager ||= EquipmentManager.new
+  end
+
+  # Empties both hands.
+  # @return [void]
+  def empty_hands
+    equipment_manager.empty_hands
+  end
+
+  # --- Boarding ---
+
+  # Full solve from the dock: acquire a boarding pass and begin the redeem/board flow.
+  # @return [void]
+  def board_and_solve
+    DRC.bput('get my boarding pass', 'You get', 'What were')
+    redeem_and_board
+  end
+
+  # Resume flow: walk to the morgue and study the corpse (used with the `restart` arg when
+  # already aboard).
+  # @return [void]
+  def resume_at_morgue
+    DRCT.walk_to(MORGUE_ROOM)
+    morgue
+  end
+
+  # Redeems a boarding pass and boards the Morada. REDEEM first asks you to repeat the
+  # command within a short window, so this retries up to MAX_REDEEM_ATTEMPTS times.
+  # @return [void]
+  def redeem_and_board
+    MAX_REDEEM_ATTEMPTS.times do
+      case DRC.bput('redeem my pass', REDEEM_REPEAT, REDEEM_NO_PASS, TASK_ASSIGNED, WRONG_ROOM, PASS_ACCEPTED)
+      when REDEEM_REPEAT
+        next
+      when REDEEM_NO_PASS
+        DRC.message('Taisidon: you have no boarding passes. Acquire one and try again.')
+        exit
+      when WRONG_ROOM
+        DRC.message("Taisidon: you are not with the cruise coordinator. Go to room #{REPRESENTATIVE_ROOM} and rerun.")
+        exit
+      when PASS_ACCEPTED
+        board_ship
+        return
+      when TASK_ASSIGNED
+        # The pass was already consumed on a prior attempt and we are aboard; skip ahead.
+        morgue
+        return
       else
-        echo("Something's wrong.  Check the things!")
+        DRC.message('Taisidon: unexpected response to REDEEM; aborting.')
         exit
       end
     end
+
+    DRC.message("Taisidon: REDEEM did not complete after #{MAX_REDEEM_ATTEMPTS} attempts; aborting.")
+    exit
   end
 
-  # ACCUSE chef WITH knife IN bar
-  def accuse
-    echo("Murderer: #{@murderer}")
-    echo("Weapon: #{@weapon}")
-    echo("Crime Scene: #{@crimescene}")
-    DRC.bput("accuse #{@murderer} with the #{@weapon} in #{@crimescene}", /coupon/)
-    EquipmentManager.new.empty_hands
+  # Asks the coordinator for access (which moves you aboard) and proceeds to the morgue.
+  # @return [void]
+  def board_ship
+    empty_hands
+    DRC.bput('ask coordinator about access', TASK_ASSIGNED)
+    morgue
   end
 
-  # move around to investigate
-  def patrol
-    @rooms.each do |room|
-      DRCT.walk_to(room)
-      questioning
-      investigate(room)
-      if @crimescene != '' && @murderer != ''
-        break
-      end
+  # --- Solving ---
+
+  # Studies the corpse, then patrols for the murderer and crime scene.
+  # @return [void]
+  def morgue
+    study_corpse
+    patrol
+  end
+
+  # Studies the corpse and records the implied weapon; aborts if the wound is unrecognized.
+  # @return [void]
+  def study_corpse
+    response = DRC.bput('study corpse', *WEAPON_BY_WOUND.keys)
+    @weapon = weapon_for(response).to_s
+
+    unless weapon_found?
+      DRC.message("Taisidon: could not identify the weapon from the corpse (wounds: #{response.inspect}). Aborting.")
+      exit
     end
+
+    DRC.message("Weapon: #{@weapon}")
+  end
+
+  # Walks each cruise room, questioning the suspect and searching for the crime scene, and
+  # stops early once both the murderer and the scene are known. Finally makes the accusation.
+  # @return [void]
+  def patrol
+    PATROL_ROOMS.each do |room|
+      DRCT.walk_to(room)
+      question_suspect
+      investigate(room)
+      break if murderer_found? && scene_found?
+    end
+
     accuse
+  end
+
+  # Asks the lone suspect in the current room about their alibi and records the murderer if
+  # a nervous tell is present. No-ops once the murderer is known or if no suspect is present.
+  # @return [void]
+  def question_suspect
+    return if murderer_found?
+
+    suspect = DRRoom.npcs.first
+    return if suspect.nil? || suspect.to_s.strip.empty?
+
+    response = DRC.bput("ask #{suspect} about alibi", *GUILTY_TELLS, ALIBI_USAGE, INNOCENT_TELL)
+
+    if response =~ ALIBI_USAGE
+      DRC.message('Taisidon: ASK ABOUT ALIBI returned a Usage error. Check the things! Aborting.')
+      exit
+    end
+
+    if guilty?(response)
+      @murderer = suspect.to_s
+      DRC.message("Murderer: #{@murderer}")
+    else
+      DRC.message("#{suspect} is innocent.")
+    end
+  end
+
+  # Searches the given room and records it as the crime scene if blood is found. No-ops once
+  # the scene is known; aborts if SEARCH itself fails or blood turns up in an unmapped room.
+  # @param room [String] the current room id
+  # @return [void]
+  def investigate(room)
+    return if scene_found?
+
+    case DRC.bput('search room', SEARCH_SCENE, SEARCH_EMPTY, SEARCH_BROKEN)
+    when SEARCH_BROKEN
+      DRC.message('Taisidon: SEARCH failed. Check the things! Aborting.')
+      exit
+    when SEARCH_EMPTY
+      # Not the crime scene; keep looking.
+      nil
+    when SEARCH_SCENE
+      scene = scene_for(room)
+      if scene.nil?
+        DRC.message("Taisidon: found blood in an unmapped room (#{room}). Aborting.")
+        exit
+      end
+
+      @crimescene = scene
+      DRC.message("Crime scene: #{@crimescene}")
+    end
+  end
+
+  # Makes the accusation when all three clues are known, then empties hands. If any clue is
+  # missing, reports what is missing and returns without sending a malformed ACCUSE.
+  # @return [void]
+  def accuse
+    unless solved?
+      DRC.message("Taisidon: not enough clues to accuse (murderer=#{@murderer.inspect}, weapon=#{@weapon.inspect}, scene=#{@crimescene.inspect}). Not accusing.")
+      return
+    end
+
+    DRC.message("Accusing #{@murderer} with the #{@weapon} in #{@crimescene}.")
+    DRC.bput(accuse_command, ACCUSE_SUCCESS)
+    empty_hands
   end
 end
 

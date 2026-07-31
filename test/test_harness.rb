@@ -8,6 +8,26 @@ module Harness
   # Indicate to scripts that we are in test mode
   $_TEST_MODE_ = true
 
+  # Lich core constant mapping long direction names to their short forms
+  # (mirrors lich/constants.rb). Scripts index it as SHORTDIR['north'] => 'n'.
+  SHORTDIR = {
+    'out'       => 'out',
+    'northeast' => 'ne',
+    'southeast' => 'se',
+    'southwest' => 'sw',
+    'northwest' => 'nw',
+    'up'        => 'up',
+    'down'      => 'down',
+    'north'     => 'n',
+    'east'      => 'e',
+    'south'     => 's',
+    'west'      => 'w',
+  }.freeze
+
+  # Lich global list of ordinal words used to disambiguate duplicate items/npcs
+  # (e.g. "second guard"). Some specs re-assign this at load; harmless for a global.
+  $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth].freeze
+
   class DRSpells
     @@_data_store = {}
 
@@ -619,9 +639,15 @@ module Harness
 
   class XMLData
     @@_room_title = nil
+    @@_game = nil
+    @@_server_time = nil
+    @@_name = nil
 
     def self._reset
       @@_room_title = nil
+      @@_game = nil
+      @@_server_time = nil
+      @@_name = nil
     end
 
     def self.room_title
@@ -630,6 +656,36 @@ module Harness
 
     def self.room_title=(val)
       @@_room_title = val
+    end
+
+    # DR game instance code (e.g. 'DR' Prime, 'DRX' Platinum, 'DRF' Fallen,
+    # 'DRT' Test). Defaults to 'DR' so specs that do not care about the instance
+    # see Prime.
+    def self.game
+      @@_game || 'DR'
+    end
+
+    def self.game=(val)
+      @@_game = val
+    end
+
+    # Game server timestamp used by time/astronomy scripts. Defaults to 0 (an
+    # Integer) so arithmetic in the class under test does not blow up when unset.
+    def self.server_time
+      @@_server_time || 0
+    end
+
+    def self.server_time=(val)
+      @@_server_time = val
+    end
+
+    # Current character name. Defaults to 'TestChar'.
+    def self.name
+      @@_name || 'TestChar'
+    end
+
+    def self.name=(val)
+      @@_name = val
     end
   end
 
@@ -673,6 +729,43 @@ module Harness
   def get_data(dummy)
     $data_called_with << dummy
     $test_data[dummy.to_sym]
+  end
+
+  # Generic per-script configuration store (Lich's UserVars). Different scripts
+  # read and write different, script-specific keys (astrology_debug, researcher,
+  # smoke_images_known, almanac_last_use, droughtmans_loot_container, ...), so
+  # this backs any getter/setter dynamically: an unset key reads back nil,
+  # assignment stores the value, and _reset (called by reset_data before every
+  # example) clears the store.
+  #
+  # Override a key for one example with allow(UserVars).to receive(:key)..., or
+  # set a value directly with UserVars.key = value. A script that needs a domain
+  # default (e.g. combat-trainer's moons) reopens Harness::UserVars to add it.
+  class UserVars
+    @store = {}
+
+    class << self
+      def _store
+        @store ||= {}
+      end
+
+      def _reset
+        @store = {}
+      end
+
+      def method_missing(name, *args)
+        key = name.to_s
+        if key.end_with?('=')
+          _store[key.chomp('=').to_sym] = args.first
+        else
+          _store[name.to_sym]
+        end
+      end
+
+      def respond_to_missing?(_name, _include_private = false)
+        true
+      end
+    end
   end
 
   # After tests run, we need to wipe out/reset
@@ -731,6 +824,7 @@ module Harness
     DRRoom._reset
     Map._reset
     XMLData._reset
+    UserVars._reset
   end
 
   def echo(message)
@@ -834,6 +928,20 @@ module Harness
 
   def bleeding?
     $bleeding || false
+  end
+
+  # DragonRealms indicator-based globals (lib/global_defs.rb). Mirror the
+  # overridable state flags so specs can drive hidden/invisible/stunned checks.
+  def checkstunned
+    $stunned || false
+  end
+
+  def checkhidden
+    $hidden || false
+  end
+
+  def checkinvisible
+    $invisible || false
   end
 
   def health=(health)
@@ -1123,6 +1231,28 @@ module Harness
   end
 
   module DRCH
+    # Mirrors the tend-response pattern constants from lich-5 common-healing-data.rb
+    # so scripts that reimplement a guarded tend (e.g. tendme's tend_wound_safely)
+    # can reference them in tests.
+    TEND_SUCCESS_PATTERNS = [
+      /You work carefully at tending/,
+      /You work carefully at binding/,
+      /That area has already been tended to/,
+      /That area is not bleeding/
+    ].freeze
+
+    TEND_FAILURE_PATTERNS = [
+      /You fumble/,
+      /too injured for you to do that/,
+      /TEND allows for the tending of wounds/,
+      /^You must have a hand free/
+    ].freeze
+
+    TEND_DISLODGE_PATTERNS = [
+      /^You \w+ remove (a|the|some) (.*) from/,
+      /^As you reach for the clay fragment/
+    ].freeze
+
     class << self
       def check_health(*_args); { 'score' => 0, 'bleeders' => [], 'poisoned' => false, 'diseased' => false }; end
       def has_tendable_bleeders?(*_args); false; end
