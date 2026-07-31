@@ -587,6 +587,7 @@ class DRYamlValidator
       'Barb Research Warding',
       'Charged Maneuver',
       'Collect',
+      'Confidence',
       'Favor Orb',
       'Flee',
       'Herbs',
