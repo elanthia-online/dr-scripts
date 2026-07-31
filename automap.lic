@@ -1,21 +1,196 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#automap
+
+  Records the rooms you walk through into the Lich map, linking each move as a
+  wayto on the previous room.
+
+  Duplicate-aware:
+  Historically automap called Room.current_or_new on every move, which SILENTLY
+  mints a brand new room whenever matching fails (the game added an exit or a UID
+  the old room lacked). That orphans the old room and creates a high-id
+  duplicate, a common source of map duplicates.
+
+  This version runs a match-only Room.current first. Only when that returns nil
+  (current_or_new WOULD create a room) does it scan for existing rooms that share
+  the same title and description. UID is authoritative: a same title+desc twin
+  with a DIFFERENT non-empty UID is a genuinely different room and is left alone.
+  It flags a twin only when the game reports a UID that the twin lacks entirely
+  (the twin is the likely pre-UID original) and, if any, STOPS and asks you
+  before creating. When the game reports no UID at all nothing is flagged, so
+  no-UID mazes never prompt and normal maze mapping is unaffected.
+
+  Reply to a prompt with Lich commands (they never reach the game or the
+  movement hook):
+    ;send yes    create the new room
+    ;send no     skip this room, leave it unmapped, keep mapping
+    ;send stop   finish mapping cleanly
+
+  Config (character profile YAML):
+    automap_confirm: false   disables the duplicate prompt (default is on)
+
+  Edits stay in memory. When you are done, save and upload the normal way:
+    ;e Lich::Common::Map.save
+    ;repository upload-mapdb
 =end
 
-class AutoMapperActions
-  @@actions = []
+# Movement recording and duplicate-room detection for automap.
+#
+# The module holds no game I/O of its own beyond the confirmation handshake; its
+# query methods (twins_for, suspicious_twin?, parse_reply, normalize) are pure so
+# they can be reasoned about and tested in isolation, while resolve_room wires
+# them to the live Room/Map/XMLData facade.
+module AutoMap
+  # Timeto weight recorded for every mapped move. A small constant keeps the map
+  # navigable without pretending automap measured a real travel time.
+  DEFAULT_TIMETO = 0.2
 
-  def self.actions=(val)
-    @@actions = val
+  # Number of twin rooms listed in a duplicate warning before truncating.
+  MAX_TWINS_SHOWN = 8
+
+  @actions = []
+  @confirm = true
+
+  class << self
+    # @return [Array<String>] client movement strings captured since the last move
+    attr_accessor :actions
+
+    # @return [Boolean] whether to prompt before creating a suspected duplicate
+    attr_accessor :confirm
   end
 
-  def self.actions
-    @@actions
+  # Resolve the room to record for the current game location.
+  #
+  # Runs a match-only Room.current first: a hit is a normal revisit and maps as
+  # usual. Only a miss (nil) means Room.current_or_new WOULD create a room, so we
+  # scan for suspicious twins and, when configured, ask before creating.
+  #
+  # @return [Lich::Common::Map, nil] the room to record, or nil to leave the
+  #   current location unmapped this step (user declined)
+  # @raise [UncaughtThrowError] throws :automap_stop when the user replies stop;
+  #   the main loop catches it for a clean finish
+  def self.resolve_room
+    return Room.current_or_new if Room.current
+
+    twins = twins_for(XMLData.room_title, XMLData.room_description.strip)
+    suspicious = twins.select { |room| suspicious_twin?(room, XMLData.room_id) }
+    return Room.current_or_new if suspicious.empty? || !confirm
+
+    case confirm_new_room(XMLData.room_title, suspicious)
+    when :create then Room.current_or_new
+    when :stop   then throw :automap_stop
+    else              nil # :skip, leave unmapped
+    end
+  end
+
+  # Existing rooms that share an exact title and description with the argument.
+  #
+  # @param title [String] the current game room title
+  # @param description [String] the current game room description, stripped
+  # @return [Array<Lich::Common::Map>] matching rooms (never includes nil holes)
+  def self.twins_for(title, description)
+    Map.list.compact.select do |room|
+      room.title.include?(title) && room.description.include?(description)
+    end
+  end
+
+  # Whether a twin looks like the duplicate source for the current location.
+  #
+  # UID is authoritative: two rooms with different, non-empty UIDs are genuinely
+  # different rooms, not duplicates. The only ambiguous case is UID ABSENCE. So
+  # the sole duplicate signal is the game reporting a UID that a same title+desc
+  # twin lacks entirely -- the twin is the likely pre-UID original of this room.
+  # When the game reports no UID at all we cannot tie the location to any
+  # UID-bearing twin, so nothing is flagged (this also keeps no-UID mazes quiet).
+  #
+  # @param room [Lich::Common::Map] a candidate twin
+  # @param game_uid [Integer, nil] the current game UID, 0 or nil when none
+  # @return [Boolean] true if the twin should trigger a duplicate warning
+  def self.suspicious_twin?(room, game_uid)
+    return false if game_uid.to_i.zero?
+
+    room.uid.empty?
+  end
+
+  # Warn about likely duplicates, then block until the user replies via ;send.
+  #
+  # @param title [String] the current game room title
+  # @param twins [Array<Lich::Common::Map>] the suspicious twins to list
+  # @return [Symbol] :create, :skip, or :stop
+  def self.confirm_new_room(title, twins)
+    announce_duplicate(title, twins)
+    clear # flush stale buffered lines so only a fresh reply is read
+    loop do
+      decision = parse_reply(get)
+      return decision if decision
+    end
+  end
+
+  # Print the duplicate warning and the reply instructions.
+  #
+  # @param title [String] the current game room title
+  # @param twins [Array<Lich::Common::Map>] the suspicious twins to list
+  # @return [void]
+  def self.announce_duplicate(title, twins)
+    game_uid = XMLData.room_id.to_i
+    respond "*** automap: about to CREATE a new room: #{title}"
+    respond "*** game UID now: #{game_uid.zero? ? '(none)' : game_uid}"
+    respond "*** #{twins.size} existing room(s) share this title and description:"
+    twins.first(MAX_TWINS_SHOWN).each do |room|
+      respond "***   ##{room.id}  uid=#{room.uid.inspect}  #{room.paths.last.inspect}"
+    end
+    respond '*** This looks like it could be a duplicate.'
+    respond '*** Reply:  ;send yes (create)  |  ;send no (skip)  |  ;send stop (finish)'
+  end
+
+  # Interpret a single reply line as a confirmation decision.
+  #
+  # Matching is exact (anchored) and case-insensitive; anything else, including
+  # nil, empty, whitespace, or extra words, is unrecognized so game output during
+  # a prompt is ignored.
+  #
+  # @param reply [String, nil] one line read from the downstream buffer
+  # @return [Symbol, nil] :create, :skip, :stop, or nil when unrecognized
+  def self.parse_reply(reply)
+    case reply.to_s.strip
+    when /\Ay(es)?\z/i then :create
+    when /\An(o)?\z/i, /\Askip\z/i then :skip
+    when /\Astop\z/i then :stop
+    end
+  end
+
+  # Record a move from last_id to current_id using the captured command.
+  #
+  # Idempotent: re-walking the same edge replaces the stale wayto rather than
+  # accumulating duplicates.
+  #
+  # @param last_id [Integer] id of the room departed
+  # @param current_id [Integer] id of the room arrived in
+  # @param action [String] the normalized movement command
+  # @return [void]
+  def self.link(last_id, current_id, action)
+    room = Room[last_id]
+    room.wayto  ||= {}
+    room.timeto ||= {}
+    room.wayto.delete_if { |_key, value| value == action }
+    room.wayto[current_id.to_s] = action
+    room.timeto[current_id.to_s] = DEFAULT_TIMETO
+  end
+
+  # Strip Lich client markup and newlines from a captured movement command.
+  #
+  # @param client_string [String] the raw string captured by the upstream hook
+  # @return [String] the bare movement command
+  def self.normalize(client_string)
+    client_string.gsub(/<c>|\n/, '')
   end
 end
 
+AutoMap.confirm = get_settings.automap_confirm != false
+
+# Capture the movement command the user typed so we can record it as the wayto.
+# The hook always passes the string through unchanged; it never suppresses it.
 action = proc do |client_string|
-  AutoMapperActions.actions << client_string
+  AutoMap.actions << client_string
   client_string
 end
 UpstreamHook.remove('automapper')
@@ -23,26 +198,46 @@ UpstreamHook.add('automapper', action)
 
 before_dying do
   UpstreamHook.remove('automapper')
+  respond '*** automap stopped. Edits are in memory only.'
+  respond '*** To save and upload:  ;e Lich::Common::Map.save   then   ;repository upload-mapdb'
 end
 
-respond('Starting')
+respond '*** automap started (duplicate-aware).'
+respond "*** Duplicate prompt is #{AutoMap.confirm ? 'ON' : 'OFF'} (set automap_confirm: false in your profile to disable)."
+respond '*** Finish with  ;send stop  or  ;stop automap. Edits stay in memory until you save.'
 
-def map_room(last_id, current_id, actions)
-  Room[last_id].wayto ||= {}
-  new_action = actions.last.gsub(/<c>|\n/, '')
-  Room[last_id].wayto.delete_if { |_key, value| value == new_action }
-  Room[last_id].wayto[current_id.to_s] = new_action
-  Room[last_id].timeto[current_id.to_s] = 0.2
-  current_id
-end
-
-last_id = Room.current_or_new.id
+last_room = Room.current_or_new
+last_id = last_room&.id
 last_count = XMLData.room_count
-loop do
-  respond '**Mapping (abort to cancel, stop to finish)**'
-  wait_until { XMLData.room_count > last_count }
-  last_id = map_room(last_id, Room.current_or_new.id, AutoMapperActions.actions.dup)
-  last_count = XMLData.room_count
-  AutoMapperActions.actions = []
-  pause 0.1
+
+catch(:automap_stop) do
+  loop do
+    wait_until { XMLData.room_count > last_count }
+    last_count = XMLData.room_count
+
+    # Snapshot and clear the captured command(s) for this move.
+    action = AutoMap.actions.last
+    AutoMap.actions = []
+
+    room = AutoMap.resolve_room
+    if room.nil?
+      respond '*** automap: room skipped, not linked. Mapping continues.'
+      last_id = nil # break the chain so we do not link across an unmapped gap
+      pause 0.1
+      next
+    end
+
+    if last_id.nil?
+      # First room, or the room right after a skip: set current only, no link.
+      respond '*** automap: no previous room to link from; current room set.'
+    elsif action.nil? || action.strip.empty?
+      # Auto-move or a move with no captured client command: do not guess a wayto.
+      respond '*** automap: no movement command captured; room set, link skipped.'
+    else
+      AutoMap.link(last_id, room.id, AutoMap.normalize(action))
+    end
+
+    last_id = room.id
+    pause 0.1
+  end
 end

@@ -27,7 +27,8 @@ class InventoryManager
         { name: 'shop', regex: /shop/i, optional: true, description: "Save your Trader shop inventory." },
         { name: 'pocket', regex: /pocket/i, optional: true, description: "Rummages your secret pocket container for list of items. NOTE: Must be wearing the container." },
         { name: 'vault_standard', regex: /vault_standard/i, optional: true, description: "Uses VAULT STANDARD to get a list of items." },
-        { name: 'vault_family', regex: /vault_family/i, optional: true, description: "Uses VAULT FAMILY to get a list of items." }
+        { name: 'vault_family', regex: /vault_family/i, optional: true, description: "Uses VAULT FAMILY to get a list of items." },
+        { name: 'ticket', regex: /ticket/i, optional: true, description: "Save ticket/currency information" }
       ],
       [
         { name: 'search', regex: /search/i, description: 'Start a search across all characters for specified item.' },
@@ -80,6 +81,8 @@ class InventoryManager
       add_trader_shop
     elsif args.pocket
       add_pocket_inv
+    elsif args.ticket
+      add_ticket
     elsif args.save
       add_current_inv
     elsif args.count
@@ -132,7 +135,7 @@ class InventoryManager
   end
 
   def valid_data_row(item)
-    if item.include?('(vault)') || item.include?('(register)') || item.include?('(eddy)') || item.include?('(caravan_box)') || item.include?('(Family)') || item.include?('(pocket)')
+    if item.include?('(vault)') || item.include?('(register)') || item.include?('(eddy)') || item.include?('(caravan_box)') || item.include?('(Family)') || item.include?('(pocket)') || item.include?('(ticket)')
       true
     else
       false
@@ -272,6 +275,11 @@ class InventoryManager
           item = clean_home_string(item)
           item.concat(" (attached to #{container})")
         end
+      elsif inventory_type == 'ticket'
+        if (match = item.match(/^([A-Za-z\-' ]+) - (.*)\./))
+          captures = match.captures
+          item = "#{captures[0]}: #{captures[1]}"
+        end
       end
 
       item.concat(" (#{inventory_type})")
@@ -290,6 +298,10 @@ class InventoryManager
     # We remove the category by finding the : in the string, plus drop the period at the end
     colon = string.index(":") + 2
     string[colon..-2]
+  end
+
+  def add_ticket
+    check_inventory("ticket", /^You take a moment/, 'ticket')
   end
 
   def add_vault_standard
