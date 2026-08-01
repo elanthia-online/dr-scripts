@@ -2804,7 +2804,11 @@ RSpec.describe SpellProcess do
     defaults = {
       tk_spell: { 'abbrev' => 'tkt', 'slivers' => true },
       tk_ammo: nil,
-      settings: OpenStruct.new
+      settings: OpenStruct.new,
+      # Sliver-recreation throttle. Default the timer well into the past so the
+      # cooldown is elapsed for tests that are not specifically about throttling.
+      sliver_recast_delay: 180,
+      sliver_timer: Time.now - 1000
     }
     defaults.merge(overrides).each do |k, v|
       instance.instance_variable_set(:"@#{k}", v)
@@ -2903,7 +2907,9 @@ RSpec.describe SpellProcess do
     context 'when slivers need to be created' do
       before(:each) do
         setup_moon_mage_with_moonblade
-        allow(DRCA).to receive(:cast_spell)
+        # A successful cast is a precondition for breaking a fresh moonblade;
+        # the failed-cast behavior is covered in its own context below.
+        allow(DRCA).to receive(:cast_spell).and_return(true)
       end
 
       it 'casts moonblade and breaks it on success' do
@@ -2972,6 +2978,85 @@ RSpec.describe SpellProcess do
       end
     end
 
+    # Issue 2 regression: `break moonblade` must be gated on the Moonblade cast
+    # actually succeeding. A failed snap-cast (the character lacks the skill to
+    # complete the pattern at minimum prep) creates no fresh blade, so an
+    # unconditional break would shatter the moonblade already in hand -- the
+    # wielded weapon of a moonblade melee trainer -- leaving them unarmed.
+    context 'when the moonblade cast fails' do
+      before(:each) do
+        setup_moon_mage_with_moonblade
+        allow(DRC).to receive(:message)
+        # Make DRC.bput a spy so `have_received(:bput)` negative assertions work;
+        # examples that need a specific break result re-stub the matching args.
+        allow(DRC).to receive(:bput)
+      end
+
+      it 'never breaks a moonblade when the cast fails (would destroy the wielded weapon)' do
+        allow(DRCA).to receive(:cast_spell).and_return(false)
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        expect(DRC).not_to receive(:bput).with('break moonblade', anything, anything, anything)
+        instance.send(:check_slivers, game_state)
+      end
+
+      it 'retries the cast up to 3 times but never breaks' do
+        allow(DRCA).to receive(:cast_spell).and_return(false)
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state)
+
+        expect(DRCA).to have_received(:cast_spell).exactly(3).times
+        expect(DRC).not_to have_received(:bput).with('break moonblade', anything, anything, anything)
+      end
+
+      it 'logs the failure message when every cast fails' do
+        allow(DRCA).to receive(:cast_spell).and_return(false)
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        expect(DRC).to receive(:message).with(/Failed to create slivers.*3 attempts/)
+        instance.send(:check_slivers, game_state)
+      end
+
+      it 'breaks only after a cast finally succeeds (fail, fail, then succeed)' do
+        allow(DRCA).to receive(:cast_spell).and_return(false, false, true)
+        allow(DRC).to receive(:bput)
+          .with('break moonblade', 'The slivers drift about', 'dissipate without any benefit', 'Break what?')
+          .and_return('The slivers drift about')
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state)
+
+        expect(DRCA).to have_received(:cast_spell).exactly(3).times
+        expect(DRC).to have_received(:bput).with('break moonblade', anything, anything, anything).once
+      end
+
+      it 'breaks only on the successful cast, not on a later failed one' do
+        # cast succeeds first -> break attempted but yields no slivers -> retry;
+        # the next two casts FAIL -> must NOT break again on those.
+        allow(DRCA).to receive(:cast_spell).and_return(true, false, false)
+        allow(DRC).to receive(:bput)
+          .with('break moonblade', 'The slivers drift about', 'dissipate without any benefit', 'Break what?')
+          .and_return('dissipate without any benefit')
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state)
+
+        expect(DRCA).to have_received(:cast_spell).exactly(3).times
+        expect(DRC).to have_received(:bput).with('break moonblade', anything, anything, anything).once
+      end
+    end
+
     context 'prep time based on Lunar Magic rank' do
       before(:each) do
         setup_moon_mage_with_moonblade
@@ -2980,23 +3065,9 @@ RSpec.describe SpellProcess do
           .and_return('The slivers drift about')
       end
 
-      it 'uses prep_time 1 for Lunar Magic >= 400' do
+      it 'uses prep_time 2 for Lunar Magic >= 400' do
         DRSkill._set_rank('Lunar Magic', 450)
-        allow(DRCA).to receive(:cast_spell)
-
-        instance = build_spell_process
-        game_state = build_game_state
-
-        instance.send(:check_slivers, game_state)
-
-        expect(DRCA).to have_received(:cast_spell) do |spell_data, _settings|
-          expect(spell_data['prep_time']).to eq(1)
-        end
-      end
-
-      it 'uses prep_time 2 for Lunar Magic 300-399' do
-        DRSkill._set_rank('Lunar Magic', 350)
-        allow(DRCA).to receive(:cast_spell)
+        allow(DRCA).to receive(:cast_spell).and_return(true)
 
         instance = build_spell_process
         game_state = build_game_state
@@ -3008,9 +3079,9 @@ RSpec.describe SpellProcess do
         end
       end
 
-      it 'uses prep_time 3 for Lunar Magic 200-299' do
-        DRSkill._set_rank('Lunar Magic', 250)
-        allow(DRCA).to receive(:cast_spell)
+      it 'uses prep_time 3 for Lunar Magic 300-399' do
+        DRSkill._set_rank('Lunar Magic', 350)
+        allow(DRCA).to receive(:cast_spell).and_return(true)
 
         instance = build_spell_process
         game_state = build_game_state
@@ -3022,9 +3093,23 @@ RSpec.describe SpellProcess do
         end
       end
 
+      it 'uses prep_time 4 for Lunar Magic 200-299' do
+        DRSkill._set_rank('Lunar Magic', 250)
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state)
+
+        expect(DRCA).to have_received(:cast_spell) do |spell_data, _settings|
+          expect(spell_data['prep_time']).to eq(4)
+        end
+      end
+
       it 'does not override prep_time for Lunar Magic < 200' do
         DRSkill._set_rank('Lunar Magic', 150)
-        allow(DRCA).to receive(:cast_spell)
+        allow(DRCA).to receive(:cast_spell).and_return(true)
 
         instance = build_spell_process
         game_state = build_game_state
@@ -3036,6 +3121,150 @@ RSpec.describe SpellProcess do
           expect(spell_data['prep_time']).to eq(5)
         end
       end
+    end
+
+    # sliver_recast_delay throttle: at most one sliver re-creation attempt per
+    # delay window (default 180s, user-configurable; 0 disables). Prevents
+    # spamming Moonblade casts on targets that consume slivers quickly.
+    context 'sliver recast throttle' do
+      before(:each) do
+        setup_moon_mage_with_moonblade
+        allow(DRC).to receive(:bput)
+          .with('break moonblade', anything, anything, anything)
+          .and_return('The slivers drift about')
+      end
+
+      it 'does not cast again while still within the cooldown window' do
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 30)
+
+        expect(DRCA).not_to receive(:cast_spell)
+        instance.send(:check_slivers, build_game_state)
+      end
+
+      it 'casts once the cooldown window has elapsed' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 181)
+        instance.send(:check_slivers, build_game_state)
+
+        expect(DRCA).to have_received(:cast_spell)
+      end
+
+      it 'boundary: still throttled one second before the delay elapses' do
+        instance = build_spell_process(sliver_recast_delay: 100, sliver_timer: Time.now - 99)
+
+        expect(DRCA).not_to receive(:cast_spell)
+        instance.send(:check_slivers, build_game_state)
+      end
+
+      it 'respects a custom (shorter) delay that a default 180 would still block' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        # 30s since last attempt: blocked at the 180 default, allowed at 20s.
+        instance = build_spell_process(sliver_recast_delay: 20, sliver_timer: Time.now - 30)
+        instance.send(:check_slivers, build_game_state)
+
+        expect(DRCA).to have_received(:cast_spell)
+      end
+
+      it 'a delay of 0 disables the throttle entirely' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process(sliver_recast_delay: 0, sliver_timer: Time.now)
+        instance.send(:check_slivers, build_game_state)
+
+        expect(DRCA).to have_received(:cast_spell)
+      end
+
+      it 'starts the cooldown on an attempt so an immediate second call is throttled' do
+        allow(DRCA).to receive(:cast_spell).and_return(true)
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 1000)
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state) # attempt: sets the timer
+        instance.send(:check_slivers, game_state) # immediately after: throttled
+
+        expect(DRCA).to have_received(:cast_spell).once
+      end
+
+      it 'starts the cooldown even when every cast fails (no per-tick retry spam)' do
+        allow(DRC).to receive(:message)
+        allow(DRCA).to receive(:cast_spell).and_return(false)
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 1000)
+        game_state = build_game_state
+
+        instance.send(:check_slivers, game_state) # 3 failed casts, sets the timer
+        instance.send(:check_slivers, game_state) # throttled: no new casts
+
+        expect(DRCA).to have_received(:cast_spell).exactly(3).times
+      end
+
+      it 'does not start the cooldown when no moons are visible (retries next tick)' do
+        UserVars._set_moons({ 'visible' => [] })
+
+        instance = build_spell_process(sliver_recast_delay: 180, sliver_timer: Time.now - 1000)
+        instance.send(:check_slivers, build_game_state)
+
+        # timer stays in the past so a later tick (with moons up) can still attempt
+        expect(instance.instance_variable_get(:@sliver_timer)).to be <= (Time.now - 1000)
+      end
+    end
+  end
+
+  # cast_ritual now routes weapon disposition through the summoned-aware
+  # GameState helpers (stow_or_store_weapon / restore_weapon) instead of its
+  # own inline break/stow + re-summon/wield branching.
+  describe '#cast_ritual' do
+    it 'stores the weapon before the ritual and restores it after' do
+      allow(DRCMM).to receive(:update_astral_data).and_return(nil)
+      instance = build_spell_process
+      gs = double('GameState')
+      allow(gs).to receive(:reset_stance=)
+      expect(gs).to receive(:stow_or_store_weapon).ordered
+      expect(gs).to receive(:restore_weapon).ordered
+      instance.send(:cast_ritual, { 'ritual' => true }, gs)
+    end
+
+    it 'performs the ritual (invoke + DRCA.ritual) when astral data is present' do
+      data = { 'ritual' => true, 'abbrev' => 'foo' }
+      allow(DRCMM).to receive(:update_astral_data).and_return(data)
+      allow(DRCA).to receive(:ritual)
+      instance = build_spell_process
+      allow(instance).to receive(:check_invoke)
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      allow(gs).to receive(:reset_stance=)
+
+      instance.send(:cast_ritual, data, gs)
+
+      expect(gs).to have_received(:stow_or_store_weapon)
+      expect(instance).to have_received(:check_invoke)
+      expect(DRCA).to have_received(:ritual).with(data, anything)
+      expect(gs).to have_received(:restore_weapon)
+    end
+
+    it 'skips the ritual body but still restores the weapon when astral data is nil' do
+      allow(DRCMM).to receive(:update_astral_data).and_return(nil)
+      allow(DRCA).to receive(:ritual)
+      instance = build_spell_process
+      allow(instance).to receive(:check_invoke)
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      allow(gs).to receive(:reset_stance=)
+
+      instance.send(:cast_ritual, { 'ritual' => true }, gs)
+
+      expect(instance).not_to have_received(:check_invoke)
+      expect(DRCA).not_to have_received(:ritual)
+      expect(gs).to have_received(:restore_weapon)
+    end
+
+    it 'resets stance after the ritual' do
+      allow(DRCMM).to receive(:update_astral_data).and_return(nil)
+      instance = build_spell_process
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      expect(gs).to receive(:reset_stance=).with(true)
+      instance.send(:cast_ritual, { 'ritual' => true }, gs)
     end
   end
 end
@@ -3726,5 +3955,236 @@ RSpec.describe TrainerProcess do
         expect(DRC).to have_received(:bput).with('turn almanac to Forging', 'You turn', 'You attempt to turn')
       end
     end
+  end
+end
+
+# ===================================================================
+# Summoned-weapon-aware store/restore (Issue 1 regression)
+#
+# A moon mage (or warrior mage) trains with a SUMMONED weapon whose
+# configured name is the spell noun ("moonblade" / "moonstaff" / an
+# elemental weapon), which is NOT a gear-list item. Routines that stow
+# then re-wield the weapon around an interruption (astrology telescope,
+# a sorcery-boosted cast, a cleric ritual) used the raw EquipmentManager
+# path, which can never match the summoned name: it printed
+#   "EquipmentManager: Failed to match a weapon for moonblade:<skill>"
+# and left the blade stuck in hand (blocking the telescope) or the
+# character unarmed after re-wield returned false.
+#
+# GameState#stow_or_store_weapon and #restore_weapon route summoned
+# weapons through wear/break + re-hold/reshape instead, matching what
+# SetupProcess#check_weapon already does on a weapon switch. Non-summoned
+# weapons fall through to the identical EquipmentManager calls as before.
+# ===================================================================
+RSpec.describe 'GameState summoned-weapon store/restore' do
+  before(:each) { ct_setup }
+
+  # Real GameState (allocate) with just the fields the two helpers touch.
+  # summoned membership is keyed on the weapon SKILL, so weapon_name is free
+  # to be the (non-gear) summoned noun.
+  def build_weapon_state(weapon_skill:, weapon_name:, summoned_weapons:, equipment_manager: nil)
+    gs = GameState.allocate
+    gs.instance_variable_set(:@current_weapon_skill, weapon_skill)
+    gs.instance_variable_set(:@weapons_to_train, { weapon_skill => weapon_name })
+    gs.instance_variable_set(:@summoned_weapons, summoned_weapons)
+    gs.instance_variable_set(:@equipment_manager, equipment_manager || double('EquipmentManager', stow_weapon: nil, wield_weapon?: nil))
+    gs.instance_variable_set(:@summoned_weapons_adjective, nil)
+    gs.instance_variable_set(:@summoned_weapons_element, nil)
+    gs.instance_variable_set(:@summoned_weapons_ingot, nil)
+    gs
+  end
+
+  describe '#stow_or_store_weapon' do
+    it 'wears (not stows) a moon mage summoned weapon to free the hand' do
+      DRStats.guild = 'Moon Mage'
+      em = double('EquipmentManager')
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'moonblade',
+                              summoned_weapons: [{ 'name' => 'Large Edged' }], equipment_manager: em)
+      expect(DRCMM).to receive(:wear_moon_weapon?)
+      expect(em).not_to receive(:stow_weapon)
+      expect(DRCS).not_to receive(:break_summoned_weapon)
+      gs.stow_or_store_weapon
+    end
+
+    it 'breaks a warrior mage summoned weapon by its configured name' do
+      DRStats.guild = 'Warrior Mage'
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'fiery sword',
+                              summoned_weapons: [{ 'name' => 'Large Edged' }])
+      expect(DRCS).to receive(:break_summoned_weapon).with('fiery sword')
+      expect(DRCMM).not_to receive(:wear_moon_weapon?)
+      gs.stow_or_store_weapon
+    end
+
+    it 'stows a normal gear weapon via EquipmentManager' do
+      DRStats.guild = 'Barbarian'
+      em = double('EquipmentManager')
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'war sword',
+                              summoned_weapons: [], equipment_manager: em)
+      expect(em).to receive(:stow_weapon).with('war sword')
+      gs.stow_or_store_weapon
+    end
+
+    # boundary: summoned membership is by SKILL, not by the weapon's noun
+    it 'treats the weapon as summoned based on skill even when the name looks mundane' do
+      DRStats.guild = 'Moon Mage'
+      gs = build_weapon_state(weapon_skill: 'Small Edged', weapon_name: 'moonblade',
+                              summoned_weapons: [{ 'name' => 'Small Edged' }])
+      expect(DRCMM).to receive(:wear_moon_weapon?)
+      gs.stow_or_store_weapon
+    end
+
+    # boundary: a nil weapon_skill is not a summoned skill -> normal stow, no crash
+    it 'handles a nil weapon_skill without raising (normal stow path)' do
+      em = double('EquipmentManager')
+      gs = build_weapon_state(weapon_skill: nil, weapon_name: nil,
+                              summoned_weapons: [{ 'name' => 'Large Edged' }], equipment_manager: em)
+      expect(em).to receive(:stow_weapon).with(nil)
+      expect { gs.stow_or_store_weapon }.not_to raise_error
+    end
+
+    # adversarial: a summoned weapon under a non-moon, non-warrior-mage guild
+    # (a misconfiguration) falls into the break branch -- documents the
+    # else = break disposition rather than silently stowing to the gear list.
+    it 'breaks a summoned weapon for a non-moon, non-warrior-mage guild' do
+      DRStats.guild = 'Ranger'
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'summoned thing',
+                              summoned_weapons: [{ 'name' => 'Large Edged' }])
+      expect(DRCS).to receive(:break_summoned_weapon).with('summoned thing')
+      gs.stow_or_store_weapon
+    end
+  end
+
+  describe '#restore_weapon' do
+    it 're-holds and reshapes a summoned weapon instead of gear-matching it' do
+      DRStats.guild = 'Moon Mage'
+      em = double('EquipmentManager')
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'moonblade',
+                              summoned_weapons: [{ 'name' => 'Large Edged' }], equipment_manager: em)
+      expect(gs).to receive(:prepare_summoned_weapon).with(false)
+      expect(em).not_to receive(:wield_weapon?)
+      gs.restore_weapon
+    end
+
+    # THE core regression: a summoned moonblade must never reach EquipmentManager
+    # (that raw path is what printed "Failed to match a weapon for moonblade:<skill>").
+    it 'never calls EquipmentManager#wield_weapon? for a summoned moonblade' do
+      DRStats.guild = 'Moon Mage'
+      em = double('EquipmentManager') # strict: any wield_weapon? call fails the example
+      gs = build_weapon_state(weapon_skill: 'Small Edged', weapon_name: 'moonblade',
+                              summoned_weapons: [{ 'name' => 'Small Edged' }], equipment_manager: em)
+      allow(gs).to receive(:prepare_summoned_weapon)
+      expect(em).not_to receive(:wield_weapon?)
+      gs.restore_weapon
+    end
+
+    it 'wields a normal gear weapon via EquipmentManager with name and skill' do
+      DRStats.guild = 'Barbarian'
+      em = double('EquipmentManager', wield_weapon?: true)
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'war sword',
+                              summoned_weapons: [], equipment_manager: em)
+      expect(em).to receive(:wield_weapon?).with('war sword', 'Large Edged')
+      expect(gs).not_to receive(:prepare_summoned_weapon)
+      gs.restore_weapon
+    end
+
+    it 'handles a nil weapon_skill without raising (normal wield path)' do
+      em = double('EquipmentManager', wield_weapon?: nil)
+      gs = build_weapon_state(weapon_skill: nil, weapon_name: nil,
+                              summoned_weapons: [{ 'name' => 'Large Edged' }], equipment_manager: em)
+      expect { gs.restore_weapon }.not_to raise_error
+    end
+
+    # integration: the REAL prepare_summoned_weapon runs (DRCS/DRCMM no-ops) and
+    # must issue no EquipmentManager calls at all.
+    it 'real prepare_summoned_weapon path issues no EquipmentManager calls' do
+      DRStats.guild = 'Moon Mage'
+      UserVars._set_moons({ 'visible' => ['Katamba'] })
+      em = double('EquipmentManager') # strict: no stow_weapon / wield_weapon? allowed
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'moonblade',
+                              summoned_weapons: [{ 'name' => 'Large Edged' }], equipment_manager: em)
+      expect { gs.restore_weapon }.not_to raise_error
+    end
+  end
+
+  describe 'store then restore round trip' do
+    it 'moon mage wears then re-holds, never touching the gear list' do
+      DRStats.guild = 'Moon Mage'
+      em = double('EquipmentManager') # strict: neither stow_weapon nor wield_weapon? allowed
+      gs = build_weapon_state(weapon_skill: 'Large Edged', weapon_name: 'moonblade',
+                              summoned_weapons: [{ 'name' => 'Large Edged' }], equipment_manager: em)
+      allow(gs).to receive(:prepare_summoned_weapon)
+      expect(DRCMM).to receive(:wear_moon_weapon?)
+      gs.stow_or_store_weapon
+      gs.restore_weapon
+      expect(gs).to have_received(:prepare_summoned_weapon).with(false)
+    end
+  end
+end
+
+# ===================================================================
+# TrainerProcess#check_heavens (Issue 1 -- astrology)
+#
+# Astrology needs a free hand for the telescope. For a moon mage the
+# weapon is a summoned moonblade; the old code stowed/re-wielded it via
+# EquipmentManager, which could not match "moonblade" -- so the blade was
+# never freed (telescope failed) and re-wield spammed the match error.
+# check_heavens now uses the summoned-aware store/restore seam.
+# ===================================================================
+RSpec.describe 'TrainerProcess#check_heavens' do
+  before(:each) { ct_setup }
+
+  def build_heavens_trainer(have_telescope: true, equipment_manager: nil)
+    tp = TrainerProcess.allocate
+    tp.instance_variable_set(:@have_telescope, have_telescope)
+    tp.instance_variable_set(:@telescope_name, 'telescope')
+    tp.instance_variable_set(:@telescope_storage, 'case')
+    tp.instance_variable_set(:@equipment_manager, equipment_manager) if equipment_manager
+    tp
+  end
+
+  it 'stows via the summoned-aware seam before observing and restores after' do
+    tp = build_heavens_trainer
+    allow(tp).to receive(:determine_time)
+    allow(DRCMM).to receive(:get_telescope?).and_return(true)
+    gs = double('GameState')
+    expect(gs).to receive(:stow_or_store_weapon).ordered
+    expect(gs).to receive(:restore_weapon).ordered
+    tp.send(:check_heavens, gs)
+  end
+
+  it 'observes the sky when a telescope is retrieved' do
+    tp = build_heavens_trainer(have_telescope: true)
+    allow(DRCMM).to receive(:get_telescope?).and_return(true)
+    gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+    expect(tp).to receive(:determine_time)
+    tp.send(:check_heavens, gs)
+  end
+
+  it 'skips observing but still restores the weapon when the telescope cannot be retrieved' do
+    tp = build_heavens_trainer(have_telescope: true)
+    allow(DRCMM).to receive(:get_telescope?).and_return(false)
+    gs = double('GameState')
+    expect(gs).to receive(:stow_or_store_weapon)
+    expect(tp).not_to receive(:determine_time)
+    expect(gs).to receive(:restore_weapon)
+    tp.send(:check_heavens, gs)
+  end
+
+  it 'observes without a telescope check when have_telescope is false' do
+    tp = build_heavens_trainer(have_telescope: false)
+    gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+    expect(DRCMM).not_to receive(:get_telescope?)
+    expect(tp).to receive(:determine_time)
+    tp.send(:check_heavens, gs)
+  end
+
+  # Regression: check_heavens must not touch EquipmentManager directly anymore.
+  it 'never calls EquipmentManager directly (summoned weapons stay off the gear path)' do
+    em = double('EquipmentManager') # strict: any call fails the example
+    tp = build_heavens_trainer(have_telescope: true, equipment_manager: em)
+    allow(tp).to receive(:determine_time)
+    allow(DRCMM).to receive(:get_telescope?).and_return(true)
+    gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+    expect { tp.send(:check_heavens, gs) }.not_to raise_error
   end
 end
