@@ -24,10 +24,22 @@ class WorkOrders
 
   NPC_NOT_FOUND_PATTERN = "What is it you're trying to give".freeze
 
+  # The clerk's repair quote, e.g. "That will cost 4,447 Kronars to repair.
+  # Just give it to me again..." -- captured (cost included) so we can read the
+  # price and top up from the bank if we are short before confirming. This only
+  # matches when the cost and prompt share one game line (the observed format);
+  # the bare 'Just give it to me again' below is kept as a fallback so a split
+  # line still matches the prompt (repair proceeds, just without auto-funding).
+  REPAIR_QUOTE_PATTERN = /cost [\d,]+ \w+ to repair.*give it to me again/i
+
+  # Clerk's response when we lack the coin to pay for a repair.
+  REPAIR_NEED_COIN_PATTERN = 'more coin'
+
   REPAIR_GIVE_PATTERNS = [
     "I don't repair those here",
     'What is it',
     "There isn't a scratch on that",
+    REPAIR_QUOTE_PATTERN,
     'Just give it to me again',
     'I will not',
     "I can't fix those.  They only have so many uses and then you must buy another."
@@ -272,10 +284,7 @@ class WorkOrders
       if REPAIR_NO_NEED_PATTERNS.any? { |pat| pat.match?(result) }
         stow_tool(tool_name)
       elsif result.include?('give')
-        DRC.bput("give #{info['repair-npc']}", 'repair ticket')
-        unless DRCI.put_away_item?('ticket')
-          Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow repair ticket')
-        end
+        confirm_repair(info, tool_name, repair_cost_copper(result))
       end
     end
 
@@ -287,6 +296,47 @@ class WorkOrders
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
     Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Parse the copper cost out of the clerk's repair quote. Repair prices are
+  # quoted in the base coin of the local currency, so the number is already in
+  # coppers. Returns nil if no cost could be read.
+  def repair_cost_copper(quote)
+    match = quote.match(/([\d,]+)/)
+    match && match[1].delete(',').to_i
+  end
+
+  # Hand the item over to finalize a repair. If the clerk says we need more
+  # coin, withdraw 10x the quoted cost from the bank, walk back, and retry.
+  def confirm_repair(info, tool_name, cost)
+    attempts = 0
+    loop do
+      case DRC.bput("give #{info['repair-npc']}", 'repair ticket', REPAIR_NEED_COIN_PATTERN)
+      when /repair ticket/
+        break
+      when /#{REPAIR_NEED_COIN_PATTERN}/
+        attempts += 1
+        if cost.nil? || attempts > 3
+          Lich::Messaging.msg('bold', "WorkOrders: Unable to fund repair of #{tool_name}; skipping.")
+          stow_tool(tool_name)
+          return
+        end
+        Lich::Messaging.msg('plain', "WorkOrders: Short on coin; withdrawing #{cost * 10} for #{tool_name} repair.")
+        stow_tool(tool_name)
+        unless DRCM.ensure_copper_on_hand(cost * 10, @settings, @hometown)
+          Lich::Messaging.msg('bold', "WorkOrders: Bank withdrawal failed; skipping #{tool_name} repair.")
+          return
+        end
+        DRCT.walk_to(info['repair-room'])
+        get_tool(tool_name)
+      else
+        Lich::Messaging.msg('bold', "WorkOrders: Unexpected response finalizing #{tool_name} repair; skipping.")
+        return
+      end
+    end
+    unless DRCI.put_away_item?('ticket')
+      Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow repair ticket')
+    end
   end
 
   def find_recipe(materials_info, recipe, quantity)
