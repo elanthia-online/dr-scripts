@@ -855,9 +855,13 @@ RSpec.describe WorkOrders do
     describe 'put_away_item? usage' do
       it 'uses DRCI.put_away_item? for ticket in repair_items' do
         workorders.instance_variable_set(:@settings, OpenStruct.new(workorders_repair_own_tools: false))
-        # Return 'Just give it to me again' for every first give per tool
-        allow(DRC).to receive(:bput) do |cmd, *_patterns|
-          cmd.include?('give') ? 'Just give it to me again' : 'repair ticket'
+        # First give per tool returns the clerk's cost quote (matches
+        # REPAIR_QUOTE_PATTERN and contains a price so repair_cost_copper works);
+        # confirm_repair's give -- the only one passing 'repair ticket' as a
+        # pattern -- returns 'repair ticket' so the repair finalizes and the
+        # ticket is stowed.
+        allow(DRC).to receive(:bput) do |_cmd, *patterns|
+          patterns.include?('repair ticket') ? 'repair ticket' : 'cost 4,447 Kronars to repair.  Just give it to me again'
         end
         allow(DRCI).to receive(:get_item?).and_return(false)
         allow(workorders).to receive(:get_tool)

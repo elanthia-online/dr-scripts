@@ -579,7 +579,10 @@ RSpec.describe Forge do
       it 'gets item when not in left hand' do
         allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false, true)
         allow(DRCI).to receive(:in_right_hand?).and_return(false)
-        expect(DRCC).to receive(:stow_crafting_item)
+        # prepare_item_in_left_hand/handle_oiling now stow BOTH hands (via
+        # stow_both_hands) before retrieving the item, so stow_crafting_item is
+        # called once per hand.
+        expect(DRCC).to receive(:stow_crafting_item).twice
         expect(DRC).to receive(:bput).with('get sword on anvil', 'You get', 'What were you referring to?').and_return('You get')
         expect(forge_instance).to receive(:swap_tool).with('oil', true)
         forge_instance.send(:handle_oiling)

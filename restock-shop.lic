@@ -3,6 +3,29 @@
 =end
 
 class ShopRestock
+  # Hard cap on a steel ingot's volume in-game (raw OR refined-and-combined).
+  # A raw ingot is (makesteel_count x 10) volume, and makesteel's count caps at
+  # 21, so a single make tops out at 210 raw. Ingots can also be smelted
+  # together, but the combined result can never exceed this same 210 cap.
+  RAW_STEEL_INGOT_CAP = 210
+
+  # makesteel's own arg cap on iron-nugget count -- a single make can't exceed
+  # this (21 x 10 = 210 raw volume).
+  MAKESTEEL_MAX_COUNT = 21
+
+  # Refine-loss factor: raw ingot volume / refined ingot volume.
+  #
+  # restock_steel always refines, which raises quality but reduces volume:
+  # a 210 raw ingot yields 168 WITH the steel-refining tech (210 / 168 = 1.25)
+  # or 105 WITHOUT it (210 / 105 = 2.0). So one makesteel+refine adds up to
+  # (count x 10 / factor) refined volume -- 168 max with the tech.
+  #
+  # Used to size each makesteel call before its fresh refined ingot is smelted
+  # into the persistent ingot (see restock_steel). Defaults to the with-tech
+  # value; override per-character with a `steel_refine_factor` YAML setting
+  # (use 2.0 if you lack the tech).
+  DEFAULT_STEEL_REFINE_FACTOR = 1.25
+
   def initialize
     @settings = get_settings
 
@@ -16,6 +39,19 @@ class ShopRestock
     @belt = @settings.forging_belt || @settings.engineering_belt
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
+
+    # Optional: store the persistent steel ingot as a (light) deed between runs.
+    @deed_ingot = @settings.deed_steel_ingot
+    if @deed_ingot
+      deeds_data = get_data('crafting').deeds[@town]
+      if deeds_data
+        @deeds_room = deeds_data['room']
+        @deeds_number = deeds_data['large_number'] # large packet = 250 claim forms
+      else
+        Lich::Messaging.msg('bold', "restock-shop: No deed data for #{@town}; disabling steel-ingot deed storage.")
+        @deed_ingot = false
+      end
+    end
 
     go_to_shop
     check_surfaces
@@ -33,7 +69,7 @@ class ShopRestock
                    DRC.list_to_array(raw_list)
                  end
       missing_items += @item_list.select { |item| surface == item['surface'] }
-                                 .reject { |item| raw_list.find { |raw_item| raw_item.match(item['full_name']) } }
+                                 .reject { |item| already_stocked?(item, raw_list) }
     end
 
     return if missing_items.empty?
@@ -51,32 +87,297 @@ class ShopRestock
     restock_surfaces(missing_items)
   end
 
+  # An item counts as already stocked if every word of its full_name appears in
+  # a shop listing line. Word-presence (rather than a contiguous substring)
+  # matching is required because the game inserts the material adjective at an
+  # unpredictable spot in crafted names -- e.g. full_name "weighted pickaxe"
+  # must still match the listing "a weighted steel pickaxe", where "steel" is
+  # wedged between the adjective and the noun.
+  def already_stocked?(item, raw_list)
+    words = item['full_name'].downcase.split
+    raw_list.any? { |raw_item| words.all? { |word| raw_item.downcase.include?(word) } }
+  end
+
   def restock_surfaces(missing_items)
     restock_steel(missing_items.select { |item| item['material'] == 'steel' })
+    restock_low_carbon_steel(missing_items.select { |item| item['material'] == 'low carbon steel' })
     restock_burlap(missing_items.select { |item| item['material'] == 'heavy burlap' })
     restock_silk(missing_items.select { |item| item['material'] == 'heavy silk' })
     restock_linen(missing_items.select { |item| item['material'] == 'heavy linen' })
     restock_gryphon(missing_items.select { |item| item['material'] == 'gryphon' })
   end
 
+  # Forge every missing steel item from a single, persistent steel ingot.
+  #
+  # Instead of making one ingot per run and trashing the remainder, we keep a
+  # refined steel ingot in the crafting container and top it up on demand: read
+  # its current volume (analyze), and whenever it can't cover the next item, make
+  # a fresh refined ingot and smelt the two together (combine). Both ingots are
+  # refined first so they're identical and merge cleanly, and the combined ingot
+  # can never exceed the 210 hard cap. When the list is exhausted the remainder
+  # is kept for next run -- as a light deed if `deed_steel_ingot` is set, or
+  # trashed (old behavior) if not.
   def restock_steel(missing_items)
     return if missing_items.empty?
 
-    volume = ((total_volume_of(missing_items) * 1.25) / 10.0).ceil
-    return if volume.zero?
+    @refine_factor = (@settings.steel_refine_factor || DEFAULT_STEEL_REFINE_FACTOR).to_f
 
-    DRC.wait_for_script_to_complete('makesteel', [volume, 'refine'])
+    queue = filter_forgeable(missing_items)
+    return if queue.empty?
 
-    missing_items.each do |item|
+    # If the persistent ingot is stored as a deed, materialize it so we can forge
+    # and combine with a real ingot again.
+    retrieve_ingot_from_deed if @deed_ingot
+
+    # Guard against a stray low/medium-carbon ingot (e.g. left by an interrupted
+    # low-carbon run) being forged as high-carbon stock.
+    grade = steel_ingot_carbon
+    if grade && grade != 'high'
+      Lich::Messaging.msg('bold', "restock-shop: The steel ingot on hand is #{grade} carbon, not high; skipping steel items to avoid forging from the wrong grade. Clear it and rerun.")
+      return
+    end
+
+    queue.each_with_index do |item, idx|
+      # When we do top up, fill toward everything still queued (capped at one
+      # ingot) so we make fewer crucible trips than one-item-at-a-time would.
+      remaining = queue[idx..].sum { |queued| volume_of(queued) }
+      ensure_ingot_volume(volume_of(item), remaining)
+
       DRC.wait_for_script_to_complete('smith', ['steel', item['recipe'], 'stamp', 'temper'])
       go_to_shop
       sell(item)
     end
 
+    # With deeds on, stow the leftover ingot as a light deed for next run.
+    # With deeds off, fall back to the old behavior and trash the remainder so a
+    # heavy ingot isn't left lying in the crafting container.
+    if @deed_ingot
+      store_ingot_as_deed
+    else
+      dispose_leftover_ingot
+    end
+
     DRC.wait_for_script_to_complete('workorders', %w[blacksmithing repair])
+  end
+
+  # Forge low-carbon-steel items (e.g. tongs, smelted 1:1 iron:coal).
+  #
+  # Unlike the high-carbon path this ingot is intentionally NOT persisted or
+  # deeded: both carbon grades are just "steel ingot" in-game and must never
+  # share the crafting container or get combined, so we make what we need this
+  # run and trash the remainder. This runs after restock_steel, which by then
+  # has re-deeded or trashed its own ingot, so no high-carbon ingot is loose
+  # while we make and forge the low-carbon one.
+  def restock_low_carbon_steel(missing_items)
+    return if missing_items.empty?
+
+    @refine_factor = (@settings.steel_refine_factor || DEFAULT_STEEL_REFINE_FACTOR).to_f
+    @steel_type = 'l' # 1:1 iron:coal
+
+    queue = filter_forgeable(missing_items)
+    return if queue.empty?
+
+    # Both carbon grades are just "steel ingot" in-game, so tell them apart by
+    # analyzing. Only proceed if any loose ingot here is already low carbon (a
+    # safe leftover to reuse); a high/medium ingot (e.g. one the steel path
+    # failed to deed/trash) would mean forging these from the wrong stock.
+    existing_grade = steel_ingot_carbon
+    if existing_grade && existing_grade != 'low'
+      Lich::Messaging.msg('bold', "restock-shop: A loose #{existing_grade}-carbon steel ingot is present; skipping low-carbon items to avoid mixing grades. Clear it and rerun.")
+      return
+    end
+
+    queue.each_with_index do |item, idx|
+      remaining = queue[idx..].sum { |queued| volume_of(queued) }
+      ensure_ingot_volume(volume_of(item), remaining)
+
+      DRC.wait_for_script_to_complete('smith', ['steel', item['recipe'], 'stamp', 'temper'])
+      go_to_shop
+      sell(item)
+    end
+
+    # Never leave a loose low-carbon "steel ingot" behind -- it would be
+    # indistinguishable from (and wrongly picked up as) the persistent
+    # high-carbon ingot on the next run.
+    dispose_leftover_ingot
+
+    DRC.wait_for_script_to_complete('workorders', %w[blacksmithing repair])
+  ensure
+    @steel_type = 'h'
+  end
+
+  # Build the makesteel argument list for the current carbon grade. High carbon
+  # (the default) omits the type; low carbon passes 'l'. Always refines.
+  def makesteel_args(count)
+    args = [count]
+    args << @steel_type if @steel_type && @steel_type != 'h'
+    args << 'refine'
+    args
+  end
+
+  # Drop any item whose volume exceeds a single ingot -- it can't be forged from
+  # one ingot at all -- and warn about it.
+  def filter_forgeable(items)
+    items.reject do |item|
+      next false unless volume_of(item) > RAW_STEEL_INGOT_CAP
+
+      respond "*** Skipping #{item['full_name']}: needs #{volume_of(item)} volume, exceeds the #{RAW_STEEL_INGOT_CAP} single-ingot limit. ***"
+      true
+    end
+  end
+
+  # Ensure the persistent ingot holds at least `min_needed` volume. When a top-up
+  # is required, fill toward `target` (capped at the ingot limit) to batch the work.
+  def ensure_ingot_volume(min_needed, target)
+    return if current_ingot_volume >= min_needed
+
+    add_ingot_volume([[target, min_needed].max, RAW_STEEL_INGOT_CAP].min)
+  end
+
+  # Top up the persistent refined ingot toward `fill_to` volume by repeatedly
+  # making a fresh refined ingot and smelting it into the existing one.
+  #
+  # Each makesteel+refine adds (count * 10 / @refine_factor) refined volume, so we
+  # add in those increments -- never letting the combined ingot exceed the 210
+  # cap, and never asking makesteel for more than its own count cap of 21.
+  def add_ingot_volume(fill_to)
+    fill_to = [fill_to, RAW_STEEL_INGOT_CAP].min
+    refined_per_count = 10.0 / @refine_factor # 8 with tech, 5 without
+
+    last_have = -1
+    loop do
+      have = current_ingot_volume
+      break if have >= fill_to
+
+      if have == last_have
+        Lich::Messaging.msg('bold', 'restock-shop: Steel ingot volume stopped increasing; aborting top-up to avoid a loop.')
+        break
+      end
+      last_have = have
+
+      want_counts = ((fill_to - have) / refined_per_count).ceil
+      room_counts = ((RAW_STEEL_INGOT_CAP - have) / refined_per_count).floor
+      count = [want_counts, room_counts, MAKESTEEL_MAX_COUNT].min
+
+      # Remaining headroom is smaller than the smallest ingot we can add.
+      break if count < 1
+
+      DRC.wait_for_script_to_complete('makesteel', makesteel_args(count))
+      combine_ingots if have.positive?
+    end
+  end
+
+  # Read the persistent steel ingot's current volume (0 if none on hand/in bag).
+  def current_ingot_volume
+    return 0 unless DRCI.get_item?('steel ingot')
+
+    result = DRC.bput('analyze my ingot', 'About \d+ volume', 'I could not find')
+    volume = (result[/About (\d+) volume/, 1] || 0).to_i
+    DRCI.stow_item?('ingot')
+    volume
+  end
+
+  # Read the carbon grade of the steel ingot on hand from its analyze block,
+  # e.g. "The metal appears to be composed of: 100.00% high carbon steel." ->
+  # "high". Returns nil when there is no steel ingot to analyze.
+  def steel_ingot_carbon
+    return nil unless DRCI.get_item?('steel ingot')
+
+    result = DRC.bput('analyze my ingot', /composed of: [\d.]+% \w+ carbon steel/, 'I could not find')
+    DRCI.stow_item?('ingot')
+    result[/% (\w+) carbon steel/, 1]
+  end
+
+  # Smelt the freshly-made refined ingot into the persistent one, yielding a
+  # single combined ingot. Assumes both are refined (identical) and total <= 210.
+  def combine_ingots
+    DRCC.find_empty_crucible(@hometown)
+
+    added = 0
+    2.times do
+      break unless DRCI.get_item?('steel ingot')
+
+      case DRC.bput('put my ingot in crucible',
+                    /You put your.*in the.*crucible\./,
+                    /You decide that smelting such a volume of metal at once would be dangerous/,
+                    /identical/i)
+      when /You put your.*in the.*crucible/
+        added += 1
+      else
+        Lich::Messaging.msg('bold', 'restock-shop: Could not combine steel ingots (over-volume or not identical); leaving them separate.')
+        DRCI.stow_item?('ingot')
+        break
+      end
+    end
+
+    if added >= 2
+      DRC.wait_for_script_to_complete('smelt')
+    elsif added == 1
+      # Only one ingot made it in; take it back so it isn't stranded in the crucible.
+      DRC.bput('get ingot from crucible', 'You get', 'What were you referring')
+    end
+    DRCI.stow_item?('ingot')
+  end
+
+  # Materialize the persistent steel ingot from its deed (if it is stored as one),
+  # leaving a real steel ingot in the crafting container. Mirrors workorders.lic.
+  def retrieve_ingot_from_deed
+    # Prefer a loose ingot already on hand: if one is in the crafting container
+    # (e.g. a leftover from an interrupted run, or a deed-store that failed for
+    # lack of a packet), use it and skip the trip to the deed room entirely.
+    # This avoids materializing a second "steel ingot" from the deed.
+    return if DRCI.exists?('steel ingot')
+
+    # The deed can only be tapped within the forging society, so walk there first.
+    DRCT.walk_to(@deeds_room)
+    return unless DRCI.get_item?('steel deed')
+
+    fput('tap my deed')
+    pause
+    DRCI.get_item_if_not_held?('steel ingot')
+    DRCI.stow_item?('ingot')
+  end
+
+  # Push the leftover steel ingot into a deed for light storage. Buys a fresh
+  # large deed packet (250 claim forms) when the current one is out. Mirrors
+  # workorders.lic; no-op if there is no ingot left to store.
+  def store_ingot_as_deed
+    return unless DRCI.get_item?('steel ingot')
+
+    ensure_deed_packet
+    unless DRCI.get_item?('packet')
+      Lich::Messaging.msg('bold', 'restock-shop: No deed packet available; leaving the steel ingot un-deeded.')
+      DRCI.stow_item?('ingot')
+      return
+    end
+
+    fput('push my ingot with packet')
+    DRCI.put_away_item?('packet')
+    DRCI.put_away_item?('deed')
+  end
+
+  # Trash the leftover steel ingot (used when deed storage is disabled, so a
+  # heavy ingot isn't left in the crafting container between runs). No-op if the
+  # ingot was fully consumed.
+  def dispose_leftover_ingot
+    return unless DRCI.get_item?('steel ingot')
+
     DRCT.walk_to(get_data('crafting')[:blacksmithing][@town]['trash-room'])
-    DRCC.get_crafting_item('steel ingot', @bag, @belt, @belt)
     DRCI.dispose_trash('steel ingot', @worn_trashcan, @worn_trashcan_verb)
+  end
+
+  # Ensure a deed packet with claim forms remaining is on hand, ordering a new
+  # large packet if the current one is empty or missing.
+  def ensure_deed_packet
+    result = DRC.bput('look my deed packet',
+                      /You count \d+ deed claim forms remaining/,
+                      /I could not find/,
+                      /What were you referring/)
+    return if result =~ /deed claim forms remaining/
+
+    DRCM.ensure_copper_on_hand(10_000, @settings, @town)
+    DRCT.order_item(@deeds_room, @deeds_number)
+    DRCI.put_away_item?('packet')
   end
 
   def restock_burlap(missing_items)
@@ -114,7 +415,7 @@ class ShopRestock
         recipe_data['part'].map { |part| part == part_name ? 1 : 0 }.reduce(0, :+).times { buy_part(part_name) }
       end
 
-      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', recipe_data['chapter'], item['recipe'], item['noun'], 'burlap'])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', recipe_data['chapter'], item['recipe'], 'burlap', item['noun']])
       stamp(item)
       DRC.wait_for_script_to_complete('sew', ['reinforce'])
       fput("stow #{item['noun']}")
@@ -157,7 +458,7 @@ class ShopRestock
     missing_items.each do |item|
       move('out') if Room.current.id == @inner_id
       recipe_data = DRCC.recipe_lookup(@recipes, item['recipe'])
-      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', recipe_data['chapter'], item['recipe'], item['noun'], 'linen'])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', recipe_data['chapter'], item['recipe'], 'linen', item['noun']])
       go_to_shop
       stamp(item)
       sell(item)
@@ -194,7 +495,7 @@ class ShopRestock
     missing_items.each do |item|
       recipe_data = DRCC.recipe_lookup(@recipes, item['recipe'])
       move('out') if Room.current.id == @inner_id
-      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', recipe_data['chapter'], item['recipe'], item['noun'], 'silk'])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', recipe_data['chapter'], item['recipe'], 'silk', item['noun']])
       go_to_shop
       stamp(item)
       sell(item)
@@ -217,7 +518,7 @@ class ShopRestock
     missing_items.each do |item|
       recipe_data = DRCC.recipe_lookup(@recipes, item['recipe'])
       recipe_data['part'].each { |part| buy_part(part) }
-      DRC.wait_for_script_to_complete('sew', ['stow', 'leather', recipe_data['chapter'], item['recipe'], item['noun'], item['material']])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'leather', recipe_data['chapter'], item['recipe'], item['material'], item['noun']])
       fput('stow leather')
       DRCC.get_crafting_item('shield', @bag, @belt, @belt)
       DRC.wait_for_script_to_complete('sew', ['seal'])
@@ -251,15 +552,18 @@ class ShopRestock
   def stamp(item)
     fput("get my #{item['noun']} from my #{@bag}")
     DRCC.get_crafting_item('stamp', @bag, @bag_items, @belt)
-    DRC.bput("mark my #{noun} with my stamp", 'carefully hammer the stamp', 'You cannot figure out how to do that', 'too badly damaged')
+    DRC.bput("mark my #{item['noun']} with my stamp", 'carefully hammer the stamp', 'already a maker\'s mark', 'You cannot figure out how to do that', 'too badly damaged')
     DRCC.stow_crafting_item('stamp', @bag, @belt)
+  end
+
+  def volume_of(item)
+    DRCC.recipe_lookup(@recipes.select { |recipe| recipe['noun'] == item['noun'] }, item['recipe'])['volume']
   end
 
   def total_volume_of(items)
     return 0 if items.empty?
 
-    items.map { |item| DRCC.recipe_lookup(@recipes.select { |recipe| recipe['noun'] == item['noun'] }, item['recipe'])['volume'] }
-         .inject(&:+)
+    items.map { |item| volume_of(item) }.inject(&:+)
   end
 end
 
