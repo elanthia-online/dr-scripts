@@ -676,7 +676,9 @@ class InventoryManager
       return
     end
 
-    InventoryManagerGui.new(@item_db_path, @version_string).run
+    # Passing self lets the Scan button reuse the same save methods the text
+    # commands call, rather than duplicating any of that logic.
+    InventoryManagerGui.new(@item_db_path, @version_string, self).run
   end
 
   def remove_character_data(name_to_remove)
@@ -738,6 +740,54 @@ class InventoryManagerGui
   }.freeze
 
   SOURCE_ORDER = SOURCE_LABELS.keys.freeze
+
+  # Seconds to settle between queued scans, so consecutive saves do not stack
+  # commands on top of each other.
+  SCAN_PAUSE = 2
+
+  # Backstop for a scan that will not finish: a save method that keeps retrying
+  # something it can never do (fetching a book that is not there, tapping a
+  # container you are not carrying) is abandoned so the rest of the queue runs.
+  SCAN_TIMEOUT = 120
+
+  # Everything ;inventory-manager save offers, mapped to the methods the text
+  # dispatch calls. Notes are the command's own help text, shown at the point of
+  # choosing rather than left in the help output.
+  SCANS = [
+    { label: 'Character inventory',    method: :add_current_inv,       group: 'Character',
+      note: "Save new or update current character's items to the database." },
+    { label: 'Vault (VAULT STANDARD)', method: :add_vault_standard,    group: 'Vaults',
+      note: 'Uses VAULT STANDARD to get a list of items.' },
+    { label: 'Vault (VAULT FAMILY)',   method: :add_vault_family,      group: 'Vaults',
+      note: 'Uses VAULT FAMILY to get a list of items.' },
+    { label: 'Vault book',             method: :add_vault_book,        group: 'Vaults',
+      note: 'Uses vault book to get a list of items from your vault.' },
+    { label: 'Vault (rummage)',        method: :add_vault_regular_inv, group: 'Vaults',
+      note: 'Rummages your vault to save items. NOTE: must be standing by your open vault.' },
+    { label: 'Family vault (rummage)', method: :add_family_vault,      group: 'Vaults',
+      note: 'Rummages your family vault to save items. NOTE: must be standing by your open vault.' },
+    { label: 'Caravan storage box',    method: :add_storage_box_inv,   group: 'Storage',
+      note: 'Rummages caravan storage box for items.' },
+    { label: 'Caravan storage book',   method: :add_storage_book,      group: 'Storage',
+      note: 'Uses storage book to get a list of items from your caravan storage box.' },
+    { label: 'Secret pocket',          method: :add_pocket_inv,        group: 'Storage',
+      note: 'Rummages your secret pocket container. NOTE: must be wearing the container.' },
+    { label: 'Eddy',                   method: :add_eddy_inv,          group: 'Storage',
+      note: 'Save the contents of an eddy (HE 436 Gift).',
+      warning: 'Character inventory already includes items found within Eddy. Saving both will duplicate them.' },
+    { label: 'Deed register',          method: :add_register_inv,      group: 'Property and Other',
+      note: 'Reads contents of deed register.' },
+    { label: 'Spell scrolls',          method: :add_scrolls,           group: 'Property and Other',
+      note: 'Save spell scrolls tracked with sort-scrolls or stack-scrolls.' },
+    { label: 'Home',                   method: :add_home,              group: 'Property and Other',
+      note: 'Save home inventory.' },
+    { label: 'Shadow servant',         method: :add_shadow_servant,    group: 'Property and Other',
+      note: 'Save shadow servant inventory.' },
+    { label: 'Trader shop',            method: :add_trader_shop,       group: 'Property and Other',
+      note: 'Save your Trader shop inventory.' }
+  ].freeze
+
+  SCAN_GROUPS = ['Character', 'Vaults', 'Storage', 'Property and Other'].freeze
 
   Row = Struct.new(:character, :source, :name, :container, :nested, :worn, :note, :raw)
 
@@ -803,9 +853,13 @@ class InventoryManagerGui
     text.to_s.gsub(/[^a-zA-Z0-9\-_.~]/) { |char| char.bytes.map { |byte| format('%%%02X', byte) }.join }
   end
 
-  def initialize(db_path, version_key)
+  def initialize(db_path, version_key, manager = nil)
     @db_path = db_path
     @version_key = version_key.to_s
+    @manager = manager
+    # Scan requests cross threads: queued by GTK signal handlers, drained here by
+    # the script thread.
+    @jobs = Queue.new
     @rows = []
     @window = nil
     @done = false
@@ -813,14 +867,30 @@ class InventoryManagerGui
 
   def run
     load_rows
-    if @rows.empty?
-      DRC.message("No saved inventory found in #{@db_path}.")
-      DRC.message('Run ;inventory-manager save first (see ;inventory-manager help for the other save options).')
-      return
-    end
+    DRC.message('No saved inventory yet -- use Scan, or the ;inventory-manager save commands.') if @rows.empty?
 
     build_window
-    pause 0.2 until @done
+
+    # Scans must execute on this thread. They issue game commands and block
+    # waiting on game output, which would deadlock the GTK main loop.
+    until @done
+      job = next_job
+      job ? perform_scan(job) : pause(0.2)
+    end
+  end
+
+  def next_job
+    @jobs.pop(true)
+  rescue ThreadError
+    nil
+  end
+
+  # Closing the window abandons anything still queued. A scan already running
+  # cannot be interrupted mid-command, so the loop exits once it returns.
+  def drain_jobs
+    dropped = 0
+    dropped += 1 while next_job
+    DRC.message("inventory-manager: dropped #{dropped} queued scan#{dropped == 1 ? '' : 's'}.") if dropped.positive?
   end
 
   def load_rows
@@ -896,15 +966,40 @@ class InventoryManagerGui
       nesting_toggle = Gtk::CheckButton.new('Nest containers')
       nesting_toggle.active = true
 
+      scan_button     = Gtk::Button.new(label: 'Scan')
       reload_button   = Gtk::Button.new(label: 'Reload')
       expand_button   = Gtk::Button.new(label: 'Expand all')
       collapse_button = Gtk::Button.new(label: 'Collapse all')
       wiki_button     = Gtk::Button.new(label: 'Elanthipedia')
 
+      scan_button.sensitive = !@manager.nil?
+      scan_button.tooltip_text = @manager ? 'Choose which saves to run in the game' : 'Scanning is unavailable'
+      reload_button.tooltip_text = 'Re-read the database from disk'
+
       status = Gtk::Label.new('')
       status.xalign = 0
 
+      @status = status
+      @scan_button = scan_button
+
+      # A scan can introduce the first character into an empty database, so keep
+      # the filter list in step without clobbering the current selection.
+      sync_characters = lambda do
+        next if @listed_characters == characters
+
+        previous = character_combo.active_text
+        @syncing = true
+        character_combo.remove_all
+        character_combo.append_text(ALL_CHARACTERS)
+        characters.each { |name| character_combo.append_text(name) }
+        index = characters.index(previous)
+        character_combo.active = index ? index + 1 : 0
+        @listed_characters = characters
+        @syncing = false
+      end
+
       redraw = lambda do
+        sync_characters.call
         refill(store, status,
                query: search_entry.text,
                character: character_combo.active_text,
@@ -918,12 +1013,15 @@ class InventoryManagerGui
         end
       end
 
+      @redraw = redraw
+
       search_entry.signal_connect('search-changed') { redraw.call }
-      character_combo.signal_connect('changed') { redraw.call }
+      character_combo.signal_connect('changed') { redraw.call unless @syncing }
       nesting_toggle.signal_connect('toggled') { redraw.call }
       expand_button.signal_connect('clicked') { view.expand_all }
       collapse_button.signal_connect('clicked') { view.collapse_all }
       wiki_button.signal_connect('clicked') { open_wiki(selected_term(view)) }
+      scan_button.signal_connect('clicked') { show_scan_dialog }
       reload_button.signal_connect('clicked') do
         load_rows
         redraw.call
@@ -951,6 +1049,8 @@ class InventoryManagerGui
       controls.pack_start(search_entry, expand: true, fill: true, padding: 0)
       controls.pack_start(character_combo, expand: false, fill: false, padding: 0)
       controls.pack_start(nesting_toggle, expand: false, fill: false, padding: 0)
+      controls.pack_start(Gtk::Separator.new(:vertical), expand: false, fill: false, padding: 2)
+      controls.pack_start(scan_button, expand: false, fill: false, padding: 0)
       controls.pack_start(reload_button, expand: false, fill: false, padding: 0)
 
       actions = Gtk::Box.new(:horizontal, 4)
@@ -977,12 +1077,144 @@ class InventoryManagerGui
         # before before_dying can try to destroy it a second time.
         @window = nil
         @done = true
+        drain_jobs
         false
       end
 
       redraw.call
       @window.show_all
     end
+  end
+
+  # Runs on the GTK thread from the Scan button. Nothing here touches the game --
+  # picks are pushed onto @jobs and executed by the script thread.
+  def show_scan_dialog
+    dialog = Gtk::Dialog.new(title: 'Run inventory scans', parent: @window)
+    dialog.modal = true
+    dialog.set_default_size(540, 520)
+    dialog.add_button('Cancel', Gtk::ResponseType::CANCEL)
+    dialog.add_button('Run selected', Gtk::ResponseType::ACCEPT)
+
+    intro = Gtk::Label.new("These send commands to the game. Make sure your character is idle and in\nposition for any scan that needs it. Selected scans run one at a time, with a\nshort pause between each, and one that fails is reported and skipped.")
+    intro.xalign = 0
+    dialog.content_area.pack_start(intro, expand: false, fill: false, padding: 6)
+
+    list = Gtk::Box.new(:vertical, 2)
+    checks = []
+    SCAN_GROUPS.each do |group|
+      entries = SCANS.select { |scan| scan[:group] == group }
+      next if entries.empty?
+
+      heading = Gtk::Label.new
+      heading.xalign = 0
+      heading.markup = "<b>#{group}</b>"
+      list.pack_start(heading, expand: false, fill: false, padding: 4)
+
+      entries.each do |scan|
+        check = Gtk::CheckButton.new("#{scan[:label]} -- #{scan[:note]}")
+        check.tooltip_text = scan[:warning] if scan[:warning]
+        list.pack_start(check, expand: false, fill: false, padding: 0)
+        checks << [scan, check]
+      end
+    end
+
+    scroller = Gtk::ScrolledWindow.new
+    scroller.set_policy(:never, :automatic)
+    scroller.add(list)
+    dialog.content_area.pack_start(scroller, expand: true, fill: true, padding: 4)
+
+    toggles = Gtk::Box.new(:horizontal, 4)
+    select_all = Gtk::Button.new(label: 'Select all')
+    clear_all = Gtk::Button.new(label: 'Clear')
+    select_all.signal_connect('clicked') { checks.each { |_scan, check| check.active = true } }
+    clear_all.signal_connect('clicked') { checks.each { |_scan, check| check.active = false } }
+    toggles.pack_start(select_all, expand: false, fill: false, padding: 0)
+    toggles.pack_start(clear_all, expand: false, fill: false, padding: 0)
+    dialog.content_area.pack_start(toggles, expand: false, fill: false, padding: 4)
+
+    dialog.signal_connect('response') do |_widget, response|
+      queue_scans(checks.select { |_scan, check| check.active? }.map(&:first)) if response == Gtk::ResponseType::ACCEPT
+      dialog.destroy
+    end
+
+    dialog.show_all
+  end
+
+  def queue_scans(selected)
+    if selected.empty?
+      @status.text = 'No scans selected.' if @status
+      return
+    end
+
+    selected.each { |scan| @jobs << scan }
+    # Re-enabled by perform_scan once the queue drains.
+    @scan_button.sensitive = false if @scan_button
+    @status.text = "Queued #{selected.length} scan#{selected.length == 1 ? '' : 's'}..." if @status
+    DRC.message("inventory-manager: queued #{selected.map { |scan| scan[:label] }.join(', ')}")
+  end
+
+  # Script thread only -- see the comment in run. Every failure mode is contained
+  # here so one bad scan cannot take down the window or the rest of the queue.
+  def perform_scan(scan)
+    return if @done
+
+    DRC.message("*WARNING: #{scan[:warning]}") if scan[:warning]
+    DRC.message("inventory-manager: scanning #{scan[:label]}...")
+    set_status("Scanning #{scan[:label]}...")
+
+    outcome = run_scan_method(scan)
+    report_outcome(scan, outcome)
+
+    load_rows
+    remaining = @jobs.size
+
+    Gtk.queue do
+      @redraw&.call
+      # refill rewrites the status line, so the result goes on after it.
+      @status.text = outcome_text(scan, outcome) if @status
+      @scan_button.sensitive = true if @scan_button && remaining.zero?
+    end
+
+    # Let the game settle before driving it again. The outcome stays in the
+    # message so the result of the scan just finished is not lost behind it.
+    return if remaining.zero? || @done
+
+    set_status("#{outcome_text(scan, outcome)} -- pausing, #{remaining} left...")
+    pause SCAN_PAUSE
+  end
+
+  def run_scan_method(scan)
+    if defined?(Timeout)
+      Timeout.timeout(SCAN_TIMEOUT) { @manager.send(scan[:method]) }
+    else
+      @manager.send(scan[:method])
+    end
+    :done
+  rescue SystemExit
+    # Several save methods call exit when a precondition fails: wrong guild, book
+    # not found, no stacker configured. From the command line that just ends the
+    # script, but here it would take the whole window down with it.
+    :skipped
+  rescue StandardError => e
+    # Timeout::Error is a StandardError, so a scan stuck retrying lands here too.
+    DRC.message("inventory-manager: #{scan[:label]} error -- #{e.class}: #{e.message}")
+    :failed
+  end
+
+  def outcome_text(scan, outcome)
+    case outcome
+    when :done    then "Finished: #{scan[:label]}"
+    when :skipped then "Skipped: #{scan[:label]} -- requirements not met"
+    else               "Failed: #{scan[:label]} -- see the game window"
+    end
+  end
+
+  def report_outcome(scan, outcome)
+    DRC.message("inventory-manager: #{outcome_text(scan, outcome)}")
+  end
+
+  def set_status(text)
+    Gtk.queue { @status.text = text if @status }
   end
 
   def refill(store, status, query:, character:, nest:)
