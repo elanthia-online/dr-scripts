@@ -736,7 +736,8 @@ class InventoryManagerGui
     'pocket'         => 'Secret Pocket',
     'shadow_servant' => 'Shadow Servant',
     'spell_scroll'   => 'Spell Scrolls',
-    'trader_shop'    => 'Trader Shop'
+    'trader_shop'    => 'Trader Shop',
+    'ticket'         => 'Tickets & Currency'
   }.freeze
 
   SOURCE_ORDER = SOURCE_LABELS.keys.freeze
@@ -784,7 +785,9 @@ class InventoryManagerGui
     { label: 'Shadow servant',         method: :add_shadow_servant,    group: 'Property and Other',
       note: 'Save shadow servant inventory.' },
     { label: 'Trader shop',            method: :add_trader_shop,       group: 'Property and Other',
-      note: 'Save your Trader shop inventory.' }
+      note: 'Save your Trader shop inventory.' },
+    { label: 'Tickets and currency',   method: :add_ticket,            group: 'Property and Other',
+      note: 'Save ticket/currency information.' }
   ].freeze
 
   SCAN_GROUPS = ['Character', 'Vaults', 'Storage', 'Property and Other'].freeze
