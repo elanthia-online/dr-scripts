@@ -73,7 +73,10 @@ RSpec.describe WorkOrders do
 
     it 'defines REPAIR_GIVE_PATTERNS as frozen array' do
       expect(described_class::REPAIR_GIVE_PATTERNS).to be_frozen
-      expect(described_class::REPAIR_GIVE_PATTERNS.length).to eq(6)
+      expect(described_class::REPAIR_GIVE_PATTERNS.length).to eq(7)
+      # Cost-capturing quote plus a bare-prompt fallback for split lines.
+      expect(described_class::REPAIR_GIVE_PATTERNS).to include(described_class::REPAIR_QUOTE_PATTERN)
+      expect(described_class::REPAIR_GIVE_PATTERNS).to include('Just give it to me again')
     end
 
     it 'defines REPAIR_NO_NEED_PATTERNS as frozen array' do

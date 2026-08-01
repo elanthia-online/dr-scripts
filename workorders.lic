@@ -26,7 +26,10 @@ class WorkOrders
 
   # The clerk's repair quote, e.g. "That will cost 4,447 Kronars to repair.
   # Just give it to me again..." -- captured (cost included) so we can read the
-  # price and top up from the bank if we are short before confirming.
+  # price and top up from the bank if we are short before confirming. This only
+  # matches when the cost and prompt share one game line (the observed format);
+  # the bare 'Just give it to me again' below is kept as a fallback so a split
+  # line still matches the prompt (repair proceeds, just without auto-funding).
   REPAIR_QUOTE_PATTERN = /cost [\d,]+ \w+ to repair.*give it to me again/i
 
   # Clerk's response when we lack the coin to pay for a repair.
@@ -37,6 +40,7 @@ class WorkOrders
     'What is it',
     "There isn't a scratch on that",
     REPAIR_QUOTE_PATTERN,
+    'Just give it to me again',
     'I will not',
     "I can't fix those.  They only have so many uses and then you must buy another."
   ].freeze

@@ -148,4 +148,14 @@ RSpec.describe ShopRestock do
       instance.send(:add_ingot_volume, 168)
     end
   end
+
+  describe '#combine_ingots' do
+    it 'finds an empty crucible using @town (guards against the nil-@hometown crash)' do
+      instance = build_instance(town: 'Crossing')
+      allow(DRCI).to receive(:get_item?).with('steel ingot').and_return(false)
+      allow(DRCI).to receive(:stow_item?)
+      expect(DRCC).to receive(:find_empty_crucible).with('Crossing')
+      instance.send(:combine_ingots)
+    end
+  end
 end

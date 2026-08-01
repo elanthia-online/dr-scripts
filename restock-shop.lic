@@ -291,7 +291,7 @@ class ShopRestock
   # Smelt the freshly-made refined ingot into the persistent one, yielding a
   # single combined ingot. Assumes both are refined (identical) and total <= 210.
   def combine_ingots
-    DRCC.find_empty_crucible(@hometown)
+    DRCC.find_empty_crucible(@town)
 
     added = 0
     2.times do
