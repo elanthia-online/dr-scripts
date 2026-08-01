@@ -127,7 +127,7 @@ listen_observe: false
 ##################################################################
 #                                                                #
 ################################################### Athletics ####
-athletics_outdoorsmanship_rooms: [#####, #####, #####, #####, #####, #####]
+athletics_outdoorsmanship_rooms: []   # e.g. [1234, 5678]
 held_athletics_items: ['stone shard', 'arrows']
 
 ##################################################################
