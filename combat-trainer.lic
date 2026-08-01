@@ -301,11 +301,9 @@ class SetupProcess
   end
 
   def last_stance
-    flag_result = Flags['last-stance']
-    return { 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 } unless flag_result
+    return { 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 } unless Flags['last-stance']
 
-    flag_result[0] =~ /(\d+)%.* (\d+)%.* (\d+)%.* (\d+)/
-    { 'EVASION' => Regexp.last_match(1).to_i, 'PARRY' => Regexp.last_match(2).to_i, 'SHIELD' => Regexp.last_match(3).to_i, 'SPARE' => Regexp.last_match(4).to_i }
+    { 'EVASION' => Flags['last-stance'][:evasion].to_i, 'PARRY' => Flags['last-stance'][:parry].to_i, 'SHIELD' => Flags['last-stance'][:shield].to_i, 'SPARE' => Flags['last-stance'][:spare].to_i }
   end
 
   def build_stance_string(vals)
@@ -1608,6 +1606,14 @@ class SpellProcess
     drop_tkt_ammo
     Flags.add('need-tkt-ammo', 'There is nothing here that can be thrown')
 
+    # Minimum seconds between recreating telekinetic slivers (see #check_slivers).
+    # Without a throttle, slivers are remade the instant they deplete, which can
+    # spam Moonblade casts on targets that consume slivers quickly. Default 180s;
+    # set sliver_recast_delay: 0 in your yaml to disable the throttle entirely.
+    @sliver_recast_delay = settings.sliver_recast_delay || 180
+    # Seed so the first check may create slivers immediately.
+    @sliver_timer = Time.now - @sliver_recast_delay
+
     @spell_checks = []
     @spell_checks << :check_slivers if DRStats.moon_mage? && @tk_spell&.dig('slivers')
     @spell_checks << :check_regalia if @regalia_array
@@ -1719,11 +1725,19 @@ class SpellProcess
     return unless @tk_spell&.dig('slivers')
     return if game_state.casting
     return if DRSpells.slivers
+    # Throttle sliver re-creation so a fast-depleting target (or a run of failed
+    # casts) can't re-enter and spam Moonblade every tick. sliver_recast_delay
+    # defaults to 180s and is user-configurable (0 disables the throttle).
+    return if Time.now - @sliver_timer < @sliver_recast_delay
 
     unless UserVars.moons['visible'].any?
       DRC.message "There are NO moons available and you have NO TK_AMMO set! You need to fix this!" if !@tk_ammo && $debug_mode_ct
       return
     end
+
+    # We are committing to an attempt: start the cooldown now so that whether the
+    # casts succeed or all fail, we won't try again until the delay elapses.
+    @sliver_timer = Time.now
 
     # With low skill you may fail to create the slivers
     # when breaking your moonblade. If so, keep retrying.
@@ -1744,15 +1758,21 @@ class SpellProcess
       if retry_count == 0
         lunar_magic_rank = DRSkill.getrank('Lunar Magic')
         if lunar_magic_rank >= 400
-          moonblade_spell['prep_time'] = 1
-        elsif lunar_magic_rank >= 300
           moonblade_spell['prep_time'] = 2
-        elsif lunar_magic_rank >= 200
+        elsif lunar_magic_rank >= 300
           moonblade_spell['prep_time'] = 3
+        elsif lunar_magic_rank >= 200
+          moonblade_spell['prep_time'] = 4
         end
       end
-      DRCA.cast_spell(moonblade_spell, @settings)
-      created_slivers = DRC.bput("break moonblade", "The slivers drift about", "dissipate without any benefit", "Break what?") == "The slivers drift about"
+      # Only break a moonblade we actually just summoned. If this cast fails
+      # (e.g. a snap-cast at minimum prep the character lacks the skill to
+      # complete), a bare "break moonblade" would shatter the moonblade already
+      # in hand -- the wielded weapon of a moonblade melee trainer -- leaving
+      # the character unarmed. Guard the break on the cast succeeding.
+      if DRCA.cast_spell(moonblade_spell, @settings)
+        created_slivers = DRC.bput("break moonblade", "The slivers drift about", "dissipate without any benefit", "Break what?") == "The slivers drift about"
+      end
       retry_count = retry_count + 1
     end
     DRC.message("Failed to create slivers for telekinetic ammo after #{retry_count} attempts") unless created_slivers
@@ -1963,7 +1983,11 @@ class SpellProcess
 
     if game_state.casting_sorcery
       game_state.casting_sorcery = false
-      @equipment_manager.wield_weapon?(game_state.weapon_name, game_state.weapon_skill)
+      # Summoned-weapon-aware re-wield: a sorcery-boosted cast stows the weapon
+      # first, and a raw wield_weapon? can never match a summoned moonblade /
+      # elemental weapon (spurious "Failed to match a weapon"). restore_weapon
+      # re-holds and reshapes a summoned weapon, or normally wields a gear one.
+      game_state.restore_weapon
     end
 
     if game_state.casting_moonblade
@@ -2382,11 +2406,10 @@ class SpellProcess
   end
 
   def cast_ritual(data, game_state)
-    if (summoned = game_state.summoned_info(game_state.weapon_skill))
-      DRCS.break_summoned_weapon(game_state.weapon_name)
-    else
-      @equipment_manager.stow_weapon(game_state.weapon_name)
-    end
+    # Centralized summoned-aware disposition: a moon mage's blade is worn (not
+    # broken) so restore_weapon can re-hold it; warrior-mage / gear weapons are
+    # broken / stowed and re-summoned / re-wielded exactly as before.
+    game_state.stow_or_store_weapon
 
     data = DRCMM.update_astral_data(data, @settings)
     if data # DRCMM.update_astral_data returns nil on failure
@@ -2394,11 +2417,7 @@ class SpellProcess
       DRCA.ritual(data, @settings)
     end
 
-    if summoned
-      game_state.prepare_summoned_weapon(false)
-    else
-      @equipment_manager.wield_weapon?(game_state.weapon_name, game_state.weapon_skill)
-    end
+    game_state.restore_weapon
     game_state.reset_stance = true
   end
 
@@ -3725,13 +3744,16 @@ class TrainerProcess
   end
 
   def check_heavens(game_state)
-    @equipment_manager.stow_weapon(game_state.weapon_name)
+    # Use the summoned-weapon-aware store/restore so a moon mage's moonblade is
+    # WORN out of the hand (freeing it for the telescope) rather than left stuck
+    # in hand by a stow that can never match the summoned name.
+    game_state.stow_or_store_weapon
     if @have_telescope
       determine_time if DRCMM.get_telescope?(@telescope_name, @telescope_storage)
     else
       determine_time
     end
-    @equipment_manager.wield_weapon?(game_state.weapon_name, game_state.weapon_skill)
+    game_state.restore_weapon
   end
 
   def determine_time
@@ -4489,7 +4511,7 @@ class CombatTrainer
   def setup(settings)
     Flags.add('ct-spellcast', '^Your formation of a targeting pattern around .+ has completed\.', 'Your target pattern has finished forming around the area', '^You feel fully prepared to cast your spell\.', '^Your spell pattern snaps into shape with little preparation!')
 
-    Flags.add('last-stance', 'Setting your Evasion stance to \d+%, your Parry stance to \d+%, and your Shield stance to \d+%.  You have \d+ stance points left')
+    Flags.add('last-stance', /^Setting your Evasion stance to (?<evasion>\d+)%,.*your Parry stance to (?<parry>\d+)%,.*your Shield stance to (?<shield>\d+)%.*?You have (?<spare>\d+) stance points left/)
 
     DRC.bput("stance set #{settings.default_stance}", 'Setting your')
 
@@ -5880,6 +5902,48 @@ class GameState
     DRCS.turn_summoned_weapon if info['turn']
     DRCS.push_summoned_weapon if info['push']
     DRCS.pull_summoned_weapon if info['pull']
+  end
+
+  # Summoned-weapon-aware "put the current training weapon away" so the hands
+  # are free (e.g. astrology needs both hands for the telescope) or before an
+  # action that stows then re-wields (a sorcery-boosted cast, a cleric ritual).
+  #
+  # A summoned weapon's configured name is the spell noun ("moonblade" /
+  # "moonstaff" / an elemental weapon), which is NOT a gear-list item, so
+  # EquipmentManager#stow_weapon can never match it -- it just leaves the
+  # summoned weapon stuck in hand. For a summoned weapon we instead WEAR it
+  # (moon mage: TK-float it out of the hand) or BREAK it (warrior mage), which
+  # is the same disposition SetupProcess#check_weapon already uses on a weapon
+  # switch. Non-summoned weapons fall through to the normal stow.
+  def stow_or_store_weapon
+    if summoned_info(weapon_skill)
+      if DRStats.moon_mage?
+        DRCMM.wear_moon_weapon?
+      else
+        DRCS.break_summoned_weapon(weapon_name)
+      end
+    else
+      @equipment_manager.stow_weapon(weapon_name)
+    end
+  end
+
+  # Inverse of #stow_or_store_weapon: re-equip the current training weapon after
+  # such an interruption.
+  #
+  # Calling EquipmentManager#wield_weapon? for a summoned weapon prints a
+  # spurious "EquipmentManager: Failed to match a weapon for <name>:<skill>"
+  # (the summoned name is not in the gear list) and re-equips nothing. For a
+  # summoned weapon we re-hold and reshape it instead: moon mage grabs the worn
+  # moonblade back and shapes it, warrior mage re-summons and shapes. Passing
+  # weapon_already_summoned = false makes prepare_summoned_weapon do the summon
+  # step, which for a moon mage is DRCMM.hold_moon_weapon? (re-grab the still
+  # active, worn blade) and for a warrior mage re-summons the broken one.
+  def restore_weapon
+    if summoned_info(weapon_skill)
+      prepare_summoned_weapon(false)
+    else
+      @equipment_manager.wield_weapon?(weapon_name, weapon_skill)
+    end
   end
 
   def can_ambush_stun?

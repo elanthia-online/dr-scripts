@@ -134,6 +134,23 @@ RSpec.describe ItemTransfer do
   end
 
   # ===========================================================================
+  # Noun derivation for decorated items (issue #7491)
+  # ===========================================================================
+  describe 'deriving the GET noun from a decorated item' do
+    it 'strips attached/flavor text instead of grabbing the trailing word' do
+      # "...with a wool rug on it" -> the old .split.last picked "it", so
+      # "get my it from my package" failed. get_noun resolves the base noun.
+      allow(DRCI).to receive(:get_item_list)
+        .and_return(['a circle of colorful wool with a wool rug on it'])
+
+      mover.transfer_items('package', 'canvas sack', nil)
+
+      expect(DRCI).to have_received(:get_item).with('wool', 'package')
+      expect(DRCI).not_to have_received(:get_item).with('it', 'package')
+    end
+  end
+
+  # ===========================================================================
   # Pagination: "lot of other stuff" forces another LOOK
   # ===========================================================================
   describe 'pagination for over-full containers' do

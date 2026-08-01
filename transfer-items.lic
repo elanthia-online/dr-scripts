@@ -45,8 +45,14 @@ class ItemTransfer
     # If you're moving a specific item, then sort those to the top
     # to increase chances we find and move all of them in one go.
     DRC.bput("sort #{noun} in my #{source}", "are now at the top", "What were you referring to", "Please rephrase that command", "You may only sort items in your inventory") if noun
+    # Derive the GET noun with DRC.get_noun so decorated items resolve correctly.
+    # Taking the last word of the tap breaks on attached/flavor text, e.g.
+    # "a circle of colorful wool with a wool rug on it" -> "it" -> GET fails.
+    # The "lot of other stuff" pagination sentinel is not a real item, so pass
+    # it through untouched for the re-look branch below.
     DRCI.get_item_list(source, 'look')
-        .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
+        .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : DRC.get_noun(full_name) }
+        .compact
         .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
         .each do |item|
       # This indicates there is more items than LOOK can show
