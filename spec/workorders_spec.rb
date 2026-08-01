@@ -873,6 +873,57 @@ RSpec.describe WorkOrders do
       end
     end
 
+    describe 'repair insufficient-funds recovery' do
+      it 'REPAIR_QUOTE_PATTERN matches a clerk cost quote' do
+        expect(described_class::REPAIR_QUOTE_PATTERN).to be_a(Regexp)
+        expect('That will cost 4,447 Kronars to repair.  Just give it to me again if you want')
+          .to match(described_class::REPAIR_QUOTE_PATTERN)
+      end
+
+      it 'REPAIR_NEED_COIN_PATTERN is the short-on-coin phrase' do
+        expect(described_class::REPAIR_NEED_COIN_PATTERN).to eq('more coin')
+      end
+
+      describe '#repair_cost_copper' do
+        it 'parses the copper amount out of a repair quote' do
+          expect(workorders.send(:repair_cost_copper, 'cost 4,447 Kronars to repair')).to eq(4447)
+        end
+
+        it 'returns nil when the quote has no number' do
+          expect(workorders.send(:repair_cost_copper, 'Just give it to me again')).to be_nil
+        end
+      end
+
+      describe '#confirm_repair' do
+        let(:info) { { 'repair-npc' => 'Rangu', 'repair-room' => 100 } }
+
+        before { allow(Lich::Messaging).to receive(:msg) }
+
+        it 'stows the ticket once the clerk accepts the repair' do
+          allow(DRC).to receive(:bput).and_return('repair ticket')
+          expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true)
+          workorders.send(:confirm_repair, info, 'hammer', 4447)
+        end
+
+        it 'withdraws 10x the quoted cost, walks back, and retries when short on coin' do
+          allow(DRC).to receive(:bput).and_return('more coin', 'repair ticket')
+          allow(workorders).to receive(:stow_tool)
+          allow(workorders).to receive(:get_tool)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCI).to receive(:put_away_item?).and_return(true)
+          expect(DRCM).to receive(:ensure_copper_on_hand).with(44_470, anything, 'Crossing').and_return(true)
+          workorders.send(:confirm_repair, info, 'hammer', 4447)
+        end
+
+        it 'skips without withdrawing when the cost could not be read' do
+          allow(DRC).to receive(:bput).and_return('more coin')
+          allow(workorders).to receive(:stow_tool)
+          expect(DRCM).not_to receive(:ensure_copper_on_hand)
+          workorders.send(:confirm_repair, info, 'hammer', nil)
+        end
+      end
+    end
+
     describe 'untie_item? usage in request_work_order' do
       it 'uses DRCI.untie_item? when items are bundled' do
         workorders.instance_variable_set(:@min_items, 1)

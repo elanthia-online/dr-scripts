@@ -602,6 +602,48 @@ RSpec.describe Forge do
       end
     end
 
+    describe '#forge_in_room? and #ensure_forge (temper forge guard)' do
+      it 'FORGE_MISSING_PATTERN matches no-forge responses' do
+        expect(Forge::FORGE_MISSING_PATTERN).to be_a(Regexp)
+        expect('I could not find').to match(Forge::FORGE_MISSING_PATTERN)
+        expect('What were you referring to').to match(Forge::FORGE_MISSING_PATTERN)
+      end
+
+      it 'forge_in_room? is true when the forge holds an item' do
+        allow(DRC).to receive(:bput).and_return(Forge::FORGE_HAS_ITEM_PATTERN)
+        expect(forge_instance.send(:forge_in_room?)).to be true
+      end
+
+      it 'forge_in_room? is true when the forge is empty' do
+        allow(DRC).to receive(:bput).and_return(Forge::FORGE_EMPTY_PATTERN)
+        expect(forge_instance.send(:forge_in_room?)).to be true
+      end
+
+      it 'forge_in_room? is false when there is no forge in the room' do
+        allow(DRC).to receive(:bput).and_return('I could not find')
+        expect(forge_instance.send(:forge_in_room?)).to be false
+      end
+
+      it 'ensure_forge does not search when a forge is already present' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(true)
+        expect(DRCC).not_to receive(:find_anvil)
+        forge_instance.send(:ensure_forge)
+      end
+
+      it 'ensure_forge walks to a free anvil room when the current room has no forge' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(false, true)
+        expect(DRCC).to receive(:find_anvil).with('Crossing')
+        forge_instance.send(:ensure_forge)
+      end
+
+      it 'ensure_forge exits when no forge can be found even after searching' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(false, false)
+        allow(DRCC).to receive(:find_anvil)
+        expect(forge_instance).to receive(:cleanup_and_exit).with(/Could not find a forge/)
+        forge_instance.send(:ensure_forge)
+      end
+    end
+
     describe '#handle_handle_assembly' do
       it 'gets item, assembles, puts back, and sets up pounding' do
         allow(DRCI).to receive(:in_left_hand?).and_return(true)
