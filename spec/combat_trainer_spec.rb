@@ -1521,9 +1521,44 @@ RSpec.describe SetupProcess do
     SetupProcess.allocate
   end
 
+  # A fired flag holds the MatchData from its registered regex, NOT a String or
+  # Array: DRParser.check_events does `Flags.flags[key] = server_string.match(regex)`.
+  # last_stance reads Flags['last-stance'] by named capture (:evasion, :parry,
+  # :shield, :spare), so the fixture has to be a real MatchData with those
+  # captures. We extract the exact regex the script registers so a capture-name
+  # drift between Flags.add('last-stance', ...) and last_stance fails here
+  # instead of shipping a script that silently reads all zeros.
+  def registered_last_stance_regex
+    filepath = File.join(File.dirname(__FILE__), '..', 'combat-trainer.lic')
+    line = File.readlines(filepath).find { |l| l.include?("Flags.add('last-stance'") }
+    raise "Flags.add('last-stance', ...) not found in combat-trainer.lic" unless line
+
+    eval(line[%r{Flags\.add\('last-stance',\s*(/.*/)\)}, 1])
+  end
+
+  # Build the MatchData production would store for the given stance percentages
+  # by matching a real game line against the registered regex.
+  def last_stance_flag(evasion:, parry:, shield:, spare:)
+    line = "Setting your Evasion stance to #{evasion}%, your Parry stance to #{parry}%, " \
+           "your Shield stance to #{shield}%.  You have #{spare} stance points left."
+    line.match(registered_last_stance_regex) ||
+      raise("sample stance line did not match the registered regex: #{line.inspect}")
+  end
+
   describe '#last_stance' do
-    context 'when Flags[last-stance] has not fired yet (nil)' do
-      it 'returns zeroed stance hash instead of raising NoMethodError' do
+    context 'when the flag has never fired (registered default is false)' do
+      it 'returns a zeroed stance hash instead of indexing false' do
+        Flags['last-stance'] = false
+        instance = build_setup_process
+
+        result = instance.send(:last_stance)
+
+        expect(result).to eq({ 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 })
+      end
+    end
+
+    context 'when the flag was cleared to nil' do
+      it 'returns a zeroed stance hash instead of raising NoMethodError' do
         Flags['last-stance'] = nil
         instance = build_setup_process
 
@@ -1533,9 +1568,9 @@ RSpec.describe SetupProcess do
       end
     end
 
-    context 'when Flags[last-stance] has a valid stance string' do
-      it 'parses the percentages correctly' do
-        Flags['last-stance'] = ['80% pointed stance 60% pointed stance 40% pointed stance 20']
+    context 'when the flag holds a fired stance MatchData' do
+      it 'parses each named capture into an integer percentage' do
+        Flags['last-stance'] = last_stance_flag(evasion: 80, parry: 60, shield: 40, spare: 20)
         instance = build_setup_process
 
         result = instance.send(:last_stance)
@@ -1544,9 +1579,9 @@ RSpec.describe SetupProcess do
       end
     end
 
-    context 'when Flags[last-stance] has all zeros' do
-      it 'returns all zeros' do
-        Flags['last-stance'] = ['0% pointed stance 0% pointed stance 0% pointed stance 0']
+    context 'when a fired stance MatchData is all zeros' do
+      it 'returns all zeros via the parse path, not the unfired-flag guard' do
+        Flags['last-stance'] = last_stance_flag(evasion: 0, parry: 0, shield: 0, spare: 0)
         instance = build_setup_process
 
         result = instance.send(:last_stance)
