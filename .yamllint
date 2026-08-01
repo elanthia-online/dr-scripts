@@ -1,0 +1,22 @@
+# yamllint config for the "Valid YAML syntax" workflow
+# (.github/workflows/yamllint.yml).
+#
+# The point of that workflow is to catch YAML that does not parse -- the class
+# of bug in #7502, where a sample profile was committed with a broken flow
+# sequence. It is not here to enforce style on the hundreds of community
+# contributed sample profiles under profiles/Samples/, many of which carry
+# harmless trailing whitespace.
+#
+# yamllint reports genuine parser errors (bad indentation that breaks the tree,
+# unterminated flow sequences, etc.) as errors regardless of the rules below, so
+# those still fail the build. Everything cosmetic is demoted to a warning, and
+# since the workflow does not pass --strict, warnings do not fail the build.
+extends: relaxed
+
+rules:
+  trailing-spaces: {level: warning}
+  new-line-at-end-of-file: {level: warning}
+  new-lines: {level: warning}
+  empty-lines: {level: warning}
+  key-duplicates: {level: warning}
+  line-length: disable

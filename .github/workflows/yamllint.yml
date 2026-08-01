@@ -30,11 +30,15 @@ jobs:
         with:
           files: |
             data/*.yaml
-            profiles/*.yaml
-            
+            profiles/**.yaml
+
+      - name: Install yamllint
+        if: steps.changed-files.outputs.any_changed == 'true'
+        run: pip install yamllint
+
       - name: Validate YAML file
-        if: steps.changed-files-excluded.outputs.any_changed == 'true'
+        if: steps.changed-files.outputs.any_changed == 'true'
         run: |
           for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
-            yamllint -d relaxed -f parsable ${file}
+            yamllint -f parsable ${file}
           done
