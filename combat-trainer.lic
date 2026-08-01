@@ -301,11 +301,9 @@ class SetupProcess
   end
 
   def last_stance
-    flag_result = Flags['last-stance']
-    return { 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 } unless flag_result
+    return { 'EVASION' => 0, 'PARRY' => 0, 'SHIELD' => 0, 'SPARE' => 0 } unless Flags['last-stance']
 
-    flag_result[0] =~ /(\d+)%.* (\d+)%.* (\d+)%.* (\d+)/
-    { 'EVASION' => Regexp.last_match(1).to_i, 'PARRY' => Regexp.last_match(2).to_i, 'SHIELD' => Regexp.last_match(3).to_i, 'SPARE' => Regexp.last_match(4).to_i }
+    { 'EVASION' => Flags['last-stance'][:evasion].to_i, 'PARRY' => Flags['last-stance'][:parry].to_i, 'SHIELD' => Flags['last-stance'][:shield].to_i, 'SPARE' => Flags['last-stance'][:spare].to_i }
   end
 
   def build_stance_string(vals)
@@ -4513,7 +4511,7 @@ class CombatTrainer
   def setup(settings)
     Flags.add('ct-spellcast', '^Your formation of a targeting pattern around .+ has completed\.', 'Your target pattern has finished forming around the area', '^You feel fully prepared to cast your spell\.', '^Your spell pattern snaps into shape with little preparation!')
 
-    Flags.add('last-stance', 'Setting your Evasion stance to \d+%, your Parry stance to \d+%, and your Shield stance to \d+%.  You have \d+ stance points left')
+    Flags.add('last-stance', /^Setting your Evasion stance to (?<evasion>\d+)%,.*your Parry stance to (?<parry>\d+)%,.*your Shield stance to (?<shield>\d+)%.*?You have (?<spare>\d+) stance points left/)
 
     DRC.bput("stance set #{settings.default_stance}", 'Setting your')
 
