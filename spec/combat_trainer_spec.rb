@@ -4435,6 +4435,9 @@ end
 RSpec.describe 'AbilityProcess room-effect cooldown seam' do
   before(:each) do
     CombatTrainer.registered_plugins.clear
+    # UserVars is shared across examples; reset it so each example starts from a
+    # known state and the built-in-timer branch is exercised only when set.
+    UserVars.warhorn = nil
     allow(DRC).to receive(:message)
     allow(Room).to receive(:current).and_return(double('room', id: 4242))
   end
@@ -4475,8 +4478,9 @@ RSpec.describe 'AbilityProcess room-effect cooldown seam' do
       it 'uses the plugin true answer and never consults the built-in timer' do
         instance = build_ability_process
         CombatTrainer.register_plugin(RecordingPlugin.new(return_value: true))
-        # UserVars.warhorn is intentionally left unset; if the built-in branch
-        # ran it would raise on nil, proving the plugin short-circuits it.
+        # UserVars.warhorn is nil here (reset in before(:each)); if the built-in
+        # branch ran it would raise on nil, proving the plugin short-circuits it.
+        UserVars.warhorn = nil
 
         expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(true)
       end

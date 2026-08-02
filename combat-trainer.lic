@@ -6583,7 +6583,9 @@ end
 # failure to load one plugin must not prevent combat-trainer from starting.
 Dir.glob(File.join(SCRIPT_DIR, 'custom', 'combat-trainer-plugin-*.rb')).sort.each do |plugin_file|
   load plugin_file
-rescue StandardError => e
+rescue ScriptError, StandardError => e
+  # ScriptError (SyntaxError/LoadError) does not descend from StandardError, so
+  # it must be named explicitly or a malformed plugin file would abort startup.
   echo "Failed to load combat-trainer plugin #{File.basename(plugin_file)}: #{e.message}"
 end
 
