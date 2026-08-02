@@ -1,45 +1,11 @@
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
+require_relative 'spec_helper'
 
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
-# Stub crafting-item helpers used by smart_get_gear / smart_stow_gear.
-module DRCC
-  def self.get_crafting_item(*_args); end
-
-  def self.stow_crafting_item(*_args); end
-end
-
-module DRCI
-  def self.get_item?(*_args); end
-
-  def self.put_away_item?(*_args); end
-end
-
+# Load the Repair class without executing repair.lic's top-level code. The
+# shared game doubles (DRCC.get_crafting_item / stow_crafting_item, DRCI, etc.)
+# come from test/test_harness.rb via spec_helper -- per the spec_helper header,
+# they must never be reopened here; examples override them with `allow(...)`.
 load_lic_class('repair.lic', 'Repair')
 
 RSpec.describe Repair do
