@@ -579,7 +579,10 @@ RSpec.describe Forge do
       it 'gets item when not in left hand' do
         allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false, true)
         allow(DRCI).to receive(:in_right_hand?).and_return(false)
-        expect(DRCC).to receive(:stow_crafting_item)
+        # prepare_item_in_left_hand/handle_oiling now stow BOTH hands (via
+        # stow_both_hands) before retrieving the item, so stow_crafting_item is
+        # called once per hand.
+        expect(DRCC).to receive(:stow_crafting_item).twice
         expect(DRC).to receive(:bput).with('get sword on anvil', 'You get', 'What were you referring to?').and_return('You get')
         expect(forge_instance).to receive(:swap_tool).with('oil', true)
         forge_instance.send(:handle_oiling)
@@ -596,6 +599,48 @@ RSpec.describe Forge do
         forge_instance.send(:handle_oiling)
         expect(forge_instance.instance_variable_get(:@command)).to eq('pour my oil on my sword')
         expect(forge_instance).to have_received(:swap_tool).with('oil', true)
+      end
+    end
+
+    describe '#forge_in_room? and #ensure_forge (temper forge guard)' do
+      it 'FORGE_MISSING_PATTERN matches no-forge responses' do
+        expect(Forge::FORGE_MISSING_PATTERN).to be_a(Regexp)
+        expect('I could not find').to match(Forge::FORGE_MISSING_PATTERN)
+        expect('What were you referring to').to match(Forge::FORGE_MISSING_PATTERN)
+      end
+
+      it 'forge_in_room? is true when the forge holds an item' do
+        allow(DRC).to receive(:bput).and_return(Forge::FORGE_HAS_ITEM_PATTERN)
+        expect(forge_instance.send(:forge_in_room?)).to be true
+      end
+
+      it 'forge_in_room? is true when the forge is empty' do
+        allow(DRC).to receive(:bput).and_return(Forge::FORGE_EMPTY_PATTERN)
+        expect(forge_instance.send(:forge_in_room?)).to be true
+      end
+
+      it 'forge_in_room? is false when there is no forge in the room' do
+        allow(DRC).to receive(:bput).and_return('I could not find')
+        expect(forge_instance.send(:forge_in_room?)).to be false
+      end
+
+      it 'ensure_forge does not search when a forge is already present' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(true)
+        expect(DRCC).not_to receive(:find_anvil)
+        forge_instance.send(:ensure_forge)
+      end
+
+      it 'ensure_forge walks to a free anvil room when the current room has no forge' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(false, true)
+        expect(DRCC).to receive(:find_anvil).with('Crossing')
+        forge_instance.send(:ensure_forge)
+      end
+
+      it 'ensure_forge exits when no forge can be found even after searching' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(false, false)
+        allow(DRCC).to receive(:find_anvil)
+        expect(forge_instance).to receive(:cleanup_and_exit).with(/Could not find a forge/)
+        forge_instance.send(:ensure_forge)
       end
     end
 
