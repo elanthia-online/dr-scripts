@@ -299,6 +299,18 @@ card_bags:
   specific_descriptions:
     card-collector: Sets bag to draw cards from (fresh) and bag to place duplicates and your case(duplicates)
 
+carving_belt:
+  description: Carving belt name and list of tools; overrides engineering_belt for carving scripts when set (issue #1420).
+  example: https://github.com/elanthia-online/dr-scripts/wiki/Crafting-Setup#tools (see Toolbelts section)
+  referenced_by:
+    - carve
+    - carve-bead
+    - carve-lockpicks
+  specific_descriptions:
+    carve: Use and stow carving tools from here (falls back to engineering_belt).
+    carve-bead: Use and stow bead carving tools from here (falls back to engineering_belt).
+    carve-lockpicks: Use and stow lockpick carving tools from here (falls back to engineering_belt).
+
 circlecheck_prettyprint:
   description: Tells circlecheck to use the pretty print formatting for output.
   example: true/false
@@ -517,22 +529,30 @@ enchanting_tools:
     clerk-tools: Get and store these tools with clerk.
 
 engineering_belt:
-  description: Specify engineering belt name and list of tools.
+  description: Engineering belt name and list of tools. Used by every Engineering sub-discipline; set carving_belt, shaping_belt, or tinkering_belt to override it for those scripts (issue #1420).
   example: https://github.com/elanthia-online/dr-scripts/wiki/Crafting-Setup#tools (see Toolbelts section)
   referenced_by:
     - arrows
     - bolts
     - carve-bead
     - carve
+    - carve-lockpicks
     - clean-lumber
     - clerk-tools
+    - fir
+    - shape
+    - tinker
   specific_descriptions:
-    arrows: Use and stow arrow crafting tools from here.
-    bolts: Use and stow bolt crafting tools from here.
-    carve-bead: Use and stow carve bead tools from here.
-    carve: Use and stow carve tools from here.
-    clean-lumber: Use and stow lumber cleaning tools here.
+    arrows: Use and stow arrow crafting tools from here (fallback for shaping_belt).
+    bolts: Use and stow bolt crafting tools from here (fallback for tinkering_belt).
+    carve-bead: Use and stow carve bead tools from here (fallback for carving_belt).
+    carve: Use and stow carve tools from here (fallback for carving_belt).
+    carve-lockpicks: Use and stow lockpick carving tools from here (fallback for carving_belt).
+    clean-lumber: Use and stow lumber cleaning tools here (fallback for shaping_belt).
     clerk-tools: Get and stow engineering/shaping tools from belt after storing with clerk.
+    fir: Use and stow the carving knife from here (fallback for shaping_belt).
+    shape: Use and stow shaping tools from here (fallback for shaping_belt).
+    tinker: Use and stow tinkering tools from here (fallback for tinkering_belt).
 
 engineering_room:
   description: Room in which to perform engineering training tasks.
@@ -964,6 +984,20 @@ safe_room:
   specific_descriptions:
     athletics: If specified, walks to your safe room first for athletics training.
 
+shaping_belt:
+  description: Shaping belt name and list of tools; overrides engineering_belt for shaping scripts when set (issue #1420).
+  example: https://github.com/elanthia-online/dr-scripts/wiki/Crafting-Setup#tools (see Toolbelts section)
+  referenced_by:
+    - shape
+    - arrows
+    - clean-lumber
+    - fir
+  specific_descriptions:
+    shape: Use and stow shaping tools from here (falls back to engineering_belt).
+    arrows: Use and stow arrow crafting tools from here (falls back to engineering_belt).
+    clean-lumber: Use and stow lumber-cleaning tools from here (falls back to engineering_belt).
+    fir: Use and stow the carving knife from here (falls back to engineering_belt).
+
 shaping_tools:
   description: List of tools used for shaping.
   example: "- carving knife, - shaper, - drawknife"
@@ -1149,6 +1183,16 @@ theurgy_supply_container:
     - carve-bead
   specific_descriptions:
     carve-bead: Holds your bead carving materials.
+
+tinkering_belt:
+  description: Tinkering belt name and list of tools; overrides engineering_belt for tinkering scripts when set (issue #1420).
+  example: https://github.com/elanthia-online/dr-scripts/wiki/Crafting-Setup#tools (see Toolbelts section)
+  referenced_by:
+    - tinker
+    - bolts
+  specific_descriptions:
+    tinker: Use and stow tinkering tools from here (falls back to engineering_belt).
+    bolts: Use and stow bolt crafting tools from here (falls back to engineering_belt).
 
 training_box_list:
   description: Array of daily use training boxes for use with locksmithing
