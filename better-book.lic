@@ -1,3 +1,10 @@
+=begin
+  Adds clickable navigation to a deed register.
+
+  Turns the register to its contents page, reads it, and echoes the page numbers
+  as clickable links along with Read, Pull and Contents commands.
+=end
+
 class BetterBook
   def initialize
     start_book

@@ -1,3 +1,10 @@
+=begin
+  Keeps UserVars.players_online up to date from WHO output.
+
+  Installs a DownstreamHook that captures the response to a WHO command, parses
+  the player names out of it, and hides the raw output from the game window.
+=end
+
 no_kill_all
 no_pause_all
 script.silent = true

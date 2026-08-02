@@ -1,3 +1,4 @@
+# Documentation: https://elanthipedia.play.net/Lich_script_repository#restock
 # Restocks consumable items from shops based on user YAML configuration
 # and base-consumables data.
 #

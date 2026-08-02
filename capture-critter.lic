@@ -1,3 +1,11 @@
+=begin
+  Runs critter-capture festival events.
+
+  Event room lists, critter names and junk items come from base-capture.yaml;
+  a custom event can be supplied via capture_critter_settings in your yaml.
+  Pass the event name as the sole argument.
+=end
+
 class CaptureCritter
   def initialize
     @settings = get_settings
