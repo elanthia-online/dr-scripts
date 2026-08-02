@@ -87,6 +87,7 @@ load_lic_class('combat-trainer.lic', 'SafetyProcess')
 load_lic_class('combat-trainer.lic', 'SpellProcess')
 load_lic_class('combat-trainer.lic', 'PetProcess')
 load_lic_class('combat-trainer.lic', 'TrainerProcess')
+load_lic_class('combat-trainer.lic', 'CombatTrainer')
 
 # Shared setup for combat-trainer tests that need game state stubs.
 # Include in each describe block via: before(:each) { ct_setup }
@@ -4221,5 +4222,365 @@ RSpec.describe 'TrainerProcess#check_heavens' do
     allow(DRCMM).to receive(:get_telescope?).and_return(true)
     gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
     expect { tp.send(:check_heavens, gs) }.not_to raise_error
+  end
+end
+
+# ===========================================================================
+# CombatTrainer plugin system -- registry + hook dispatch
+# ===========================================================================
+# These stub plugins stand in for real combat-trainer plugins. Each is
+# deliberately tiny so the behavior under test is obvious at the call site
+# (DAMP), and each records its invocations so tests can assert exactly which
+# plugins were polled and with what arguments.
+
+# Records every hook invocation and returns a preconfigured value.
+class RecordingPlugin
+  attr_reader :calls
+
+  def initialize(return_value: nil)
+    @return_value = return_value
+    @calls = []
+  end
+
+  def warhorn_cooldown_active?(room_id:)
+    @calls << [:warhorn_cooldown_active?, { room_id: room_id }]
+    @return_value
+  end
+
+  def warhorn_applied(room_id:, type:)
+    @calls << [:warhorn_applied, { room_id: room_id, type: type }]
+    @return_value
+  end
+
+  def combat_tick(trainer, game_state, counter:)
+    @calls << [:combat_tick, [trainer, game_state], { counter: counter }]
+    @return_value
+  end
+
+  # Used only to prove method_missing forwarding through CombatTrainer.
+  def custom_command(arg)
+    @calls << [:custom_command, [arg]]
+    "handled:#{arg}"
+  end
+end
+
+# Raises whenever a hook is called, to prove dispatch isolates plugin errors.
+class ExplodingPlugin
+  def warhorn_cooldown_active?(room_id:)
+    raise "boom for #{room_id}"
+  end
+
+  def warhorn_applied(room_id:, type:)
+    raise "boom applying #{type} in #{room_id}"
+  end
+
+  def combat_tick(_trainer, _game_state, counter:)
+    raise "boom on tick #{counter}"
+  end
+end
+
+# Implements no hooks at all, to prove respond_to? gating skips it cleanly.
+class InertPlugin
+end
+
+RSpec.describe CombatTrainer do
+  before(:each) do
+    CombatTrainer.registered_plugins.clear
+  end
+
+  after(:each) do
+    CombatTrainer.registered_plugins.clear
+    $debug_mode_ct = nil
+  end
+
+  describe '.register_plugin' do
+    it 'accumulates plugins in registration order' do
+      first = RecordingPlugin.new
+      second = RecordingPlugin.new
+
+      CombatTrainer.register_plugin(first)
+      CombatTrainer.register_plugin(second)
+
+      expect(CombatTrainer.registered_plugins).to eq([first, second])
+    end
+  end
+
+  describe '.fire_hook (decision dispatch)' do
+    it 'returns nil when no plugins are registered' do
+      expect(CombatTrainer.fire_hook(:warhorn_cooldown_active?, room_id: 5)).to be_nil
+    end
+
+    it 'returns nil when registered plugins do not implement the hook' do
+      CombatTrainer.register_plugin(InertPlugin.new)
+
+      expect(CombatTrainer.fire_hook(:warhorn_cooldown_active?, room_id: 5)).to be_nil
+    end
+
+    it 'returns the first non-nil result and stops polling later plugins' do
+      first = RecordingPlugin.new(return_value: nil)
+      second = RecordingPlugin.new(return_value: true)
+      third = RecordingPlugin.new(return_value: false)
+      [first, second, third].each { |plugin| CombatTrainer.register_plugin(plugin) }
+
+      result = CombatTrainer.fire_hook(:warhorn_cooldown_active?, room_id: 7)
+
+      expect(result).to eq(true)
+      expect(third.calls).to be_empty
+    end
+
+    it 'treats a false return as a real answer (does not fall through)' do
+      answering = RecordingPlugin.new(return_value: false)
+      later = RecordingPlugin.new(return_value: true)
+      CombatTrainer.register_plugin(answering)
+      CombatTrainer.register_plugin(later)
+
+      expect(CombatTrainer.fire_hook(:warhorn_cooldown_active?, room_id: 1)).to eq(false)
+      expect(later.calls).to be_empty
+    end
+
+    it 'skips a plugin that raises and uses the next plugin answer' do
+      responder = RecordingPlugin.new(return_value: true)
+      CombatTrainer.register_plugin(ExplodingPlugin.new)
+      CombatTrainer.register_plugin(responder)
+
+      result = nil
+      expect { result = CombatTrainer.fire_hook(:warhorn_cooldown_active?, room_id: 9) }.not_to raise_error
+      expect(result).to eq(true)
+    end
+
+    it 'echoes the plugin error under $debug_mode_ct' do
+      $debug_mode_ct = true
+      CombatTrainer.register_plugin(ExplodingPlugin.new)
+
+      CombatTrainer.fire_hook(:warhorn_cooldown_active?, room_id: 9)
+
+      expect(displayed_messages).to include(a_string_matching(/ExplodingPlugin error in warhorn_cooldown_active\?/))
+    end
+
+    it 'forwards positional and keyword arguments to the hook' do
+      plugin = RecordingPlugin.new(return_value: :done)
+      CombatTrainer.register_plugin(plugin)
+      state = Object.new
+
+      CombatTrainer.fire_hook(:combat_tick, :trainer, state, counter: 42)
+
+      expect(plugin.calls).to eq([[:combat_tick, [:trainer, state], { counter: 42 }]])
+    end
+  end
+
+  describe '.notify_hook (notification dispatch)' do
+    it 'always returns nil, even when a plugin returns a value' do
+      CombatTrainer.register_plugin(RecordingPlugin.new(return_value: :ignored))
+
+      expect(CombatTrainer.notify_hook(:warhorn_applied, room_id: 1, type: 'egg')).to be_nil
+    end
+
+    it 'invokes every plugin that implements the hook, not just the first' do
+      first = RecordingPlugin.new
+      second = RecordingPlugin.new
+      CombatTrainer.register_plugin(first)
+      CombatTrainer.register_plugin(second)
+
+      CombatTrainer.notify_hook(:warhorn_applied, room_id: 3, type: 'warhorn')
+
+      expect(first.calls).to eq([[:warhorn_applied, { room_id: 3, type: 'warhorn' }]])
+      expect(second.calls).to eq([[:warhorn_applied, { room_id: 3, type: 'warhorn' }]])
+    end
+
+    it 'continues notifying the remaining plugins after one raises' do
+      survivor = RecordingPlugin.new
+      CombatTrainer.register_plugin(ExplodingPlugin.new)
+      CombatTrainer.register_plugin(survivor)
+
+      expect { CombatTrainer.notify_hook(:warhorn_applied, room_id: 4, type: 'egg') }.not_to raise_error
+      expect(survivor.calls).to eq([[:warhorn_applied, { room_id: 4, type: 'egg' }]])
+    end
+
+    it 'skips plugins that do not implement the hook' do
+      CombatTrainer.register_plugin(InertPlugin.new)
+
+      expect { CombatTrainer.notify_hook(:warhorn_applied, room_id: 4, type: 'egg') }.not_to raise_error
+    end
+  end
+
+  describe 'method_missing forwarding' do
+    it 'forwards an unknown call to the first plugin that responds' do
+      trainer = CombatTrainer.allocate
+      plugin = RecordingPlugin.new
+      CombatTrainer.register_plugin(plugin)
+
+      expect(trainer.custom_command('x')).to eq('handled:x')
+      expect(plugin.calls).to eq([[:custom_command, ['x']]])
+    end
+
+    it 'reports respond_to? true when a plugin implements the method' do
+      trainer = CombatTrainer.allocate
+      CombatTrainer.register_plugin(RecordingPlugin.new)
+
+      expect(trainer.respond_to?(:custom_command)).to be(true)
+    end
+
+    it 'raises NoMethodError when no registered plugin can handle the call' do
+      trainer = CombatTrainer.allocate
+      CombatTrainer.register_plugin(InertPlugin.new)
+
+      expect { trainer.totally_unknown_method }.to raise_error(NoMethodError)
+    end
+  end
+end
+
+# ===========================================================================
+# AbilityProcess room-effect (warhorn/egg) cooldown seam
+# ===========================================================================
+RSpec.describe 'AbilityProcess room-effect cooldown seam' do
+  before(:each) do
+    CombatTrainer.registered_plugins.clear
+    allow(DRC).to receive(:message)
+    allow(Room).to receive(:current).and_return(double('room', id: 4242))
+  end
+
+  after(:each) do
+    CombatTrainer.registered_plugins.clear
+  end
+
+  describe '#room_effect_on_cooldown?' do
+    context 'with no plugin registered (built-in per-character timer)' do
+      it 'is on cooldown when the last use was under 600s ago' do
+        instance = build_ability_process
+        UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 599 }
+
+        expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(true)
+      end
+
+      it 'is off cooldown when the last use was over 600s ago' do
+        instance = build_ability_process
+        UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 601 }
+
+        expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(false)
+      end
+
+      it 'treats exactly 600s since last use as still on cooldown (boundary)' do
+        instance = build_ability_process
+        # Freeze the clock so the boundary is exact; with a live clock the check
+        # instant drifts microseconds past 600s and the case is unobservable.
+        frozen = Time.now
+        allow(Time).to receive(:now).and_return(frozen)
+        UserVars.warhorn = { 'last_warhorn_or_egg' => frozen - 600 }
+
+        expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(true)
+      end
+    end
+
+    context 'with a plugin answering the decision hook' do
+      it 'uses the plugin true answer and never consults the built-in timer' do
+        instance = build_ability_process
+        CombatTrainer.register_plugin(RecordingPlugin.new(return_value: true))
+        # UserVars.warhorn is intentionally left unset; if the built-in branch
+        # ran it would raise on nil, proving the plugin short-circuits it.
+
+        expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(true)
+      end
+
+      it 'uses the plugin false answer even when the built-in timer would block' do
+        instance = build_ability_process
+        UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now }
+        CombatTrainer.register_plugin(RecordingPlugin.new(return_value: false))
+
+        expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(false)
+      end
+
+      it 'falls back to the built-in timer when the plugin returns nil' do
+        instance = build_ability_process
+        UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 601 }
+        CombatTrainer.register_plugin(RecordingPlugin.new(return_value: nil))
+
+        expect(instance.send(:room_effect_on_cooldown?, 4242)).to be(false)
+      end
+
+      it 'forwards the current room id to the plugin as a keyword' do
+        instance = build_ability_process
+        plugin = RecordingPlugin.new(return_value: true)
+        CombatTrainer.register_plugin(plugin)
+
+        instance.send(:room_effect_on_cooldown?, 4242)
+
+        expect(plugin.calls).to eq([[:warhorn_cooldown_active?, { room_id: 4242 }]])
+      end
+    end
+  end
+
+  describe '#record_room_effect' do
+    it 'refreshes the built-in per-character timer to now' do
+      instance = build_ability_process
+      UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 5000 }
+
+      instance.send(:record_room_effect, 4242, 'egg')
+
+      expect(UserVars.warhorn['last_warhorn_or_egg']).to be_within(2).of(Time.now)
+    end
+
+    it 'notifies plugins of the application with room id and type' do
+      instance = build_ability_process
+      UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now }
+      plugin = RecordingPlugin.new
+      CombatTrainer.register_plugin(plugin)
+
+      instance.send(:record_room_effect, 4242, 'warhorn')
+
+      expect(plugin.calls).to eq([[:warhorn_applied, { room_id: 4242, type: 'warhorn' }]])
+    end
+  end
+
+  describe '#use_warhorn_or_egg' do
+    it 'skips use and does not rotate when the room effect is on cooldown' do
+      instance = build_ability_process(warhorn_or_egg: %w[egg warhorn])
+      UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now }
+
+      expect(instance).not_to receive(:use_egg?)
+
+      instance.send(:use_warhorn_or_egg, build_game_state)
+
+      expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(%w[egg warhorn])
+    end
+
+    it 'applies an egg, records the effect, and rotates on success' do
+      instance = build_ability_process(warhorn_or_egg: %w[egg warhorn])
+      UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 601 }
+      allow(instance).to receive(:use_egg?).and_return(true)
+      plugin = RecordingPlugin.new
+      CombatTrainer.register_plugin(plugin)
+
+      instance.send(:use_warhorn_or_egg, build_game_state)
+
+      expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(%w[warhorn egg])
+      # The plugin is also polled for the cooldown decision (it defers with nil);
+      # what matters here is that the successful application was recorded.
+      expect(plugin.calls).to include([:warhorn_applied, { room_id: 4242, type: 'egg' }])
+    end
+
+    it 'rotates without recording the effect when application fails' do
+      instance = build_ability_process(warhorn_or_egg: %w[egg warhorn])
+      UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 601 }
+      allow(instance).to receive(:use_egg?).and_return(false)
+      plugin = RecordingPlugin.new
+      CombatTrainer.register_plugin(plugin)
+
+      instance.send(:use_warhorn_or_egg, build_game_state)
+
+      expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(%w[warhorn egg])
+      expect(plugin.calls.select { |call| call.first == :warhorn_applied }).to be_empty
+    end
+
+    it 'routes a warhorn rotation entry through use_warhorn?' do
+      instance = build_ability_process(warhorn_or_egg: %w[warhorn egg])
+      UserVars.warhorn = { 'last_warhorn_or_egg' => Time.now - 601 }
+      game_state = build_game_state
+      allow(instance).to receive(:use_warhorn?).with(game_state).and_return(true)
+
+      instance.send(:use_warhorn_or_egg, game_state)
+
+      expect(instance).to have_received(:use_warhorn?).with(game_state)
+      expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(%w[egg warhorn])
+    end
   end
 end
