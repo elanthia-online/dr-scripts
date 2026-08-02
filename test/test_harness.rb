@@ -1142,6 +1142,14 @@ module Harness
       def left_hand_noun; Harness._noun($left_hand); end
       def right_hand_noun; Harness._noun($right_hand); end
       def get_noun(long_name); Harness._noun(long_name); end
+
+      # Mirrors the real DRC.list_to_array: split a game item sentence on the
+      # comma/and separators, keeping the article that begins each item (so
+      # non-first items retain their leading space, exactly like production).
+      def list_to_array(list)
+        list.strip.split(%r{(?:,|(?:, |\s)?and\s?)(?:\s?<pushBold/>\s?)?(?=\s\ba\b|\s\ban\b|\s\bsome\b|\s\bthe\b)}i).reject(&:empty?)
+      end
+
       def get_gems(*_args); []; end
       def get_town_name(name); name; end
       def text2num(text); text; end
