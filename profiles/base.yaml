@@ -1011,6 +1011,11 @@ custom_clerk_tools:
 
 forging_belt:
 engineering_belt:
+# carving_belt / shaping_belt / tinkering_belt each override engineering_belt for that
+# Engineering sub-discipline; leave unset to keep using engineering_belt (issue #1420)
+carving_belt:
+shaping_belt:
+tinkering_belt:
 outfitting_belt:
 alchemy_belt:
 enchanting_belt:
