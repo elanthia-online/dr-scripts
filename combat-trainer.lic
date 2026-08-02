@@ -4504,17 +4504,27 @@ class CombatTrainer
   # combat-trainer's hook names, not vice versa) in the spirit of the Dependency
   # Inversion and Interface Segregation principles.
   #
-  # Plugins are auto-loaded at boot (see the loader near the bottom of this file)
-  # from:
-  #   <SCRIPT_DIR>/custom/combat-trainer-plugin-*.rb
-  # and each file registers its instance with:
+  # == Authoring a plugin
+  #
+  # Create a file named +combat-trainer-plugin-<name>.rb+ in the +custom+
+  # directory (+<SCRIPT_DIR>/custom/+). At boot, combat-trainer loads every
+  # matching file in sorted filename order, *before* the orchestrator is
+  # constructed, and each file is expected to register one instance:
+  #
   #   CombatTrainer.register_plugin(MyPlugin.new)
   #
-  # Two dispatch styles are provided:
+  # A plugin implements only the hooks it cares about; unimplemented hooks are
+  # skipped. A plugin that raises inside a hook is isolated: the error is
+  # swallowed (and echoed under +$debug_mode_ct+) so a misbehaving plugin
+  # degrades to the built-in default rather than aborting combat.
+  #
+  # == Two dispatch styles
+  #
   #   * {fire_hook} -- a *decision* hook. Plugins are polled in registration
   #     order and the first non-nil return value wins, replacing combat-trainer's
   #     built-in behavior for that decision. A plugin returns +nil+ (or omits the
-  #     hook) to defer to the built-in default.
+  #     hook) to defer to the built-in default. Note that +false+ is a real
+  #     answer and short-circuits the poll.
   #   * {notify_hook} -- a *notification* hook. Every plugin implementing the
   #     hook is invoked for its side effects; return values are ignored and an
   #     exception raised by one plugin never stops the others.
@@ -4524,7 +4534,79 @@ class CombatTrainer
   # instance) can still fire hooks via +CombatTrainer.fire_hook+ /
   # +CombatTrainer.notify_hook+.
   #
-  # @see AbilityProcess#room_effect_on_cooldown? the warhorn/egg cooldown seam.
+  # == Hook catalog
+  #
+  # Lifecycle hooks (fired by the orchestrator). +trainer+ is the live
+  # CombatTrainer instance and +game_state+ is the current GameState:
+  #
+  #   after_initialize(trainer)                          [notify]
+  #     Fired once when the orchestrator has finished constructing, before
+  #     combat begins. Read settings, open resources, or announce startup here.
+  #
+  #   before_combat(trainer, game_state)                 [notify]
+  #     Fired once at the top of the combat loop, before the first iteration.
+  #
+  #   combat_tick(trainer, game_state, counter:)         [decision]
+  #     Fired once per loop iteration after the combat processes run; +counter+
+  #     is the 1-based iteration count. This is the only lifecycle hook whose
+  #     return value is honored: returning +:break+ stops the combat loop. Any
+  #     other return value is ignored.
+  #
+  #   after_combat(trainer, game_state)                  [notify]
+  #     Fired once after the combat loop exits.
+  #
+  #   cleanup(trainer)                                   [notify]
+  #     Fired from the before_dying teardown (including abnormal exits). Release
+  #     resources here; it is guarded so a failure cannot block shutdown.
+  #
+  # Feature seams (fired by the combat +*Process+ collaborators):
+  #
+  #   warhorn_cooldown_active?(room_id:)                 [decision]
+  #     Decide whether the warhorn/egg room effect is still active in +room_id+.
+  #     Return +true+ to skip a fresh application, +false+ to allow it, or +nil+
+  #     to defer to the built-in per-character 600s timer.
+  #     Fired by {AbilityProcess#room_effect_on_cooldown?}.
+  #
+  #   warhorn_applied(room_id:, type:)                   [notify]
+  #     Announced right after a warhorn/egg effect is applied in +room_id+;
+  #     +type+ is "warhorn" or "egg". Persist the event to an external store
+  #     here. Fired by {AbilityProcess#record_room_effect}.
+  #
+  # This is the current set; more seams may be added over time, so a plugin
+  # should implement only the hooks it needs and tolerate new ones appearing.
+  #
+  # == Calling into a plugin from outside
+  #
+  # Unknown instance calls on the orchestrator are forwarded to the first
+  # registered plugin that responds, so an external script can drive plugin
+  # behavior through the global handle, e.g. +$COMBAT_TRAINER.my_command(arg)+.
+  # See {#method_missing}.
+  #
+  # @example A plugin that logs the lifecycle and stops combat after N ticks
+  #   # scripts/custom/combat-trainer-plugin-ticklimit.rb
+  #   class TickLimitPlugin
+  #     def initialize(max_ticks: 500)
+  #       @max_ticks = max_ticks
+  #     end
+  #
+  #     def after_initialize(_trainer)
+  #       echo "[ticklimit] loaded; will stop after #{@max_ticks} ticks"
+  #     end
+  #
+  #     # Decision hook: returning :break ends the combat loop.
+  #     def combat_tick(_trainer, _game_state, counter:)
+  #       :break if counter >= @max_ticks
+  #     end
+  #
+  #     def cleanup(_trainer)
+  #       echo '[ticklimit] cleaning up'
+  #     end
+  #   end
+  #
+  #   CombatTrainer.register_plugin(TickLimitPlugin.new(max_ticks: 300))
+  #
+  # @see AbilityProcess#room_effect_on_cooldown? the warhorn/egg cooldown seam,
+  #   a worked example of a decision hook.
   @registered_plugins = []
 
   class << self
