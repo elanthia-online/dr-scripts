@@ -1,4 +1,6 @@
 =begin
+  Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-smoke.lic
+
   smoke:
     container: smoking jacket
     pipe: glitvire pipe
@@ -11,9 +13,57 @@
     - tart
 =end
 
+# Trains smoke-image skills by repeatedly inhaling and exhaling images, and can
+# teach or learn images from another player.
+#
+# Image selection is tier-priority: the script reads "smoke list", groups your
+# trainable images by mastery tier, and practices the lowest (least-skilled)
+# tier first, re-reading the list between rounds to follow advancements.
+#
+# @note Required settings (under the `smoke:` block):
+#   - `container` [String] holds your smoking supplies (required)
+#   - `pipe` [String] pipe noun/adjective (required unless smoking a cigar)
+# @note Optional settings:
+#   - `lighter` [String] preferred lighter; falls back to flint and steel
+#   - `blade` [String] blade used to strike flint (EquipmentManager item)
+#   - `lighter_tied_to` [String] where the lighter is tied
+#   - `time_between_exhales` [Integer] pause between exhales (default 1)
+#   - `clean_list_of_mastered` [Boolean] skip fully mastered images
+#   - `smoke_images` [Array<String>] curated training pool
+#   - `smoke_room` [Integer] room id to walk to before training
+#
+# @example Train one piece of tobacco from your pipe
+#   ;smoke pipe
+# @example Train until you run out of tobacco
+#   ;smoke pipe until_out
+# @example Just light a cigar and stop
+#   ;smoke fine cigar light_only
+# @example Teach the deer image to another player
+#   ;smoke teach pipe Someone deer
 class Smoker
+  VERSION = '2.0'
+
+  # Maps each skill tier name to its training priority (lower is less skilled).
+  # Olvi (Halflings) use different intermediate names but share `master`/`master*`.
+  TIER_ORDER = {
+    'learning' => 0,
+    'wheezer'  => 1, 'beginner'  => 1,
+    'sneezer'  => 2, 'amateur'   => 2,
+    'whiffler' => 3, 'adequate'  => 3,
+    'streamer' => 4, 'competent' => 4,
+    'master'   => 5,
+    'master*'  => 6
+  }.freeze
+
+  # Tier name that marks a fully mastered image.
+  MASTERED_TIER = 'master*'.freeze
+
+  # Priority assigned to tiers absent from {TIER_ORDER} (sorts last).
+  UNKNOWN_RANK = 99
+
   def initialize
-    Flags.add('new-cig', 'That was the last of your', 'goes out and crumbles away'); Flags['new-cig'] = true
+    Flags.add('new-cig', 'That was the last of your', 'goes out and crumbles away')
+    Flags['new-cig'] = true
     @full_image_list = ['deer', 'dragon', 'rabbit', 'pixie', 'kitten', 'troll', 'horse', 'paladin', 'whip', 'cloak', 'stump', 'fleas', 'daisies', 'unicorn', 'rams', 'bandit', 'ship', 'grave', 'fish', 'web', 'phoenix', 'bracelet', 'skeleton', 'tart', 'almanac', 'dartboard', 'wolf', 'vine', 'forge', 'moongate', 'mage', 'violin', 'altar', 'trader']
     UserVars.smoke_images_known ||= @full_image_list
     UserVars.smoke_images_mastered ||= []
@@ -47,61 +97,223 @@ class Smoker
 
     args            = parse_args(arg_definitions)
     @smoke_settings = get_settings.smoke
-    @equipmanager   = EquipmentManager.new
-    images          = args.image || @smoke_settings['smoke_images'] || UserVars.smoke_images_known
-    @bag            = @smoke_settings['container']
-    @pipe           = @smoke_settings['pipe']
-    @lighter        = @smoke_settings['lighter']
-    @blade          = @equipmanager.items.find { |gear| gear.short_regex =~ @smoke_settings['blade'] || gear.name =~ /\b#{@smoke_settings['blade']}\b/i }
-    @cigar          = args.cigar
-    @time_between   = @smoke_settings['time_between_exhales'] || 1
-
-    if args.light_only
-      quick_light(args.smoke)
+    unless @smoke_settings
+      DRC.message("=== Smoke Settings Validation Failed ===")
+      DRC.message("No 'smoke:' block found in your YAML settings.")
+      DRC.message("Add a smoke: section with at minimum 'container' set. See the user guide for all options.")
       exit
     end
 
-    reset_known if args.reset_known
-    smoke_teach(args, images.to_a) if args.teach
+    @equipmanager   = EquipmentManager.new
+    @bag            = @smoke_settings['container']
+    @pipe           = @smoke_settings['pipe']
+    @lighter        = @smoke_settings['lighter']
+    @blade          = find_blade(@smoke_settings['blade'])
+    @cigar          = args.cigar
+    @smoker         = @cigar || @pipe
+    @time_between   = @smoke_settings['time_between_exhales'] || 1
+    # An explicitly requested image is trained even if mastered; otherwise honor the setting.
+    @clean_mastered = @smoke_settings['clean_list_of_mastered'] && !args.image
 
-    unless args.image
-      images = check_images(images)
-      if UserVars.smoke_images_known.size == UserVars.smoke_images_mastered.size
-        DRC.message("All known images mastered, sampling from your known list")
-      elsif images.empty?
-        DRC.message("No valid images selected")
-        exit
-      end
+    validate_settings(args)
+
+    if args.light_only
+      quick_light(args.smoke)
+      DRC.message("Light only mode complete.")
+      exit
     end
 
-    if args.until_out
-      smoke_loop(images.to_a, 99)
-    elsif args.repeat
-      smoke_loop(images.to_a, args.repeat.to_i)
-    else
-      smoke_loop(images.to_a, 1)
+    # Array() normalizes a single image arg (String) and the list settings (Array) alike.
+    images = Array(args.image || @smoke_settings['smoke_images'] || UserVars.smoke_images_known)
+
+    reset_known if args.reset_known
+    smoke_teach(args, images) if args.teach
+
+    rounds =
+      if args.until_out
+        :until_out
+      elsif args.repeat
+        args.repeat.to_i
+      else
+        1
+      end
+    smoke_loop(images, rounds)
+  end
+
+  # Treats nil and blank/whitespace strings as "not configured".
+  #
+  # @param value [Object] a setting value (commonly String or nil)
+  # @return [Boolean] true when the value is nil or an empty/whitespace string
+  def blank?(value)
+    value.nil? || (value.respond_to?(:strip) && value.strip.empty?)
+  end
+
+  # Resolves the configured blade to an EquipmentManager item.
+  #
+  # @param setting [String, nil] the configured blade noun/adjective
+  # @return [Object, nil] the matching item, or nil when unset/unmatched
+  def find_blade(setting)
+    return nil if blank?(setting)
+
+    @equipmanager.items.find do |gear|
+      gear.short_regex =~ setting || gear.name =~ /\b#{Regexp.escape(setting)}\b/i
     end
   end
 
+  # Validates the equipment settings for the requested run and aborts with a
+  # helpful summary if anything required is missing or misconfigured.
+  #
+  # @param args [Object] parsed command arguments
+  # @return [void]
+  def validate_settings(args)
+    # reset_known only needs the smoke settings block to exist (already checked), no equipment
+    return if args.reset_known
+
+    errors = []
+    warnings = []
+
+    errors << "'container' is not set. Specify the container holding your smoking supplies (e.g., 'smoking jacket')." if blank?(@bag)
+
+    # Anything that is not an explicit cigar run uses the pipe (bare ;smoke,
+    # image-only, and ;smoke pipe all default to @pipe).
+    using_cigar = args.cigar || (args.smoke && args.smoke =~ /cigar/i)
+    errors << "'pipe' is not set. Specify the noun/adjective of your pipe (e.g., 'glitvire pipe')." if !using_cigar && blank?(@pipe)
+
+    # Lighting chain: warrior mages light innately; everyone else needs a lighter
+    # or a flint-and-steel blade.
+    unless DRStats.warrior_mage? || !blank?(@lighter)
+      if blank?(@smoke_settings['blade'])
+        errors << "No way to light tobacco. Set 'lighter', or set 'blade' for flint and steel. Warrior Mages light automatically."
+      elsif @blade
+        warnings << "No 'lighter' configured. Will use flint and steel with '#{@smoke_settings['blade']}'."
+      else
+        errors << "'blade' is set to '#{@smoke_settings['blade']}' but no matching item found in EquipmentManager. Register the item or correct the setting."
+      end
+    end
+
+    warnings.each { |w| DRC.message("Warning: #{w}") }
+    return if errors.empty?
+
+    DRC.message("=== Smoke Settings Validation Failed ===")
+    DRC.message("Missing or invalid settings under 'smoke:' in your YAML:")
+    errors.each { |e| DRC.message("  - #{e}") }
+    DRC.message("Fix your YAML settings and try again.")
+    exit
+  end
+
+  # Runs the training loop: build a priority queue, then smoke rounds of tobacco
+  # until the requested count is reached or, in until_out mode, supplies run out.
+  #
+  # @param images [Array<String>] the candidate training pool
+  # @param number [Integer, Symbol] round count, or :until_out
+  # @return [void]
   def smoke_loop(images, number)
-    DRCT.walk_to(@smoke_settings['smoke_room'])
-    number.times do
+    @image_pool = images
+    @image_queue = build_priority_queue
+    if @image_queue.empty?
+      announce_all_mastered
+      exit
+    end
+
+    until_out = (number == :until_out)
+    max_rounds = until_out ? Float::INFINITY : number
+    DRC.message(until_out ? "Starting smoke loop: until out of tobacco or images" : "Starting smoke loop: #{number} round(s)")
+    DRCT.walk_to(@smoke_settings['smoke_room']) if @smoke_settings['smoke_room']
+    rounds_completed = 0
+    round = 0
+    while round < max_rounds
+      round += 1
       if @cigar && Flags['new-cig']
         Flags.reset('new-cig')
-        quick_light(@cigar)
+        break if until_out && !quick_light_safe(@cigar)
+
+        quick_light(@cigar) unless until_out
         @smoker = @cigar
       elsif @pipe && Flags['new-cig']
         Flags.reset('new-cig')
-        quick_light(@pipe)
+        break if until_out && !quick_light_safe(@pipe)
+
+        quick_light(@pipe) unless until_out
         @smoker = @pipe
       end
-      smoke(images) until Flags['new-cig']
-      images = check_images(images) if @smoke_settings['clean_list_of_mastered']
+      if Flags['new-cig']
+        if until_out
+          DRC.message("=== Out of tobacco ===")
+          break
+        end
+        DRC.message("Round #{round}/#{number}: tobacco exhausted before smoking. Skipping.")
+        next
+      end
+      smoke until Flags['new-cig']
+      rounds_completed += 1
+      DRC.message(until_out ? "Round #{rounds_completed} complete, tobacco exhausted." : "Round #{round}/#{number} complete, tobacco exhausted.")
+      # Refresh tier data between rounds to detect advancements
+      @image_queue = build_priority_queue
+      next unless @image_queue.empty?
+
+      announce_all_mastered("Finished #{rounds_completed} round(s). ")
+      stow_pipe
+      exit
     end
-    DRCI.put_away_item?(@pipe, @bag) if DRCI.in_hands?(@pipe)
-    DRC.message("Smoker Complete!")
+    stow_pipe
+    DRC.message("Smoker Complete! Finished #{rounds_completed} round(s).")
   end
 
+  # Announces that there is nothing left to practice.
+  #
+  # @param prefix [String] optional lead-in (e.g. round summary)
+  # @return [void]
+  def announce_all_mastered(prefix = "")
+    DRC.message("=== All #{UserVars.smoke_images_mastered.size} images have reached master* ===")
+    DRC.message("Mastered: #{UserVars.smoke_images_mastered.join(', ')}")
+    DRC.message("#{prefix}Nothing left to practice. Learn new images and run ;smoke reset_known to continue.")
+  end
+
+  # Stows the pipe if it is in hand. No-op for cigar runs.
+  #
+  # @return [void]
+  def stow_pipe
+    DRCI.put_away_item?(@pipe, @bag) if @pipe && DRCI.in_hands?(@pipe)
+  end
+
+  # Lights a smoker for until_out mode, reporting (rather than aborting) when
+  # supplies run out.
+  #
+  # @param smoker [String] "pipe" or a cigar noun
+  # @return [Boolean] true if lit, false if out of tobacco/cigars
+  def quick_light_safe(smoker)
+    case smoker
+    when /pipe/
+      return false unless DRCI.get_item_if_not_held?(@pipe, @bag)
+
+      contents = DRC.bput("look in my #{@pipe}", /^In the .* you see (a|an|some) .*/, /^There is nothing in there/)
+      case contents
+      when /burning/
+        return true
+      when /There is nothing/
+        unless DRCI.get_item?('tobacco', @bag)
+          DRC.message("=== Out of tobacco ===")
+          return false
+        end
+        DRCI.put_away_item?('tobacco', @pipe)
+      end
+      light_tobacco("tobacco in pipe")
+      true
+    when /cigar/
+      unless DRCI.get_item_if_not_held?(smoker, @bag)
+        DRC.message("=== Out of cigars ===")
+        return false
+      end
+      light_tobacco(smoker)
+      true
+    end
+  end
+
+  # Dispatches to the teaching or learning loop after lighting up.
+  #
+  # @param args [Object] parsed command arguments (uses args.smoke, args.player, args.teach)
+  # @param images [Array<String>] images to teach (ignored when learning)
+  # @return [void]
   def smoke_teach(args, images)
     Flags.add('smoke-image-learned', /finally catches on to your instructions on how to make the .* smoke image/, /^You now know the basics of making the .* smoke image/)
     Flags.add('teacher-smoked', /^#{args.player.capitalize} takes a long drag off of/)
@@ -114,9 +326,14 @@ class Smoker
       quick_light(args.smoke)
       @smoker = 'cigar'
     end
-    send(args.teach + '_loop', images, args.player)
+    send(args.teach + '_loop', images, args.player.capitalize)
   end
 
+  # Teaches each image to a student, demonstrating until they learn it.
+  #
+  # @param images [Array<String>] images to teach in order
+  # @param player [String] student name (already capitalized)
+  # @return [void]
   def teach_loop(images, player)
     @time_between = 0
     images.each do |image|
@@ -131,21 +348,31 @@ class Smoker
       end
       Flags.reset('smoke-image-learned')
     end
+    DRC.message("Teaching complete.")
     exit
   end
 
+  # Learns images from a teacher, copying each demonstrated image until learned.
+  # Aborts if the teacher leaves the room.
+  #
+  # @param _images [Array<String>] unused (kept for the teach/learn dispatch arity)
+  # @param player [String] teacher name (already capitalized)
+  # @return [void]
   def learn_loop(_images, player)
     @time_between = 0
     loop do
+      abort_lesson("#{player} is no longer in the room") unless DRRoom.pcs.include?(player)
       if /make a (?<image>\w+) smoke image/ =~ DRC.bput("Listen #{player}", /^You start paying attention to #{player.capitalize}'s advice on how to make a (?<image>\w+) smoke image/, /^#{player.capitalize} isn't teaching a class/)
         image = Regexp.last_match[:image]
       else
-        pause 1 until Flags['time-to-listen']
+        pause 1 until Flags['time-to-listen'] || !DRRoom.pcs.include?(player)
+        abort_lesson("#{player} is no longer in the room") unless DRRoom.pcs.include?(player)
         image = Flags['time-to-listen'][:image]
         DRC.bput("Listen #{player}", /You start paying attention to/)
       end
       until Flags['smoke-image-learned']
-        pause 1 until Flags['teacher-smoked'] || Flags['smoke-image-learned']
+        pause 1 until Flags['teacher-smoked'] || Flags['smoke-image-learned'] || !DRRoom.pcs.include?(player)
+        abort_lesson("#{player} left the room mid-lesson") unless DRRoom.pcs.include?(player)
         Flags.reset('teacher-smoked')
         break if Flags['smoke-image-learned']
 
@@ -158,6 +385,22 @@ class Smoker
     end
   end
 
+  # Ends a teaching/learning session cleanly, stowing the active smoker.
+  #
+  # @param reason [String] why the session is ending
+  # @return [void]
+  def abort_lesson(reason)
+    DRC.message("=== #{reason} ===")
+    DRC.message("Learning session ended. Stowing equipment.")
+    DRCI.put_away_item?(@smoker, @bag) if @smoker && DRCI.in_hands?(@smoker)
+    exit
+  end
+
+  # Offers a lesson on a single image to a student.
+  #
+  # @param image [String] image to teach
+  # @param player [String] student name
+  # @return [Boolean] true if the student is attending, false if they already know it
   def offer_lesson(image, player)
     case DRC.bput("smoke teach #{image} #{player}", { 'timeout' => 45, 'suppress_no_match' => true }, /^#{player.capitalize} starts paying attention to your advice on how to make/, /^#{player.capitalize} nods to you/, /already knows how to make that smoke image/)
     when /paying attention/, /nods to you/
@@ -170,70 +413,118 @@ class Smoker
     end
   end
 
+  # Retrieves the pipe, ensures it holds tobacco, and lights it.
+  #
+  # @return [void]
   def load_pipe
-    exit unless DRCI.get_item_if_not_held?(@pipe, @bag)
+    unless DRCI.get_item_if_not_held?(@pipe, @bag)
+      DRC.message("Could not get #{@pipe} from #{@bag}.")
+      exit
+    end
     contents = DRC.bput("look in my #{@pipe}", /^In the .* you see (a|an|some) .*/, /^There is nothing in there/)
     case contents
     when /burning/
       return true
     when /There is nothing/
-      DRCI.get_item?('tobacco', @bag)
+      unless DRCI.get_item?('tobacco', @bag)
+        DRC.message("No tobacco found in #{@bag}.")
+        DRCI.put_away_item?(@pipe, @bag)
+        exit
+      end
       DRCI.put_away_item?('tobacco', @pipe)
     end
     light_tobacco("tobacco in pipe")
   end
 
+  # Retrieves and lights a smoker, aborting on failure.
+  #
+  # @param smoker [String] "pipe" or a cigar noun
+  # @return [void]
   def quick_light(smoker)
     Flags.reset('new-cig')
     case smoker
     when /pipe/
       load_pipe
     when /cigar/
-      exit unless DRCI.get_item_if_not_held?(smoker, @bag)
+      unless DRCI.get_item_if_not_held?(smoker, @bag)
+        DRC.message("Could not get #{smoker} from #{@bag}.")
+        exit
+      end
       light_tobacco(smoker)
     end
   end
 
+  # Lights the target via the best available method.
+  #
+  # @param target [String] loaded pipe contents or a cigar in hand
+  # @return [void]
   def light_tobacco(target) # loaded pipe or cigar in hand, ends with either in hand, ready to rip
-    if DRStats.warrior_mage?
-      DRC.bput("prep c b t", /^You are now prepared/)
-      DRC.bput("gesture #{target}", /^You touch/, /^That's already burning/)
-    elsif @lighter
-      if @smoke_settings['lighter_tied_to']
-        unless DRCI.untie_item?(@lighter, @smoke_settings['lighter_tied_to'])
-          DRC.message("#{@lighter} could not be untied, going to try flint and steel")
-          @lighter = false
-          return light_tobacco(target)
-        end
-      else
-        unless DRCI.get_item?(@lighter)
-          DRC.message("#{@lighter} could not get lighter, going to try flint and steel")
-          @lighter = false
-          return light_tobacco(target)
-        end
-      end
+    return light_warrior_mage(target) if DRStats.warrior_mage?
+    return light_with_lighter(target) if @lighter
 
-      DRC.bput("point my #{@lighter} at #{target}", /making the .* quickly catch fire/, /^That's already burning/)
-      return if @smoke_settings['lighter_tied_to'] && DRCI.tie_item?(@lighter, @smoke_settings['lighter_tied_to'])
-
-      DRCI.put_away_item?(@lighter, @bag)
-    else # flint
-      unless DRCI.get_item?("flint")
-        DRC.message("Missing flint, scoot to your local shop and pick some up, every adventurer should have flint and steel")
-        DRCI.put_away_item?(DRC.right_hand, @bag)
-        exit
-      end
-      DRCI.lower_item?(target.split.last)
-      @equipmanager.get_item?(@blade)
-      DRC.bput("light #{target} with my flint", /^Roundtime/, /^That's already burning/)
-      DRCI.stow_item?("flint")
-      @equipmanager.return_held_gear
-      DRCI.lift?
-    end
+    light_with_flint(target)
   end
 
+  # Lights using the warrior mage cantrip.
+  #
+  # @param target [String] thing to light
+  # @return [void]
+  def light_warrior_mage(target)
+    DRC.bput("prep c b t", /^You are now prepared/)
+    DRC.bput("gesture #{target}", /^You touch/, /^That's already burning/)
+  end
+
+  # Lights using the configured lighter, falling back to flint on failure.
+  #
+  # @param target [String] thing to light
+  # @return [void]
+  def light_with_lighter(target)
+    if @smoke_settings['lighter_tied_to']
+      unless DRCI.untie_item?(@lighter, @smoke_settings['lighter_tied_to'])
+        DRC.message("#{@lighter} could not be untied, going to try flint and steel")
+        @lighter = false
+        return light_tobacco(target)
+      end
+    elsif !DRCI.get_item?(@lighter)
+      DRC.message("#{@lighter} could not get lighter, going to try flint and steel")
+      @lighter = false
+      return light_tobacco(target)
+    end
+
+    DRC.bput("point my #{@lighter} at #{target}", /making the .* quickly catch fire/, /^That's already burning/)
+    return if @smoke_settings['lighter_tied_to'] && DRCI.tie_item?(@lighter, @smoke_settings['lighter_tied_to'])
+
+    DRCI.put_away_item?(@lighter, @bag)
+  end
+
+  # Lights using flint and steel (the configured blade).
+  #
+  # @param target [String] thing to light
+  # @return [void]
+  def light_with_flint(target)
+    unless DRCI.get_item?("flint")
+      DRC.message("Could not get flint. Buy flint from a general store.")
+      DRCI.put_away_item?(DRC.right_hand, @bag)
+      exit
+    end
+    DRCI.lower_item?(target.split.last)
+    @equipmanager.get_item?(@blade)
+    DRC.bput("light #{target} with my flint", /^Roundtime/, /^That's already burning/)
+    DRCI.stow_item?("flint")
+    @equipmanager.return_held_gear
+    DRCI.lift?
+  end
+
+  # Exhales a single image, handling the untrained and just-learned outcomes.
+  #
+  # @param image [String] image to exhale
+  # @return [void]
   def exhale_smoke(image)
-    case DRC.bput("exhale line #{image}", /^Roundtime/, /^You are untrained in the ways of making that image./, /^You now know the basics of making/)
+    case DRC.bput("exhale line #{image}",
+                  /^Roundtime/,
+                  /^You are untrained in the ways of making that image./,
+                  /You need to observe your teacher performing/,
+                  /^You now know the basics of making/)
     when /untrained/
       fput 'exhale ring'
     when /You need to observe your teacher performing/
@@ -244,16 +535,24 @@ class Smoker
     end
   end
 
+  # Inhales from the active smoker, clearing the lungs first if needed.
+  #
+  # @param image [String] image being practiced (exhaled if lungs must be cleared)
+  # @return [void]
   def inhale(image)
     if /out of your lungs first/ =~ DRC.bput("inhale my #{@smoker}", /^You take/, /out of your lungs first/)
-      exhale_smoke(image, true)
+      exhale_smoke(image)
       return inhale(image)
     end
   end
 
-  def smoke(images)
-    # pull a random image from our list of images
-    image = images.to_a.sample
+  # Performs one inhale/exhale cycle for an image.
+  #
+  # @param image [String, nil] image to practice; pulled from the queue when nil
+  # @return [void]
+  def smoke(image = nil)
+    image ||= next_image
+    DRC.message("Practicing image: #{image}")
     inhale(image)
     pause 1
     exhale_smoke(image)
@@ -261,63 +560,172 @@ class Smoker
     pause @time_between
   end
 
-  def reset_known
-    # Resetting our known images to the master list
-    UserVars.smoke_images_known = @full_image_list
-    # and our mastered images to an empty list
-    UserVars.smoke_images_mastered = []
-    # Then cleaning out images we don't know, getting a list of images we've mastered
-    # and providing a list of images to train
-    training_list = check_images(@full_image_list)
-    if training_list.empty?
-      DRC.message("All known images are mastered. Set a list under smoke_images in your yaml, or smoker will select from your known images at random")
-    else
-      DRC.message("New Training List: #{training_list.join(' ')}")
-    end
-    exit
-  end
-
-  def check_images(images)
-    # If we master everything during our loop, this variable will be empty, so we'll revert to just broad sampling.
-    return UserVars.smoke_images_known unless images
-    # Here we're returning IF the provided list of images is identical to our known image size, and the follow-on comparison suggests we've mastered everything we know.
-    return images if images.size == UserVars.smoke_images_known.size && UserVars.smoke_images_known.size == UserVars.smoke_images_mastered.size
-
-    smoke_list = []
+  # Sends "smoke list" and gathers its raw output lines.
+  #
+  # @return [Array<String>] lines up to (excluding) the terminator line
+  def collect_smoke_list_lines
+    lines = []
     fput 'smoke list'
     loop do
       line = get
-      break if line =~ /Total images known/ # last line after smoke list
-      break if line =~ /You don't know any smoke images/ # last line of empty smoke list
-      next if line.include?('IMAGE - SKILL') # topline that would normally match
+      break if line.nil?
+      break if line =~ /Total images known/
+      break if line =~ /You don't know any smoke images/
 
-      smoke_list << line.scan(/\w+\s-\s\w+\*?/) # grabbing lines: "<image> - <mastery level>       <image> - <mastery level>        <image> - <mastery level>"
+      lines << line
     end
-    smoke_list.flatten!
-    # This draws off our array of known images, creating a new array of images found on our smoke list.
-    # effectively comparing the two, and removing images we don't know
-    # smoke_images_known, unless already defined, contains a list of all possible images, so this is important
-    images_you_know = UserVars.smoke_images_known.select { |image| smoke_list.any? { |image_and_mastery| image_and_mastery.include?(image) } }
-    # smoke_images_known, unless already defined, contains a list of all possible images, so this is important
-    UserVars.smoke_images_known = images_you_know
-    unless (images - images_you_know).empty? # skip if we haven't asked to smoke any images we don't know
-      DRC.message("Removing images you do not know: #{(images - images_you_know).join(' ')}") # prints out a string representing the difference between what images we know and what images we wanted to smoke
-      images -= (images - images_you_know) # creates an array of images we don't know, and removes them from our list of images we were hoping to smoke
-    end
-    # Here we might want to just smoke a curated list of images, regardless of whether we've mastered one or more
-    # TODO: support for non-halfling mastery?
-    return images unless @smoke_settings['clean_list_of_mastered']
+    lines
+  end
 
-    # Here we're using the originally generated list like a hash
-    images_mastered = smoke_list
-                      .select { |image_and_mastery| image_and_mastery.include?('master*') } # selecting only those images we've fully mastered.
-                      .join(' ') # making a string of image names, dashes, and 'master*'
-                      .split # creating a new array with all of those items as elements
-                      .reject { |item| item =~ /-|master*/ } # removing the dashes and 'master*' elements, leaving us with just an array of images we've mastered
-                      .select { |image| images.include?(image) } # then comparing our original images list to the list of mastered images, and removing any matches.
-    DRC.message("Removing already mastered images: #{images_mastered.join(' ')}") unless images_mastered.empty? # images_mastered here means images from our variable 'images' that we sent this method
-    UserVars.smoke_images_mastered |= images_mastered # here we're adding any mastered images we found on our list of mastered to our uservar, but only if they're not already present.
-    images - UserVars.smoke_images_mastered # Finally, we return our original list minus any images we've mastered.
+  # Parses "smoke list" output into image/tier pairs. Pure: no game I/O.
+  #
+  # @param lines [Array<String>] raw "smoke list" output lines
+  # @return [Array<Array(String, String)>] [image, tier] pairs
+  # @example
+  #   parse_smoke_list(["deer    - learning     tart    - master*"])
+  #   # => [["deer", "learning"], ["tart", "master*"]]
+  def parse_smoke_list(lines)
+    lines.reject { |line| line.to_s.include?('IMAGE - SKILL') }
+         .flat_map { |line| line.to_s.scan(/(\w+)\s+-\s+(\w+\*?)/) }
+  end
+
+  # Reads and parses the current smoke list.
+  #
+  # @return [Array<Array(String, String)>] [image, tier] pairs
+  def read_smoke_list
+    parse_smoke_list(collect_smoke_list_lines)
+  end
+
+  # Training priority of a tier. Pure.
+  #
+  # @param tier [String] a tier name
+  # @return [Integer] {TIER_ORDER} rank, or {UNKNOWN_RANK} if unrecognized
+  def tier_rank(tier)
+    TIER_ORDER[tier.to_s.downcase] || UNKNOWN_RANK
+  end
+
+  # Whether a tier name is recognized. Pure.
+  #
+  # @param tier [String] a tier name
+  # @return [Boolean]
+  def known_tier?(tier)
+    TIER_ORDER.key?(tier.to_s.downcase)
+  end
+
+  # Whether a tier represents full mastery. Case-insensitive. Pure.
+  #
+  # @param tier [String] a tier name
+  # @return [Boolean]
+  def mastered?(tier)
+    tier.to_s.downcase == MASTERED_TIER
+  end
+
+  # Computes a training plan from a smoke list. Pure: no I/O, no state writes,
+  # deterministic (does not shuffle).
+  #
+  # @param entries [Array<Array(String, String)>] [image, tier] pairs
+  # @param pool [Array<String>] candidate images to train
+  # @param clean_mastered [Boolean] drop fully mastered images from the pool
+  # @return [Hash] plan with keys:
+  #   :known [Array<String>] every image the list reports
+  #   :unknown [Array<String>] pool images not on the list
+  #   :mastered [Array<String>] pool images at {MASTERED_TIER} (when clean_mastered)
+  #   :pool [Array<String>] surviving training pool
+  #   :unknown_tiers [Array<String>] tier names absent from {TIER_ORDER}
+  #   :lowest_tier [String, nil] display name of the lowest surviving tier
+  #   :lowest_images [Array<String>] images at the lowest surviving tier
+  #   :summary [String] human-readable tier breakdown
+  def prioritize(entries, pool, clean_mastered:)
+    known = entries.map(&:first)
+    unknown = pool - known
+    survivors = pool & known
+
+    mastered = []
+    if clean_mastered
+      mastered = entries.select { |_, tier| mastered?(tier) }
+                        .map(&:first)
+                        .select { |name| survivors.include?(name) }
+      survivors -= mastered
+    end
+
+    pool_entries = entries.select { |name, _| survivors.include?(name) }
+    unknown_tiers = pool_entries.map { |_, tier| tier }.reject { |tier| known_tier?(tier) }.uniq
+    grouped = pool_entries.group_by { |_, tier| tier_rank(tier) }
+    sorted = grouped.sort_by(&:first)
+    summary = sorted.map { |_, imgs| "#{imgs.first[1]}(#{imgs.size})" }.join(' > ')
+
+    if sorted.empty?
+      lowest_name = nil
+      lowest_images = []
+    else
+      _, lowest_entries = sorted.first
+      lowest_name = lowest_entries.first[1]
+      lowest_images = lowest_entries.map(&:first)
+    end
+
+    {
+      known: known,
+      unknown: unknown,
+      mastered: mastered,
+      pool: survivors,
+      unknown_tiers: unknown_tiers,
+      lowest_tier: lowest_name,
+      lowest_images: lowest_images,
+      summary: summary
+    }
+  end
+
+  # Reads the smoke list, updates UserVars, and returns a shuffled queue of the
+  # lowest trainable tier. Reports unknown/mastered/unrecognized-tier removals.
+  #
+  # @return [Array<String>] the next round's image queue ([] when nothing to train)
+  def build_priority_queue
+    plan = prioritize(read_smoke_list, @image_pool, clean_mastered: @clean_mastered)
+
+    UserVars.smoke_images_known = plan[:known]
+    UserVars.smoke_images_mastered |= plan[:mastered]
+
+    DRC.message("Removing unknown images: #{plan[:unknown].join(', ')}") unless plan[:unknown].empty?
+    DRC.message("Removing mastered images: #{plan[:mastered].join(', ')}") unless plan[:mastered].empty?
+    DRC.message("Unrecognized tiers (training last): #{plan[:unknown_tiers].join(', ')}") unless plan[:unknown_tiers].empty?
+
+    @image_pool = plan[:pool]
+    @lowest_tier_pool = plan[:lowest_images]
+    return [] if @lowest_tier_pool.empty?
+
+    DRC.message("Image tiers: #{plan[:summary]}")
+    queue = @lowest_tier_pool.shuffle
+    DRC.message("Practicing #{plan[:lowest_tier]} tier: #{queue.join(', ')}")
+    queue
+  end
+
+  # Returns the next image to practice, reshuffling the lowest tier when the
+  # queue is exhausted.
+  #
+  # @return [String, nil] the next image
+  def next_image
+    if @image_queue.nil? || @image_queue.empty?
+      @image_queue = (@lowest_tier_pool || []).shuffle
+      DRC.message("Reshuffled: #{@image_queue.join(', ')}")
+    end
+    @image_queue.shift
+  end
+
+  # Rebuilds UserVars from the master image list and reports the training list.
+  #
+  # @return [void]
+  def reset_known
+    UserVars.smoke_images_known = @full_image_list
+    UserVars.smoke_images_mastered = []
+    plan = prioritize(read_smoke_list, @full_image_list, clean_mastered: true)
+    UserVars.smoke_images_known = plan[:known]
+    UserVars.smoke_images_mastered = plan[:mastered]
+    if plan[:pool].empty?
+      DRC.message("All known images are mastered. Set a list under smoke_images in your yaml, or smoker will select from your known images at random")
+    else
+      DRC.message("New Training List: #{plan[:pool].join(' ')}")
+    end
+    exit
   end
 end
 

@@ -28,7 +28,7 @@
 # @example Resume interrupted work
 #   ;forge resume weaponsmithing hammer
 #
-# @example Craft and log to engineering logbook
+# @example Craft and log to forging logbook
 #   ;forge log weaponsmithing 4 "steel throwing hammer" steel hammer
 #
 # @see https://elanthipedia.play.net/Lich_script_repository#forge
@@ -274,6 +274,10 @@ class Forge
   # Pattern indicating forge is empty
   # @return [String]
   FORGE_EMPTY_PATTERN = 'There is nothing'
+
+  # Pattern indicating there is no forge in the current room
+  # @return [Regexp]
+  FORGE_MISSING_PATTERN = /I could not find|What were you referring to/
 
   # @!endgroup
 
@@ -575,16 +579,6 @@ class Forge
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
   end
 
-  # Stow hammer and tongs if they are currently held.
-  #
-  # Common cleanup before retrieving item from anvil/forge.
-  #
-  # @return [void]
-  def stow_hammer_and_tongs
-    DRCC.stow_crafting_item(@hammer, @bag, @forging_belt) if DRCI.in_hands?(@hammer)
-    DRCC.stow_crafting_item('tongs', @bag, @forging_belt) if DRCI.in_hands?('tongs')
-  end
-
   # Ready hammer and tongs for pounding work.
   #
   # Swaps to hammer first, then to tongs (tongs in right hand, hammer accessible).
@@ -620,7 +614,11 @@ class Forge
   def prepare_item_in_left_hand(location = 'on anvil', context = 'work')
     return true if DRCI.in_left_hand?(@item)
 
-    stow_hammer_and_tongs
+    # Stow BOTH hands (each via its own mechanism), not just hammer/tongs, so no
+    # tool sharing the item's noun -- e.g. a "wide shovel" forging tool vs. a
+    # crafted "wide shovel" -- is left in hand to be confused with the item we
+    # are about to pick up.
+    stow_both_hands
     result = DRC.bput("get #{@item} #{location}", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
     if result == GET_FAILURE_PATTERN
       error_log("Failed to get #{@item} from #{location} for #{context}.")
@@ -1134,6 +1132,31 @@ class Forge
     end
   end
 
+  # Ensure the current room has a forge before a tempering command runs.
+  #
+  # Tempering ("put/turn/analyze ... on forge") requires a forge, but grinding
+  # happens at grindstone rooms that have no forge -- so after a grind step we
+  # can be standing in a forge-less room (e.g. the Smelting and Grinding Area).
+  # Forges are co-located with anvils, so walk to a free anvil room (one not in
+  # use by another crafter) when the current room has no forge.
+  #
+  # @return [void]
+  # @raise [SystemExit] if no forge can be found
+  def ensure_forge
+    return if forge_in_room?
+
+    DRCC.find_anvil(@hometown)
+    cleanup_and_exit('Could not find a forge to temper at.') unless forge_in_room?
+  end
+
+  # Check whether the current room contains a forge.
+  #
+  # @return [Boolean] true if a forge is present (empty or holding an item)
+  def forge_in_room?
+    result = DRC.bput('look on forge', FORGE_HAS_ITEM_PATTERN, FORGE_EMPTY_PATTERN, FORGE_MISSING_PATTERN)
+    result == FORGE_HAS_ITEM_PATTERN || result == FORGE_EMPTY_PATTERN
+  end
+
   # @!endgroup
 
   # @!group Assembly
@@ -1280,6 +1303,7 @@ class Forge
       renew_forge_rental if Flags['forge-rental-warning']
       assemble_part
       @command ||= @home_command
+      ensure_forge if @command.include?('forge')
       spin_grindstone if @command.include?('grindstone')
 
       result = execute_work_command
@@ -1498,7 +1522,11 @@ class Forge
   def handle_oiling
     report_progress_milestone('Oiling')
     if @home_tool == 'tongs' || !DRCI.in_left_hand?(@item)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @forging_belt)
+      # Stow BOTH hands before retrieving the item: if a forging tool shares the
+      # item's noun (e.g. a "wide shovel" tool vs. a crafted "wide shovel"),
+      # leaving it in the other hand makes the following get/swap grab the wrong
+      # one and tie the finished item to the belt.
+      stow_both_hands
       result = DRC.bput("get #{@item} #{@location}", GET_SUCCESS_PATTERN, GET_FAILURE_PATTERN)
       if result == GET_FAILURE_PATTERN
         error_log("Failed to get #{@item} from #{@location} for oiling.")
@@ -1582,8 +1610,8 @@ class Forge
   def finalize_item
     case @finish
     when /log/
-      DRCC.logbook_item('engineering', @item, @bag)
-      info_log("#{@item} logged to engineering logbook.")
+      DRCC.logbook_item('forging', @item, @bag)
+      info_log("#{@item} logged to forging logbook.")
     when /stow/
       if DRCC.stow_crafting_item(@item, @bag, @forging_belt)
         info_log("#{@item} stowed in #{@bag}.")

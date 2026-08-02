@@ -2,66 +2,13 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
-module DRC
-  class << self
-    def bput(*_args); end
-    def collect(*_args); end
-    def forage?(*_args); end
-    def retreat(*_args); end
-    def wait_for_script_to_complete(*_args); end
-    def message(_msg); end
-  end
-end unless defined?(DRC)
+require_relative 'spec_helper'
 
 DRC.define_singleton_method(:collect) { |*_args| } unless DRC.respond_to?(:collect)
 DRC.define_singleton_method(:forage?) { |*_args| } unless DRC.respond_to?(:forage?)
 DRC.define_singleton_method(:retreat) { |*_args| } unless DRC.respond_to?(:retreat)
 
-module DRCI
-  class << self
-    def in_hands?(_item); false; end
-    def dispose_trash(*_args); end
-  end
-end unless defined?(DRCI)
-
 DRCI.define_singleton_method(:dispose_trash) { |*_args| } unless DRCI.respond_to?(:dispose_trash)
-
-module DRCA
-  class << self
-    def crafting_magic_routine(*_args); end
-  end
-end unless defined?(DRCA)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-  end
-end unless defined?(DRCT)
 
 Harness::DRSkill.define_singleton_method(:_xp_store) { @_xp_store ||= {} }
 Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[skillname] = val }

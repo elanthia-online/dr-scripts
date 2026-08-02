@@ -1,94 +1,32 @@
 # frozen_string_literal: true
 
-require 'digest'
 require 'tmpdir'
+require 'fileutils'
 require 'ostruct'
 require 'yaml'
 
-# Test suite for dependency.lic
+# Test suite for dependency.lic (v4.2.0+)
 #
-# Covers obsolete script detection, autostart handling, cascading includes,
-# and inlined manager functions (bankbot, reportbot, slackbot).
+# Covers the runtime helper functions that remain after all gated
+# code was removed (core lich 5.18.0+ provides ArgParser, SetupFiles,
+# ScriptManager, map overrides, and DR startup natively).
+#
+# verify_script now lives in core as DRC.verify_script; the dead
+# reportbot/format helpers were removed in v4.1.0. v4.2.0 added
+# obsolete-script detection (DR_OBSOLETE_SCRIPTS / warn_obsolete_scripts).
 
-# Stub SCRIPT_DIR, _respond, respond, and Lich::Messaging before loading methods
+# Stub constants and globals before loading methods
 SCRIPT_DIR = Dir.mktmpdir('dr-scripts-test') unless defined?(SCRIPT_DIR)
 LICH_DIR = Dir.mktmpdir('lich-test') unless defined?(LICH_DIR)
 
-module Lich
-  module Messaging
-    def self.monsterbold(msg)
-      msg
-    end
-  end
-end
-
-# Capture _respond and respond calls for assertion
-$respond_messages = []
-def _respond(msg)
-  $respond_messages << msg
-end
-
-# Stub Script.current for dr_obsolete_script?
-module Script
-  def self.current
-    OpenStruct.new(name: 'test-script')
-  end
-end
-
 $clean_lich_char = ';'
 
-def checkname
-  'Testchar'
-end
-
-def echo(_msg)
-  # no-op in tests
-end
-
-# Mock UserVars with a mutable autostart_scripts array
-module UserVars
-  class << self
-    attr_accessor :autostart_scripts
-  end
-  self.autostart_scripts = []
-end unless defined?(UserVars)
-
-# Mock Settings as a hash-like store
-module Settings
-  @store = { 'autostart' => [] }
-
-  def self.[](key)
-    @store[key]
-  end
-
-  def self.[]=(key, value)
-    @store[key] = value
-  end
-
-  def self.reset!
-    @store = { 'autostart' => [] }
-  end
-end unless defined?(Settings)
-
-# --- Extract the constant and methods from dependency.lic ---
-# We eval only the relevant sections to avoid all Lich runtime dependencies.
-# Methods/constants may be at column 0 or indented inside sentinel gate blocks.
+# --- Extract methods from dependency.lic ---
 dep_path = File.join(File.dirname(__FILE__), '..', 'dependency.lic')
 dep_lines = File.readlines(dep_path)
 
-# Helper: extract a constant assignment (possibly indented) through .freeze
-def extract_constant(lines, path, const_name)
-  start = lines.index { |l| l =~ /^\s*#{Regexp.escape(const_name)}\s*=/ }
-  raise "Could not find #{const_name} in #{path}" unless start
+DEP_SOURCE = File.read(dep_path)
 
-  freeze_offset = lines[start..].index { |l| l =~ /\.freeze$/ }
-  raise "Could not find .freeze for #{const_name}" unless freeze_offset
-
-  source = lines[start..start + freeze_offset].map(&:lstrip).join
-  eval(source, TOPLEVEL_BINDING, path, start + 1)
-end
-
-# Helper: extract a method definition (possibly indented) through its matching end
 def extract_method(lines, path, method_name)
   start = lines.index { |l| l =~ /^\s*def #{Regexp.escape(method_name)}[\s(]?/ }
   raise "Could not find def #{method_name} in #{path}" unless start
@@ -101,432 +39,31 @@ def extract_method(lines, path, method_name)
   eval(source, TOPLEVEL_BINDING, path, start + 1)
 end
 
-extract_constant(dep_lines, dep_path, 'DR_OBSOLETE_SCRIPTS')
-extract_constant(dep_lines, dep_path, 'DR_OBSOLETE_DATA_FILES')
-
 %w[
-  warn_obsolete_scripts
   save_bankbot_transaction
   load_bankbot_ledger
-  save_reportbot_whitelist
-  load_reportbot_whitelist
   register_slackbot
   send_slackbot_message
-  warn_obsolete_data_files
+  shift_hometown
+  clear_hometown
+  obsolete_script_dirs
+  warn_obsolete_scripts
 ].each { |fn| extract_method(dep_lines, dep_path, fn) }
 
-RSpec.describe 'Obsolete Scripts' do
-  before { $respond_messages.clear }
+# Extract the frozen DR_OBSOLETE_SCRIPTS constant (assignment line through the
+# terminating ".freeze"); extract_method only handles def bodies.
+obsolete_const_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_SCRIPTS\s*=/ }
+raise 'Could not find DR_OBSOLETE_SCRIPTS in dependency.lic' unless obsolete_const_start
 
-  describe 'DR_OBSOLETE_SCRIPTS' do
-    it 'includes exp-monitor' do
-      expect(DR_OBSOLETE_SCRIPTS).to include('exp-monitor')
-    end
+obsolete_const_offset = dep_lines[obsolete_const_start..].index { |l| l =~ /\.freeze\s*$/ }
+raise 'Could not find .freeze terminating DR_OBSOLETE_SCRIPTS' unless obsolete_const_offset
 
-    it 'includes previously obsoleted scripts' do
-      %w[events slackbot spellmonitor].each do |script|
-        expect(DR_OBSOLETE_SCRIPTS).to include(script)
-      end
-    end
+eval(
+  dep_lines[obsolete_const_start..obsolete_const_start + obsolete_const_offset].join,
+  TOPLEVEL_BINDING, dep_path, obsolete_const_start + 1
+)
 
-    it 'is frozen' do
-      expect(DR_OBSOLETE_SCRIPTS).to be_frozen
-    end
-  end
-
-  describe '#warn_obsolete_scripts' do
-    context 'when no obsolete script files exist' do
-      it 'produces no warnings' do
-        warn_obsolete_scripts
-        expect($respond_messages).to be_empty
-      end
-    end
-
-    context 'when an obsolete script file exists in SCRIPT_DIR' do
-      around do |example|
-        path = File.join(SCRIPT_DIR, 'exp-monitor.lic')
-        File.write(path, '# obsolete')
-        example.run
-      ensure
-        File.delete(path) if File.exist?(path)
-      end
-
-      it 'warns about the obsolete file' do
-        warn_obsolete_scripts
-        warning = $respond_messages.find { |m| m.include?('exp-monitor') }
-        expect(warning).to include('obsolete')
-        expect(warning).to include('should be deleted')
-      end
-    end
-  end
-
-  describe 'DR_OBSOLETE_DATA_FILES' do
-    it 'is frozen' do
-      expect(DR_OBSOLETE_DATA_FILES).to be_frozen
-    end
-
-    it 'is empty (no data files are currently obsolete)' do
-      expect(DR_OBSOLETE_DATA_FILES).to be_empty
-    end
-  end
-
-  describe '#warn_obsolete_data_files' do
-    let(:data_dir) { File.join(SCRIPT_DIR, 'data') }
-
-    before { FileUtils.mkdir_p(data_dir) }
-
-    context 'when no obsolete data files exist' do
-      it 'produces no warnings' do
-        warn_obsolete_data_files
-        expect($respond_messages).to be_empty
-      end
-    end
-  end
-end
-
-# --- Cascading Includes ---
-
-# Minimal mock that replicates the resolve_includes_recursively behavior.
-# Tests the core algorithm in isolation without SetupFiles's complex dependencies.
-class IncludeResolver
-  attr_reader :files, :loaded_files, :debug
-
-  def initialize(files = {}, debug: false)
-    @files = files
-    @loaded_files = []
-    @debug = debug
-  end
-
-  def reload_profiles(filenames)
-    filenames.each { |f| @loaded_files << f unless @loaded_files.include?(f) }
-  end
-
-  def cache_get_by_filename(filename)
-    return nil unless @files.key?(filename)
-
-    data = @files[filename]
-    OpenStruct.new(
-      name: filename,
-      data: data,
-      peek: ->(prop) { data[prop.to_sym] || data[prop.to_s] }
-    )
-  end
-
-  def to_include_filename(suffix)
-    "include-#{suffix}.yaml"
-  end
-
-  def echo(msg)
-    puts msg if @debug
-  end
-
-  def resolve_includes_recursively(filenames, visited = Set.new, include_order = [])
-    filenames.each do |filename|
-      next if visited.include?(filename)
-
-      visited << filename
-      reload_profiles([filename])
-      file_info = cache_get_by_filename(filename)
-      next unless file_info
-
-      nested_suffixes = file_info.peek.call('include') || []
-      echo "#{filename} has nested includes: #{nested_suffixes}" if @debug && !nested_suffixes.empty?
-      nested_filenames = nested_suffixes.map { |suffix| to_include_filename(suffix) }
-
-      resolve_includes_recursively(nested_filenames, visited, include_order)
-
-      include_order << filename
-    end
-    include_order
-  end
-end
-
-RSpec.describe 'Cascading Includes Algorithm' do
-  describe '#resolve_includes_recursively' do
-    context 'with no includes' do
-      it 'returns empty array when no include files specified' do
-        resolver = IncludeResolver.new({})
-        result = resolver.resolve_includes_recursively([])
-        expect(result).to eq([])
-      end
-    end
-
-    context 'with single-level includes (backwards compatibility)' do
-      let(:files) do
-        {
-          'include-hunting.yaml' => { hunting_zones: ['zone1', 'zone2'] }
-        }
-      end
-
-      it 'resolves single-level includes correctly' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml'])
-        expect(result).to eq(['include-hunting.yaml'])
-      end
-    end
-
-    context 'with two-level cascading includes' do
-      let(:files) do
-        {
-          'include-hunting.yaml' => { include: ['combat'], hunting_zones: ['zone1'] },
-          'include-combat.yaml'  => { combat_style: 'aggressive' }
-        }
-      end
-
-      it 'resolves nested includes depth-first' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml'])
-        expect(result).to eq(['include-combat.yaml', 'include-hunting.yaml'])
-      end
-    end
-
-    context 'with three-level cascading includes' do
-      let(:files) do
-        {
-          'include-hunting.yaml' => { include: ['combat'], hunting_zones: ['zone1'] },
-          'include-combat.yaml'  => { include: ['weapons'], combat_style: 'aggressive' },
-          'include-weapons.yaml' => { primary_weapon: 'sword' }
-        }
-      end
-
-      it 'resolves three levels depth-first' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml'])
-        expect(result).to eq(['include-weapons.yaml', 'include-combat.yaml', 'include-hunting.yaml'])
-      end
-    end
-
-    context 'with sibling includes at same level' do
-      let(:files) do
-        {
-          'include-hunting.yaml'  => { include: ['combat', 'survival'], hunting_zones: ['zone1'] },
-          'include-combat.yaml'   => { combat_style: 'aggressive' },
-          'include-survival.yaml' => { survival_skill: 'evasion' }
-        }
-      end
-
-      it 'resolves siblings in order, depth-first' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml'])
-        expect(result).to eq(['include-combat.yaml', 'include-survival.yaml', 'include-hunting.yaml'])
-      end
-    end
-
-    context 'with diamond dependency pattern' do
-      let(:files) do
-        {
-          'include-hunting.yaml'  => { include: ['common'], hunting_zones: ['zone1'] },
-          'include-crafting.yaml' => { include: ['common'], crafting_type: 'forging' },
-          'include-common.yaml'   => { safe_room: 1234 }
-        }
-      end
-
-      it 'resolves diamond pattern without duplicates' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml', 'include-crafting.yaml'])
-        expect(result).to eq(['include-common.yaml', 'include-hunting.yaml', 'include-crafting.yaml'])
-        expect(result.count('include-common.yaml')).to eq(1)
-      end
-    end
-
-    context 'with circular dependency' do
-      let(:files) do
-        {
-          'include-circular-a.yaml' => { include: ['circular-b'], setting_a: 'value_a' },
-          'include-circular-b.yaml' => { include: ['circular-a'], setting_b: 'value_b' }
-        }
-      end
-
-      it 'handles circular dependency without infinite loop' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-circular-a.yaml'])
-        expect(result).to eq(['include-circular-b.yaml', 'include-circular-a.yaml'])
-      end
-    end
-
-    context 'with self-referencing include' do
-      let(:files) do
-        {
-          'include-self-ref.yaml' => { include: ['self-ref'], setting_self: 'value_self' }
-        }
-      end
-
-      it 'handles self-reference without infinite loop' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-self-ref.yaml'])
-        expect(result).to eq(['include-self-ref.yaml'])
-      end
-    end
-
-    context 'with missing include file' do
-      let(:files) do
-        {
-          'include-exists.yaml' => { existing_setting: 'value' }
-        }
-      end
-
-      it 'skips missing files gracefully' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-exists.yaml', 'include-missing.yaml'])
-        expect(result).to eq(['include-exists.yaml'])
-      end
-    end
-
-    context 'with include file having empty include array' do
-      let(:files) do
-        {
-          'include-empty-includes.yaml' => { include: [], some_setting: 'value' }
-        }
-      end
-
-      it 'handles empty include arrays' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-empty-includes.yaml'])
-        expect(result).to eq(['include-empty-includes.yaml'])
-      end
-    end
-
-    context 'with include file having nil/missing include key' do
-      let(:files) do
-        {
-          'include-nil-includes.yaml' => { some_setting: 'value' }
-        }
-      end
-
-      it 'handles missing include key (nil)' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-nil-includes.yaml'])
-        expect(result).to eq(['include-nil-includes.yaml'])
-      end
-    end
-
-    context 'with deeply nested includes (stress test)' do
-      let(:files) do
-        (1..10).each_with_object({}) do |level, hash|
-          next_include = level < 10 ? ["level-#{level + 1}"] : []
-          hash["include-level-#{level}.yaml"] = {
-            include: next_include,
-            "setting_#{level}": "value_#{level}"
-          }
-        end
-      end
-
-      it 'handles deeply nested includes' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-level-1.yaml'])
-        expect(result.length).to eq(10)
-      end
-
-      it 'resolves in correct depth-first order' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-level-1.yaml'])
-        expected = (1..10).to_a.reverse.map { |n| "include-level-#{n}.yaml" }
-        expect(result).to eq(expected)
-      end
-    end
-
-    context 'complex real-world scenario' do
-      let(:files) do
-        {
-          'include-moon-mage.yaml'  => {
-            include: ['magic-user', 'common'],
-            guild: 'Moon Mage',
-            cambrinth: 'moon-staff'
-          },
-          'include-crossing.yaml'   => {
-            include: ['common'],
-            hometown: 'Crossing',
-            safe_room: 1234
-          },
-          'include-magic-user.yaml' => {
-            include: ['common'],
-            train_magic: true
-          },
-          'include-common.yaml'     => {
-            loot_coins: true,
-            safe_room: 9999
-          }
-        }
-      end
-
-      it 'resolves complex hierarchy correctly' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-moon-mage.yaml', 'include-crossing.yaml'])
-        expect(result).to eq([
-                               'include-common.yaml',
-                               'include-magic-user.yaml',
-                               'include-moon-mage.yaml',
-                               'include-crossing.yaml'
-                             ])
-      end
-
-      it 'common is only loaded once despite multiple references' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-moon-mage.yaml', 'include-crossing.yaml'])
-        expect(result.count('include-common.yaml')).to eq(1)
-        expect(result.uniq.length).to eq(result.length)
-      end
-    end
-
-    context 'multiple initial includes with shared dependencies' do
-      let(:files) do
-        {
-          'include-hunting.yaml'   => { include: ['weapons', 'armor'] },
-          'include-crafting.yaml'  => { include: ['tools', 'armor'] },
-          'include-weapons.yaml'   => { include: ['materials'] },
-          'include-tools.yaml'     => { include: ['materials'] },
-          'include-armor.yaml'     => {},
-          'include-materials.yaml' => {}
-        }
-      end
-
-      it 'resolves shared dependencies correctly' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml', 'include-crafting.yaml'])
-        expect(result.uniq.length).to eq(result.length)
-        expect(result).to include('include-hunting.yaml')
-        expect(result).to include('include-crafting.yaml')
-        expect(result).to include('include-weapons.yaml')
-        expect(result).to include('include-tools.yaml')
-        expect(result).to include('include-armor.yaml')
-        expect(result).to include('include-materials.yaml')
-      end
-
-      it 'maintains depth-first order' do
-        resolver = IncludeResolver.new(files)
-        result = resolver.resolve_includes_recursively(['include-hunting.yaml', 'include-crafting.yaml'])
-        expect(result.index('include-materials.yaml')).to be < result.index('include-weapons.yaml')
-        expect(result.index('include-weapons.yaml')).to be < result.index('include-hunting.yaml')
-        expect(result.index('include-hunting.yaml')).to be < result.index('include-crafting.yaml')
-      end
-    end
-  end
-
-  describe 'merge order verification' do
-    context 'setting override precedence' do
-      let(:files) do
-        {
-          'include-level2.yaml' => { shared: 'from_level2', level2_only: 'l2' },
-          'include-level1.yaml' => { include: ['level2'], shared: 'from_level1', level1_only: 'l1' }
-        }
-      end
-
-      it 'shallower include overrides deeper include' do
-        resolver = IncludeResolver.new(files)
-        order = resolver.resolve_includes_recursively(['include-level1.yaml'])
-        merged = order.reduce({}) do |result, filename|
-          data = files[filename] || {}
-          result.merge(data.reject { |k, _| k == :include })
-        end
-        expect(merged[:shared]).to eq('from_level1')
-        expect(merged[:level1_only]).to eq('l1')
-        expect(merged[:level2_only]).to eq('l2')
-      end
-    end
-  end
-end
-
-# --- Inlined Manager Functions ---
+# --- Bankbot ---
 
 RSpec.describe 'Bankbot Functions' do
   let(:ledger_path) { File.join(LICH_DIR, 'Testchar-ledger.yaml') }
@@ -590,43 +127,7 @@ RSpec.describe 'Bankbot Functions' do
   end
 end
 
-RSpec.describe 'Reportbot Functions' do
-  let(:whitelist_path) { File.join(LICH_DIR, 'reportbot-whitelist.yaml') }
-
-  after do
-    File.delete(whitelist_path) if File.exist?(whitelist_path)
-  end
-
-  describe '#save_reportbot_whitelist' do
-    it 'writes the whitelist to YAML' do
-      whitelist = %w[Player1 Player2 Player3]
-      save_reportbot_whitelist(whitelist)
-
-      saved = YAML.unsafe_load_file(whitelist_path)
-      expect(saved).to eq(whitelist)
-    end
-  end
-
-  describe '#load_reportbot_whitelist' do
-    context 'when the whitelist file exists' do
-      before do
-        File.open(whitelist_path, 'w') { |f| f.puts(%w[Alpha Beta].to_yaml) }
-      end
-
-      it 'returns the whitelist as an array' do
-        result = load_reportbot_whitelist
-        expect(result).to eq(%w[Alpha Beta])
-      end
-    end
-
-    context 'when the whitelist file does not exist' do
-      it 'returns an empty array' do
-        result = load_reportbot_whitelist
-        expect(result).to eq([])
-      end
-    end
-  end
-end
+# --- Slackbot ---
 
 RSpec.describe 'Slackbot Functions' do
   before do
@@ -636,7 +137,7 @@ RSpec.describe 'Slackbot Functions' do
 
   describe '#register_slackbot' do
     before do
-      stub_const('SlackBot', Class.new {
+      stub_const('Lich::DragonRealms::SlackBot', Class.new {
         define_method(:initialize) {}
         define_method(:direct_message) { |_user, _msg| }
       })
@@ -693,7 +194,7 @@ RSpec.describe 'Slackbot Functions' do
     end
 
     context 'when slackbot is registered' do
-      let(:mock_slackbot) { instance_double('SlackBot') }
+      let(:mock_slackbot) { instance_double('Lich::DragonRealms::SlackBot') }
 
       before do
         $slackbot_instance = mock_slackbot
@@ -708,478 +209,253 @@ RSpec.describe 'Slackbot Functions' do
   end
 end
 
-# --- SHA Computation (build_version_hash) ---
+# --- Utility helpers ---
 
-RSpec.describe 'SHA computation' do
-  # Replicates dependency's build_version_hash SHA computation:
-  #   body = File.binread(path)
-  #   sha = Digest::SHA1.hexdigest("blob #{body.size}\0#{body}")
-  # This must match git's blob SHA regardless of line endings.
+RSpec.describe 'Utility Functions' do
+  describe '#shift_hometown' do
+    after { $HOMETOWN = nil }
 
-  let(:content_lf) { "line1\nline2\nline3\n" }
-  let(:content_crlf) { "line1\r\nline2\r\nline3\r\n" }
-
-  def git_blob_sha(content)
-    Digest::SHA1.hexdigest("blob #{content.size}\0#{content}")
-  end
-
-  it 'produces consistent SHAs for LF files using binread' do
-    path = File.join(SCRIPT_DIR, 'test-lf.lic')
-    File.binwrite(path, content_lf)
-    body = File.binread(path)
-    expect(git_blob_sha(body)).to eq(git_blob_sha(content_lf))
-  ensure
-    File.delete(path) if File.exist?(path)
-  end
-
-  it 'produces consistent SHAs for CRLF files using binread' do
-    path = File.join(SCRIPT_DIR, 'test-crlf.lic')
-    File.binwrite(path, content_crlf)
-    body = File.binread(path)
-    expect(git_blob_sha(body)).to eq(git_blob_sha(content_crlf))
-  ensure
-    File.delete(path) if File.exist?(path)
-  end
-
-  it 'produces DIFFERENT SHAs for LF vs CRLF content (they are different bytes)' do
-    expect(git_blob_sha(content_lf)).not_to eq(git_blob_sha(content_crlf))
-  end
-
-  it 'would produce WRONG SHA if text-mode read were used on CRLF files' do
-    path = File.join(SCRIPT_DIR, 'test-crlf-textmode.lic')
-    File.binwrite(path, content_crlf)
-
-    # Text-mode read (the old buggy way) - translates CRLF to LF on read
-    text_body = File.open(path, 'r').readlines.join('')
-    git_blob_sha(text_body)
-
-    # Binary read (the correct way) - preserves bytes
-    bin_body = File.binread(path)
-    git_blob_sha(bin_body)
-
-    # On platforms that translate line endings (Windows), these would differ.
-    # On Unix they're the same because 'r' mode doesn't translate.
-    # The key point: binread always gives the correct SHA regardless of platform.
-    expect(git_blob_sha(bin_body)).to eq(git_blob_sha(content_crlf))
-  ensure
-    File.delete(path) if File.exist?(path)
-  end
-
-  it 'round-trip: write with wb then read with binread produces SHA matching original content' do
-    # This is the critical regression test: if we write with 'wb' and read
-    # with binread, the SHA of the round-tripped content must match the SHA
-    # of the original content (as GitHub would compute it).
-    # The regression in 2.4.7 was: writes used text mode ('w') which added
-    # CRLF on Windows, but reads used binread which preserved CRLF,
-    # producing a SHA that never matched GitHub's LF-based SHA.
-    original_content = content_lf # simulates what download_raw_file returns
-    path = File.join(SCRIPT_DIR, 'test-roundtrip.lic')
-
-    # Write the way dependency does (wb mode)
-    File.open(path, 'wb') { |file| file.print(original_content) }
-
-    # Read the way build_version_hash does (binread)
-    read_back = File.binread(path)
-
-    # SHA must match the original content's SHA
-    expect(git_blob_sha(read_back)).to eq(git_blob_sha(original_content))
-  ensure
-    File.delete(path) if File.exist?(path)
-  end
-
-  it 'round-trip: write with wb preserves LF line endings (no CRLF conversion)' do
-    path = File.join(SCRIPT_DIR, 'test-roundtrip-endings.lic')
-    File.open(path, 'wb') { |file| file.print(content_lf) }
-    read_back = File.binread(path)
-
-    # Content must be byte-identical - no line ending translation
-    expect(read_back).to eq(content_lf)
-    expect(read_back).not_to include("\r\n")
-  ensure
-    File.delete(path) if File.exist?(path)
-  end
-end
-
-RSpec.describe 'union_keys merge behavior' do
-  # Simulates the merge logic from SetupFiles#get_settings
-  def merge_with_union_keys(file_data_list)
-    # Peek pass: collect union_keys from all files
-    union_keys = file_data_list.reduce([]) do |keys, data|
-      file_keys = data['union_keys'] || []
-      (keys + file_keys).uniq
-    end
-
-    # Merge pass
-    file_data_list.reduce({}) do |result, data|
-      result.merge(data) do |key, old_val, new_val|
-        if union_keys.include?(key) && old_val.is_a?(Array) && new_val.is_a?(Array)
-          (old_val + new_val).uniq
-        else
-          new_val
-        end
-      end
+    it 'sets the $HOMETOWN global' do
+      shift_hometown('Shard')
+      expect($HOMETOWN).to eq('Shard')
     end
   end
 
-  context 'when no union_keys defined' do
-    it 'overwrites arrays (existing behavior)' do
-      base = { 'autostarts' => %w[esp afk] }
-      char = { 'autostarts' => %w[healer] }
-      result = merge_with_union_keys([base, char])
-      expect(result['autostarts']).to eq(%w[healer])
-    end
-  end
-
-  context 'when union_keys includes autostarts' do
-    it 'unions arrays from include and character files' do
-      include_file = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp afk textsubs] }
-      char_file = { 'autostarts' => %w[healer moonwatch] }
-      result = merge_with_union_keys([include_file, char_file])
-      expect(result['autostarts']).to match_array(%w[esp afk textsubs healer moonwatch])
-    end
-  end
-
-  context 'when union_keys defined in multiple files' do
-    it 'unions the union_keys themselves' do
-      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp], 'gear' => %w[backpack] }
-      include_file = { 'union_keys' => ['gear'], 'autostarts' => %w[afk], 'gear' => %w[sword] }
-      char = { 'autostarts' => %w[healer], 'gear' => %w[shield] }
-      result = merge_with_union_keys([base, include_file, char])
-      expect(result['autostarts']).to match_array(%w[esp afk healer])
-      expect(result['gear']).to match_array(%w[backpack sword shield])
-    end
-  end
-
-  context 'when union key value is not an array' do
-    it 'falls through to overwrite' do
-      base = { 'union_keys' => ['hometown'], 'hometown' => 'Crossing' }
-      char = { 'hometown' => 'Shard' }
-      result = merge_with_union_keys([base, char])
-      expect(result['hometown']).to eq('Shard')
-    end
-  end
-
-  context 'when union key only defined in one file' do
-    it 'keeps the value as-is' do
-      base = { 'union_keys' => ['autostarts'] }
-      char = { 'autostarts' => %w[healer moonwatch] }
-      result = merge_with_union_keys([base, char])
-      expect(result['autostarts']).to eq(%w[healer moonwatch])
-    end
-  end
-
-  context 'when union produces duplicates' do
-    it 'deduplicates the result' do
-      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp afk] }
-      char = { 'autostarts' => %w[afk healer] }
-      result = merge_with_union_keys([base, char])
-      expect(result['autostarts']).to match_array(%w[esp afk healer])
-      expect(result['autostarts'].length).to eq(3)
-    end
-  end
-
-  context 'with three-file cascade (base, include, character)' do
-    it 'unions across all three files' do
-      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp] }
-      include_file = { 'autostarts' => %w[afk textsubs] }
-      char = { 'autostarts' => %w[healer] }
-      result = merge_with_union_keys([base, include_file, char])
-      expect(result['autostarts']).to match_array(%w[esp afk textsubs healer])
-    end
-  end
-
-  context 'non-union keys remain unaffected' do
-    it 'overwrites non-union keys normally' do
-      base = { 'union_keys' => ['autostarts'], 'autostarts' => %w[esp], 'hometown' => 'Crossing' }
-      char = { 'autostarts' => %w[healer], 'hometown' => 'Shard' }
-      result = merge_with_union_keys([base, char])
-      expect(result['autostarts']).to match_array(%w[esp healer])
-      expect(result['hometown']).to eq('Shard')
+  describe '#clear_hometown' do
+    it 'clears the $HOMETOWN global' do
+      $HOMETOWN = 'Shard'
+      clear_hometown
+      expect($HOMETOWN).to be_nil
     end
   end
 end
 
-# --- Sentinel Gating ---
-# Validates structural integrity of the gated dependency.lic:
-# - Each sentinel gates an independent block
-# - No gate block nests another sentinel check
-# - Functions land in the correct gate (or outside all gates)
-# - Version string has been ticked
+# --- Version and structure ---
 
-DEP_SOURCE = File.read(dep_path)
+RSpec.describe 'Dependency Structure' do
+  describe 'version' do
+    it 'declares version 4.2.1' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.2.1'")
+    end
 
-# Extracts the body of an `unless Lich::Common.const_defined?(:SENTINEL, false)` block.
-# Returns the indented content between the unless and its closing end.
-# Extracts all `unless Lich::Common.const_defined?(:SENTINEL, false)` blocks
-# that reference the given sentinel. Returns their bodies concatenated.
-# A single sentinel may gate multiple blocks (e.g. CORE_GET_SETTINGS gates
-# both the get_settings/get_data functions and the ScriptManager class).
-def extract_gate_block(source, sentinel_name)
-  opening = "unless Lich::Common.const_defined?(:#{sentinel_name}, false)\n"
-  bodies = []
-  pos = 0
-  while (idx = source.index(opening, pos))
-    rest = source[idx + opening.length..]
-    end_match = rest.match(/^end\s*#.*gate/)
-    raise "Could not find closing end for #{sentinel_name} gate at position #{idx}" unless end_match
-
-    bodies << rest[0...end_match.begin(0)]
-    pos = idx + opening.length + end_match.end(0)
-  end
-  raise "Could not find any gate block for #{sentinel_name}" if bodies.empty?
-
-  bodies.join("\n")
-end
-
-RSpec.describe 'Sentinel Gating Structure' do
-  describe 'gate block extraction' do
-    %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP].each do |sentinel|
-      it "#{sentinel} gate block exists and is extractable" do
-        expect { extract_gate_block(DEP_SOURCE, sentinel) }.not_to raise_error
-      end
+    it 'requires minimum lich version 5.19.1' do
+      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.19.1'")
     end
   end
 
-  describe 'gate independence' do
-    let(:sentinels) { %w[CORE_GET_SETTINGS CORE_SCRIPT_LOADER CORE_MAP_OVERRIDES CORE_DR_STARTUP] }
+  describe 'removed gated code' do
+    it 'does not contain any sentinel gate blocks' do
+      expect(DEP_SOURCE).not_to include('const_defined?')
+    end
 
-    it 'no gate block contains another sentinel check' do
-      sentinels.each do |sentinel|
-        block = extract_gate_block(DEP_SOURCE, sentinel)
-        other_sentinels = sentinels - [sentinel]
-        other_sentinels.each do |other|
-          expect(block).not_to include("const_defined?(:#{other}"),
-                               "#{sentinel} gate must not check #{other} -- gates must be independent"
-        end
-      end
+    it 'does not define ArgParser class' do
+      expect(DEP_SOURCE).not_to include('class ArgParser')
+    end
+
+    it 'does not define SetupFiles class' do
+      expect(DEP_SOURCE).not_to include('class SetupFiles')
+    end
+
+    it 'does not define ScriptManager class' do
+      expect(DEP_SOURCE).not_to include('class ScriptManager')
+    end
+
+    it 'does not reference $manager' do
+      expect(DEP_SOURCE).not_to include('$manager')
+    end
+
+    it 'does not reference $setupfiles' do
+      expect(DEP_SOURCE).not_to include('$setupfiles')
     end
   end
 
-  describe 'CORE_GET_SETTINGS gate contents' do
-    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_GET_SETTINGS') }
-
-    it 'defines $setupfiles global' do
-      expect(block).to include('$setupfiles = SetupFiles.new')
-    end
-
-    it 'defines get_settings method' do
-      expect(block).to include('def get_settings')
-    end
-
-    it 'defines get_data method' do
-      expect(block).to include('def get_data')
-    end
-
-    it 'defines ScriptManager class (also gated by CORE_GET_SETTINGS)' do
-      expect(block).to include('class ScriptManager')
-    end
-
-    it 'defines $manager global' do
-      expect(block).to include('$manager = ScriptManager.new')
-    end
-
-    it 'defines ScriptManager-dependent helpers' do
-      expect(block).to include('def get_script(')
-      expect(block).to include('def force_refresh_scripts')
-      expect(block).to include('def list_tracked_scripts')
-      expect(block).to include('def setup_data')
-    end
-  end
-
-  describe 'CORE_SCRIPT_LOADER gate contents' do
-    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_SCRIPT_LOADER') }
-
-    it 'defines custom_require method returning a lambda' do
-      expect(block).to include('def custom_require')
-      expect(block).to include('lambda do')
-    end
-  end
-
-  describe 'CORE_MAP_OVERRIDES gate contents' do
-    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_MAP_OVERRIDES') }
-
-    it 'defines make_map_edits method' do
-      expect(block).to include('def make_map_edits')
-    end
-
-    it 'handles wayto overrides' do
-      expect(block).to include('base_wayto_overrides')
-      expect(block).to include('personal_wayto_overrides')
-    end
-
-    it 'handles personal map targets' do
-      expect(block).to include('personal_map_targets')
-    end
-  end
-
-  describe 'CORE_DR_STARTUP gate contents' do
-    let(:block) { extract_gate_block(DEP_SOURCE, 'CORE_DR_STARTUP') }
-
-    it 'checks ShowRoomID and MonsterBold flags' do
-      expect(block).to include('ShowRoomID')
-      expect(block).to include('MonsterBold')
-    end
-
-    it 'guards flag setup with UserVars.dependency_setflags' do
-      expect(block).to include('dependency_setflags')
-    end
-
-    it 'defines DR_OBSOLETE_SCRIPTS constant' do
-      expect(block).to include('DR_OBSOLETE_SCRIPTS')
-    end
-
-    it 'defines DR_OBSOLETE_DATA_FILES constant' do
-      expect(block).to include('DR_OBSOLETE_DATA_FILES')
-    end
-
-    it 'defines warn_obsolete_scripts method' do
-      expect(block).to include('def warn_obsolete_scripts')
-    end
-
-    it 'defines warn_obsolete_data_files method' do
-      expect(block).to include('def warn_obsolete_data_files')
-    end
-
-    it 'defines warn_custom_scripts method' do
-      expect(block).to include('def warn_custom_scripts')
-    end
-  end
-
-  describe 'CORE_AUTOSTART gate removed' do
-    it 'no longer contains CORE_AUTOSTART gate block' do
-      expect(DEP_SOURCE).not_to include('const_defined?(:CORE_AUTOSTART')
-    end
-
-    it 'no longer contains the autostart helpers gate comment' do
-      expect(DEP_SOURCE).not_to include('Autostart helpers gate')
-    end
-
-    it 'no longer references handle_obsolete_autostart anywhere' do
-      expect(DEP_SOURCE).not_to match(/\bhandle_obsolete_autostart/)
-    end
-
-    it 'no longer contains the perpetual merge into UserVars.autostart_scripts' do
-      expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts = merged')
-    end
-
-    it 'no longer contains the zombie merge echo message' do
-      expect(DEP_SOURCE).not_to include('Merging global autostarts into character autostarts')
-    end
-  end
-
-  describe 'deprecated autostart helper stubs' do
-    it 'defines autostart() as a deprecation stub' do
-      expect(DEP_SOURCE).to match(/def autostart\(/)
-      expect(DEP_SOURCE).to include('DEPRECATED: autostart() has been removed')
-    end
-
-    it 'defines stop_autostart() as a deprecation stub' do
-      expect(DEP_SOURCE).to match(/def stop_autostart\(/)
-      expect(DEP_SOURCE).to include('DEPRECATED: stop_autostart() has been removed')
-    end
-
-    it 'defines dependency_status() as a deprecation stub' do
-      expect(DEP_SOURCE).to match(/def dependency_status/)
-      expect(DEP_SOURCE).to include('DEPRECATED: dependency_status() has been removed')
-    end
-
-    it 'points users to YAML autostarts or ;autostart add' do
-      expect(DEP_SOURCE).to include(';autostart add')
-      expect(DEP_SOURCE).to include(';autostart remove')
-      expect(DEP_SOURCE).to include(';autostart list')
-    end
-
-    it 'stubs do not modify UserVars.autostart_scripts' do
-      expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts.push')
-      expect(DEP_SOURCE).not_to include('UserVars.autostart_scripts.delete')
-    end
-  end
-
-  describe 'one-shot orphan cleanup of Settings autostart' do
-    it "clears Settings['autostart'] if present" do
-      expect(DEP_SOURCE).to include("Settings['autostart'] = nil")
-    end
-
-    it 'saves after clearing' do
-      cleanup_block = DEP_SOURCE[/if Settings\['autostart'\].*?end/m]
-      expect(cleanup_block).not_to be_nil
-      expect(cleanup_block).to include('Settings.save')
-    end
-
-    it 'is guarded by a conditional check on Settings key' do
-      expect(DEP_SOURCE).to match(/^if Settings\['autostart'\]/)
-    end
-  end
-
-  describe 'pre-existing gates' do
-    it 'CORE_ARGPARSER gate exists with inline fallback' do
-      expect(DEP_SOURCE).to match(/const_defined\?\(:CORE_ARGPARSER/)
-      expect(DEP_SOURCE).to include('class ArgParser')
-    end
-
-    it 'CORE_SETUPFILES gate exists with inline fallback' do
-      expect(DEP_SOURCE).to match(/const_defined\?\(:CORE_SETUPFILES/)
-      expect(DEP_SOURCE).to include('class SetupFiles')
-    end
-
-    it 'does not define redundant top-level aliases (include Lich::Common handles it)' do
-      expect(DEP_SOURCE).not_to include('ArgParser = Lich::Common::ArgParser')
-      expect(DEP_SOURCE).not_to include('SetupFiles = Lich::Common::SetupFiles')
-    end
-  end
-
-  describe 'ungated runtime helpers' do
-    let(:runtime_marker) { DEP_SOURCE.index('# --- Runtime helpers') }
-
+  describe 'runtime helpers are present' do
     %w[
       save_bankbot_transaction
       load_bankbot_ledger
-      save_reportbot_whitelist
-      load_reportbot_whitelist
       send_slackbot_message
       register_slackbot
-      format_name
-      format_yaml_name
-      verify_script
       shift_hometown
       clear_hometown
     ].each do |fn_name|
-      it "#{fn_name} is defined outside all gate blocks" do
-        fn_pos = DEP_SOURCE.index(/^def #{Regexp.escape(fn_name)}[\s(]?/)
-        expect(fn_pos).not_to be_nil, "Expected to find def #{fn_name}"
-        expect(fn_pos).to be > runtime_marker,
-                          "#{fn_name} should be after the runtime helpers section marker"
+      it "defines #{fn_name}" do
+        expect(DEP_SOURCE).to match(/^def #{Regexp.escape(fn_name)}[\s(]/)
       end
     end
   end
 
-  describe 'version' do
-    it 'has been ticked to 3.1.0' do
-      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '3.1.0'")
+  describe 'removed helpers are absent' do
+    %w[
+      save_reportbot_whitelist
+      load_reportbot_whitelist
+      format_name
+      format_yaml_name
+      verify_script
+    ].each do |fn_name|
+      it "does not define #{fn_name}" do
+        expect(DEP_SOURCE).not_to match(/^def #{Regexp.escape(fn_name)}[\s(]/)
+      end
+    end
+  end
+end
+
+# --- Obsolete script detection (v4.2.0) ---
+#
+# dependency.lic warns at startup about scripts superseded by native core lich
+# functionality (DR_OBSOLETE_SCRIPTS) so a lingering copy on disk can be found
+# and deleted before it duplicates work core lich now performs. roomnumbers.lic
+# is the first such script. SCRIPT_DIR (from the harness above) is a real temp
+# directory, so File.file? checks exercise the actual filesystem.
+
+RSpec.describe 'Obsolete Script Detection' do
+  let(:main_dir) { SCRIPT_DIR }
+  let(:custom_dir) { File.join(SCRIPT_DIR, 'custom') }
+
+  # Create a real file so File.file? checks have something to find.
+  def write_script(dir, filename)
+    FileUtils.mkdir_p(dir)
+    path = File.join(dir, filename)
+    File.write(path, "# placeholder for testing\n")
+    path
+  end
+
+  before do
+    $respond_messages = []
+    # Start each example from a clean SCRIPT_DIR (this includes custom/).
+    FileUtils.rm_rf(Dir.glob(File.join(SCRIPT_DIR, '*')))
+  end
+
+  describe 'the DR_OBSOLETE_SCRIPTS constant' do
+    it 'lists roomnumbers as an obsolete script' do
+      expect(DR_OBSOLETE_SCRIPTS).to include('roomnumbers')
     end
 
-    it 'requires minimum lich version 5.17.0' do
-      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.17.0'")
+    it 'is frozen so it cannot be mutated at runtime' do
+      expect(DR_OBSOLETE_SCRIPTS).to be_frozen
+    end
+
+    it 'stores base names with no .lic extension' do
+      expect(DR_OBSOLETE_SCRIPTS).to all(satisfy { |name| !name.include?('.lic') })
     end
   end
 
-  describe 'boot sequence' do
-    it 'conditionally runs legacy ScriptManager boot' do
-      expect(DEP_SOURCE).to include('if defined?($manager)')
+  describe '#obsolete_script_dirs' do
+    it 'searches the custom directory before the main script directory' do
+      expect(obsolete_script_dirs).to eq([custom_dir, main_dir])
+    end
+  end
+
+  describe '#warn_obsolete_scripts' do
+    context 'when no obsolete script exists on disk' do
+      it 'returns an empty array' do
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'emits no warnings' do
+        warn_obsolete_scripts
+        expect($respond_messages).to be_empty
+      end
     end
 
-    it 'calls map overrides in non-legacy path' do
-      expect(DEP_SOURCE).to match(/make_map_edits if/)
+    context 'when an obsolete script lingers in the main script directory' do
+      before { write_script(main_dir, 'roomnumbers.lic') }
+
+      it 'returns the offending script name' do
+        expect(warn_obsolete_scripts).to eq(['roomnumbers'])
+      end
+
+      it 'warns that the file is obsolete and should be deleted' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include("'roomnumbers.lic' is obsolete")
+      end
+
+      it 'names the main script directory in the warning' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include(main_dir)
+      end
     end
 
-    it 'reloads setupfiles cache' do
-      expect(DEP_SOURCE).to include('$setupfiles.reload if')
+    context 'when an obsolete script lingers only in the custom directory' do
+      before { write_script(custom_dir, 'roomnumbers.lic') }
+
+      it 'still detects and returns it' do
+        expect(warn_obsolete_scripts).to eq(['roomnumbers'])
+      end
+
+      it 'names the custom directory in the warning' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include(custom_dir)
+      end
     end
 
-    it 'calls warning functions conditionally' do
-      expect(DEP_SOURCE).to match(/warn_custom_scripts if/)
-      expect(DEP_SOURCE).to match(/warn_obsolete_scripts if/)
-      expect(DEP_SOURCE).to match(/warn_obsolete_data_files if/)
+    context 'when an obsolete script exists in both the custom and main directories' do
+      before do
+        write_script(custom_dir, 'roomnumbers.lic')
+        write_script(main_dir, 'roomnumbers.lic')
+      end
+
+      it 'reports the script only once' do
+        warn_obsolete_scripts
+        expect($respond_messages.length).to eq(1)
+      end
+
+      it 'reports the higher-priority custom directory' do
+        warn_obsolete_scripts
+        expect($respond_messages.first).to include(custom_dir)
+      end
+    end
+
+    context 'when a non-obsolete script shares the directory' do
+      before { write_script(main_dir, 'combat-trainer.lic') }
+
+      it 'ignores it and returns an empty array' do
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'emits no warnings' do
+        warn_obsolete_scripts
+        expect($respond_messages).to be_empty
+      end
+    end
+
+    context 'with an explicitly injected obsolete list' do
+      before { write_script(main_dir, 'legacy-thing.lic') }
+
+      it 'checks the provided names instead of the default constant' do
+        expect(warn_obsolete_scripts(['legacy-thing'])).to eq(['legacy-thing'])
+      end
+
+      it 'does not mutate the frozen default constant' do
+        warn_obsolete_scripts(['legacy-thing'])
+        expect(DR_OBSOLETE_SCRIPTS).to eq(['roomnumbers'])
+      end
+    end
+
+    describe 'adversarial inputs' do
+      it 'returns an empty array for an empty obsolete list' do
+        write_script(main_dir, 'roomnumbers.lic')
+        expect(warn_obsolete_scripts([])).to eq([])
+      end
+
+      it 'does not match a file whose name lacks the .lic extension' do
+        write_script(main_dir, 'roomnumbers') # no extension
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'does not match a directory that shares the script name' do
+        FileUtils.mkdir_p(File.join(main_dir, 'roomnumbers.lic'))
+        expect(warn_obsolete_scripts).to eq([])
+      end
+
+      it 'does not raise when the custom directory is absent' do
+        FileUtils.rm_rf(custom_dir)
+        expect { warn_obsolete_scripts }.not_to raise_error
+      end
+
+      it 'does not warn for a script whose name is only a substring of a present file' do
+        write_script(main_dir, 'roomnumbers-extra.lic')
+        expect(warn_obsolete_scripts).to eq([])
+      end
     end
   end
 end

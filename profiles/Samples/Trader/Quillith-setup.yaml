@@ -751,8 +751,8 @@ lumber_buddy_tree_list:
 #- Cherry # longbows
 - Copperwood # longbows
 - Crabwood # martial
-- Darkspine	# martial
-- Diamondwood	# martial
+- Darkspine # martial
+- Diamondwood # martial
 - Dragonwood # alterations
 #- Ebony # Martial
 - E'erdream # ???
@@ -770,17 +770,17 @@ lumber_buddy_tree_list:
 - Lelori #Composite
 - Macawood #alterations
 - Mistwood # longbow, shortbow
-#- Osage	# longbows
+#- Osage # longbows
 - Ramin # longbows
-#- Redwood	# alterations
+#- Redwood # alterations
 - Rockwood # martial
 #- Rosewood # longbows
 - Shadowbark # ???
 - Silverwood # shortbows, composite bows
-- Smokewood	# alterations
-- Tamarak	# alterations
-- Tamboti	# ???
-#- Yew	# Longbows
+- Smokewood # alterations
+- Tamarak # alterations
+- Tamboti # ???
+#- Yew # Longbows
 
 crafting_container: cartographer trunk
 workorder_diff:

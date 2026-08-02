@@ -2,116 +2,15 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Define stub modules only if not already defined
-module DRC
-  class << self
-    def bput(*_args); end
-    def left_hand; end
-    def right_hand; end
-    def message(_msg); end
-    def wait_for_script_to_complete(*_args); end
-    def fix_standing; end
-    def release_invisibility; end
-
-    def get_noun(item)
-      item.to_s.split.last
-    end
-  end
-end unless defined?(DRC)
-
-module DRCI
-  class << self
-    def open_container?(*_args); end
-    def get_box_list_in_container(_container); end
-    def get_item?(*_args); end
-    def get_item_if_not_held?(_item); end
-    def put_away_item?(*_args); end
-    def stow_hand(_hand); end
-    def stow_hands; end
-    def stow_item?(_item); end
-    def in_hands?(_item); end
-    def in_left_hand?(_item); end
-    def in_right_hand?(_item); end
-    def dispose_trash(*_args); end
-    def count_lockpick_container(_container); end
-    def get_item_list(*_args); end
-    def lower_item?(_item); end
-    def remove_item?(_item); end
-    def wear_item?(_item); end
-    def tie_gem_pouch?(*_args); end
-    def swap_out_full_gempouch?(*_args); end
-    def fill_gem_pouch_with_container(*_args); end
-  end
-end unless defined?(DRCI)
-
-module DRCH
-  class << self
-    def check_health; end
-  end
-end unless defined?(DRCH)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-    def refill_lockpick_container(*_args); end
-  end
-end unless defined?(DRCT)
-
-module DRCM
-  class << self
-    def ensure_copper_on_hand(*_args); end
-  end
-end unless defined?(DRCM)
-
-module Lich
-  module Messaging
-    class << self
-      def msg(*_args); end
-    end
-  end
-end unless defined?(Lich::Messaging)
-
 class EquipmentManager
   def empty_hands; end
   def remove_gear_by; end
   def wear_items(_items); end
   def wear_equipment_set?(_set_name); end
 end unless defined?(EquipmentManager)
-
-def sitting?
-  false
-end
-
-def stunned?
-  false
-end
 
 load_lic_class('pick.lic', 'Pick')
 

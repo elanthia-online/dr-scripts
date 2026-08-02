@@ -1,7 +1,7 @@
 ---
 Arthe Dale:
   currency: kronars
-  nexus: # Crossing
+  nexus: &crossing_nexus # Crossing
     id: 19162
   shipment_clerk:
     id: 8999
@@ -11,8 +11,7 @@ Arthe Dale:
     id: 1073
 Crossing:
   currency: kronars
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   vault:
     id: 8285
   family_vault:
@@ -265,14 +264,13 @@ Crossing:
       - 970
 Knife Clan:
   currency: kronars
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   deposit: *crossing_deposit
   # npc_empath:
     # id: 6218 # This is Dokt.  He no longer heals.  Leaving this here for Posterity
 Darkling Wood:
   currency: dokoras
-  nexus: # Shard
+  nexus: &shard_nexus # Shard
     id: 9459
   shipment_clerk:
     id: 14636
@@ -283,8 +281,7 @@ Darkling Wood:
 Dirge:
   vault:
     id: 14633
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   deposit:
     id: 16655
   exchange:
@@ -316,8 +313,7 @@ Dirge:
       - 1320
 Fayrin's Rest:
   currency: dokoras
-  nexus: # Shard
-    id: 9459
+  nexus: *shard_nexus # Shard
   shipment_clerk:
     id: 19278
   trade_minister:
@@ -326,8 +322,7 @@ Fayrin's Rest:
     id: 2840
 Chyolvea:
   currency: dokoras
-  nexus: # Shard
-    id: 9459
+  nexus: *shard_nexus # Shard
   npc_empath:
     id: 8043
   deposit:
@@ -337,8 +332,7 @@ Chyolvea:
     fee: 0.08
 Leth Deriel:
   currency: kronars
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   vault:
     id: 4488
   leather_repair: &verrys
@@ -397,8 +391,7 @@ Leth Deriel:
     << : *zoluren_guild_leaders
 Shard:
   currency: dokoras
-  nexus: # Shard
-    id: 9459
+  nexus: *shard_nexus # Shard
   vault:
     id: 19282
   family_vault:
@@ -667,8 +660,7 @@ Shard:
       - 2595
 Steelclaw Clan:
   currency: dokoras
-  nexus: # Shard
-    id: 9459
+  nexus: *shard_nexus # Shard
   shipment_clerk:
     id: 19399
   trade_minister:
@@ -682,8 +674,7 @@ Steelclaw Clan:
   deposit: *shard_deposit
 Stone Clan:
   currency: kronars
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   shipment_clerk:
     id: 8996
   trade_minister:
@@ -692,8 +683,7 @@ Stone Clan:
     id: 1169
 Tiger Clan:
   currency: kronars
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   shipment_clerk:
     id: 1889
   trade_minister:
@@ -702,8 +692,7 @@ Tiger Clan:
     id: 1885
 Wolf Clan:
   currency: kronars
-  nexus: # Crossing
-    id: 19162
+  nexus: *crossing_nexus # Crossing
   shipment_clerk:
     id: 8997
   trade_minister:
@@ -720,7 +709,7 @@ Wolf Clan:
     name: Crolin
 Riverhaven:
   currency: lirums
-  nexus: # Riverhaven
+  nexus: &riverhaven_nexus # Riverhaven
     id: 365
   vault:
     id: 11476
@@ -743,15 +732,13 @@ Riverhaven:
   tannery:
     id: 7956
     name: Fara
-  leather_repair:
+  leather_repair: &unspiek
     id: 8737
     name: Unspiek
   locksmithing:
     id: 19096
     name: Ss'Thran
-  metal_repair:
-    id: 8737
-    name: Unspiek
+  metal_repair: *unspiek
   npc_empath:
     id: 8720
   exchange:
@@ -853,8 +840,7 @@ Rossman's Landing:
     id: 7702
     name: Drinak
   currency: lirums
-  nexus: # Riverhaven
-    id: 365
+  nexus: *riverhaven_nexus # Riverhaven
   vault:
     id: 51487
   exchange:
@@ -865,12 +851,8 @@ Rossman's Landing:
   gemshop:
     id: 12416
     name: Barberry
-  leather_repair:
-    id: 8737
-    name: Unspiek
-  metal_repair:
-    id: 8737
-    name: Unspiek
+  leather_repair: *unspiek
+  metal_repair: *unspiek
   perceive_health_rooms:
     - 7670
     - 7676
@@ -881,7 +863,7 @@ Rossman's Landing:
     - 12416
 Therenborough:
   currency: lirums
-  nexus: # Therenborough
+  nexus: &therenborough_nexus # Therenborough
     id: 3158
   vault:
     id: 8501
@@ -891,31 +873,31 @@ Therenborough:
     id: 3232
   trader_outpost:
     id: 3155
-  leather_repair:
+  leather_repair: &theren_leather
     id: 12209
     name: Kamze
-  metal_repair:
+  metal_repair: &theren_metal
     id: 12218
     name: Dagul
-  deposit:
+  deposit: &theren_deposit
     id: 3226
   exchange: &theren_exchange
     id: 3224
     fee: 0.05
-  debt_office:
+  debt_office: &theren_debt_office
     id: 3225
-  gemshop:
+  gemshop: &theren_gemshop
     id: 3231
     name: Gruk
   pawnshop:
     id: 3227
     name: Dorsot
-  tannery:
+  tannery: &theren_tannery
     id: 3229
     name: Dartrise
-  npc_empath:
+  npc_empath: &theren_empath
     id: 10079
-  theurgy_supplies:
+  theurgy_supplies: &theren_theurgy
     id: 11606
   favor_altar:
     << : *northern_favor_altar
@@ -923,9 +905,9 @@ Therenborough:
     << : *northern_favor_puzzle
   locksmithing:
     id:
-  guard_house:
+  guard_house: &theren_guard_house
     id: 7044
-  attunement_rooms:
+  attunement_rooms: &theren_attunement
     - 3353
     - 3414
     - 3412
@@ -956,28 +938,16 @@ Langenfirth:
     id: 13414
   trader_outpost:
     id: 3407
-  leather_repair:
-    id: 12209
-    name: Kamze
-  metal_repair:
-    id: 12218
-    name: Dagul
-  deposit:
-    id: 3226
+  leather_repair: *theren_leather
+  metal_repair: *theren_metal
+  deposit: *theren_deposit
   exchange:
     << : *theren_exchange
-  debt_office:
-    id: 3225
-  gemshop:
-    id: 3231
-    name: Gruk
-  tannery:
-    id: 3229
-    name: Dartrise
-  npc_empath:
-    id: 10079
-  theurgy_supplies:
-    id: 11606
+  debt_office: *theren_debt_office
+  gemshop: *theren_gemshop
+  tannery: *theren_tannery
+  npc_empath: *theren_empath
+  theurgy_supplies: *theren_theurgy
   favor_altar:
     << : *northern_favor_altar
   favor_puzzle:
@@ -987,19 +957,8 @@ Langenfirth:
   pawnshop:
     id: 12269
     name: Bynari
-  guard_house:
-    id: 7044
-  attunement_rooms:
-    - 3353
-    - 3414
-    - 3412
-    - 3420
-    - 3404
-    - 3402
-    - 3342
-    - 3344
-    - 3346
-    - 3348
+  guard_house: *theren_guard_house
+  attunement_rooms: *theren_attunement
   perceive_health_rooms:
     - 3353
     - 12212
@@ -1017,8 +976,7 @@ Langenfirth:
     << : *therengia_guild_leaders
 Fornsted:
   currency: lirums
-  nexus: # Therenborough
-    id: 3158
+  nexus: *therenborough_nexus # Therenborough
   shipment_clerk:
     id: 14435
   trade_minister:
@@ -1027,8 +985,7 @@ Fornsted:
     id: 3693
 Hvaral:
   currency: lirums
-  nexus: # Therenborough
-    id: 3158
+  nexus: *therenborough_nexus # Therenborough
   shipment_clerk:
     id: 14651
   trade_minister:
@@ -1059,6 +1016,8 @@ Ratha:
   tannery:
     id: 10753
     name: Lysskava'an
+  locksmithing:
+    id: 51654
   npc_empath:
     id: 10741
   debt_office:
@@ -1247,12 +1206,10 @@ Mer'Kresh:
   pawnshop:
     id: 11832
     name: Oweede
-  metal_repair:
+  metal_repair: &diwitt
     id: 11807
     name: Diwitt
-  leather_repair:
-    id: 11807
-    name: Diwitt
+  leather_repair: *diwitt
   tannery:
     id: 8827
     name: Scupper
@@ -1318,18 +1275,16 @@ Hibarnhvidar:
     id: 7412
   trader_outpost:
     id: 3903
-  leather_repair:
+  leather_repair: &ladar
     id: 11206
     name: Ladar
-  metal_repair:
-    id: 11206
-    name: Ladar
-  deposit:
+  metal_repair: *ladar
+  deposit: &hib_deposit
     id: 8883
   exchange: &hib_exchange
     id: 8884
     fee: 0.05
-  gemshop:
+  gemshop: &hib_gemshop
     id: 8899
     name: rasiya
   pawnshop:
@@ -1338,9 +1293,9 @@ Hibarnhvidar:
   tannery:
     id: 8885
     name: Vandorf
-  npc_empath:
+  npc_empath: &hib_empath
     id: 8881
-  locksmithing: # Ain Ghazal
+  locksmithing: &sephina_locksmithing # Ain Ghazal
     id: 13190
     name: Sephina
   theurgy_supplies:
@@ -1349,9 +1304,9 @@ Hibarnhvidar:
     << : *southern_favor_altar
   favor_puzzle:
     << : *southern_favor_puzzle
-  debt_office:
+  debt_office: &hib_debt_office
     id: 11696
-  guard_house:
+  guard_house: &hib_guard_house
     id: 11697
   thief_bin:
     id: 15151
@@ -1440,14 +1395,24 @@ Hibarnhvidar:
       id: 11498
 Raven's Point:
   currency: dokoras
-  nexus: # Shard
-    id: 9459
+  nexus: *shard_nexus # Shard
   shipment_clerk:
     id: 14642
   trade_minister:
     id: 14642
   trader_outpost:
     id: 4440
+  deposit:
+    id: 9425
+  exchange:
+    id: 9426
+    fee: 0.05
+  gemshop:
+    id: 9430
+    name: Gimsta
+  tannery:
+    id: 9431
+    name: Stedh
 Boar Clan:
   currency: dokoras
   vault:
@@ -1462,31 +1427,23 @@ Boar Clan:
     id: 12174
     name: Tuzra
   metal_repair: *tuzra
-  deposit:
-    id: 8883
+  deposit: *hib_deposit
   exchange:
     << : *hib_exchange
-  gemshop:
-    id: 8899
-    name: rasiya
+  gemshop: *hib_gemshop
   tannery:
     id: 12173
     name: Gudthar
-  npc_empath:
-    id: 8881
-  locksmithing: # Ain Ghazal
-    id: 13190
-    name: Sephina
+  npc_empath: *hib_empath
+  locksmithing: *sephina_locksmithing
   theurgy_supplies:
     id:
   favor_altar:
     << : *southern_favor_altar
   favor_puzzle:
     << : *southern_favor_puzzle
-  debt_office:
-    id: 11696
-  guard_house:
-    id: 11697
+  debt_office: *hib_debt_office
+  guard_house: *hib_guard_house
   attunement_rooms:
     - 4111
     - 4112
@@ -1542,7 +1499,9 @@ Fang Cove:
     id: 8390
   gemshop:
     id: 8386
-    name: Wickett
+    name:
+      - Wickett
+      - attendant
   tannery:
     id: 8394
     name: Gorund
@@ -1555,9 +1514,8 @@ Fang Cove:
   npc_empath:
     id: 8393
 Muspar'i:
-  currency: Lirums
-  nexus: # Therenborough
-    id: 3158
+  currency: lirums
+  nexus: *therenborough_nexus # Therenborough
   vault:
     id: 15110
   shipment_clerk:
@@ -1566,12 +1524,10 @@ Muspar'i:
     id: 14288
   trader_outpost:
     id: 14282
-  leather_repair:
-    id: # Leather repair is on the Oasis
-    name:
-  metal_repair:
+  metal_repair: &fekoeti
     id: 11124
     name: Fekoeti
+  leather_repair: *fekoeti # repairs both per game update; leather NPC was historically "on the Oasis"
   deposit:
     id: 305
   exchange:
@@ -1627,9 +1583,7 @@ Ain Ghazal:
     id: 14640
   exchange:
     << : *hib_exchange
-  locksmithing:
-    id: 13190
-    name: Sephina
+  locksmithing: *sephina_locksmithing
   guild_leaders:
     Thief:
       name: Ivitha
@@ -1649,6 +1603,9 @@ Hara'jaal:
   gemshop:
     id: 15293
     name: Abira
+  pawnshop:
+    id: 15278
+    name: Dumi
   tannery:
     id: 15307
     name: assistant
@@ -1664,14 +1621,11 @@ Hara'jaal:
     - 15279
     - 15271
     - 15257
-    - 15271
-    - 15279
     - 15280
     - 15267
     - 15266
     - 15265
     - 15264
-    - 15263
   perceive_health_rooms:
     - 15313
     - 15283

@@ -3,9 +3,7 @@
 require 'ostruct'
 require 'time'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
+require_relative 'spec_helper'
 
 # Helper to create a Flags stub for tests that need it
 # Use stub_const to avoid conflicts with other specs (e.g., workorders_spec.rb)
@@ -46,107 +44,7 @@ def stub_flags_class
   end)
 end
 
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  # Find the matching 'end' at column 0 (same level as class definition)
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
 # Minimal stub modules for game interaction
-module DRC
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.bput(*_args)
-    'Roundtime'
-  end
-
-  def self.message(*_args); end
-
-  def self.wait_for_script_to_complete(*_args); end
-end
-
-module DRCC
-  def self.stow_crafting_item(*_args)
-    true
-  end
-
-  def self.get_crafting_item(*_args); end
-
-  def self.get_adjust_tongs?(*_args)
-    true
-  end
-
-  def self.find_grindstone(*_args); end
-
-  def self.check_consumables(*_args); end
-
-  def self.find_recipe2(*_args); end
-
-  def self.logbook_item(*_args); end
-end
-
-module DRCI
-  def self.in_hands?(*_args)
-    false
-  end
-
-  def self.in_left_hand?(*_args)
-    false
-  end
-
-  def self.in_right_hand?(*_args)
-    false
-  end
-
-  def self.get_item?(*_args)
-    true
-  end
-
-  def self.put_away_item?(*_args)
-    true
-  end
-
-  def self.dispose_trash(*_args); end
-end
-
-module DRCA
-  def self.crafting_magic_routine(*_args); end
-end
-
-module DRCM
-  def self.ensure_copper_on_hand(*_args)
-    true
-  end
-end
-
-module DRCT
-  def self.walk_to(*_args); end
-end
-
 # MockRoom for private forge testing - Room is defined in test_harness.rb
 class MockRoom
   attr_accessor :id
@@ -156,27 +54,9 @@ class MockRoom
   end
 end
 
-module DRSkill
-  def self.getrank(*_args)
-    100
-  end
-end
-
 # Lich messaging mock
-module Lich
-  module Messaging
-    def self.msg(*_args); end
-  end
-end
-
 # Load the Forge class
 load_lic_class('forge.lic', 'Forge')
-
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data
-  end
-end
 
 RSpec.describe Forge do
   describe 'class constants' do
@@ -699,7 +579,10 @@ RSpec.describe Forge do
       it 'gets item when not in left hand' do
         allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(false, true)
         allow(DRCI).to receive(:in_right_hand?).and_return(false)
-        expect(DRCC).to receive(:stow_crafting_item)
+        # prepare_item_in_left_hand/handle_oiling now stow BOTH hands (via
+        # stow_both_hands) before retrieving the item, so stow_crafting_item is
+        # called once per hand.
+        expect(DRCC).to receive(:stow_crafting_item).twice
         expect(DRC).to receive(:bput).with('get sword on anvil', 'You get', 'What were you referring to?').and_return('You get')
         expect(forge_instance).to receive(:swap_tool).with('oil', true)
         forge_instance.send(:handle_oiling)
@@ -716,6 +599,48 @@ RSpec.describe Forge do
         forge_instance.send(:handle_oiling)
         expect(forge_instance.instance_variable_get(:@command)).to eq('pour my oil on my sword')
         expect(forge_instance).to have_received(:swap_tool).with('oil', true)
+      end
+    end
+
+    describe '#forge_in_room? and #ensure_forge (temper forge guard)' do
+      it 'FORGE_MISSING_PATTERN matches no-forge responses' do
+        expect(Forge::FORGE_MISSING_PATTERN).to be_a(Regexp)
+        expect('I could not find').to match(Forge::FORGE_MISSING_PATTERN)
+        expect('What were you referring to').to match(Forge::FORGE_MISSING_PATTERN)
+      end
+
+      it 'forge_in_room? is true when the forge holds an item' do
+        allow(DRC).to receive(:bput).and_return(Forge::FORGE_HAS_ITEM_PATTERN)
+        expect(forge_instance.send(:forge_in_room?)).to be true
+      end
+
+      it 'forge_in_room? is true when the forge is empty' do
+        allow(DRC).to receive(:bput).and_return(Forge::FORGE_EMPTY_PATTERN)
+        expect(forge_instance.send(:forge_in_room?)).to be true
+      end
+
+      it 'forge_in_room? is false when there is no forge in the room' do
+        allow(DRC).to receive(:bput).and_return('I could not find')
+        expect(forge_instance.send(:forge_in_room?)).to be false
+      end
+
+      it 'ensure_forge does not search when a forge is already present' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(true)
+        expect(DRCC).not_to receive(:find_anvil)
+        forge_instance.send(:ensure_forge)
+      end
+
+      it 'ensure_forge walks to a free anvil room when the current room has no forge' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(false, true)
+        expect(DRCC).to receive(:find_anvil).with('Crossing')
+        forge_instance.send(:ensure_forge)
+      end
+
+      it 'ensure_forge exits when no forge can be found even after searching' do
+        allow(forge_instance).to receive(:forge_in_room?).and_return(false, false)
+        allow(DRCC).to receive(:find_anvil)
+        expect(forge_instance).to receive(:cleanup_and_exit).with(/Could not find a forge/)
+        forge_instance.send(:ensure_forge)
       end
     end
 
@@ -829,6 +754,12 @@ RSpec.describe Forge do
     end
 
     describe '#swap_tool' do
+      # swap_tool ends by calling verify_tool_in_hand, which exits the script if
+      # the tool is not in hand. These examples exercise the tool-selection
+      # branches (the DRCC calls), not the post-swap verification, so neutralize
+      # the verify step to keep a failed check from terminating the run.
+      before { allow(forge_instance).to receive(:verify_tool_in_hand) }
+
       it 'uses adjustable tongs when switching to tongs' do
         forge_instance.instance_variable_set(:@adjustable_tongs, true)
         expect(DRCC).to receive(:get_adjust_tongs?).with('tongs', 'backpack', [], nil, true)
@@ -903,10 +834,10 @@ RSpec.describe Forge do
         allow(forge_instance).to receive(:magic_cleanup)
       end
 
-      it 'logs item to engineering logbook when finish is log' do
+      it 'logs item to forging logbook when finish is log' do
         forge_instance.instance_variable_set(:@finish, 'log')
-        expect(DRCC).to receive(:logbook_item).with('engineering', 'sword', 'backpack')
-        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword logged to engineering logbook.')
+        expect(DRCC).to receive(:logbook_item).with('forging', 'sword', 'backpack')
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: sword logged to forging logbook.')
         expect { forge_instance.send(:complete_crafting) }.to raise_error(SystemExit)
       end
 
@@ -999,13 +930,13 @@ RSpec.describe Forge do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
         allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
-        expect(DRC).to receive(:bput).and_return("You don't have enough")
+        allow(DRC).to receive(:bput).and_return("You don't have enough")
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: BLOCKED from entering private forge!')
         expect(Lich::Messaging).to receive(:msg).with('bold', /sentry won't let you in/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Not enough money/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Forge is already rented/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Other restriction/)
-        expect(Lich::Messaging).to receive(:msg).with('bold', /Exiting/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', /Use a public forge or resolve the issue/)
         expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
       end
 
@@ -1043,6 +974,9 @@ RSpec.describe Forge do
           allow(DRCC).to receive(:find_recipe2)
           allow(DRCC).to receive(:stow_crafting_item)
           allow(forge_instance).to receive(:swap_tool)
+          # prep runs the recipe-book flow before fetching the ingot; default the
+          # book check to success so examples can focus on the ingot handling.
+          allow(DRCI).to receive(:in_hands?).and_return(true)
         end
 
         it 'uses DRCC.get_crafting_item to fetch ingot' do

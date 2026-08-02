@@ -1,49 +1,8 @@
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction.
-module DRC
-  def self.message(*_args); end
-
-  def self.wait_for_script_to_complete(*_args); end
-end
-
-module DRCT
-  def self.walk_to(*_args); end
-end
-
-module DRCH
-  def self.check_health
-    $mock_health || { 'score' => 0 }
-  end
-end
-
 # Add known_spells support to test harness DRSpells
 module Harness
   class DRSpells
@@ -64,7 +23,6 @@ load_lic_class('plantheal.lic', 'PlantHeal')
 RSpec.describe PlantHeal do
   before(:each) do
     reset_data
-    $mock_health = nil
   end
 
   # Helper: create a bare PlantHeal instance without running initialize
@@ -274,7 +232,6 @@ RSpec.describe PlantHeal do
   describe '#heal_between_hugs' do
     context 'waggle healing path' do
       it 'heals in place without walking to healing room' do
-        $mock_health = { 'score' => 5 }
         instance = build_instance(waggle_healing: true, healingroom: 1234, plantroom: 5678)
         expect(instance).to receive(:ensure_healing_spells)
         expect(instance).to receive(:wait_for_passive_healing)
@@ -285,7 +242,6 @@ RSpec.describe PlantHeal do
 
     context 'healme path' do
       it 'walks to healing room, runs healme, walks back to plant room' do
-        $mock_health = { 'score' => 5 }
         instance = build_instance(waggle_healing: false, healingroom: 1234, plantroom: 5678)
         expect(DRCT).to receive(:walk_to).with(1234).ordered
         expect(DRC).to receive(:wait_for_script_to_complete).with('healme').ordered
@@ -301,7 +257,6 @@ RSpec.describe PlantHeal do
 
   describe '#wait_for_passive_healing' do
     it 'returns immediately when wound score is 0' do
-      $mock_health = { 'score' => 0 }
       instance = build_instance(healingroom: 1234)
       expect(instance).not_to receive(:pause)
       instance.send(:wait_for_passive_healing)
@@ -320,7 +275,7 @@ RSpec.describe PlantHeal do
     end
 
     it 'falls back to healme after timeout' do
-      $mock_health = { 'score' => 5 }
+      allow(DRCH).to receive(:check_health).and_return('score' => 5)
       instance = build_instance(healingroom: 1234)
       allow(instance).to receive(:pause)
       expect(DRC).to receive(:message).with(/Still wounded after.*passive healing.*healme as fallback/)

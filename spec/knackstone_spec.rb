@@ -2,88 +2,10 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
-# Minimal stub modules for game interaction
-module DRC
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.bput(*_args)
-    'Roundtime'
-  end
-
-  def self.message(*_args); end
-end
-
-module DRCI
-  def self.in_hands?(*_args)
-    false
-  end
-
-  def self.remove_item?(*_args)
-    true
-  end
-
-  def self.wear_item?(*_args)
-    true
-  end
-
-  def self.put_away_item?(*_args)
-    true
-  end
-
-  def self.get_item_if_not_held?(*_args)
-    true
-  end
-end
-
-module Lich
-  module Util
-    def self.issue_command(*_args)
-      []
-    end
-  end
-end
+require_relative 'spec_helper'
 
 # Load Knackstone class definition (without executing top-level code)
 load_lic_class('knackstone.lic', 'Knackstone')
-
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data
-  end
-end
 
 RSpec.describe Knackstone do
   let(:settings) do

@@ -3,6 +3,17 @@
 =end
 
 class InventoryManager
+  # Entities the game emits inside item names. Decoded rather than deleted so
+  # "a black &amp; white cloak" stays "a black & white cloak".
+  XML_ENTITIES = {
+    'amp'  => '&',
+    'lt'   => '<',
+    'gt'   => '>',
+    'quot' => '"',
+    'apos' => "'",
+    '#39'  => "'"
+  }.freeze
+
   def initialize
     @active_character = Char.name.to_sym
     @item_db_path = "data/inventory.yaml"
@@ -27,7 +38,8 @@ class InventoryManager
         { name: 'shop', regex: /shop/i, optional: true, description: "Save your Trader shop inventory." },
         { name: 'pocket', regex: /pocket/i, optional: true, description: "Rummages your secret pocket container for list of items. NOTE: Must be wearing the container." },
         { name: 'vault_standard', regex: /vault_standard/i, optional: true, description: "Uses VAULT STANDARD to get a list of items." },
-        { name: 'vault_family', regex: /vault_family/i, optional: true, description: "Uses VAULT FAMILY to get a list of items." }
+        { name: 'vault_family', regex: /vault_family/i, optional: true, description: "Uses VAULT FAMILY to get a list of items." },
+        { name: 'ticket', regex: /ticket/i, optional: true, description: "Save ticket/currency information" }
       ],
       [
         { name: 'search', regex: /search/i, description: 'Start a search across all characters for specified item.' },
@@ -42,6 +54,9 @@ class InventoryManager
       [
         { name: 'remove', regex: /remove/i, description: "Remove character's inventory." },
         { name: 'name', regex: /\w+/i, optional: false, description: 'Character to remove.' }
+      ],
+      [
+        { name: 'gui', regex: /gui/i, description: 'Open a graphical browser for the saved inventory: collapsible character > source > container > item tree, live search, and Elanthipedia lookup.' }
       ]
     ]
 
@@ -80,6 +95,8 @@ class InventoryManager
       add_trader_shop
     elsif args.pocket
       add_pocket_inv
+    elsif args.ticket
+      add_ticket
     elsif args.save
       add_current_inv
     elsif args.count
@@ -90,6 +107,8 @@ class InventoryManager
       search_for_item(args.item, args.nest)
     elsif args.list
       list_character_inv(args.name, args.nest)
+    elsif args.gui
+      launch_gui
     else
       DRC.message('Type ;inventory-manager help for a usage guide')
     end
@@ -116,10 +135,15 @@ class InventoryManager
     # forever unless the entire character was deleted.
     @version_string = 'version'.to_sym
 
-    version = @item_data[@version_string][0]
+    # A brand-new database has no version row at all, and YAML.load_file returns
+    # nil for the empty file setup just created, so read this defensively rather
+    # than indexing straight into it.
+    version = @item_data[@version_string].to_a.first
 
     if version != '2.00'
       @item_data.each do |_k, v|
+        next unless v.is_a?(Array)
+
         v.each { |item|
           next if valid_data_row(item)
 
@@ -132,7 +156,7 @@ class InventoryManager
   end
 
   def valid_data_row(item)
-    if item.include?('(vault)') || item.include?('(register)') || item.include?('(eddy)') || item.include?('(caravan_box)') || item.include?('(Family)') || item.include?('(pocket)')
+    if item.include?('(vault)') || item.include?('(register)') || item.include?('(eddy)') || item.include?('(caravan_box)') || item.include?('(Family)') || item.include?('(pocket)') || item.include?('(ticket)')
       true
     else
       false
@@ -153,16 +177,44 @@ class InventoryManager
     File.open(@item_db_path, 'w') { |file| file.write(@item_data.to_yaml(line_width: -1)) }
   end
 
+  # issue_command returns an empty array when the end pattern never arrives, so
+  # retrying until it is non-empty spins forever on any command the game refuses.
+  # Try a few times, then give up and let the caller carry on.
+  CAPTURE_ATTEMPTS = 3
+
+  # Strips the XML noise the game mixes into item output, returning nil for the
+  # structural lines that are not items at all. Shared by the save and count
+  # paths so they agree on what counts as an item.
+  def clean_item_line(line)
+    text = line.to_s
+    return nil if text =~ /<\/?(?:prompt|output)\b/ || text.include?('<?xml')
+
+    # Tags first, then entities -- otherwise a decoded &lt; could be mistaken for
+    # the start of a tag.
+    text.gsub(/<[^>]*>/, '')
+        .gsub(/&(amp|lt|gt|quot|apos|#39);/) { XML_ENTITIES[Regexp.last_match(1)] }
+  end
+
+  def capture_command(command, end_pattern, timeout: 3)
+    CAPTURE_ATTEMPTS.times do
+      waitrt?
+      capture = Lich::Util.issue_command(command, end_pattern, timeout: timeout)
+      return capture if capture && !capture.empty?
+    end
+    DRC.message("inventory-manager: gave up on \"#{command}\" after #{CAPTURE_ATTEMPTS} tries.")
+    []
+  end
+
   def get_inv_count(desc)
     count, closed = 0, 0
     if desc.nil?
       # Counting all items in inventory
-      capture = []
-      until capture != []
-        capture = Lich::Util.issue_command('inv list', /^You have:/, timeout: 3) unless waitrt?
-      end
+      capture = capture_command('inv list', /^You have:/)
       capture.each do |line|
-        item = line.lstrip
+        clean = clean_item_line(line)
+        next if clean.nil?
+
+        item = clean.strip
 
         next if item.empty?
         next if item.start_with?(*@inventory_ignores)
@@ -173,12 +225,12 @@ class InventoryManager
       DRC.message("You have #{count} items, #{closed} of which are (closed) containers.")
     else
       # Counting items matching the description, i.e., inv count pouch
-      capture = []
-      until capture != []
-        capture = Lich::Util.issue_command("inv search #{desc}", /rummage about your person/, timeout: 3) unless waitrt?
-      end
+      capture = capture_command("inv search #{desc}", /rummage about your person/)
       capture.each do |line|
-        item = line.lstrip
+        clean = clean_item_line(line)
+        next if clean.nil?
+
+        item = clean.strip
 
         next if item.empty?
         next if item.start_with?(*@inventory_ignores)
@@ -198,30 +250,46 @@ class InventoryManager
 
     get_item_data(inventory_type)
 
-    capture = []
-    until capture != []
-      capture = Lich::Util.issue_command(command, end_pattern, timeout: 3) unless waitrt?
+    capture = capture_command(command, end_pattern)
+    if capture.empty?
+      DRC.message("inventory-manager: skipping #{inventory_type}, no usable response to \"#{command}\".")
+      # Nothing is written, so the saved file keeps whatever it already had.
+      start_script('sorter') if using_sorter && !Script.running?('sorter')
+      return
     end
+
     lines = capture
     # when rummaging, this block splits the items, including the last two that are split by and instead of a comma
     if command.start_with?("rummage")
-      container = capture[0]
-      lines = container[rummage_length, container.length - (rummage_length + 1)].split(",")
+      container = capture[0].to_s
+      body = container[rummage_length, container.length - (rummage_length + 1)].to_s
+      lines = body.split(",")
 
-      last_item = lines.length - 1
+      unless lines.empty?
+        # The last two items are joined by "and" rather than a comma. A container
+        # holding one item, or none, has no conjunction at all -- appending
+        # last_two_items[1] unconditionally put a nil in the list, which crashed
+        # the parse loop below.
+        last_two_items = lines[-1].to_s.split(" and ")
+        lines[-1] = last_two_items[0]
+        lines << last_two_items[1] if last_two_items[1]
+      end
 
-      last_two_items = lines[last_item].split(" and ")
-
-      lines[last_item] = last_two_items[0]
-      lines[last_item + 1] = last_two_items[1]
+      # An empty container reports "nothing", which is not an item.
+      lines.reject! { |entry| entry.to_s.strip.match?(/\Anothing\.?\z/i) }
     end
 
     container = ""
     sub_container = ""
     lines.each do |line|
       line.sub!(/\(\d+\)/, '') if command == 'vault standard'
-      item = line.lstrip
+      # Game output carries XML noise (bold toggles, <d> command tags, prompts)
+      # that used to leak into inventory.yaml verbatim. Clean it once, up front,
+      # so the item text and the indentation checks below both see clean text.
+      clean_line = clean_item_line(line)
+      next if clean_line.nil?
 
+      item = clean_line.strip
       next if item.empty?
       next if item.start_with?(*@inventory_ignores)
 
@@ -229,12 +297,23 @@ class InventoryManager
         container = item.to_s
         next
       end
+
+      # A deed register is an ASCII table, not an item list, so it needs its own
+      # parse rather than the container logic below.
+      if inventory_type == 'register'
+        deed = parse_deed_row(item)
+        next if deed.nil?
+
+        @item_data[@active_character] << "#{deed} (#{inventory_type})"
+        next
+      end
+
       # if the item starts with a -, it's in a container
       if item[0].eql? '-'
         item[0] = ''
-        if line =~ /\s{8,}-(?:a|an|some|the|several|clusters|one) /
+        if clean_line =~ /^\s{8,}-/
           item.concat(" (nested container - #{sub_container})")
-        elsif line =~ /\s{5}-(?:a|an|some|the|several|clusters|one) /
+        elsif clean_line =~ /^\s{5,}-/
           item.concat(" (in container - #{container})")
           sub_container = item.to_s
         else
@@ -246,9 +325,9 @@ class InventoryManager
         item.concat(' (worn)')
       elsif command == "read my storage book" || command == "read my vault book" || inventory_type == "shadow_servant"
         # Vault book, storage book and shadow servant via PG all have same output formatting
-        if line =~ /\s{8,}(?:a|an|some|the|several|clusters|one) /
+        if clean_line =~ /\s{8,}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (nested container - #{sub_container})")
-        elsif line =~ /\s{6}(?:a|an|some|the|several|clusters|one) /
+        elsif clean_line =~ /\s{6}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (in container - #{container})")
           sub_container = item.to_s
         else
@@ -256,9 +335,9 @@ class InventoryManager
         end
       elsif command == 'vault standard'
         # items in a container are prefixed by 11 spaces once the item count is removed
-        if line =~ /\s{16,}(?:a|an|some|the|several|clusters|one) /
+        if clean_line =~ /\s{16,}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (nested container - #{sub_container})")
-        elsif line =~ /\s{11}(?:a|an|some|the|several|clusters|one) /
+        elsif clean_line =~ /\s{11}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (in container - #{container})")
           sub_container = item.to_s
         else
@@ -271,6 +350,11 @@ class InventoryManager
         else
           item = clean_home_string(item)
           item.concat(" (attached to #{container})")
+        end
+      elsif inventory_type == 'ticket'
+        if (match = item.match(/^([A-Za-z\-' ]+) - (.*)\./))
+          captures = match.captures
+          item = "#{captures[0]}: #{captures[1]}"
         end
       end
 
@@ -286,10 +370,44 @@ class InventoryManager
     end
   end
 
+  # Turns one row of the "read my register" table into a stored item, keeping the
+  # deed description as the name so it searches like any other item, with the
+  # page number and any player-written note folded into a single annotation.
+  # Returns nil for the borders, the header row and the totals line.
+  def parse_deed_row(line)
+    return nil unless line.start_with?('|')
+
+    # ["", page, type, deed, notes...] -- a stray | inside a note is rejoined.
+    columns = line.split('|').map(&:strip)
+    return nil if columns.length < 4
+
+    page = columns[1].to_s
+    deed = columns[3].to_s
+    note = columns[4..-1].to_a.join(' ').strip
+
+    # The header row's page column is "Page", which is how it gets dropped.
+    return nil unless page.match?(/\A\d+\z/)
+    return nil if deed.empty?
+
+    annotation = "deed page #{page}"
+    annotation = "#{annotation} - #{note}" unless note.empty?
+    "#{deed} (#{annotation})"
+  end
+
   def clean_home_string(string)
     # We remove the category by finding the : in the string, plus drop the period at the end
-    colon = string.index(":") + 2
-    string[colon..-2]
+    colon = string.index(":")
+    # No category prefix means there is nothing to trim; slicing blind here used
+    # to raise on nil or lop the front off an unrelated line.
+    return string if colon.nil?
+
+    # A bare category such as "Furniture:" slices past the end of the string and
+    # yields nil, which then crashed the caller's concat.
+    string[(colon + 2)..-2] || string
+  end
+
+  def add_ticket
+    check_inventory("ticket", /^You take a moment/, 'ticket')
   end
 
   def add_vault_standard
@@ -366,10 +484,17 @@ class InventoryManager
       exit
     end
 
-    get_item_data('spell_scroll')
-
     stacker = @settings.scroll_sorter['stacker']
-    scroll_stackers = @settings.scroll_stackers
+    # to_a because a yaml without scroll_stackers leaves this nil, and the loop
+    # below used to call .each straight on it.
+    scroll_stackers = @settings.scroll_stackers.to_a
+
+    if !stacker && scroll_stackers.empty?
+      DRC.message('You have no stacker or scroll_stackers defined for sort-scrolls or stack-scrolls!')
+      return
+    end
+
+    get_item_data('spell_scroll')
 
     DRCI.open_container?("my #{stacker_container}")
 
@@ -378,14 +503,20 @@ class InventoryManager
     if stacker
       # stacker is defined, so they're using sort-scrolls - get all ten books and parse them
       10.times do
-        DRCI.get_item_safe?("tenth #{stacker}", stacker_container)
+        # Nothing left to fetch means there are no further books, so stop instead
+        # of flipping something that is not in hand.
+        break unless DRCI.get_item_safe?("tenth #{stacker}", stacker_container)
+
         spells.concat(check_scroll_stacker(stacker))
         DRCI.put_away_item?(stacker, stacker_container)
       end
     else
       # no stacker variable, so they are using stack-scrolls. loop through their scroll stackers and parse them
       scroll_stackers.each do |scroll_stacker|
-        DRCI.get_item_safe?(scroll_stacker, stacker_container)
+        # A configured stacker you are not actually carrying is skipped rather
+        # than flipped, which is what produced the repeated failure messages.
+        next unless DRCI.get_item_safe?(scroll_stacker, stacker_container)
+
         spells.concat(check_scroll_stacker(scroll_stacker))
         DRCI.put_away_item?(scroll_stacker, stacker_container)
       end
@@ -402,10 +533,8 @@ class InventoryManager
 
   def check_scroll_stacker(stacker)
     spells = []
-    capture = []
-    until capture != []
-      capture = Lich::Util.issue_command("flip my #{stacker.split.last}", /^You flip through the #{stacker.split.last}, checking each section before closing it.$/, timeout: 3) unless waitrt?
-    end
+    noun = stacker.split.last
+    capture = capture_command("flip my #{noun}", /^You flip through the #{noun}, checking each section before closing it.$/)
     capture.each do |line|
       if line =~ /The (.+) section has (\d+)/
         spell = "#{Regexp.last_match(1)} (#{Regexp.last_match(2)})"
@@ -446,10 +575,7 @@ class InventoryManager
     get_item_data('trader_shop')
 
     surfaces = Hash.new
-    capture = []
-    until capture != []
-      capture = Lich::Util.issue_command("shop customer", /^The following items contain goods for sale:/, timeout: 3) unless waitrt?
-    end
+    capture = capture_command('shop customer', /^The following items contain goods for sale:/)
     capture.each do |line|
       line = line.lstrip
 
@@ -462,10 +588,7 @@ class InventoryManager
     end
 
     surfaces.each do |surface|
-      capture = []
-      until capture != []
-        capture = Lich::Util.issue_command(surface[1], /, you see:/, timeout: 3) unless waitrt?
-      end
+      capture = capture_command(surface[1], /, you see:/)
       capture.each do |line|
         line = line.lstrip
 
@@ -493,9 +616,9 @@ class InventoryManager
       return
     end
 
-    name_sym = name.capitalize.to_sym
+    name_sym = character_key(name)
     if @item_data.has_key?(name_sym)
-      DRC.message("Inventory for #{name.capitalize}")
+      DRC.message("Inventory for #{name_sym}")
       @item_data[name_sym].each { |item|
         if !nested
           item = strip_nesting(item)
@@ -503,27 +626,35 @@ class InventoryManager
         DRC.message("   - #{item}")
       }
     else
-      DRC.message("No data found for the character #{name.capitalize}!")
+      DRC.message("No data found for the character #{name}!")
     end
   end
 
+  # Keys are stored as symbols from Char.name. Match case-insensitively so a name
+  # that is not simply capitalised, such as McTavish, is still found.
+  def character_key(name)
+    wanted = name.to_s.downcase
+    @item_data.keys.find { |key| key.to_s.downcase == wanted } || name.to_s.capitalize.to_sym
+  end
+
   def search_for_item(item, nested)
-    total_found = 0
+    needle = item.downcase
     @item_data.each do |k, v|
       next if k == @version_string
 
-      total_found = 0
+      matches = []
+      v.each do |data|
+        data = strip_nesting(data) unless nested
+        matches << data if data.downcase.include?(needle)
+      end
+      # Only report characters that actually have a match, otherwise a large
+      # multi-character database spams a "Checking/Found 0 matches" block per
+      # character on every search.
+      next if matches.empty?
+
       DRC.message("Checking #{k}:")
-      v.each { |data|
-        if !nested
-          data = strip_nesting(data)
-        end
-        if data.downcase.include?(item)
-          total_found += 1
-          DRC.message("Match #{total_found}): #{data}")
-        end
-      }
-      DRC.message("Found #{total_found} match#{(total_found > 1 ? 'es' : '')} on #{k}\n")
+      matches.each_with_index { |data, index| DRC.message("Match #{index + 1}): #{data}") }
+      DRC.message("Found #{matches.length} match#{(matches.length > 1 ? 'es' : '')} on #{k}\n")
     end
   end
 
@@ -535,12 +666,768 @@ class InventoryManager
     end
   end
 
-  def remove_character_data(name_to_remove)
-    return if name_to_remove == "version"
+  # The GUI is strictly opt-in via ;inventory-manager gui. HAVE_GTK is only
+  # touched here so the text commands keep working on installs without the
+  # ruby-gtk bindings.
+  def launch_gui
+    unless defined?(HAVE_GTK) && HAVE_GTK
+      DRC.message('The GUI needs the ruby-gtk bindings, which are not available in this Lich install.')
+      DRC.message('The text commands still work: ;inventory-manager list <name>, ;inventory-manager search <item>')
+      return
+    end
 
-    @item_data.delete(name_to_remove.capitalize.to_sym)
+    # Passing self lets the Scan button reuse the same save methods the text
+    # commands call, rather than duplicating any of that logic.
+    InventoryManagerGui.new(@item_db_path, @version_string, self).run
+  end
+
+  def remove_character_data(name_to_remove)
+    key = character_key(name_to_remove)
+    # Case-insensitive, so the schema row cannot be deleted as "Version" either.
+    return if key.to_s.downcase == 'version'
+
+    # Deleting a name that is not present used to report success regardless.
+    unless @item_data.key?(key)
+      DRC.message("No data found for the character #{name_to_remove}!")
+      return
+    end
+
+    @item_data.delete(key)
     File.open(@item_db_path, 'w') { |file| file.write(@item_data.to_yaml(line_width: -1)) }
-    DRC.message("Removed #{name_to_remove.capitalize}'s data!")
+    DRC.message("Removed #{key}'s data!")
+  end
+end
+
+# Graphical browser for the saved inventory database.
+#
+# A read-only view: scanning stays with the text commands, and this window shows
+# what they have already saved. Reads the same data/inventory.yaml, so it needs
+# no game interaction and is safe to leave open. Built against the GTK3 bindings
+# Lich ships: every widget call must happen inside Gtk.queue because Lich owns
+# the GTK main loop on its own thread.
+class InventoryManagerGui
+  COL_LABEL  = 0
+  COL_TERM   = 1
+  COL_DETAIL = 2
+  COL_KIND   = 3
+  COL_WEIGHT = 4
+
+  WEIGHT_NORMAL = 400
+  WEIGHT_BOLD   = 700
+
+  # Guards against a container cycle in hand-edited data.
+  MAX_NESTING = 8
+
+  # Plain ?search= is MediaWiki's "Go" behaviour: it jumps straight to the
+  # article when the term matches a title exactly, and falls back to search
+  # results when it does not.
+  WIKI_SEARCH    = 'https://elanthipedia.play.net/index.php?search='
+  ALL_CHARACTERS = 'All characters'
+
+  # Friendly names for the inventory_type suffix check_inventory appends.
+  SOURCE_LABELS = {
+    'character'      => 'Carried & Worn',
+    'vault'          => 'Vault',
+    'Family'         => 'Family Vault',
+    'caravan_box'    => 'Caravan Storage',
+    'home'           => 'Home',
+    'register'       => 'Deed Register',
+    'eddy'           => 'Eddy',
+    'pocket'         => 'Secret Pocket',
+    'shadow_servant' => 'Shadow Servant',
+    'spell_scroll'   => 'Spell Scrolls',
+    'trader_shop'    => 'Trader Shop',
+    'ticket'         => 'Tickets & Currency'
+  }.freeze
+
+  SOURCE_ORDER = SOURCE_LABELS.keys.freeze
+
+  # Seconds to settle between queued scans, so consecutive saves do not stack
+  # commands on top of each other.
+  SCAN_PAUSE = 2
+
+  # Backstop for a scan that will not finish: a save method that keeps retrying
+  # something it can never do (fetching a book that is not there, tapping a
+  # container you are not carrying) is abandoned so the rest of the queue runs.
+  SCAN_TIMEOUT = 120
+
+  # Everything ;inventory-manager save offers, mapped to the methods the text
+  # dispatch calls. Notes are the command's own help text, shown at the point of
+  # choosing rather than left in the help output.
+  SCANS = [
+    { label: 'Character inventory',    method: :add_current_inv,       group: 'Character',
+      note: "Save new or update current character's items to the database." },
+    { label: 'Vault (VAULT STANDARD)', method: :add_vault_standard,    group: 'Vaults',
+      note: 'Uses VAULT STANDARD to get a list of items.' },
+    { label: 'Vault (VAULT FAMILY)',   method: :add_vault_family,      group: 'Vaults',
+      note: 'Uses VAULT FAMILY to get a list of items.' },
+    { label: 'Vault book',             method: :add_vault_book,        group: 'Vaults',
+      note: 'Uses vault book to get a list of items from your vault.' },
+    { label: 'Vault (rummage)',        method: :add_vault_regular_inv, group: 'Vaults',
+      note: 'Rummages your vault to save items. NOTE: must be standing by your open vault.' },
+    { label: 'Family vault (rummage)', method: :add_family_vault,      group: 'Vaults',
+      note: 'Rummages your family vault to save items. NOTE: must be standing by your open vault.' },
+    { label: 'Caravan storage box',    method: :add_storage_box_inv,   group: 'Storage',
+      note: 'Rummages caravan storage box for items.' },
+    { label: 'Caravan storage book',   method: :add_storage_book,      group: 'Storage',
+      note: 'Uses storage book to get a list of items from your caravan storage box.' },
+    { label: 'Secret pocket',          method: :add_pocket_inv,        group: 'Storage',
+      note: 'Rummages your secret pocket container. NOTE: must be wearing the container.' },
+    { label: 'Eddy',                   method: :add_eddy_inv,          group: 'Storage',
+      note: 'Save the contents of an eddy (HE 436 Gift).',
+      warning: 'Character inventory already includes items found within Eddy. Saving both will duplicate them.' },
+    { label: 'Deed register',          method: :add_register_inv,      group: 'Property and Other',
+      note: 'Reads contents of deed register.' },
+    { label: 'Spell scrolls',          method: :add_scrolls,           group: 'Property and Other',
+      note: 'Save spell scrolls tracked with sort-scrolls or stack-scrolls.' },
+    { label: 'Home',                   method: :add_home,              group: 'Property and Other',
+      note: 'Save home inventory.' },
+    { label: 'Shadow servant',         method: :add_shadow_servant,    group: 'Property and Other',
+      note: 'Save shadow servant inventory.' },
+    { label: 'Trader shop',            method: :add_trader_shop,       group: 'Property and Other',
+      note: 'Save your Trader shop inventory.' },
+    { label: 'Tickets and currency',   method: :add_ticket,            group: 'Property and Other',
+      note: 'Save ticket/currency information.' }
+  ].freeze
+
+  SCAN_GROUPS = ['Character', 'Vaults', 'Storage', 'Property and Other'].freeze
+
+  Row = Struct.new(:character, :source, :name, :container, :nested, :worn, :note, :raw)
+
+  # Splits a stored row back into its parts. The inventory_type is always the
+  # final parenthetical and never contains nested parens; container annotations
+  # may, because a nested container embeds its parent's full description.
+  def self.parse_row(character, raw)
+    work = raw.to_s.dup
+    source = nil
+    if (match = work.match(/\s\(([^()]+)\)\s*\z/))
+      source = match[1]
+      work = work[0...match.begin(0)]
+    end
+
+    worn = !work.sub!(/\s\(worn\)\z/, '').nil?
+
+    # Deed rows carry "(deed page N)" or "(deed page N - note)".
+    note = nil
+    if (match = work.match(/\s\(deed page (\d+)(?:\s+-\s+(.*?))?\)\z/))
+      written = match[2].to_s.strip
+      note = written.empty? ? "page #{match[1]}" : "page #{match[1]} - #{written}"
+      work = work[0...match.begin(0)]
+    end
+
+    container = nil
+    nested = false
+    if (match = work.match(/\s\((nested container|in container) - /))
+      nested = match[1] == 'nested container'
+      container = immediate_container(work[match.end(0)..-1])
+      work = work[0...match.begin(0)]
+    elsif (match = work.match(/\s\(attached to /))
+      container = immediate_container(work[match.end(0)..-1])
+      work = work[0...match.begin(0)]
+    end
+
+    Row.new(character, source, work.strip, container, nested, worn, note, raw.to_s)
+  end
+
+  # The immediate parent runs up to the first nested paren, so
+  # "a rock (in container - a pack))" yields "a rock".
+  def self.immediate_container(tail)
+    name = tail.to_s[/\A[^()]*/].to_s.sub(/\)+\z/, '').strip
+    name.empty? ? nil : name
+  end
+
+  # Registers saved before deed parsing existed stored the raw ASCII table, so
+  # hide those rows rather than let an old database look broken until re-saved.
+  def self.legacy_table_row?(item)
+    text = item.to_s.lstrip
+    text.start_with?('|', '+--', 'Currently Stored:')
+  end
+
+  # Trim articles, counts and state markers so the wiki search gets the noun.
+  def self.wiki_term(name)
+    term = name.to_s.gsub(/\((?:closed|open)\)/i, '')
+    term = term.sub(/\A(?:a|an|some|the|several|one|two|three|four|five|clusters?\s+of)\s+/i, '')
+    term.gsub(/\s+/, ' ').strip
+  end
+
+  # Percent-encode without depending on a require; & in the query string must
+  # never reach a shell or the wiki search.
+  def self.url_escape(text)
+    text.to_s.gsub(/[^a-zA-Z0-9\-_.~]/) { |char| char.bytes.map { |byte| format('%%%02X', byte) }.join }
+  end
+
+  def initialize(db_path, version_key, manager = nil)
+    @db_path = db_path
+    @version_key = version_key.to_s
+    @manager = manager
+    # Scan requests cross threads: queued by GTK signal handlers, drained here by
+    # the script thread.
+    @jobs = Queue.new
+    @rows = []
+    @window = nil
+    @done = false
+  end
+
+  def run
+    load_rows
+    DRC.message('No saved inventory yet -- use Scan, or the ;inventory-manager save commands.') if @rows.empty?
+
+    build_window
+
+    # Scans must execute on this thread. They issue game commands and block
+    # waiting on game output, which would deadlock the GTK main loop.
+    until @done
+      job = next_job
+      job ? perform_scan(job) : pause(0.2)
+    end
+  end
+
+  def next_job
+    @jobs.pop(true)
+  rescue ThreadError
+    nil
+  end
+
+  # Closing the window abandons anything still queued. A scan already running
+  # cannot be interrupted mid-command, so the loop exits once it returns.
+  def drain_jobs
+    dropped = 0
+    dropped += 1 while next_job
+    DRC.message("inventory-manager: dropped #{dropped} queued scan#{dropped == 1 ? '' : 's'}.") if dropped.positive?
+  end
+
+  def load_rows
+    @characters = nil
+    data = begin
+      YAML.load_file(@db_path)
+    rescue StandardError => e
+      DRC.message("Unable to read #{@db_path}: #{e.message}")
+      nil
+    end
+    data = {} unless data.is_a?(Hash)
+
+    @rows = data.flat_map do |character, items|
+      next [] if character.to_s == @version_key
+      next [] unless items.is_a?(Array)
+
+      items.reject { |item| self.class.legacy_table_row?(item) }
+           .map { |item| self.class.parse_row(character.to_s, item) }
+    end
+  end
+
+  def characters
+    @characters ||= @rows.map(&:character).uniq.sort
+  end
+
+  def build_window
+    saved_width    = CharSettings['gui_width'] || 760
+    saved_height   = CharSettings['gui_height'] || 560
+    saved_position = CharSettings['gui_position'] || []
+
+    # Only reached when the script is killed with the window still open. Closing
+    # the window clears @window first, because GTK has already destroyed it by
+    # then and touching it again raises "destroyed GLib::Object".
+    before_dying do
+      Gtk.queue do
+        begin
+          @window.destroy if @window
+        rescue StandardError
+          nil
+        end
+      end
+    end
+
+    Gtk.queue do
+      store = Gtk::TreeStore.new(String, String, String, String, Integer)
+
+      view = Gtk::TreeView.new(store)
+      view.enable_tree_lines = true
+      view.search_column = COL_LABEL
+      view.selection.mode = :single
+
+      item_column = Gtk::TreeViewColumn.new('Item', Gtk::CellRendererText.new, text: COL_LABEL, weight: COL_WEIGHT)
+      item_column.resizable = true
+      item_column.expand = true
+      view.append_column(item_column)
+
+      detail_column = Gtk::TreeViewColumn.new('Details', Gtk::CellRendererText.new, text: COL_DETAIL)
+      detail_column.resizable = true
+      view.append_column(detail_column)
+
+      scroller = Gtk::ScrolledWindow.new
+      scroller.set_policy(:automatic, :automatic)
+      scroller.add(view)
+
+      search_entry = Gtk::SearchEntry.new
+      search_entry.placeholder_text = 'Search items and containers'
+
+      character_combo = Gtk::ComboBoxText.new
+      character_combo.append_text(ALL_CHARACTERS)
+      characters.each { |name| character_combo.append_text(name) }
+      character_combo.active = 0
+
+      nesting_toggle = Gtk::CheckButton.new('Nest containers')
+      nesting_toggle.active = true
+
+      scan_button     = Gtk::Button.new(label: 'Scan')
+      reload_button   = Gtk::Button.new(label: 'Reload')
+      expand_button   = Gtk::Button.new(label: 'Expand all')
+      collapse_button = Gtk::Button.new(label: 'Collapse all')
+      wiki_button     = Gtk::Button.new(label: 'Elanthipedia')
+
+      scan_button.sensitive = !@manager.nil?
+      scan_button.tooltip_text = @manager ? 'Choose which saves to run in the game' : 'Scanning is unavailable'
+      reload_button.tooltip_text = 'Re-read the database from disk'
+
+      status = Gtk::Label.new('')
+      status.xalign = 0
+
+      @status = status
+      @scan_button = scan_button
+
+      # A scan can introduce the first character into an empty database, so keep
+      # the filter list in step without clobbering the current selection.
+      sync_characters = lambda do
+        next if @listed_characters == characters
+
+        previous = character_combo.active_text
+        @syncing = true
+        character_combo.remove_all
+        character_combo.append_text(ALL_CHARACTERS)
+        characters.each { |name| character_combo.append_text(name) }
+        index = characters.index(previous)
+        character_combo.active = index ? index + 1 : 0
+        @listed_characters = characters
+        @syncing = false
+      end
+
+      redraw = lambda do
+        sync_characters.call
+        refill(store, status,
+               query: search_entry.text,
+               character: character_combo.active_text,
+               nest: nesting_toggle.active?)
+        # A search is only useful expanded; the idle view stays tidy.
+        if search_entry.text.to_s.strip.empty?
+          view.collapse_all
+          expand_top_level(view, store)
+        else
+          view.expand_all
+        end
+      end
+
+      @redraw = redraw
+
+      search_entry.signal_connect('search-changed') { redraw.call }
+      character_combo.signal_connect('changed') { redraw.call unless @syncing }
+      nesting_toggle.signal_connect('toggled') { redraw.call }
+      expand_button.signal_connect('clicked') { view.expand_all }
+      collapse_button.signal_connect('clicked') { view.collapse_all }
+      wiki_button.signal_connect('clicked') { open_wiki(selected_term(view)) }
+      scan_button.signal_connect('clicked') { show_scan_dialog }
+      reload_button.signal_connect('clicked') do
+        load_rows
+        redraw.call
+      end
+
+      view.signal_connect('row-activated') do |_widget, path, _column|
+        term = store.get_iter(path)[COL_TERM].to_s
+        if term.empty?
+          view.row_expanded?(path) ? view.collapse_row(path) : view.expand_row(path, false)
+        else
+          open_wiki(term)
+        end
+      end
+
+      view.signal_connect('button-press-event') do |widget, event|
+        if event.button == 3
+          show_context_menu(widget, store, event)
+          true
+        else
+          false
+        end
+      end
+
+      controls = Gtk::Box.new(:horizontal, 4)
+      controls.pack_start(search_entry, expand: true, fill: true, padding: 0)
+      controls.pack_start(character_combo, expand: false, fill: false, padding: 0)
+      controls.pack_start(nesting_toggle, expand: false, fill: false, padding: 0)
+      controls.pack_start(Gtk::Separator.new(:vertical), expand: false, fill: false, padding: 2)
+      controls.pack_start(scan_button, expand: false, fill: false, padding: 0)
+      controls.pack_start(reload_button, expand: false, fill: false, padding: 0)
+
+      actions = Gtk::Box.new(:horizontal, 4)
+      actions.pack_start(status, expand: true, fill: true, padding: 4)
+      actions.pack_start(expand_button, expand: false, fill: false, padding: 0)
+      actions.pack_start(collapse_button, expand: false, fill: false, padding: 0)
+      actions.pack_start(wiki_button, expand: false, fill: false, padding: 0)
+
+      layout = Gtk::Box.new(:vertical, 4)
+      layout.pack_start(controls, expand: false, fill: false, padding: 0)
+      layout.pack_start(scroller, expand: true, fill: true, padding: 0)
+      layout.pack_start(actions, expand: false, fill: false, padding: 0)
+
+      @window = Gtk::Window.new
+      @window.title = 'Inventory Manager'
+      @window.border_width = 4
+      @window.resize(saved_width, saved_height)
+      @window.move(saved_position[0], saved_position[1]) if saved_position.length == 2
+      @window.add(layout)
+
+      @window.signal_connect('delete_event') do
+        remember_geometry
+        # Returning false lets GTK destroy the window, so drop our handle to it
+        # before before_dying can try to destroy it a second time.
+        @window = nil
+        @done = true
+        drain_jobs
+        false
+      end
+
+      redraw.call
+      @window.show_all
+    end
+  end
+
+  # Runs on the GTK thread from the Scan button. Nothing here touches the game --
+  # picks are pushed onto @jobs and executed by the script thread.
+  def show_scan_dialog
+    dialog = Gtk::Dialog.new(title: 'Run inventory scans', parent: @window)
+    dialog.modal = true
+    dialog.set_default_size(540, 520)
+    dialog.add_button('Cancel', Gtk::ResponseType::CANCEL)
+    dialog.add_button('Run selected', Gtk::ResponseType::ACCEPT)
+
+    intro = Gtk::Label.new("These send commands to the game. Make sure your character is idle and in\nposition for any scan that needs it. Selected scans run one at a time, with a\nshort pause between each, and one that fails is reported and skipped.")
+    intro.xalign = 0
+    dialog.content_area.pack_start(intro, expand: false, fill: false, padding: 6)
+
+    list = Gtk::Box.new(:vertical, 2)
+    checks = []
+    SCAN_GROUPS.each do |group|
+      entries = SCANS.select { |scan| scan[:group] == group }
+      next if entries.empty?
+
+      heading = Gtk::Label.new
+      heading.xalign = 0
+      heading.markup = "<b>#{group}</b>"
+      list.pack_start(heading, expand: false, fill: false, padding: 4)
+
+      entries.each do |scan|
+        check = Gtk::CheckButton.new("#{scan[:label]} -- #{scan[:note]}")
+        check.tooltip_text = scan[:warning] if scan[:warning]
+        list.pack_start(check, expand: false, fill: false, padding: 0)
+        checks << [scan, check]
+      end
+    end
+
+    scroller = Gtk::ScrolledWindow.new
+    scroller.set_policy(:never, :automatic)
+    scroller.add(list)
+    dialog.content_area.pack_start(scroller, expand: true, fill: true, padding: 4)
+
+    toggles = Gtk::Box.new(:horizontal, 4)
+    select_all = Gtk::Button.new(label: 'Select all')
+    clear_all = Gtk::Button.new(label: 'Clear')
+    select_all.signal_connect('clicked') { checks.each { |_scan, check| check.active = true } }
+    clear_all.signal_connect('clicked') { checks.each { |_scan, check| check.active = false } }
+    toggles.pack_start(select_all, expand: false, fill: false, padding: 0)
+    toggles.pack_start(clear_all, expand: false, fill: false, padding: 0)
+    dialog.content_area.pack_start(toggles, expand: false, fill: false, padding: 4)
+
+    dialog.signal_connect('response') do |_widget, response|
+      queue_scans(checks.select { |_scan, check| check.active? }.map(&:first)) if response == Gtk::ResponseType::ACCEPT
+      dialog.destroy
+    end
+
+    dialog.show_all
+  end
+
+  def queue_scans(selected)
+    if selected.empty?
+      @status.text = 'No scans selected.' if @status
+      return
+    end
+
+    selected.each { |scan| @jobs << scan }
+    # Re-enabled by perform_scan once the queue drains.
+    @scan_button.sensitive = false if @scan_button
+    @status.text = "Queued #{selected.length} scan#{selected.length == 1 ? '' : 's'}..." if @status
+    DRC.message("inventory-manager: queued #{selected.map { |scan| scan[:label] }.join(', ')}")
+  end
+
+  # Script thread only -- see the comment in run. Every failure mode is contained
+  # here so one bad scan cannot take down the window or the rest of the queue.
+  def perform_scan(scan)
+    return if @done
+
+    DRC.message("*WARNING: #{scan[:warning]}") if scan[:warning]
+    DRC.message("inventory-manager: scanning #{scan[:label]}...")
+    set_status("Scanning #{scan[:label]}...")
+
+    outcome = run_scan_method(scan)
+    report_outcome(scan, outcome)
+
+    load_rows
+    remaining = @jobs.size
+
+    Gtk.queue do
+      @redraw&.call
+      # refill rewrites the status line, so the result goes on after it.
+      @status.text = outcome_text(scan, outcome) if @status
+      @scan_button.sensitive = true if @scan_button && remaining.zero?
+    end
+
+    # Let the game settle before driving it again. The outcome stays in the
+    # message so the result of the scan just finished is not lost behind it.
+    return if remaining.zero? || @done
+
+    set_status("#{outcome_text(scan, outcome)} -- pausing, #{remaining} left...")
+    pause SCAN_PAUSE
+  end
+
+  def run_scan_method(scan)
+    if defined?(Timeout)
+      Timeout.timeout(SCAN_TIMEOUT) { @manager.send(scan[:method]) }
+    else
+      @manager.send(scan[:method])
+    end
+    :done
+  rescue SystemExit
+    # Several save methods call exit when a precondition fails: wrong guild, book
+    # not found, no stacker configured. From the command line that just ends the
+    # script, but here it would take the whole window down with it.
+    :skipped
+  rescue StandardError => e
+    # Timeout::Error is a StandardError, so a scan stuck retrying lands here too.
+    DRC.message("inventory-manager: #{scan[:label]} error -- #{e.class}: #{e.message}")
+    :failed
+  end
+
+  def outcome_text(scan, outcome)
+    case outcome
+    when :done    then "Finished: #{scan[:label]}"
+    when :skipped then "Skipped: #{scan[:label]} -- requirements not met"
+    else               "Failed: #{scan[:label]} -- see the game window"
+    end
+  end
+
+  def report_outcome(scan, outcome)
+    DRC.message("inventory-manager: #{outcome_text(scan, outcome)}")
+  end
+
+  def set_status(text)
+    Gtk.queue { @status.text = text if @status }
+  end
+
+  def refill(store, status, query:, character:, nest:)
+    store.clear
+    needle = query.to_s.strip.downcase
+    shown = 0
+    shown_characters = 0
+
+    grouped = @rows.group_by(&:character)
+    grouped.keys.sort.each do |char_name|
+      next if character && character != ALL_CHARACTERS && character != char_name
+
+      char_iter = nil
+      char_total = 0
+      by_source = grouped[char_name].group_by { |row| row.source.to_s }
+
+      by_source.keys.sort_by { |source| [SOURCE_ORDER.index(source) || SOURCE_ORDER.length, source] }.each do |source|
+        source_rows = by_source[source]
+        visible = if needle.empty?
+                    source_rows
+                  else
+                    source_rows.select { |row| row.name.to_s.downcase.include?(needle) || row.container.to_s.downcase.include?(needle) }
+                  end
+        next if visible.empty?
+
+        char_iter ||= append_row(store, nil, label: char_name, kind: 'character', weight: WEIGHT_BOLD)
+        source_iter = append_row(store, char_iter, label: source_label(source), detail: count_label(visible.length), kind: 'source', weight: WEIGHT_BOLD)
+
+        # An item that holds other items becomes a container node instead of a
+        # duplicate leaf, so each item appears exactly once.
+        holders = {}
+        index = {}
+        source_rows.each do |row|
+          holders[row.container] = true if row.container
+          index[row.name] ||= row
+        end
+        nodes = {}
+
+        visible.sort_by { |row| row.name.to_s.downcase }.each do |row|
+          if nest && holders.key?(row.name)
+            ensure_container_node(store, source_iter, index, nodes, row.name)
+          else
+            parent = nest ? ensure_container_node(store, source_iter, index, nodes, row.container) : source_iter
+            append_row(store, parent, label: row.name, detail: detail_for(row, nest), kind: 'item', term: row.name)
+          end
+          shown += 1
+          char_total += 1
+        end
+      end
+
+      next unless char_iter
+
+      char_iter[COL_DETAIL] = count_label(char_total)
+      shown_characters += 1
+    end
+
+    # Counts describe what is actually on screen, so they stay in step with the
+    # character filter and the search box.
+    status.text = if needle.empty?
+                    "#{shown} items across #{shown_characters} character#{'s' unless shown_characters == 1}"
+                  else
+                    "#{shown} match#{shown == 1 ? '' : 'es'} for \"#{query.to_s.strip}\""
+                  end
+  end
+
+  # Containers become their own nodes, re-parented under whatever holds them so
+  # the nesting recorded in the database shows up as real hierarchy.
+  def ensure_container_node(store, source_iter, index, nodes, name, depth = 0)
+    return source_iter if name.nil? || name.to_s.empty?
+    return nodes[name] if nodes.key?(name)
+    return source_iter if depth > MAX_NESTING
+
+    record = index[name]
+    parent = if record && record.container && record.container != name
+               ensure_container_node(store, source_iter, index, nodes, record.container, depth + 1)
+             else
+               source_iter
+             end
+
+    nodes[name] = append_row(store, parent, label: name, detail: container_detail(record), kind: 'container', weight: WEIGHT_BOLD, term: name)
+  end
+
+  # A container node still needs to say whether it is worn, since promoting it
+  # out of the item list drops the detail it would have carried as a leaf.
+  def container_detail(record)
+    record && record.worn ? 'container, worn' : 'container'
+  end
+
+  def append_row(store, parent, label:, kind:, detail: '', weight: WEIGHT_NORMAL, term: '')
+    iter = store.append(parent)
+    iter[COL_LABEL]  = label.to_s
+    iter[COL_TERM]   = term.to_s
+    iter[COL_DETAIL] = detail.to_s
+    iter[COL_KIND]   = kind.to_s
+    iter[COL_WEIGHT] = weight
+    iter
+  end
+
+  def detail_for(row, nest)
+    parts = []
+    parts << 'worn' if row.worn
+    parts << row.note if row.note
+    parts << "#{row.nested ? 'nested in' : 'in'} #{row.container}" if row.container && !nest
+    parts.join(', ')
+  end
+
+  def count_label(count)
+    "#{count} item#{count == 1 ? '' : 's'}"
+  end
+
+  def source_label(source)
+    return SOURCE_LABELS[source] if SOURCE_LABELS.key?(source)
+
+    source.to_s.empty? ? 'Unsorted' : source.to_s.tr('_', ' ').capitalize
+  end
+
+  def expand_top_level(view, store)
+    iter = store.iter_first
+    return unless iter
+
+    loop do
+      view.expand_row(iter.path, false)
+      break unless iter.next!
+    end
+  end
+
+  def selected_term(view)
+    iter = view.selection.selected
+    iter.nil? ? '' : iter[COL_TERM].to_s
+  end
+
+  def show_context_menu(view, store, event)
+    located = view.get_path_at_pos(event.x, event.y)
+    return if located.nil?
+
+    path = located.first
+    view.selection.select_path(path)
+    term = store.get_iter(path)[COL_TERM].to_s
+
+    menu = Gtk::Menu.new
+    lookup = Gtk::MenuItem.new(label: 'Look up on Elanthipedia')
+    lookup.sensitive = !term.empty?
+    lookup.signal_connect('activate') { open_wiki(term) }
+    menu.append(lookup)
+
+    copy = Gtk::MenuItem.new(label: 'Copy name')
+    copy.sensitive = !term.empty?
+    copy.signal_connect('activate') { copy_to_clipboard(term) }
+    menu.append(copy)
+
+    menu.show_all
+    begin
+      menu.popup_at_pointer(event)
+    rescue StandardError
+      menu.popup(nil, nil, event.button, event.time)
+    end
+  end
+
+  def open_wiki(name)
+    term = self.class.wiki_term(name)
+    if term.empty?
+      DRC.message('Select an item first.')
+      return
+    end
+
+    url = "#{WIKI_SEARCH}#{self.class.url_escape(term)}"
+    DRC.message("Elanthipedia lookup: #{term}")
+    return if open_via_gtk(url)
+    return if open_via_os(url)
+
+    DRC.message("Could not open a browser. URL: #{url}")
+  end
+
+  def open_via_gtk(url)
+    Gtk.show_uri_on_window(@window, url, 0)
+    true
+  rescue StandardError
+    false
+  end
+
+  def open_via_os(url)
+    case RbConfig::CONFIG['host_os']
+    when /mswin|mingw|cygwin/
+      # rundll32 takes the URL as one argument, so the & in the query string is
+      # never handed to a shell for interpretation.
+      system('rundll32', 'url.dll,FileProtocolHandler', url)
+    when /darwin/
+      system('open', url)
+    else
+      system('xdg-open', url)
+    end
+  rescue StandardError
+    false
+  end
+
+  def copy_to_clipboard(text)
+    Gtk::Clipboard.get_default(Gdk::Display.default).text = text
+    DRC.message("Copied: #{text}")
+  rescue StandardError
+    DRC.message("Item name: #{text}")
+  end
+
+  def remember_geometry
+    return unless @window
+
+    CharSettings['gui_position'] = @window.position
+    CharSettings['gui_width']    = @window.allocation.width
+    CharSettings['gui_height']   = @window.allocation.height
+  rescue StandardError
+    nil
   end
 end
 

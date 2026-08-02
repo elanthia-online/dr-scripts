@@ -486,7 +486,9 @@ def progress_bar(pct, width = 10)
   pct = 0 if pct < 0
   pct = 100 if pct > 100
   filled = ((pct / 100.0) * width).round
-  "[" + ("█" * filled) + ("░" * (width - filled)) + "]"
+  # Various frontends expect ASCII only characters, UTF-8 not supported
+  filled_char, empty_char = ['#', '-']
+  "[" + (filled_char * filled) + (empty_char * (width - filled)) + "]"
 end
 
 # Clamp aggregate progress for one skill: how many ranks the player has gained

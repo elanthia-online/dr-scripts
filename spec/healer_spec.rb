@@ -2,76 +2,9 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal module stubs for modules not provided by the test harness
-module DRC
-  class << self
-    def bput(*_args)
-      ''
-    end
-
-    def wait_for_script_to_complete(*_args); end
-
-    def fix_standing; end
-
-    def log_window(_msg, _window = nil); end
-  end
-end unless defined?(DRC)
-
-module DRCH
-  class << self
-    def check_health
-      OpenStruct.new(wounds: {}, poisoned: false, diseased: false, score: 0, dead: false)
-    end
-
-    def perceive_health_other(_target)
-      OpenStruct.new(wounds: {}, parasites: {}, poisoned: false, diseased: false, score: 0, dead: false)
-    end
-  end
-end unless defined?(DRCH)
-
-module Lich
-  module Messaging
-    def self.msg(_style, _message); end
-  end
-
-  module Util
-    def self.issue_command(*_args)
-      []
-    end
-  end
-end unless defined?(Lich)
-
-# Provide start_script and DRSpells.known_spells if not already defined
-def start_script(*_args); end unless defined?(start_script)
-
-Harness::DRSpells.define_singleton_method(:known_spells) { @_known_spells || {} } unless Harness::DRSpells.respond_to?(:known_spells)
-Harness::DRSpells.define_singleton_method(:_set_known_spells) { |val| @_known_spells = val }
-
 load_lic_class('healer.lic', 'Healer')
 
 # Helper to build a Healer instance bypassing startup validations.
@@ -111,6 +44,11 @@ def wound(body_part:, severity: 1, is_internal: false)
   OpenStruct.new(body_part: body_part, severity: severity, is_internal: is_internal)
 end
 
+# Builds a scar-like object (cosmetic; scar? => true)
+def scar(body_part:, severity: 1)
+  OpenStruct.new(body_part: body_part, severity: severity, :scar? => true)
+end
+
 # ============================================================
 # SPECS
 # ============================================================
@@ -118,6 +56,7 @@ end
 RSpec.describe Healer do
   before(:each) do
     reset_data
+    $dead = false
     DRStats.health = 100
     DRStats.guild = 'Empath'
     Harness::DRSpells._set_active_spells({})
@@ -634,6 +573,17 @@ RSpec.describe Healer do
       expect(result).to include('right arm', 'head', 'abdomen', 'back')
     end
 
+    it 'does not exclude a part that only has a scar' do
+      scarred = health_result(
+        wounds: { 1 => [scar(body_part: 'left arm', severity: 1)] },
+        score: 1
+      )
+      allow(DRCH).to receive(:check_health).and_return(scarred)
+
+      result = healer.send(:available_heal_locations)
+      expect(result).to include('left arm')
+    end
+
     it 'returns empty when all heal locations are wounded' do
       all_wounded = Healer::HEAL_LOCATIONS.map.with_index do |part, i|
         wound(body_part: part, severity: (i % 3) + 1)
@@ -807,7 +757,7 @@ RSpec.describe Healer do
       expect(healer.get_patient('Tenuk')[:vh_attempted]).to be true
     end
 
-    it 'waits in recovering phase when health is between floor and stable threshold' do
+    it 'waits in recovering phase when health is between floor and resume threshold' do
       healer = build_healer
       healer.add_patient('Tenuk')
 
@@ -816,12 +766,60 @@ RSpec.describe Healer do
       task = healer.instance_variable_get(:@spell_task)
       task[:phase] = :recovering
       task[:timer] = Time.now
-      DRStats.health = 75
+      DRStats.health = 70 # between SELF_VIT_FLOOR (60) and VIT_RESUME_THRESHOLD (75)
 
       healer.send(:process_vitality_slot)
 
       task = healer.instance_variable_get(:@spell_task)
       expect(task[:phase]).to eq(:recovering)
+    end
+
+    it 'stacks multiple vit-transfer streams when own vitality is high' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.instance_variable_set(:@vh_available, true)
+      healer.instance_variable_set(:@vh_spell, { name: 'Vitality Healing', mana: 5, cambrinth: [], prep_time: 0 })
+      DRStats.health = 100 # full headroom -> MAX_VIT_STACKS
+
+      healer.claim_spell_slot('Tenuk', :vitality)
+      task = healer.instance_variable_get(:@spell_task)
+      task[:phase] = :prepping
+      task[:prep_start] = Time.now - 5
+
+      transfers = 0
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        transfers += 1 if cmd == 'transfer Tenuk vit quick'
+        ''
+      end
+
+      healer.send(:process_vitality_slot)
+
+      expect(transfers).to eq(Healer::MAX_VIT_STACKS)
+      expect(healer.instance_variable_get(:@spell_task)[:phase]).to eq(:awaiting_drain)
+    end
+
+    it 'uses a single vit-transfer stream when headroom is thin' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      healer.instance_variable_set(:@vh_available, true)
+      healer.instance_variable_set(:@vh_spell, { name: 'Vitality Healing', mana: 5, cambrinth: [], prep_time: 0 })
+      healer.instance_variable_set(:@self_vit_floor, 60)
+      DRStats.health = 65 # just above the 60% floor -> thin headroom -> only 1 stream
+
+      healer.claim_spell_slot('Tenuk', :vitality)
+      task = healer.instance_variable_get(:@spell_task)
+      task[:phase] = :prepping
+      task[:prep_start] = Time.now - 5
+
+      transfers = 0
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        transfers += 1 if cmd == 'transfer Tenuk vit quick'
+        ''
+      end
+
+      healer.send(:process_vitality_slot)
+
+      expect(transfers).to eq(1)
     end
   end
 
@@ -909,6 +907,30 @@ RSpec.describe Healer do
 
       healer.instance_variable_set(:@last_health_check, nil)
       expect(healer.ready_to_heal_wounds?).to be false
+    end
+
+    it 'stays ready when healer only has cosmetic scars' do
+      scarred = health_result(
+        wounds: { 2 => [scar(body_part: 'left arm', severity: 2)] },
+        score: 4
+      )
+      allow(DRCH).to receive(:check_health).and_return(scarred)
+      DRStats.health = 100
+
+      healer.instance_variable_set(:@last_health_check, nil)
+      expect(healer.ready_to_heal_wounds?).to be true
+    end
+
+    it 'stays ready when healer only has trivial severity-1 abrasions' do
+      abraded = health_result(
+        wounds: { 1 => [wound(body_part: 'left arm', severity: 1)] },
+        score: 1
+      )
+      allow(DRCH).to receive(:check_health).and_return(abraded)
+      DRStats.health = 100
+
+      healer.instance_variable_set(:@last_health_check, nil)
+      expect(healer.ready_to_heal_wounds?).to be true
     end
 
     it 'returns false when healer is poisoned' do
@@ -1115,6 +1137,78 @@ RSpec.describe Healer do
 
       expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
       expect(healer.get_patient('Navesi')[:unity_linked]).to be false
+    end
+  end
+
+  # ============================================================
+  # Self-Death Handling (idle while a ghost, resume on resurrection)
+  # ============================================================
+
+  describe 'self-death handling' do
+    it 'idles instead of processing when the healer is dead' do
+      healer = build_healer
+      healer.add_patient('Tenuk')
+      DRRoom.pcs = ['Tenuk']
+      $dead = true
+
+      expect(DRC).not_to receive(:fix_standing)
+
+      healer.send(:process_queue)
+
+      expect(healer.instance_variable_get(:@self_dead)).to be true
+    end
+
+    it 'skips self-VH prep spam while dead' do
+      healer = build_healer
+      healer.instance_variable_set(:@vh_available, true)
+      healer.instance_variable_set(:@vh_spell, { name: 'Vitality Healing', mana: 5, cambrinth: [], prep_time: 3 })
+      DRStats.health = 0
+      $dead = true
+
+      $sent_messages = []
+      healer.send(:heal_self)
+
+      expect($sent_messages).to be_empty
+    end
+
+    it 'clears self_dead and resumes after resurrection' do
+      healer = build_healer
+      healer.instance_variable_set(:@self_dead, true)
+      $dead = false
+
+      healer.send(:process_queue)
+
+      expect(healer.instance_variable_get(:@self_dead)).to be false
+    end
+  end
+
+  # ============================================================
+  # Passive Heal Detection (recognizes Regenerate)
+  # ============================================================
+
+  describe '#validate_healing_spells' do
+    it 'treats Regenerate as passive healing' do
+      healer = build_healer
+      allow(healer).to receive(:validate_healing_spells).and_call_original
+      Harness::DRSpells._set_known_spells('Regenerate' => true)
+
+      expect(healer.send(:validate_healing_spells)).to be true
+    end
+
+    it 'treats Heal + Adaptive Curing as passive healing' do
+      healer = build_healer
+      allow(healer).to receive(:validate_healing_spells).and_call_original
+      Harness::DRSpells._set_known_spells('Heal' => true, 'Adaptive Curing' => true)
+
+      expect(healer.send(:validate_healing_spells)).to be true
+    end
+
+    it 'falls back to healme without Regenerate or Heal + Adaptive Curing' do
+      healer = build_healer
+      allow(healer).to receive(:validate_healing_spells).and_call_original
+      Harness::DRSpells._set_known_spells('Heal' => true)
+
+      expect(healer.send(:validate_healing_spells)).to be false
     end
   end
 

@@ -2,116 +2,12 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
-# Define stub modules only if not already defined
-module DRC
-  class << self
-    def bput(*_args); end
-    def left_hand; end
-    def right_hand; end
-    def message(_msg); end
-    def wait_for_script_to_complete(*_args); end
-    def fix_standing; end
-  end
-end unless defined?(DRC)
-
-module DRCI
-  class << self
-    def in_hands?(_item); end
-  end
-end unless defined?(DRCI)
-
-module DRCMM
-  class << self
-    def observe(_thing); end
-    def predict(_thing); end
-    def study_sky; end
-    def align(_skill); end
-    def roll_bones(_storage); end
-    def use_div_tool(_tool); end
-    def get_telescope?(_name, _storage); end
-    def store_telescope?(_name, _storage); end
-    def store_div_tool?(_tool); end
-    def center_telescope(_target); end
-    def peer_telescope; end
-  end
-end unless defined?(DRCMM)
-
-module DRCA
-  class << self
-    def cast_spell(_data, _settings); end
-    def check_discern(_data, _settings); end
-    def cast_spells(_spells, _settings); end
-    def perc_mana; end
-  end
-end unless defined?(DRCA)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-  end
-end unless defined?(DRCT)
-
-module Lich
-  module Messaging
-    class << self
-      def msg(*_args); end
-    end
-  end
-
-  module Util
-    class << self
-      def issue_command(*_args); end
-    end
-  end
-end unless defined?(Lich::Messaging)
-
-# Define Lich::Util separately in case Lich::Messaging was already defined
-module Lich
-  module Util
-    class << self
-      def issue_command(*_args); end
-    end
-  end
-end unless defined?(Lich::Util)
+require_relative 'spec_helper'
 
 # Add methods to Harness classes that astrology.lic needs
 Harness::EquipmentManager.class_eval do
   def empty_hands; end
 end
-
-# DRSkill needs getxp for training routines
-# Use singleton methods to avoid class variable issues in Ruby 4.0
-Harness::DRSkill.define_singleton_method(:_xp_store) { @_xp_store ||= {} }
-Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[skillname] = val }
-Harness::DRSkill.define_singleton_method(:_reset_xp) { @_xp_store = {} }
-Harness::DRSkill.define_singleton_method(:getxp) { |skillname| _xp_store[skillname] || 0 }
 
 class Room
   class << self
@@ -120,30 +16,6 @@ class Room
     end
   end
 end unless defined?(Room)
-
-class UserVars
-  class << self
-    def astrology_debug
-      false
-    end
-
-    def astral_plane_exp_timer
-      nil
-    end
-
-    def astral_plane_exp_timer=(_val); end
-  end
-end unless defined?(UserVars)
-
-def sitting?
-  false
-end
-
-def stunned?
-  false
-end
-
-def pause(*_args); end
 
 load_lic_class('astrology.lic', 'Astrology')
 

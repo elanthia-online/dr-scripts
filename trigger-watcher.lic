@@ -13,7 +13,7 @@ $debug_mode_tw = UserVars.trigger_watcher_debug || args.debug
 
 # When trigger command =exec has been used. Executes a specified script with no wait to complete.
 def execute_script(name, args = [], flags = {})
-  verify_script(name)
+  DRC.verify_script(name)
   echo "Starting script #{name}, don't wait to complete" if $debug_mode_tw
   waitrt?
   start_script(name, args.map { |arg| arg =~ /\s/ ? "\"#{arg}\"" : arg }, flags)
@@ -21,7 +21,7 @@ end
 
 # When trigger command =execw has been used. Executes a specified script and waits until complete.
 def execute_script_wait(name, args = [])
-  verify_script(name)
+  DRC.verify_script(name)
   echo "Starting script #{name}, wait to complete" if $debug_mode_tw
   waitrt?
   DRC.wait_for_script_to_complete(name, args)

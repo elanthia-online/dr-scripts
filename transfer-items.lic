@@ -2,7 +2,13 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#transfer-items
 =end
 
+# Bulk-transfers items between containers (or to the trash) from the command line.
+#
+# Usage: +transfer-items <source> <destination> [noun]+, where +destination+ may
+# be the literal "trash". With +noun+, only matching items are moved.
 class ItemTransfer
+  # Parse the source/destination/noun arguments and run the transfer.
+  # @return [void]
   def initialize
     arg_definitions = [
       [
@@ -19,13 +25,34 @@ class ItemTransfer
     transfer_items(args.source, args.destination, args.noun)
   end
 
+  # Move every item (optionally filtered by noun) out of one container and into
+  # another, or into the trash.
+  #
+  # Recurses to page through a container too full for a single LOOK to list, and
+  # is defensive about two game quirks: coins auto-deposit into the coin purse on
+  # GET (so they never reach the hands and their GET "fails"), and a destination
+  # container can be too small/full for a given item.
+  #
+  # @param source [String] source container noun (e.g. "package")
+  # @param destination [String] destination container noun, or "trash" to dispose
+  # @param noun [String, nil] if given, only items whose short name matches this
+  #   noun are transferred
+  # @return [void]
+  # @note Deliberately calls +exit+ when a non-coin item cannot be retrieved
+  #   (typically hands full), since the transfer cannot safely continue.
   def transfer_items(source, destination, noun)
     # If container is very full then LOOK may not list all of them.
     # If you're moving a specific item, then sort those to the top
     # to increase chances we find and move all of them in one go.
     DRC.bput("sort #{noun} in my #{source}", "are now at the top", "What were you referring to", "Please rephrase that command", "You may only sort items in your inventory") if noun
+    # Derive the GET noun with DRC.get_noun so decorated items resolve correctly.
+    # Taking the last word of the tap breaks on attached/flavor text, e.g.
+    # "a circle of colorful wool with a wool rug on it" -> "it" -> GET fails.
+    # The "lot of other stuff" pagination sentinel is not a real item, so pass
+    # it through untouched for the re-look branch below.
     DRCI.get_item_list(source, 'look')
-        .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
+        .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : DRC.get_noun(full_name) }
+        .compact
         .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
         .each do |item|
       # This indicates there is more items than LOOK can show
@@ -36,13 +63,15 @@ class ItemTransfer
         transfer_items(source, destination, noun)
         break
       end
+      # Coins auto-deposit into the coin purse on GET and can never be placed in a
+      # container, so GET "fails" (they never reach the hands). Pull them from the
+      # source to empty it and move on -- do NOT treat this as a fatal failure.
+      if item =~ /coins?/i
+        DRCI.get_item(item, source)
+        next
+      end
       # Attempt to get the item from the source container.
       if DRCI.get_item(item, source)
-        # Coins are automatically picked up and added to coin purse.
-        # Skip trying to transfer them to destination container.
-        if item =~ /coins?/i
-          next
-        end
         if destination == 'trash'
           trash_item(item)
         else
@@ -56,6 +85,14 @@ class ItemTransfer
     end
   end
 
+  # Put a held item into the destination container, returning it to the source if
+  # the destination cannot hold it (full or too small) so the loop can continue
+  # with the next item.
+  #
+  # @param item [String] item noun currently in hand
+  # @param source [String] container to return the item to on failure
+  # @param destination [String] container to put the item into
+  # @return [void]
   def move_item(item, source, destination)
     # Attempt to put the item in the destination container.
     unless DRCI.put_away_item?(item, destination)
@@ -66,6 +103,10 @@ class ItemTransfer
     end
   end
 
+  # Dispose of a held item via the standard trash-handling helper.
+  #
+  # @param item [String] item noun currently in hand
+  # @return [void]
   def trash_item(item)
     DRCI.dispose_trash(item)
   end

@@ -122,3 +122,31 @@ ingredients:
   output: dried dioica
   Crossing: 8860
   ranks: 380
+- name: shining clubmoss
+  output: dried clubmoss
+  Crossing: 8860
+  ranks: 625
+- name: marsh woundwort
+  output: crushed woundwort
+  Crossing: 8860
+  ranks: 750
+- name: ashen flamestalk
+  output: crushed flamestalk
+  Crossing: 8860
+  ranks: 625
+- name: marram grass
+  output: dried marram
+  Crossing: 8860
+  ranks: 650
+- name: purple blossom
+  output: purple alyssum
+  Crossing: 8860
+  ranks: 1000
+- name: white blossom
+  output: white alyssum
+  Crossing: 8860
+  ranks: 1000
+- name: pink blossom
+  output: pink alyssum
+  Crossing: # Ratha only
+  ranks: 1000

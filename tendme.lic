@@ -38,10 +38,43 @@ class TendMe
       .sort_by { |wound| wound.severity * -1 } # sort descending
       .map { |wound| wound.body_part }
       .uniq
-      .each { |body_part| tended_wounds = DRCH.bind_wound(body_part) || tended_wounds }
+      .each { |body_part| tended_wounds = tend_wound_safely(body_part) || tended_wounds }
     DRCI.lift? if lowered
     DRC.safe_unpause_list(scripts_to_unpause)
     return tended_wounds
+  end
+
+  # Tend a wound, guarding the lodged-item disposal.
+  #
+  # This mirrors DRCH.bind_wound but disposes a dislodged item (a crossbow bolt,
+  # arrow, ...) ONLY while it is still in hand. Upstream's bind_wound calls
+  # dispose_trash unconditionally, and dispose_trash falls back to a blind
+  # "get <item>" that reaches into worn containers -- so if the dislodged item
+  # has left your hand before disposal runs (the Droughtman's Maze can yank you
+  # out and clear your hands the instant a bolt drops), it GETs and trashes the
+  # character's own like-named ammunition. Guarding on in_hands? avoids that.
+  #
+  # @note Temporary shim: remove and revert to DRCH.bind_wound once lich-5 PR
+  #   #1469 (the same in-hand guard, in commons) has shipped to players.
+  # @param body_part [String] the wound location to tend
+  # @param person [String] whose wound (defaults to "my")
+  # @return [Boolean] true if tended/no longer bleeding, false on a tend failure
+  def tend_wound_safely(body_part, person = 'my')
+    result = DRC.bput("tend #{person} #{body_part}",
+                      *DRCH::TEND_SUCCESS_PATTERNS, *DRCH::TEND_FAILURE_PATTERNS, *DRCH::TEND_DISLODGE_PATTERNS)
+    waitrt?
+    case result
+    when *DRCH::TEND_DISLODGE_PATTERNS
+      dislodge_match = result.match(/^You \w+ remove (?:a|the|some) (?<item>.+) from/)
+      if dislodge_match && DRCI.in_hands?(dislodge_match[:item])
+        DRCI.dispose_trash(dislodge_match[:item], get_settings.worn_trashcan, get_settings.worn_trashcan_verb)
+      end
+      tend_wound_safely(body_part, person)
+    when *DRCH::TEND_FAILURE_PATTERNS
+      false
+    else
+      true
+    end
   end
 
   # Monitor for wounds to begin bleeding again then tend them.

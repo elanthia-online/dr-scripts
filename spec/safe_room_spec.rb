@@ -2,74 +2,9 @@
 
 require 'ostruct'
 
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Stub modules
-module DRC
-  class << self
-    def bput(*_args); end
-    def left_hand; end
-    def right_hand; end
-    def message(_msg); end
-    def wait_for_script_to_complete(*_args); end
-    def fix_standing; end
-    def release_invisibility; end
-    def beep; end
-  end
-end unless defined?(DRC)
-
-module DRCI
-  class << self
-    def exists?(*_args); end
-    def stow_hands; end
-    def count_items_in_container(*_args); end
-  end
-end unless defined?(DRCI)
-
-module DRCH
-  class << self
-    def check_health; end
-  end
-end unless defined?(DRCH)
-
-module DRCT
-  class << self
-    def walk_to(_room_id); end
-    def sort_destinations(_ids); end
-  end
-end unless defined?(DRCT)
-
-module DRCM
-  class << self
-    def ensure_copper_on_hand(*_args); end
-    def wealth(*_args); 0; end
-    def minimize_coins(_amount); []; end
-  end
-end unless defined?(DRCM)
-
 class CharacterValidator
   def initialize(*_args); end
   def in_game?(_name); false; end
@@ -80,27 +15,6 @@ class UserVars
     false
   end
 end unless defined?(UserVars)
-
-# Lich runtime stubs
-$bleeding = false
-$started_scripts = []
-$stopped_scripts = []
-
-def bleeding?
-  $bleeding || false
-end
-
-def checkname
-  'Testchar'
-end
-
-def start_script(name, *args)
-  $started_scripts << [name, *args]
-end
-
-def stop_script(name)
-  $stopped_scripts << name
-end
 
 load_lic_class('safe-room.lic', 'SafeRoom')
 

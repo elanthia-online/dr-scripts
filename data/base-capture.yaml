@@ -29,3 +29,21 @@ taffelberry_faire:
     - ram
     - crow
     - tankard
+
+premium_festival:
+  return_room: 15908
+  return_surface: ocean-blue cart
+  room_list: [15891, 15890, 15897, 15899, 15902, 15910, 15908, 15906, 15913, 15914, 15926]
+  critter_names:
+    - seagull
+
+memory_garden:
+  return_room: 51913
+  return_surface: wagon
+  room_list: [51914, 51915, 51916, 51917, 51918, 51919, 51920, 51921]
+  critter_names:
+    - effigy
+    - doll
+    - marionete
+    - puppet
+    - figurine

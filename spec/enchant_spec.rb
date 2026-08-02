@@ -2,82 +2,9 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction
-module DRC
-  def self.bput(*_args)
-    $mock_bput_result || 'Roundtime'
-  end
-
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.wait_for_script_to_complete(*_args); end
-end
-
-module DRCC
-  def self.get_crafting_item(*_args); end
-
-  def self.stow_crafting_item(*_args); end
-
-  def self.find_recipe2(*_args); end
-end
-
-module DRCI
-  def self.exists?(*_args)
-    $mock_drci_exists.nil? ? true : $mock_drci_exists
-  end
-
-  def self.get_item?(*_args)
-    $mock_drci_get_item.nil? ? true : $mock_drci_get_item
-  end
-
-  def self.dispose_trash(*_args); end
-end
-
-module DRCA
-  def self.cast_spell?(*_args)
-    $mock_drca_cast_spell.nil? ? true : $mock_drca_cast_spell
-  end
-end
-
-module Lich
-  module Messaging
-    def self.msg(*_args); end
-  end
-end
-
 class EquipmentManager
   def empty_hands; end
 end
@@ -114,6 +41,9 @@ RSpec.describe Enchant do
     instance.instance_variable_set(:@bag_items, ['burin'])
     instance.instance_variable_set(:@belt, 'toolbelt')
     instance.instance_variable_set(:@brazier, 'brazier')
+    # @brazier_ref is derived in initialize (which these specs bypass); the
+    # command-building methods interpolate it directly.
+    instance.instance_variable_set(:@brazier_ref, 'brazier')
     instance.instance_variable_set(:@fount, 'fount')
     instance.instance_variable_set(:@loop, 'aug loop')
     instance.instance_variable_set(:@imbue_wand, 'rod')

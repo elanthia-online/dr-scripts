@@ -31,28 +31,80 @@ class SellLoot
     town_data = get_data('town')
     @character_hometown = DRC.get_town_name(args.town || @settings.sell_loot_town || @settings.hometown)
     @hometown = town_data[@character_hometown]
+    unless @hometown
+      DRC.message("***ERROR: no town data found for '#{@character_hometown}'; exiting***")
+      return
+    end
     @bankbot_name = @settings.bankbot_name
     @bankbot_room_id = @settings.bankbot_room_id
     @bankbot_deposit_threshold = @settings.bankbot_deposit_threshold
     @bankbot_enabled = @settings.bankbot_enabled
-    @local_currency = town_data[@character_hometown]['currency']
+    @local_currency = @hometown['currency']
     skip_bank = @settings.sell_loot_skip_bank
     skip_exchange = @settings.sell_loot_skip_exchange
-    keep_money_by_currency = @settings.sell_loot_money_on_hand.split(' ')
+    keep_money_by_currency = (@settings.sell_loot_money_on_hand || '').split(' ')
     keep_amount = args.amount || keep_money_by_currency[0] || 3
     keep_denomination = args.type || keep_money_by_currency[1] || 'silver'
     keep_coppers_bank = DRCM.convert_to_copper(keep_amount, keep_denomination)
     @sort_auto_head = @settings.sort_auto_head
+    @autoloot_container = @settings.autoloot_container
+    @autoloot_metals = @settings.autoloot_metals
+    # How many spare gem pouches to keep stocked (default 5).
+    @spare_gem_pouch_target = (@settings.spare_gem_pouch_target || 5).to_i
 
-    sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
-    check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective) if @settings.spare_gem_pouch_container
+    # Validate settings before checking for loot
+    unless validate_settings
+      DRC.message("***Exiting due to missing or invalid settings***")
+      return
+    end
 
-    sell_metals_and_stones(@settings.sell_loot_metals_and_stones_container) if @settings.sell_loot_metals_and_stones
+    # Sell physical loot only when there is some -- no reason to walk to every
+    # shop for nothing. Whether or not there was loot, we still fall through to
+    # banking below so coins already on hand get exchanged and deposited.
+    # (Regression: a bare "return" here when has_loot_to_sell? was false skipped
+    # banking entirely, stranding excess coins, and any single missing loot type
+    # -- e.g. no bundle -- could take the whole run down with it.)
+    if has_loot_to_sell?
+      sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
 
-    sell_bundle if @settings.sell_loot_bundle
+      if @settings.sell_loot_metals_and_stones
+        if @settings.sell_loot_metals_and_stones_container.is_a?(String)
+          sell_metals_and_stones(@settings.sell_loot_metals_and_stones_container)
+        elsif @settings.sell_loot_metals_and_stones_container.is_a?(Array)
+          @settings.sell_loot_metals_and_stones_container.each do |container|
+            sell_metals_and_stones(container)
+          end
+        else
+          DRC.message("sell_loot_metals_and_stones_container is: #{@settings.sell_loot_metals_and_stones_container}")
+          DRC.message("This is invalid. Skipping selling stones and metals.")
+        end
+        if @autoloot_container && @autoloot_metals
+          sell_metals_and_stones(@autoloot_container)
+        end
+      end
 
-    sell_traps(@settings.pick['component_container'] || @settings.component_container) if @settings.sell_loot_traps
+      sell_bundle if @settings.sell_loot_bundle
 
+      sell_traps(@settings.pick['component_container'] || @settings.component_container) if @settings.sell_loot_traps
+    else
+      DRC.message("No loot to sell")
+    end
+
+    # Restock spare gem pouches independently of whether there was loot to sell.
+    # Each thing sell-loot does has to be checked on its own -- pouch restocking
+    # must not be gated behind having gems/metals/etc. to sell, or the pouches
+    # silently run dry on any run that happens to have nothing to sell.
+    # check_spare_pouch short-circuits (no travel) when already at target and
+    # walks itself to the gem shop when it does need to restock, so calling it
+    # unconditionally here is safe. Require gem_pouch_adjective too: unlike the
+    # sell_loot_pouch path, validate_settings does not guarantee it is set when
+    # only spare_gem_pouch_container is configured, and a nil adjective would ask
+    # the clerk for " pouch" and count " gem pouch" -- malformed game commands.
+    if @settings.spare_gem_pouch_container && @settings.gem_pouch_adjective
+      check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective)
+    end
+
+    # Handle banking
     return if skip_bank && !@bankbot_enabled
     return if @bankbot_enabled && (@bankbot_name.nil? || @bankbot_room_id.nil?)
 
@@ -63,6 +115,10 @@ class SellLoot
       return
     end
 
+    # Only make the trip to the exchange/bank when we are actually carrying more
+    # than we keep on hand -- no loot and no excess coins means nothing to do.
+    return unless coins_to_bank?(keep_coppers_bank)
+
     exchange_coins unless skip_exchange
     if @bankbot_enabled
       give_money_to_bankbot(@local_currency, @bankbot_deposit_threshold)
@@ -71,8 +127,182 @@ class SellLoot
     end
   end
 
+  def validate_settings
+    valid = true
+
+    if @settings.sell_loot_pouch
+      unless @settings.gem_pouch_adjective && @settings.gem_pouch_noun
+        DRC.message("***ERROR: sell_loot_pouch is enabled but gem_pouch_adjective or gem_pouch_noun is missing***")
+        valid = false
+      end
+    end
+
+    if @settings.sell_loot_metals_and_stones
+      unless @settings.sell_loot_metals_and_stones_container
+        DRC.message("***ERROR: sell_loot_metals_and_stones is enabled but sell_loot_metals_and_stones_container is missing***")
+        valid = false
+      end
+    end
+
+    if @settings.sell_loot_traps
+      unless @settings.pick && (@settings.pick['component_container'] || @settings.component_container)
+        DRC.message("***ERROR: sell_loot_traps is enabled but component_container is missing***")
+        valid = false
+      end
+    end
+
+    valid
+  end
+
+  def has_loot_to_sell?
+    has_loot = false
+
+    if @settings.sell_loot_pouch
+      if has_gems_to_sell?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
+        DRC.message("Found gems to sell")
+        has_loot = true
+      end
+    end
+
+    if @settings.sell_loot_metals_and_stones
+      containers_to_check = []
+
+      if @settings.sell_loot_metals_and_stones_container.is_a?(String)
+        containers_to_check << @settings.sell_loot_metals_and_stones_container
+      elsif @settings.sell_loot_metals_and_stones_container.is_a?(Array)
+        containers_to_check.concat(@settings.sell_loot_metals_and_stones_container)
+      end
+
+      if @autoloot_container && @autoloot_metals
+        containers_to_check << @autoloot_container
+      end
+
+      containers_to_check.each do |container|
+        if has_metals_to_sell?(container)
+          DRC.message("Found metals/stones to sell in #{container}")
+          has_loot = true
+        end
+      end
+    end
+
+    if @settings.sell_loot_bundle
+      if has_bundle_to_sell?
+        DRC.message("Found bundle to sell")
+        has_loot = true
+      end
+    end
+
+    if @settings.sell_loot_traps
+      container = @settings.pick['component_container'] || @settings.component_container
+      if has_traps_to_sell?(container)
+        DRC.message("Found traps to sell")
+        has_loot = true
+      end
+    end
+
+    has_loot
+  end
+
+  # Opens a gem pouch and reports whether its contents are reachable.
+  #
+  # @param container [String] the gem pouch noun to open
+  # @return [Boolean] true if the pouch is open (or already was), false if it is
+  #   tied off or cannot be found
+  def open_gem_pouch?(container)
+    case DRC.bput("open my #{container}", 'You open your', 'You open a', 'has been tied off', 'What were you referring to', 'That is already open')
+    when 'has been tied off', 'What were you referring to'
+      false
+    else
+      true
+    end
+  end
+
+  def has_gems_to_sell?(container)
+    unless open_gem_pouch?(container)
+      DRC.message("Unable to open gem pouch: #{container}")
+      return false
+    end
+
+    gems = DRC.get_gems(container)
+    !gems.empty?
+  rescue StandardError => e
+    DRC.message("Error checking gems in #{container}: #{e.message}")
+    false
+  end
+
+  # Item descriptions in +container+ reduced to the "<material> <noun>" phrases
+  # the gemshop buys (e.g. "iron bar"), after removing anything on the configured
+  # ignore list. Safe to call on an unreadable or empty container.
+  #
+  # @param container [String] the container noun to inspect
+  # @return [Array<String>] sellable "<material> <noun>" phrases; empty if none
+  def sellable_metal_and_stone_items(container)
+    item_data = get_data('items')
+    material_types = (item_data['metal_types'] || []) + (item_data['stone_types'] || [])
+    return [] if material_types.empty?
+
+    ignore_types = @settings.sell_loot_ignored_metals_and_stones || []
+    # Escape config-driven values so a stray metacharacter cannot raise
+    # RegexpError or match unexpectedly.
+    materials_regex = /^(?<size>\w+) (?<material>#{material_types.map { |type| Regexp.escape(type) }.join('|')}) (?<noun>nugget|bar)$/i
+    ignored_regex = /\b#{ignore_types.map { |type| Regexp.escape(type) }.join('|')}\b/i unless ignore_types.empty?
+
+    items = DRCI.get_item_list(container)
+    return [] if items.nil? || items.empty?
+
+    items
+      .select { |item| item =~ materials_regex }
+      .reject { |item| ignored_regex ? item =~ ignored_regex : false }
+      .map do |item|
+        # Reduce "small iron bar" to the "iron bar" phrase the shop sells.
+        item =~ materials_regex
+        "#{Regexp.last_match[:material]} #{Regexp.last_match[:noun]}"
+      end
+  end
+
+  def has_metals_to_sell?(container)
+    !sellable_metal_and_stone_items(container).empty?
+  rescue StandardError => e
+    DRC.message("Error checking metals/stones in #{container}: #{e.message}")
+    false
+  end
+
+  def has_bundle_to_sell?
+    DRCI.exists?('bundle')
+  rescue StandardError => e
+    DRC.message("Error checking for bundle: #{e.message}")
+    false
+  end
+
+  def has_traps_to_sell?(container)
+    return false unless DRStats.thief?
+
+    result = DRC.bput("look in my #{container}", "There is nothing in there", "you see")
+    result == "you see"
+  rescue StandardError => e
+    DRC.message("Error checking traps in #{container}: #{e.message}")
+    false
+  end
+
+  # Whether we are carrying coins worth a trip to the exchange/bank: either
+  # local currency above the amount we keep on hand, or any foreign currency
+  # that could be exchanged into local. Used to avoid walking to the bank on a
+  # run that had no loot and no excess coins.
+  #
+  # @param keep_copper [Integer] copper to keep on hand in local currency
+  # @return [Boolean] true if there is anything to exchange or deposit
+  def coins_to_bank?(keep_copper)
+    wealth = DRCM.get_total_wealth
+    local = wealth[@local_currency.to_s.downcase].to_i
+    foreign = wealth.sum { |currency, copper| currency.to_s.casecmp?(@local_currency.to_s) ? 0 : copper }
+    local > keep_copper || foreign.positive?
+  end
+
   def exchange_coins
-    DRCT.walk_to(@hometown['exchange']['id'])
+    exchange_id = @hometown.dig('exchange', 'id')
+    return unless exchange_id
+
+    DRCT.walk_to(exchange_id)
     DRC.release_invisibility
     exchange_to = @hometown['currency']
     $CURRENCIES
@@ -82,7 +312,7 @@ class SellLoot
 
   def give_money_to_bankbot(currency, keep)
     copper_on_hand = DRCM.check_wealth(currency)
-    deposit_amount = copper_on_hand - keep
+    deposit_amount = copper_on_hand - keep.to_i
     return if deposit_amount <= 0
 
     DRCT.walk_to(@bankbot_room_id)
@@ -113,15 +343,26 @@ class SellLoot
   end
 
   def sell_bundle
+    # Only proceed if the bundle actually holds skins.
     return unless DRC.bput('count my bundle', /^You flip through .* bundle and find \d+ skins? in it/, /^I could not find/).scan(/\d+/).first.to_i.positive?
 
-    return unless DRCT.walk_to(@hometown['tannery']['id'])
+    tannery_id = @hometown.dig('tannery', 'id')
+    return unless tannery_id
+    return unless DRCT.walk_to(tannery_id)
 
     return if DRC.bput('remove my bundle', 'You remove', 'You sling', 'Remove what', 'You take') == 'Remove what'
 
     DRC.release_invisibility
-    DRC.bput('sell my bundle', 'ponders over the bundle', 'sorts through it', 'gives it a close inspection', 'takes the bundle', 'I don\'t think I can give you anything for that worthless thing')
-    case DRC.left_hand + " " + DRC.right_hand
+    DRC.bput('sell my bundle',
+             'ponders over the bundle',
+             'sorts through it',
+             'gives it a close inspection',
+             'takes the bundle',
+             "I don't think I can give you anything for that worthless thing")
+
+    # Post-sell hand cleanup: stow the leftover rope, or put away / wear the
+    # bundle if it was handed back (e.g. worthless / unsold).
+    case DRC.left_hand.to_s + ' ' + DRC.right_hand.to_s
     when /rope/
       DRCI.put_away_item?('rope')
     when /bundle/
@@ -131,35 +372,103 @@ class SellLoot
 
   def check_spare_pouch(container, adj)
     fput("open my #{container}")
-    return if DRCI.inside?("#{adj} pouch", container)
+    # The clerk hands back "a <adjective> gem pouch" (e.g. "soft gem pouch"), so
+    # count by "<adjective> gem pouch". Asking for / stowing "<adjective> pouch"
+    # below is just the accepted shorthand for the same item -- do not "simplify"
+    # this count to "<adjective> pouch" or it will match differently.
+    adj == "gem" ? pouch_type = "#{adj} pouch" : pouch_type = "#{adj} gem pouch"
+    current_count = DRCI.count_items_in_container(pouch_type, container).to_i
+    return if current_count >= @spare_gem_pouch_target
 
-    DRCT.walk_to(@hometown['gemshop']['id'])
-    clerk = which_clerk(@hometown['gemshop']['name'])
+    gemshop_id = @hometown.dig('gemshop', 'id')
+    return unless gemshop_id
+
+    DRCT.walk_to(gemshop_id)
+    clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+    return unless clerk
+
     DRC.release_invisibility
-    fput("ask #{clerk} for #{adj} pouch")
-    fput("put my pouch in my #{container}")
+    (@spare_gem_pouch_target - current_count).times do
+      fput("ask #{clerk} for #{adj} pouch")
+      fput("put my pouch in my #{container}")
+    end
   end
 
   def which_clerk(clerks)
     clerks.is_a?(String) ? clerks : clerks.find { |clerk| DRRoom.npcs.include?(clerk) }
   end
 
+  # Number of times to look for a gem-shop clerk before giving up, and how long
+  # to wait between attempts. Some shops are staffed by more than one possible
+  # NPC (configured as a list under gemshop.name), and there can be a gap where
+  # none of them is in the room.
+  CLERK_MAX_ATTEMPTS = 5
+  CLERK_RETRY_PAUSE = 60
+
+  # Resolves a gem-shop clerk that is currently in the room, tolerating the gap
+  # when a shop rotates between multiple possible NPCs.
+  #
+  # A single named clerk (String) is returned immediately -- there is nobody to
+  # fail over to. For a list of candidates, every name is checked against the
+  # room each attempt; if none is present, we pause CLERK_RETRY_PAUSE seconds and
+  # try again, up to CLERK_MAX_ATTEMPTS times. On give-up a verbose message
+  # reports where we are, who we tried, how long we waited, and how many attempts
+  # were made, and nil is returned so the caller can skip gem-shop sales.
+  #
+  # @param clerks [String, Array<String>] the configured clerk name(s)
+  # @return [String, nil] a clerk present in the room, or nil after giving up
+  def wait_for_clerk(clerks)
+    return clerks if clerks.is_a?(String)
+
+    candidates = Array(clerks)
+    # No configured clerk (nil or empty list) will never resolve -- bail
+    # immediately rather than burning CLERK_MAX_ATTEMPTS pauses on it.
+    return nil if candidates.empty?
+
+    attempt = 0
+    loop do
+      attempt += 1
+      clerk = which_clerk(candidates)
+      return clerk if clerk
+
+      if attempt >= CLERK_MAX_ATTEMPTS
+        waited = (attempt - 1) * CLERK_RETRY_PAUSE
+        DRC.message("***ERROR: gave up looking for a gem-shop clerk in #{DRRoom.title} " \
+                    "(room #{Room.current&.id}) after #{attempt} attempts over #{waited} seconds. " \
+                    "Tried #{candidates.join(' and ')}; none were present. Skipping gem-shop sales.***")
+        return nil
+      end
+
+      DRC.message("No gem-shop clerk (#{candidates.join(' or ')}) in #{DRRoom.title}; " \
+                  "attempt #{attempt}/#{CLERK_MAX_ATTEMPTS}, waiting #{CLERK_RETRY_PAUSE}s before retrying.")
+      pause CLERK_RETRY_PAUSE
+    end
+  end
+
+  # Walks to the town gemshop.
+  #
+  # @return [Boolean] true if the town has a gemshop and the walk succeeded
+  def walk_to_gemshop
+    gemshop_id = @hometown.dig('gemshop', 'id')
+    return false unless gemshop_id
+
+    DRCT.walk_to(gemshop_id)
+  end
+
   def sell_gems(container)
     DRC.release_invisibility
-    case DRC.bput("open my #{container}", 'You open your', 'You open a', 'has been tied off', 'What were you referring to', 'That is already open')
-    when 'has been tied off', 'What were you referring to'
-      return
-    end
+    return unless open_gem_pouch?(container)
 
     gems = DRC.get_gems(container)
     unless gems.empty?
-      return unless DRCT.walk_to(@hometown['gemshop']['id'])
+      return unless walk_to_gemshop
 
-      clerk = which_clerk(@hometown['gemshop']['name'])
-
-      gems.each do |gem|
-        fput("get my #{gem} from my #{container}")
-        fput("sell my #{gem} to #{clerk}")
+      clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+      if clerk
+        gems.each do |gem|
+          fput("get my #{gem} from my #{container}")
+          fput("sell my #{gem} to #{clerk}")
+        end
       end
     end
 
@@ -169,36 +478,16 @@ class SellLoot
   def sell_metals_and_stones(container)
     DRC.release_invisibility
 
-    item_data = get_data('items')
-    metal_types = item_data['metal_types']
-    stone_types = item_data['stone_types']
+    items = sellable_metal_and_stone_items(container)
+    return if items.empty?
+    return unless walk_to_gemshop
 
-    material_types = metal_types + stone_types
-    ignore_types = @settings.sell_loot_ignored_metals_and_stones
+    clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+    return unless clerk
 
-    materials_regex = /^(?<size>\w+) (?<material>#{(material_types).join('|')}) (?<noun>nugget|bar)$/i
-    ignored_regex = /\b#{ignore_types.join('|')}\b/i unless ignore_types.empty?
-
-    items = DRCI.get_item_list(container)
-                .select { |item| item =~ materials_regex }
-                .reject { |item| ignored_regex ? item =~ ignored_regex : false }
-                .map do |item|
-      # Do regex then grab matches for details.
-      item =~ materials_regex
-      material = Regexp.last_match[:material]
-      noun = Regexp.last_match[:noun]
-      "#{material} #{noun}"
-    end
-
-    unless items.empty?
-      return unless DRCT.walk_to(@hometown['gemshop']['id'])
-
-      clerk = which_clerk(@hometown['gemshop']['name'])
-
-      items.each do |item|
-        fput("get my #{item} from my #{container}")
-        fput("sell my #{item} to #{clerk}")
-      end
+    items.each do |item|
+      fput("get my #{item} from my #{container}")
+      fput("sell my #{item} to #{clerk}")
     end
   end
 
@@ -218,8 +507,9 @@ class SellLoot
       return
     end
 
-    if DRCT.walk_to(@hometown['locksmithing']['id'])
-      clerk = which_clerk(@hometown['locksmithing']['name'])
+    locksmith_id = @hometown.dig('locksmithing', 'id')
+    if locksmith_id && DRCT.walk_to(locksmith_id)
+      clerk = which_clerk(@hometown.dig('locksmithing', 'name'))
       # The locksmith won't accept your component container
       # as long as other players are in the same room.
       # Once the room is empty then try to give it to them.
@@ -237,7 +527,7 @@ class SellLoot
                     "What is it you're trying to give",               # no container or no npc
                     "not interested in",                              # non-traps in container
                     "doesn't appear to be interested in your offer",  # not a thief
-                    "I don't have that in stock right now")           # players in room, try again later
+                    "I don't have that in stock right now") # players in room, try again later
       when "not interested in"
         DRC.message("Remove non-trap components from #{container} then try again.")
       when "doesn't appear to be interested in your offer"

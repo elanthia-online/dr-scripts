@@ -49,9 +49,19 @@ t2_skip_awaken: false
 # This allows one to auto-start t2 safely.
 t2_startup_delay: 0
 
+# Scripts T2 launched that should NOT be stopped when T2 exits. Works like
+# cyclic_no_release: by default T2 stops every script it started itself on
+# shutdown (it never touches scripts you started independently). List script
+# names here to spare them, or use the case-sensitive keyword ALL to spare
+# every script T2 launched.
+t2_no_kill: []
+
 # Combat settings
 # https://elanthipedia.play.net/Lich_script_repository#combat-trainer
 aim_fillers:
+  Brawling:
+    - bob
+    - bob
   Crossbow:
     - bob
     - bob
@@ -413,6 +423,8 @@ combat_trainer_offhand_trainables: false
 combat_trainer_focus_threshold: 0
 # roughly number of consecutive spell casts of a single skill (e.g. Targeted Magic)that need to not gain mindstate (mob too low) before it is blacklisted.
 combat_trainer_magic_gain_check: 3
+# seconds to pause at the end of each main combat loop tick. Lower = faster reaction, higher = less idle CPU usage. Default 0.1.
+combat_trainer_loop_tick: 0.1
 
 dual_load: false
 # use_stealth_attacks true will train stealth by hiding and attacking/backstabbing from stealth.  Thieves also use backstab: below
@@ -1627,6 +1639,12 @@ line_similarity_percentage: 70
 lichbot_buffs:
 lichbot_train_when_idle: false
 lichbot_compost: false
+# When true (default), lichbot runs as a full service bot: it validates room
+# occupants, accepts item offers, and answers whisper commands (help/inv/give/
+# buff). Set false for a passive bot that only trains while idle and answers the
+# Slack-token handshake -- it will not validate occupants, accept items, or
+# respond to whispers.
+lichbot_service_mode: true
 
 lockpick_buff_bot:
 
@@ -2299,7 +2317,6 @@ sorter:
 # https://elanthipedia.play.net/Lich_script_repository#inventory-manager
 inventory_manager_ignores:
   - '['
-  - '<'
   - 'Roundtime'
   - 'You have'
   - 'Vault Inventory'
@@ -2316,6 +2333,9 @@ inventory_manager_ignores:
   - 'in the known realms'
   - 'A notation at'
   - '...You have nothing currently stored'
+  - 'You take a moment to recall'
+  - '<output class'
+  - '<prompt time'
 
 inventory_manager_vault_surfaces:
   - 'a brass hook'
@@ -2649,10 +2669,6 @@ runestone_harness: 30
 ### Uses restock section.
 runestone_purchase: false
 
-### Roomnumbers.lic Settings:
-roomnumbers_display_exits: true
-roomnumbers_display_stringproc_exits: false
-
 # ESP Settings
 # List the channels you want to subscribe to when `esp` script runs.
 # You'll unsubscribe from any channels not listed.
@@ -2833,7 +2849,6 @@ script_watch_ignored_scripts:
   - events
   - skill-recorder
   - moonwatch
-  - roomnumbers
   - textsubs
 # lower number means faster updates, but could have performance impact
 script_watch_cycle_time: 5
@@ -2857,6 +2872,7 @@ capture_critter_settings:
     # List of items to dispose of
     junk:
       - sharkskin
+      - seagull feather
     # Where to store rewards\prizes for turning in captured critters
     reward_container: 
     # Optional custom game settings, if base-capture.yaml is out of date. Should match the format of an entry in base-capture.yaml

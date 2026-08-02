@@ -6,6 +6,13 @@
 =end
 
 class T2
+  # Seconds T2 sleeps when it finds nothing to train on a given tick.
+  IDLE_SLEEP_DURATION = 60
+
+  # Case-sensitive keyword accepted in the +t2_no_kill+ setting. When present,
+  # every script this T2 instance launched is spared from cleanup on shutdown.
+  KILL_ALL_KEYWORD = 'ALL'
+
   def initialize
     arg_definitions = [
       [
@@ -19,10 +26,19 @@ class T2
 
     @shutdown = false
 
-    fput('awaken') unless @settings.t2_skip_awaken
-
     @counter = 0
+    # Names of scripts this T2 instance has started, in launch order. Used by
+    # #stop_launched_scripts during shutdown so T2 only ever cleans up after
+    # itself and never kills scripts the user started independently.
+    @launched_scripts = []
+    @equipment_manager = EquipmentManager.new
+
+    # Guard against corrupted persisted state
     UserVars.t2_timers ||= {}
+    unless UserVars.t2_timers.is_a?(Hash)
+      DRC.message("WARNING: UserVars.t2_timers was corrupted, resetting to empty hash")
+      UserVars.t2_timers = {}
+    end
 
     @settings.t2_avoids.each do |avoid|
       if avoid['state']
@@ -40,6 +56,8 @@ class T2
       echo "***STATUS*** Performing Pre-startup activities."
       execute_actions(@settings.t2_before_startup)
     end
+
+    fput('awaken') unless @settings.t2_skip_awaken
   end
 
   def run
@@ -47,17 +65,18 @@ class T2
       break if @shutdown
 
       trainables = @settings['training_list']
-      EquipmentManager.new.empty_hands
+      @equipment_manager.empty_hands
 
       # should only stay true if it gets through the below loop without executing anything.
       warn_user = true
       trainables.each do |trainable|
         # Skip if learning rate is above start threshold for this trainable
-        if trainable['skill'].is_a?(Array)
-          next if trainable['skill'].each.reject { |skill| DRSkill.getxp(skill) >= trainable['start'] }.empty?
-        elsif DRSkill.getxp(trainable['skill']) >= trainable['start']
-          next
-        end
+        skip_due_to_threshold = if trainable['skill'].is_a?(Array)
+                                  trainable['skill'].all? { |skill| DRSkill.getxp(skill) >= trainable['start'] }
+                                else
+                                  DRSkill.getxp(trainable['skill']) >= trainable['start']
+                                end
+        next if skip_due_to_threshold
 
         # Skip if the skill is still on cooldown between trainings
         next if has_cooldown?(trainable['skill']) && !cooldown_expired?(trainable['skill'])
@@ -67,29 +86,28 @@ class T2
         next if trainable['moons'] && !DRCMM.moons_visible?
 
         # At this point we know that we need to train the skill
-        if trainable['name'].nil?
-          trainable_title = trainable['skill']
-        else
-          trainable_title = trainable['name']
-        end
+        trainable_title = trainable['name'] || trainable['skill']
         echo "***STATUS*** Starting (#{trainable['start']}) #{trainable_title}"
         trainable_start_time = Time.now
+
         if @settings.t2_burgle_every_block
           echo "***STATUS*** Trying to burgle"
           DRC.wait_for_script_to_complete("burgle", ["start"])
         end
+
         execute_actions(trainable['scripts'])
         update_cooldown(trainable['skill']) if has_cooldown?(trainable['skill'])
-        echo "***STATUS*** Completed #{trainable_title} in #{Time.at(Time.now - trainable_start_time).strftime("%Mm:%Ss")}"
+        echo "***STATUS*** Completed #{trainable_title} in #{format_duration(Time.now - trainable_start_time)}"
         warn_user = false
         break
       end
       if warn_user
         DRC.message("Ran out of things to do - please read the T2 tutorial if you see this message.\n  https://github.com/elanthia-online/dr-scripts/wiki/T2-Tutorial")
-        DRC.message("Sleeping 5 seconds.")
-        pause 60
+        DRC.message("Sleeping #{IDLE_SLEEP_DURATION} seconds.")
+        pause IDLE_SLEEP_DURATION
       end
     end
+
     unless @settings.t2_after_shutdown.empty?
       echo "***STATUS*** Controlled shutdown, executing shutdown actions."
       execute_actions(@settings.t2_after_shutdown)
@@ -97,24 +115,59 @@ class T2
   end
 
   def has_cooldown?(skill)
+    return false unless @settings.exp_timers.is_a?(Hash)
     @settings.exp_timers.keys.include?(skill)
   end
 
   def cooldown_expired?(skill)
-    UserVars.t2_timers[skill].nil? || Time.now - @settings.exp_timers[skill] >= UserVars.t2_timers[skill]
+    return false unless UserVars.t2_timers.is_a?(Hash)
+    return true if UserVars.t2_timers[skill].nil?
+
+    timer_config = @settings.exp_timers&.[](skill)
+    return true unless timer_config
+
+    Time.now - timer_config >= UserVars.t2_timers[skill]
   end
 
   def update_cooldown(skill)
     UserVars.t2_timers[skill] = Time.now
   end
 
+  def format_duration(seconds)
+    seconds = seconds.to_i
+    hours = seconds / 3600
+    minutes = (seconds % 3600) / 60
+    secs = seconds % 60
+    "#{hours}h:#{minutes.to_s.rjust(2, '0')}m:#{secs.to_s.rjust(2, '0')}s"
+  end
+
   def execute_actions(actions)
-    echo "Action"
     actions.each do |action|
       echo "***STATUS*** EXECUTE #{action}"
       action_parts = action.split(' ')
       script_name = action_parts.shift
-      DRC.wait_for_script_to_complete(script_name, action_parts)
+
+      begin
+        # Verify script exists before attempting to run
+        unless Script.exists?(script_name)
+          DRC.message("ERROR: Script '#{script_name}' does not exist, skipping")
+          next
+        end
+
+        # Track before waiting so before_dying can stop the script even if
+        # T2 exits while wait_for_script_to_complete is still running.
+        @launched_scripts << script_name unless @launched_scripts.include?(script_name)
+
+        script_handle = DRC.wait_for_script_to_complete(script_name, action_parts)
+
+        if script_handle.nil?
+          DRC.message("ERROR: Failed to start script '#{script_name}', skipping")
+          next
+        end
+      rescue StandardError => e
+        DRC.message("ERROR executing #{script_name}: #{e.message}")
+        DRC.message("Skipping to next action...")
+      end
     end
   end
 
@@ -149,13 +202,47 @@ class T2
     DRC.message("T2 training_list reloaded.")
     echo @settings.training_list.to_yaml if debug
   end
+
+  # Script names the operator has opted out of shutdown cleanup, taken from the
+  # +t2_no_kill+ setting. The setting mirrors +cyclic_no_release+: it accepts a
+  # single value or a list, either of which is normalized to an array here so
+  # every shape (unset, scalar, list) is handled uniformly.
+  #
+  # @return [Array<String>] script names to spare, or +[KILL_ALL_KEYWORD]+ when
+  #   the operator asked to spare everything.
+  def scripts_to_spare
+    Array(@settings.t2_no_kill)
+  end
+
+  # Whether the operator asked to spare every launched script from cleanup via
+  # the case-sensitive {KILL_ALL_KEYWORD} keyword in +t2_no_kill+.
+  #
+  # @return [Boolean]
+  def spare_all_scripts?
+    scripts_to_spare.include?(KILL_ALL_KEYWORD)
+  end
+
+  # Stops the scripts this T2 instance launched, honoring +t2_no_kill+.
+  #
+  # T2 only ever stops scripts it started itself; scripts the operator started
+  # independently are never touched because they are absent from
+  # +@launched_scripts+. Within that set, any script named in +t2_no_kill+ is
+  # spared, and the {KILL_ALL_KEYWORD} keyword spares all of them. Scripts that
+  # are not currently running are skipped.
+  #
+  # @return [void]
+  def stop_launched_scripts
+    return if spare_all_scripts?
+
+    spared = scripts_to_spare
+    @launched_scripts
+      .reject { |script_name| spared.include?(script_name) }
+      .each { |script_name| stop_script(script_name) if Script.running?(script_name) }
+  end
 end
 
 before_dying do
-  scripts = ['magic', 'hunting-buddy', 'performance', 'athletics', 'first-aid', 'steal', 'outdoorsmanship', 'mech-lore', 'pick', 'foragetask']
-  scripts.each do |script_name|
-    stop_script(script_name) if Script.running?(script_name)
-  end
+  $T2&.stop_launched_scripts
   DRCA.release_cyclics(get_settings.cyclic_no_release)
 end
 

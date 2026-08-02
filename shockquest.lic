@@ -1,102 +1,323 @@
 =begin
-  Original Author: Damiza Nihshyde
-  Version: 1.16
+  shockquest.lic - Automates the Empath "shock" quest (bonding a vela'tohr seed).
+
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#shockquest
+  Walkthrough:   https://elanthipedia.play.net/Shock_quest_walkthrough
+
+  The quest: Nadigo (in the vela'tohr woods) gives the empath a vela'tohr seed on
+  a medallion. The empath must MEDITATE on the seed in a series of qualifying
+  outdoor locations, each in a different zone, waiting out a per-seed cooldown
+  between successful meditations, until the seed is fully charged. The charged
+  seed is then returned to Nadigo to complete the quest.
+
+  Original Author: Damiza Nihshyde (v1.16)
+  Rewrite: preserves the curated meditation route while fixing the two failure
+  modes that caused the original to silently give up mid-quest:
+
+    1. A successful meditation puts the seed on a randomised 56-65 minute
+       cooldown. The original waited a flat 60 minutes, so whenever the roll
+       landed above 60 the next spot returned "still processing the energy" -
+       and the original treated that as a wasted spot, advancing to the next
+       location instead of retrying. With a fixed list of spots and up to eight
+       successful meditations required, losing even one spot to a cooldown could
+       leave the seed uncharged when the list ran out.
+
+    2. The original ran off the end of its fixed list and exited silently with
+       no indication that the seed was not yet full. This rewrite retries
+       cooldowns in place (never wasting a spot), skips genuinely-unusable
+       spots, and prints an explicit message if the route is exhausted before
+       the seed is full (progress is saved on the seed - just re-run later).
 =end
 
+# Automates the Empath vela'tohr "shock" quest end to end.
+#
+# The class is deliberately decomposed into small, single-responsibility methods
+# so that the decision logic (classifying a MEDITATE response, choosing how to
+# react to each outcome) can be unit-tested in isolation from the game I/O.
+#
+# @example Run with default settings
+#   ShockQuest.new
+#
+# @example Override the meditation route and timing via character settings
+#   # In your YAML settings:
+#   # shockquest_meditation_spots:
+#   #   - { room: '8741', safe: '4105' }
+#   #   - { room: '4111' }
+#   # shockquest_cooldown_seconds: 3900
 class ShockQuest
-  def initialize
-    unless DRStats.empath?
-      echo "Wait... You're no Empath!  Bye!!"
-      exit
-    end
+  # @return [String] semantic version of this script
+  VERSION = '2.0.0'
 
-    check_seed
-    DRCT.walk_to('8741')
-    seed_meditate(true, '4105')
-    DRCT.walk_to('4111')
-    seed_meditate
-    DRCT.walk_to('3996')
-    seed_meditate
-    DRCT.walk_to('6226')
-    seed_meditate(true, '6272')
-    DRCT.walk_to('6260')
-    seed_meditate(true, '6272')
-    DRCT.walk_to('2837')
-    seed_meditate
-    DRCT.walk_to('2701')
-    seed_meditate(true, '2780')
-    DRCT.walk_to('1951')
-    seed_meditate
+  # Map room used to reach Nadigo and the seed vendor / turn-in.
+  # @return [String]
+  NADIGO_ROOM = '15017'
+
+  # The default curated meditation route, preserved from the original script.
+  #
+  # Each entry is a Hash with a mandatory "room" (map id to meditate in) and an
+  # optional "safe" (map id to retreat to while waiting out the cooldown, for
+  # spots that are not safe to idle in). Zones must differ between successful
+  # meditations, so the route deliberately spans widely separated rooms.
+  #
+  # @return [Array<Hash>]
+  DEFAULT_MEDITATION_SPOTS = [
+    { 'room' => '8741', 'safe' => '4105' },
+    { 'room' => '4111' },
+    { 'room' => '3996' },
+    { 'room' => '6226', 'safe' => '6272' },
+    { 'room' => '6260', 'safe' => '6272' },
+    { 'room' => '2837' },
+    { 'room' => '2701', 'safe' => '2780' },
+    { 'room' => '1951' }
+  ].freeze
+
+  # Default time to wait after a successful bond before moving on. The in-game
+  # cooldown is a random 56-65 minutes; this default sits near the top of that
+  # range so the next spot rarely reports a cooldown, and the in-place retry
+  # loop (see {#meditate_at_spot}) absorbs any remaining overage.
+  # @return [Integer] seconds
+  DEFAULT_COOLDOWN_SECONDS = 63 * 60
+
+  # How long to wait between in-place retries when a spot is still on cooldown.
+  # @return [Integer] seconds
+  DEFAULT_RETRY_INTERVAL_SECONDS = 2 * 60
+
+  # Upper bound on in-place cooldown/distraction retries before abandoning a
+  # spot. At the default interval this covers ~20 minutes of overage, far more
+  # than the 56-65 minute cooldown window can ever require after the base wait.
+  # @return [Integer]
+  DEFAULT_MAX_COOLDOWN_RETRIES = 10
+
+  # Granularity of the countdown messages emitted while waiting out a cooldown.
+  # @return [Integer] seconds
+  COOLDOWN_PROGRESS_INTERVAL = 5 * 60
+
+  # Ordered classification table for MEDITATE SEED responses.
+  #
+  # Order matters: the fully-charged ("full") message and the seed-destroyed
+  # message are checked first so that a single response line is never
+  # misclassified as a lesser outcome. Every pattern is anchored on a phrase
+  # confirmed either in live quest logs or on the Elanthipedia walkthrough.
+  #
+  # @return [Array<Array(Symbol, Regexp)>] outcome symbol paired with its matcher
+  MEDITATION_RESPONSES = [
+    [:full,         /germination to complete your quest/i],
+    [:destroyed,    /shriveling and crumbling away|vegetative agony/i],
+    [:bonded,       /strange sensations subside/i],
+    [:cooldown,     /still processing the energy/i],
+    [:familiar,     /already familiar with this area/i],
+    [:too_close,    /still too close to the area where the tainted vela'tohr grow/i],
+    [:bad_location, /nothing more happens despite your concentration/i],
+    [:distracted,   /trouble concentrating/i]
+  ].freeze
+
+  # Outcomes that mean "this spot cannot bond the seed right now, move on to
+  # the next spot in the route without retrying".
+  # @return [Array<Symbol>]
+  SKIP_OUTCOMES = %i[familiar too_close bad_location unknown].freeze
+
+  # Outcomes that warrant retrying the exact same spot after a wait rather than
+  # advancing (the seed is simply not ready, not the location's fault).
+  # @return [Array<Symbol>]
+  RETRY_OUTCOMES = %i[cooldown distracted].freeze
+
+  # Builds configuration from settings and runs the quest.
+  #
+  # @param settings [Object] object responding to the shockquest_* accessors
+  #   (defaults to the character's live settings via +get_settings+).
+  # @return [void]
+  def initialize(settings = get_settings)
+    load_settings(settings)
+    run
   end
 
-  def check_seed
-    case DRC.bput('tap my vela seed', /You tap a .+ vela\'tohr seed.*/, /I could not find what you were referring to./)
-    when /I could not find what you were referring to./
-      echo 'No seed detected!  Heading to Nadigo.'
-      DRCT.walk_to('15017')
-      get_seed
-    end
+  # Reads and normalises configuration, falling back to the module defaults.
+  #
+  # @param settings [Object] settings object (see {#initialize}).
+  # @return [void]
+  def load_settings(settings)
+    @meditation_spots = settings.shockquest_meditation_spots || DEFAULT_MEDITATION_SPOTS
+    @cooldown_seconds = settings.shockquest_cooldown_seconds || DEFAULT_COOLDOWN_SECONDS
+    @retry_interval   = settings.shockquest_retry_interval_seconds || DEFAULT_RETRY_INTERVAL_SECONDS
+    @max_retries      = settings.shockquest_max_retries || DEFAULT_MAX_COOLDOWN_RETRIES
   end
 
-  def get_seed
-    case DRC.bput('ask nadigo for shock', /Nadigo gazes at you searchingly, then nods.*/, /Nadigo gives a slight nod of his head.*/, /Nadigo closes his eyes and grows still.*/, /Nadigo gazes at you searchingly, then nods.*/, /Nadigo glances at you, "It is still too soon.*/)
-    when /Nadigo (closes his eyes and grows still|gives a slight nod of his head).*/
-      get_seed
-    when /Nadigo (gazes at you searchingly, then nods|gives a slight nod of his head).*/
-      waitfor 'Nadigo says, "It\'s strung on a medallion.'
-    when /Nadigo glances at you, "It is still too soon.*/
-      echo 'You cannot start this quest again so soon!'
-      exit
-    end
+  # Top-level orchestration: guard the guild, obtain a seed if needed, charge it.
+  #
+  # @return [void]
+  def run
+    return unless ensure_empath
+    return unless ensure_seed
+    charge_seed
   end
 
-  def seed_meditate(has_safe = false, safe_room = '')
-    case DRC.bput('meditate seed', /.*to Nadigo for germination to complete your quest.*/, /As the strange sensations subside.*/, /You attempt to meditate, but have trouble concentrating./, /You close your eyes and breathe deeply.*/, /.*seed is still processing the energy.*/)
-    when /.*to Nadigo for germination to complete your quest.*/
-      waitrt?
-      nadigo_return
-    when /You attempt to meditate, but have trouble concentrating./
-      if has_safe then
-        DRCT.walk_to(safe_room)
+  # Verifies the character is an Empath. Guild membership cannot change in
+  # DragonRealms, so this is the only eligibility check the quest needs.
+  #
+  # @return [Boolean] true if the quest may proceed.
+  def ensure_empath
+    return true if DRStats.empath?
+
+    DRC.message("Wait... You're no Empath! Bye!")
+    false
+  end
+
+  # Ensures a vela'tohr seed is on hand, fetching one from Nadigo if absent.
+  #
+  # @return [Boolean] true if a seed is available to charge; false if one could
+  #   not be obtained (the quest must not continue in a no-seed state).
+  def ensure_seed
+    return true if seed_on_hand?
+
+    DRC.message('No seed detected - heading to Nadigo.')
+    DRCT.walk_to(NADIGO_ROOM)
+    return true if acquire_seed
+
+    DRC.message('Could not obtain a seed from Nadigo - aborting quest.')
+    false
+  end
+
+  # Checks whether the character is already carrying/wearing the seed.
+  #
+  # @return [Boolean]
+  def seed_on_hand?
+    response = DRC.bput('tap my vela seed',
+                        /You tap a .+ vela'tohr seed/,
+                        /I could not find what you were referring to/)
+    response.include?('You tap')
+  end
+
+  # Asks Nadigo for the seed, handling his multi-step dialogue and the
+  # "too soon to try again" refusal.
+  #
+  # @return [Boolean] true once Nadigo hands over the seed; false if he never
+  #   agrees within the retry budget. Exits the script outright on the
+  #   "too soon" refusal.
+  def acquire_seed
+    @max_retries.times do
+      case DRC.bput('ask nadigo for shock',
+                    /gazes at you searchingly, then nods/,
+                    /gives a slight nod of his head/,
+                    /closes his eyes and grows still/,
+                    /It is still too soon/)
+      when /gazes at you searchingly, then nods/
+        waitfor 'strung on a medallion'
+        return true
+      when /It is still too soon/
+        DRC.message('You cannot start this quest again so soon - exiting.')
+        return exit
       end
-      echo 'Unable to determine time, waiting 10 minutes and trying again.'
-      pause 600
-    when /.*seed is still processing the energy.*/
-      if has_safe then
-        DRCT.walk_to(safe_room)
-      end
-      echo 'Unable to determine time, waiting 10 minutes and trying again.'
-      pause 600
-    when /As the strange sensations subside.*/
-      if has_safe then
-        DRCT.walk_to(safe_room)
-      end
-      echo 'Success!  Waiting 1 hour...'
-      pause 600
-      echo '10 minutes down, 50 minutes remaining!'
-      pause 600
-      echo '20 minutes down, 40 minutes remaining!'
-      pause 600
-      echo '30 minutes down, 30 minutes remaining!'
-      pause 600
-      echo '40 minutes down, 20 minutes remaining!'
-      pause 600
-      echo '50 minutes down, 10 minutes remaining!'
-      pause 600
-      echo 'Wait time done!  Continuing...'
-    when /You close your eyes and breathe deeply.*/
-      waitrt
     end
+    false
   end
 
-  def nadigo_return
-    echo 'Your seed is full!  Returning to Nadigo!'
-    DRCT.walk_to('15017')
-    fput('remove my seed')
-    fput('give nadigo')
-    waitfor 'Nadigo smiles at you, then turns away, gazing off into the woods.'
-    echo 'Your quest is completed!'
-    exit
+  # Walks the meditation route, bonding the seed until it is full or the route
+  # is exhausted.
+  #
+  # @return [void]
+  def charge_seed
+    @meditation_spots.each do |spot|
+      case meditate_at_spot(spot)
+      when :full
+        return deliver_seed
+      when :destroyed
+        return DRC.message('The seed was destroyed - the quest cannot continue.')
+      when :bonded
+        rest_after_bond(spot)
+      end
+      # SKIP_OUTCOMES fall through and continue to the next spot.
+    end
+
+    announce_incomplete
+  end
+
+  # Travels to a spot and meditates, retrying in place while the only obstacle
+  # is the seed's cooldown (or a transient distraction). Never advances the
+  # route on a retryable outcome - that was the core bug in the original.
+  #
+  # @param spot [Hash] a meditation-route entry (see {DEFAULT_MEDITATION_SPOTS}).
+  # @return [Symbol] a terminal outcome from {MEDITATION_RESPONSES} (never
+  #   +:cooldown+ or +:distracted+).
+  def meditate_at_spot(spot)
+    DRCT.walk_to(spot['room'])
+
+    (@max_retries + 1).times do |attempt|
+      outcome = classify_meditation(perform_meditation)
+      return outcome unless RETRY_OUTCOMES.include?(outcome)
+      return :unknown if attempt >= @max_retries
+
+      DRC.message("Seed not ready here (#{outcome}); waiting #{@retry_interval / 60} min then retrying this spot.")
+      pause @retry_interval
+    end
+
+    :unknown
+  end
+
+  # Sends the MEDITATE command and returns the decisive response line.
+  #
+  # @return [String] the matched response text (empty string on timeout).
+  def perform_meditation
+    DRC.bput('meditate seed', *MEDITATION_RESPONSES.map { |_outcome, pattern| pattern })
+  end
+
+  # Classifies a raw MEDITATE SEED response into a single outcome symbol.
+  #
+  # @param response [String, nil] the response text from {#perform_meditation}.
+  # @return [Symbol] one of the outcome symbols in {MEDITATION_RESPONSES}, or
+  #   +:unknown+ when nothing matches.
+  def classify_meditation(response)
+    return :unknown if response.nil? || response.empty?
+
+    MEDITATION_RESPONSES.each do |outcome, pattern|
+      return outcome if response =~ pattern
+    end
+    :unknown
+  end
+
+  # Retreats to the spot's safe room (if any) and waits out the seed cooldown.
+  #
+  # @param spot [Hash] the spot that was just bonded.
+  # @return [void]
+  def rest_after_bond(spot)
+    DRC.message('Bond formed! Waiting out the seed cooldown.')
+    DRCT.walk_to(spot['safe']) if spot['safe']
+    wait_cooldown
+  end
+
+  # Sleeps for the configured cooldown, emitting periodic countdown messages.
+  #
+  # @return [void]
+  def wait_cooldown
+    remaining = @cooldown_seconds
+    while remaining > 0
+      chunk = [COOLDOWN_PROGRESS_INTERVAL, remaining].min
+      pause chunk
+      remaining -= chunk
+      DRC.message("Cooldown: #{remaining / 60} minutes remaining.") if remaining > 0
+    end
+    DRC.message('Cooldown complete - continuing.')
+  end
+
+  # Returns the fully-charged seed to Nadigo and waits for the germination
+  # ceremony to finish.
+  #
+  # @return [void]
+  def deliver_seed
+    DRC.message('Seed is full! Returning to Nadigo.')
+    DRCT.walk_to(NADIGO_ROOM)
+    DRC.bput('remove my seed', /You remove a .+ vela'tohr seed/, /You aren't wearing/)
+    DRC.bput('give nadigo', /brushes the proffered seed/, /Excellent work/)
+    waitfor 'turns away, gazing off into the woods'
+    DRC.message('Your quest is complete!')
+  end
+
+  # Explains that the route was used up before the seed charged. Progress is
+  # stored on the seed itself, so simply re-running later resumes the quest.
+  #
+  # @return [void]
+  def announce_incomplete
+    DRC.message('Ran out of meditation spots before the seed was full.')
+    DRC.message('Progress is saved on the seed - re-run later (respecting the cooldown), or add more spots to shockquest_meditation_spots.')
   end
 end
 

@@ -3,170 +3,9 @@
 require 'ostruct'
 require 'time'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  # Find the matching 'end' at column 0 (same level as class definition)
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+require_relative 'spec_helper'
 
 # Minimal stub modules for game interaction
-module DRC
-  def self.right_hand
-    $right_hand
-  end
-
-  def self.left_hand
-    $left_hand
-  end
-
-  def self.bput(*_args)
-    'Roundtime'
-  end
-
-  def self.message(*_args); end
-
-  def self.release_invisibility; end
-
-  def self.wait_for_script_to_complete(*_args); end
-
-  def self.fix_standing; end
-end
-
-module DRCC
-  def self.stow_crafting_item(*_args)
-    true
-  end
-
-  def self.get_crafting_item(*_args); end
-
-  def self.find_shaping_room(*_args); end
-
-  def self.find_sewing_room(*_args); end
-
-  def self.find_enchanting_room(*_args); end
-
-  def self.find_empty_crucible(*_args); end
-
-  def self.check_for_existing_sigil?(*_args)
-    true
-  end
-
-  def self.order_enchant(*_args); end
-
-  def self.fount(*_args); end
-
-  def self.repair_own_tools(*_args); end
-end
-
-module DRCI
-  def self.stow_hands; end
-
-  def self.dispose_trash(*_args); end
-
-  def self.get_item(*_args); end
-
-  def self.get_item?(*_args)
-    true
-  end
-
-  def self.get_item_if_not_held?(*_args)
-    true
-  end
-
-  def self.put_away_item?(*_args)
-    true
-  end
-
-  def self.untie_item?(*_args)
-    true
-  end
-
-  def self.count_items_in_container(*_args)
-    0
-  end
-
-  def self.exists?(*_args)
-    false
-  end
-end
-
-module DRCT
-  def self.walk_to(*_args); end
-
-  def self.order_item(*_args); end
-
-  def self.buy_item(*_args); end
-
-  def self.dispose(*_args); end
-end
-
-module DRCM
-  def self.ensure_copper_on_hand(*_args); end
-end
-
-module DRSkill
-  def self.getxp(*_args)
-    0
-  end
-end
-
-module DRRoom
-  def self.npcs
-    $room_npcs || []
-  end
-end
-
-class Room
-  def self.current
-    OpenStruct.new(id: $room_id || 1)
-  end
-end
-
-module XMLData
-  def self.room_title
-    $room_title || ''
-  end
-end
-
-module Flags
-  def self.add(*_args); end
-  def self.delete(*_args); end
-end
-
-module Lich
-  module Messaging
-    def self.msg(*_args); end
-  end
-
-  module Util
-    def self.issue_command(*_args)
-      []
-    end
-  end
-end
-
 # Stub for script before_dying
 def before_dying(&block)
   # No-op for testing
@@ -178,22 +17,17 @@ $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth 
 # Load WorkOrders class definition (without executing top-level code)
 load_lic_class('workorders.lic', 'WorkOrders')
 
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data if defined?(reset_data)
-    $right_hand = nil
-    $left_hand = nil
-    $room_npcs = []
-    $room_id = 1
-    $room_title = ''
-  end
-end
-
 RSpec.describe WorkOrders do
   # Allocate a bare instance without calling initialize
   let(:workorders) { described_class.allocate }
 
   before(:each) do
+    # World state this spec assumes (reset_data runs first, via spec_helper).
+    $right_hand = nil
+    $left_hand = nil
+    DRRoom.npcs = []
+    XMLData.room_title = ''
+
     workorders.instance_variable_set(:@settings, OpenStruct.new(
                                                    crafting_container: 'backpack',
                                                    crafting_items_in_container: [],
@@ -239,7 +73,10 @@ RSpec.describe WorkOrders do
 
     it 'defines REPAIR_GIVE_PATTERNS as frozen array' do
       expect(described_class::REPAIR_GIVE_PATTERNS).to be_frozen
-      expect(described_class::REPAIR_GIVE_PATTERNS.length).to eq(6)
+      expect(described_class::REPAIR_GIVE_PATTERNS.length).to eq(7)
+      # Cost-capturing quote plus a bare-prompt fallback for split lines.
+      expect(described_class::REPAIR_GIVE_PATTERNS).to include(described_class::REPAIR_QUOTE_PATTERN)
+      expect(described_class::REPAIR_GIVE_PATTERNS).to include('Just give it to me again')
     end
 
     it 'defines REPAIR_NO_NEED_PATTERNS as frozen array' do
@@ -343,7 +180,7 @@ RSpec.describe WorkOrders do
     let(:room_list) { [100, 101, 102] }
 
     context 'when NPC is in current room' do
-      before { $room_npcs = ['Jakke'] }
+      before { DRRoom.npcs = ['Jakke'] }
 
       it 'returns true without walking' do
         expect(DRCT).not_to receive(:walk_to)
@@ -367,7 +204,7 @@ RSpec.describe WorkOrders do
     end
 
     context 'when NPC is not in any room' do
-      before { $room_npcs = [] }
+      before { DRRoom.npcs = [] }
 
       it 'walks to all rooms and returns false' do
         expect(DRCT).to receive(:walk_to).exactly(3).times
@@ -1021,9 +858,13 @@ RSpec.describe WorkOrders do
     describe 'put_away_item? usage' do
       it 'uses DRCI.put_away_item? for ticket in repair_items' do
         workorders.instance_variable_set(:@settings, OpenStruct.new(workorders_repair_own_tools: false))
-        # Return 'Just give it to me again' for every first give per tool
-        allow(DRC).to receive(:bput) do |cmd, *_patterns|
-          cmd.include?('give') ? 'Just give it to me again' : 'repair ticket'
+        # First give per tool returns the clerk's cost quote (matches
+        # REPAIR_QUOTE_PATTERN and contains a price so repair_cost_copper works);
+        # confirm_repair's give -- the only one passing 'repair ticket' as a
+        # pattern -- returns 'repair ticket' so the repair finalizes and the
+        # ticket is stowed.
+        allow(DRC).to receive(:bput) do |_cmd, *patterns|
+          patterns.include?('repair ticket') ? 'repair ticket' : 'cost 4,447 Kronars to repair.  Just give it to me again'
         end
         allow(DRCI).to receive(:get_item?).and_return(false)
         allow(workorders).to receive(:get_tool)
@@ -1032,6 +873,57 @@ RSpec.describe WorkOrders do
         expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true).twice
 
         workorders.send(:repair_items, { 'repair-room' => 100, 'repair-npc' => 'Rangu' }, %w[hammer tongs])
+      end
+    end
+
+    describe 'repair insufficient-funds recovery' do
+      it 'REPAIR_QUOTE_PATTERN matches a clerk cost quote' do
+        expect(described_class::REPAIR_QUOTE_PATTERN).to be_a(Regexp)
+        expect('That will cost 4,447 Kronars to repair.  Just give it to me again if you want')
+          .to match(described_class::REPAIR_QUOTE_PATTERN)
+      end
+
+      it 'REPAIR_NEED_COIN_PATTERN is the short-on-coin phrase' do
+        expect(described_class::REPAIR_NEED_COIN_PATTERN).to eq('more coin')
+      end
+
+      describe '#repair_cost_copper' do
+        it 'parses the copper amount out of a repair quote' do
+          expect(workorders.send(:repair_cost_copper, 'cost 4,447 Kronars to repair')).to eq(4447)
+        end
+
+        it 'returns nil when the quote has no number' do
+          expect(workorders.send(:repair_cost_copper, 'Just give it to me again')).to be_nil
+        end
+      end
+
+      describe '#confirm_repair' do
+        let(:info) { { 'repair-npc' => 'Rangu', 'repair-room' => 100 } }
+
+        before { allow(Lich::Messaging).to receive(:msg) }
+
+        it 'stows the ticket once the clerk accepts the repair' do
+          allow(DRC).to receive(:bput).and_return('repair ticket')
+          expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true)
+          workorders.send(:confirm_repair, info, 'hammer', 4447)
+        end
+
+        it 'withdraws 10x the quoted cost, walks back, and retries when short on coin' do
+          allow(DRC).to receive(:bput).and_return('more coin', 'repair ticket')
+          allow(workorders).to receive(:stow_tool)
+          allow(workorders).to receive(:get_tool)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCI).to receive(:put_away_item?).and_return(true)
+          expect(DRCM).to receive(:ensure_copper_on_hand).with(44_470, anything, 'Crossing').and_return(true)
+          workorders.send(:confirm_repair, info, 'hammer', 4447)
+        end
+
+        it 'skips without withdrawing when the cost could not be read' do
+          allow(DRC).to receive(:bput).and_return('more coin')
+          allow(workorders).to receive(:stow_tool)
+          expect(DRCM).not_to receive(:ensure_copper_on_hand)
+          workorders.send(:confirm_repair, info, 'hammer', nil)
+        end
       end
     end
 

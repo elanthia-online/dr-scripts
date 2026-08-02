@@ -15,11 +15,8 @@ class ScrollSorter
     @default_container = @settings.default_container
     @stacker = @settings.scroll_sorter['stacker']
     @stacker_container = @settings.scroll_sorter['stacker_container']
-    @custom_nouns = @settings.scroll_sorter['scroll_nouns']
-    @scroll_nouns = get_data('items').scroll_nouns + @custom_nouns
     @unleash_mana = @settings.scroll_sorter['unleash_mana']
-    @unleash_harnesses = @settings.scroll_sorter['unleash_harnesses']
-    @unleash_harnesses ||= 1
+    @unleash_harnesses = @settings.scroll_sorter['unleash_harnesses'] || 1
 
     arg_definitions =
       [

@@ -117,6 +117,8 @@ class Enchant
       end
     end
 
+    @brazier_ref = @use_own_brazier ? "my #{@brazier}" : @brazier
+
     args = parse_args(arg_definitions)
 
     @baseitem = args.base_noun || args.noun
@@ -164,10 +166,10 @@ class Enchant
   end
 
   def handle_resume
-    DRCC.get_crafting_item(@brazier, @bag, @bag_items, @belt)
+    DRCC.get_crafting_item(@brazier, @bag, @bag_items, @belt) if @use_own_brazier
 
     analyze_patterns = ANALYZE_READY_PATTERNS + [ANALYZE_IMBUE_PATTERN]
-    result = DRC.bput("analyze #{@item} on my brazier", *analyze_patterns)
+    result = DRC.bput("analyze #{@item} on #{@brazier_ref}", *analyze_patterns)
 
     if ANALYZE_READY_PATTERNS.any? { |pat| pat.match?(result) }
       DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
@@ -180,12 +182,12 @@ class Enchant
   end
 
   def handle_imbue_resume
-    result = DRC.bput("look on my #{@brazier}", BRAZIER_HAS_FOUNT_PATTERN, 'There is nothing')
+    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_HAS_FOUNT_PATTERN, 'There is nothing')
     if BRAZIER_HAS_FOUNT_PATTERN.match?(result)
       imbue
     else
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
-      wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
+      wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
       DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
       imbue
     end
@@ -203,7 +205,7 @@ class Enchant
       end
 
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
-      wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
+      wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
       DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
     end
 
@@ -240,7 +242,7 @@ class Enchant
   def place_item_on_brazier
     2.times do
       all_patterns = [PUT_BRAZIER_ALREADY_ENCHANTED, PUT_BRAZIER_GLANCE, PUT_BRAZIER_NEEDS_CLEAN] + PUT_BRAZIER_SUCCESS
-      result = DRC.bput("put my #{@baseitem} on #{@brazier}", *all_patterns)
+      result = DRC.bput("put my #{@baseitem} on #{@brazier_ref}", *all_patterns)
 
       if PUT_BRAZIER_ALREADY_ENCHANTED.match?(result)
         Lich::Messaging.msg("plain", "Enchant: Totem already enchanted, disposing and retrying.")
@@ -266,7 +268,7 @@ class Enchant
   def place_item_inner
     2.times do
       all_patterns = [PUT_BRAZIER_GLANCE] + PUT_BRAZIER_SUCCESS
-      result = DRC.bput("put my #{@baseitem} on #{@brazier}", *all_patterns)
+      result = DRC.bput("put my #{@baseitem} on #{@brazier_ref}", *all_patterns)
       if PUT_BRAZIER_SUCCESS.any? { |pat| pat.match?(result) }
         waitrt?
         return
@@ -277,7 +279,7 @@ class Enchant
   def imbue
     imbue_data = @settings['waggle_sets']['imbue']['Imbue']
     if imbue_data
-      imbue_data['cast'] = "cast #{@item} on #{@brazier}"
+      imbue_data['cast'] = "cast #{@item} on #{@brazier_ref}"
       until DRCA.cast_spell?(imbue_data, @settings)
         Lich::Messaging.msg("bold", "Enchant: Casting Imbue failed. Retrying.")
       end
@@ -286,7 +288,7 @@ class Enchant
         DRCC.get_crafting_item(@imbue_wand, @bag, @bag_items, @belt)
       end
 
-      result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
+      result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier_ref}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
       if result == IMBUE_WAND_FAILED
         Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
         imbue
@@ -299,10 +301,10 @@ class Enchant
   end
 
   def clean_brazier
-    result = DRC.bput("clean #{@brazier}", CLEAN_SUCCESS, CLEAN_NOTHING, CLEAN_NOT_LIT)
+    result = DRC.bput("clean #{@brazier_ref}", CLEAN_SUCCESS, CLEAN_NOTHING, CLEAN_NOT_LIT)
     case result
     when CLEAN_SUCCESS
-      DRC.bput("clean #{@brazier}", CLEAN_SINGED)
+      DRC.bput("clean #{@brazier_ref}", CLEAN_SINGED)
     when CLEAN_NOT_LIT
       DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
     end
@@ -311,7 +313,7 @@ class Enchant
   def empty_brazier
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
 
-    result = DRC.bput("look on #{@brazier}", BRAZIER_CONTENTS_PATTERN, 'There is nothing')
+    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_CONTENTS_PATTERN, 'There is nothing')
     match = BRAZIER_CONTENTS_PATTERN.match(result)
     return unless match
 
@@ -334,7 +336,7 @@ class Enchant
     end
     DRC.bput("study my #{sigil} sigil", SIGIL_STUDY_SUCCESS)
     waitrt?
-    DRC.bput("trace #{@item} on #{@brazier}", SIGIL_TRACE_SUCCESS)
+    DRC.bput("trace #{@item} on #{@brazier_ref}", SIGIL_TRACE_SUCCESS)
   end
 
   def scribe
@@ -353,7 +355,7 @@ class Enchant
     elsif Flags['enchant-complete']
       handle_complete_flag
     else
-      DRC.bput("scribe #{@item} on #{@brazier} with my #{@burin}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+      DRC.bput("scribe #{@item} on #{@brazier_ref} with my #{@burin}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
       waitrt?
       scribe
     end
@@ -371,14 +373,14 @@ class Enchant
 
   def handle_focus_flag
     Flags.reset('enchant-focus')
-    DRC.bput("focus #{@item} on #{@brazier}", FOCUS_IMBUE_NEEDED, SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+    DRC.bput("focus #{@item} on #{@brazier_ref}", FOCUS_IMBUE_NEEDED, SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     waitrt?
     scribe
   end
 
   def handle_meditate_flag
     Flags.reset('enchant-meditate')
-    DRC.bput("meditate fount on #{@brazier}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+    DRC.bput("meditate fount on #{@brazier_ref}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     waitrt?
     scribe
   end
@@ -387,7 +389,7 @@ class Enchant
     Flags.reset('enchant-push')
     DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.to_s.include?('burin')
     DRCC.get_crafting_item(@loop, @bag, @bag_items, @belt)
-    DRC.bput("push #{@item} on #{@brazier} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
+    DRC.bput("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     waitrt?
     DRCC.stow_crafting_item(@loop, @bag, @belt)
     DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)

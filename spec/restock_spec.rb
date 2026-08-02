@@ -2,87 +2,11 @@
 
 require 'ostruct'
 
-# Load test harness which provides mock game objects
-load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
-include Harness
-
-# Extract and eval a class from a .lic file without executing top-level code
-def load_lic_class(filename, class_name)
-  return if Object.const_defined?(class_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
-
-# Minimal stub modules for game interaction
-module DRC
-  class << self
-    def bput(*_args); 'I could not find what you were referring to.'; end
-
-    def text2num(text)
-      %w[zero one two three four five six seven eight nine ten].index(text) || text.to_i
-    end
-  end
-end
-
-module DRCT
-  class << self
-    def walk_to(*_args); end
-    def buy_item(*_args); end
-  end
-end
-
-module DRCI
-  class << self
-    def open_container?(*_args); true; end
-    def stow_hands; end
-    def put_away_item?(*_args); true; end
-    def count_items_in_container(*_args); 0; end
-  end
-end
-
-module DRCM
-  class << self
-    def convert_to_copper(amount, denom)
-      amount.to_i * case denom
-                    when 'copper' then 1
-                    when 'bronze' then 10
-                    when 'silver' then 100
-                    when 'gold' then 1000
-                    when 'platinum' then 10_000
-                    else 1
-                    end
-    end
-
-    def ensure_copper_on_hand(*_args); end
-    def deposit_coins(*_args); end
-  end
-end
+require_relative 'spec_helper'
 
 $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth].freeze
 
 load_lic_class('restock.lic', 'Restock')
-
-RSpec.configure do |config|
-  config.before(:each) do
-    reset_data
-  end
-end
 
 RSpec.describe Restock do
   # Build a Restock instance without calling initialize (avoids game I/O).
