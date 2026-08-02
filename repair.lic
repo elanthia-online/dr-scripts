@@ -44,12 +44,7 @@ class Repair
     @craft_data     = get_data('crafting')['blacksmithing'][@town]
     @equipmanager   = EquipmentManager.new
 
-    @toolbelts_list = []
-    @toolset_list   = []
-    @disciplines.each do |name|
-      @toolbelts_list << @settings.send(name + '_belt')
-      @toolset_list   << @settings.send(name + '_tools')
-    end
+    @toolbelts_list, @toolset_list = build_tool_lists
 
     if @town == 'Fang Cove' && fang_closed?
       DRC.message('Fang Cove repair personnel are sleeping off their latest hangover, and are not available for repairs at this hour. Try back between mid-morning and sunset')
@@ -239,6 +234,25 @@ class Repair
       pause 0.01 until (item = [DRC.right_hand, DRC.left_hand].compact.first) # waits for repaired item to hit your hand
       smart_stow_gear(item)
     end
+  end
+
+  # Builds the toolbelt and toolset lists from the per-discipline *_belt and
+  # *_tools settings, skipping any discipline that has neither configured.
+  # Excluding nils is required so smart_get_gear/smart_stow_gear never call
+  # belt["items"] or tools.any? on nil -- common now that carving/shaping/
+  # tinkering belts are separate from engineering_belt and are often left
+  # unset (issue #1420).
+  # @return [Array(Array<Hash>, Array<Array>)] the [toolbelts, toolsets] pair
+  def build_tool_lists
+    toolbelts = []
+    toolsets  = []
+    @disciplines.each do |name|
+      belt  = @settings.send(name + '_belt')
+      tools = @settings.send(name + '_tools')
+      toolbelts << belt if belt
+      toolsets  << tools if tools
+    end
+    [toolbelts, toolsets]
   end
 
   def smart_get_gear(gear_item)
