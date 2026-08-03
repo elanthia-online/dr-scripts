@@ -1,4 +1,6 @@
 =begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#t2
+
         Alternative trainer script which kicks off sub-scripts based on
         current mindstates.  See Leustyin-setup and Chuno-setup for examples
         This script uses the `training_list` key to define the skills to train

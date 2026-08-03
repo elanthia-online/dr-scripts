@@ -1,3 +1,11 @@
+=begin
+  Keeps the Heroic tattoo invoked, running in the background as an autostart.
+
+  Tracks the invoke cooldown (derived from Arcana ranks unless overridden) and
+  skips activation while in a no-use room or while a no-use script is running.
+  Run with "cycle" to print uptime, downtime and total cycle time and exit.
+=end
+
 no_pause_all
 no_kill_all
 

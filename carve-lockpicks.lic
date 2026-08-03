@@ -1,4 +1,6 @@
 =begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#carve-lockpicks
+
   Need these settings in your yaml:
     #Header
     lockpick_carve_settings:

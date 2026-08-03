@@ -1,3 +1,10 @@
+=begin
+  Registers every item in a gear set with the registrar.
+
+  Walks to the registrar, then taps and registers each item in gear_sets[set_name].
+  Items that cannot be tapped (locked or animated) are skipped with a message.
+=end
+
 class RegGear
   def initialize(debug: true)
     @debug = debug

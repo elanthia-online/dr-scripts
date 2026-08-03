@@ -1,3 +1,10 @@
+=begin
+  Sacrifices a resource at the hometown nexus.
+
+  Walks to the nexus room for nexus_town, fang_cove_override_town or hometown and
+  sacrifices the named resource. Enforces a six hour cooldown tracked in UserVars.
+=end
+
 class Nexus
   def initialize
     arg_definitions = [

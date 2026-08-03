@@ -1,3 +1,9 @@
+=begin
+  Watches arena NPCs for telegraphed attacks and responds with the matching
+  evasive maneuver (pedal, bob, duck, jump, lean, cower). Pauses combat-trainer
+  while a watch is in progress and unpauses it once the maneuver is set.
+=end
+
 def mainloop
   ignore_npcs = %w[Usdiwi Servant Traumatologist Usdiwi]
   npcs = DRRoom.npcs - ignore_npcs

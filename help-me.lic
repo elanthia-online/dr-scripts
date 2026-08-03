@@ -1,3 +1,11 @@
+=begin
+  Collects troubleshooting information and uploads it to pastebin.
+
+  Gathers Lich, Ruby and dependency versions, the game client, and every
+  character yaml profile, then returns the paste link. If a user name is given
+  and lnet is running, the link is also sent to that user.
+=end
+
 require 'net/http'
 
 class HelpMe

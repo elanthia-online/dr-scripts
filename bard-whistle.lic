@@ -1,3 +1,11 @@
+=begin
+  Passively trains Bardic Lore with WHISTLE PIERCING.
+
+  Exits unless the character is a Bard of circle 18+ with Bardic Lore under 1750
+  ranks. Skips whistling while hunting-buddy or combat-trainer is running, or
+  once Bardic Lore experience is at 32 or above.
+=end
+
 no_kill_all
 
 class Whistle

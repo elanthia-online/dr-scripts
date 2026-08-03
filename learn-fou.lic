@@ -1,3 +1,10 @@
+=begin
+  Learns Fires of Ushnish by studying the cone and the lava crevasse.
+
+  Checks that mobar blood is in inventory first and warns if fewer than five are
+  held. Pass "crevasse" to skip the cone and start at the lava crevasse.
+=end
+
 class LearnFOU
   def initialize
     arg_definitions = [

@@ -1,3 +1,11 @@
+=begin
+  Creates and buffs Osrel Meraud for Clerics.
+
+  Obtains a favor orb for osrel_favor_god (running the favor script if needed),
+  walks to the safe room, then casts using the create_om waggle set and follows
+  up with the buff_om set.
+=end
+
 class CreateOsrelMeraud
   def initialize
     unless DRStats.cleric?

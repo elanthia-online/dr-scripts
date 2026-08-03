@@ -1,3 +1,10 @@
+=begin
+  Fills all five Moon Mage prediction pools.
+
+  Checks each pool with PREDICT STATE and observes constellations belonging to
+  that pool until it reports complete understanding.
+=end
+
 class MoonieFill
   def initialize
     @magic = ['Dawgolesh', 'Durgaulda', 'Ismenia', 'Yavash', 'Wolf', 'Cobra', 'Ox', 'Donkey', 'Coyote', 'Dove', 'Phoenix', 'Cow', 'Shrike', 'Jackal', 'Amlothi', 'Wren', 'Nightingale', 'Owl', 'Adder', 'Shrew', 'Toad']

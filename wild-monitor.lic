@@ -1,3 +1,11 @@
+=begin
+  Reacts to wild and caustic mana surges.
+
+  Pauses other scripts when a surge starts, retreats out of combat, and steps the
+  harness amount down until attunement is severed, then releases mana and
+  restores wild_mana_amount and the paused scripts.
+=end
+
 no_pause_all
 no_kill_all
 
