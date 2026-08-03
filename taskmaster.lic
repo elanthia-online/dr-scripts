@@ -250,7 +250,7 @@ class TaskMaster
     elsif base == 'lumber'
       buy_stackables(item, count, volume_per_item, base)
       shape_item(item, count, base, type)
-      repair(@settings.shaping_tools, @settings.engineering_belt)
+      repair(@settings.engineering_tools, @settings.engineering_belt)
       trash(item, base, type)
       return
     elsif volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
