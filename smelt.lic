@@ -18,6 +18,10 @@ class Smelt
     @bag_items = settings.crafting_items_in_container
     @belt = settings.forging_belt
     @rod = settings.forging_tools.find { |item| /rod/ =~ item }
+    unless @rod
+      DRC.message('*** No stirring rod in your forging_tools setting; assuming "stirring rod". Add it to your YAML to silence this. ***')
+      @rod = 'stirring rod'
+    end
     DRCI.stow_hands
     if settings.adjustable_tongs
       adjustable_tongs = DRCC.get_adjust_tongs?('reset shovel', @bag, @bag_items, @belt)
