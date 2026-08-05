@@ -1049,6 +1049,92 @@ RSpec.describe 'moonwatch.lic' do
       end
     end
 
+    # Regression guard for the moon-window text-leak bug. update_window runs on
+    # moonwatch's timer thread while game output is written by another thread.
+    # If the stream open and close ship as separate _respond lines, a game line
+    # can land between them and a line-based frontend (e.g. ProfanityFE) routes
+    # it into the moon window, where it stays stranded until the next refresh.
+    # The open, content, and close must therefore travel as one atomic message.
+    describe '#update_window (atomic moon stream)' do
+      let(:ui) do
+        instance = described_class.new(window_enabled: true)
+        instance.update_moon_vars(offset_manager, now)
+        $respond_messages.clear
+        instance
+      end
+
+      it 'emits the pushStream and popStream tags in one indivisible message' do
+        ui.update_window
+        atomic = $respond_messages.find { |m| m.include?('<pushStream id="moonWindow"/>') }
+        expect(atomic).to include('<popStream/>')
+      end
+
+      it 'never emits a bare popStream on a line by itself' do
+        ui.update_window
+        expect($respond_messages).not_to include('<popStream/>')
+      end
+
+      it 'wraps the moon content between the open and close tags of that message' do
+        ui.update_window
+        atomic = $respond_messages.find { |m| m.start_with?('<pushStream id="moonWindow"/>') }
+        expect(atomic).to match(%r{\A<pushStream id="moonWindow"/>.+<popStream/>\z})
+      end
+
+      it 'still clears the stream before repainting it' do
+        ui.update_window
+        expect($respond_messages).to include('<clearStream id="moonWindow"/>')
+      end
+    end
+
+    describe '#moon_stream_message' do
+      let(:ui) { described_class.new(window_enabled: false) }
+
+      it 'returns a self-contained push/content/pop payload' do
+        expect(ui.moon_stream_message('Katamba full')).to eq(
+          '<pushStream id="moonWindow"/>Katamba full<popStream/>'
+        )
+      end
+
+      it 'keeps the opening and closing tags in the same string for any content' do
+        payload = ui.moon_stream_message('anything at all')
+        expect(payload).to start_with('<pushStream id="moonWindow"/>')
+        expect(payload).to end_with('<popStream/>')
+      end
+    end
+
+    describe '#moon_stream_summary' do
+      it 'joins the three moon short forms in katamba, yavash, xibar order' do
+        @moons['katamba']['short'] = 'K-short'
+        @moons['yavash']['short']  = 'Y-short'
+        @moons['xibar']['short']   = 'X-short'
+        ui = described_class.new(window_enabled: false)
+        expect(ui.moon_stream_summary).to eq('K-short Y-short X-short')
+      end
+    end
+
+    describe '#window_content_fresh?' do
+      let(:ui) { described_class.new(window_enabled: false) }
+
+      it 'is fresh when the content differs from the cached content' do
+        ui.instance_variable_set(:@window_cache, 'old summary')
+        ui.instance_variable_set(:@last_window_refresh, Time.now)
+        expect(ui.window_content_fresh?('new summary')).to be true
+      end
+
+      it 'is stale when the content matches the cache within the refresh interval' do
+        ui.instance_variable_set(:@window_cache, 'same summary')
+        ui.instance_variable_set(:@last_window_refresh, Time.now)
+        expect(ui.window_content_fresh?('same summary')).to be false
+      end
+
+      it 'is fresh again once the refresh interval has elapsed' do
+        ui.instance_variable_set(:@window_cache, 'same summary')
+        stale_at = Time.now - MoonwatchUI::WINDOW_REFRESH_INTERVAL - 1
+        ui.instance_variable_set(:@last_window_refresh, stale_at)
+        expect(ui.window_content_fresh?('same summary')).to be true
+      end
+    end
+
     describe '#log_initial_status' do
       it 'emits nothing when debug is off' do
         ui = described_class.new(window_enabled: false)
