@@ -2232,26 +2232,60 @@ class MoonwatchUI
 
   # Update the moon status window if enabled.
   #
-  # @return [void]
+  # Repaints the +moonWindow+ side stream with the current three-moon summary,
+  # skipping the write when the content is unchanged within
+  # {WINDOW_REFRESH_INTERVAL} (see {#window_content_fresh?}).
   #
+  # The stream open, its content, and the stream close are emitted as a
+  # *single* +_respond+ so the frontend receives them on one indivisible line.
+  # Because +update_window+ runs on moonwatch's timer thread while the game's
+  # own output is written by another thread, splitting the open and close
+  # across separate +_respond+ calls opens a race: a line-based frontend such
+  # as ProfanityFE keeps a single "current stream" pointer, so any game line
+  # that arrives between a bare +<pushStream id="moonWindow"/>+ and a later
+  # bare +<popStream/>+ is captured into the moon window and left stranded
+  # there until the next refresh. Keeping push/content/pop atomic closes that
+  # window entirely. See {#moon_stream_message} for the emitted payload.
+  #
+  # @return [void]
   def update_window
     return unless @window_enabled
 
-    new_message = [
-      UserVars.moons['katamba']['short'],
-      UserVars.moons['yavash']['short'],
-      UserVars.moons['xibar']['short']
-    ].join(' ')
-
-    if @window_cache == new_message && Time.now - @last_window_refresh < WINDOW_REFRESH_INTERVAL
-      return
-    end
+    new_message = moon_stream_summary
+    return unless window_content_fresh?(new_message)
 
     @window_cache = new_message
     @last_window_refresh = Time.now
     _respond('<clearStream id="moonWindow"/>')
-    _respond("<pushStream id=\"moonWindow\"/>#{new_message}")
-    _respond('<popStream/>')
+    _respond(moon_stream_message(new_message))
+  end
+
+  # Build the space-joined short-form summary for the three tracked moons.
+  #
+  # @return [String] e.g. +"Katamba full Yavash rising Xibar set"+
+  def moon_stream_summary
+    %w[katamba yavash xibar].map { |moon| UserVars.moons[moon]['short'] }.join(' ')
+  end
+
+  # Wrap the moon summary in a self-contained +moonWindow+ stream payload.
+  #
+  # Open tag, content, and close tag are concatenated so a single +_respond+
+  # delivers them atomically and no foreign line can be routed into the moon
+  # window mid-update. See {#update_window} for the race this prevents.
+  #
+  # @param message [String] the moon summary to display
+  # @return [String] one-line +<pushStream .../>...<popStream/>+ payload
+  def moon_stream_message(message)
+    "<pushStream id=\"moonWindow\"/>#{message}<popStream/>"
+  end
+
+  # Whether the given content should be repainted now, i.e. it differs from the
+  # cached content or the refresh interval has elapsed since the last paint.
+  #
+  # @param message [String] the candidate moon summary
+  # @return [Boolean] true when a repaint is warranted
+  def window_content_fresh?(message)
+    @window_cache != message || Time.now - @last_window_refresh >= WINDOW_REFRESH_INTERVAL
   end
 
   # Log initial status for debug mode.
