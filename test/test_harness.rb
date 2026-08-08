@@ -639,12 +639,14 @@ module Harness
 
   class XMLData
     @@_room_title = nil
+    @@_room_exits = []
     @@_game = nil
     @@_server_time = nil
     @@_name = nil
 
     def self._reset
       @@_room_title = nil
+      @@_room_exits = []
       @@_game = nil
       @@_server_time = nil
       @@_name = nil
@@ -656,6 +658,14 @@ module Harness
 
     def self.room_title=(val)
       @@_room_title = val
+    end
+
+    def self.room_exits
+      @@_room_exits
+    end
+
+    def self.room_exits=(val)
+      @@_room_exits = val
     end
 
     # DR game instance code (e.g. 'DR' Prime, 'DRX' Platinum, 'DRF' Fallen,
