@@ -22,6 +22,8 @@ class WorkOrders
     "What is it you're trying to give"
   ].freeze
 
+  GIVE_LOGBOOK_INCOMPLETE_PATTERN = "The work order isn't yet complete".freeze
+
   NPC_NOT_FOUND_PATTERN = "What is it you're trying to give".freeze
 
   # The clerk's repair quote, e.g. "That will cost 4,447 Kronars to repair.
@@ -34,6 +36,9 @@ class WorkOrders
 
   # Clerk's response when we lack the coin to pay for a repair.
   REPAIR_NEED_COIN_PATTERN = 'more coin'
+
+  # Extra forge attempts beyond asked quantity to cover quality rejects / failed crafts
+  FORGE_ATTEMPT_BUFFER = 5
 
   REPAIR_GIVE_PATTERNS = [
     "I don't repair those here",
@@ -252,10 +257,29 @@ class WorkOrders
       end
       DRC.release_invisibility
       result = DRC.bput("give logbook to #{info['npc']}", *GIVE_LOGBOOK_SUCCESS_PATTERNS, NPC_NOT_FOUND_PATTERN)
+      if result.include?(GIVE_LOGBOOK_INCOMPLETE_PATTERN)
+        remaining = logbook_remaining(info['logbook'])
+        detail = remaining ? "still needs #{remaining} more" : 'is not complete'
+        Lich::Messaging.msg('bold', "WorkOrders: Work order #{detail} — not turned in")
+        stow_tool('logbook')
+        return
+      end
       break unless GIVE_LOGBOOK_RETRY_PATTERNS.any? { |pattern| pattern.is_a?(Regexp) ? pattern.match?(result) : result.include?(pattern) }
     end
     stow_tool('logbook')
     Lich::Messaging.msg('plain', 'WorkOrders: Work order completed and turned in')
+  end
+
+  # Read work-order logbook and return items still needed.
+  # @return [Integer, nil] remaining count, 0 if complete, nil if unreadable
+  def logbook_remaining(logbook)
+    result = DRC.bput("read my #{logbook} logbook", *READ_LOGBOOK_PATTERNS)
+    return 0 if result.include?('appears to be complete')
+
+    match = result.match(LOGBOOK_REMAINING_PATTERN)
+    return match[:remaining].to_i if match
+
+    nil
   end
 
   def get_tool(name)
@@ -748,7 +772,16 @@ class WorkOrders
 
     DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
 
-    quantity.times do
+    max_attempts = quantity + FORGE_ATTEMPT_BUFFER
+    attempts = 0
+    while attempts < max_attempts
+      remaining = logbook_remaining(info['logbook'])
+      if remaining.nil?
+        Lich::Messaging.msg('bold', 'WorkOrders: Could not read forging logbook remaining count')
+        break
+      end
+      break if remaining.zero?
+
       if remaining_volume < recipe['volume']
         DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
         DRCT.order_item(info['stock-room'], materials_info['stock-number'])
@@ -760,7 +793,14 @@ class WorkOrders
       bundle_item(recipe['noun'], info['logbook'])
 
       remaining_volume -= recipe['volume']
+      attempts += 1
     end
+
+    remaining = logbook_remaining(info['logbook'])
+    if remaining&.positive?
+      Lich::Messaging.msg('bold', "WorkOrders: Forging finished but logbook still needs #{remaining} more")
+    end
+
     DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
   end
 
@@ -814,9 +854,24 @@ class WorkOrders
       exit
     end
 
-    quantity.times do
+    max_attempts = quantity + FORGE_ATTEMPT_BUFFER
+    attempts = 0
+    while attempts < max_attempts
+      remaining = logbook_remaining(info['logbook'])
+      if remaining.nil?
+        Lich::Messaging.msg('bold', 'WorkOrders: Could not read forging logbook remaining count')
+        break
+      end
+      break if remaining.zero?
+
       DRC.wait_for_script_to_complete('smith', [@use_own_ingot_type, item['name']])
       bundle_item(recipe['noun'], info['logbook'])
+      attempts += 1
+    end
+
+    remaining = logbook_remaining(info['logbook'])
+    if remaining&.positive?
+      Lich::Messaging.msg('bold', "WorkOrders: Forging finished but logbook still needs #{remaining} more")
     end
 
     if smelt

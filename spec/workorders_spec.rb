@@ -312,14 +312,40 @@ RSpec.describe WorkOrders do
     end
 
     context 'when work order is not complete' do
-      it 'handles incomplete work order response' do
+      it 'does not claim success when work order is incomplete' do
         allow(DRCI).to receive(:get_item?).and_return(true)
         allow(DRC).to receive(:release_invisibility)
         allow(DRC).to receive(:bput).and_return("The work order isn't yet complete")
+        allow(workorders).to receive(:logbook_remaining).and_return(1)
         expect(workorders).to receive(:stow_tool).with('logbook')
+        expect(Lich::Messaging).to receive(:msg).with('bold', /still needs 1 more.*not turned in/)
+        expect(Lich::Messaging).not_to receive(:msg).with('plain', 'WorkOrders: Work order completed and turned in')
 
         workorders.send(:complete_work_order, info)
       end
+    end
+  end
+
+  # ===========================================================================
+  # #logbook_remaining - read remaining item count from work order logbook
+  # ===========================================================================
+  describe '#logbook_remaining' do
+    it 'returns 0 when work order appears complete' do
+      expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::READ_LOGBOOK_PATTERNS)
+                                 .and_return('This work order appears to be complete.')
+      expect(workorders.send(:logbook_remaining, 'forging')).to eq(0)
+    end
+
+    it 'returns remaining count from logbook text' do
+      expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::READ_LOGBOOK_PATTERNS)
+                                 .and_return('You must bundle and deliver 1 more of the ordered item.')
+      expect(workorders.send(:logbook_remaining, 'forging')).to eq(1)
+    end
+
+    it 'returns nil when response is unreadable' do
+      expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::READ_LOGBOOK_PATTERNS)
+                                 .and_return('I could not find what you were referring to.')
+      expect(workorders.send(:logbook_remaining, 'forging')).to be_nil
     end
   end
 
@@ -962,7 +988,8 @@ RSpec.describe WorkOrders do
     let(:info) do
       {
         'stock-room' => 100,
-        'trash-room' => 200
+        'trash-room' => 200,
+        'logbook'    => 'forging'
       }
     end
     let(:materials_info) do
@@ -996,6 +1023,8 @@ RSpec.describe WorkOrders do
       allow(DRCT).to receive(:dispose)
       allow(DRC).to receive(:wait_for_script_to_complete)
       allow(workorders).to receive(:bundle_item)
+      # need one more -> craft once -> complete on next check (+ final status read)
+      allow(workorders).to receive(:logbook_remaining).and_return(1, 0, 0)
     end
 
     it 'stows ingot to crafting_container using DRCC.stow_crafting_item' do
@@ -1019,6 +1048,14 @@ RSpec.describe WorkOrders do
       allow(DRCC).to receive(:stow_crafting_item)
       expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword'])
       workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+
+    it 'crafts an extra item when logbook still needs one more after quantity' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      # asked for 2; after two crafts still need 1; third craft completes
+      allow(workorders).to receive(:logbook_remaining).and_return(2, 1, 1, 0, 0)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword']).exactly(3).times
+      workorders.send(:forge_items, info, materials_info, item, 2)
     end
   end
 
