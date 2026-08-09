@@ -260,7 +260,7 @@ class WorkOrders
       if result.include?(GIVE_LOGBOOK_INCOMPLETE_PATTERN)
         remaining = logbook_remaining(info['logbook'])
         detail = remaining ? "still needs #{remaining} more" : 'is not complete'
-        Lich::Messaging.msg('bold', "WorkOrders: Work order #{detail} — not turned in")
+        Lich::Messaging.msg('bold', "WorkOrders: Work order #{detail} - not turned in")
         stow_tool('logbook')
         return
       end
