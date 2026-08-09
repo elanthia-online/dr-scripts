@@ -5,7 +5,7 @@
 =end
 
 class WorkOrders
-  VERSION = '1.0.0'.freeze
+  VERSION = '1.0.2'.freeze
 
   # Pattern constants for game responses
   GIVE_LOGBOOK_SUCCESS_PATTERNS = [
@@ -78,7 +78,18 @@ class WorkOrders
     'You must bundle and deliver \d+ more'
   ].freeze
 
+  # Full item capture must be used in bput — a shorter prefix match returns only the
+  # matched substring and drops the item name (item + remaining are often one line).
+  LOGBOOK_ITEM_PATTERN = /This logbook is tracking a work order requiring you to craft (?<item>.+?) from any/i.freeze
   LOGBOOK_REMAINING_PATTERN = /You must bundle and deliver (?<remaining>\d+) more/.freeze
+
+  RESUME_LOGBOOK_PATTERNS = [
+    LOGBOOK_ITEM_PATTERN,
+    'This work order appears to be complete.',
+    'is not currently tracking',
+    'has expired',
+    LOGBOOK_REMAINING_PATTERN
+  ].freeze
 
   COUNT_PATTERN = /(?<count>\d+)/.freeze
   POLISH_COUNT_PATTERN = /The surface polish has (?<count>\d+) uses remaining/.freeze
@@ -95,15 +106,16 @@ class WorkOrders
       [
         { name: 'discipline', options: %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing], description: 'What type of workorder to do?' },
         { name: 'repair', regex: /repair/i, optional: true, description: 'repair tools instead of crafting' },
-        { name: 'turnin', regex: /turnin/i, optional: true, description: 'get work order and turn it in immediately with items already on hand' }
+        { name: 'turnin', regex: /turnin/i, optional: true, description: 'get work order and turn it in immediately with items already on hand' },
+        { name: 'continue', regex: /continue/i, optional: true, description: 'resume an in-progress workorder from the logbook' }
       ]
     ]
 
     args = parse_args(arg_definitions)
-    work_order(args.discipline, args.repair, args.turnin)
+    work_order(args.discipline, args.repair, args.turnin, args.continue)
   end
 
-  def work_order(discipline, repair, turnin)
+  def work_order(discipline, repair, turnin, continue_order = nil)
     @settings = get_settings
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
@@ -148,7 +160,12 @@ class WorkOrders
       exit
     end
 
-    unless repair
+    item = nil
+    quantity = nil
+    if continue_order
+      item_name, quantity = resume_work_order(info['logbook'], recipes)
+      item = recipes.find { |r| r['name'] == item_name } if item_name
+    elsif !repair
       if @settings.workorder_diff.is_a?(Hash)
         item_name, quantity = request_work_order(recipes, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], @settings.workorder_diff[discipline])
       else
@@ -176,16 +193,18 @@ class WorkOrders
       @outfitting_room = @settings.outfitting_room
       tools = @settings.outfitting_tools
       @belt = @settings.outfitting_belt
-      case item['chapter']
-      when 4, 2, 3
-        craft_method = :sew_items
-      when 5
-        materials_info = crafting_data['stock'][@workorders_materials['knit_type']]
-        craft_method = :knit_items
-      else
-        if item['chapter']
-          Lich::Messaging.msg('bold', "WorkOrders: Unknown chapter for tailoring item: #{item}")
-          exit
+      if item
+        case item['chapter']
+        when 4, 2, 3
+          craft_method = :sew_items
+        when 5
+          materials_info = crafting_data['stock'][@workorders_materials['knit_type']]
+          craft_method = :knit_items
+        else
+          if item['chapter']
+            Lich::Messaging.msg('bold', "WorkOrders: Unknown chapter for tailoring item: #{item}")
+            exit
+          end
         end
       end
     when 'shaping'
@@ -225,12 +244,18 @@ class WorkOrders
 
     return repair_items(info, tools) if repair
 
+    if continue_order && quantity.zero?
+      complete_work_order(info)
+      repair_items(info, tools) if @workorders_repair
+      return
+    end
+
     if DRSkill.getxp(skill) > @craft_max_mindstate
       Lich::Messaging.msg('bold', "WorkOrders: Exiting because your current mindstate for #{skill} (#{DRSkill.getxp(skill)}) is over the set maximum craft_max_mindstate: #{@craft_max_mindstate}")
       exit
     end
 
-    if turnin
+    if turnin && !continue_order
       quantity.times do
         DRCI.get_item(item['noun'], @settings.default_container)
         bundle_item(item['noun'], info['logbook'])
@@ -280,6 +305,60 @@ class WorkOrders
     return match[:remaining].to_i if match
 
     nil
+  end
+
+  # Resume an in-progress work order from the discipline logbook.
+  # @return [Array(String, Integer)] recipe name and remaining quantity (0 if complete)
+  def resume_work_order(logbook, recipes)
+    unless DRCI.get_item?("#{logbook} logbook")
+      Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{logbook} logbook")
+      exit
+    end
+
+    result = DRC.bput("read my #{logbook} logbook", *RESUME_LOGBOOK_PATTERNS)
+
+    if result.include?('appears to be complete')
+      stow_tool('logbook')
+      Lich::Messaging.msg('plain', 'WorkOrders: Logbook order complete — turning in')
+      return [nil, 0]
+    end
+
+    if result.include?('not currently tracking') || result.include?('has expired')
+      stow_tool('logbook')
+      Lich::Messaging.msg('bold', "WorkOrders: No in-progress work order in #{logbook} logbook")
+      exit
+    end
+
+    match = result.match(LOGBOOK_ITEM_PATTERN)
+    unless match
+      stow_tool('logbook')
+      Lich::Messaging.msg('bold', "WorkOrders: Could not parse item from #{logbook} logbook")
+      exit
+    end
+
+    item_desc = match[:item]
+    recipe = recipes.find { |r| r['name'] == item_desc }
+    unless recipe
+      stow_tool('logbook')
+      Lich::Messaging.msg('bold', "WorkOrders: Could not match logbook item '#{item_desc}' to a recipe")
+      exit
+    end
+
+    remaining = logbook_remaining(logbook)
+    stow_tool('logbook')
+
+    if remaining.nil?
+      Lich::Messaging.msg('bold', "WorkOrders: Could not read remaining count from #{logbook} logbook")
+      exit
+    end
+
+    if remaining.zero?
+      Lich::Messaging.msg('plain', 'WorkOrders: Logbook order complete — turning in')
+      return [recipe['name'], 0]
+    end
+
+    Lich::Messaging.msg('plain', "WorkOrders: Continuing work order for #{remaining} #{recipe['name']}")
+    [recipe['name'], remaining]
   end
 
   def get_tool(name)
