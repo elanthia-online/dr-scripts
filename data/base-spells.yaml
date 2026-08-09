@@ -3447,6 +3447,7 @@ spell_data:
     guild: Warrior Mage
     mana_type: elemental
     prep: prepare # This is a buff that trains TM, you 'spit' to use it
+    expire: Your throat contracts suddenly, growing cooler as your Dragon's Breath spell dissipates. # for combat-trainer rebuffing when consumed
   Electric Charge:
     skill: cantrip
     abbrev: C E C
