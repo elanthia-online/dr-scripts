@@ -78,7 +78,7 @@ class WorkOrders
     'You must bundle and deliver \d+ more'
   ].freeze
 
-  # Full item capture must be used in bput — a shorter prefix match returns only the
+  # Full item capture must be used in bput - a shorter prefix match returns only the
   # matched substring and drops the item name (item + remaining are often one line).
   LOGBOOK_ITEM_PATTERN = /This logbook is tracking a work order requiring you to craft (?<item>.+?) from any/i.freeze
   LOGBOOK_REMAINING_PATTERN = /You must bundle and deliver (?<remaining>\d+) more/.freeze
@@ -319,7 +319,7 @@ class WorkOrders
 
     if result.include?('appears to be complete')
       stow_tool('logbook')
-      Lich::Messaging.msg('plain', 'WorkOrders: Logbook order complete — turning in')
+      Lich::Messaging.msg('plain', 'WorkOrders: Logbook order complete - turning in')
       return [nil, 0]
     end
 
@@ -353,7 +353,7 @@ class WorkOrders
     end
 
     if remaining.zero?
-      Lich::Messaging.msg('plain', 'WorkOrders: Logbook order complete — turning in')
+      Lich::Messaging.msg('plain', 'WorkOrders: Logbook order complete - turning in')
       return [recipe['name'], 0]
     end
 

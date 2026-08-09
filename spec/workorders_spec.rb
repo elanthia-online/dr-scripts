@@ -410,7 +410,7 @@ RSpec.describe WorkOrders do
       expect(DRCI).to receive(:get_item?).with('forging logbook').and_return(true)
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::RESUME_LOGBOOK_PATTERNS)
                                  .and_return('This work order appears to be complete.')
-      expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Logbook order complete — turning in')
+      expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Logbook order complete - turning in')
 
       expect(workorders.send(:resume_work_order, 'forging', recipes)).to eq([nil, 0])
     end
