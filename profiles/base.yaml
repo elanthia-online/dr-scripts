@@ -379,7 +379,13 @@ thanatology:
   store: false
   harvest_container:
   harvest_count: 0
+  # Optional butcher cap per corpse. Unset = butcher until exhausted
+  # ("much too battered and beat up to extract any body parts from"), then dissect
+  # when dissect_and_butcher. Set to 1 for legacy one-butcher-then-dissect.
+  # Multi-butcher + preserve/dissect order requires patched combat-trainer.
+  butcher_count:
 # attempts to necromancer dissect after butchering a mob.  This often works.
+# With patched CT: preserve → multi-butcher → dissect when dissect_and_butcher.
 dissect_and_butcher: false
 # redeemed tag only allows dissect ritual
 necro_redeemed: false
