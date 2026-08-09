@@ -17,14 +17,16 @@ class TendMe
 
   def bind_open_wounds?
     lowered = false
+    lowered_item = nil
     # Pause scripts to prevent interference
     until (scripts_to_unpause = DRC.safe_pause_list)
       echo("Cannot pause, trying again in 30 seconds.")
       pause 30
     end
 
-    if checkleft && checkright && DRCI.lower_item?(DRC.left_hand)
-      lowered = true
+    if checkleft && checkright
+      lowered_item = DRC.left_hand
+      lowered = DRCI.lower_item?(lowered_item)
     end
 
     tended_wounds = false
@@ -39,7 +41,7 @@ class TendMe
       .map { |wound| wound.body_part }
       .uniq
       .each { |body_part| tended_wounds = tend_wound_safely(body_part) || tended_wounds }
-    DRCI.lift? if lowered
+    DRCI.lift?(lowered_item) if lowered
     DRC.safe_unpause_list(scripts_to_unpause)
     return tended_wounds
   end

@@ -972,6 +972,20 @@ module Harness
     $right_hand
   end
 
+  def checkleft(*hand)
+    return nil if $left_hand.nil?
+
+    hand.flatten!
+    hand.empty? ? $left_hand : hand.find { |instance| $left_hand =~ /#{instance}/i }
+  end
+
+  def checkright(*hand)
+    return nil if $right_hand.nil?
+
+    hand.flatten!
+    hand.empty? ? $right_hand : hand.find { |instance| $right_hand =~ /#{instance}/i }
+  end
+
   def waitrt?; end
 
   def waitcastrt?; end
@@ -1164,6 +1178,8 @@ module Harness
       def retreat(*_args); end
       def rummage(*_args); end
       def log_window(*_args); end
+      def safe_pause_list(*_args); []; end
+      def safe_unpause_list(*_args); end
     end
   end
 

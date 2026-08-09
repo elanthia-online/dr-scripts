@@ -125,4 +125,37 @@ RSpec.describe TendMe do
       expect(DRC).to have_received(:bput).with('tend Muleoak chest', any_args).twice
     end
   end
+
+  describe '#bind_open_wounds?' do
+    subject(:tend_me) { TendMe.allocate }
+
+    def tendme_health_result(overrides = {})
+      { 'lodged' => {}, 'parasites' => {}, 'bleeders' => {} }.merge(overrides)
+    end
+
+    before(:each) do
+      reset_data
+      allow(DRCH).to receive(:check_health).and_return(tendme_health_result)
+    end
+
+    it 'lifts the item back up after lowering it to free a hand for binding' do
+      $left_hand = 'broadsword'
+      $right_hand = 'buckler'
+      allow(DRCI).to receive(:lower_item?).and_return(true)
+
+      expect(DRCI).to receive(:lift?).with('broadsword')
+
+      tend_me.bind_open_wounds?
+    end
+
+    it 'does not lower or lift anything when a hand is free' do
+      $left_hand = 'broadsword'
+      $right_hand = nil
+
+      expect(DRCI).not_to receive(:lower_item?)
+      expect(DRCI).not_to receive(:lift?)
+
+      tend_me.bind_open_wounds?
+    end
+  end
 end
