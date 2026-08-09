@@ -1015,9 +1015,11 @@ shaping_tools:
   example: "- carving knife, - shaper, - drawknife"
   referenced_by:
     - clerk-tools
+    - taskmaster
     - workorders
   specific_descriptions:
     clerk-tools: Get or store these tools with the clerk.
+    taskmaster: Tools repaired for lumber-based tasks.
     workorders: Tools repaired for shaping work orders.
 
 shard_thief_password:
