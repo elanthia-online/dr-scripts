@@ -1,3 +1,10 @@
+=begin
+  Prays to Chadatru at the hometown altar, once per hour.
+
+  Paladins only. Walks to the chadatru_altar room for your hometown, kneels and
+  prays. Exits with a message if the hometown has no altar in base-theurgy.yaml.
+=end
+
 class PrayChadatru
   def initialize
     hometown = get_settings.hometown

@@ -1,3 +1,13 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#coordinator
+
+  Task scheduler that runs hunting, town and cleanup tasks in priority order.
+
+  Tasks and their predicates come from coordinator_hunting_tasks,
+  coordinator_town_tasks and coordinator_hunting_cleanup in your yaml. Predicates
+  are evaluated against skills and timers, and timers persist in UserVars.
+=end
+
 class Coordinator
   def initialize(debug)
     UserVars.coordinator_timers ||= {}

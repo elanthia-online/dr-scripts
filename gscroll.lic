@@ -1,3 +1,10 @@
+=begin
+  Gives every scroll in a container to another player.
+
+  Empties hands, lists the scrolls in the named container, then gets and gives
+  each one in turn. Stows the scroll and exits if a hand off fails.
+=end
+
 class GiveScrolls
   def initialize
     arg_definitions = [

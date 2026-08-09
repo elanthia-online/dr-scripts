@@ -1,3 +1,10 @@
+=begin
+  Collects insects from a fixed circuit of Crossing-area rooms.
+
+  Walks the circuit until a bug is in the room, picks it up, and places it on the
+  shrine in room 10506. Wings are dropped. Waits and re-walks when nothing spawns.
+=end
+
 rooms = [10_506, 10_507, 10_676, 10_508, 10_509, 10_665, 10_670, 10_673, 10_482, 10_497, 10_515, 10_675, 10_510, 10_539, 10_668, 10_669, 10_590, 10_520,
          10_666, 10_640, 10_557, 10_576, 10_617, 10_667, 10_620, 10_572, 10_671, 10_672, 10_677, 13_231, 10_678]
 

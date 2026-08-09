@@ -1,1 +1,7 @@
+=begin
+  Walks to the room id given as the first argument.
+
+  Thin wrapper around DRCT.walk_to for use from aliases and yaml hooks.
+=end
+
 DRCT.walk_to(variable[1])

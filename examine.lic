@@ -1,3 +1,10 @@
+=begin
+  Runs the full identification verb set against a single item.
+
+  Issues TAP, LOOK, RECALL, STUDY, ANALYZE, FOCUS and APPRAISE on the target so
+  that every available description is shown in one pass.
+=end
+
 class Examine
   def initialize
     arg_definitions = [

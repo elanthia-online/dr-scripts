@@ -1,3 +1,10 @@
+=begin
+  Plays the insult game against a named player.
+
+  Alternates MOCK with waiting for the reply and exits once the winning insult
+  appears, declaring the winner. Defaults to 'nut-hook' if no insult is given.
+=end
+
 class Insult
   def initialize
     arg_definitions =

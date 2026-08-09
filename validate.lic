@@ -1,3 +1,13 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#validate
+
+  Checks your character yaml profiles for common configuration errors.
+
+  Verifies file extensions and locations, that every profile parses as YAML, and
+  runs a set of assertions against your setup file. Pass "verbose" to print each
+  assertion as it runs.
+=end
+
 class DRYamlValidator
   def initialize
     arg_definitions = [[
