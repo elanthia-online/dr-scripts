@@ -264,6 +264,7 @@ burgle_settings:
   loot: pawn                                # drop | keep | bin | pawn   default: keep 
   loot_container: haversack                 # container to keep loot in while burglering
   safe_mode: true                           # stop searching and try to get out as quickly as possible when hearing footsteps.  Default: true
+  # stealth_inside: true                    # stay hidden while moving and searching inside the house.  The hide needed to enter happens either way.  Default: true
   room_blacklist:                           # array of rooms to ignore. Case sensitive.
   # prioritize_rooms:                       # array of rooms to search before any other room. Case sensitive. Omit for the original random walk.
   #   - Library                             # Houses are laid out randomly every caper, so this costs a recon walk of the whole house before any searching.
