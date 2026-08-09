@@ -6,10 +6,43 @@
 =end
 
 class Clerk
+  # Toolset names match workorders.lic's discipline names. Each maps to the
+  # crafting data area whose clerk holds the tools, and the settings naming the
+  # tools and the belt they live on.
+  TOOLSETS = {
+    'blacksmithing'  => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
+    'weaponsmithing' => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
+    'armorsmithing'  => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
+    'tailoring'      => { tools: :outfitting_tools, area: 'tailoring',     belt: :outfitting_belt },
+    'shaping'        => { tools: :shaping_tools,    area: 'shaping',       belt: :engineering_belt },
+    # carving_belt/tinkering_belt (#1420) override engineering_belt when set, matching
+    # carve.lic/carve-bead.lic/carve-lockpicks.lic/tinker.lic/bolts.lic's own fallback.
+    'carving'        => { tools: :carving_tools,    area: 'carving',       belt: :engineering_belt, belt_override: :carving_belt },
+    # Tinkering has no crafting data area of its own; the Engineering society
+    # clerk that holds shaping tools holds tinkering tools too.
+    'tinkering'      => { tools: :tinkering_tools,  area: 'shaping',       belt: :engineering_belt, belt_override: :tinkering_belt },
+    'remedies'       => { tools: :alchemy_tools,    area: 'remedies',      belt: :alchemy_belt },
+    'artificing'     => { tools: :enchanting_tools, area: 'artificing',    belt: :enchanting_belt }
+  }.freeze
+
+  # Core discipline names this script accepted before the rename. Each maps to
+  # the variant it already used, so existing calls behave exactly as they did.
+  LEGACY_TOOLSETS = {
+    'forging'     => 'blacksmithing',
+    'outfitting'  => 'tailoring',
+    'engineering' => 'shaping',
+    'alchemy'     => 'remedies',
+    'enchanting'  => 'artificing'
+  }.freeze
+
+  TOOLSET_NAMES = (TOOLSETS.keys + LEGACY_TOOLSETS.keys).freeze
+
+  TOOLSET_REGEX = /^(?:#{TOOLSET_NAMES.join('|')}|custom=\w+)$/i.freeze
+
   def initialize
     arg_definitions = [
       [
-        { name: 'toolset', regex: /forging|outfitting|engineering|alchemy|enchanting|custom=\w+/i, description: 'What set <forging outfitting engineering alchemy enchanting custom={set}> of tools to use.' },
+        { name: 'toolset', regex: TOOLSET_REGEX, description: "What set <#{TOOLSET_NAMES.join(' ')} custom={set}> of tools to use." },
         { name: 'action', options: %w[get store], description: 'Whether to get tools, or store them with the clerk' }
       ]
     ]
@@ -38,26 +71,16 @@ class Clerk
       tools = settings.custom_clerk_tools[custom_toolset][:tool_list]
       area = settings.custom_clerk_tools[custom_toolset][:area]
       @belt = nil
-    elsif args.toolset == 'engineering'
-      tools = settings.shaping_tools
-      area = 'shaping'
-      @belt = settings.engineering_belt
-    elsif args.toolset == 'outfitting'
-      tools = settings.outfitting_tools
-      area = 'tailoring'
-      @belt = settings.outfitting_belt
-    elsif args.toolset == 'forging'
-      tools = settings.forging_tools
-      area = 'blacksmithing'
-      @belt = settings.forging_belt
-    elsif args.toolset == 'alchemy'
-      tools = settings.alchemy_tools
-      area = 'remedies'
-      @belt = settings.alchemy_belt
-    elsif args.toolset == 'enchanting'
-      tools = settings.enchanting_tools
-      area = 'artificing'
-      @belt = settings.enchanting_belt
+    else
+      toolset = TOOLSETS[LEGACY_TOOLSETS.fetch(args.toolset, args.toolset)]
+      tools = settings.send(toolset[:tools])
+      area = toolset[:area]
+      @belt = (toolset[:belt_override] && settings.send(toolset[:belt_override])) || settings.send(toolset[:belt])
+
+      if tools.nil? || tools.empty?
+        echo "No tools configured for #{args.toolset}, set #{toolset[:tools]} in your yaml"
+        exit
+      end
     end
 
     roomnumber = crafting_data[area][hometown]['repair-room']

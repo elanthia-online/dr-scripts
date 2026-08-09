@@ -311,6 +311,18 @@ carving_belt:
     carve-bead: Use and stow bead carving tools from here (falls back to engineering_belt).
     carve-lockpicks: Use and stow lockpick carving tools from here (falls back to engineering_belt).
 
+carving_tools:
+  description: List of carving tools.
+  example: https://github.com/elanthia-online/dr-scripts/wiki/Crafting-Setup#tools
+  referenced_by:
+    - carve
+    - clerk-tools
+    - workorders
+  specific_descriptions:
+    carve: Finds the saw and chisel to carve with here.
+    clerk-tools: Get and store these tools with the clerk.
+    workorders: Tools repaired for carving work orders.
+
 circlecheck_prettyprint:
   description: Tells circlecheck to use the pretty print formatting for output.
   example: true/false
@@ -549,7 +561,7 @@ engineering_belt:
     carve: Use and stow carve tools from here (fallback for carving_belt).
     carve-lockpicks: Use and stow lockpick carving tools from here (fallback for carving_belt).
     clean-lumber: Use and stow lumber cleaning tools here (fallback for shaping_belt).
-    clerk-tools: Get and stow engineering/shaping tools from belt after storing with clerk.
+    clerk-tools: Get and stow engineering tools from belt after storing with clerk. Used for shaping, carving and tinkering.
     fir: Use and stow the carving knife from here (fallback for shaping_belt).
     shape: Use and stow shaping tools from here (fallback for shaping_belt).
     tinker: Use and stow tinkering tools from here (fallback for tinkering_belt).
@@ -1003,8 +1015,10 @@ shaping_tools:
   example: "- carving knife, - shaper, - drawknife"
   referenced_by:
     - clerk-tools
+    - workorders
   specific_descriptions:
     clerk-tools: Get or store these tools with the clerk.
+    workorders: Tools repaired for shaping work orders.
 
 shard_thief_password:
   description: The password for the Shard Thieves Guild.
@@ -1193,6 +1207,16 @@ tinkering_belt:
   specific_descriptions:
     tinker: Use and stow tinkering tools from here (falls back to engineering_belt).
     bolts: Use and stow bolt crafting tools from here (falls back to engineering_belt).
+
+tinkering_tools:
+  description: List of tinkering tools.
+  example: https://github.com/elanthia-online/dr-scripts/wiki/Crafting-Setup#tools
+  referenced_by:
+    - clerk-tools
+    - tinker
+  specific_descriptions:
+    clerk-tools: Get and store these tools with the clerk.
+    tinker: Matches the tool the recipe calls for against this list.
 
 training_box_list:
   description: Array of daily use training boxes for use with locksmithing
