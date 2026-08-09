@@ -69,7 +69,7 @@ class Burgle
     @max_priority_mindstate = @burgle_settings['max_priority_mindstate'] || 26
     @rope_adjective = @burgle_settings['rope_adjective'] || 'heavy'
     # room types to search before anything else, and how strictly to honor their order
-    @prioritize_rooms = @burgle_settings['prioritize_rooms'] || []
+    @prioritize_rooms = Array(@burgle_settings['prioritize_rooms'])
     @room_priority_type = @burgle_settings['room_priority_type'] || 'any'
     # stay hidden while moving and searching inside the house.  The hide needed to enter is
     # unconditional either way.  fetch, not ||, so an explicit false isn't read back as true.
