@@ -7,6 +7,9 @@ Documentation: https://elanthipedia.play.net/Lich_script_repository#burgle
 =end
 
 class Burgle
+  # room titles inside a burgled house all look like "[[Someone Else's Home, Library]]"
+  ROOM_TITLE_PATTERN = /\[\[Someone Else's Home, (?<room>.*)\]\]/.freeze
+
   def initialize
     arg_definitions = [
       [
@@ -65,6 +68,12 @@ class Burgle
     @lockpick_container = @burgle_settings['lockpick_container']
     @max_priority_mindstate = @burgle_settings['max_priority_mindstate'] || 26
     @rope_adjective = @burgle_settings['rope_adjective'] || 'heavy'
+    # room types to search before anything else, and how strictly to honor their order
+    @prioritize_rooms = Array(@burgle_settings['prioritize_rooms'])
+    @room_priority_type = @burgle_settings['room_priority_type'] || 'any'
+    # stay hidden while moving and searching inside the house.  The hide needed to enter is
+    # unconditional either way.  fetch, not ||, so an explicit false isn't read back as true.
+    @stealth_inside = @burgle_settings.fetch('stealth_inside', true)
     @loot_room_id = nil
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
@@ -128,6 +137,7 @@ class Burgle
       DRC.message("Invalid burgle_settings:entry_type setting.")
       return false
     end
+    validate_prioritize_rooms
     if @burgle_settings['max_search_count'] > 0
       case DRC.bput("open my #{@loot_container}", 'already open', '^You.+open', '^You spread your arms, carefully holding your bag well away from your body', 'Please rephrase that command', 'What were you referring', 'You can\'t do that', 'This is probably not the time nor place for that')
       when 'This is probably not the time nor place for that'
@@ -154,6 +164,30 @@ class Burgle
     end
 
     return true
+  end
+
+  # prioritize_rooms is best-effort: nothing here aborts the run, every problem warns and degrades
+  def validate_prioritize_rooms
+    return if @prioritize_rooms.empty?
+
+    valid = @room_searchable_objects_map.keys
+    unknown = @prioritize_rooms - valid
+    unless unknown.empty?
+      DRC.message("Unknown burgle_settings:prioritize_rooms entries (case-sensitive), ignoring: #{unknown.join(', ')}")
+      DRC.message("Valid room names: #{valid.join(', ')}")
+      @prioritize_rooms -= unknown
+    end
+
+    conflicts = @prioritize_rooms & (@burgle_settings['room_blacklist'] || [])
+    unless conflicts.empty?
+      DRC.message("In both prioritize_rooms and room_blacklist; blacklist wins: #{conflicts.join(', ')}")
+      @prioritize_rooms -= conflicts
+    end
+
+    unless %w[any inorder].include?(@room_priority_type)
+      DRC.message("Invalid burgle_settings:room_priority_type '#{@room_priority_type}'. Falling back to 'any'.")
+      @room_priority_type = 'any'
+    end
   end
 
   def validate_bin_settings
@@ -293,7 +327,7 @@ class Burgle
 
     if @burgle_settings['max_search_count'] > 0
       @search_count = 0
-      rob_the_place
+      search_the_place
     end
 
     DRC.bput('go window', 'You take a moment to reflect on the caper')
@@ -399,7 +433,7 @@ class Burgle
     visited.push(direction) unless direction == nil
 
     # get the room type, which is used to get searchable objects
-    if (room_match = XMLData.room_title.match(/\[\[Someone Else's Home, (?<room>.*)\]\]/))
+    if (room_match = XMLData.room_title.match(ROOM_TITLE_PATTERN))
       current_room = room_match[:room]
       # search the lootable objects unless the room type has been blacklisted
       search_for_loot(@room_searchable_objects_map[current_room]) unless @burgle_settings['room_blacklist'].include?(current_room)
@@ -421,12 +455,101 @@ class Burgle
     end
   end
 
+  # No prioritized rooms means no recon pass and no behavior change from the original walk.
+  def search_the_place
+    if @prioritize_rooms.empty?
+      rob_the_place
+    else
+      rob_the_place_prioritized
+    end
+  end
+
+  # Used when burgle_settings:prioritize_rooms is set.  The house layout is randomized every
+  # caper, so there is no way to know a Library exists until you have walked to it - which means
+  # no single interleaved pass can guarantee priority rooms are searched first.  Map the house
+  # first, then spend the search budget in priority order.
+  def rob_the_place_prioritized
+    map = map_house
+    # recon was aborted by footsteps, so don't search anything - head straight for the window
+    return if Flags['burgle-footsteps']
+
+    # direction-path from the entry room to wherever we currently are
+    current = []
+    build_search_queue(map).each do |room|
+      break if @search_count >= @burgle_settings['max_search_count']
+      break if Flags['burgle-footsteps']
+
+      target = map[room]
+      path_between(current, target).each { |dir| burgle_move(dir) }
+      current = target
+      search_for_loot(@room_searchable_objects_map[room])
+    end
+
+    # `go window` only works from the entry room, so always end up back there
+    path_between(current, []).each { |dir| burgle_move(dir) }
+  end
+
+  # Walks every reachable room without searching, recording the direction-path from the entry
+  # room to each.  Same traversal shape as rob_the_place, minus the search call and the
+  # @search_count guard - recon consumes no search budget.  Unwinds back to the entry room.
+  # Room types are never duplicated within a house, so the room title is a safe map key.
+  # Recorded paths are the first one found, not the shortest, so a room reached the long way
+  # around a cycle keeps the long path - correct, just not always the fewest moves.
+  def map_house(path = [], direction = nil, map = {})
+    visited = []
+    visited.push(direction) unless direction.nil?
+
+    if (room_match = XMLData.room_title.match(ROOM_TITLE_PATTERN))
+      room = room_match[:room]
+      # Houses contain cycles, so a room can be reached by more than one path.  Keep the first
+      # path found and don't explore on from a room that is already mapped - without this the
+      # recon walks the cycle forever, overwriting good paths with longer ones as it goes.
+      # Backing out is left to the caller's burgle_move(reverse), same as any other room.
+      return map if map.key?(room)
+
+      map[room] = path.dup
+
+      while XMLData.room_exits.count > visited.count && !(Flags['burgle-footsteps'])
+        newdir = XMLData.room_exits.reject { |exit| visited.include?(exit) }.sample
+        visited.push(newdir)
+        reverse = @reverse_direction_map[newdir]
+        burgle_move(newdir)
+        map_house(path + [newdir], reverse, map) unless Flags['burgle-footsteps']
+        burgle_move(reverse)
+      end
+    end
+    map
+  end
+
+  # Priority rooms first, then everything else.  map.keys is in insertion order, which is
+  # discovery order, which is exactly what room_priority_type 'any' wants - so 'any' needs no
+  # sort.  'inorder' instead honors the order the rooms were listed in, so an earlier-listed
+  # room is searched first even when a later-listed one is nearer and costs fewer moves.
+  # Every room in priority came from prioritize_rooms, so the index lookup is never nil.
+  def build_search_queue(map)
+    blacklist = @burgle_settings['room_blacklist'] || []
+    candidates = map.keys.reject { |room| blacklist.include?(room) }
+    priority = candidates.select { |room| @prioritize_rooms.include?(room) }
+    priority = priority.sort_by { |room| @prioritize_rooms.index(room) } if @room_priority_type == 'inorder'
+
+    priority + (candidates - priority)
+  end
+
+  # Both arguments are direction-paths from the entry room.  Returns the moves that get from one
+  # to the other, dropping the shared prefix so we don't walk all the way back to the entry room
+  # when two rooms share a branch.
+  def path_between(from, to)
+    common = 0
+    common += 1 while common < from.length && common < to.length && from[common] == to[common]
+    from[common..].reverse.map { |dir| @reverse_direction_map[dir] } + to[common..]
+  end
+
   def search_for_loot(target)
     # don't hide/search if you've seen footsteps and are in safe_mode
     return if Flags['burgle-footsteps']
 
     # ensure you're in hiding or invis before looting -> only try once because of timer
-    if !invisible?
+    if !invisible? && @stealth_inside
       DRC.hide?
       DRC.message("Couldn't hide.  Searching to avoid delays.") unless hidden?
     end
@@ -488,7 +611,7 @@ class Burgle
 
   # specialized move routine - sneaks when in hiding, when needed, moves when not to speed up script
   def burgle_move(direction)
-    if !invisible? && hidden? && @search_count < @burgle_settings['max_search_count'] && !(Flags['burgle-footsteps'])
+    if @stealth_inside && !invisible? && hidden? && @search_count < @burgle_settings['max_search_count'] && !(Flags['burgle-footsteps'])
       result = DRC.bput("sneak #{direction}", "Someone Else's Home", 'Sneaking is an', "You can't", 'In YOUR condition')
       return if /Someone Else's Home/ =~ result
     end
