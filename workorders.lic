@@ -898,6 +898,11 @@ class WorkOrders
           buy_mechanism_ingots(mechanism_ingot, num_presses)
           DRCC.create_mechanisms(@settings, mechanism_ingot, num_presses, mechanism_press_speed)
           consolidate_mechanisms(mech_name)
+          actual = count_mechanisms
+          if actual < mechanisms_needed
+            Lich::Messaging.msg('bold', "WorkOrders: Only #{actual} #{mechanism_ingot} mechanisms available, need #{mechanisms_needed}. Stopping. Automated buying is only done with bronze.")
+            exit
+          end
         end
       end
     end
@@ -931,7 +936,21 @@ class WorkOrders
               twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen]
     tens = { 'twenty' => 20, 'thirty' => 30, 'forty' => 40, 'fifty' => 50,
              'sixty' => 60, 'seventy' => 70, 'eighty' => 80, 'ninety' => 90 }
-    str.downcase.gsub('-', ' ').split.sum { |w| ones.index(w) || tens[w] || 0 }
+    total = 0
+    current = 0
+    str.downcase.gsub('-', ' ').split.each do |w|
+      if w == 'hundred'
+        current *= 100
+      elsif w == 'thousand'
+        total += current * 1000
+        current = 0
+      elsif (v = ones.index(w))
+        current += v
+      elsif (v = tens[w])
+        current += v
+      end
+    end
+    total + current
   end
 
   def buy_mechanism_ingots(material, count)
