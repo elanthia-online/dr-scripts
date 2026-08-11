@@ -765,19 +765,19 @@ box_hunt_minimum: 1
 # These OPTIONAL keys let you teach Lich about your own problematic items,
 # creatures, boxes, etc. without waiting for a Lich release. Each merges ON TOP
 # OF Lich's built-in defaults (it does not replace them). Leave them unset to use
-# only the built-ins. Edits are picked up on a Lich restart or ;reload.
-# Invalid entries are skipped individually with an explanatory message; the rest
-# still apply. Keep all values ASCII.
+# only the built-ins. Edits are picked up the next time you log in (the lists are
+# cached for the session). Invalid entries are skipped individually with an
+# explanatory message; the rest still apply. Keep all values ASCII.
 #
 # Scroll description -> gettable noun. Each entry is [full description, noun];
 # applied before Lich's built-in scroll keyword-collapse.
 # custom_scroll_substitutions:
-#   - ['large midnight-blue scale torn with symbols', 'midnight-blue scale']
+#   - ['tattered goblin-hide scroll', 'goblin-hide scroll']
 #
 # Creature variant descriptions that should collapse to a canonical name. Any
 # room-object string containing one of these becomes just that name.
 # custom_creature_normalizations:
-#   - lesser naga
+#   - razorclaw wolverine
 #
 # Extra box wood/material adjectives and container nouns to recognize when
 # rummaging boxes, plus post-match rewrites ([from, to], applied with gsub).
@@ -786,7 +786,7 @@ box_hunt_minimum: 1
 # custom_box_containers:
 #   - reliquary
 # custom_box_substitutions:
-#   - ['ironwood', 'iron']
+#   - ['driftwood', 'drift']
 #
 # Extra trash-receptacle nouns dispose_trash should recognize.
 # custom_trash_storage:
