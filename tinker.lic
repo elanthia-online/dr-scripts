@@ -232,7 +232,12 @@ class Tinker
         waitrt?
         tool = 'stain'
         command = "apply my stain to my #{@noun}"
-      when /mechanisms must be affixed/, /pulling them into place/
+      when /mechanisms must be affixed/
+        waitrt?
+        assemble_part
+        tool = 'pliers'
+        command = "pull my #{@noun} with my pliers"
+      when /pulling them into place/
         tool = 'pliers'
         command = "pull my #{@noun} with my pliers"
       when /while it is inside of something/, /You fumble around but/
