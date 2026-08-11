@@ -915,7 +915,7 @@ class WorkOrders
       DRCC.stow_crafting_item("#{materials_info['stock-name']} lumber", @bag, @belt)
 
       DRCC.find_shaping_room(@hometown, @engineering_room)
-      DRC.wait_for_script_to_complete('cm_tinker', [recipe['chapter'], recipe['name'], materials_info['stock-name'], recipe['noun']])
+      DRC.wait_for_script_to_complete('tinker', [recipe['chapter'], recipe['name'], materials_info['stock-name'], recipe['noun']])
       bundle_item(recipe['noun'], info['logbook'])
     end
 
