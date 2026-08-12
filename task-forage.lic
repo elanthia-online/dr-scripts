@@ -1,3 +1,13 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#task-forage
+
+  Runs foraging tasks from the task giver.
+
+  Accepts, works and turns in forage tasks, using base-forage.yaml plus any
+  entries added under task_forage_settings. Supports Crossing and Shard; defaults
+  to your hometown. Pass "resume" to pick up a task already in progress.
+=end
+
 class TaskForage
   def initialize
     arg_definitions = [

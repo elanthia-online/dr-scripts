@@ -1,3 +1,13 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#tome
+
+  Studies a tome toward a scholarship goal.
+
+  Reads settings from tome_settings and refuses to run unless the tome is listed
+  in your gear, so that it cannot be lost from your hands. Runs passively by
+  default; pass "active" to study continuously until the goal is reached.
+=end
+
 no_kill_all
 
 class Tome

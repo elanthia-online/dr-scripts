@@ -1,4 +1,6 @@
 =begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#locksmithing
+
   YAML SETTINGS:
 
   training_box_list:                            # Array of adj/nouns of daily lockpicking trainers

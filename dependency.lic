@@ -30,6 +30,9 @@ unless Gem::Version.new(LICH_VERSION) >= Gem::Version.new($MIN_LICH_VERSION)
     _respond("<pushBold/>* #{"Lich versions prior to #{$MIN_LICH_VERSION} are no longer supported.".ljust(103)} *<popBold/>")
     _respond("<pushBold/>* #{"See https://github.com/elanthia-online/lich-5/wiki/Documentation-for-Installing-and-Upgrading-Lich".ljust(103)} *<popBold/>")
     _respond("<pushBold/>* #{"For update instructions.".ljust(103)} *<popBold/>")
+    if LICH_VERSION.start_with?('5')
+      _respond("<pushBold/>* #{"Or to automatically update, run '#{$clean_lich_char}lich5-update --update'.".ljust(103)} *<popBold/>")
+    end
     _respond("<pushBold/>* #{"Exiting Dependency now. Nothing much will work from here...".ljust(103)} *<popBold/>")
     _respond("<pushBold/>#{border}<popBold/>")
     pause 10

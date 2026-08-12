@@ -1,3 +1,10 @@
+=begin
+  Gets crafting tools from, or stores them with, a crafting society clerk.
+
+  Handles the forging, outfitting, engineering, alchemy and enchanting toolsets,
+  plus custom sets defined under custom_clerk_tools in your yaml.
+=end
+
 class Clerk
   def initialize
     arg_definitions = [
@@ -32,7 +39,7 @@ class Clerk
       area = settings.custom_clerk_tools[custom_toolset][:area]
       @belt = nil
     elsif args.toolset == 'engineering'
-      tools = settings.shaping_tools
+      tools = settings.engineering_tools || settings.shaping_tools
       area = 'shaping'
       @belt = settings.engineering_belt
     elsif args.toolset == 'outfitting'

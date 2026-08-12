@@ -1,3 +1,4 @@
+# Documentation: https://elanthipedia.play.net/Lich_script_repository#rummage
 # Rummage Parser
 
 require 'terminal-table'
