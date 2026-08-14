@@ -106,14 +106,24 @@ RSpec.describe Clerk do
     end
   end
 
-  describe 'engineering_tools/shaping_tools fallback (#7523)' do
-    it 'prefers engineering_tools over shaping_tools when set' do
-      settings.engineering_tools = ['engineering shaper']
-      expect(resolve('shaping')[:tools]).to eq(['engineering shaper'])
+  describe 'per-discipline tools override the shared skill setting' do
+    it 'prefers blacksmithing_tools over forging_tools when set' do
+      settings.blacksmithing_tools = ['warhammer']
+      expect(resolve('blacksmithing')[:tools]).to eq(['warhammer'])
     end
 
-    it 'falls back to shaping_tools when engineering_tools is not set' do
+    it 'falls back to forging_tools when blacksmithing_tools is not set' do
+      expect(resolve('blacksmithing')[:tools]).to eq(['tong'])
+    end
+
+    it 'prefers shaping_tools over engineering_tools when set' do
       expect(resolve('shaping')[:tools]).to eq(['shaper'])
+    end
+
+    it 'falls back to engineering_tools when shaping_tools is not set' do
+      settings.shaping_tools = nil
+      settings.engineering_tools = ['engineering shaper']
+      expect(resolve('shaping')[:tools]).to eq(['engineering shaper'])
     end
   end
 
