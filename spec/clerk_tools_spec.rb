@@ -106,6 +106,17 @@ RSpec.describe Clerk do
     end
   end
 
+  describe 'engineering_tools/shaping_tools fallback (#7523)' do
+    it 'prefers engineering_tools over shaping_tools when set' do
+      settings.engineering_tools = ['engineering shaper']
+      expect(resolve('shaping')[:tools]).to eq(['engineering shaper'])
+    end
+
+    it 'falls back to shaping_tools when engineering_tools is not set' do
+      expect(resolve('shaping')[:tools]).to eq(['shaper'])
+    end
+  end
+
   describe 'carving_belt/tinkering_belt overrides (#1420)' do
     it 'prefers carving_belt over engineering_belt when set, matching carve.lic' do
       settings.carving_belt = 'carving belt'

@@ -6,7 +6,8 @@ class Craft
   def initialize
     arg_definitions = [
       [
-        { name: 'craft', options: %w[forging outfitting engineering alchemy enchanting], description: 'What craft to train' }
+        { name: 'craft', options: %w[forging outfitting engineering alchemy enchanting], description: 'What craft to train' },
+        { name: 'debug', regex: /debug/i, optional: true, description: 'Enable debug logging' }
       ]
     ]
     args = parse_args(arg_definitions)
@@ -24,6 +25,7 @@ class Craft
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.enchanting_belt
     @overrides = @settings.craft_overrides
+    @debug = args.debug
 
     if args.craft == 'engineering'
       exit if DRSkill.getxp('Engineering') > @craft_max_mindstate
@@ -155,137 +157,46 @@ class Craft
   end
 
   def train_alchemy
-    crafting_data = get_data('crafting')
+    recipes = get_data('recipes').crafting_recipes
     rank = DRSkill.getrank('Alchemy')
+    echo("Craft: train_alchemy rank=#{rank} hometown=#{@hometown} bag=#{@bag}") if @debug
 
     if rank <= 25 # Tier 1  Extremely Easy
-      # Buy red flowers and nemoih root
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some blister cream/ }
-      DRCM.ensure_copper_on_hand(2000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb2_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('cream', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 1 - some blister cream') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some blister cream/ }, 2000)
     elsif rank <= 50 # Tier 2 - Very Easy
-      # Buy red flowers and plovik leaf
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some moisturizing ointment/ }
-      DRCM.ensure_copper_on_hand(2000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb2_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('ointment', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 2 - some moisturizing ointment') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some moisturizing ointment/ }, 2000)
     elsif rank <= 100 # Tier 3 - Easy
-      # Buy plovik leaves
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some chest salve/ }
-      DRCM.ensure_copper_on_hand(2000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('salve', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 3 - some chest salve') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some chest salve/ }, 2000, herb2: 'na')
     elsif rank <= 175 # Tier 4 - Simple
-      # Buy riolur leaves
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /a neck potion/ }
-      DRCM.ensure_copper_on_hand(2000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('potion', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 4 - a neck potion') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /a neck potion/ }, 2000, herb2: 'na')
     elsif rank <= 300 # Tier 5 - Basic
-      # Buy jadice flower
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some limb salve/ }
-      DRCM.ensure_copper_on_hand(2000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('salve', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 5 - some limb salve') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some limb salve/ }, 2000, herb2: 'na')
     elsif rank <= 425 # Tier 6 - Somewhat Challenging
-      # Buy plovik leaves
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some chest unguent/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('unguent', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 6 - some chest unguent') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some chest unguent/ }, 4000, herb2: 'na')
     elsif rank <= 550 # Tier 7 - Challenging
-      # Buy riolur leaves
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some neck tonic/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('tonic', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 7 - some neck tonic') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some neck tonic/ }, 4000, herb2: 'na')
     elsif rank <= 700 # Tier 8 - Complicated
-      # Buy aevaes leaves
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some eye tonic/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('tonic', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 8 - some eye tonic') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some eye tonic/ }, 4000, herb2: 'na')
     elsif rank <= 850 # Tier 9 - Intricate
-      # Buy ojhenik root
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /a body elixir/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('elixir', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 9 - a body elixir') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /a body elixir/ }, 4000, herb2: 'na')
     elsif rank <= 1175 # Tier 10 - Difficult
-      # Forage belradi moss
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /a general elixir/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRC.wait_for_script_to_complete('alchemy', ['belradi', 'forage', '25'])
-      DRC.wait_for_script_to_complete('alchemy', ['belradi', 'prepare'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], 'na', crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('elixir', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 10 - a general elixir') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /a general elixir/ }, 4000, herb2: 'na', forage: { 'belradi' => 25 })
     elsif rank <= 1400 # Tier 11  Very Difficult
-      # Forage blue flowers and belradi moss
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some refreshment elixir/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRC.wait_for_script_to_complete('alchemy', ['blue', 'forage', '25'])
-      DRC.wait_for_script_to_complete('alchemy', ['belradi', 'forage', '5'])
-      DRC.wait_for_script_to_complete('alchemy', ['blue', 'prepare'])
-      DRC.wait_for_script_to_complete('alchemy', ['belradi', 'prepare'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('elixir', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 11 - some refreshment elixir') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some refreshment elixir/ }, 4000, forage: { 'blue flower' => 25, 'belradi' => 5 })
     else # Tier 12 - Extremely Difficult
-      # Buy red flowers and forage dioica sap
-      recipe = get_data('recipes').crafting_recipes.find { |each_recipe| each_recipe['name'] =~ /some vigor poultices/ }
-      DRCM.ensure_copper_on_hand(4000, @settings, @hometown)
-      DRCT.order_item(crafting_data['remedies'][@hometown]['stock-room'], recipe['herb1_stock'])
-      DRC.wait_for_script_to_complete('alchemy', ['dioica', 'forage', '5'])
-      DRC.wait_for_script_to_complete('alchemy', ['dioica', 'prepare'])
-      DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt)
-      DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt)
-      DRCT.walk_to(@training_room)
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], crafting_data['remedies'][@hometown]['catalyst'], recipe['container'], recipe['noun']])
-      DRCI.dispose_trash('poultices', @worn_trashcan, @worn_trashcan_verb)
+      echo('Craft: alchemy tier 12 - some vigor poultices') if @debug
+      brew(recipes.find { |recipe| recipe['name'] =~ /some vigor poultices/ }, 4000, forage: { 'dioica' => 5 })
     end
   end
 
@@ -700,6 +611,90 @@ class Craft
     DRCI.dispose_trash(DRC.left_hand, @worn_trashcan, @worn_trashcan_verb) if DRC.left_hand && full_name.sub("metal ", "").include?(DRC.left_hand)
   end
 
+  def brew(recipe, copper_needed, herb2: nil, forage: {})
+    unless recipe
+      echo('Craft: brew aborted - recipe not found') if @debug
+      return
+    end
+
+    crafting_data = get_data('crafting')
+    remedies = crafting_data['remedies'][@hometown]
+    catalyst = remedies['catalyst']
+    herb2_arg = herb2.nil? ? (recipe['herb2'] || 'na') : herb2
+    echo("Craft: brew recipe=#{recipe['name']} copper=#{copper_needed} herb1=#{recipe['herb1']} herb1_stock=#{recipe['herb1_stock']} herb2=#{herb2_arg} herb2_stock=#{recipe['herb2_stock']} catalyst=#{catalyst} forage=#{forage}") if @debug
+
+    # From base-recipes.yaml: herb1/herb2 = name, herb1_stock/herb2_stock = shop order #
+    # Count needed for one remedy craft is 25 (or forage override).
+    needs = { recipe['herb1'] => forage[recipe['herb1']] || 25 }
+    unless %w[na none].include?(herb2_arg.to_s)
+      needs[herb2_arg] = forage[herb2_arg] || 25
+    end
+    echo("Craft: brew needs=#{needs}") if @debug
+
+    short = check_alchemy_herbs(needs)
+    echo("Craft: brew short after check=#{short}") if @debug
+    buyable = short.select do |herb, _required|
+      stock = herb_stock_number(recipe, herb)
+      stock && !stock.to_s.empty?
+    end
+    catalyst_on_hand = DRCI.exists?(catalyst)
+    needs_funds = buyable.any? || !catalyst_on_hand
+    echo("Craft: brew buyable=#{buyable} catalyst_on_hand=#{catalyst_on_hand} needs_funds=#{needs_funds}") if @debug
+
+    if needs_funds
+      echo("Craft: brew ensuring #{copper_needed} copper for Alchemy") if @debug
+      unless money_for_training?(copper_needed, 'Alchemy')
+        echo('Craft: brew aborted - insufficient funds') if @debug
+        return
+      end
+    end
+
+    stock_room = remedies['stock-room']
+    short.each do |herb, required|
+      stock = herb_stock_number(recipe, herb)
+      if stock && !stock.to_s.empty?
+        echo("Craft: brew ordering herb=#{herb} stock=#{stock} room=#{stock_room}") if @debug
+        DRCT.order_item(stock_room, stock)
+        DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
+        DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
+      else
+        target = alchemy_forage_target(herb)
+        echo("Craft: brew foraging herb=#{herb} target=#{target} qty=#{required}") if @debug
+        DRC.wait_for_script_to_complete('alchemy', [target, 'forage', required.to_s])
+        DRC.wait_for_script_to_complete('alchemy', [target, 'prepare'])
+      end
+    end
+
+    missing = check_alchemy_herbs(needs)
+    echo("Craft: brew short after acquire=#{missing}") if @debug
+    if missing.any?
+      echo("Missing alchemy ingredients: #{missing.keys.join(', ')}. Skipping Alchemy training.")
+      @settings.crossing_training.delete('Alchemy') if @settings.crossing_training
+      return
+    end
+
+    DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
+    DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
+    echo("Craft: brew starting remedy chapter=#{recipe['chapter']} container=#{recipe['container']} noun=#{recipe['noun']} room=#{@training_room}") if @debug
+    DRCT.walk_to(@training_room)
+    DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2_arg, catalyst, recipe['container'], recipe['noun']])
+    DRCI.dispose_trash(recipe['noun'], @worn_trashcan, @worn_trashcan_verb)
+    echo('Craft: brew complete') if @debug
+  end
+
+  def herb_stock_number(recipe, herb)
+    return recipe['herb1_stock'] if herb == recipe['herb1']
+    return recipe['herb2_stock'] if herb == recipe['herb2']
+
+    nil
+  end
+
+  def alchemy_forage_target(herb)
+    return 'blue' if herb == 'blue flower'
+
+    herb
+  end
+
   def buy_wood
     crafting_data = get_data('crafting')
     return unless money_for_training?(1000, 'Engineering')
@@ -781,6 +776,36 @@ class Craft
       buy_wood if count < 5
     end
     DRCC.stow_crafting_item('lumber', @bag, @belt)
+  end
+
+  # Herbs is a hash of Key/Value pairs (HerbName => Count)
+  def check_alchemy_herbs(herbs)
+    echo("Craft: check_alchemy_herbs herbs=#{herbs}") if @debug
+    short = {}
+    herbs.each do |herb, required|
+      names = [herb]
+      names << 'dried flower' if herb == 'red flower'
+      names << 'crushed flower' if herb == 'blue flower'
+
+      count = 0
+      held = nil
+      names.each do |name|
+        case DRC.bput("get my #{name}", 'You get', 'You are already', 'What were you')
+        when 'You get', 'You are already'
+          count = DRC.bput("count my #{name}", 'You count out \d+ pieces').scan(/\d+/).first.to_i
+          held = name
+          echo("Craft: check_alchemy_herbs found name=#{name} count=#{count} required=#{required}") if @debug
+          break
+        end
+      end
+      echo("Craft: check_alchemy_herbs missing herb=#{herb} required=#{required}") if @debug && held.nil?
+
+      short[herb] = required if count < required
+      DRCC.stow_crafting_item(held, @bag, @belt) if held
+    end
+    # Return all herbs where count is less than the required value.
+    echo("Craft: check_alchemy_herbs short=#{short}") if @debug
+    short
   end
 
   def check_teaching

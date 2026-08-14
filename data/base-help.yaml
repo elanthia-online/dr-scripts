@@ -283,7 +283,7 @@ burgle_settings:
   referenced_by:
     - burgle
   specific_descriptions:
-    burgle: "Set the following: room, entry_type, max_priority_mindstate, rope_adjective, hometown, use_lockpick_ring, lockpick_container, max_search_count, retry, loot, loot_container, safe_mode, room_blacklist, item_whitelist, before, after."
+    burgle: "Set the following: room, entry_type, max_priority_mindstate, rope_adjective, hometown, use_lockpick_ring, lockpick_container, max_search_count, retry, loot, loot_container, safe_mode, stealth_inside, room_blacklist, prioritize_rooms, room_priority_type, item_whitelist, before, after."
 
 burgle_town:
   description: By default, burgle runs from args, burgle-settings(hometown), or hometown, in that order. This is a top-level setting to change where burgle runs.

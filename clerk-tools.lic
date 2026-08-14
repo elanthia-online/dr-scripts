@@ -14,7 +14,9 @@ class Clerk
     'weaponsmithing' => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
     'armorsmithing'  => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
     'tailoring'      => { tools: :outfitting_tools, area: 'tailoring',     belt: :outfitting_belt },
-    'shaping'        => { tools: :shaping_tools,    area: 'shaping',       belt: :engineering_belt },
+    # engineering_tools (#7523) is the current setting name; shaping_tools is
+    # the pre-rename name still set in most existing yamls.
+    'shaping'        => { tools: :engineering_tools, tools_fallback: :shaping_tools, area: 'shaping', belt: :engineering_belt },
     # carving_belt/tinkering_belt (#1420) override engineering_belt when set, matching
     # carve.lic/carve-bead.lic/carve-lockpicks.lic/tinker.lic/bolts.lic's own fallback.
     'carving'        => { tools: :carving_tools,    area: 'carving',       belt: :engineering_belt, belt_override: :carving_belt },
@@ -73,7 +75,7 @@ class Clerk
       @belt = nil
     else
       toolset = TOOLSETS[LEGACY_TOOLSETS.fetch(args.toolset, args.toolset)]
-      tools = settings.send(toolset[:tools])
+      tools = settings.send(toolset[:tools]) || (toolset[:tools_fallback] && settings.send(toolset[:tools_fallback]))
       area = toolset[:area]
       @belt = (toolset[:belt_override] && settings.send(toolset[:belt_override])) || settings.send(toolset[:belt])
 

@@ -264,7 +264,12 @@ burgle_settings:
   loot: pawn                                # drop | keep | bin | pawn   default: keep 
   loot_container: haversack                 # container to keep loot in while burglering
   safe_mode: true                           # stop searching and try to get out as quickly as possible when hearing footsteps.  Default: true
+  # stealth_inside: true                    # stay hidden while moving and searching inside the house.  The hide needed to enter happens either way.  Default: true
   room_blacklist:                           # array of rooms to ignore. Case sensitive.
+  # prioritize_rooms:                       # array of rooms to search before any other room. Case sensitive. Omit for the original random walk.
+  #   - Library                             # Houses are laid out randomly every caper, so this costs a recon walk of the whole house before any searching.
+  #   - Armory                              # Rooms listed here that aren't in this house are just skipped.  room_blacklist wins over this list.
+  # room_priority_type: any                 # any | inorder.  any: priority rooms beat all others, whichever is found first wins among them.  inorder: strict list order, so Library above is searched before Armory even if Armory is nearer.  Default: any
   item_whitelist:                           # array of full item names (adj + noun) of items to keep no matter what.  Case Sensitive.  
     - keepsake box                          # consumable lockpick trainers are supported by ;locksmithing. Found in Bedroom
     - worn book                             

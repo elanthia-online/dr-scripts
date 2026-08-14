@@ -1250,6 +1250,16 @@ hunting_zones:
   - 16338
   - 16334
   - 16336
+  # https://elanthipedia.play.net/Emerald_Claw_Troll                      450-650
+  # New creature (2026), designed during SimuCon live dev panel.
+  emerald_claw_trolls:
+  - 52009
+  - 52010
+  - 52011
+  - 52012
+  - 52013
+  - 52014
+  - 52015
   # https://elanthipedia.play.net/Crauyarin_scuttler                     515-725
   # Added TT 126 - Special interactions with lunar magic
   # Constructs

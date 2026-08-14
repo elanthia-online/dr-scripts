@@ -370,26 +370,61 @@ class InventoryManager
     end
   end
 
-  # Turns one row of the "read my register" table into a stored item, keeping the
-  # deed description as the name so it searches like any other item, with the
-  # page number and any player-written note folded into a single annotation.
-  # Returns nil for the borders, the header row and the totals line.
+  # "read my register" has two output formats depending on the crafting display
+  # toggle, and both are in use. They carry the same data, so both are parsed to
+  # the same stored row: the deed description becomes the item name, so it
+  # searches like any other item, with the page number and the volume/quality
+  # note folded into a single annotation.
+  #
+  #   toggle on:  "|   7 | Metal | an agonite ingot | 3V 98Q - pure --Sekmeht |"
+  #   toggle off: "   7 -- [Metal]  a deed for an agonite ingot (3V 98Q - pure --Sekmeht)"
+  #
+  # Returns nil for the borders, headers and totals lines of either format.
   def parse_deed_row(line)
-    return nil unless line.start_with?('|')
+    line.start_with?('|') ? parse_deed_table_row(line) : parse_deed_listing_row(line)
+  end
 
+  # Toggle on: a bordered table that gives the note its own column.
+  def parse_deed_table_row(line)
     # ["", page, type, deed, notes...] -- a stray | inside a note is rejoined.
     columns = line.split('|').map(&:strip)
     return nil if columns.length < 4
 
-    page = columns[1].to_s
-    deed = columns[3].to_s
-    note = columns[4..-1].to_a.join(' ').strip
+    format_deed_row(columns[1], columns[2], columns[3], columns[4..-1].to_a.join(' '))
+  end
 
-    # The header row's page column is "Page", which is how it gets dropped.
+  # Toggle off: a plain listing where the note is parenthesised onto the end of
+  # the deed text instead of sitting in its own column, and every entry is
+  # prefixed with "a deed for". Both are undone so the two formats agree.
+  def parse_deed_listing_row(line)
+    match = line.match(/\A\s*(\d+)\s+--\s+\[([^\]]*)\]\s+(.+)\z/)
+    return nil unless match
+
+    deed = match[3].strip.sub(/\Aa deed for\s+/i, '')
+    note = nil
+    if (trailing = deed.match(/\s\((.*)\)\z/))
+      note = trailing[1]
+      deed = deed[0...trailing.begin(0)]
+    end
+
+    format_deed_row(match[1], match[2], deed, note)
+  end
+
+  # "<deed> (deed page <n>[, <type>][ - <note>])". The type is worth keeping --
+  # it is the only place the game tells us a deed is Metal rather than Wood, and
+  # it cannot be reliably inferred from the description.
+  def format_deed_row(page, type, deed, note)
+    page = page.to_s
+    type = type.to_s.strip
+    deed = deed.to_s.strip
+    note = note.to_s.strip
+
+    # The header row's page column reads "Page", which is how it gets dropped.
     return nil unless page.match?(/\A\d+\z/)
     return nil if deed.empty?
 
     annotation = "deed page #{page}"
+    annotation = "#{annotation}, #{type}" unless type.empty?
     annotation = "#{annotation} - #{note}" unless note.empty?
     "#{deed} (#{annotation})"
   end
@@ -792,6 +827,20 @@ class InventoryManagerGui
 
   SCAN_GROUPS = ['Character', 'Vaults', 'Storage', 'Property and Other'].freeze
 
+  # Columns offered by Export to CSV, in file order. All are on by default: the
+  # common case is wanting the lot for a character. "Stored row" is the verbatim
+  # database entry, so an export is never lossy even with columns turned off.
+  EXPORT_COLUMNS = [
+    { key: :character, label: 'Character' },
+    { key: :source,    label: 'Source' },
+    { key: :name,      label: 'Item' },
+    { key: :container, label: 'Container' },
+    { key: :nested,    label: 'Nested' },
+    { key: :worn,      label: 'Worn' },
+    { key: :note,      label: 'Note' },
+    { key: :raw,       label: 'Stored row' }
+  ].freeze
+
   Row = Struct.new(:character, :source, :name, :container, :nested, :worn, :note, :raw)
 
   # Splits a stored row back into its parts. The inventory_type is always the
@@ -807,11 +856,11 @@ class InventoryManagerGui
 
     worn = !work.sub!(/\s\(worn\)\z/, '').nil?
 
-    # Deed rows carry "(deed page N)" or "(deed page N - note)".
+    # Deed rows carry "(deed page N[, Type][ - note])". Captured whole rather
+    # than field by field, so rows written by earlier versions still read back.
     note = nil
-    if (match = work.match(/\s\(deed page (\d+)(?:\s+-\s+(.*?))?\)\z/))
-      written = match[2].to_s.strip
-      note = written.empty? ? "page #{match[1]}" : "page #{match[1]} - #{written}"
+    if (match = work.match(/\s\(deed page (.+)\)\z/))
+      note = "page #{match[1]}"
       work = work[0...match.begin(0)]
     end
 
@@ -840,7 +889,8 @@ class InventoryManagerGui
   # hide those rows rather than let an old database look broken until re-saved.
   def self.legacy_table_row?(item)
     text = item.to_s.lstrip
-    text.start_with?('|', '+--', 'Currently Stored:')
+    # Both register formats have a totals line, and they differ in capitalisation.
+    text.start_with?('|', '+--') || text.match?(/\A(?:currently stored|maximum):/i)
   end
 
   # Trim articles, counts and state markers so the wiki search gets the noun.
@@ -969,6 +1019,7 @@ class InventoryManagerGui
       nesting_toggle = Gtk::CheckButton.new('Nest containers')
       nesting_toggle.active = true
 
+      export_button   = Gtk::Button.new(label: 'Export to CSV')
       scan_button     = Gtk::Button.new(label: 'Scan')
       reload_button   = Gtk::Button.new(label: 'Reload')
       expand_button   = Gtk::Button.new(label: 'Expand all')
@@ -977,10 +1028,17 @@ class InventoryManagerGui
 
       scan_button.sensitive = !@manager.nil?
       scan_button.tooltip_text = @manager ? 'Choose which saves to run in the game' : 'Scanning is unavailable'
+      export_button.tooltip_text = 'Export everything for whichever character the dropdown is showing'
       reload_button.tooltip_text = 'Re-read the database from disk'
 
       status = Gtk::Label.new('')
       status.xalign = 0
+      # Makes the exported file path clickable. Returning true stops GTK also
+      # running its own default handler for the link.
+      status.signal_connect('activate-link') do |_label, uri|
+        open_uri(uri)
+        true
+      end
 
       @status = status
       @scan_button = scan_button
@@ -1025,6 +1083,7 @@ class InventoryManagerGui
       collapse_button.signal_connect('clicked') { view.collapse_all }
       wiki_button.signal_connect('clicked') { open_wiki(selected_term(view)) }
       scan_button.signal_connect('clicked') { show_scan_dialog }
+      export_button.signal_connect('clicked') { show_export_dialog(character_combo.active_text) }
       reload_button.signal_connect('clicked') do
         load_rows
         redraw.call
@@ -1051,6 +1110,8 @@ class InventoryManagerGui
       controls = Gtk::Box.new(:horizontal, 4)
       controls.pack_start(search_entry, expand: true, fill: true, padding: 0)
       controls.pack_start(character_combo, expand: false, fill: false, padding: 0)
+      # Sits against the dropdown so it reads as "export what this is showing".
+      controls.pack_start(export_button, expand: false, fill: false, padding: 0)
       controls.pack_start(nesting_toggle, expand: false, fill: false, padding: 0)
       controls.pack_start(Gtk::Separator.new(:vertical), expand: false, fill: false, padding: 2)
       controls.pack_start(scan_button, expand: false, fill: false, padding: 0)
@@ -1087,6 +1148,145 @@ class InventoryManagerGui
       redraw.call
       @window.show_all
     end
+  end
+
+  # Scope deliberately follows the character dropdown and nothing else. Someone
+  # exporting a character wants everything on that character, not whatever the
+  # search box happens to be narrowing the tree to, so the dialog says as much.
+  def show_export_dialog(scope)
+    rows = rows_for_export(scope)
+    named_scope = all_characters?(scope) ? 'all characters' : scope.to_s
+
+    dialog = Gtk::Dialog.new(title: 'Export to CSV', parent: @window)
+    dialog.modal = true
+    dialog.set_default_size(440, 420)
+    dialog.add_button('Cancel', Gtk::ResponseType::CANCEL)
+    dialog.add_button('Export', Gtk::ResponseType::ACCEPT)
+
+    intro = Gtk::Label.new("Exporting #{rows.length} item#{rows.length == 1 ? '' : 's'} for #{named_scope}.\nScope follows the character dropdown. The search box does not limit the export.")
+    intro.xalign = 0
+    dialog.content_area.pack_start(intro, expand: false, fill: false, padding: 6)
+
+    columns = Gtk::Label.new
+    columns.xalign = 0
+    columns.markup = '<b>Columns</b>'
+    dialog.content_area.pack_start(columns, expand: false, fill: false, padding: 4)
+
+    checks = EXPORT_COLUMNS.map do |column|
+      check = Gtk::CheckButton.new(column[:label])
+      check.active = true
+      dialog.content_area.pack_start(check, expand: false, fill: false, padding: 0)
+      [column, check]
+    end
+
+    dialog.signal_connect('response') do |_widget, response|
+      export_rows(scope, rows, checks.select { |_column, check| check.active? }.map(&:first)) if response == Gtk::ResponseType::ACCEPT
+      dialog.destroy
+    end
+
+    dialog.show_all
+  end
+
+  def all_characters?(scope)
+    scope.nil? || scope.to_s.empty? || scope == ALL_CHARACTERS
+  end
+
+  def rows_for_export(scope)
+    rows = all_characters?(scope) ? @rows : @rows.select { |row| row.character == scope }
+    rows.sort_by { |row| [row.character.to_s, source_label(row.source).to_s, row.name.to_s.downcase] }
+  end
+
+  def export_rows(scope, rows, columns)
+    if columns.empty?
+      show_status('Nothing exported: no columns selected.')
+      return
+    end
+
+    if rows.empty?
+      show_status('Nothing to export for that scope.')
+      return
+    end
+
+    path = export_path(scope)
+    begin
+      write_csv(path, rows, columns)
+    rescue StandardError => e
+      DRC.message("inventory-manager: export failed -- #{e.message}")
+      show_status('Export failed -- see the game window')
+      return
+    end
+
+    DRC.message("inventory-manager: exported #{rows.length} rows to #{path}")
+    show_status_link("Exported #{rows.length} rows to", file_uri(path), path)
+  end
+
+  # The full path, as a link that opens the file. Written as markup, so plain
+  # status updates have to turn markup back off again -- see show_status.
+  def show_status_link(text, uri, label)
+    return unless @status
+    return show_status("#{text} #{label}") unless @status.respond_to?(:markup=)
+
+    @status.markup = "#{escape_markup(text)} <a href=\"#{escape_markup(uri)}\">#{escape_markup(label)}</a>"
+  end
+
+  def show_status(text)
+    return unless @status
+
+    # A search containing & or < would fail to render if markup were still on
+    # from a previous export.
+    @status.use_markup = false if @status.respond_to?(:use_markup=)
+    @status.text = text
+  end
+
+  # Lich sets DATA_DIR absolutely, honouring a --data= override, so exports land
+  # wherever this install actually keeps its data rather than a guessed path.
+  # @db_path is relative, so expanding it is the fallback.
+  def export_directory
+    return DATA_DIR if defined?(DATA_DIR) && DATA_DIR
+
+    File.dirname(File.expand_path(@db_path))
+  end
+
+  # Timestamped so a second export never silently overwrites the first.
+  def export_path(scope)
+    slug = all_characters?(scope) ? 'all' : scope.to_s.downcase.gsub(/[^a-z0-9]+/, '-')
+    File.join(export_directory, "inventory-#{slug}-#{Time.now.strftime('%Y%m%d-%H%M%S')}.csv")
+  end
+
+  def file_uri(path)
+    escaped = path.to_s.tr('\\', '/').gsub(/[ #?%]/) { |char| format('%%%02X', char.ord) }
+    "file:///#{escaped.sub(%r{\A/+}, '')}"
+  end
+
+  def escape_markup(text)
+    text.to_s.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;').gsub('"', '&quot;')
+  end
+
+  def write_csv(path, rows, columns)
+    File.open(path, 'w') do |file|
+      file.puts(columns.map { |column| csv_field(column[:label]) }.join(','))
+      rows.each do |row|
+        file.puts(columns.map { |column| csv_field(export_value(row, column[:key])) }.join(','))
+      end
+    end
+  end
+
+  def export_value(row, key)
+    case key
+    when :source then source_label(row.source)
+    when :nested then row.nested ? 'yes' : 'no'
+    when :worn   then row.worn ? 'yes' : 'no'
+    else row.public_send(key)
+    end
+  end
+
+  # Item names routinely contain commas, and notes contain quotes, so fields are
+  # escaped per RFC 4180 rather than just joined.
+  def csv_field(value)
+    text = value.to_s
+    return text unless text.match?(/[",\r\n]/)
+
+    %("#{text.gsub('"', '""')}")
   end
 
   # Runs on the GTK thread from the Scan button. Nothing here touches the game --
@@ -1145,14 +1345,14 @@ class InventoryManagerGui
 
   def queue_scans(selected)
     if selected.empty?
-      @status.text = 'No scans selected.' if @status
+      show_status('No scans selected.')
       return
     end
 
     selected.each { |scan| @jobs << scan }
     # Re-enabled by perform_scan once the queue drains.
     @scan_button.sensitive = false if @scan_button
-    @status.text = "Queued #{selected.length} scan#{selected.length == 1 ? '' : 's'}..." if @status
+    show_status("Queued #{selected.length} scan#{selected.length == 1 ? '' : 's'}...")
     DRC.message("inventory-manager: queued #{selected.map { |scan| scan[:label] }.join(', ')}")
   end
 
@@ -1174,7 +1374,7 @@ class InventoryManagerGui
     Gtk.queue do
       @redraw&.call
       # refill rewrites the status line, so the result goes on after it.
-      @status.text = outcome_text(scan, outcome) if @status
+      show_status(outcome_text(scan, outcome))
       @scan_button.sensitive = true if @scan_button && remaining.zero?
     end
 
@@ -1217,7 +1417,7 @@ class InventoryManagerGui
   end
 
   def set_status(text)
-    Gtk.queue { @status.text = text if @status }
+    Gtk.queue { show_status(text) }
   end
 
   def refill(store, status, query:, character:, nest:)
@@ -1276,6 +1476,8 @@ class InventoryManagerGui
 
     # Counts describe what is actually on screen, so they stay in step with the
     # character filter and the search box.
+    # Same markup reset as show_status: a search for "&" must not break the label.
+    status.use_markup = false if status.respond_to?(:use_markup=)
     status.text = if needle.empty?
                     "#{shown} items across #{shown_characters} character#{'s' unless shown_characters == 1}"
                   else
@@ -1383,12 +1585,16 @@ class InventoryManagerGui
       return
     end
 
-    url = "#{WIKI_SEARCH}#{self.class.url_escape(term)}"
     DRC.message("Elanthipedia lookup: #{term}")
-    return if open_via_gtk(url)
-    return if open_via_os(url)
+    open_uri("#{WIKI_SEARCH}#{self.class.url_escape(term)}")
+  end
 
-    DRC.message("Could not open a browser. URL: #{url}")
+  # Shared by the wiki lookup and the exported-file link.
+  def open_uri(uri)
+    return if open_via_gtk(uri)
+    return if open_via_os(uri)
+
+    DRC.message("Could not open #{uri}")
   end
 
   def open_via_gtk(url)
