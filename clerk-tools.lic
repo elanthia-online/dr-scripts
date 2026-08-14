@@ -8,23 +8,23 @@
 class Clerk
   # Toolset names match workorders.lic's discipline names. Each maps to the
   # crafting data area whose clerk holds the tools, and the settings naming the
-  # tools and the belt they live on.
+  # tools and the belt they live on. tools is the discipline's own <name>_tools
+  # setting; tools_fallback is the setting the disciplines shared before the
+  # per-discipline rename, still what most existing yamls set.
   TOOLSETS = {
-    'blacksmithing'  => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
-    'weaponsmithing' => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
-    'armorsmithing'  => { tools: :forging_tools,    area: 'blacksmithing', belt: :forging_belt },
-    'tailoring'      => { tools: :outfitting_tools, area: 'tailoring',     belt: :outfitting_belt },
-    # engineering_tools (#7523) is the current setting name; shaping_tools is
-    # the pre-rename name still set in most existing yamls.
-    'shaping'        => { tools: :engineering_tools, tools_fallback: :shaping_tools, area: 'shaping', belt: :engineering_belt },
+    'blacksmithing'  => { tools: :blacksmithing_tools,  tools_fallback: :forging_tools,     area: 'blacksmithing', belt: :forging_belt },
+    'weaponsmithing' => { tools: :weaponsmithing_tools, tools_fallback: :forging_tools,     area: 'blacksmithing', belt: :forging_belt },
+    'armorsmithing'  => { tools: :armorsmithing_tools,  tools_fallback: :forging_tools,     area: 'blacksmithing', belt: :forging_belt },
+    'tailoring'      => { tools: :tailoring_tools,      tools_fallback: :outfitting_tools,  area: 'tailoring',     belt: :outfitting_belt },
+    'shaping'        => { tools: :shaping_tools,        tools_fallback: :engineering_tools, area: 'shaping',       belt: :engineering_belt },
     # carving_belt/tinkering_belt (#1420) override engineering_belt when set, matching
     # carve.lic/carve-bead.lic/carve-lockpicks.lic/tinker.lic/bolts.lic's own fallback.
-    'carving'        => { tools: :carving_tools,    area: 'carving',       belt: :engineering_belt, belt_override: :carving_belt },
+    'carving'        => { tools: :carving_tools,        area: 'carving',       belt: :engineering_belt, belt_override: :carving_belt },
     # Tinkering has no crafting data area of its own; the Engineering society
     # clerk that holds shaping tools holds tinkering tools too.
-    'tinkering'      => { tools: :tinkering_tools,  area: 'shaping',       belt: :engineering_belt, belt_override: :tinkering_belt },
-    'remedies'       => { tools: :alchemy_tools,    area: 'remedies',      belt: :alchemy_belt },
-    'artificing'     => { tools: :enchanting_tools, area: 'artificing',    belt: :enchanting_belt }
+    'tinkering'      => { tools: :tinkering_tools,      area: 'shaping',       belt: :engineering_belt, belt_override: :tinkering_belt },
+    'remedies'       => { tools: :remedies_tools,       tools_fallback: :alchemy_tools,     area: 'remedies',      belt: :alchemy_belt },
+    'artificing'     => { tools: :artificing_tools,     tools_fallback: :enchanting_tools,  area: 'artificing',    belt: :enchanting_belt }
   }.freeze
 
   # Core discipline names this script accepted before the rename. Each maps to
