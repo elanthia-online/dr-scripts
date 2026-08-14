@@ -123,7 +123,7 @@ class SellLoot
     if @bankbot_enabled
       give_money_to_bankbot(@local_currency, @bankbot_deposit_threshold)
     else
-      DRCM.deposit_coins(keep_coppers_bank, @settings)
+      DRCM.deposit_coins(keep_coppers_bank, @settings, @character_hometown)
     end
   end
 
