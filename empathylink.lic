@@ -47,25 +47,40 @@ class Empathylink
   end
 
   def touch(target)
-    p_script
-    waitrt?
-    case DRC.bput("touch #{target}",
-                  "You touch",
-                  "You lay your hand on",
-                  "Touch what",
-                  "I could not find",
-                  "You rest your hand on")
-    when 'You touch', 'You lay your hand on', 'You rest your hand on'
-      if @use_hodierna == true
-        hodierna_heal_patient(target)
-      else
-        heal_patient(target)
-      end
-    when 'Touch what', 'I could not find'
-      DRC.message("Failed to establish link with #{target}")
-      UserVars.empathylink[target] = Time.now.to_i + 1800 # Put them on hold for 30m
+    # Pause other scripts through the shared safe-pause lock ($safe_pause_lock)
+    # so a combat script cannot pause us mid-heal while we have it paused. The
+    # old approach called pause_script('combat-trainer') directly, outside that
+    # lock: if combat-trainer's own safe_pause_list paused empathylink between
+    # p_script and u_script, each ended up pausing the other and neither could
+    # unpause, deadlocking every script and freezing the character. safe_pause_list
+    # makes the two pause requests mutually exclusive, and the ensure guarantees
+    # the unpause (and lock release) even if a heal command raises.
+    until (scripts_to_unpause = DRC.safe_pause_list)
+      echo('Cannot pause, trying again in 5 seconds.')
+      pause 5
     end
-    u_script
+
+    begin
+      waitrt?
+      case DRC.bput("touch #{target}",
+                    "You touch",
+                    "You lay your hand on",
+                    "Touch what",
+                    "I could not find",
+                    "You rest your hand on")
+      when 'You touch', 'You lay your hand on', 'You rest your hand on'
+        if @use_hodierna == true
+          hodierna_heal_patient(target)
+        else
+          heal_patient(target)
+        end
+      when 'Touch what', 'I could not find'
+        DRC.message("Failed to establish link with #{target}")
+        UserVars.empathylink[target] = Time.now.to_i + 1800 # Put them on hold for 30m
+      end
+    ensure
+      DRC.safe_unpause_list(scripts_to_unpause)
+    end
   end
 
   def hodierna_heal_patient(target)
@@ -93,7 +108,6 @@ class Empathylink
       DRC.message("Failing to establish Link Persistent with #{target}")
       UserVars.empathylink[target] = Time.now.to_i + 300 # Put them on hold for 5m
     end
-    # u_script
   end
 
   def heal_patient(target)
@@ -115,15 +129,6 @@ class Empathylink
       DRC.message("Failed to establish healing with #{target}")
       UserVars.empathylink[target] = Time.now.to_i + 1800 # Put them on hold for 30m
     end
-    # u_script
-  end
-
-  def p_script
-    pause_script('combat-trainer') if Script.running?('combat-trainer')
-  end
-
-  def u_script
-    unpause_script('combat-trainer') if Script.running?('combat-trainer')
   end
 end
 Empathylink.new
