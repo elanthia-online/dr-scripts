@@ -66,8 +66,9 @@ describe 'Empathylink#touch' do
     expect(DRC).to have_received(:safe_unpause_list).with(['combat-trainer'])
   end
 
-  it 'no longer pauses combat-trainer directly via the removed p_script/u_script helpers' do
-    expect(link).not_to respond_to(:p_script)
-    expect(link).not_to respond_to(:u_script)
+  it 'no longer defines the p_script/u_script helpers that paused combat-trainer directly' do
+    # include_all: true so a re-added private/protected helper is still caught
+    expect(link.respond_to?(:p_script, true)).to be(false)
+    expect(link.respond_to?(:u_script, true)).to be(false)
   end
 end
