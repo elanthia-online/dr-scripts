@@ -75,12 +75,15 @@ class Clerk
       @belt = nil
     else
       toolset = TOOLSETS[LEGACY_TOOLSETS.fetch(args.toolset, args.toolset)]
-      tools = settings.send(toolset[:tools]) || (toolset[:tools_fallback] && settings.send(toolset[:tools_fallback]))
+      # Whichever setting matches the name the caller actually typed wins;
+      # the other name is only a fallback if the requested one is unset.
+      preferred_setting, fallback_setting = LEGACY_TOOLSETS.key?(args.toolset) ? [toolset[:tools_fallback], toolset[:tools]] : [toolset[:tools], toolset[:tools_fallback]]
+      tools = settings.send(preferred_setting) || (fallback_setting && settings.send(fallback_setting))
       area = toolset[:area]
       @belt = (toolset[:belt_override] && settings.send(toolset[:belt_override])) || settings.send(toolset[:belt])
 
       if tools.nil? || tools.empty?
-        echo "No tools configured for #{args.toolset}, set #{toolset[:tools]} in your yaml"
+        echo "No tools configured for #{args.toolset}, set #{preferred_setting} in your yaml"
         exit
       end
     end
