@@ -127,6 +127,60 @@ RSpec.describe Clerk do
     end
   end
 
+  describe 'requesting by the legacy name prefers the legacy-named setting' do
+    # Regression test: calling with the legacy discipline name used to still
+    # check the current-name setting first, so a caller with both settings
+    # configured got the wrong toolset back.
+    it 'prefers engineering_tools over shaping_tools when both are set and engineering was requested' do
+      settings.engineering_tools = ['engineering shaper']
+      expect(resolve('engineering')[:tools]).to eq(['engineering shaper'])
+    end
+
+    it 'still falls back to shaping_tools when engineering_tools is not set' do
+      expect(resolve('engineering')[:tools]).to eq(['shaper'])
+    end
+
+    it 'prefers forging_tools over blacksmithing_tools when both are set and forging was requested' do
+      settings.blacksmithing_tools = ['warhammer']
+      expect(resolve('forging')[:tools]).to eq(['tong'])
+    end
+  end
+
+  describe 'every current/legacy setting pair prefers whichever name was requested' do
+    # Same bug class as the engineering/shaping and forging/blacksmithing cases
+    # above, exercised across the remaining TOOLSETS entries that carry a
+    # tools_fallback, so the fix is proven for all of them, not just two.
+    {
+      'tailoring'  => { current_setting: :tailoring_tools,  legacy: 'outfitting', legacy_setting: :outfitting_tools },
+      'remedies'   => { current_setting: :remedies_tools,   legacy: 'alchemy',    legacy_setting: :alchemy_tools },
+      'artificing' => { current_setting: :artificing_tools, legacy: 'enchanting', legacy_setting: :enchanting_tools }
+    }.each do |current_name, cfg|
+      it "prefers #{cfg[:current_setting]} over #{cfg[:legacy_setting]} when #{current_name} is requested and both are set" do
+        settings.send("#{cfg[:current_setting]}=", ['current tool'])
+        settings.send("#{cfg[:legacy_setting]}=", ['legacy tool'])
+        expect(resolve(current_name)[:tools]).to eq(['current tool'])
+      end
+
+      it "prefers #{cfg[:legacy_setting]} over #{cfg[:current_setting]} when #{cfg[:legacy]} is requested and both are set" do
+        settings.send("#{cfg[:current_setting]}=", ['current tool'])
+        settings.send("#{cfg[:legacy_setting]}=", ['legacy tool'])
+        expect(resolve(cfg[:legacy])[:tools]).to eq(['legacy tool'])
+      end
+    end
+  end
+
+  describe 'weaponsmithing and armorsmithing each prefer their own setting over the shared forging_tools' do
+    it 'prefers weaponsmithing_tools over forging_tools when set' do
+      settings.weaponsmithing_tools = ['rapier']
+      expect(resolve('weaponsmithing')[:tools]).to eq(['rapier'])
+    end
+
+    it 'prefers armorsmithing_tools over forging_tools when set' do
+      settings.armorsmithing_tools = ['breastplate']
+      expect(resolve('armorsmithing')[:tools]).to eq(['breastplate'])
+    end
+  end
+
   describe 'carving_belt/tinkering_belt overrides (#1420)' do
     it 'prefers carving_belt over engineering_belt when set, matching carve.lic' do
       settings.carving_belt = 'carving belt'
