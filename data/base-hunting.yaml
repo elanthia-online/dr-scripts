@@ -2597,7 +2597,7 @@ hunting_zones:
   - 10811
   - 10812
   # - 11006 Issue with day/night descriptions
-  # No elanthipeida page yet - dryanoxie                                 475-680? (lvl 85 +/- 2)
+  # https://elanthipedia.play.net/Dryanoxie                              450-630 (lvl 85 +/- 2)
   dryanoxie:
   - 51837
   - 51838
@@ -2616,6 +2616,13 @@ hunting_zones:
   - 10066
   - 10065
   - 10064
+  #https://elanthipedia.play.net/Snarlvine_fox                         550-700
+  #snarvine vixen spawn too, same mob different nount
+  - snarlvine_fox:
+  - 51876
+  - 51877
+  - 51878
+  - 51879
   # https://elanthipedia.play.net/Bronze_leucro                        575?-800?
   bronze_leucro:
   - 15946
@@ -3688,8 +3695,20 @@ hunting_zones:
   - 8295
   - 8294
   - 8293
+  # https://elanthipedia.play.net/Sovamedo_cub                           220-320
+  sovamedo_cubs:
+  - 51812
+  - 51809
+  - 51810
+  - 51811
   # https://elanthipedia.play.net/Yellow_bristled_gremlin                280-410
   yellow_gremlins:
   - 8410
   - 8408
   - 8409
+  # https://elanthipedia.play.net/Adult_sovamedo                         600-800
+  sovamedo_adult:
+  - 52003
+  - 52006
+  - 52004
+  - 52005
