@@ -1,6 +1,49 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#tdps
+
+  Custom variant: TDPs earned from skill ranks are calculated per-guild.
+  For each of the 5 skillsets (Weapon/Armor/Lore/Survival/Magic, as already
+  classified by DRSkill#skillset), the guild's own N determines how many of
+  its top-ranked skills (excluding the guild's dedicated guild skill) are
+  averaged together. That average is floored to a whole number, run through
+  avg * (avg + 1) / 2, then floor-divided by 200 (any leftover ranks that
+  don't fill a full 200-rank bucket generate no TDPs), then multiplied by 11
+  (Weapon/Armor) or 10 (Lore/Survival/Magic). The guild skill is scored the
+  same way as its own standalone group of one, with no multiplier.
 =end
+
+# N (how many top-ranked skills to average) per guild per group, plus each
+# guild's dedicated guild skill (excluded from its group's normal pool and
+# scored as its own unmultiplied group of one).
+GUILD_TDP_DATA = {
+  'Barbarian'    => { 'Weapon' => 6, 'Armor' => 3, 'Lore' => 3, 'Survival' => 6, 'Magic' => 3, guild_skill: 'Expertise' },
+  'Bard'         => { 'Weapon' => 4, 'Armor' => 2, 'Lore' => 5, 'Survival' => 5, 'Magic' => 6, guild_skill: 'Bardic Lore' },
+  'Cleric'       => { 'Weapon' => 4, 'Armor' => 3, 'Lore' => 5, 'Survival' => 5, 'Magic' => 6, guild_skill: 'Theurgy' },
+  'Empath'       => { 'Weapon' => 2, 'Armor' => 2, 'Lore' => 5, 'Survival' => 5, 'Magic' => 6, guild_skill: 'Empathy' },
+  'Moon Mage'    => { 'Weapon' => 2, 'Armor' => 2, 'Lore' => 5, 'Survival' => 6, 'Magic' => 7, guild_skill: 'Astrology' },
+  'Necromancer'  => { 'Weapon' => 2, 'Armor' => 2, 'Lore' => 3, 'Survival' => 8, 'Magic' => 6, guild_skill: 'Thanatology' },
+  'Paladin'      => { 'Weapon' => 4, 'Armor' => 3, 'Lore' => 4, 'Survival' => 6, 'Magic' => 4, guild_skill: 'Conviction' },
+  'Ranger'       => { 'Weapon' => 4, 'Armor' => 3, 'Lore' => 3, 'Survival' => 8, 'Magic' => 4, guild_skill: 'Instinct' },
+  'Thief'        => { 'Weapon' => 4, 'Armor' => 2, 'Lore' => 4, 'Survival' => 8, 'Magic' => 3, guild_skill: 'Backstab' },
+  'Trader'       => { 'Weapon' => 2, 'Armor' => 3, 'Lore' => 5, 'Survival' => 7, 'Magic' => 2, guild_skill: 'Trading' },
+  'Warrior Mage' => { 'Weapon' => 4, 'Armor' => 2, 'Lore' => 4, 'Survival' => 5, 'Magic' => 6, guild_skill: 'Summoning' }
+}.freeze
+
+GROUP_MULTIPLIERS = { 'Weapon' => 11, 'Armor' => 11, 'Lore' => 10, 'Survival' => 10, 'Magic' => 10 }.freeze
+
+# Skills that can never be part of a group's averaged pool, for anyone.
+EXCLUDED_SKILLS = [
+  'Primary Magic', 'Holy Magic', 'Lunar Magic', 'Elemental Magic', 'Arcane Magic', 'Life Magic', 'Inner Fire', 'Inner Magic',
+  'Defending', 'Melee Mastery', 'Missile Mastery', 'Ranged Mastery', 'Offhand Weapon', 'Mechanical Lore'
+].freeze
+
+# Floor the average to a whole rank, then bucket avg * (avg + 1) / 2 into
+# groups of 200 (integer division floors, so leftover ranks that don't fill
+# a full bucket generate no TDPs).
+def rank_tdp_value(avg_rank)
+  floored_avg = avg_rank.floor
+  (floored_avg * (floored_avg + 1) / 2) / 200
+end
 
 races = { 'human'    => [0, 0, 0, 0, 0, 0, 0, 0],
           'dwarf'    => [0, 1, 1, 0, -1, 0, 0, -1],
@@ -28,9 +71,28 @@ stats = [DRStats.strength, DRStats.reflex, DRStats.agility, DRStats.charisma, DR
 race = DRStats.race.downcase.sub(' ', '').sub("'", '')
 mods = races.fetch(race)
 
-# Calculate total ranks and total TDPs from that
+# Calculate total ranks
 total_ranks = DRSkill.list.map(&:rank).reduce(:+)
-rank_tdps = DRSkill.list.map { |skill_info| (skill_info.rank * (skill_info.rank + 1)) / 2 }.reduce(:+) / 200
+
+# Calculate TDPs gained from ranks, per-guild
+guild = DRStats.guild
+guild_data = GUILD_TDP_DATA.fetch(guild) { DRC.message("Unrecognized guild for TDP calculation: #{guild}"); exit }
+guild_skill = guild_data[:guild_skill]
+skills_by_group = DRSkill.list.group_by(&:skillset)
+
+group_tdps = {}
+group_top_skills = {}
+GROUP_MULTIPLIERS.each do |group_name, multiplier|
+  group_skills = (skills_by_group[group_name] || []).reject { |skill| skill.name == guild_skill || EXCLUDED_SKILLS.include?(skill.name) }
+  top_skills = group_skills.sort_by(&:rank).reverse.first(guild_data[group_name])
+  avg_rank = top_skills.empty? ? 0.0 : top_skills.sum(&:rank).to_f / top_skills.size
+  group_tdps[group_name] = rank_tdp_value(avg_rank) * multiplier
+  group_top_skills[group_name] = top_skills
+end
+
+guild_skill_tdps = rank_tdp_value(DRSkill.getrank(guild_skill))
+
+rank_tdps = (group_tdps.values.reduce(:+) + guild_skill_tdps).round
 
 # Calculate TDPs from circling
 circle = DRStats.circle
@@ -55,7 +117,12 @@ end
 
 # Display info
 DRC.message("Total Ranks Gained: #{total_ranks}")
-DRC.message("TDPs Gained from Ranks: #{rank_tdps}")
+DRC.message("TDPs Gained from Ranks (#{guild}): #{rank_tdps}")
+GROUP_MULTIPLIERS.each_key do |group_name|
+  DRC.message("  #{group_name} : #{group_tdps[group_name].round(2)}")
+  group_top_skills[group_name].each { |skill| DRC.message("    #{skill.name} (#{skill.rank})") }
+end
+DRC.message("  #{guild_skill} (guild skill) : #{guild_skill_tdps.round(2)}")
 DRC.message("TDPs Gained from Circling: #{circle_tdps}")
 DRC.message("Total TDPs Gained: #{rank_tdps + circle_tdps}")
 DRC.message("Total TDPs spent: #{costs.reduce(0, :+)}")
