@@ -4225,6 +4225,95 @@ RSpec.describe 'TrainerProcess#check_heavens' do
   end
 end
 
+# ===================================================================
+# TrainerProcess#meraud_commune (Issue 7539)
+#
+# A sub-300 Theurgy character could only commune in an empty room, so
+# the Meraud commune -- and last_rites, which only fires once the
+# commune sets game_state.blessed_room -- effectively never fired
+# during a hunt (the room rarely clears of npcs). It now retreats out
+# of melee first, the way #pray_mat does, and communes with npcs present.
+# ===================================================================
+RSpec.describe 'TrainerProcess#meraud_commune' do
+  before(:each) { ct_setup }
+
+  def build_meraud_trainer(**overrides)
+    tp = TrainerProcess.allocate
+    defaults = {
+      equipment_manager: double('EquipmentManager', stow_weapon: nil, wield_weapon?: true),
+      theurgy_supply_container: 'sack',
+      water_holder: 'chalice',
+      flint_lighter: 'flint',
+      training_abilities: { 'Meraud' => 3900 }
+    }
+    defaults.merge(overrides).each { |k, v| tp.instance_variable_set(:"@#{k}", v) }
+    tp
+  end
+
+  def build_meraud_state(**attrs)
+    defaults = {
+      aimed_skill?: false,
+      npcs: ['an elder razortusk boar'],
+      weapon_name: 'liscis',
+      weapon_skill: 'Large Edged',
+      cooldown_timers: {}
+    }
+    state = double('GameState', defaults.merge(attrs))
+    allow(state).to receive(:blessed_room=)
+    state
+  end
+
+  before(:each) do
+    allow(DRC).to receive(:retreat)
+    allow(DRC).to receive(:bput)
+    allow(DRC).to receive(:bput).with('commune sense', any_args).and_return('roundtime')
+  end
+
+  it 'retreats past mobs and communes for a hunter (regression: was empty-room-only)' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).to have_received(:retreat)
+    expect(DRC).to have_received(:bput).with('commune meraud', any_args)
+    expect(state).to have_received(:blessed_room=).with(true)
+  end
+
+  it 'does not retreat when the room is already empty' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state(npcs: [])
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).not_to have_received(:retreat)
+    expect(DRC).to have_received(:bput).with('commune meraud', any_args)
+  end
+
+  it 'skips entirely when training an aimed weapon skill' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state(aimed_skill?: true)
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).not_to have_received(:retreat)
+    expect(DRC).not_to have_received(:bput).with('commune meraud', any_args)
+    expect(state.cooldown_timers).to have_key('Meraud')
+  end
+
+  it 'skips the ritual and just marks the room blessed when already a vessel' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state
+    allow(DRC).to receive(:bput).with('commune sense', any_args).and_return('Meraud')
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).not_to have_received(:retreat)
+    expect(DRC).not_to have_received(:bput).with('commune meraud', any_args)
+    expect(state).to have_received(:blessed_room=).with(true)
+  end
+end
+
 # ===========================================================================
 # CombatTrainer plugin system -- registry + hook dispatch
 # ===========================================================================

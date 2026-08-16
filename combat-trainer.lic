@@ -3684,7 +3684,8 @@ class TrainerProcess
   end
 
   def meraud_commune(game_state)
-    unless (DRSkill.getrank('Theurgy') >= 300 || game_state.npcs.empty?) && !game_state.aimed_skill?
+    # Training an aimed weapon skill uses a different stow/wield flow, so skip.
+    if game_state.aimed_skill?
       reset_ability(game_state, 'Meraud')
       return
     end
@@ -3694,6 +3695,14 @@ class TrainerProcess
       return
     end
     waitrt?
+    # The commune is a lengthy, vulnerable ritual (stow weapon, sprinkle holy
+    # water, wave incense, then a ~7s commune). Requiring an empty room meant a
+    # sub-300 Theurgy character almost never got to run it during a hunt, since
+    # the room rarely clears. Retreat out of melee first instead -- the same way
+    # #pray_mat does -- so it can fire mid-hunt. AbilityProcess#execute already
+    # bails when game_state.danger is set, and the 3900s cooldown means this
+    # retreat happens at most once per hunt.
+    DRC.retreat unless game_state.npcs.empty?
     @equipment_manager.stow_weapon(game_state.weapon_name)
     unless DRCTH.sprinkle_holy_water?(@theurgy_supply_container, @water_holder, checkname) && DRCTH.wave_incense?(@theurgy_supply_container, @flint_lighter, checkname)
       DRC.message("Holy water sprinkling, or incense waving routine failed, skipping Meraud commune")
