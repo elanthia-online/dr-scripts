@@ -198,9 +198,9 @@ hunting_areas_by_town:
   # https://elanthipedia.play.net/Mottled_westanuryn                     180-290
     - velaka_westanuryn
   # https://elanthipedia.play.net/Velakan_slaver                         225-360
-    - velaka_slaver
+    - velaka_slavers
   # https://elanthipedia.play.net/Zombie_nomad                           260-410
-    - zombie_nomad
+    - zombie_nomads
   # https://elanthipedia.play.net/Gam_chaga                              300-450
     - gam_chaga
   # https://elanthipedia.play.net/Isundjen_conjurer                      360-500
@@ -246,8 +246,6 @@ hunting_areas_by_town:
   # 19097 - Unmappable room
   # Hit or miss spawns, boxes and skins
     - orc_scouts
-  # https://elanthipedia.play.net/Hulking_black_barghest                 210-290
-    - hulking_black_barghest_riverhaven
   # https://elanthipedia.play.net/Orc_Bandit                             180-317
   # warcats calm, need 35 disc
   # Hit or miss spawn, boxes and skins
@@ -311,7 +309,7 @@ hunting_areas_by_town:
   # https://elanthipedia.play.net/Silver_leucro                           95-110
     - silver_leucros_ratha
   # https://elanthipedia.play.net/Adult_razortusk_boar                   100-130
-    - razortuzk_boars
+    - razortusk_boars
   # https://elanthipedia.play.net/Merrows                                120-150
     - crimson_merrows
   # https://elanthipedia.play.net/Bawdy_swain                            120-150
@@ -2616,9 +2614,9 @@ hunting_zones:
   - 10066
   - 10065
   - 10064
-  #https://elanthipedia.play.net/Snarlvine_fox                         550-700
-  #snarvine vixen spawn too, same mob different nount
-  - snarlvine_fox:
+  # https://elanthipedia.play.net/Snarlvine_fox                         550-700
+  # snarlvine vixen spawn too, same mob different noun
+  snarlvine_fox:
   - 51876
   - 51877
   - 51878
