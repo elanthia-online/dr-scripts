@@ -74,6 +74,12 @@
 #     other file). Put spec-specific world setup in a describe-scoped before
 #     instead.
 
+# Line ranges (0-based, inclusive) each extractor actually eval'd out of a .lic,
+# keyed by absolute path. Lets the coverage backfill below distinguish "no spec
+# ever eval'd this line" from "eval'd, but Ruby attributed the statement to a
+# neighbouring line". Harmless and cheap when coverage is off.
+LIC_EVAL_RANGES = Hash.new { |h, k| h[k] = [] }
+
 # Coverage (opt-in): COVERAGE=1 bundle exec rspec, report in coverage/index.html.
 #
 # This has to run before anything else here, and it needs `enable_coverage :eval`
@@ -88,14 +94,19 @@ if ENV['COVERAGE']
 
   # Only the class/module bodies a spec extracts are ever eval'd, so a script's
   # remaining code -- the before_dying block, the `Klass.new` entry point, a
-  # top-level def, a multi-line constant -- is invisible to Coverage rather than
-  # counted as missed, which quietly flatters the percentage. Backfill those
-  # lines from SimpleCov's own static line classifier (the same one it uses for
-  # files that were never loaded at all) so they land in the denominator as
-  # uncovered. Real measurements always win; this only fills nil holes.
+  # top-level def -- is invisible to Coverage rather than counted as missed,
+  # which quietly flatters the percentage. Backfill those lines from SimpleCov's
+  # own static line classifier (the same one it uses for files that were never
+  # loaded at all) so they land in the denominator as uncovered.
+  #
+  # Restricted to lines OUTSIDE every range an extractor eval'd. Inside an eval'd
+  # range Ruby is authoritative and the static classifier is not: it calls each
+  # element line of a multi-line literal relevant, while Ruby attributes the
+  # whole literal to one line. Backfilling there invents missed lines for code
+  # that demonstrably ran (astrology.lic's OBSERVE_SUCCESS_PATTERNS is the
+  # example -- line 73 opens the array, but Ruby records the hit on line 74).
   SimpleCov.at_exit do
-    result = SimpleCov.result
-    raw = result.original_result
+    raw = SimpleCov.result.original_result
 
     raw.each do |filename, data|
       next unless filename.end_with?('.lic')
@@ -104,8 +115,14 @@ if ENV['COVERAGE']
       static = static['lines'] || static[:lines] if static.is_a?(Hash)
       next unless static
 
+      evaled = LIC_EVAL_RANGES[filename]
       measured = data['lines'] || data[:lines]
-      static.each_index { |i| measured[i] = 0 if measured[i].nil? && !static[i].nil? }
+      static.each_index do |i|
+        next unless measured[i].nil? && !static[i].nil?
+        next if evaled.any? { |range| range.cover?(i) }
+
+        measured[i] = 0
+      end
     end
 
     SimpleCov::Result.new(raw, command_name: SimpleCov.command_name).format!
@@ -173,6 +190,7 @@ def load_lic_class(filename, class_name)
   raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
 
   class_source = lines[start_idx..end_idx].join
+  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
   eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
@@ -193,6 +211,7 @@ def load_lic_module(filename, module_name)
   end_idx = (start_idx + 1...lines.size).find { |i| lines[i] =~ /^end\s*$/ }
   raise "Could not find matching end for 'module #{module_name}' in #{filename}" unless end_idx
 
+  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
   eval(lines[start_idx..end_idx].join, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
@@ -211,6 +230,7 @@ def load_lic_constant(filename, const_name)
 
   # Pass the real line number so the eval'd assignment is attributed to where it
   # actually lives, rather than to line 1 of the file.
+  LIC_EVAL_RANGES[filepath] << (idx..idx)
   eval(lines[idx], TOPLEVEL_BINDING, filepath, idx + 1)
 end
 
