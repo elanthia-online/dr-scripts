@@ -74,6 +74,20 @@
 #     other file). Put spec-specific world setup in a describe-scoped before
 #     instead.
 
+# Coverage (opt-in): COVERAGE=1 bundle exec rspec, report in coverage/index.html.
+#
+# This has to run before anything else here, and it needs `enable_coverage :eval`
+# -- the .lic files are never required, they are eval'd by load_lic_class below,
+# and Ruby only measures eval'd source when Coverage is set up with eval: true.
+# Starting here is early enough: RSpec requires spec_helper (via .rspec) before
+# it loads any *_spec.rb, so every load_lic_class call still lies ahead of us.
+if ENV['COVERAGE']
+  require 'simplecov'
+  SimpleCov.enable_coverage :eval
+  SimpleCov.enable_coverage :branch
+  SimpleCov.start
+end
+
 require 'ostruct'
 
 # Load the test harness, which provides the mock game objects and commons
@@ -81,6 +95,31 @@ require 'ostruct'
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 
 include Harness
+
+# Absolute, symlink-free path to a .lic in the repo root. Expanded rather than
+# left as "<root>/spec/../foo.lic" so eval attributes the source to the file's
+# real path -- backtraces point at it, and coverage tooling does not mistake it
+# for something under spec/.
+def lic_path(filename)
+  File.expand_path(File.join(__dir__, '..', filename))
+end
+
+# Ruby allocates a file's eval-coverage line array on the FIRST eval attributed
+# to that filename and never grows it. A .lic holding several classes is eval'd
+# once per class, so any class starting past the end of the first-eval'd one
+# would be silently dropped from coverage -- not counted as missed, just absent
+# (combat-trainer.lic reported 2 of its 11 classes). Priming with a blank eval
+# spanning the whole file sizes the array once so every later eval lands inside.
+# No-op when coverage is not running.
+def prime_lic_coverage(filepath, line_count)
+  return unless defined?(Coverage) && Coverage.running?
+
+  @primed_lic_files ||= {}
+  return if @primed_lic_files[filepath]
+
+  @primed_lic_files[filepath] = true
+  eval(("\n" * (line_count - 1)) + 'nil', TOPLEVEL_BINDING, filepath, 1)
+end
 
 # Extract and eval a class from a .lic file without executing the top-level code
 # (before_dying blocks, Klass.new, etc.) that sits outside the class body.
@@ -91,8 +130,9 @@ include Harness
 def load_lic_class(filename, class_name)
   return if Object.const_defined?(class_name)
 
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
+  filepath = lic_path(filename)
   lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
 
   start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
   raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
@@ -110,19 +150,42 @@ def load_lic_class(filename, class_name)
   eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
+# Module counterpart to load_lic_class, with the same strategy and guard.
+# Lived as a duplicated top-level def in automap_spec and moonwatch_spec, which
+# is the exact "a duplicate top-level definition wins for the entire process by
+# load order" hazard described above -- it belongs here, defined once.
+def load_lic_module(filename, module_name)
+  return if Object.const_defined?(module_name)
+
+  filepath = lic_path(filename)
+  lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
+
+  start_idx = lines.index { |l| l =~ /^module\s+#{module_name}\b/ }
+  raise "Could not find 'module #{module_name}' in #{filename}" unless start_idx
+
+  end_idx = (start_idx + 1...lines.size).find { |i| lines[i] =~ /^end\s*$/ }
+  raise "Could not find matching end for 'module #{module_name}' in #{filename}" unless end_idx
+
+  eval(lines[start_idx..end_idx].join, TOPLEVEL_BINDING, filepath, start_idx + 1)
+end
+
 # Extract and eval a single top-level constant assignment (CONST = ...) from a
 # .lic file without executing the rest of the file. The const_defined? guard
 # makes repeated calls (across co-running specs) idempotent.
 def load_lic_constant(filename, const_name)
   return if Object.const_defined?(const_name)
 
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
+  filepath = lic_path(filename)
   lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
 
-  line = lines.find { |l| l =~ /^#{const_name}\s*=/ }
-  raise "Could not find '#{const_name}' in #{filename}" unless line
+  idx = lines.index { |l| l =~ /^#{const_name}\s*=/ }
+  raise "Could not find '#{const_name}' in #{filename}" unless idx
 
-  eval(line, TOPLEVEL_BINDING, filepath)
+  # Pass the real line number so the eval'd assignment is attributed to where it
+  # actually lives, rather than to line 1 of the file.
+  eval(lines[idx], TOPLEVEL_BINDING, filepath, idx + 1)
 end
 
 RSpec.configure do |config|

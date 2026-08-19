@@ -21,26 +21,6 @@ require 'ostruct'
 
 # Eval only the `module AutoMap ... end` slice so the top-level hook, config read,
 # and mapping loop at the bottom of the .lic never run.
-#
-# @param filename [String] path to the .lic relative to this spec's parent dir
-# @param module_name [String] the module to extract
-# @return [void]
-def load_lic_module(filename, module_name)
-  return if Object.const_defined?(module_name)
-
-  path = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(path)
-
-  start_idx = lines.index { |l| l =~ /^module\s+#{module_name}\b/ }
-  raise "Could not find 'module #{module_name}' in #{filename}" unless start_idx
-
-  end_offset = lines[start_idx + 1..].index { |l| l =~ /^end\s*$/ }
-  raise "Could not find matching end for 'module #{module_name}'" unless end_offset
-
-  source = lines[start_idx..start_idx + 1 + end_offset].join
-  eval(source, TOPLEVEL_BINDING, path, start_idx + 1)
-end
-
 load_lic_module('automap.lic', 'AutoMap')
 
 # Build a room stand-in with only the accessors AutoMap touches.
