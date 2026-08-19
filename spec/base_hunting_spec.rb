@@ -90,3 +90,56 @@ RSpec.describe 'data/base-hunting.yaml integrity' do
     end
   end
 end
+
+BROCKET_ROOMS = {
+  'brocket_young' => [3477, 3478, 52275, 3479],
+  'brocket_mid'   => [52276, 52277, 52278, 52279],
+  'brocket_elder' => [52280, 52281, 52282, 52283]
+}.freeze
+
+RSpec.describe 'data/base-hunting.yaml brocket conversion' do
+  let(:data)           { YAML.unsafe_load_file('data/base-hunting.yaml') }
+  let(:escort_zones)   { data.fetch('escort_zones') }
+  let(:hunting_zones)  { data.fetch('hunting_zones') }
+  let(:theren_zones)   { data.fetch('hunting_areas_by_town').fetch('Theren').compact }
+
+  it 'parses as valid YAML' do
+    expect(data).to be_a(Hash)
+  end
+
+  BROCKET_ROOMS.each do |zone, rooms|
+    describe zone do
+      it 'is defined in hunting_zones with its exact mapped room list' do
+        expect(hunting_zones[zone]).to eq(rooms)
+      end
+
+      it 'is no longer an escort zone' do
+        expect(escort_zones).not_to have_key(zone)
+      end
+
+      it 'is still offered under the Theren hunting town' do
+        expect(theren_zones).to include(zone)
+      end
+
+      it 'lists only unique, positive integer room ids' do
+        expect(rooms).to all(be_a(Integer).and(be > 0))
+        expect(rooms.uniq).to eq(rooms)
+      end
+    end
+  end
+
+  it 'does not reuse a room id across the three brocket tiers' do
+    all_rooms = BROCKET_ROOMS.values.flatten
+    expect(all_rooms.uniq).to eq(all_rooms)
+  end
+
+  # Global invariant the conversion must preserve: escort_zones takes precedence
+  # over hunting_zones in find_hunting_room?, so any name present in both sections
+  # would silently ignore its hunting_zones room list and keep escorting. A green
+  # assertion here proves the brockets (and every other zone) were actually MOVED,
+  # not merely copied.
+  it 'never defines the same zone in both escort_zones and hunting_zones' do
+    overlap = escort_zones.keys & hunting_zones.keys
+    expect(overlap).to eq([])
+  end
+end
