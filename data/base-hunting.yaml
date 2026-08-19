@@ -37,13 +37,6 @@ escort_zones:
     base: 1358
     area: crocs
     enter: enter
-  # https://elanthipedia.play.net/Young_red_brocket_deer                  90-110
-  # High swarm
-  # Therengia
-  brocket_young:
-    base: 3462
-    area: brocket_young
-    enter: enter
   # https://elanthipedia.play.net/Golden_scaled_atik%27et                120-170
   # https://elanthipedia.play.net/Grey_and_tan_mottled_westanuryn
   # mixed in with lower-level Young Firecats
@@ -52,13 +45,6 @@ escort_zones:
     base: 1784
     area: gate_of_souls
     enter: blasted
-  # https://elanthipedia.play.net/Red_brocket_deer                       135-180
-  # high swarm
-  # Therengia
-  brocket_mid:
-    base: 3462
-    area: brocket_mid
-    enter: enter
   # https://elanthipedia.play.net/Giant_black_leucro                     160-215
   # Requires at least 130 Perception to access
   # Zoluren
@@ -88,13 +74,6 @@ escort_zones:
     base: 247
     area: velaka
     enter: westanuryn
-  # https://elanthipedia.play.net/Elder_red_brocket_deer                 200-260
-  # high swarm
-  # Therengia
-  brocket_elder:
-    base: 3462
-    area: brocket_elder
-    enter: enter
   # https://elanthipedia.play.net/Velakan_slaver                         225-360
   # May have a wandering velaka_westanuryn
   # Muspar'i
@@ -2220,6 +2199,27 @@ hunting_zones:
   - 8606
   - 8607
   - 8608
+  # https://elanthipedia.play.net/Young_red_brocket_deer                  90-110
+  # High swarm. Reached via go2 (climb log fence from 3462); formerly an escort zone.
+  brocket_young:
+  - 3477
+  - 3478
+  - 52275
+  - 3479
+  # https://elanthipedia.play.net/Red_brocket_deer                       135-180
+  # High swarm. Up the gentle hill from the young meadow; formerly an escort zone.
+  brocket_mid:
+  - 52276
+  - 52277
+  - 52278
+  - 52279
+  # https://elanthipedia.play.net/Elder_red_brocket_deer                 200-260
+  # High swarm. Up the rolling hill from the mid meadow; formerly an escort zone.
+  brocket_elder:
+  - 52280
+  - 52281
+  - 52282
+  - 52283
   # https://elanthipedia.play.net/Gypsy_marauder                         100-125
   # Good spawn
   marauders:
