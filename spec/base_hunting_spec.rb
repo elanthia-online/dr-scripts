@@ -65,6 +65,19 @@ RSpec.describe 'data/base-hunting.yaml integrity' do
     end
   end
 
+  # Ceceline's Meadow barghest zone: was a dangling town ref (defined nowhere);
+  # the meadow is already mapped, so it is now a real go2 hunting zone spanning
+  # all 12 mapped rooms (579-590 -- the meadow plus the road that runs through it).
+  describe 'hulking_black_barghest_riverhaven' do
+    it 'is defined in hunting_zones with all of Ceceline\'s Meadow (579-590)' do
+      expect(hunting_zones['hulking_black_barghest_riverhaven']).to eq((579..590).to_a)
+    end
+
+    it 'is offered under the Riverhaven hunting town' do
+      expect(towns.fetch('Riverhaven').compact).to include('hulking_black_barghest_riverhaven')
+    end
+  end
+
   # Regression for the "- snarlvine_fox:" indentation fold into sky_giants.
   describe 'snarlvine_fox' do
     it 'is its own zone with exactly its four rooms' do

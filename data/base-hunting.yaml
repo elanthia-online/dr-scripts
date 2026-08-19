@@ -246,6 +246,8 @@ hunting_areas_by_town:
   # 19097 - Unmappable room
   # Hit or miss spawns, boxes and skins
     - orc_scouts
+  # https://elanthipedia.play.net/Hulking_black_barghest                 210-290
+    - hulking_black_barghest_riverhaven
   # https://elanthipedia.play.net/Orc_Bandit                             180-317
   # warcats calm, need 35 disc
   # Hit or miss spawn, boxes and skins
@@ -2331,6 +2333,22 @@ hunting_zones:
   - 19100
   - 19191
   - 19192
+  # https://elanthipedia.play.net/Hulking_black_barghest                 210-290
+  # Ceceline's Meadow (Riverhaven); barghests roam the whole meadow (579-590),
+  # including the road that runs through it.
+  hulking_black_barghest_riverhaven:
+  - 579
+  - 580
+  - 581
+  - 582
+  - 583
+  - 584
+  - 585
+  - 586
+  - 587
+  - 588
+  - 589
+  - 590
   # https://elanthipedia.play.net/Small_Peccary                          175-250
   # https://elanthipedia.play.net/Swamp_Troll_(2)                        140-235
   # Great swarm
