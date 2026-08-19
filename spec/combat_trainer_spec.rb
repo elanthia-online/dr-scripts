@@ -5222,3 +5222,186 @@ RSpec.describe 'GameState action counter' do
     expect(gs.action_count).to eq(0)
   end
 end
+
+# ===================================================================
+# LootProcess -- necromancer ritual corpse targeting
+#
+# Rituals used to be aimed at the bare noun from DRRoom.dead_npcs, which
+# is ambiguous the moment two same-noun corpses share a room. Unless an
+# example says otherwise the room below holds two 'rat' corpses that
+# differ only by id, so a command built from the noun could not tell
+# them apart:
+# every perform/butcher must address the selected corpse by '#<id>'.
+# Only the operator-facing diagnostics still name the corpse, falling
+# back to the noun when the creature has no name yet.
+# ===================================================================
+RSpec.describe LootProcess do
+  before(:each) do
+    ct_setup
+    DRStats.guild = 'Necromancer'
+    Lich::DragonRealms::Creature._set_room([selected_corpse, other_corpse])
+    allow(DRC).to receive(:bput) { |command, *_matchers| record_bput(command) }
+    allow(DRC).to receive(:message)
+  end
+
+  # Same noun, different ids -- the whole point of the id targeting.
+  let(:selected_corpse) { OpenStruct.new(id: 111, noun: 'rat', name: 'a giant rat') }
+  let(:other_corpse) { OpenStruct.new(id: 222, noun: 'rat', name: 'a giant rat') }
+
+  let(:rituals) do
+    {
+      'preserve'  => 'suspending the corpse in unnatural stasis',
+      'harvest'   => 'a few quick, precise motions with your ritual knife',
+      'dissect'   => 'Using your knife as a probe',
+      'consume'   => 'a few quick, precise cuts with your ritual knife',
+      'arise'     => 'carefully carve a ritual design across a handspan of its body',
+      'construct' => 'Rituals do not work upon constructs',
+      'butcher'   => 'Making several deep cuts with your knife',
+      'failures'  => ['You do not have the knowledge required to perform this ritual']
+    }
+  end
+
+  # Commands the script sent, in order, so each example can assert both
+  # what was targeted and that the noun never leaked into a command.
+  let(:sent_commands) { [] }
+  # Per-command canned game responses; anything unlisted answers with the
+  # matching ritual message so the happy path runs to completion.
+  let(:bput_responses) { {} }
+
+  def record_bput(command)
+    sent_commands << command
+    return bput_responses[command] if bput_responses.key?(command)
+
+    case command
+    when /^perform preserve/ then rituals['preserve']
+    when /^perform butcher/  then rituals['butcher']
+    when /^perform dissect/  then rituals['dissect']
+    when /^perform arise/    then rituals['arise']
+    else 'Roundtime'
+    end
+  end
+
+  def perform_commands
+    sent_commands.grep(/^perform /)
+  end
+
+  def build_necro_loot(**overrides)
+    lp = LootProcess.allocate
+    defaults = {
+      rituals: rituals, last_ritual: nil, ritual_type: 'butcher',
+      necro_corpse_priority: 'heal', necro_heal: false,
+      make_zombie: false, make_bonebug: false,
+      redeemed: false, cycle_rituals: false, force_rituals: false,
+      current_harvest_count: 0, necro_count: 0,
+      dissect_and_butcher: true, butcher_count: 2, necro_store: false,
+      equipment_manager: double('EquipmentManager', stow_weapon: nil, wield_weapon?: nil)
+    }
+    defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+    lp
+  end
+
+  def necro_game_state(construct: false)
+    state = double('GameState', necro_casting?: false, cfb_active?: false, cfw_active?: false,
+                                weapon_name: 'javelin', weapon_skill: 'Polearms')
+    allow(state).to receive(:construct?).and_return(construct)
+    allow(state).to receive(:construct)
+    allow(state).to receive(:prepare_nr=)
+    allow(state).to receive(:prepare_cfb=)
+    allow(state).to receive(:prepare_cfw=)
+    allow(state).to receive(:prepare_consume=)
+    state
+  end
+
+  describe '#check_rituals? with two same-noun corpses in the room' do
+    it 'asks the creature registry for dead creatures' do
+      build_necro_loot.check_rituals?(necro_game_state)
+
+      expect(Lich::DragonRealms::Creature._in_room_filters).to include([:dead])
+    end
+
+    it 'targets preserve, every butcher and the final dissect at the selected corpse id' do
+      build_necro_loot(ritual_type: 'butcher', dissect_and_butcher: true, butcher_count: 2)
+        .check_rituals?(necro_game_state)
+
+      expect(perform_commands).to eq(
+        [
+          'perform preserve on #111',
+          'perform butcher on #111',
+          'perform butcher on #111',
+          'perform dissect on #111'
+        ]
+      )
+    end
+
+    it 'never addresses a corpse by noun, nor the other same-noun corpse' do
+      build_necro_loot(ritual_type: 'butcher', dissect_and_butcher: true, butcher_count: 2)
+        .check_rituals?(necro_game_state)
+
+      expect(sent_commands.grep(/rat/)).to be_empty
+      expect(sent_commands.grep(/#222/)).to be_empty
+    end
+
+    it 'targets the selected corpse id for a non-butcher ritual and its preserve' do
+      # Mindstates full, so the configured ritual is skipped and only the
+      # zombie-raising arise (with its preserve) runs. Stubbed per-example
+      # rather than seeded with DRSkill._set_xp: outdoorsmanship_spec swaps
+      # the harness xp store for one reset_data does not clear, so a seeded
+      # value leaks into later examples in a full-suite run.
+      allow(DRSkill).to receive(:getxp).and_return(34)
+
+      build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false, make_zombie: true)
+        .check_rituals?(necro_game_state)
+
+      expect(perform_commands).to eq(['perform preserve on #111', 'perform arise on #111'])
+    end
+
+    it 'sends nothing when the room holds no corpse' do
+      Lich::DragonRealms::Creature._set_room([])
+
+      expect(build_necro_loot.check_rituals?(necro_game_state)).to be true
+      expect(perform_commands).to be_empty
+    end
+
+    it 'skips a corpse the game state already knows is a construct' do
+      game_state = necro_game_state(construct: true)
+
+      expect(build_necro_loot.check_rituals?(game_state)).to be true
+      expect(game_state).to have_received(:construct?).with('rat')
+      expect(perform_commands).to be_empty
+    end
+  end
+
+  describe 'wrong/missing corpse diagnostics' do
+    it 'reports the corpse name and id when a perform misses its target' do
+      bput_responses['perform dissect on #111'] = 'What were you referring to'
+
+      build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false)
+        .check_rituals?(necro_game_state)
+
+      expect(DRC).to have_received(:message)
+        .with("*** combat-trainer: dissect failed - wrong/missing corpse target (tried 'a giant rat' #111)")
+    end
+
+    it 'falls back to the noun when the corpse has no name yet' do
+      selected_corpse.name = nil
+      bput_responses['perform dissect on #111'] = 'What were you referring to'
+
+      build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false)
+        .check_rituals?(necro_game_state)
+
+      expect(DRC).to have_received(:message)
+        .with("*** combat-trainer: dissect failed - wrong/missing corpse target (tried 'rat' #111)")
+    end
+
+    it 'reports the corpse and skips the dissect when a butcher misses its target' do
+      bput_responses['perform butcher on #111'] = 'I could not find what you were referring to'
+
+      build_necro_loot(ritual_type: 'butcher', dissect_and_butcher: true, butcher_count: 2)
+        .check_rituals?(necro_game_state)
+
+      expect(DRC).to have_received(:message)
+        .with("*** combat-trainer: butcher failed - wrong/missing corpse target (tried 'a giant rat' #111)")
+      expect(perform_commands).to eq(['perform preserve on #111', 'perform butcher on #111'])
+    end
+  end
+end
