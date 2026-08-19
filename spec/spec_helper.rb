@@ -85,6 +85,32 @@ if ENV['COVERAGE']
   require 'simplecov'
   SimpleCov.enable_coverage :eval
   SimpleCov.enable_coverage :branch
+
+  # Only the class/module bodies a spec extracts are ever eval'd, so a script's
+  # remaining code -- the before_dying block, the `Klass.new` entry point, a
+  # top-level def, a multi-line constant -- is invisible to Coverage rather than
+  # counted as missed, which quietly flatters the percentage. Backfill those
+  # lines from SimpleCov's own static line classifier (the same one it uses for
+  # files that were never loaded at all) so they land in the denominator as
+  # uncovered. Real measurements always win; this only fills nil holes.
+  SimpleCov.at_exit do
+    result = SimpleCov.result
+    raw = result.original_result
+
+    raw.each do |filename, data|
+      next unless filename.end_with?('.lic')
+
+      static = SimpleCov::SimulateCoverage.call(filename)
+      static = static['lines'] || static[:lines] if static.is_a?(Hash)
+      next unless static
+
+      measured = data['lines'] || data[:lines]
+      static.each_index { |i| measured[i] = 0 if measured[i].nil? && !static[i].nil? }
+    end
+
+    SimpleCov::Result.new(raw, command_name: SimpleCov.command_name).format!
+  end
+
   SimpleCov.start
 end
 
