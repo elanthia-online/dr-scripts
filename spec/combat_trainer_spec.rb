@@ -4677,3 +4677,548 @@ RSpec.describe 'AbilityProcess room-effect cooldown seam' do
     end
   end
 end
+
+# ===================================================================
+# GameState#sort_by_rate_then_rank
+#
+# The shared ordering primitive behind every "what do I train next"
+# decision: dance skill selection, offhand aiming/doublestrike/whirlwind
+# skill selection, and SetupProcess weapon rotation. A regression here
+# silently starves low-rank skills, which is the exact failure mode the
+# rank tiebreaker exists to prevent.
+# ===================================================================
+RSpec.describe 'GameState#sort_by_rate_then_rank' do
+  before(:each) { ct_setup }
+
+  # sort_by_rate_then_rank reads nothing but its arguments and DRSkill,
+  # so a bare allocate with no ivars is enough.
+  let(:game_state) { GameState.allocate }
+
+  # Give each skill an explicit learning rate and rank so the ordering
+  # assertions below never depend on harness defaults.
+  def stub_skills(rates: {}, ranks: {})
+    allow(DRSkill).to receive(:getxp) { |skill| rates.fetch(skill, 0) }
+    allow(DRSkill).to receive(:getrank) { |skill| ranks.fetch(skill, 0) }
+  end
+
+  it 'orders by learning rate ascending, lowest rate first' do
+    stub_skills(rates: { 'Small Edged' => 30, 'Large Edged' => 5, 'Staves' => 17 })
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged', 'Staves']))
+      .to eq(['Large Edged', 'Staves', 'Small Edged'])
+  end
+
+  it 'breaks a rate tie by rank ascending, so low-rank skills are not starved' do
+    stub_skills(
+      rates: { 'Small Edged' => 10, 'Large Edged' => 10 },
+      ranks: { 'Small Edged' => 500, 'Large Edged' => 50 }
+    )
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged']))
+      .to eq(['Large Edged', 'Small Edged'])
+  end
+
+  it 'prefers a prioritized skill over a non-prioritized one at the same rate' do
+    stub_skills(
+      rates: { 'Small Edged' => 10, 'Large Edged' => 10 },
+      ranks: { 'Small Edged' => 50, 'Large Edged' => 500 }
+    )
+    # Large Edged has the worse rank but is prioritized, so it must still win.
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Large Edged']))
+      .to eq(['Large Edged', 'Small Edged'])
+  end
+
+  it 'does not let priority override a lower learning rate' do
+    stub_skills(rates: { 'Small Edged' => 5, 'Large Edged' => 25 })
+    # Rate is the primary key -- priority only breaks ties within a rate.
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Large Edged']))
+      .to eq(['Small Edged', 'Large Edged'])
+  end
+
+  it 'ranks two prioritized skills against each other by rank' do
+    stub_skills(
+      rates: { 'Small Edged' => 10, 'Large Edged' => 10 },
+      ranks: { 'Small Edged' => 500, 'Large Edged' => 50 }
+    )
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Small Edged', 'Large Edged']))
+      .to eq(['Large Edged', 'Small Edged'])
+  end
+
+  it 'returns a new array and does not mutate the caller argument' do
+    stub_skills(rates: { 'Small Edged' => 30, 'Large Edged' => 5 })
+    skills = ['Small Edged', 'Large Edged']
+    result = game_state.sort_by_rate_then_rank(skills)
+
+    expect(result).not_to equal(skills)
+    expect(skills).to eq(['Small Edged', 'Large Edged'])
+  end
+
+  it 'returns an empty array for empty input rather than raising' do
+    stub_skills
+    expect(game_state.sort_by_rate_then_rank([])).to eq([])
+  end
+
+  it 'ignores a priority entry that is not among the skills being sorted' do
+    stub_skills(rates: { 'Small Edged' => 5, 'Large Edged' => 25 })
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Bow']))
+      .to eq(['Small Edged', 'Large Edged'])
+  end
+
+  it 'treats a mindlocked skill (34) as the least attractive by rate' do
+    stub_skills(rates: { 'Small Edged' => 34, 'Large Edged' => 33 })
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged']).first)
+      .to eq('Large Edged')
+  end
+end
+
+# ===================================================================
+# GameState aim and dance queues
+#
+# Both queues are refilled from configured YAML arrays and drained with
+# shift. Because the refill uses a shallow dup, a shift that reached the
+# source array would permanently destroy the user's configured actions
+# for the rest of the session.
+# ===================================================================
+RSpec.describe 'GameState aim and dance queues' do
+  before(:each) { ct_setup }
+
+  def build_queue_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      current_weapon_skill: 'Bow',
+      aim_queue: [],
+      dance_queue: [],
+      aim_fillers: { 'Bow' => %w[appraise analyze] },
+      aim_fillers_stealth: nil,
+      dance_actions: %w[bob weave circle],
+      dance_actions_stealth: nil,
+      combat_training_abilities_target: 0
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  # use_stealth? is `Stealth xp < @combat_training_abilities_target`, so a
+  # target of 0 keeps stealth off and a high target turns it on.
+  before(:each) { allow(DRSkill).to receive(:getxp).and_return(10) }
+
+  describe '#set_aim_queue' do
+    it 'fills the queue from aim_fillers for the current weapon skill' do
+      gs = build_queue_state
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[appraise analyze])
+    end
+
+    it 'draining the queue does not mutate the configured aim_fillers array' do
+      fillers = { 'Bow' => %w[appraise analyze] }
+      gs = build_queue_state(aim_fillers: fillers)
+      gs.set_aim_queue
+      gs.next_aim_action
+      gs.next_aim_action
+
+      expect(gs.done_aiming?).to be true
+      expect(fillers['Bow']).to eq(%w[appraise analyze])
+    end
+
+    it 'refills from the stealth fillers when stealth is being trained' do
+      gs = build_queue_state(
+        aim_fillers_stealth: { 'Bow' => %w[hide] },
+        combat_training_abilities_target: 34
+      )
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[hide])
+    end
+
+    it 'uses the normal fillers when stealth has no entry for the weapon skill' do
+      gs = build_queue_state(
+        aim_fillers_stealth: { 'Slings' => %w[hide] },
+        combat_training_abilities_target: 34
+      )
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[appraise analyze])
+    end
+
+    # Asymmetry worth pinning: unlike set_dance_queue, set_aim_queue has no
+    # "return unless empty" guard, so calling it mid-queue discards whatever
+    # aim actions were still pending.
+    it 'discards pending actions when called again before the queue drains' do
+      gs = build_queue_state
+      gs.set_aim_queue
+      gs.next_aim_action
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[analyze])
+
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[appraise analyze])
+    end
+  end
+
+  describe '#next_aim_action / #done_aiming? / #clear_aim_queue' do
+    it 'drains the queue in order and reports done only when empty' do
+      gs = build_queue_state
+      gs.set_aim_queue
+
+      expect(gs.done_aiming?).to be false
+      expect(gs.next_aim_action).to eq('appraise')
+      expect(gs.done_aiming?).to be false
+      expect(gs.next_aim_action).to eq('analyze')
+      expect(gs.done_aiming?).to be true
+    end
+
+    it 'returns nil from next_aim_action once drained' do
+      gs = build_queue_state(aim_fillers: { 'Bow' => [] })
+      gs.set_aim_queue
+      expect(gs.next_aim_action).to be_nil
+    end
+
+    it 'clear_aim_queue empties a partially drained queue' do
+      gs = build_queue_state
+      gs.set_aim_queue
+      gs.next_aim_action
+      gs.clear_aim_queue
+      expect(gs.done_aiming?).to be true
+    end
+  end
+
+  describe '#set_dance_queue' do
+    it 'fills the queue from the configured dance actions' do
+      gs = build_queue_state
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[bob weave circle])
+    end
+
+    # The guard set_aim_queue lacks: a mid-queue refill must be a no-op so
+    # the dance rotation is not restarted from the top on every tick.
+    it 'is a no-op when the queue still has actions pending' do
+      gs = build_queue_state
+      gs.set_dance_queue
+      gs.next_dance_action
+
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[weave circle])
+    end
+
+    it 'refills once the queue has fully drained' do
+      gs = build_queue_state
+      gs.set_dance_queue
+      3.times { gs.next_dance_action }
+
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[bob weave circle])
+    end
+
+    it 'draining the queue does not mutate the configured dance_actions array' do
+      actions = %w[bob weave circle]
+      gs = build_queue_state(dance_actions: actions)
+      gs.set_dance_queue
+      3.times { gs.next_dance_action }
+
+      expect(actions).to eq(%w[bob weave circle])
+    end
+
+    it 'uses the stealth dance actions when stealth is being trained' do
+      gs = build_queue_state(
+        dance_actions_stealth: %w[hide],
+        combat_training_abilities_target: 34
+      )
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[hide])
+    end
+
+    it 'falls back to normal dance actions when the stealth list is empty' do
+      gs = build_queue_state(
+        dance_actions_stealth: [],
+        combat_training_abilities_target: 34
+      )
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[bob weave circle])
+    end
+
+    it 'returns nil from next_dance_action when the queue is empty' do
+      expect(build_queue_state.next_dance_action).to be_nil
+    end
+  end
+end
+
+# ===================================================================
+# GameState charged maneuvers
+#
+# Maneuvers share a per-character cooldown, and @cooldown_timers stores
+# the future ready-time rather than the start time. Off-by-one handling
+# here either wastes maneuvers or spams ones still on cooldown.
+# ===================================================================
+RSpec.describe 'GameState charged maneuvers' do
+  before(:each) { ct_setup }
+
+  def build_maneuver_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      use_charged_maneuvers: true,
+      charged_maneuvers: {},
+      cooldown_timers: {},
+      currently_whirlwinding: false,
+      prioritize_maneuver_doublestrike: false,
+      doublestrike_trainables: [],
+      current_weapon_skill: 'Small Edged',
+      rush_shield: nil,
+      rush_engage_only: false
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  describe '#charged_maneuver_off_cooldown?' do
+    it 'treats a nil maneuver as not off cooldown' do
+      expect(build_maneuver_state.charged_maneuver_off_cooldown?(nil)).to be false
+    end
+
+    it 'is off cooldown when the maneuver has no recorded timer' do
+      expect(build_maneuver_state.charged_maneuver_off_cooldown?('Vault Kick')).to be true
+    end
+
+    it 'is on cooldown while the stored ready-time is in the future' do
+      gs = build_maneuver_state(cooldown_timers: { 'vault kick' => Time.now + 60 })
+      expect(gs.charged_maneuver_off_cooldown?('Vault Kick')).to be false
+    end
+
+    it 'is off cooldown once the stored ready-time has passed' do
+      gs = build_maneuver_state(cooldown_timers: { 'vault kick' => Time.now - 1 })
+      expect(gs.charged_maneuver_off_cooldown?('Vault Kick')).to be true
+    end
+
+    # The timer keys are downcased on write, so lookup must downcase too --
+    # otherwise every maneuver reads as "no timer" and fires every tick.
+    it 'matches the stored timer case-insensitively' do
+      gs = build_maneuver_state(cooldown_timers: { 'vault kick' => Time.now + 60 })
+      expect(gs.charged_maneuver_off_cooldown?('VAULT KICK')).to be false
+    end
+  end
+
+  describe '#determine_charged_maneuver' do
+    it 'returns nil when charged maneuvers are disabled' do
+      gs = build_maneuver_state(
+        use_charged_maneuvers: false,
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick' }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'picks the maneuver configured for the current weapon skill' do
+      gs = build_maneuver_state(charged_maneuvers: { 'Small Edged' => 'Vault Kick' })
+      expect(gs.determine_charged_maneuver).to eq('Vault Kick')
+    end
+
+    it 'returns nil when nothing is configured for the current weapon skill' do
+      gs = build_maneuver_state(charged_maneuvers: { 'Bow' => 'Precision' })
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'prefers Dual Wield over the weapon-skill maneuver while whirlwinding' do
+      gs = build_maneuver_state(
+        currently_whirlwinding: true,
+        charged_maneuvers: { 'Dual Wield' => 'Twin Hammerfists', 'Small Edged' => 'Vault Kick' }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Twin Hammerfists')
+    end
+
+    it 'does not pick Dual Wield while whirlwinding with a twohanded weapon' do
+      gs = build_maneuver_state(
+        currently_whirlwinding: true,
+        current_weapon_skill: 'Twohanded Edged',
+        charged_maneuvers: { 'Dual Wield' => 'Twin Hammerfists', 'Twohanded Edged' => 'Vault Kick' }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Vault Kick')
+    end
+
+    it 'falls back to the weapon-skill maneuver when Dual Wield is on cooldown' do
+      gs = build_maneuver_state(
+        currently_whirlwinding: true,
+        charged_maneuvers: { 'Dual Wield' => 'Twin Hammerfists', 'Small Edged' => 'Vault Kick' },
+        cooldown_timers: { 'twin hammerfists' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Vault Kick')
+    end
+
+    it 'falls back to a shield rush when the weapon maneuver is on cooldown' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick', 'Shield Usage' => 'Shield Rush' },
+        cooldown_timers: { 'vault kick' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Shield Rush')
+    end
+
+    it 'does not shield rush when the offhand is occupied' do
+      $left_hand = 'parry stick'
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick', 'Shield Usage' => 'Shield Rush' },
+        cooldown_timers: { 'vault kick' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'does not shield rush while training an aimed weapon skill' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        current_weapon_skill: 'Bow',
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Shield Usage' => 'Shield Rush' }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'does not shield rush when rush is configured for engagement only' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        rush_engage_only: true,
+        charged_maneuvers: { 'Shield Usage' => 'Shield Rush' }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'returns nil when every configured maneuver is on cooldown' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick', 'Shield Usage' => 'Shield Rush' },
+        cooldown_timers: { 'vault kick' => Time.now + 60, 'shield rush' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+  end
+end
+
+# ===================================================================
+# GameState thrown-weapon verbs
+#
+# Picking the wrong verb either wastes the throw or loses the weapon:
+# a bound weapon must be invoked back rather than picked up off the
+# floor, and a lodging weapon must be lobbed rather than thrown.
+# ===================================================================
+RSpec.describe 'GameState thrown-weapon verbs' do
+  before(:each) { ct_setup }
+
+  def build_thrown_state(bound: false, lodges: false, **overrides)
+    gs = GameState.allocate
+    item = OpenStruct.new(bound: bound, lodges: lodges, swappable: false)
+    equipment_manager = double('EquipmentManager')
+    allow(equipment_manager).to receive(:item_by_desc).and_return(item)
+
+    defaults = {
+      current_weapon_skill: 'Light Thrown',
+      weapons_to_train: { 'Light Thrown' => 'javelin' },
+      attack_overrides: {},
+      use_weak_attacks: false,
+      equipment_manager: equipment_manager
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  describe '#thrown_attack_verb' do
+    it 'hurls a bound weapon' do
+      expect(build_thrown_state(bound: true).thrown_attack_verb).to eq('hurl')
+    end
+
+    it 'lobs a lodging weapon' do
+      expect(build_thrown_state(lodges: true).thrown_attack_verb).to eq('lob')
+    end
+
+    it 'throws a weapon that is neither bound nor lodging' do
+      expect(build_thrown_state.thrown_attack_verb).to eq('throw')
+    end
+
+    it 'lobs a bound weapon when weak attacks are enabled' do
+      # Weak attacks must beat the bound-weapon hurl so mindstate stays low.
+      expect(build_thrown_state(bound: true, use_weak_attacks: true).thrown_attack_verb).to eq('lob')
+    end
+
+    it 'prefers a configured attack override over every other verb' do
+      gs = build_thrown_state(bound: true, attack_overrides: { 'Light Thrown' => 'sling' })
+      expect(gs.thrown_attack_verb).to eq('sling')
+    end
+
+    # A weapon the equipment manager does not know about is assumed to lodge,
+    # so it is lobbed rather than thrown out of reach.
+    it 'treats an unknown weapon as lodging' do
+      gs = build_thrown_state
+      equipment_manager = double('EquipmentManager')
+      allow(equipment_manager).to receive(:item_by_desc).and_return(nil)
+      gs.instance_variable_set(:@equipment_manager, equipment_manager)
+      expect(gs.thrown_attack_verb).to eq('lob')
+    end
+  end
+
+  describe '#thrown_retrieve_verb' do
+    it 'invokes a bound weapon back to hand' do
+      expect(build_thrown_state(bound: true).thrown_retrieve_verb).to eq('invoke')
+    end
+
+    it 'picks an unbound weapon up by name' do
+      expect(build_thrown_state.thrown_retrieve_verb).to eq('get my javelin')
+    end
+
+    it 'picks an unknown weapon up by name rather than invoking it' do
+      gs = build_thrown_state
+      equipment_manager = double('EquipmentManager')
+      allow(equipment_manager).to receive(:item_by_desc).and_return(nil)
+      gs.instance_variable_set(:@equipment_manager, equipment_manager)
+      expect(gs.thrown_retrieve_verb).to eq('get my javelin')
+    end
+  end
+end
+
+# ===================================================================
+# GameState action counter
+#
+# @action_count drives skill_done? when ignore_weapon_mindstate is set,
+# so drift here changes how long a weapon is trained.
+# ===================================================================
+RSpec.describe 'GameState action counter' do
+  before(:each) { ct_setup }
+
+  def build_counter_state(action_count: 0)
+    gs = GameState.allocate
+    gs.instance_variable_set(:@action_count, action_count)
+    gs
+  end
+
+  it 'increments by one by default' do
+    gs = build_counter_state
+    gs.action_taken
+    expect(gs.action_count).to eq(1)
+  end
+
+  it 'increments by an explicit count' do
+    gs = build_counter_state
+    gs.action_taken(5)
+    expect(gs.action_count).to eq(5)
+  end
+
+  it 'accumulates across repeated calls' do
+    gs = build_counter_state
+    3.times { gs.action_taken }
+    gs.action_taken(2)
+    expect(gs.action_count).to eq(5)
+  end
+
+  it 'reduces by an explicit count' do
+    gs = build_counter_state(action_count: 10)
+    gs.action_reduce(4)
+    expect(gs.action_count).to eq(6)
+  end
+
+  # Nothing clamps the counter, so an over-reduction goes negative and
+  # silently extends training past the configured target_action_count.
+  it 'goes negative when reduced below zero' do
+    gs = build_counter_state(action_count: 1)
+    gs.action_reduce(3)
+    expect(gs.action_count).to eq(-2)
+  end
+
+  it 'resets to zero regardless of the accumulated count' do
+    gs = build_counter_state(action_count: 42)
+    gs.reset_action_count
+    expect(gs.action_count).to eq(0)
+  end
+end
