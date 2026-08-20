@@ -996,6 +996,15 @@ enchanting_tools:
   - brazier
   - burin
 
+# Sigil books holding your sigil-scrolls, kept in your crafting container or on
+# your enchanting belt.  A book only holds 20 scrolls, so list as many as you
+# carry - they are searched in the order listed.  When set, enchant studies
+# sigils straight out of the books and only falls back to a loose sigil-scroll
+# when no book holds that type.  Leave blank to always use loose sigil-scrolls.
+sigil_books:
+  # - small sigil book
+  # - large sigil book
+
 # setup custom toolsets to get from clerk-tools.  example of format listed below
 custom_clerk_tools:
   # mining:                   # name of the toolset to use custom=mining in this case
