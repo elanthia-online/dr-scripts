@@ -429,5 +429,84 @@ RSpec.describe Enchant do
 
       instance.send(:handle_resume)
     end
+
+    it 'picks the burin back up and scribes when the item is ready for scribing' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return('The fount is ready for additional scribing.')
+      allow(DRCC).to receive(:get_crafting_item)
+
+      expect(instance).to receive(:scribe_with_burin)
+
+      instance.send(:handle_resume)
+    end
+
+    it 'hands off to the imbue resume when an imbue is still required' do
+      instance = build_instance
+      allow(DRC).to receive(:bput)
+        .and_return('The fount requires an application of an imbue spell to advance the enchanting process.')
+      allow(DRCC).to receive(:get_crafting_item)
+
+      expect(instance).to receive(:handle_imbue_resume)
+
+      instance.send(:handle_resume)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # handle_imbue_resume
+  #
+  # Regression: an imbue is never the last step, so resuming into one must fall
+  # through to the scribe loop. It used to imbue and exit, which dropped the
+  # sigil prompt that only arrives after the imbue roundtime.
+  # ---------------------------------------------------------------------------
+
+  describe '#handle_imbue_resume' do
+    it 'scribes after imbuing when the fount is already on the brazier' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount and a totem.')
+      allow(instance).to receive(:imbue)
+
+      expect(DRCC).not_to receive(:get_crafting_item).with('fount', any_args)
+      expect(instance).to receive(:scribe_with_burin)
+
+      instance.send(:handle_imbue_resume)
+    end
+
+    it 'waves the fount first, then imbues, then scribes' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return('There is nothing')
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+
+      expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
+      expect(instance).to receive(:imbue).ordered
+      expect(instance).to receive(:scribe_with_burin).ordered
+
+      instance.send(:handle_imbue_resume)
+    end
+
+    it 'still scribes when the look on the brazier matches nothing at all' do
+      instance = build_instance
+      # bput returns nil when no pattern matched within the timeout.
+      allow(DRC).to receive(:bput).and_return(nil)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(instance).to receive(:imbue)
+
+      expect(instance).to receive(:scribe_with_burin)
+
+      instance.send(:handle_imbue_resume)
+    end
+  end
+
+  describe '#scribe_with_burin' do
+    it 'gets the burin before entering the scribe loop' do
+      instance = build_instance
+
+      expect(DRCC).to receive(:get_crafting_item).with('burin', 'backpack', ['burin'], 'toolbelt').ordered
+      expect(instance).to receive(:scribe).ordered
+
+      instance.send(:scribe_with_burin)
+    end
   end
 end

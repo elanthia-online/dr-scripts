@@ -172,8 +172,7 @@ class Enchant
     result = DRC.bput("analyze #{@item} on #{@brazier_ref}", *analyze_patterns)
 
     if ANALYZE_READY_PATTERNS.any? { |pat| pat.match?(result) }
-      DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
-      scribe
+      scribe_with_burin
     elsif ANALYZE_IMBUE_PATTERN.match?(result)
       handle_imbue_resume
     else
@@ -183,14 +182,16 @@ class Enchant
 
   def handle_imbue_resume
     result = DRC.bput("look on #{@brazier_ref}", BRAZIER_HAS_FOUNT_PATTERN, 'There is nothing')
-    if BRAZIER_HAS_FOUNT_PATTERN.match?(result)
-      imbue
-    else
+    unless BRAZIER_HAS_FOUNT_PATTERN.match?(result)
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
       wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
       DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
-      imbue
     end
+    imbue
+    # An imbue is never the last step - the item still needs scribing, and the
+    # sigil prompt only arrives after the imbue roundtime. Without this the
+    # script exits before the scribe loop ever sees it.
+    scribe_with_burin
   end
 
   def handle_new_enchant
@@ -212,6 +213,14 @@ class Enchant
     DRC.bput("touch my #{@cube}", *TOUCH_CUBE_PATTERNS) if @cube
     imbue
 
+    scribe_with_burin
+  end
+
+  # Picks the burin back up and enters the scribe loop. Every path that leaves
+  # the item ready for scribing ends here.
+  #
+  # @return [void]
+  def scribe_with_burin
     DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
     scribe
   end
