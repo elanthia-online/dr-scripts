@@ -54,6 +54,33 @@ class Enchant
   SIGIL_STUDY_SUCCESS = /^You study the sigil-scroll and commit the design to memory/.freeze
   SIGIL_TRACE_SUCCESS = /^Recalling the intricacies of the sigil, you trace its form/.freeze
 
+  # Sigil book (holds sigil-scrolls in numbered pages, grouped into sections by
+  # sigil type). TURN selects a section or a page, READ lists the pages of the
+  # current view, and STUDY memorizes the sigil on the selected page - the same
+  # memorization the loose-scroll path gets, so TRACE is unchanged afterwards.
+  #
+  # The book must be HELD for any of these ("But you're not holding it."), and
+  # the item reference must NOT contain the word "sigil": the parser reads it as
+  # the sigil-type argument, so "turn my sigil book to sigil congruence" answers
+  # "Which sigil did you wish to turn the a small sigil book to?". The bare noun
+  # is used for TURN/READ/STUDY for that reason - which also means the artificing
+  # instruction book must be stowed while the sigil book is in hand.
+  SIGIL_BOOK_TURN_SECTION = /^You turn the .+ to the (?<section>[a-z\-']+) section\./i.freeze
+  SIGIL_BOOK_TURN_PAGE = /^You turn the .+ to page (?<page>\d+)\./i.freeze
+  SIGIL_BOOK_READ_HEADER = /^You page through the .+ to see what scrolls it contains\./.freeze
+  SIGIL_BOOK_READ_FOOTER = /^\[You can turn the book TO PAGE/.freeze
+  # "      3 -- nurture, rough (26), broad (21)"
+  SIGIL_BOOK_PAGE_ROW = /^\s*(?<page>\d+) -- (?<type>[a-z\-']+),/i.freeze
+  SIGIL_BOOK_PAGE_HEADER = /^On this page you see /.freeze
+  SIGIL_BOOK_PAGE_FOOTER = /^\[You can now STUDY the book to memorize the sigil\.\]/.freeze
+  # "   --=== Congruence sigil ===--"
+  SIGIL_BOOK_PAGE_TYPE = /--===\s*(?<type>.+?)\s+sigil\s*===--/i.freeze
+  SIGIL_BOOK_STUDY_SUCCESS = /^You commit the sigil's design to memory/.freeze
+  # STUDY with the book at the contents (no page selected) appraises the book
+  # instead of memorizing anything, so it must be treated as a failure.
+  SIGIL_BOOK_STUDY_APPRAISE = /^You study the book and determine it is well-suited for holding sigil-scrolls/.freeze
+  SIGIL_BOOK_NOT_HELD = "But you're not holding it."
+
   # Scribe patterns
   SCRIBE_RT_PATTERN = /^Roundtime/.freeze
   SCRIBE_SIGIL_NEEDED = /^You need another .* sigil to continue the enchanting process/.freeze
@@ -86,6 +113,10 @@ class Enchant
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.enchanting_belt
     @stamp = @settings.mark_crafted_goods
+    # Optional: sigil books holding your sigil-scrolls, tried in order. A book
+    # only holds 20 scrolls, so several are usually needed. When unset, sigils
+    # are retrieved loose, as before.
+    @sigil_books = @settings.sigil_books
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
 
@@ -339,13 +370,146 @@ class Enchant
   end
 
   def trace_sigil(sigil)
+    return unless study_sigil(sigil)
+
+    DRC.bput("trace #{@item} on #{@brazier_ref}", SIGIL_TRACE_SUCCESS)
+  end
+
+  # Memorizes a sigil, from the sigil book when one is configured and holds the
+  # type, otherwise from a loose sigil-scroll.
+  #
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [Boolean] true once the sigil is committed to memory
+  def study_sigil(sigil)
+    return true if study_sigil_from_book(sigil)
+
     unless DRCI.get_item?("#{sigil} sigil")
       Lich::Messaging.msg("bold", "Enchant: Failed to get #{sigil} sigil.")
-      return
+      return false
     end
     DRC.bput("study my #{sigil} sigil", SIGIL_STUDY_SUCCESS)
     waitrt?
-    DRC.bput("trace #{@item} on #{@brazier_ref}", SIGIL_TRACE_SUCCESS)
+    true
+  end
+
+  # The configured sigil books, in the order they should be searched. A bare
+  # string is accepted as a single book.
+  #
+  # @return [Array<String>] configured sigil book names
+  def sigil_books
+    Array(@sigil_books)
+  end
+
+  # Studies a sigil out of the configured sigil books, taking the first book
+  # that holds the type. A book only holds 20 scrolls, so a run usually spans
+  # several of them.
+  #
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [Boolean] true when the sigil was memorized from a book
+  def study_sigil_from_book(sigil)
+    return false if sigil_books.empty?
+
+    return true if sigil_books.any? { |book| study_sigil_from_this_book(book, sigil) }
+
+    Lich::Messaging.msg("bold", "Enchant: No #{sigil} sigil in your sigil books.")
+    false
+  end
+
+  # Studies a sigil out of one book: turn to the type's section, read it for a
+  # page holding that type, turn to that page, confirm the page before studying
+  # it. The book is stowed again before returning, so the caller's hands are
+  # free for the burin and the trace - and so the next book can be picked up
+  # without two same-nouned books being in reach at once.
+  #
+  # Every step is verified by a READ rather than trusted, because studying a
+  # page blanks it and RENUMBERS the remaining pages - a page number is only
+  # valid until the next study, so nothing about a book can be cached.
+  #
+  # @param book [String] the sigil book to search
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [Boolean] true when the sigil was memorized from this book
+  def study_sigil_from_this_book(book, sigil)
+    return false unless get_sigil_book(book)
+
+    begin
+      page = find_sigil_page(book, sigil)
+      return false unless page
+      return false unless turn_to_sigil_page(book, page, sigil)
+
+      result = DRC.bput("study my #{sigil_book_noun(book)}", SIGIL_BOOK_STUDY_SUCCESS, SIGIL_BOOK_STUDY_APPRAISE, SIGIL_BOOK_NOT_HELD)
+      unless SIGIL_BOOK_STUDY_SUCCESS.match?(result.to_s)
+        Lich::Messaging.msg("bold", "Enchant: Failed to study #{sigil} sigil from #{book}.")
+        return false
+      end
+      waitrt?
+      true
+    ensure
+      DRCC.stow_crafting_item(book, @bag, @belt)
+    end
+  end
+
+  # The reference used for TURN/READ/STUDY. Always the bare noun - see the
+  # SIGIL_BOOK_* constants for why a "sigil ..." reference cannot be used.
+  #
+  # @param book [String] the sigil book name
+  # @return [String] noun of that sigil book
+  def sigil_book_noun(book)
+    DRC.get_noun(book)
+  end
+
+  # Gets a sigil book in hand, which every book command requires.
+  #
+  # Always fetches rather than short-circuiting on a book already held: sigil
+  # books commonly share the noun "book", so a held book is not proof that the
+  # right one is in hand.
+  #
+  # @param book [String] the sigil book to pick up
+  # @return [Boolean] true when the book is held
+  def get_sigil_book(book)
+    DRCC.get_crafting_item(book, @bag, @bag_items, @belt, true)
+    return true if DRCI.in_hands?(sigil_book_noun(book))
+
+    Lich::Messaging.msg("bold", "Enchant: Failed to get #{book}.")
+    false
+  end
+
+  # Finds the first page of a book holding the requested sigil type.
+  #
+  # Turning to a section that holds nothing still succeeds and simply reads
+  # empty, so presence is decided by the READ, not the TURN.
+  #
+  # @param book [String] the sigil book to read
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [Integer, nil] page number, or nil when this book has none
+  def find_sigil_page(book, sigil)
+    noun = sigil_book_noun(book)
+    DRC.bput("turn my #{noun} to sigil #{sigil}", { 'timeout' => 3, 'suppress_no_match' => true }, SIGIL_BOOK_TURN_SECTION)
+    lines = Lich::Util.issue_command("read my #{noun}", SIGIL_BOOK_READ_HEADER, SIGIL_BOOK_READ_FOOTER, silent: true, quiet: true, timeout: 3)
+    match = lines
+            .map { |line| SIGIL_BOOK_PAGE_ROW.match(line) }
+            .compact
+            .find { |row| row[:type].casecmp(sigil).zero? }
+    match ? match[:page].to_i : nil
+  end
+
+  # Turns to a page and confirms it holds the expected sigil type.
+  #
+  # @param book [String] the sigil book being read
+  # @param page [Integer] page number to turn to
+  # @param sigil [String] sigil type the page is expected to hold
+  # @return [Boolean] true when the page is selected and ready to study
+  def turn_to_sigil_page(book, page, sigil)
+    noun = sigil_book_noun(book)
+    DRC.bput("turn my #{noun} to page #{page}", { 'timeout' => 3, 'suppress_no_match' => true }, SIGIL_BOOK_TURN_PAGE)
+    lines = Lich::Util.issue_command("read my #{noun}", SIGIL_BOOK_PAGE_HEADER, SIGIL_BOOK_PAGE_FOOTER, silent: true, quiet: true, timeout: 3)
+    match = lines
+            .map { |line| SIGIL_BOOK_PAGE_TYPE.match(line) }
+            .compact
+            .first
+    return true if match && match[:type].casecmp(sigil).zero?
+
+    Lich::Messaging.msg("bold", "Enchant: Page #{page} of #{book} does not hold a #{sigil} sigil.")
+    false
   end
 
   def scribe
