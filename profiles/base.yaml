@@ -1124,7 +1124,7 @@ caravan_coins_on_hand: 9555
 # Have you purchased a 750plat interior from the trade minister?
 caravan_interior: false
 # Store/retrieve caravans in the nearest stable rather than emptying the box/contracts and returning it
-trade_use_stable: false
+trade_use_stable: true
 # skills and cooldowns to train in ;trade.  See https://github.com/elanthia-online/dr-scripts/wiki/Trader-Tutorials for valid skills and what they do
 caravan_training_skills:
   # Augmentation: 5
