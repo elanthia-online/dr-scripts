@@ -22,8 +22,9 @@ LICH_DIR = Dir.mktmpdir('lich-test') unless defined?(LICH_DIR)
 $clean_lich_char = ';'
 
 # --- Extract methods from dependency.lic ---
-dep_path = File.join(File.dirname(__FILE__), '..', 'dependency.lic')
+dep_path = lic_path('dependency.lic')
 dep_lines = File.readlines(dep_path)
+prime_lic_coverage(dep_path, dep_lines.size)
 
 DEP_SOURCE = File.read(dep_path)
 

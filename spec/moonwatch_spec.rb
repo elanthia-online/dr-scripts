@@ -28,21 +28,7 @@ require_relative 'spec_helper'
 # `include`s Harness exactly once (it is auto-required via .rspec). We must NOT
 # re-`load` the harness here -- doing so re-executes its class bodies and would
 # clobber other specs' harness reopenings (e.g. combat-trainer's DRSpells
-# _reset). load_lic_class comes from spec_helper; we only add a `module` variant.
-def load_lic_module(filename, module_name)
-  return if Object.const_defined?(module_name)
-
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
-  lines = File.readlines(filepath)
-
-  start_idx = lines.index { |l| l =~ /^module\s+#{module_name}\b/ }
-  raise "Could not find 'module #{module_name}' in #{filename}" unless start_idx
-
-  end_idx = (start_idx + 1...lines.size).find { |i| lines[i] =~ /^end\s*$/ }
-  raise "Could not find matching end for 'module #{module_name}' in #{filename}" unless end_idx
-
-  eval(lines[start_idx..end_idx].join, TOPLEVEL_BINDING, filepath, start_idx + 1)
-end
+# _reset). load_lic_class and load_lic_module both come from spec_helper.
 
 # --- collaborators (contamination-proof) ----------------------------------
 
