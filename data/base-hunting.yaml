@@ -37,13 +37,6 @@ escort_zones:
     base: 1358
     area: crocs
     enter: enter
-  # https://elanthipedia.play.net/Young_red_brocket_deer                  90-110
-  # High swarm
-  # Therengia
-  brocket_young:
-    base: 3462
-    area: brocket_young
-    enter: enter
   # https://elanthipedia.play.net/Golden_scaled_atik%27et                120-170
   # https://elanthipedia.play.net/Grey_and_tan_mottled_westanuryn
   # mixed in with lower-level Young Firecats
@@ -52,13 +45,6 @@ escort_zones:
     base: 1784
     area: gate_of_souls
     enter: blasted
-  # https://elanthipedia.play.net/Red_brocket_deer                       135-180
-  # high swarm
-  # Therengia
-  brocket_mid:
-    base: 3462
-    area: brocket_mid
-    enter: enter
   # https://elanthipedia.play.net/Giant_black_leucro                     160-215
   # Requires at least 130 Perception to access
   # Zoluren
@@ -88,13 +74,6 @@ escort_zones:
     base: 247
     area: velaka
     enter: westanuryn
-  # https://elanthipedia.play.net/Elder_red_brocket_deer                 200-260
-  # high swarm
-  # Therengia
-  brocket_elder:
-    base: 3462
-    area: brocket_elder
-    enter: enter
   # https://elanthipedia.play.net/Velakan_slaver                         225-360
   # May have a wandering velaka_westanuryn
   # Muspar'i
@@ -198,9 +177,9 @@ hunting_areas_by_town:
   # https://elanthipedia.play.net/Mottled_westanuryn                     180-290
     - velaka_westanuryn
   # https://elanthipedia.play.net/Velakan_slaver                         225-360
-    - velaka_slaver
+    - velaka_slavers
   # https://elanthipedia.play.net/Zombie_nomad                           260-410
-    - zombie_nomad
+    - zombie_nomads
   # https://elanthipedia.play.net/Gam_chaga                              300-450
     - gam_chaga
   # https://elanthipedia.play.net/Isundjen_conjurer                      360-500
@@ -311,7 +290,7 @@ hunting_areas_by_town:
   # https://elanthipedia.play.net/Silver_leucro                           95-110
     - silver_leucros_ratha
   # https://elanthipedia.play.net/Adult_razortusk_boar                   100-130
-    - razortuzk_boars
+    - razortusk_boars
   # https://elanthipedia.play.net/Merrows                                120-150
     - crimson_merrows
   # https://elanthipedia.play.net/Bawdy_swain                            120-150
@@ -374,7 +353,7 @@ hunting_zones:
   - 686
   - 687
   - 688
-  - 19199
+  - 689
   - 690
   - 695
   - 696
@@ -2220,6 +2199,27 @@ hunting_zones:
   - 8606
   - 8607
   - 8608
+  # https://elanthipedia.play.net/Young_red_brocket_deer                  90-110
+  # High swarm. Reached via go2 (climb log fence from 3462); formerly an escort zone.
+  brocket_young:
+  - 3477
+  - 3478
+  - 52275
+  - 3479
+  # https://elanthipedia.play.net/Red_brocket_deer                       135-180
+  # High swarm. Up the gentle hill from the young meadow; formerly an escort zone.
+  brocket_mid:
+  - 52276
+  - 52277
+  - 52278
+  - 52279
+  # https://elanthipedia.play.net/Elder_red_brocket_deer                 200-260
+  # High swarm. Up the rolling hill from the mid meadow; formerly an escort zone.
+  brocket_elder:
+  - 52280
+  - 52281
+  - 52282
+  - 52283
   # https://elanthipedia.play.net/Gypsy_marauder                         100-125
   # Good spawn
   marauders:
@@ -2333,6 +2333,22 @@ hunting_zones:
   - 19100
   - 19191
   - 19192
+  # https://elanthipedia.play.net/Hulking_black_barghest                 210-290
+  # Ceceline's Meadow (Riverhaven); barghests roam the whole meadow (579-590),
+  # including the road that runs through it.
+  hulking_black_barghest_riverhaven:
+  - 579
+  - 580
+  - 581
+  - 582
+  - 583
+  - 584
+  - 585
+  - 586
+  - 587
+  - 588
+  - 589
+  - 590
   # https://elanthipedia.play.net/Small_Peccary                          175-250
   # https://elanthipedia.play.net/Swamp_Troll_(2)                        140-235
   # Great swarm
@@ -2597,7 +2613,7 @@ hunting_zones:
   - 10811
   - 10812
   # - 11006 Issue with day/night descriptions
-  # No elanthipeida page yet - dryanoxie                                 475-680? (lvl 85 +/- 2)
+  # https://elanthipedia.play.net/Dryanoxie                              450-630 (lvl 85 +/- 2)
   dryanoxie:
   - 51837
   - 51838
@@ -2616,6 +2632,13 @@ hunting_zones:
   - 10066
   - 10065
   - 10064
+  # https://elanthipedia.play.net/Snarlvine_fox                         550-700
+  # snarlvine vixen spawn too, same mob different noun
+  snarlvine_fox:
+  - 51876
+  - 51877
+  - 51878
+  - 51879
   # https://elanthipedia.play.net/Bronze_leucro                        575?-800?
   bronze_leucro:
   - 15946
@@ -3688,8 +3711,20 @@ hunting_zones:
   - 8295
   - 8294
   - 8293
+  # https://elanthipedia.play.net/Sovamedo_cub                           220-320
+  sovamedo_cubs:
+  - 51812
+  - 51809
+  - 51810
+  - 51811
   # https://elanthipedia.play.net/Yellow_bristled_gremlin                280-410
   yellow_gremlins:
   - 8410
   - 8408
   - 8409
+  # https://elanthipedia.play.net/Adult_sovamedo                         600-800
+  sovamedo_adult:
+  - 52003
+  - 52006
+  - 52004
+  - 52005

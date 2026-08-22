@@ -4225,6 +4225,95 @@ RSpec.describe 'TrainerProcess#check_heavens' do
   end
 end
 
+# ===================================================================
+# TrainerProcess#meraud_commune (Issue 7539)
+#
+# A sub-300 Theurgy character could only commune in an empty room, so
+# the Meraud commune -- and last_rites, which only fires once the
+# commune sets game_state.blessed_room -- effectively never fired
+# during a hunt (the room rarely clears of npcs). It now retreats out
+# of melee first, the way #pray_mat does, and communes with npcs present.
+# ===================================================================
+RSpec.describe 'TrainerProcess#meraud_commune' do
+  before(:each) { ct_setup }
+
+  def build_meraud_trainer(**overrides)
+    tp = TrainerProcess.allocate
+    defaults = {
+      equipment_manager: double('EquipmentManager', stow_weapon: nil, wield_weapon?: true),
+      theurgy_supply_container: 'sack',
+      water_holder: 'chalice',
+      flint_lighter: 'flint',
+      training_abilities: { 'Meraud' => 3900 }
+    }
+    defaults.merge(overrides).each { |k, v| tp.instance_variable_set(:"@#{k}", v) }
+    tp
+  end
+
+  def build_meraud_state(**attrs)
+    defaults = {
+      aimed_skill?: false,
+      npcs: ['an elder razortusk boar'],
+      weapon_name: 'liscis',
+      weapon_skill: 'Large Edged',
+      cooldown_timers: {}
+    }
+    state = double('GameState', defaults.merge(attrs))
+    allow(state).to receive(:blessed_room=)
+    state
+  end
+
+  before(:each) do
+    allow(DRC).to receive(:retreat)
+    allow(DRC).to receive(:bput)
+    allow(DRC).to receive(:bput).with('commune sense', any_args).and_return('roundtime')
+  end
+
+  it 'retreats past mobs and communes for a hunter (regression: was empty-room-only)' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).to have_received(:retreat)
+    expect(DRC).to have_received(:bput).with('commune meraud', any_args)
+    expect(state).to have_received(:blessed_room=).with(true)
+  end
+
+  it 'does not retreat when the room is already empty' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state(npcs: [])
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).not_to have_received(:retreat)
+    expect(DRC).to have_received(:bput).with('commune meraud', any_args)
+  end
+
+  it 'skips entirely when training an aimed weapon skill' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state(aimed_skill?: true)
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).not_to have_received(:retreat)
+    expect(DRC).not_to have_received(:bput).with('commune meraud', any_args)
+    expect(state.cooldown_timers).to have_key('Meraud')
+  end
+
+  it 'skips the ritual and just marks the room blessed when already a vessel' do
+    trainer = build_meraud_trainer
+    state = build_meraud_state
+    allow(DRC).to receive(:bput).with('commune sense', any_args).and_return('Meraud')
+
+    trainer.send(:meraud_commune, state)
+
+    expect(DRC).not_to have_received(:retreat)
+    expect(DRC).not_to have_received(:bput).with('commune meraud', any_args)
+    expect(state).to have_received(:blessed_room=).with(true)
+  end
+end
+
 # ===========================================================================
 # CombatTrainer plugin system -- registry + hook dispatch
 # ===========================================================================
@@ -4585,6 +4674,734 @@ RSpec.describe 'AbilityProcess room-effect cooldown seam' do
 
       expect(instance).to have_received(:use_warhorn?).with(game_state)
       expect(instance.instance_variable_get(:@warhorn_or_egg)).to eq(%w[egg warhorn])
+    end
+  end
+end
+
+# ===================================================================
+# GameState#sort_by_rate_then_rank
+#
+# The shared ordering primitive behind every "what do I train next"
+# decision: dance skill selection, offhand aiming/doublestrike/whirlwind
+# skill selection, and SetupProcess weapon rotation. A regression here
+# silently starves low-rank skills, which is the exact failure mode the
+# rank tiebreaker exists to prevent.
+# ===================================================================
+RSpec.describe 'GameState#sort_by_rate_then_rank' do
+  before(:each) { ct_setup }
+
+  # sort_by_rate_then_rank reads nothing but its arguments and DRSkill,
+  # so a bare allocate with no ivars is enough.
+  let(:game_state) { GameState.allocate }
+
+  # Give each skill an explicit learning rate and rank so the ordering
+  # assertions below never depend on harness defaults.
+  def stub_skills(rates: {}, ranks: {})
+    allow(DRSkill).to receive(:getxp) { |skill| rates.fetch(skill, 0) }
+    allow(DRSkill).to receive(:getrank) { |skill| ranks.fetch(skill, 0) }
+  end
+
+  it 'orders by learning rate ascending, lowest rate first' do
+    stub_skills(rates: { 'Small Edged' => 30, 'Large Edged' => 5, 'Staves' => 17 })
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged', 'Staves']))
+      .to eq(['Large Edged', 'Staves', 'Small Edged'])
+  end
+
+  it 'breaks a rate tie by rank ascending, so low-rank skills are not starved' do
+    stub_skills(
+      rates: { 'Small Edged' => 10, 'Large Edged' => 10 },
+      ranks: { 'Small Edged' => 500, 'Large Edged' => 50 }
+    )
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged']))
+      .to eq(['Large Edged', 'Small Edged'])
+  end
+
+  it 'prefers a prioritized skill over a non-prioritized one at the same rate' do
+    stub_skills(
+      rates: { 'Small Edged' => 10, 'Large Edged' => 10 },
+      ranks: { 'Small Edged' => 50, 'Large Edged' => 500 }
+    )
+    # Large Edged has the worse rank but is prioritized, so it must still win.
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Large Edged']))
+      .to eq(['Large Edged', 'Small Edged'])
+  end
+
+  it 'does not let priority override a lower learning rate' do
+    stub_skills(rates: { 'Small Edged' => 5, 'Large Edged' => 25 })
+    # Rate is the primary key -- priority only breaks ties within a rate.
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Large Edged']))
+      .to eq(['Small Edged', 'Large Edged'])
+  end
+
+  it 'ranks two prioritized skills against each other by rank' do
+    stub_skills(
+      rates: { 'Small Edged' => 10, 'Large Edged' => 10 },
+      ranks: { 'Small Edged' => 500, 'Large Edged' => 50 }
+    )
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Small Edged', 'Large Edged']))
+      .to eq(['Large Edged', 'Small Edged'])
+  end
+
+  it 'returns a new array and does not mutate the caller argument' do
+    stub_skills(rates: { 'Small Edged' => 30, 'Large Edged' => 5 })
+    skills = ['Small Edged', 'Large Edged']
+    result = game_state.sort_by_rate_then_rank(skills)
+
+    expect(result).not_to equal(skills)
+    expect(skills).to eq(['Small Edged', 'Large Edged'])
+  end
+
+  it 'returns an empty array for empty input rather than raising' do
+    stub_skills
+    expect(game_state.sort_by_rate_then_rank([])).to eq([])
+  end
+
+  it 'ignores a priority entry that is not among the skills being sorted' do
+    stub_skills(rates: { 'Small Edged' => 5, 'Large Edged' => 25 })
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged'], ['Bow']))
+      .to eq(['Small Edged', 'Large Edged'])
+  end
+
+  it 'treats a mindlocked skill (34) as the least attractive by rate' do
+    stub_skills(rates: { 'Small Edged' => 34, 'Large Edged' => 33 })
+    expect(game_state.sort_by_rate_then_rank(['Small Edged', 'Large Edged']).first)
+      .to eq('Large Edged')
+  end
+end
+
+# ===================================================================
+# GameState aim and dance queues
+#
+# Both queues are refilled from configured YAML arrays and drained with
+# shift. Because the refill uses a shallow dup, a shift that reached the
+# source array would permanently destroy the user's configured actions
+# for the rest of the session.
+# ===================================================================
+RSpec.describe 'GameState aim and dance queues' do
+  before(:each) { ct_setup }
+
+  def build_queue_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      current_weapon_skill: 'Bow',
+      aim_queue: [],
+      dance_queue: [],
+      aim_fillers: { 'Bow' => %w[appraise analyze] },
+      aim_fillers_stealth: nil,
+      dance_actions: %w[bob weave circle],
+      dance_actions_stealth: nil,
+      combat_training_abilities_target: 0
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  # use_stealth? is `Stealth xp < @combat_training_abilities_target`, so a
+  # target of 0 keeps stealth off and a high target turns it on.
+  before(:each) { allow(DRSkill).to receive(:getxp).and_return(10) }
+
+  describe '#set_aim_queue' do
+    it 'fills the queue from aim_fillers for the current weapon skill' do
+      gs = build_queue_state
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[appraise analyze])
+    end
+
+    it 'draining the queue does not mutate the configured aim_fillers array' do
+      fillers = { 'Bow' => %w[appraise analyze] }
+      gs = build_queue_state(aim_fillers: fillers)
+      gs.set_aim_queue
+      gs.next_aim_action
+      gs.next_aim_action
+
+      expect(gs.done_aiming?).to be true
+      expect(fillers['Bow']).to eq(%w[appraise analyze])
+    end
+
+    it 'refills from the stealth fillers when stealth is being trained' do
+      gs = build_queue_state(
+        aim_fillers_stealth: { 'Bow' => %w[hide] },
+        combat_training_abilities_target: 34
+      )
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[hide])
+    end
+
+    it 'uses the normal fillers when stealth has no entry for the weapon skill' do
+      gs = build_queue_state(
+        aim_fillers_stealth: { 'Slings' => %w[hide] },
+        combat_training_abilities_target: 34
+      )
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[appraise analyze])
+    end
+
+    # Asymmetry worth pinning: unlike set_dance_queue, set_aim_queue has no
+    # "return unless empty" guard, so calling it mid-queue discards whatever
+    # aim actions were still pending.
+    it 'discards pending actions when called again before the queue drains' do
+      gs = build_queue_state
+      gs.set_aim_queue
+      gs.next_aim_action
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[analyze])
+
+      gs.set_aim_queue
+      expect(gs.instance_variable_get(:@aim_queue)).to eq(%w[appraise analyze])
+    end
+  end
+
+  describe '#next_aim_action / #done_aiming? / #clear_aim_queue' do
+    it 'drains the queue in order and reports done only when empty' do
+      gs = build_queue_state
+      gs.set_aim_queue
+
+      expect(gs.done_aiming?).to be false
+      expect(gs.next_aim_action).to eq('appraise')
+      expect(gs.done_aiming?).to be false
+      expect(gs.next_aim_action).to eq('analyze')
+      expect(gs.done_aiming?).to be true
+    end
+
+    it 'returns nil from next_aim_action once drained' do
+      gs = build_queue_state(aim_fillers: { 'Bow' => [] })
+      gs.set_aim_queue
+      expect(gs.next_aim_action).to be_nil
+    end
+
+    it 'clear_aim_queue empties a partially drained queue' do
+      gs = build_queue_state
+      gs.set_aim_queue
+      gs.next_aim_action
+      gs.clear_aim_queue
+      expect(gs.done_aiming?).to be true
+    end
+  end
+
+  describe '#set_dance_queue' do
+    it 'fills the queue from the configured dance actions' do
+      gs = build_queue_state
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[bob weave circle])
+    end
+
+    # The guard set_aim_queue lacks: a mid-queue refill must be a no-op so
+    # the dance rotation is not restarted from the top on every tick.
+    it 'is a no-op when the queue still has actions pending' do
+      gs = build_queue_state
+      gs.set_dance_queue
+      gs.next_dance_action
+
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[weave circle])
+    end
+
+    it 'refills once the queue has fully drained' do
+      gs = build_queue_state
+      gs.set_dance_queue
+      3.times { gs.next_dance_action }
+
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[bob weave circle])
+    end
+
+    it 'draining the queue does not mutate the configured dance_actions array' do
+      actions = %w[bob weave circle]
+      gs = build_queue_state(dance_actions: actions)
+      gs.set_dance_queue
+      3.times { gs.next_dance_action }
+
+      expect(actions).to eq(%w[bob weave circle])
+    end
+
+    it 'uses the stealth dance actions when stealth is being trained' do
+      gs = build_queue_state(
+        dance_actions_stealth: %w[hide],
+        combat_training_abilities_target: 34
+      )
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[hide])
+    end
+
+    it 'falls back to normal dance actions when the stealth list is empty' do
+      gs = build_queue_state(
+        dance_actions_stealth: [],
+        combat_training_abilities_target: 34
+      )
+      gs.set_dance_queue
+      expect(gs.instance_variable_get(:@dance_queue)).to eq(%w[bob weave circle])
+    end
+
+    it 'returns nil from next_dance_action when the queue is empty' do
+      expect(build_queue_state.next_dance_action).to be_nil
+    end
+  end
+end
+
+# ===================================================================
+# GameState charged maneuvers
+#
+# Maneuvers share a per-character cooldown, and @cooldown_timers stores
+# the future ready-time rather than the start time. Off-by-one handling
+# here either wastes maneuvers or spams ones still on cooldown.
+# ===================================================================
+RSpec.describe 'GameState charged maneuvers' do
+  before(:each) { ct_setup }
+
+  def build_maneuver_state(**overrides)
+    gs = GameState.allocate
+    defaults = {
+      use_charged_maneuvers: true,
+      charged_maneuvers: {},
+      cooldown_timers: {},
+      currently_whirlwinding: false,
+      prioritize_maneuver_doublestrike: false,
+      doublestrike_trainables: [],
+      current_weapon_skill: 'Small Edged',
+      rush_shield: nil,
+      rush_engage_only: false
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  describe '#charged_maneuver_off_cooldown?' do
+    it 'treats a nil maneuver as not off cooldown' do
+      expect(build_maneuver_state.charged_maneuver_off_cooldown?(nil)).to be false
+    end
+
+    it 'is off cooldown when the maneuver has no recorded timer' do
+      expect(build_maneuver_state.charged_maneuver_off_cooldown?('Vault Kick')).to be true
+    end
+
+    it 'is on cooldown while the stored ready-time is in the future' do
+      gs = build_maneuver_state(cooldown_timers: { 'vault kick' => Time.now + 60 })
+      expect(gs.charged_maneuver_off_cooldown?('Vault Kick')).to be false
+    end
+
+    it 'is off cooldown once the stored ready-time has passed' do
+      gs = build_maneuver_state(cooldown_timers: { 'vault kick' => Time.now - 1 })
+      expect(gs.charged_maneuver_off_cooldown?('Vault Kick')).to be true
+    end
+
+    # The timer keys are downcased on write, so lookup must downcase too --
+    # otherwise every maneuver reads as "no timer" and fires every tick.
+    it 'matches the stored timer case-insensitively' do
+      gs = build_maneuver_state(cooldown_timers: { 'vault kick' => Time.now + 60 })
+      expect(gs.charged_maneuver_off_cooldown?('VAULT KICK')).to be false
+    end
+  end
+
+  describe '#determine_charged_maneuver' do
+    it 'returns nil when charged maneuvers are disabled' do
+      gs = build_maneuver_state(
+        use_charged_maneuvers: false,
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick' }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'picks the maneuver configured for the current weapon skill' do
+      gs = build_maneuver_state(charged_maneuvers: { 'Small Edged' => 'Vault Kick' })
+      expect(gs.determine_charged_maneuver).to eq('Vault Kick')
+    end
+
+    it 'returns nil when nothing is configured for the current weapon skill' do
+      gs = build_maneuver_state(charged_maneuvers: { 'Bow' => 'Precision' })
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'prefers Dual Wield over the weapon-skill maneuver while whirlwinding' do
+      gs = build_maneuver_state(
+        currently_whirlwinding: true,
+        charged_maneuvers: { 'Dual Wield' => 'Twin Hammerfists', 'Small Edged' => 'Vault Kick' }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Twin Hammerfists')
+    end
+
+    it 'does not pick Dual Wield while whirlwinding with a twohanded weapon' do
+      gs = build_maneuver_state(
+        currently_whirlwinding: true,
+        current_weapon_skill: 'Twohanded Edged',
+        charged_maneuvers: { 'Dual Wield' => 'Twin Hammerfists', 'Twohanded Edged' => 'Vault Kick' }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Vault Kick')
+    end
+
+    it 'falls back to the weapon-skill maneuver when Dual Wield is on cooldown' do
+      gs = build_maneuver_state(
+        currently_whirlwinding: true,
+        charged_maneuvers: { 'Dual Wield' => 'Twin Hammerfists', 'Small Edged' => 'Vault Kick' },
+        cooldown_timers: { 'twin hammerfists' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Vault Kick')
+    end
+
+    it 'falls back to a shield rush when the weapon maneuver is on cooldown' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick', 'Shield Usage' => 'Shield Rush' },
+        cooldown_timers: { 'vault kick' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to eq('Shield Rush')
+    end
+
+    it 'does not shield rush when the offhand is occupied' do
+      $left_hand = 'parry stick'
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick', 'Shield Usage' => 'Shield Rush' },
+        cooldown_timers: { 'vault kick' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'does not shield rush while training an aimed weapon skill' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        current_weapon_skill: 'Bow',
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Shield Usage' => 'Shield Rush' }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'does not shield rush when rush is configured for engagement only' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        rush_engage_only: true,
+        charged_maneuvers: { 'Shield Usage' => 'Shield Rush' }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+
+    it 'returns nil when every configured maneuver is on cooldown' do
+      $left_hand = nil
+      gs = build_maneuver_state(
+        rush_shield: 'shield',
+        charged_maneuvers: { 'Small Edged' => 'Vault Kick', 'Shield Usage' => 'Shield Rush' },
+        cooldown_timers: { 'vault kick' => Time.now + 60, 'shield rush' => Time.now + 60 }
+      )
+      expect(gs.determine_charged_maneuver).to be_nil
+    end
+  end
+end
+
+# ===================================================================
+# GameState thrown-weapon verbs
+#
+# Picking the wrong verb either wastes the throw or loses the weapon:
+# a bound weapon must be invoked back rather than picked up off the
+# floor, and a lodging weapon must be lobbed rather than thrown.
+# ===================================================================
+RSpec.describe 'GameState thrown-weapon verbs' do
+  before(:each) { ct_setup }
+
+  def build_thrown_state(bound: false, lodges: false, **overrides)
+    gs = GameState.allocate
+    item = OpenStruct.new(bound: bound, lodges: lodges, swappable: false)
+    equipment_manager = double('EquipmentManager')
+    allow(equipment_manager).to receive(:item_by_desc).and_return(item)
+
+    defaults = {
+      current_weapon_skill: 'Light Thrown',
+      weapons_to_train: { 'Light Thrown' => 'javelin' },
+      attack_overrides: {},
+      use_weak_attacks: false,
+      equipment_manager: equipment_manager
+    }
+    defaults.merge(overrides).each { |k, v| gs.instance_variable_set(:"@#{k}", v) }
+    gs
+  end
+
+  describe '#thrown_attack_verb' do
+    it 'hurls a bound weapon' do
+      expect(build_thrown_state(bound: true).thrown_attack_verb).to eq('hurl')
+    end
+
+    it 'lobs a lodging weapon' do
+      expect(build_thrown_state(lodges: true).thrown_attack_verb).to eq('lob')
+    end
+
+    it 'throws a weapon that is neither bound nor lodging' do
+      expect(build_thrown_state.thrown_attack_verb).to eq('throw')
+    end
+
+    it 'lobs a bound weapon when weak attacks are enabled' do
+      # Weak attacks must beat the bound-weapon hurl so mindstate stays low.
+      expect(build_thrown_state(bound: true, use_weak_attacks: true).thrown_attack_verb).to eq('lob')
+    end
+
+    it 'prefers a configured attack override over every other verb' do
+      gs = build_thrown_state(bound: true, attack_overrides: { 'Light Thrown' => 'sling' })
+      expect(gs.thrown_attack_verb).to eq('sling')
+    end
+
+    # A weapon the equipment manager does not know about is assumed to lodge,
+    # so it is lobbed rather than thrown out of reach.
+    it 'treats an unknown weapon as lodging' do
+      gs = build_thrown_state
+      equipment_manager = double('EquipmentManager')
+      allow(equipment_manager).to receive(:item_by_desc).and_return(nil)
+      gs.instance_variable_set(:@equipment_manager, equipment_manager)
+      expect(gs.thrown_attack_verb).to eq('lob')
+    end
+  end
+
+  describe '#thrown_retrieve_verb' do
+    it 'invokes a bound weapon back to hand' do
+      expect(build_thrown_state(bound: true).thrown_retrieve_verb).to eq('invoke')
+    end
+
+    it 'picks an unbound weapon up by name' do
+      expect(build_thrown_state.thrown_retrieve_verb).to eq('get my javelin')
+    end
+
+    it 'picks an unknown weapon up by name rather than invoking it' do
+      gs = build_thrown_state
+      equipment_manager = double('EquipmentManager')
+      allow(equipment_manager).to receive(:item_by_desc).and_return(nil)
+      gs.instance_variable_set(:@equipment_manager, equipment_manager)
+      expect(gs.thrown_retrieve_verb).to eq('get my javelin')
+    end
+  end
+end
+
+# ===================================================================
+# GameState action counter
+#
+# @action_count drives skill_done? when ignore_weapon_mindstate is set,
+# so drift here changes how long a weapon is trained.
+# ===================================================================
+RSpec.describe 'GameState action counter' do
+  before(:each) { ct_setup }
+
+  def build_counter_state(action_count: 0)
+    gs = GameState.allocate
+    gs.instance_variable_set(:@action_count, action_count)
+    gs
+  end
+
+  it 'increments by one by default' do
+    gs = build_counter_state
+    gs.action_taken
+    expect(gs.action_count).to eq(1)
+  end
+
+  it 'increments by an explicit count' do
+    gs = build_counter_state
+    gs.action_taken(5)
+    expect(gs.action_count).to eq(5)
+  end
+
+  it 'accumulates across repeated calls' do
+    gs = build_counter_state
+    3.times { gs.action_taken }
+    gs.action_taken(2)
+    expect(gs.action_count).to eq(5)
+  end
+
+  it 'reduces by an explicit count' do
+    gs = build_counter_state(action_count: 10)
+    gs.action_reduce(4)
+    expect(gs.action_count).to eq(6)
+  end
+
+  # Nothing clamps the counter, so an over-reduction goes negative and
+  # silently extends training past the configured target_action_count.
+  it 'goes negative when reduced below zero' do
+    gs = build_counter_state(action_count: 1)
+    gs.action_reduce(3)
+    expect(gs.action_count).to eq(-2)
+  end
+
+  it 'resets to zero regardless of the accumulated count' do
+    gs = build_counter_state(action_count: 42)
+    gs.reset_action_count
+    expect(gs.action_count).to eq(0)
+  end
+end
+
+# ===================================================================
+# LootProcess -- necromancer ritual corpse targeting
+#
+# Rituals used to be aimed at the bare noun from DRRoom.dead_npcs, which
+# is ambiguous the moment two same-noun corpses share a room. Unless an
+# example says otherwise the room below holds two 'rat' corpses that
+# differ only by id, so a command built from the noun could not tell
+# them apart:
+# every perform/butcher must address the selected corpse by '#<id>'.
+# Only the operator-facing diagnostics still name the corpse, falling
+# back to the noun when the creature has no name yet.
+# ===================================================================
+RSpec.describe LootProcess do
+  before(:each) do
+    ct_setup
+    DRStats.guild = 'Necromancer'
+    Lich::DragonRealms::Creature._set_room([selected_corpse, other_corpse])
+    allow(DRC).to receive(:bput) { |command, *_matchers| record_bput(command) }
+    allow(DRC).to receive(:message)
+  end
+
+  # Same noun, different ids -- the whole point of the id targeting.
+  let(:selected_corpse) { OpenStruct.new(id: 111, noun: 'rat', name: 'a giant rat') }
+  let(:other_corpse) { OpenStruct.new(id: 222, noun: 'rat', name: 'a giant rat') }
+
+  let(:rituals) do
+    {
+      'preserve'  => 'suspending the corpse in unnatural stasis',
+      'harvest'   => 'a few quick, precise motions with your ritual knife',
+      'dissect'   => 'Using your knife as a probe',
+      'consume'   => 'a few quick, precise cuts with your ritual knife',
+      'arise'     => 'carefully carve a ritual design across a handspan of its body',
+      'construct' => 'Rituals do not work upon constructs',
+      'butcher'   => 'Making several deep cuts with your knife',
+      'failures'  => ['You do not have the knowledge required to perform this ritual']
+    }
+  end
+
+  # Commands the script sent, in order, so each example can assert both
+  # what was targeted and that the noun never leaked into a command.
+  let(:sent_commands) { [] }
+  # Per-command canned game responses; anything unlisted answers with the
+  # matching ritual message so the happy path runs to completion.
+  let(:bput_responses) { {} }
+
+  def record_bput(command)
+    sent_commands << command
+    return bput_responses[command] if bput_responses.key?(command)
+
+    case command
+    when /^perform preserve/ then rituals['preserve']
+    when /^perform butcher/  then rituals['butcher']
+    when /^perform dissect/  then rituals['dissect']
+    when /^perform arise/    then rituals['arise']
+    else 'Roundtime'
+    end
+  end
+
+  def perform_commands
+    sent_commands.grep(/^perform /)
+  end
+
+  def build_necro_loot(**overrides)
+    lp = LootProcess.allocate
+    defaults = {
+      rituals: rituals, last_ritual: nil, ritual_type: 'butcher',
+      necro_corpse_priority: 'heal', necro_heal: false,
+      make_zombie: false, make_bonebug: false,
+      redeemed: false, cycle_rituals: false, force_rituals: false,
+      current_harvest_count: 0, necro_count: 0,
+      dissect_and_butcher: true, butcher_count: 2, necro_store: false,
+      equipment_manager: double('EquipmentManager', stow_weapon: nil, wield_weapon?: nil)
+    }
+    defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+    lp
+  end
+
+  def necro_game_state(construct: false)
+    state = double('GameState', necro_casting?: false, cfb_active?: false, cfw_active?: false,
+                                weapon_name: 'javelin', weapon_skill: 'Polearms')
+    allow(state).to receive(:construct?).and_return(construct)
+    allow(state).to receive(:construct)
+    allow(state).to receive(:prepare_nr=)
+    allow(state).to receive(:prepare_cfb=)
+    allow(state).to receive(:prepare_cfw=)
+    allow(state).to receive(:prepare_consume=)
+    state
+  end
+
+  describe '#check_rituals? with two same-noun corpses in the room' do
+    it 'asks the creature registry for dead creatures' do
+      build_necro_loot.check_rituals?(necro_game_state)
+
+      expect(Lich::DragonRealms::Creature._in_room_filters).to include([:dead])
+    end
+
+    it 'targets preserve, every butcher and the final dissect at the selected corpse id' do
+      build_necro_loot(ritual_type: 'butcher', dissect_and_butcher: true, butcher_count: 2)
+        .check_rituals?(necro_game_state)
+
+      expect(perform_commands).to eq(
+        [
+          'perform preserve on #111',
+          'perform butcher on #111',
+          'perform butcher on #111',
+          'perform dissect on #111'
+        ]
+      )
+    end
+
+    it 'never addresses a corpse by noun, nor the other same-noun corpse' do
+      build_necro_loot(ritual_type: 'butcher', dissect_and_butcher: true, butcher_count: 2)
+        .check_rituals?(necro_game_state)
+
+      expect(sent_commands.grep(/rat/)).to be_empty
+      expect(sent_commands.grep(/#222/)).to be_empty
+    end
+
+    it 'targets the selected corpse id for a non-butcher ritual and its preserve' do
+      # Mindstates full, so the configured ritual is skipped and only the
+      # zombie-raising arise (with its preserve) runs. Stubbed per-example
+      # rather than seeded with DRSkill._set_xp: outdoorsmanship_spec swaps
+      # the harness xp store for one reset_data does not clear, so a seeded
+      # value leaks into later examples in a full-suite run.
+      allow(DRSkill).to receive(:getxp).and_return(34)
+
+      build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false, make_zombie: true)
+        .check_rituals?(necro_game_state)
+
+      expect(perform_commands).to eq(['perform preserve on #111', 'perform arise on #111'])
+    end
+
+    it 'sends nothing when the room holds no corpse' do
+      Lich::DragonRealms::Creature._set_room([])
+
+      expect(build_necro_loot.check_rituals?(necro_game_state)).to be true
+      expect(perform_commands).to be_empty
+    end
+
+    it 'skips a corpse the game state already knows is a construct' do
+      game_state = necro_game_state(construct: true)
+
+      expect(build_necro_loot.check_rituals?(game_state)).to be true
+      expect(game_state).to have_received(:construct?).with('rat')
+      expect(perform_commands).to be_empty
+    end
+  end
+
+  describe 'wrong/missing corpse diagnostics' do
+    it 'reports the corpse name and id when a perform misses its target' do
+      bput_responses['perform dissect on #111'] = 'What were you referring to'
+
+      build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false)
+        .check_rituals?(necro_game_state)
+
+      expect(DRC).to have_received(:message)
+        .with("*** combat-trainer: dissect failed - wrong/missing corpse target (tried 'a giant rat' #111)")
+    end
+
+    it 'falls back to the noun when the corpse has no name yet' do
+      selected_corpse.name = nil
+      bput_responses['perform dissect on #111'] = 'What were you referring to'
+
+      build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false)
+        .check_rituals?(necro_game_state)
+
+      expect(DRC).to have_received(:message)
+        .with("*** combat-trainer: dissect failed - wrong/missing corpse target (tried 'rat' #111)")
+    end
+
+    it 'reports the corpse and skips the dissect when a butcher misses its target' do
+      bput_responses['perform butcher on #111'] = 'I could not find what you were referring to'
+
+      build_necro_loot(ritual_type: 'butcher', dissect_and_butcher: true, butcher_count: 2)
+        .check_rituals?(necro_game_state)
+
+      expect(DRC).to have_received(:message)
+        .with("*** combat-trainer: butcher failed - wrong/missing corpse target (tried 'a giant rat' #111)")
+      expect(perform_commands).to eq(['perform preserve on #111', 'perform butcher on #111'])
     end
   end
 end

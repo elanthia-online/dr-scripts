@@ -2,9 +2,19 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#kill-counter
 =end
 
-unless HAVE_GTK
+arg_definitions = [
+  [
+    { name: 'stream', regex: /^stream/, optional: true, description: "Run in a  stream window rather than a GTK window." }
+  ]
+]
+
+args = parse_args(arg_definitions)
+@stream = args.stream
+
+unless HAVE_GTK || @stream
   respond
-  respond 'error: ruby-gtk bindings are not installed or failed to load'
+  DRC.message("error: ruby-gtk bindings are not installed or failed to load")
+  DRC.message("run ';kill-counter stream' to use a stream window instead")
   respond
   exit
 end
@@ -17,75 +27,107 @@ class KillCounter
   end
 end
 
-filter = KillCounter.new
-window = nil
-window_done = false
-load_window_position = CharSettings['window_position'] || []
-load_window_width    = CharSettings['window_width'] || 300
-load_window_height   = CharSettings['window_height'] || 100
-window_title = "#{checkname} Kill Counter"
-save_window_position = nil
-save_window_width    = nil
-save_window_height   = nil
-
-before_dying do
-  CharSettings['window_position'] = save_window_position if (save_window_position.class == Array) && (save_window_position[0].to_i >= 0) && (save_window_position[1].to_i >= 0)
-  CharSettings['window_width']    = save_window_width    if (save_window_width.class == Integer) && (save_window_width > 100)
-  CharSettings['window_height']   = save_window_height   if (save_window_height.class == Integer) && (save_window_height > 100)
-  Gtk.queue { window.destroy }
-end
-
-begin
+if @stream
+  filter = KillCounter.new
   k_counter = 0
-  k_counter_disp = nil
+  k_start_time = Time.now.strftime('%Y-%m-%d %H:%M:%S')
 
-  Gtk.queue do
-    vbox = Gtk::Box.new(:vertical, 0)
-    start_time = Gtk::Entry.new
-    start_time.editable = false
-    display_font = Pango::FontDescription.new
-    display_font.weight = :bold
-    start_time.override_font(display_font)
-    time_obj = Time.now
-    start_time.text = "Start Time: #{time_obj.inspect}"
-    vbox.pack_start(start_time)
+  # Create and expose the Lich script window
+  _respond("<streamWindow id='KillCounter' title='Kill Counter' location='center' save='true' resident='true' />")
+  _respond("<exposeStream id='KillCounter'/>")
 
-    k_counter_disp = Gtk::Entry.new
-    k_counter_disp.editable = false
-    display_font = Pango::FontDescription.new
-    display_font.weight = :bold
-    k_counter_disp.override_font(display_font)
-    vbox.pack_start(k_counter_disp)
+  # Update the window with the initial count and start time
+  _respond("<clearStream id='KillCounter'/>")
+  _respond("<pushStream id='KillCounter'/>Start Time: #{k_start_time}\r\nKill Count: #{k_counter}<popStream/>")
 
-    window              = Gtk::Window.new
-    window.title        = window_title
-    window.keep_above = true
-    window.border_width = 1
-    window.resize(load_window_width, load_window_height)
-    unless load_window_position.empty?
-      window.move(load_window_position[0], load_window_position[1])
-    end
-    window.add(vbox)
-
-    window.signal_connect('delete_event') do
-      save_window_position = window.position
-      save_window_width    = window.allocation.width
-      save_window_height   = window.allocation.height
-      window_done = true
-    end
-    window.show_all
+  # Clear the window when the script dies
+  before_dying do
+    _respond("<clearStream id='KillCounter'/>")
   end
 
   loop do
     line = script.gets?
-    break if window_done
-
     pause 0.05 unless line
     next unless line
 
     next unless filter.process_line?(line)
 
     k_counter += 1
-    k_counter_disp.text = "Kill Count: #{k_counter}"
+    _respond("<clearStream id='KillCounter'/>")
+    _respond("<pushStream id='KillCounter'/>Start Time: #{k_start_time}\r\nKill Count: #{k_counter}<popStream/>")
+  end
+else
+  filter = KillCounter.new
+  window = nil
+  window_done = false
+  load_window_position = CharSettings['window_position'] || []
+  load_window_width    = CharSettings['window_width'] || 300
+  load_window_height   = CharSettings['window_height'] || 100
+  window_title = "#{checkname} Kill Counter"
+  save_window_position = nil
+  save_window_width    = nil
+  save_window_height   = nil
+
+  before_dying do
+    CharSettings['window_position'] = save_window_position if (save_window_position.class == Array) && (save_window_position[0].to_i >= 0) && (save_window_position[1].to_i >= 0)
+    CharSettings['window_width']    = save_window_width    if (save_window_width.class == Integer) && (save_window_width > 100)
+    CharSettings['window_height']   = save_window_height   if (save_window_height.class == Integer) && (save_window_height > 100)
+    Gtk.queue { window.destroy }
+  end
+
+  begin
+    k_counter = 0
+    k_counter_disp = nil
+
+    Gtk.queue do
+      vbox = Gtk::Box.new(:vertical, 0)
+      start_time = Gtk::Entry.new
+      start_time.editable = false
+      display_font = Pango::FontDescription.new
+      display_font.weight = :bold
+      start_time.override_font(display_font)
+      time_obj = Time.now
+      start_time.text = "Start Time: #{time_obj.inspect}"
+      vbox.pack_start(start_time)
+
+      k_counter_disp = Gtk::Entry.new
+      k_counter_disp.editable = false
+      display_font = Pango::FontDescription.new
+      display_font.weight = :bold
+      k_counter_disp.override_font(display_font)
+      vbox.pack_start(k_counter_disp)
+
+      window              = Gtk::Window.new
+      window.title        = window_title
+      window.keep_above = true
+      window.border_width = 1
+      window.resize(load_window_width, load_window_height)
+      unless load_window_position.empty?
+        window.move(load_window_position[0], load_window_position[1])
+      end
+      window.add(vbox)
+
+      window.signal_connect('delete_event') do
+        save_window_position = window.position
+        save_window_width    = window.allocation.width
+        save_window_height   = window.allocation.height
+        window_done = true
+      end
+      window.show_all
+    end
+
+    loop do
+      line = script.gets?
+      break if window_done
+
+      pause 0.05 unless line
+      next unless line
+
+      next unless filter.process_line?(line)
+
+      k_counter += 1
+      Gtk.queue { k_counter_disp.text = "Kill Count: #{k_counter}" }
+      # k_counter_disp.text = "Kill Count: #{k_counter}"
+    end
   end
 end

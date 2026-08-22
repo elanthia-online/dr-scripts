@@ -858,19 +858,20 @@ class LootProcess
   def check_rituals?(game_state)
     return true unless DRStats.necromancer?
 
-    mob_noun = DRRoom.dead_npcs.first
-    return true if game_state.construct?(mob_noun)
+    corpse = Lich::DragonRealms::Creature.in_room(:dead).first
+    return true if corpse.nil?
+    return true if game_state.construct?(corpse.noun)
 
     echo "  should_perform_ritual? #{should_perform_ritual?(game_state)}" if $debug_mode_ct
     if @last_ritual.nil?
       if @necro_corpse_priority == 'pet'
         echo "Prioritizing pet creation over healing" if $debug_mode_ct
-        check_necro_pet(mob_noun, game_state)
-        check_necro_heal(mob_noun, game_state)
+        check_necro_pet(corpse, game_state)
+        check_necro_heal(corpse, game_state)
       elsif @necro_corpse_priority == 'heal' || !@necro_corpse_priority
         echo "Prioritizing healing over pet creation" if $debug_mode_ct
-        check_necro_heal(mob_noun, game_state)
-        check_necro_pet(mob_noun, game_state)
+        check_necro_heal(corpse, game_state)
+        check_necro_pet(corpse, game_state)
       end
       ritual = if @redeemed
                  'dissect'
@@ -883,14 +884,14 @@ class LootProcess
                else
                  @ritual_type
                end
-      do_necro_ritual(mob_noun, ritual, game_state) if should_perform_ritual?(game_state)
+      do_necro_ritual(corpse, ritual, game_state) if should_perform_ritual?(game_state)
     end
     return false if %w[consume harvest dissect].include?(@last_ritual)
 
     true
   end
 
-  def check_necro_heal(mob_noun, game_state)
+  def check_necro_heal(corpse, game_state)
     if @necro_heal && !game_state.necro_casting?
       game_state.wounds = DRCH.check_health['wounds']
       echo "Severity to Wounds: #{game_state.wounds}" if $debug_mode_ct
@@ -900,22 +901,22 @@ class LootProcess
         # flag set but no CF/devour cast to clear hence blocking looting (and potentially other necro_casting defs)
         # the check for !devour will also disallow concurrent use of devour and CF but that is not currently supported in CT @ 2/2/2025
         if @wound_level_threshold <= game_state.wounds.keys.max && !DRSpells.active_spells['Devour']
-          do_necro_ritual(mob_noun, 'consume', game_state)
+          do_necro_ritual(corpse, 'consume', game_state)
           return false
         end
       end
     end
   end
 
-  def check_necro_pet(mob_noun, game_state)
+  def check_necro_pet(corpse, game_state)
     if @make_zombie && !game_state.necro_casting? && !game_state.cfb_active?
       echo 'Making zombie' if $debug_mode_ct
-      do_necro_ritual(mob_noun, 'arise', game_state)
+      do_necro_ritual(corpse, 'arise', game_state)
       return false
     end
     if @make_bonebug && !game_state.necro_casting? && !game_state.cfw_active?
       echo 'Making bone bug' if $debug_mode_ct
-      do_necro_ritual(mob_noun, 'arise', game_state)
+      do_necro_ritual(corpse, 'arise', game_state)
       return false
     end
   end
@@ -937,21 +938,21 @@ class LootProcess
     necro_wrong_corpse_matchers.any? { |msg| result.include?(msg) }
   end
 
-  def do_necro_ritual(mob_noun, ritual, game_state)
+  def do_necro_ritual(corpse, ritual, game_state)
     return unless DRStats.necromancer?
     return unless ritual
-    return if game_state.construct?(mob_noun)
+    return if game_state.construct?(corpse.noun)
 
-    echo "Attempting necromancer ritual #{ritual} on #{mob_noun}" if $debug_mode_ct
+    echo "Attempting necromancer ritual #{ritual} on #{corpse.name || corpse.noun} (##{corpse.id})" if $debug_mode_ct
 
     if ritual.eql?('butcher')
-      butcher_corpse(mob_noun, ritual, game_state)
+      butcher_corpse(corpse, ritual, game_state)
       echo "Last ritual performed: #{@last_ritual}" if $debug_mode_ct
       return
     end
 
-    do_necro_ritual(mob_noun, 'preserve', game_state) if %w[consume harvest arise].include?(ritual)
-    perform_message = "perform #{ritual} on #{mob_noun}"
+    do_necro_ritual(corpse, 'preserve', game_state) if %w[consume harvest arise].include?(ritual)
+    perform_message = "perform #{ritual} on ##{corpse.id}"
     result = DRC.bput(perform_message, @rituals['arise'], @rituals['preserve'], @rituals['dissect'], @rituals['harvest'], @rituals['consume'], @rituals['construct'], necro_wrong_corpse_matchers, @rituals['failures'])
     echo result if $debug_mode_ct
     case result
@@ -975,19 +976,19 @@ class LootProcess
       necro_harvest_check
     when @rituals['construct']
       echo 'Detected an attempt to do ritual on a construct' if $debug_mode_ct
-      game_state.construct(mob_noun)
+      game_state.construct(corpse.noun)
     when *necro_wrong_corpse_matchers
-      DRC.message("*** combat-trainer: #{ritual} failed - wrong/missing corpse target (tried '#{mob_noun}')")
+      DRC.message("*** combat-trainer: #{ritual} failed - wrong/missing corpse target (tried '#{corpse.name || corpse.noun}' ##{corpse.id})")
     when *@rituals['failures']
       echo 'Failure detected' if $debug_mode_ct
     end
     echo "Last ritual performed: #{@last_ritual}" if $debug_mode_ct
   end
 
-  def butcher_corpse(mob_noun, ritual, game_state)
+  def butcher_corpse(corpse, ritual, game_state)
     return unless ritual.eql?('butcher')
 
-    echo "Butchering the #{mob_noun}'s corpse!" if $debug_mode_ct
+    echo "Butchering the #{corpse.name || corpse.noun}'s corpse! (##{corpse.id})" if $debug_mode_ct
     # Order: preserve -> butcher until exhausted -> dissect (if dissect_and_butcher).
     # Natural stop: "much too battered and beat up to extract any body parts from."
     # Optional thanatology.butcher_count caps butchers before that. Legacy one-shot
@@ -1010,13 +1011,13 @@ class LootProcess
     @equipment_manager.stow_weapon(game_state.weapon_name)
 
     # Preserve first - extends part decay and marks the corpse for butchery.
-    do_necro_ritual(mob_noun, 'preserve', game_state)
+    do_necro_ritual(corpse, 'preserve', game_state)
 
     butchers_done = 0
     skip_dissect = false
     loop do
-      result = DRC.bput("perform #{ritual} on #{mob_noun}", @rituals['butcher'], necro_wrong_corpse_matchers, @rituals['failures'], @rituals['construct'])
-      game_state.construct(mob_noun) if result.include?(@rituals['construct'])
+      result = DRC.bput("perform #{ritual} on ##{corpse.id}", @rituals['butcher'], necro_wrong_corpse_matchers, @rituals['failures'], @rituals['construct'])
+      game_state.construct(corpse.noun) if result.include?(@rituals['construct'])
       @last_ritual = 'butcher' if result.include?(@rituals['butcher'])
 
       if result.empty? || result.include?(@rituals['construct'])
@@ -1025,7 +1026,7 @@ class LootProcess
       end
 
       if necro_wrong_corpse_target?(result)
-        DRC.message("*** combat-trainer: #{ritual} failed - wrong/missing corpse target (tried '#{mob_noun}')")
+        DRC.message("*** combat-trainer: #{ritual} failed - wrong/missing corpse target (tried '#{corpse.name || corpse.noun}' ##{corpse.id})")
         skip_dissect = true
         break
       end
@@ -1053,7 +1054,7 @@ class LootProcess
     end
 
     # Dissect last when requested and the corpse is still usable.
-    do_necro_ritual(mob_noun, 'dissect', game_state) if @dissect_and_butcher && !skip_dissect
+    do_necro_ritual(corpse, 'dissect', game_state) if @dissect_and_butcher && !skip_dissect
     @equipment_manager.wield_weapon?(game_state.weapon_name, game_state.weapon_skill)
   end
 
@@ -3684,7 +3685,8 @@ class TrainerProcess
   end
 
   def meraud_commune(game_state)
-    unless (DRSkill.getrank('Theurgy') >= 300 || game_state.npcs.empty?) && !game_state.aimed_skill?
+    # Training an aimed weapon skill uses a different stow/wield flow, so skip.
+    if game_state.aimed_skill?
       reset_ability(game_state, 'Meraud')
       return
     end
@@ -3694,6 +3696,14 @@ class TrainerProcess
       return
     end
     waitrt?
+    # The commune is a lengthy, vulnerable ritual (stow weapon, sprinkle holy
+    # water, wave incense, then a ~7s commune). Requiring an empty room meant a
+    # sub-300 Theurgy character almost never got to run it during a hunt, since
+    # the room rarely clears. Retreat out of melee first instead -- the same way
+    # #pray_mat does -- so it can fire mid-hunt. AbilityProcess#execute already
+    # bails when game_state.danger is set, and the 3900s cooldown means this
+    # retreat happens at most once per hunt.
+    DRC.retreat unless game_state.npcs.empty?
     @equipment_manager.stow_weapon(game_state.weapon_name)
     unless DRCTH.sprinkle_holy_water?(@theurgy_supply_container, @water_holder, checkname) && DRCTH.wave_incense?(@theurgy_supply_container, @flint_lighter, checkname)
       DRC.message("Holy water sprinkling, or incense waving routine failed, skipping Meraud commune")
