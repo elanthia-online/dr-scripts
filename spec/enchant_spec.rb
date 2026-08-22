@@ -243,7 +243,9 @@ RSpec.describe Enchant do
 
       expect(DRCI).to receive(:get_item?).with('induction sigil').and_return(true)
       expect(DRC).to receive(:bput).with('study my induction sigil', Enchant::SIGIL_STUDY_SUCCESS)
-      expect(DRC).to receive(:bput).with('trace totem on brazier', Enchant::SIGIL_TRACE_SUCCESS)
+      expect(DRC).to receive(:bput)
+        .with('trace totem on brazier', { 'timeout' => 5, 'suppress_no_match' => true }, Enchant::SIGIL_TRACE_SUCCESS)
+        .and_return(trace_success)
 
       instance.send(:trace_sigil, 'induction')
     end
@@ -268,11 +270,68 @@ RSpec.describe Enchant do
     end
 
     it 'traces without touching a loose scroll when the book supplied the sigil' do
-      instance = build_instance(sigil_book: 'small sigil book')
+      instance = build_instance(sigil_books: { 'induction' => first_book })
 
       allow(instance).to receive(:study_sigil_from_book).with('induction').and_return(true)
       expect(DRCI).not_to receive(:get_item?)
-      expect(DRC).to receive(:bput).with('trace totem on brazier', Enchant::SIGIL_TRACE_SUCCESS)
+      expect(DRC).to receive(:bput)
+        .with('trace totem on brazier', { 'timeout' => 5, 'suppress_no_match' => true }, Enchant::SIGIL_TRACE_SUCCESS)
+        .and_return(trace_success)
+
+      instance.send(:trace_sigil, 'induction')
+    end
+
+    it 'keeps the book in hand while tracing' do
+      instance = build_instance(sigil_books: { 'induction' => first_book }, held_sigil_book: first_book)
+
+      allow(instance).to receive(:study_sigil).and_return(true)
+      allow(DRC).to receive(:bput).and_return(trace_success)
+
+      expect(instance).not_to receive(:stow_sigil_book)
+
+      instance.send(:trace_sigil, 'induction')
+    end
+
+    # The book occupies a hand for the whole scribe loop. Whether TRACE tolerates
+    # that is not known from the game output we have, so the run finds out once
+    # rather than paying a stow and a fetch per sigil on the chance it matters.
+    it 'stows the book and retries once when the trace is not accepted' do
+      instance = build_instance(sigil_books: { 'induction' => first_book }, held_sigil_book: first_book)
+
+      allow(instance).to receive(:study_sigil).and_return(true)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      allow(DRC).to receive(:bput).and_return(nil, trace_success)
+
+      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
+
+      instance.send(:trace_sigil, 'induction')
+
+      expect(instance.instance_variable_get(:@trace_needs_free_hand)).to be true
+    end
+
+    it 'stows the book before tracing once it knows the trace needs the hand' do
+      instance = build_instance(
+        sigil_books: { 'induction' => first_book },
+        held_sigil_book: first_book,
+        trace_needs_free_hand: true
+      )
+
+      allow(instance).to receive(:study_sigil).and_return(true)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      allow(DRC).to receive(:bput).and_return(trace_success)
+
+      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt').once
+
+      instance.send(:trace_sigil, 'induction')
+    end
+
+    it 'reports when even a retry with free hands will not trace' do
+      instance = build_instance
+
+      allow(instance).to receive(:study_sigil).and_return(true)
+      allow(DRC).to receive(:bput).and_return(nil)
+
+      expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to trace induction sigil/)
 
       instance.send(:trace_sigil, 'induction')
     end
@@ -281,104 +340,51 @@ RSpec.describe Enchant do
   # ---------------------------------------------------------------------------
   # Sigil book
   #
-  # Fixtures are verbatim game output. Note that page numbers are global to the
-  # book and are NOT renumbered per section (congruence 1-2, nurture 3-5), but
-  # they DO renumber when a study blanks a page.
+  # One book per sigil type. A dedicated book is never read: every page holds
+  # the same type, and studying a page blanks it and renumbers the rest, so the
+  # next scroll of that type is page 1 again.
+  #
+  # Fixtures are verbatim game output.
   # ---------------------------------------------------------------------------
 
-  let(:contents_read) do
-    [
-      'You page through the book to see what scrolls it contains.',
-      '   Page -- Sigil Type, Clarity, Precision',
-      '      1 -- congruence, distinct (54), broad (13)',
-      '      2 -- congruence, distinct (54), broad (13)',
-      '      3 -- nurture, rough (26), broad (21)',
-      '      4 -- nurture, rough (26), broad (21)',
-      '      5 -- nurture, rough (19), broad (15)',
-      '[You can turn the book TO PAGE # or TO SIGIL {Sigil Type}.]'
-    ]
-  end
-
-  let(:nurture_section_read) do
-    [
-      'You page through the nurture section to see what scrolls it contains.',
-      '   Page -- Sigil Type, Clarity, Precision',
-      '      3 -- nurture, rough (26), broad (21)',
-      '      4 -- nurture, rough (26), broad (21)',
-      '      5 -- nurture, rough (19), broad (15)',
-      '[You can turn the book TO PAGE # or TO CONTENTS.]'
-    ]
-  end
-
-  let(:empty_section_read) do
-    [
-      'You page through the rarefaction section to see what scrolls it contains.',
-      '   Page -- Sigil Type, Clarity, Precision',
-      '[You can turn the book TO PAGE # or TO CONTENTS.]'
-    ]
-  end
-
-  let(:nurture_page_read) do
-    [
-      'On this page you see a rough nurture sigil comprised of broad strokes.  You can STUDY the book to bring it into your mind, or PULL the book to remove it.',
-      '   --=== Nurture sigil ===--',
-      '',
-      '   Cardinality: Primary',
-      '       Clarity: 26 (rough)',
-      '     Precision: 21 (comprised of broad strokes)',
-      '[You can now STUDY the book to memorize the sigil.]'
-    ]
-  end
-
+  let(:turn_page) { 'You turn the book to page 1.' }
+  let(:already_at_page) { 'You are already on page 1.' }
+  let(:page_missing) { 'The book does not have that many sigils in it.' }
+  let(:page_banner) { '   --=== Nurture sigil ===--' }
+  let(:study_unread) { 'You must read the current page before you study the book.' }
   let(:study_success) { "You commit the sigil's design to memory rendering the page blank, and turn the book back to the contents." }
   let(:study_appraise) { 'You study the book and determine it is well-suited for holding sigil-scrolls.  These scrolls can be PUT into the book.' }
+  let(:trace_success) { 'Recalling the intricacies of the sigil, you trace its form' }
 
   # Two books with DIFFERENT nouns, so a spec can tell which one a command
-  # addressed. In game they are usually both "book", which is exactly why the
-  # implementation stows one before picking up the next.
+  # addressed. In game they are usually both "book", which is why only one is
+  # ever held at a time.
   let(:first_book) { 'small sigil book' }
   let(:second_book) { 'battered sigil tome' }
 
-  # Stubs the two READs the book flow issues against one book, keyed by their
-  # start pattern.
-  def stub_book_reads(noun: 'book', section_lines:, page_lines: [])
-    allow(Lich::Util).to receive(:issue_command)
-      .with("read my #{noun}", Enchant::SIGIL_BOOK_READ_HEADER, Enchant::SIGIL_BOOK_READ_FOOTER, silent: true, quiet: true, timeout: 3)
-      .and_return(section_lines)
-    allow(Lich::Util).to receive(:issue_command)
-      .with("read my #{noun}", Enchant::SIGIL_BOOK_PAGE_HEADER, Enchant::SIGIL_BOOK_PAGE_FOOTER, silent: true, quiet: true, timeout: 3)
-      .and_return(page_lines)
-  end
-
   describe 'sigil book constants' do
-    it 'parses a page row into page number and sigil type' do
-      match = Enchant::SIGIL_BOOK_PAGE_ROW.match('      3 -- nurture, rough (26), broad (21)')
-
-      expect(match[:page]).to eq('3')
-      expect(match[:type]).to eq('nurture')
+    it 'parses the page turn confirmation' do
+      expect(Enchant::SIGIL_BOOK_TURN_PAGE.match(turn_page)[:page]).to eq('1')
     end
 
-    it 'does not treat the table header as a page row' do
-      expect(Enchant::SIGIL_BOOK_PAGE_ROW).not_to match('   Page -- Sigil Type, Clarity, Precision')
+    it 'parses the already-at-that-page response' do
+      expect(Enchant::SIGIL_BOOK_ALREADY_AT_PAGE.match(already_at_page)[:page]).to eq('1')
+      expect(Enchant::SIGIL_BOOK_ALREADY_AT_PAGE).not_to match('A small black book of sigils is already at the contents.')
+      expect(Enchant::SIGIL_BOOK_ALREADY_AT_PAGE).not_to match(page_missing)
+    end
+
+    it 'recognizes an emptied book refusing the page turn' do
+      expect(Enchant::SIGIL_BOOK_PAGE_MISSING).to match(page_missing)
+      expect(Enchant::SIGIL_BOOK_PAGE_MISSING).not_to match(turn_page)
     end
 
     it 'parses the sigil type off a page banner' do
-      match = Enchant::SIGIL_BOOK_PAGE_TYPE.match('   --=== Congruence sigil ===--')
-
-      expect(match[:type]).to eq('Congruence')
+      expect(Enchant::SIGIL_BOOK_PAGE_TYPE.match(page_banner)[:type]).to eq('Nurture')
     end
 
-    it 'matches the read footer in both the contents and section views' do
-      expect(Enchant::SIGIL_BOOK_READ_FOOTER).to match('[You can turn the book TO PAGE # or TO SIGIL {Sigil Type}.]')
-      expect(Enchant::SIGIL_BOOK_READ_FOOTER).to match('[You can turn the book TO PAGE # or TO CONTENTS.]')
-    end
-
-    it 'matches the section and page turn confirmations' do
-      section = Enchant::SIGIL_BOOK_TURN_SECTION.match('You turn the book to the congruence section.')
-      page = Enchant::SIGIL_BOOK_TURN_PAGE.match('You turn the book to page 1.')
-
-      expect(section[:section]).to eq('congruence')
-      expect(page[:page]).to eq('1')
+    it 'recognizes a study refused for want of a read' do
+      expect(Enchant::SIGIL_BOOK_STUDY_UNREAD).to match(study_unread)
+      expect(Enchant::SIGIL_BOOK_STUDY_UNREAD).not_to match(study_success)
     end
 
     it 'distinguishes a memorizing study from the book appraisal' do
@@ -388,21 +394,39 @@ RSpec.describe Enchant do
     end
   end
 
-  describe '#sigil_books' do
-    it 'is empty when nothing is configured' do
-      expect(build_instance.send(:sigil_books)).to eq([])
+  describe '#parse_sigil_books' do
+    it 'is empty when the setting is unset' do
+      expect(build_instance.send(:parse_sigil_books, nil)).to eq({})
     end
 
-    it 'keeps a configured list in order' do
-      instance = build_instance(sigil_books: [first_book, second_book])
+    it 'maps each sigil type to its book' do
+      instance = build_instance
 
-      expect(instance.send(:sigil_books)).to eq([first_book, second_book])
+      parsed = instance.send(:parse_sigil_books, 'nurture' => first_book, 'congruence' => second_book)
+
+      expect(parsed).to eq('nurture' => first_book, 'congruence' => second_book)
     end
 
-    it 'accepts a bare string as a single book' do
-      instance = build_instance(sigil_books: first_book)
+    it 'downcases the configured sigil types' do
+      instance = build_instance
 
-      expect(instance.send(:sigil_books)).to eq([first_book])
+      expect(instance.send(:parse_sigil_books, 'Nurture' => first_book)).to eq('nurture' => first_book)
+    end
+
+    it 'rejects the pre-map list format, which cannot say what each book holds' do
+      instance = build_instance
+
+      expect(Lich::Messaging).to receive(:msg).with('bold', /must map each sigil type to its own book/)
+
+      expect(instance.send(:parse_sigil_books, [first_book, second_book])).to eq({})
+    end
+
+    it 'says nothing about an empty list' do
+      instance = build_instance
+
+      expect(Lich::Messaging).not_to receive(:msg)
+
+      expect(instance.send(:parse_sigil_books, [])).to eq({})
     end
   end
 
@@ -416,8 +440,8 @@ RSpec.describe Enchant do
   end
 
   describe '#study_sigil' do
-    it 'prefers the books and skips the loose scroll entirely' do
-      instance = build_instance(sigil_books: [first_book])
+    it 'prefers the book and skips the loose scroll entirely' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       expect(instance).to receive(:study_sigil_from_book).with('nurture').and_return(true)
       expect(DRCI).not_to receive(:get_item?)
@@ -425,8 +449,8 @@ RSpec.describe Enchant do
       expect(instance.send(:study_sigil, 'nurture')).to be true
     end
 
-    it 'falls back to a loose scroll when no book can supply the sigil' do
-      instance = build_instance(sigil_books: [first_book])
+    it 'falls back to a loose scroll when the book cannot supply the sigil' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       allow(instance).to receive(:study_sigil_from_book).with('nurture').and_return(false)
       expect(DRCI).to receive(:get_item?).with('nurture sigil').and_return(true)
@@ -435,8 +459,8 @@ RSpec.describe Enchant do
       expect(instance.send(:study_sigil, 'nurture')).to be true
     end
 
-    it 'returns false when neither the books nor a loose scroll has the sigil' do
-      instance = build_instance(sigil_books: [first_book])
+    it 'returns false when neither the book nor a loose scroll has the sigil' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       allow(instance).to receive(:study_sigil_from_book).and_return(false)
       allow(DRCI).to receive(:get_item?).and_return(false)
@@ -447,283 +471,324 @@ RSpec.describe Enchant do
   end
 
   describe '#study_sigil_from_book' do
-    it 'returns false without touching the game when no books are configured' do
-      instance = build_instance
+    it 'returns false without touching the game for a type with no book' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       expect(DRCC).not_to receive(:get_crafting_item)
       expect(DRC).not_to receive(:bput)
 
-      expect(instance.send(:study_sigil_from_book, 'nurture')).to be false
+      expect(instance.send(:study_sigil_from_book, 'rarefaction')).to be false
     end
 
-    it 'takes the sigil from the first book that has it' do
-      instance = build_instance(sigil_books: [first_book, second_book])
+    it 'turns to page 1, reads it, then studies - without reading the contents' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
-      expect(instance).to receive(:study_sigil_from_this_book).with(first_book, 'nurture').and_return(true)
-      expect(instance).not_to receive(:study_sigil_from_this_book).with(second_book, anything)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      allow(DRCC).to receive(:get_crafting_item)
+
+      expect(DRC).to receive(:bput)
+        .with('turn my book to page 1', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_PAGE, Enchant::SIGIL_BOOK_ALREADY_AT_PAGE, Enchant::SIGIL_BOOK_PAGE_MISSING)
+        .and_return(turn_page)
+      expect(DRC).to receive(:bput)
+        .with('read my book', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_PAGE_TYPE)
+        .and_return(page_banner)
+      expect(DRC).to receive(:bput)
+        .with('study my book', Enchant::SIGIL_BOOK_STUDY_SUCCESS, Enchant::SIGIL_BOOK_STUDY_APPRAISE, Enchant::SIGIL_BOOK_STUDY_UNREAD, Enchant::SIGIL_BOOK_NOT_HELD)
+        .and_return(study_success)
+      expect(Lich::Util).not_to receive(:issue_command)
 
       expect(instance.send(:study_sigil_from_book, 'nurture')).to be true
     end
 
-    it 'moves on to the next book when the first one is out of that sigil' do
-      instance = build_instance(sigil_books: [first_book, second_book])
+    it 'refuses to study a page holding some other sigil type' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
-      expect(instance).to receive(:study_sigil_from_this_book).with(first_book, 'nurture').and_return(false)
-      expect(instance).to receive(:study_sigil_from_this_book).with(second_book, 'nurture').and_return(true)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRC).to receive(:bput).and_return(turn_page, '   --=== Congruence sigil ===--')
 
-      expect(instance.send(:study_sigil_from_book, 'nurture')).to be true
-    end
-
-    it 'reports once when no configured book holds the sigil' do
-      instance = build_instance(sigil_books: [first_book, second_book])
-
-      allow(instance).to receive(:study_sigil_from_this_book).and_return(false)
-
-      expect(Lich::Messaging).to receive(:msg).with('bold', /No nurture sigil in your sigil books/).once
+      expect(Lich::Messaging).to receive(:msg).with('bold', /mapped to nurture but page 1 holds a congruence sigil/)
+      expect(DRC).not_to receive(:bput).with('study my book', any_args)
 
       expect(instance.send(:study_sigil_from_book, 'nurture')).to be false
+      expect(instance.send(:sigil_books)).not_to have_key('nurture')
     end
 
-    it 'searches every configured book against real book output before giving up' do
-      instance = build_instance(sigil_books: [first_book, second_book])
+    it 'matches the configured type case-insensitively' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
+
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRC).to receive(:bput).and_return(turn_page, page_banner, study_success)
+
+      expect(instance.send(:study_sigil_from_book, 'Nurture')).to be true
+    end
+
+    it 'keeps the book in hand across repeats of the same sigil type' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
+
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      allow(DRC).to receive(:bput).and_return(turn_page, page_banner, study_success, turn_page, page_banner, study_success)
+
+      expect(DRCC).to receive(:get_crafting_item).once
+      expect(DRCC).not_to receive(:stow_crafting_item)
+
+      instance.send(:study_sigil_from_book, 'nurture')
+      instance.send(:study_sigil_from_book, 'nurture')
+    end
+
+    it 'swaps books when the next sigil is a different type' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book, 'congruence' => second_book })
 
       allow(DRCI).to receive(:in_hands?).and_return(true)
-      allow(DRC).to receive(:bput).and_return(study_success)
+      allow(DRC).to receive(:bput).and_return(turn_page, page_banner, study_success, turn_page, '   --=== Congruence sigil ===--', study_success)
       allow(DRCC).to receive(:get_crafting_item)
-      allow(DRCC).to receive(:stow_crafting_item)
-      # The first book is out of nurture; the second still has pages.
-      stub_book_reads(noun: 'book', section_lines: empty_section_read)
-      stub_book_reads(noun: 'tome', section_lines: nurture_section_read, page_lines: nurture_page_read)
 
-      expect(instance.send(:study_sigil_from_book, 'nurture')).to be true
+      instance.send(:study_sigil_from_book, 'nurture')
+
+      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
+
+      instance.send(:study_sigil_from_book, 'congruence')
+
       expect(DRCC).to have_received(:get_crafting_item).with(first_book, 'backpack', ['burin'], 'toolbelt', true)
       expect(DRCC).to have_received(:get_crafting_item).with(second_book, 'backpack', ['burin'], 'toolbelt', true)
     end
 
-    it 'stows each book it picks up, including ones that had nothing' do
-      instance = build_instance(sigil_books: [first_book, second_book])
-
-      allow(DRCI).to receive(:in_hands?).and_return(true)
-      allow(DRC).to receive(:bput).and_return(study_success)
-      allow(DRCC).to receive(:get_crafting_item)
-      allow(Lich::Messaging).to receive(:msg)
-      stub_book_reads(noun: 'book', section_lines: empty_section_read)
-      stub_book_reads(noun: 'tome', section_lines: nurture_section_read, page_lines: nurture_page_read)
-
-      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
-      expect(DRCC).to receive(:stow_crafting_item).with(second_book, 'backpack', 'toolbelt')
-
-      instance.send(:study_sigil_from_book, 'nurture')
-    end
-  end
-
-  describe '#study_sigil_from_this_book' do
-    it 'turns to the section, reads it, turns to a page, confirms it, then studies' do
-      instance = build_instance(sigil_books: [first_book])
+    it 'drops a book that has run out and falls back to loose scrolls after' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
       allow(DRCC).to receive(:get_crafting_item)
-      stub_book_reads(section_lines: nurture_section_read, page_lines: nurture_page_read)
+      # An emptied book refuses the page turn outright.
+      allow(DRC).to receive(:bput).and_return(page_missing)
 
-      expect(DRC).to receive(:bput)
-        .with('turn my book to sigil nurture', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_SECTION)
-      expect(DRC).to receive(:bput)
-        .with('turn my book to page 3', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_PAGE)
-      expect(DRC).to receive(:bput)
-        .with('study my book', Enchant::SIGIL_BOOK_STUDY_SUCCESS, Enchant::SIGIL_BOOK_STUDY_APPRAISE, Enchant::SIGIL_BOOK_NOT_HELD)
-        .and_return(study_success)
-      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
-
-      expect(instance.send(:study_sigil_from_this_book, first_book, 'nurture')).to be true
-    end
-
-    it 'returns false without studying when this book has no page of that type' do
-      instance = build_instance(sigil_books: [first_book])
-
-      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
-      allow(DRCC).to receive(:get_crafting_item)
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: empty_section_read)
-
+      expect(Lich::Messaging).to receive(:msg).with('bold', /small sigil book has no nurture sigils left/)
       expect(DRC).not_to receive(:bput).with('study my book', any_args)
 
-      expect(instance.send(:study_sigil_from_this_book, first_book, 'rarefaction')).to be false
+      expect(instance.send(:study_sigil_from_book, 'nurture')).to be false
+      expect(instance.send(:sigil_books)).not_to have_key('nurture')
     end
 
     it 'treats the book appraisal as a failed study rather than a memorized sigil' do
-      instance = build_instance(sigil_books: [first_book])
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
       allow(DRCC).to receive(:get_crafting_item)
-      stub_book_reads(section_lines: nurture_section_read, page_lines: nurture_page_read)
-      allow(DRC).to receive(:bput).and_return(study_appraise)
+      allow(DRC).to receive(:bput).and_return(turn_page, page_banner, study_appraise)
 
       expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to study nurture sigil from small sigil book/)
 
-      expect(instance.send(:study_sigil_from_this_book, first_book, 'nurture')).to be false
+      expect(instance.send(:study_sigil_from_book, 'nurture')).to be false
     end
 
-    it 'stows the book even when the study fails' do
-      instance = build_instance(sigil_books: [first_book])
+    it 'forgets the held book when the game says it is not being held' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
       allow(DRCC).to receive(:get_crafting_item)
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: empty_section_read)
+      allow(DRC).to receive(:bput).and_return(turn_page, page_banner, Enchant::SIGIL_BOOK_NOT_HELD)
       allow(Lich::Messaging).to receive(:msg)
 
-      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
+      instance.send(:study_sigil_from_book, 'nurture')
 
-      instance.send(:study_sigil_from_this_book, first_book, 'nurture')
+      expect(instance.instance_variable_get(:@held_sigil_book)).to be_nil
     end
 
-    it 'does not stow anything when the book could not be picked up' do
-      instance = build_instance(sigil_books: [first_book])
+    it 'returns false when the book cannot be picked up' do
+      instance = build_instance(sigil_books: { 'nurture' => first_book })
 
       allow(DRCI).to receive(:in_hands?).with('book').and_return(false)
       allow(DRCC).to receive(:get_crafting_item)
-      allow(Lich::Messaging).to receive(:msg)
+      expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to get small sigil book/)
+      expect(DRC).not_to receive(:bput)
 
-      expect(DRCC).not_to receive(:stow_crafting_item)
-
-      expect(instance.send(:study_sigil_from_this_book, first_book, 'nurture')).to be false
-    end
-
-    it 're-reads the book for every sigil, because studying renumbers the pages' do
-      instance = build_instance(sigil_books: [first_book])
-
-      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
-      allow(DRCC).to receive(:get_crafting_item)
-      allow(DRC).to receive(:bput).and_return(study_success)
-      allow(DRCC).to receive(:stow_crafting_item)
-      stub_book_reads(section_lines: nurture_section_read, page_lines: nurture_page_read)
-
-      instance.send(:study_sigil_from_this_book, first_book, 'nurture')
-      instance.send(:study_sigil_from_this_book, first_book, 'nurture')
-
-      expect(Lich::Util).to have_received(:issue_command)
-        .with('read my book', Enchant::SIGIL_BOOK_READ_HEADER, Enchant::SIGIL_BOOK_READ_FOOTER, silent: true, quiet: true, timeout: 3)
-        .twice
+      expect(instance.send(:study_sigil_from_book, 'nurture')).to be false
     end
   end
 
-  describe '#get_sigil_book' do
+  describe '#hold_sigil_book' do
     it 'fetches from the crafting container or belt and confirms it landed in hand' do
       instance = build_instance
 
       allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
       expect(DRCC).to receive(:get_crafting_item).with(first_book, 'backpack', ['burin'], 'toolbelt', true)
 
-      expect(instance.send(:get_sigil_book, first_book)).to be true
+      expect(instance.send(:hold_sigil_book, first_book)).to be true
+      expect(instance.instance_variable_get(:@held_sigil_book)).to eq(first_book)
     end
 
-    it 'always fetches, because a held book may be a different book of the same noun' do
-      instance = build_instance
+    it 'does not re-fetch a book it is already holding' do
+      instance = build_instance(held_sigil_book: first_book)
 
-      allow(DRCI).to receive(:in_hands?).with('tome').and_return(true)
-      expect(DRCC).to receive(:get_crafting_item).with(second_book, 'backpack', ['burin'], 'toolbelt', true)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      expect(DRCC).not_to receive(:get_crafting_item)
 
-      instance.send(:get_sigil_book, second_book)
+      expect(instance.send(:hold_sigil_book, first_book)).to be true
     end
 
-    it 'reports failure when the book never reaches a hand' do
+    it 're-fetches when the tracked book is no longer in hand' do
+      instance = build_instance(held_sigil_book: first_book)
+
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(false)
+      expect(DRCC).to receive(:get_crafting_item)
+      allow(Lich::Messaging).to receive(:msg)
+
+      instance.send(:hold_sigil_book, first_book)
+    end
+
+    it 'puts the current book away before picking up a different one' do
+      instance = build_instance(held_sigil_book: first_book)
+
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCC).to receive(:get_crafting_item)
+
+      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
+
+      instance.send(:hold_sigil_book, second_book)
+    end
+
+    it 'reports failure and tracks nothing when the book never reaches a hand' do
       instance = build_instance
 
       allow(DRCI).to receive(:in_hands?).with('book').and_return(false)
       allow(DRCC).to receive(:get_crafting_item)
       expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to get small sigil book/)
 
-      expect(instance.send(:get_sigil_book, first_book)).to be false
+      expect(instance.send(:hold_sigil_book, first_book)).to be false
+      expect(instance.instance_variable_get(:@held_sigil_book)).to be_nil
     end
   end
 
-  describe '#find_sigil_page' do
-    it 'returns the first page of the requested type' do
-      instance = build_instance
+  describe '#stow_sigil_book' do
+    it 'puts the held book away and forgets it' do
+      instance = build_instance(held_sigil_book: first_book)
 
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: nurture_section_read)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      expect(DRCC).to receive(:stow_crafting_item).with(first_book, 'backpack', 'toolbelt')
 
-      expect(instance.send(:find_sigil_page, first_book, 'nurture')).to eq(3)
+      instance.send(:stow_sigil_book)
+
+      expect(instance.instance_variable_get(:@held_sigil_book)).to be_nil
     end
 
-    it 'ignores pages of other types when reading the contents view' do
+    it 'does nothing when no book is being tracked' do
       instance = build_instance
 
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: contents_read)
+      expect(DRCC).not_to receive(:stow_crafting_item)
 
-      expect(instance.send(:find_sigil_page, first_book, 'nurture')).to eq(3)
+      instance.send(:stow_sigil_book)
     end
 
-    it 'matches the sigil type case-insensitively' do
-      instance = build_instance
+    it 'forgets a book another cleanup path already stowed' do
+      instance = build_instance(held_sigil_book: first_book)
 
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: nurture_section_read)
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(false)
+      expect(DRCC).not_to receive(:stow_crafting_item)
 
-      expect(instance.send(:find_sigil_page, first_book, 'Nurture')).to eq(3)
-    end
+      instance.send(:stow_sigil_book)
 
-    it 'addresses the book by its own noun' do
-      instance = build_instance
-
-      stub_book_reads(noun: 'tome', section_lines: nurture_section_read)
-      expect(DRC).to receive(:bput)
-        .with('turn my tome to sigil nurture', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_SECTION)
-
-      expect(instance.send(:find_sigil_page, second_book, 'nurture')).to eq(3)
-    end
-
-    it 'returns nil for a section that reads empty' do
-      instance = build_instance
-
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: empty_section_read)
-
-      expect(instance.send(:find_sigil_page, first_book, 'rarefaction')).to be_nil
-    end
-
-    it 'returns nil when the read times out and captures nothing' do
-      instance = build_instance
-
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: [])
-
-      expect(instance.send(:find_sigil_page, first_book, 'nurture')).to be_nil
+      expect(instance.instance_variable_get(:@held_sigil_book)).to be_nil
     end
   end
 
-  describe '#turn_to_sigil_page' do
-    it 'confirms the page holds the expected sigil type' do
+  describe '#read_sigil_book_page' do
+    # STUDY refuses a page that has not been read, so this command is mandatory -
+    # which makes the type check on its banner free.
+    it 'reads the page and accepts a banner of the expected type' do
       instance = build_instance
 
-      stub_book_reads(section_lines: [], page_lines: nurture_page_read)
       expect(DRC).to receive(:bput)
-        .with('turn my book to page 3', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_PAGE)
+        .with('read my book', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_PAGE_TYPE)
+        .and_return(page_banner)
 
-      expect(instance.send(:turn_to_sigil_page, first_book, 3, 'nurture')).to be true
+      expect(instance.send(:read_sigil_book_page, first_book, 'nurture')).to be true
+    end
+
+    it 'matches the banner case-insensitively' do
+      instance = build_instance
+
+      allow(DRC).to receive(:bput).and_return(page_banner)
+
+      expect(instance.send(:read_sigil_book_page, first_book, 'Nurture')).to be true
     end
 
     it 'rejects a page holding a different sigil type' do
       instance = build_instance
 
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: [], page_lines: nurture_page_read)
+      allow(DRC).to receive(:bput).and_return('   --=== Congruence sigil ===--')
 
-      expect(Lich::Messaging).to receive(:msg).with('bold', /Page 3 of small sigil book does not hold a congruence sigil/)
+      expect(Lich::Messaging).to receive(:msg).with('bold', /small sigil book is mapped to nurture but page 1 holds a congruence sigil/)
 
-      expect(instance.send(:turn_to_sigil_page, first_book, 3, 'congruence')).to be false
+      expect(instance.send(:read_sigil_book_page, first_book, 'nurture')).to be false
     end
 
-    it 'rejects a read that never reached a page view' do
+    it 'rejects a read that produced no page banner' do
       instance = build_instance
 
-      allow(DRC).to receive(:bput)
-      stub_book_reads(section_lines: [], page_lines: nurture_section_read)
-      allow(Lich::Messaging).to receive(:msg)
+      allow(DRC).to receive(:bput).and_return(nil)
 
-      expect(instance.send(:turn_to_sigil_page, first_book, 3, 'nurture')).to be false
+      expect(Lich::Messaging).to receive(:msg).with('bold', /Could not read the current page of small sigil book/)
+
+      expect(instance.send(:read_sigil_book_page, first_book, 'nurture')).to be false
+    end
+
+    it 'addresses the book by its own noun' do
+      instance = build_instance
+
+      expect(DRC).to receive(:bput)
+        .with('read my tome', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_PAGE_TYPE)
+        .and_return(page_banner)
+
+      instance.send(:read_sigil_book_page, second_book, 'nurture')
+    end
+  end
+
+  describe '#turn_sigil_book_to_first_page' do
+    it 'always turns to page 1, because studying renumbers the pages' do
+      instance = build_instance
+
+      expect(DRC).to receive(:bput)
+        .with('turn my book to page 1', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_PAGE, Enchant::SIGIL_BOOK_ALREADY_AT_PAGE, Enchant::SIGIL_BOOK_PAGE_MISSING)
+        .and_return(turn_page)
+
+      expect(instance.send(:turn_sigil_book_to_first_page, first_book)).to be true
+    end
+
+    # An interrupted study leaves the book sitting on the page it selected, so
+    # the next turn is a no-op the game reports differently. Treating that as a
+    # failure would wrongly write the book off as empty.
+    it 'accepts a book already sitting on page 1' do
+      instance = build_instance
+
+      allow(DRC).to receive(:bput).and_return(already_at_page)
+
+      expect(instance.send(:turn_sigil_book_to_first_page, first_book)).to be true
+    end
+
+    it 'addresses the book by its own noun' do
+      instance = build_instance
+
+      expect(DRC).to receive(:bput)
+        .with('turn my tome to page 1', { 'timeout' => 3, 'suppress_no_match' => true }, Enchant::SIGIL_BOOK_TURN_PAGE, Enchant::SIGIL_BOOK_ALREADY_AT_PAGE, Enchant::SIGIL_BOOK_PAGE_MISSING)
+        .and_return('You turn the tome to page 1.')
+
+      expect(instance.send(:turn_sigil_book_to_first_page, second_book)).to be true
+    end
+
+    it 'is false when the book has no scrolls left' do
+      instance = build_instance
+
+      allow(DRC).to receive(:bput).and_return(page_missing)
+
+      expect(instance.send(:turn_sigil_book_to_first_page, first_book)).to be false
+    end
+
+    it 'is false when the turn draws no recognized response at all' do
+      instance = build_instance
+
+      allow(DRC).to receive(:bput).and_return(nil)
+
+      expect(instance.send(:turn_sigil_book_to_first_page, first_book)).to be false
     end
   end
 
