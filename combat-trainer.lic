@@ -3299,10 +3299,17 @@ class ManipulateProcess
       next if game_state.construct?(npc)
       break if manipulate_count >= @threshold
 
-      index = npc_occurrences[npc]
-      ordinal_string = $ORDINALS[index]
+      # Lich already disambiguates a second/third/etc. duplicate NPC by prefixing
+      # the noun itself
+      already_ordinal = $ORDINALS.any? { |ord| npc.start_with?("#{ord} ") }
+      target = if already_ordinal
+                 npc
+               else
+                 index = npc_occurrences[npc]
+                 "#{$ORDINALS[index]} #{npc}"
+               end
 
-      case DRC.bput("manipulate friendship #{ordinal_string} #{npc}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what', 'deep sense of loss')
+      case DRC.bput("manipulate friendship #{target}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what', 'deep sense of loss')
       when 'does not seem to have a life essence' then
         game_state.construct(npc)
       when 'deep sense of loss'
