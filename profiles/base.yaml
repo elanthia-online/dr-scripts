@@ -741,6 +741,13 @@ cambrinth_items:
 cambrinth_num_charges: 4
 # invoke a specific cambrinth amount -- useful for traders with Avtalia Array
 cambrinth_invoke_exact_amount: false
+# Spread charges over your cambrinth_items instead of charging each item in full.
+# Only matters if cambrinth_items lists more than one item. Without this, a spell
+# with "cambrinth: [4, 10]" charges 4 and 10 into EVERY item. With it, the charges
+# are packed into each item up to its cap, then the next item is used. It also
+# makes use_auto_mana respect each item's cap. A single cambrinth item is
+# unaffected either way. An older Lich ignores this setting.
+cambrinth_distribute_charges: false
 # Trader only - enables starlight management - how many seconds in between checking starlight auras in combat
 # see https://github.com/elanthia-online/dr-scripts/wiki/Trader-Tutorials
 aura_frequency:
