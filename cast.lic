@@ -499,13 +499,14 @@ class Cast
     rest = @total_mana - prep_mana
     charge_values = []
     charges_left = num_charges
-    while rest > 0
+    while rest > 0 && charges_left > 0
       next_charge = (rest * 1.0 / charges_left).ceil
       charge_values << next_charge
       rest -= next_charge
       charges_left -= 1
     end
-    [prep_mana, charge_values]
+    # Anything the charges could not take goes back into the prep.
+    [prep_mana + rest, charge_values]
   end
 
   def optimize_charge_time
@@ -514,9 +515,9 @@ class Cast
     max_charges = 10
 
     max_charges.downto(min_charges).each do |num_charges|
-      prep_mana, charge_values = distribute_num_charges(num_charges)
-      charge_time = calculate_charge_time(charge_values)
-      return [prep_mana, charge_values] if charge_time <= charge_time_budget_secs
+      prep_mana, cambrinth = charge_plan(num_charges)
+      charge_time = calculate_charge_time(cambrinth.flatten)
+      return [prep_mana, cambrinth] if charge_time <= charge_time_budget_secs
     end
   end
 
@@ -539,21 +540,61 @@ class Cast
     end
 
     if @charge.end_with?("s")
-      prep_mana, charge_values = optimize_charge_time
+      prep_mana, cambrinth = optimize_charge_time
     else
-      prep_mana, charge_values = distribute_num_charges
+      prep_mana, cambrinth = charge_plan
     end
 
     logd "Optimized prep and charges:", {
       "Prep mana"            => prep_mana,
-      "Cambrinth charges"    => charge_values,
-      "Expected charge time" => calculate_charge_time(charge_values),
+      "Cambrinth charges"    => cambrinth,
+      "Expected charge time" => calculate_charge_time(cambrinth.flatten),
     }
 
-    # Create an array of arrays representing amounts to charge in each cambrinth item.
+    @spell_data["mana"] = prep_mana
+    @spell_data["cambrinth"] = cambrinth
+  end
+
+  # Works out the base prep and the charges for each cambrinth item.
+  #
+  # With cambrinth_distribute_charges set, this hands the work to DRCA so that
+  # ,cast and the waggle scripts charge the same way. Each item takes as much as
+  # its cap allows, in the order the profile lists them, so a small worn item
+  # fills before a large stored one.
+  #
+  # Without the setting, the charges are all the same size and each item is
+  # filled up to its cap before the next one is used. A charge larger than an
+  # item's cap skips that item for good, so small items often go unused.
+  def charge_plan(num_charges = @charge.to_i)
+    prep_mana, charge_values = distribute_num_charges(num_charges)
+    if distribute_charges?
+      cambrinth, leftover = DRCA.allocate_cambrinth_charges(charge_values.sum, @camb_items, num_charges)
+    else
+      cambrinth, leftover = pack_charge_values(charge_values)
+    end
+    if leftover > 0
+      logd "Ran out of room in all cambrinth items, will add the remaining #{leftover} to base prep (now #{prep_mana + leftover})."
+    end
+    [prep_mana + leftover, cambrinth]
+  end
+
+  def distribute_charges?
+    return false unless @settings.cambrinth_distribute_charges
+
+    unless DRCA.respond_to?(:allocate_cambrinth_charges)
+      logd "cambrinth_distribute_charges is set but this Lich has no DRCA.allocate_cambrinth_charges. Using the built-in split."
+      return false
+    end
+    true
+  end
+
+  # The original scheme: fill each item up to its cap, in order, and never come
+  # back to an item once a charge has passed it by.
+  def pack_charge_values(charge_values)
     cambrinth = Array.new(@camb_items.length) { [] }
     camb_index = 0
     already_charged = 0
+    leftover = 0
     until charge_values.empty? do
       charge_value = charge_values.shift
       camb_cap = @camb_items[camb_index]["cap"]
@@ -568,18 +609,13 @@ class Cast
         already_charged = 0
         camb_index += 1
       else
-        remainder = charge_value + charge_values.sum
-        prep_mana += remainder
-        logd "Ran out of room in all cambrinth items, will add the remaining #{remainder} to base prep (now #{prep_mana})."
+        leftover = charge_value + charge_values.sum
         break
       end
     end
 
     # Clean up any empty arrays at the end (which may be all of them, if we're doing no charging)
-    cambrinth = cambrinth.reverse.drop_while { |c| c.empty? }.reverse
-
-    @spell_data["mana"] = prep_mana
-    @spell_data["cambrinth"] = cambrinth
+    [cambrinth.reverse.drop_while { |c| c.empty? }.reverse, leftover]
   end
 
   def set_target!
