@@ -52,13 +52,7 @@ class Remedy
     @herb1 = args.herb1
     @herb2 = args.herb2
     @catalyst = args.catalyst
-    @container = args.container
-    if @container =~ /bowl/
-      # Check for cauldron in place of bowl
-      @container = @settings.alchemy_tools.find { |tool| /cauldron|bowl/ =~ tool }
-    else
-      @container = @settings.alchemy_tools.find { |tool| /#{args.container}/ =~ tool } || args.container
-    end
+    @container = resolve_container(args.container)
     @pestle = @settings.alchemy_tools.find { |tool| /pestle/ =~ tool } || 'pestle'
     @verb = 'crush'
     @noun = args.noun
@@ -125,6 +119,23 @@ class Remedy
     work("analyze my #{@noun}") if args.continue
 
     create_item
+  end
+
+  # Finds the alchemy_tools entry for the container a recipe asks for, so that a
+  # "rustic mortar" answers a recipe that asks for a "mortar". A cauldron answers
+  # a recipe that asks for a bowl.
+  #
+  # Stops when the setting lists no match, because the setting is wrong. Going on
+  # with the word the recipe used sends "get my bowl", which takes whichever bowl
+  # the character happens to carry, and a nil sends "get my " with no item at all.
+  def resolve_container(requested)
+    pattern = requested =~ /bowl/ ? /cauldron|bowl/ : /#{requested}/
+    container = @settings.alchemy_tools.to_a.find { |tool| pattern =~ tool }
+    return container if container
+
+    DRC.message("*** #{@recipe_name} needs a #{requested}, and your alchemy_tools setting lists none. ***")
+    DRC.message("*** Add your #{requested} to alchemy_tools, then run this again. ***")
+    exit
   end
 
   def get_item(name, at_feet = false)
