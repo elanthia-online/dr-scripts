@@ -835,6 +835,7 @@ module Harness
     Map._reset
     XMLData._reset
     UserVars._reset
+    Lich::DragonRealms::Creature._reset
   end
 
   def echo(message)
@@ -1380,6 +1381,41 @@ module Harness
 
     module Util
       def self.issue_command(*_args); []; end
+    end
+
+    module DragonRealms
+      # Stand-in for lich-5's creature registry (lib/dragonrealms/creature.rb).
+      # Real CreatureInstance objects expose id/noun/name plus status flags; a
+      # spec only needs to seed the room roster, so any object answering the
+      # attributes the script under test reads (an OpenStruct is plenty) works.
+      #
+      # in_room ignores its status filters (:dead, :undead, ...) and returns
+      # whatever was seeded -- seed the roster you want the filtered call to
+      # produce. The filters are still recorded in _in_room_filters so a spec
+      # can assert the script asked for the right ones.
+      module Creature
+        @@_room = []
+        @@_in_room_filters = []
+
+        def self._reset
+          @@_room = []
+          @@_in_room_filters = []
+        end
+
+        # Seed the roster with an array of creature-like objects.
+        def self._set_room(creatures)
+          @@_room = creatures
+        end
+
+        def self._in_room_filters
+          @@_in_room_filters
+        end
+
+        def self.in_room(*filters)
+          @@_in_room_filters << filters
+          @@_room
+        end
+      end
     end
   end
 end

@@ -6566,6 +6566,15 @@ crafting_recipes:
   - mechanism
   - mechanism
   - lenses
+- name: a simple orlog
+  noun: orlog
+  work_order: true
+  type: tinkering
+  chapter: 9
+  volume: 5
+  part:
+  - mechanism
+  - mechanism
 - name: a clockwork telescope
   noun: telescope
   work_order: true
