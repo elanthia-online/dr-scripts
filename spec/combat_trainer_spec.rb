@@ -3393,6 +3393,7 @@ RSpec.describe SpellProcess do
       allow(DRCA).to receive(:release_cyclics)
 
       instance = build_spell_process
+      instance.instance_variable_set(:@should_invoke, [5]) # stale cambrinth intent from a prior cast
       gs = build_prep_state(casting_sorcery: true)
       data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'cyclic' => true }
 
@@ -3402,6 +3403,7 @@ RSpec.describe SpellProcess do
       expect(gs.casting_cyclic).to be false           # ...but the flag it set was reset
       expect(gs.casting_sorcery).to be false
       expect(gs.casting).to be false
+      expect(instance.instance_variable_get(:@should_invoke)).to be_nil # no stale cambrinth intent
     end
   end
 
@@ -3444,6 +3446,7 @@ RSpec.describe SpellProcess do
     it 'releases and fully resets casting state once the 70s window is exceeded' do
       allow(DRC).to receive(:bput)
       instance = build_spell_process
+      instance.instance_variable_set(:@should_invoke, [5]) # a cambrinth cast that timed out mid-flight
       gs = GameState.allocate
       gs.casting = true
       gs.casting_sorcery = true
@@ -3455,6 +3458,9 @@ RSpec.describe SpellProcess do
       expect(gs.casting).to be false
       expect(gs.casting_sorcery).to be false
       expect(gs.cast_timer).to be_nil
+      # cambrinth stays charged game-side, but the stale invoke intent must not
+      # bleed into the next cast (would wrongly gate check_current on charging).
+      expect(instance.instance_variable_get(:@should_invoke)).to be_nil
     end
 
     it 'does nothing while still inside the 70s window (boundary)' do

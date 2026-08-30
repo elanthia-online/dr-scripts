@@ -1910,6 +1910,13 @@ class SpellProcess
     @abbrev = nil
     @use_auto_mana = nil
     @prepared_spell = nil
+    # Clear the cambrinth invoke/harness intent for this (now-abandoned) cast.
+    # The cambrinth itself stays charged on the game side -- charges never leak --
+    # so a later cast can still use them; we just must not carry a stale invoke
+    # decision into the next spell, or check_current would wait on check_charging?
+    # for a spell that isn't using cambrinth.
+    @should_invoke = nil
+    @should_harness = false
   end
 
   def check_avtalia(game_state)
