@@ -3487,7 +3487,9 @@ RSpec.describe SpellProcess do
     it 'skips a disabled always-due buff and casts the next due buff instead' do
       DRStats.mana = 100
       DRSpells._set_active_spells({}) # nothing active -> every buff is "due"
-      $weapon_buffs = []              # so check_buff_conditions? short-circuits true
+      # NB: don't touch the shared $weapon_buffs global (reset_data doesn't restore
+      # it). BadBuff/GoodBuff aren't weapon buffs, so check_buff_conditions? already
+      # returns true against the real $weapon_buffs list.
 
       # Disabled buff listed FIRST: with the filter gone, `find` would pick it every tick.
       buffs = {
