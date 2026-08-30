@@ -3479,6 +3479,65 @@ RSpec.describe SpellProcess do
   end
 
   # ===========================================================================
+  # #check_buffs -- the disabled filter is load-bearing: without it a disabled
+  # always-due buff is re-selected by `find` every tick and monopolizes the one
+  # per-tick buff slot, starving every other due buff.
+  # ===========================================================================
+  describe '#check_buffs' do
+    it 'skips a disabled always-due buff and casts the next due buff instead' do
+      DRStats.mana = 100
+      DRSpells._set_active_spells({}) # nothing active -> every buff is "due"
+      $weapon_buffs = []              # so check_buff_conditions? short-circuits true
+
+      # Disabled buff listed FIRST: with the filter gone, `find` would pick it every tick.
+      buffs = {
+        'BadBuff'  => { 'abbrev' => 'bad',  'name' => 'BadBuff',  'recast' => 5 },
+        'GoodBuff' => { 'abbrev' => 'good', 'name' => 'GoodBuff', 'recast' => 5 }
+      }
+      instance = build_spell_process(
+        buff_spells: buffs,
+        buff_spell_mana_threshold: 0,
+        buff_force_cambrinth: nil,
+        disabled_spells: Set.new(['bad'])
+      )
+      gs = double('GameState', casting: false)
+      allow(gs).to receive(:casting_weapon_buff=)
+
+      # Must prepare the healthy buff, never the disabled one.
+      expect(instance).to receive(:prepare_spell).with(hash_including('abbrev' => 'good'), anything, anything)
+      instance.send(:check_buffs, gs)
+    end
+  end
+
+  # ===========================================================================
+  # #check_training -- same filter, same starvation risk on the training slot.
+  # ===========================================================================
+  describe '#check_training' do
+    it 'does not train a disabled spell (the skill is filtered out)' do
+      DRStats.mana = 100
+      ward = { 'abbrev' => 'ward', 'name' => 'Warding Spell', 'harmless' => true }
+
+      instance = build_spell_process(
+        training_spells: { 'Warding' => ward },
+        training_spells_max_threshold: nil,
+        release_cyclic_on_low_mana: nil,
+        training_spell_mana_threshold: 0,
+        magic_exp_training_max_threshold: 100,
+        training_spells_wait: 45,
+        training_cyclic_timer: Time.now,
+        disabled_spells: Set.new(['ward'])
+      )
+      gs = double('GameState', casting: false, is_offense_allowed?: false)
+      # Returns its input so, if the filter let 'Warding' through, it would be
+      # selected and prepare_spell would run -- the filter is what prevents it.
+      allow(gs).to receive(:sort_by_rate_then_rank) { |arr| arr }
+
+      expect(instance).not_to receive(:prepare_spell)
+      instance.send(:check_training, gs)
+    end
+  end
+
+  # ===========================================================================
   # #check_offensive -- the select filter skips a disabled spell (slot efficiency)
   # ===========================================================================
   describe '#check_offensive' do
