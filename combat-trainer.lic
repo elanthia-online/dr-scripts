@@ -1663,7 +1663,7 @@ class SpellProcess
     Flags.add('ct-regalia-expired', 'Your .* glimmers? weakly') if DRStats.trader?
     Flags.add('ct-regalia-succeeded', 'You cup your palms skyward to bask in') if DRStats.trader?
     Flags.add('ct-shock-warning', 'You are distinctly aware that completion of this spell pattern may bring you shock')
-    Flags.add('ct-spell-unknown', 'You have no idea how to cast that spell')
+    Flags.add('ct-spell-unknown', '^You have no idea how to cast that spell')
 
     @offensive_spells
       .select { |spell| spell['expire'] }
@@ -1877,12 +1877,39 @@ class SpellProcess
   def check_timer(game_state)
     return if game_state.cast_timer.nil? || (Time.now - game_state.cast_timer) <= 70
 
-    game_state.cast_timer = nil
     if game_state.casting
       DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
       DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
     end
+    reset_casting_state(game_state)
+  end
+
+  # Clear the casting flags/ivars WITHOUT the success-path side-effects (weapon
+  # restore, moon-weapon re-wear, blacklist, command send) that cast_spell runs.
+  # Used by the two non-casting exits -- an aborted prep and the 70s check_timer
+  # recovery -- so stale casting_* sub-flags don't bleed into the next cast.
+  def reset_casting_state(game_state)
     game_state.casting = false
+    game_state.cast_timer = nil
+    game_state.hide_on_cast = false
+    game_state.casting_weapon_buff = false
+    game_state.casting_consume = false
+    game_state.casting_nr = false
+    game_state.casting_cfb = false
+    game_state.casting_cfw = false
+    game_state.casting_cyclic = false
+    game_state.casting_sorcery = false
+    game_state.casting_moonblade = false
+    game_state.casting_regalia = false
+    @custom_cast = nil
+    @symbiosis = nil
+    @barrage = nil
+    @before = nil
+    @after = nil
+    @skill = nil
+    @abbrev = nil
+    @use_auto_mana = nil
+    @prepared_spell = nil
   end
 
   def check_avtalia(game_state)
@@ -2185,7 +2212,7 @@ class SpellProcess
   # (empath healing) rebuild the hash each tick, so a flag on it would not
   # persist. See issue #7563.
   def spell_disabled?(abbrev)
-    abbrev && @disabled_spells&.include?(abbrev.downcase)
+    !!(abbrev && @disabled_spells&.include?(abbrev.downcase))
   end
 
   def disable_spell(data)
@@ -2193,10 +2220,11 @@ class SpellProcess
     return unless abbrev
 
     @disabled_spells ||= Set.new
-    # add? returns nil when already present, so the message prints exactly once.
+    # add? returns nil when already present, so the message prints exactly once
+    # per run; the disable is cleared the next time combat-trainer is started.
     return unless @disabled_spells.add?(abbrev.downcase)
 
-    DRC.message("Disabling #{data['name'] || abbrev}: the game reports you have no idea how to cast it. Fix your spell lists.")
+    DRC.message("Disabling #{data['name'] || abbrev} for this session: the game reports you have no idea how to cast it. Re-memorize it (or fix your spell lists) and restart combat-trainer to re-enable.")
   end
 
   def check_buffs(game_state)
@@ -2271,7 +2299,7 @@ class SpellProcess
     return if DRStats.health > @empath_vitality_threshold && @wounds.empty?
 
     if DRSpells.active_spells['Regeneration']
-      if @empath_spells['VH'] && DRStats.health <= @empath_vitality_threshold && !spell_disabled?('vh')
+      if @empath_spells['VH'] && DRStats.health <= @empath_vitality_threshold
         data = { 'abbrev' => 'vh', 'mana' => @empath_spells['VH'].first, 'cambrinth' => @empath_spells['VH'][1..-1], 'harmless' => true }
         prepare_spell(data, game_state)
       end
@@ -2292,7 +2320,7 @@ class SpellProcess
       end
       @wounds = {}
       prepare_spell(data, game_state, true) if data
-    elsif @empath_spells['VH'] && !spell_disabled?('vh')
+    elsif @empath_spells['VH']
       data = { 'abbrev' => 'vh', 'mana' => @empath_spells['VH'].first, 'cambrinth' => @empath_spells['VH'][1..-1], 'harmless' => true }
       prepare_spell(data, game_state, true)
     end
@@ -2524,6 +2552,11 @@ class SpellProcess
 
   def prepare_spell(data, game_state, force_cambrinth = false)
     return unless data
+    # Central guard: a spell the game said we cannot cast is skipped here, so every
+    # caller (offensive/buff/training selects, empath/necro healing, regalia, ...)
+    # is covered and none re-send `prep` or trip destructive prep side-effects
+    # (release_cyclics, drop_moon_weapon?) below. See issue #7563.
+    return if spell_disabled?(data['abbrev'])
 
     data = DRCA.check_discern(data, @settings, spell_is_sorcery?(data)) if data['use_auto_mana']
     game_state.cast_timer = Time.now
@@ -2610,9 +2643,10 @@ class SpellProcess
     # Preparation failed (unknown spell, area interference, exhausted retries, etc.).
     # Do NOT set casting; otherwise execute() bails on `if game_state.casting` and
     # starves all offensive and training casting until check_timer clears it 70s later.
+    # reset_casting_state also clears the casting_* sub-flags set above (cyclic,
+    # moonblade, regalia) and by callers (sorcery, weapon_buff, hide_on_cast).
     unless prepared
-      game_state.casting = false
-      game_state.cast_timer = nil
+      reset_casting_state(game_state)
       return
     end
 
