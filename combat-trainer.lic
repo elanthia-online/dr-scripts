@@ -4184,7 +4184,12 @@ class AttackProcess
   def attack_thrown(game_state)
     attack_action = game_state.thrown_attack_verb
     attack_action += ' left' if game_state.offhand?
-    DRC.bput(attack_action, 'roundtime', 'What are you trying to')
+    # Some thrown hits (e.g. an offhand lob that shatters a limb) resolve without the
+    # game ever printing a 'roundtime' line, which would otherwise stall bput for its
+    # full timeout. Also match the throw's own success text so we return promptly and
+    # let waitrt? handle the actual roundtime from XML. See issue #7529.
+    attack_verb = attack_action.split(' ').first
+    DRC.bput(attack_action, /you #{Regexp.escape(attack_verb)}/i, 'roundtime', 'What are you trying to')
     waitrt?
     return game_state.action_taken if attack_action.include?('whip')
 
