@@ -54,6 +54,44 @@ class Enchant
   SIGIL_STUDY_SUCCESS = /^You study the sigil-scroll and commit the design to memory/.freeze
   SIGIL_TRACE_SUCCESS = /^Recalling the intricacies of the sigil, you trace its form/.freeze
 
+  # Sigil book (holds sigil-scrolls in numbered pages). Configured as a sigil
+  # type -> book map: one book per type, because a book's contents cannot be
+  # reorganized once filled and there are far more sigil types than a book can
+  # usefully mix. TURN selects a page and STUDY memorizes the sigil on it - the
+  # same memorization the loose-scroll path gets, so TRACE is unchanged after.
+  #
+  # A dedicated book never has to be searched for a sigil: every page holds the
+  # type the book is dedicated to, and studying a page blanks it and RENUMBERS
+  # the rest, so the next scroll of that type is page 1 again. Page 1 is always
+  # the right answer, so no contents listing is ever read or cached.
+  #
+  # STUDY refuses a page that has not been read ("You must read the current page
+  # before you study the book."), so the sequence is TURN, READ, STUDY. The READ
+  # is not wasted: its banner names the sigil on the page, which is checked
+  # against the type asked for - free protection against a mis-filed scroll.
+  #
+  # The book must be HELD for any of these ("But you're not holding it."), and
+  # the item reference must NOT contain the word "sigil": the parser reads it as
+  # a sigil-type argument, so "turn my sigil book to ..." answers "Which sigil
+  # did you wish to turn the a small sigil book to?". The bare noun is used for
+  # TURN/READ/STUDY for that reason - which also means the artificing instruction
+  # book must be stowed while a sigil book is in hand.
+  SIGIL_BOOK_TURN_PAGE = /^You turn the .+ to page (?<page>\d+)\./i.freeze
+  # A book left on a page by an interrupted study answers this instead. It means
+  # the same thing here: a page is selected and ready to READ.
+  SIGIL_BOOK_ALREADY_AT_PAGE = /^You are already on page (?<page>\d+)\./i.freeze
+  # No page 1 means no scrolls left: "The book does not have that many sigils in
+  # it." This is how an emptied book is detected - its contents are never read.
+  SIGIL_BOOK_PAGE_MISSING = /does not have that many sigils in it\./i.freeze
+  # Page banner from READ: "   --=== Congruence sigil ===--"
+  SIGIL_BOOK_PAGE_TYPE = /--===\s*(?<type>.+?)\s+sigil\s*===--/i.freeze
+  SIGIL_BOOK_STUDY_SUCCESS = /^You commit the sigil's design to memory/.freeze
+  # STUDY with the book at the contents (no page selected) appraises the book
+  # instead of memorizing anything, so it must be treated as a failure.
+  SIGIL_BOOK_STUDY_APPRAISE = /^You study the book and determine it is well-suited for holding sigil-scrolls/.freeze
+  SIGIL_BOOK_STUDY_UNREAD = /^You must read the current page before you study the book\./.freeze
+  SIGIL_BOOK_NOT_HELD = "But you're not holding it."
+
   # Scribe patterns
   SCRIBE_RT_PATTERN = /^Roundtime/.freeze
   SCRIBE_SIGIL_NEEDED = /^You need another .* sigil to continue the enchanting process/.freeze
@@ -86,6 +124,14 @@ class Enchant
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.enchanting_belt
     @stamp = @settings.mark_crafted_goods
+    # Optional: sigil type -> book map, one book per sigil type. Types without
+    # a book, and an unset setting, fall back to loose sigil-scrolls as before.
+    @sigil_books = parse_sigil_books(@settings.sigil_books)
+    # The sigil book currently in hand, kept between sigils so that a repeat of
+    # the same type costs no fetching at all.
+    @held_sigil_book = nil
+    # Set once if TRACE turns out to need the book's hand free - see trace_sigil.
+    @trace_needs_free_hand = false
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
 
@@ -135,6 +181,9 @@ class Enchant
       setup_flags
       run_enchant
     ensure
+      # The sigil book is held across the whole scribe loop, so it has to be put
+      # away here too - otherwise a killed or crashed run leaves it in hand.
+      stow_sigil_book
       cleanup_flags
     end
   end
@@ -172,8 +221,7 @@ class Enchant
     result = DRC.bput("analyze #{@item} on #{@brazier_ref}", *analyze_patterns)
 
     if ANALYZE_READY_PATTERNS.any? { |pat| pat.match?(result) }
-      DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
-      scribe
+      scribe_with_burin
     elsif ANALYZE_IMBUE_PATTERN.match?(result)
       handle_imbue_resume
     else
@@ -183,14 +231,16 @@ class Enchant
 
   def handle_imbue_resume
     result = DRC.bput("look on #{@brazier_ref}", BRAZIER_HAS_FOUNT_PATTERN, 'There is nothing')
-    if BRAZIER_HAS_FOUNT_PATTERN.match?(result)
-      imbue
-    else
+    unless BRAZIER_HAS_FOUNT_PATTERN.match?(result)
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
       wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
       DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
-      imbue
     end
+    imbue
+    # An imbue is never the last step - the item still needs scribing, and the
+    # sigil prompt only arrives after the imbue roundtime. Without this the
+    # script exits before the scribe loop ever sees it.
+    scribe_with_burin
   end
 
   def handle_new_enchant
@@ -212,6 +262,14 @@ class Enchant
     DRC.bput("touch my #{@cube}", *TOUCH_CUBE_PATTERNS) if @cube
     imbue
 
+    scribe_with_burin
+  end
+
+  # Picks the burin back up and enters the scribe loop. Every path that leaves
+  # the item ready for scribing ends here.
+  #
+  # @return [void]
+  def scribe_with_burin
     DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
     scribe
   end
@@ -284,7 +342,7 @@ class Enchant
         Lich::Messaging.msg("bold", "Enchant: Casting Imbue failed. Retrying.")
       end
     else
-      unless DRC.left_hand.to_s.include?(@imbue_wand)
+      unless DRCI.in_hands?(@imbue_wand)
         DRCC.get_crafting_item(@imbue_wand, @bag, @bag_items, @belt)
       end
 
@@ -295,7 +353,7 @@ class Enchant
         return
       end
 
-      DRCC.stow_crafting_item(@imbue_wand, @bag, @belt) if DRC.left_hand.to_s.include?(@imbue_wand)
+      DRCC.stow_crafting_item(@imbue_wand, @bag, @belt) if DRCI.in_hands?(@imbue_wand)
     end
     Flags.reset('enchant-imbue')
   end
@@ -329,14 +387,193 @@ class Enchant
     end
   end
 
+  # Memorizes a sigil and traces it onto the item.
+  #
+  # The sigil book is normally kept in hand across the whole scribe loop. If
+  # TRACE turns out to need that hand free, the book is stowed and the trace
+  # retried, and every later trace stows first - so a run self-corrects once
+  # instead of paying a stow and a fetch per sigil on the chance it is needed.
+  #
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [void]
   def trace_sigil(sigil)
+    return unless study_sigil(sigil)
+
+    stow_sigil_book if @trace_needs_free_hand
+    return if trace_memorized_sigil
+
+    # Unrecognized response, most likely because both hands are full.
+    @trace_needs_free_hand = true
+    stow_sigil_book
+    return if trace_memorized_sigil
+
+    Lich::Messaging.msg("bold", "Enchant: Failed to trace #{sigil} sigil.")
+  end
+
+  # Traces the sigil currently held in memory onto the item.
+  #
+  # @return [Boolean] true when the trace was accepted
+  def trace_memorized_sigil
+    result = DRC.bput("trace #{@item} on #{@brazier_ref}", { 'timeout' => 5, 'suppress_no_match' => true }, SIGIL_TRACE_SUCCESS)
+    SIGIL_TRACE_SUCCESS.match?(result.to_s)
+  end
+
+  # Memorizes a sigil, from the book dedicated to that type when one is
+  # configured, otherwise from a loose sigil-scroll.
+  #
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [Boolean] true once the sigil is committed to memory
+  def study_sigil(sigil)
+    return true if study_sigil_from_book(sigil)
+
     unless DRCI.get_item?("#{sigil} sigil")
       Lich::Messaging.msg("bold", "Enchant: Failed to get #{sigil} sigil.")
-      return
+      return false
     end
     DRC.bput("study my #{sigil} sigil", SIGIL_STUDY_SUCCESS)
     waitrt?
-    DRC.bput("trace #{@item} on #{@brazier_ref}", SIGIL_TRACE_SUCCESS)
+    true
+  end
+
+  # The configured sigil type -> book map.
+  #
+  # @return [Hash{String => String}] downcased sigil type to book name
+  def sigil_books
+    @sigil_books ||= {}
+  end
+
+  # Parses the sigil_books setting into a sigil type -> book map.
+  #
+  # @param setting [Hash, nil] the sigil_books setting
+  # @return [Hash{String => String}] downcased sigil type to book name
+  def parse_sigil_books(setting)
+    case setting
+    when Hash
+      setting.each_with_object({}) { |(type, book), books| books[type.to_s.downcase] = book }
+    when nil, ''
+      {}
+    else
+      # Pre-map configs listed books as a bare Array, which cannot say which
+      # type each book holds.
+      Lich::Messaging.msg("bold", "Enchant: sigil_books must map each sigil type to its own book, e.g. 'nurture: blue book'. Using loose sigil-scrolls.") unless Array(setting).empty?
+      {}
+    end
+  end
+
+  # Studies a sigil out of the book dedicated to that type.
+  #
+  # Three commands when that book is already in hand (TURN, READ, STUDY), two
+  # more when it has to be swapped in. No contents listing is read: page 1 of a
+  # dedicated book always holds the type wanted - see the SIGIL_BOOK_ constants.
+  #
+  # A book that cannot supply the sigil - out of scrolls, or holding something
+  # other than the type it is mapped to - is dropped from the map for the rest
+  # of the run, so the type falls back to loose sigil-scrolls instead of failing
+  # the same way again on every later prompt.
+  #
+  # @param sigil [String] sigil type, e.g. 'congruence'
+  # @return [Boolean] true when the sigil was memorized from its book
+  def study_sigil_from_book(sigil)
+    book = sigil_books[sigil.downcase]
+    return false unless book
+    return false unless hold_sigil_book(book)
+
+    unless turn_sigil_book_to_first_page(book)
+      Lich::Messaging.msg("bold", "Enchant: #{book} has no #{sigil} sigils left.")
+      sigil_books.delete(sigil.downcase)
+      return false
+    end
+
+    unless read_sigil_book_page(book, sigil)
+      sigil_books.delete(sigil.downcase)
+      return false
+    end
+
+    result = DRC.bput("study my #{sigil_book_noun(book)}", SIGIL_BOOK_STUDY_SUCCESS, SIGIL_BOOK_STUDY_APPRAISE, SIGIL_BOOK_STUDY_UNREAD, SIGIL_BOOK_NOT_HELD)
+    unless SIGIL_BOOK_STUDY_SUCCESS.match?(result.to_s)
+      @held_sigil_book = nil if result.to_s.include?(SIGIL_BOOK_NOT_HELD)
+      Lich::Messaging.msg("bold", "Enchant: Failed to study #{sigil} sigil from #{book}.")
+      return false
+    end
+    waitrt?
+    true
+  end
+
+  # Reads the selected page, which STUDY requires before it will memorize
+  # anything, and confirms the page holds the sigil type asked for.
+  #
+  # The check is free - the page has to be read either way - and catches a
+  # scroll filed into the wrong book, which would otherwise be traced as the
+  # wrong sigil.
+  #
+  # @param book [String] the book in hand
+  # @param sigil [String] sigil type the page is expected to hold
+  # @return [Boolean] true when the page holds that type and is ready to study
+  def read_sigil_book_page(book, sigil)
+    result = DRC.bput("read my #{sigil_book_noun(book)}", { 'timeout' => 3, 'suppress_no_match' => true }, SIGIL_BOOK_PAGE_TYPE)
+    match = SIGIL_BOOK_PAGE_TYPE.match(result.to_s)
+    unless match
+      Lich::Messaging.msg("bold", "Enchant: Could not read the current page of #{book}.")
+      return false
+    end
+    return true if match[:type].casecmp(sigil).zero?
+
+    Lich::Messaging.msg("bold", "Enchant: #{book} is mapped to #{sigil} but page 1 holds a #{match[:type].downcase} sigil.")
+    false
+  end
+
+  # Turns the held book to page 1, which is always its next unread scroll.
+  #
+  # An empty book cannot select a page, which is how a book that has run out is
+  # detected - its contents never have to be read.
+  #
+  # @param book [String] the book in hand
+  # @return [Boolean] true when a page was selected, false when the book is out
+  def turn_sigil_book_to_first_page(book)
+    result = DRC.bput("turn my #{sigil_book_noun(book)} to page 1", { 'timeout' => 3, 'suppress_no_match' => true }, SIGIL_BOOK_TURN_PAGE, SIGIL_BOOK_ALREADY_AT_PAGE, SIGIL_BOOK_PAGE_MISSING).to_s
+    SIGIL_BOOK_TURN_PAGE.match?(result) || SIGIL_BOOK_ALREADY_AT_PAGE.match?(result)
+  end
+
+  # The reference used for TURN/STUDY. Always the bare noun - see the
+  # SIGIL_BOOK_* constants for why a "sigil ..." reference cannot be used.
+  #
+  # @param book [String] the sigil book name
+  # @return [String] noun of that sigil book
+  def sigil_book_noun(book)
+    DRC.get_noun(book)
+  end
+
+  # Gets a sigil book in hand, which every book command requires, and leaves it
+  # there. Only a sigil of a different type causes a swap.
+  #
+  # @param book [String] the sigil book to hold
+  # @return [Boolean] true when the book is held
+  def hold_sigil_book(book)
+    return true if @held_sigil_book == book && DRCI.in_hands?(sigil_book_noun(book))
+
+    stow_sigil_book
+    DRCC.get_crafting_item(book, @bag, @bag_items, @belt, true)
+    unless DRCI.in_hands?(sigil_book_noun(book))
+      Lich::Messaging.msg("bold", "Enchant: Failed to get #{book}.")
+      return false
+    end
+
+    @held_sigil_book = book
+    true
+  end
+
+  # Puts the held sigil book away and forgets it.
+  #
+  # Safe to call at any point: the cleanup paths stow whatever is in hand, so
+  # the book may already be gone by the time this runs.
+  #
+  # @return [void]
+  def stow_sigil_book
+    book = @held_sigil_book
+    @held_sigil_book = nil
+    return unless book && DRCI.in_hands?(sigil_book_noun(book))
+
+    DRCC.stow_crafting_item(book, @bag, @belt)
   end
 
   def scribe
@@ -387,7 +624,9 @@ class Enchant
 
   def handle_push_flag
     Flags.reset('enchant-push')
-    DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.to_s.include?('burin')
+    # The loop needs the hand the sigil book has been sitting in.
+    stow_sigil_book
+    DRCC.stow_crafting_item(@burin, @bag, @belt) if DRCI.in_hands?(@burin)
     DRCC.get_crafting_item(@loop, @bag, @bag_items, @belt)
     DRC.bput("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     waitrt?
@@ -398,7 +637,10 @@ class Enchant
 
   def handle_imbue_flag
     Flags.reset('enchant-imbue')
-    DRCC.stow_crafting_item(@burin, @bag, @belt) if DRC.left_hand.to_s.include?('burin')
+    # Imbuing needs the hand the sigil book has been sitting in, for the wand or
+    # for the casting.
+    stow_sigil_book
+    DRCC.stow_crafting_item(@burin, @bag, @belt) if DRCI.in_hands?(@burin)
     imbue
     DRCC.get_crafting_item(@burin, @bag, @bag_items, @belt)
     scribe
@@ -427,6 +669,7 @@ class Enchant
   end
 
   def cleanup
+    stow_sigil_book
     DRCC.stow_crafting_item(DRC.right_hand, @bag, @belt) if DRC.right_hand
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
     unless @item == 'fount'

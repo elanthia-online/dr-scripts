@@ -996,6 +996,16 @@ enchanting_tools:
   - brazier
   - burin
 
+# Sigil books holding your sigil-scrolls, kept in your crafting container or on
+# your enchanting belt.  Map each sigil type to the book that holds that type
+# and nothing else - enchant turns such a book straight to page 1, which is
+# always its next scroll of that type, so no book ever has to be read.
+# Sigil types with no book listed, and an empty setting, use loose
+# sigil-scrolls instead.
+sigil_books:
+  # congruence: small sigil book
+  # nurture: large sigil book
+
 # setup custom toolsets to get from clerk-tools.  example of format listed below
 custom_clerk_tools:
   # mining:                   # name of the toolset to use custom=mining in this case
