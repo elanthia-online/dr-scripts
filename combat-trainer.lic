@@ -2118,7 +2118,7 @@ class SpellProcess
     needs_training = ['Warding', 'Utility', 'Augmentation', 'Sorcery', 'Debilitation', 'Targeted Magic'].select do |skill|
       data = @training_spells[skill]
       next false unless data
-      next false if data['ct_spell_disabled']
+      next false if spell_disabled?(data['abbrev'])
       next false unless game_state.is_offense_allowed? || data['harmless']
       next false unless %w[Warding Utility Augmentation].include?(skill) || (!@training_spells_combat_sorcery && skill == 'Sorcery') || !game_state.npcs.empty?
       next false unless DRSkill.getxp(skill) < @magic_exp_training_max_threshold
@@ -2179,12 +2179,32 @@ class SpellProcess
     DRCI.put_away_item?(data['runestone_name'], @runestone_storage)
   end
 
+  # Spells the game reports the character cannot cast ("You have no idea how to
+  # cast that spell") are disabled by abbrev so they are not retried every tick.
+  # Keyed by abbrev, not by a flag on the spell hash, because some callers
+  # (empath healing) rebuild the hash each tick, so a flag on it would not
+  # persist. See issue #7563.
+  def spell_disabled?(abbrev)
+    abbrev && @disabled_spells&.include?(abbrev.downcase)
+  end
+
+  def disable_spell(data)
+    abbrev = data['abbrev']
+    return unless abbrev
+
+    @disabled_spells ||= Set.new
+    # add? returns nil when already present, so the message prints exactly once.
+    return unless @disabled_spells.add?(abbrev.downcase)
+
+    DRC.message("Disabling #{data['name'] || abbrev}: the game reports you have no idea how to cast it. Fix your spell lists.")
+  end
+
   def check_buffs(game_state)
     return if game_state.casting
     return if DRStats.mana < @buff_spell_mana_threshold
 
     recastable_buffs = @buff_spells.select do |name, data|
-      next false if data['ct_spell_disabled']
+      next false if spell_disabled?(data['abbrev'])
       next false unless data['recast'] || data['recast_every'] || data['expire']
       next false if data['expire'] && !Flags["ct-#{data['abbrev']}"]
       next false unless check_buff_conditions?(name, game_state)
@@ -2251,7 +2271,7 @@ class SpellProcess
     return if DRStats.health > @empath_vitality_threshold && @wounds.empty?
 
     if DRSpells.active_spells['Regeneration']
-      if @empath_spells['VH'] && DRStats.health <= @empath_vitality_threshold
+      if @empath_spells['VH'] && DRStats.health <= @empath_vitality_threshold && !spell_disabled?('vh')
         data = { 'abbrev' => 'vh', 'mana' => @empath_spells['VH'].first, 'cambrinth' => @empath_spells['VH'][1..-1], 'harmless' => true }
         prepare_spell(data, game_state)
       end
@@ -2265,14 +2285,14 @@ class SpellProcess
 
     echo('Healing') if $debug_mode_ct
     if @wounds.any?
-      if @empath_spells['FOC']
+      if @empath_spells['FOC'] && !spell_disabled?('foc')
         data = { 'abbrev' => 'foc', 'mana' => @empath_spells['FOC'].first, 'cambrinth' => @empath_spells['FOC'][1..-1], 'harmless' => true }
-      elsif @empath_spells['HEAL']
+      elsif @empath_spells['HEAL'] && !spell_disabled?('heal')
         data = { 'abbrev' => 'heal', 'mana' => @empath_spells['HEAL'].first, 'cambrinth' => @empath_spells['HEAL'][1..-1], 'harmless' => true }
       end
       @wounds = {}
       prepare_spell(data, game_state, true) if data
-    elsif @empath_spells['VH']
+    elsif @empath_spells['VH'] && !spell_disabled?('vh')
       data = { 'abbrev' => 'vh', 'mana' => @empath_spells['VH'].first, 'cambrinth' => @empath_spells['VH'][1..-1], 'harmless' => true }
       prepare_spell(data, game_state, true)
     end
@@ -2426,7 +2446,7 @@ class SpellProcess
 
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
     ready_spells = @offensive_spells.select do |spell|
-      next false if spell['ct_spell_disabled']
+      next false if spell_disabled?(spell['abbrev'])
       next false if spell['target_enemy'] && !game_state.npcs.include?(spell['target_enemy'])
       next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
       next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
@@ -2583,12 +2603,9 @@ class SpellProcess
 
     # The character does not know this spell (e.g. a scroll-memorized spell lost on
     # death, or an Analogous Patterns spell forgotten at circle 10). Disable it so we
-    # do not retry it every tick; check_buffs/check_training/check_offensive skip it.
-    if Flags['ct-spell-unknown']
-      Flags.reset('ct-spell-unknown')
-      data['ct_spell_disabled'] = true
-      DRC.message("Disabling #{data['name'] || data['abbrev']}: the game reports you have no idea how to cast it. Fix your spell lists.")
-    end
+    # do not retry it every tick; the check_* paths below skip disabled spells.
+    disable_spell(data) if Flags['ct-spell-unknown']
+    Flags.reset('ct-spell-unknown')
 
     # Preparation failed (unknown spell, area interference, exhausted retries, etc.).
     # Do NOT set casting; otherwise execute() bails on `if game_state.casting` and

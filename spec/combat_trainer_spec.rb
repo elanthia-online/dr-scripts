@@ -3347,7 +3347,7 @@ RSpec.describe SpellProcess do
       expect(gs.cast_timer).to be_nil
     end
 
-    it 'disables an unknown spell and does not set casting' do
+    it 'disables an unknown spell (by abbrev) and does not set casting' do
       # Mimic the game replying "You have no idea how to cast that spell": the
       # ct-spell-unknown flag trips during prep and prepare? returns false.
       allow(DRCA).to receive(:prepare?) do
@@ -3362,7 +3362,7 @@ RSpec.describe SpellProcess do
 
       instance.send(:prepare_spell, data, gs)
 
-      expect(data['ct_spell_disabled']).to be true
+      expect(instance.send(:spell_disabled?, 'ease')).to be_truthy
       expect(gs.casting).to be false
     end
   end
@@ -3371,19 +3371,50 @@ RSpec.describe SpellProcess do
   # #check_offensive -- a disabled spell is skipped instead of retried forever
   # ===========================================================================
   describe '#check_offensive' do
-    it 'skips an offensive spell flagged ct_spell_disabled' do
+    it 'skips a disabled offensive spell rather than preparing it' do
       DRStats.mana = 100
-      disabled_spell = { 'abbrev' => 'LETH', 'name' => 'Lethargy', 'skill' => 'Debilitation', 'ct_spell_disabled' => true }
+      disabled_spell = { 'abbrev' => 'LETH', 'name' => 'Lethargy', 'skill' => 'Debilitation' }
 
       instance = build_spell_process(
         offensive_spells: [disabled_spell],
         offensive_spell_cycle: [],
-        offensive_spell_mana_threshold: 0
+        offensive_spell_mana_threshold: 0,
+        disabled_spells: Set.new(['leth'])
       )
-      gs = double('GameState', casting: false, npcs: ['an orc'], sort_by_rate_then_rank: [])
+      # sort_by_rate_then_rank returns the spell's skill so that, if the filter
+      # let the disabled spell through, `data` would resolve to it and
+      # prepare_spell would be called -- i.e. the guard, not `return unless data`,
+      # is what keeps prepare_spell from running.
+      gs = double('GameState', casting: false, npcs: ['an orc'],
+                               is_offense_allowed?: true, dancing?: false,
+                               sort_by_rate_then_rank: ['Debilitation'])
 
       expect(instance).not_to receive(:prepare_spell)
       instance.send(:check_offensive, gs)
+    end
+  end
+
+  # ===========================================================================
+  # #check_health_empath -- the disable also covers the rebuilt healing hashes
+  #
+  # These paths build a throwaway `data` hash every tick, so keying the disable
+  # by abbrev (not a flag on the hash) is what stops the repeated retry/message.
+  # ===========================================================================
+  describe '#check_health_empath' do
+    it 'does not prepare a disabled Vitality Healing during regeneration' do
+      DRStats.health = 50
+      DRSpells._set_active_spells({ 'Regeneration' => 100 })
+
+      instance = build_spell_process(
+        empath_spells: { 'VH' => [5] },
+        empath_vitality_threshold: 75,
+        wounds: {},
+        disabled_spells: Set.new(['vh'])
+      )
+      gs = double('GameState')
+
+      expect(instance).not_to receive(:prepare_spell)
+      instance.send(:check_health_empath, gs)
     end
   end
 end
