@@ -3551,8 +3551,10 @@ RSpec.describe SpellProcess do
   end
 
   # ===========================================================================
-  # #check_consume -- an UNGUARDED caller: the central guard is what protects it,
-  # proving the disable is not limited to the four select/empath paths.
+  # Necromancer callers -- UNGUARDED (no select filter): the central guard is what
+  # protects them, and it must also clear the casting_* sub-flag they set BEFORE
+  # calling prepare_spell, or necro_casting? sticks true and suppresses
+  # looting/rituals/pet creation for the rest of the session.
   # ===========================================================================
   describe '#check_consume' do
     it 'does not ping the game for a disabled necromancer Siphon Vitality' do
@@ -3565,11 +3567,35 @@ RSpec.describe SpellProcess do
         siphon_vit_threshold: '100',
         disabled_spells: Set.new(['sv'])
       )
-      gs = double('GameState', casting: false, npcs: ['an orc'])
+      gs = GameState.allocate
+      gs.casting = false
+      allow(gs).to receive(:npcs).and_return(['an orc'])
 
       instance.send(:check_consume, gs)
 
       expect(DRCA).not_to have_received(:prepare?)
+    end
+  end
+
+  describe '#check_cfb' do
+    it 'does not leave casting_cfb set (necro_casting? stays false) when Call from Beyond is disabled' do
+      DRStats.guild = 'Necromancer'
+      allow(DRCA).to receive(:prepare?)
+
+      instance = build_spell_process(
+        necromancer_zombie: { 'Call from Beyond' => { 'abbrev' => 'cfb', 'name' => 'Call from Beyond', 'mana' => 5 } },
+        disabled_spells: Set.new(['cfb'])
+      )
+      gs = GameState.allocate
+      gs.casting = false
+      gs.casting_cfb = false
+      gs.prepare_cfb = true # a trigger fired, so check_cfb will try to cast it
+
+      instance.send(:check_cfb, gs)
+
+      expect(DRCA).not_to have_received(:prepare?) # central guard skipped it
+      expect(gs.casting_cfb).to be false           # ...and cleared the flag check_cfb set
+      expect(gs.necro_casting?).to be false         # so loot/rituals/pets are NOT suppressed
     end
   end
 end

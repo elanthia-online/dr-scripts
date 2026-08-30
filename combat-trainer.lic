@@ -1663,7 +1663,7 @@ class SpellProcess
     Flags.add('ct-regalia-expired', 'Your .* glimmers? weakly') if DRStats.trader?
     Flags.add('ct-regalia-succeeded', 'You cup your palms skyward to bask in') if DRStats.trader?
     Flags.add('ct-shock-warning', 'You are distinctly aware that completion of this spell pattern may bring you shock')
-    Flags.add('ct-spell-unknown', '^You have no idea how to cast that spell')
+    Flags.add('ct-spell-unknown', 'You have no idea how to cast that spell')
 
     @offensive_spells
       .select { |spell| spell['expire'] }
@@ -2563,7 +2563,14 @@ class SpellProcess
     # caller (offensive/buff/training selects, empath/necro healing, regalia, ...)
     # is covered and none re-send `prep` or trip destructive prep side-effects
     # (release_cyclics, drop_moon_weapon?) below. See issue #7563.
-    return if spell_disabled?(data['abbrev'])
+    # reset_casting_state clears any casting_* sub-flag a caller set before calling
+    # us -- check_cfb/check_cfw/heal_corpse/check_consume set casting_cfb/cfw/nr/
+    # consume before prepare_spell -- otherwise necro_casting? would stay true after
+    # a disabled necro spell and suppress looting, rituals, and pet creation.
+    if spell_disabled?(data['abbrev'])
+      reset_casting_state(game_state)
+      return
+    end
 
     data = DRCA.check_discern(data, @settings, spell_is_sorcery?(data)) if data['use_auto_mana']
     game_state.cast_timer = Time.now
