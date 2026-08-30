@@ -1663,6 +1663,7 @@ class SpellProcess
     Flags.add('ct-regalia-expired', 'Your .* glimmers? weakly') if DRStats.trader?
     Flags.add('ct-regalia-succeeded', 'You cup your palms skyward to bask in') if DRStats.trader?
     Flags.add('ct-shock-warning', 'You are distinctly aware that completion of this spell pattern may bring you shock')
+    Flags.add('ct-spell-unknown', 'You have no idea how to cast that spell')
 
     @offensive_spells
       .select { |spell| spell['expire'] }
@@ -2117,6 +2118,7 @@ class SpellProcess
     needs_training = ['Warding', 'Utility', 'Augmentation', 'Sorcery', 'Debilitation', 'Targeted Magic'].select do |skill|
       data = @training_spells[skill]
       next false unless data
+      next false if data['ct_spell_disabled']
       next false unless game_state.is_offense_allowed? || data['harmless']
       next false unless %w[Warding Utility Augmentation].include?(skill) || (!@training_spells_combat_sorcery && skill == 'Sorcery') || !game_state.npcs.empty?
       next false unless DRSkill.getxp(skill) < @magic_exp_training_max_threshold
@@ -2182,6 +2184,7 @@ class SpellProcess
     return if DRStats.mana < @buff_spell_mana_threshold
 
     recastable_buffs = @buff_spells.select do |name, data|
+      next false if data['ct_spell_disabled']
       next false unless data['recast'] || data['recast_every'] || data['expire']
       next false if data['expire'] && !Flags["ct-#{data['abbrev']}"]
       next false unless check_buff_conditions?(name, game_state)
@@ -2423,6 +2426,7 @@ class SpellProcess
 
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
     ready_spells = @offensive_spells.select do |spell|
+      next false if spell['ct_spell_disabled']
       next false if spell['target_enemy'] && !game_state.npcs.include?(spell['target_enemy'])
       next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
       next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
@@ -2573,8 +2577,27 @@ class SpellProcess
     game_state.casting_regalia = data['abbrev'].casecmp('REGAL').zero?
 
     Flags.reset('ct-shock-warning')
+    Flags.reset('ct-spell-unknown')
     custom_prep = data['custom_prep'] || @settings['custom_spell_prep']
-    DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], custom_prep)
+    prepared = DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], custom_prep)
+
+    # The character does not know this spell (e.g. a scroll-memorized spell lost on
+    # death, or an Analogous Patterns spell forgotten at circle 10). Disable it so we
+    # do not retry it every tick; check_buffs/check_training/check_offensive skip it.
+    if Flags['ct-spell-unknown']
+      Flags.reset('ct-spell-unknown')
+      data['ct_spell_disabled'] = true
+      DRC.message("Disabling #{data['name'] || data['abbrev']}: the game reports you have no idea how to cast it. Fix your spell lists.")
+    end
+
+    # Preparation failed (unknown spell, area interference, exhausted retries, etc.).
+    # Do NOT set casting; otherwise execute() bails on `if game_state.casting` and
+    # starves all offensive and training casting until check_timer clears it 70s later.
+    unless prepared
+      game_state.casting = false
+      game_state.cast_timer = nil
+      return
+    end
 
     if Flags['ct-shock-warning'] && !game_state.is_permashocked?
       DRC.message('Dropping spell: Got shock warning.')
@@ -6658,6 +6681,7 @@ before_dying do
   Flags.delete('ct-germshieldlost')
   Flags.delete('ct-itemdropped')
   Flags.delete('ct-shock-warning')
+  Flags.delete('ct-spell-unknown')
   Flags.delete('ct-maneuver-cooldown-reduced')
   Flags.delete('ct-attack-out-of-range')
   Flags.delete('ct-battle-cry-not-facing')

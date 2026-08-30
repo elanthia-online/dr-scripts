@@ -3303,6 +3303,89 @@ RSpec.describe SpellProcess do
       instance.send(:cast_ritual, { 'ritual' => true }, gs)
     end
   end
+
+  # ===========================================================================
+  # #prepare_spell -- a failed preparation must not leave game_state.casting set
+  #
+  # Regression for issue #7563. DRCA.prepare? returns false when preparation
+  # fails (unknown spell, area interference, exhausted retries, ...). The old
+  # code discarded that return value and unconditionally set
+  # game_state.casting = true, so SpellProcess#execute bailed on
+  # `if game_state.casting` and starved every offensive and training cast until
+  # check_timer cleared it 70 seconds later.
+  # ===========================================================================
+  describe '#prepare_spell' do
+    def build_prep_state
+      gs = GameState.allocate
+      gs.casting = false
+      gs.cast_timer = nil
+      gs
+    end
+
+    it 'sets casting when preparation succeeds' do
+      allow(DRCA).to receive(:prepare?).and_return('You feel fully prepared to cast your spell.')
+
+      instance = build_spell_process(settings: OpenStruct.new)
+      gs = build_prep_state
+      data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'cambrinth' => [] }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(gs.casting).to be true
+    end
+
+    it 'leaves casting unset when preparation fails' do
+      allow(DRCA).to receive(:prepare?).and_return(false)
+
+      instance = build_spell_process(settings: OpenStruct.new)
+      gs = build_prep_state
+      data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3 }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(gs.casting).to be false
+      expect(gs.cast_timer).to be_nil
+    end
+
+    it 'disables an unknown spell and does not set casting' do
+      # Mimic the game replying "You have no idea how to cast that spell": the
+      # ct-spell-unknown flag trips during prep and prepare? returns false.
+      allow(DRCA).to receive(:prepare?) do
+        Flags['ct-spell-unknown'] = true
+        false
+      end
+      allow(DRC).to receive(:message)
+
+      instance = build_spell_process(settings: OpenStruct.new)
+      gs = build_prep_state
+      data = { 'abbrev' => 'EASE', 'name' => 'Ease Burden', 'mana' => 3 }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(data['ct_spell_disabled']).to be true
+      expect(gs.casting).to be false
+    end
+  end
+
+  # ===========================================================================
+  # #check_offensive -- a disabled spell is skipped instead of retried forever
+  # ===========================================================================
+  describe '#check_offensive' do
+    it 'skips an offensive spell flagged ct_spell_disabled' do
+      DRStats.mana = 100
+      disabled_spell = { 'abbrev' => 'LETH', 'name' => 'Lethargy', 'skill' => 'Debilitation', 'ct_spell_disabled' => true }
+
+      instance = build_spell_process(
+        offensive_spells: [disabled_spell],
+        offensive_spell_cycle: [],
+        offensive_spell_mana_threshold: 0
+      )
+      gs = double('GameState', casting: false, npcs: ['an orc'], sort_by_rate_then_rank: [])
+
+      expect(instance).not_to receive(:prepare_spell)
+      instance.send(:check_offensive, gs)
+    end
+  end
 end
 
 # ###################################################################
