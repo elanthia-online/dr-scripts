@@ -596,7 +596,41 @@ hunting_buddies:
 hunting_buddies_max: 2
 # A list of nemesis or people you do not want to hunt with.
 hunting_nemesis:
+# Stop the hunt when you start bleeding so you can get healed before you bleed out.
+# A heal-over-time spell (Empath Heal/Regenerate, Necromancer Devour) is assumed to tend
+# the bleed for you, so while one of those is active the hunt does NOT stop on the bleed
+# alone -- it only stops once your vitality (health %) has also fallen below
+# safety_escape_health_threshold (default 80), the point a heal-over-time can no longer be
+# trusted to keep up. With no heal-over-time active, the hunt stops as soon as you bleed.
+# Set to false to keep hunting through bleeds; they are still tended in stride via ;tendme.
 stop_hunting_if_bleeding: true
+# Stop the hunt when you are stunned and your vitality (health %) is below
+# safety_escape_health_threshold (default 80). Independent of bleeding; leave false unless
+# you want that stunned-at-low-health exit.
+#
+# NOTE: the old safety_exit_on_bleeding setting is deprecated. It bundled "stop on bleed"
+# together with this stunned exit; those are now stop_hunting_if_bleeding and
+# safety_exit_when_stunned respectively. safety_exit_on_bleeding is still honored (it turns
+# on both) but prints a deprecation notice -- migrate to the two settings above.
+safety_exit_when_stunned: false
+# Minimum concentration (%) to keep hunting. If your concentration falls below this, the
+# hunt stops -- concentration is needed to keep casting, so a dip means you can no longer
+# sustain your rotation. This is the highest-priority safety check (it is evaluated before
+# the bleed/stun/Vanish exits). Default 0 disables it (concentration is never below 0).
+safety_concentration_minimum: 0
+# Vitality (health %) floor shared by several safety exits. Leave BLANK (the default) to
+# keep current behavior; set a number to enable/raise it. When set, one value drives THREE
+# things:
+#   * Thieves who know Vanish will Vanish and stop when bleeding, stunned, or health drops
+#     below this value. Blank disables the Vanish escape entirely (thieves won't auto-Vanish
+#     on bleed/stun/health at all).
+#   * safety_exit_when_stunned uses it as the "low health" line for the stunned exit
+#     (falls back to 80 when blank).
+#   * With stop_hunting_if_bleeding, it is the vitality floor below which the hunt stops on a
+#     bleed even while a heal-over-time is active (falls back to 80 when blank).
+# NOTE: because one value drives all three, raising it (e.g. 90) makes Vanish very eager AND
+# largely cancels the heal-over-time bleed grace (you are usually below it once bleeding).
+safety_escape_health_threshold:
 # Room that you will use to prebuff your character before a hunt, utilizes the prehunt_buffs waggle set.
 prehunt_buffing_room:
 # Minimum perc mana to look for in a hunting room. If hunting_room_strict_mana is true, then it will skip a hunt if it can't find the mana
