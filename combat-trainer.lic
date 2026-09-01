@@ -2305,7 +2305,7 @@ class SpellProcess
   def check_health_empath(game_state)
     return if DRStats.health > @empath_vitality_threshold && @wounds.empty?
 
-    if DRSpells.active_spells['Regeneration']
+    if DRSpells.active_spells['Regenerate']
       if @empath_spells['VH'] && DRStats.health <= @empath_vitality_threshold
         data = { 'abbrev' => 'vh', 'mana' => @empath_spells['VH'].first, 'cambrinth' => @empath_spells['VH'][1..-1], 'harmless' => true }
         prepare_spell(data, game_state)

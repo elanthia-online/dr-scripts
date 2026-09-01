@@ -3573,7 +3573,7 @@ RSpec.describe SpellProcess do
   describe '#check_health_empath' do
     it 'does not ping the game for a disabled Vitality Healing during regeneration' do
       DRStats.health = 50
-      DRSpells._set_active_spells({ 'Regeneration' => 100 })
+      DRSpells._set_active_spells({ 'Regenerate' => 100 })
       allow(DRCA).to receive(:prepare?)
 
       instance = build_spell_process(
@@ -3587,6 +3587,29 @@ RSpec.describe SpellProcess do
       instance.send(:check_health_empath, gs)
 
       expect(DRCA).not_to have_received(:prepare?)
+    end
+
+    # Regression: the passive-heal guard was keyed off 'Regeneration', but the
+    # active_spells key the game reports is 'Regenerate'. The typo meant the guard
+    # never matched, so empaths actively burned FOC/HEAL mana on wounds a running
+    # Regenerate was already clearing. With Regenerate active we must early-return
+    # and NOT prepare an active healing spell.
+    it 'skips active FOC healing while Regenerate is running' do
+      DRStats.health = 100
+      DRSpells._set_active_spells({ 'Regenerate' => 100 })
+
+      instance = build_spell_process(
+        empath_spells: { 'FOC' => [5] },
+        empath_vitality_threshold: 75,
+        perc_health_timer: Time.now, # skip the perceive-health refresh branch
+        wounds: { 'chest' => 3 }
+      )
+      allow(instance).to receive(:prepare_spell)
+      gs = GameState.allocate
+
+      instance.send(:check_health_empath, gs)
+
+      expect(instance).not_to have_received(:prepare_spell)
     end
 
     it 'falls back to HEAL when FOC is disabled' do
