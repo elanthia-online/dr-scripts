@@ -1730,6 +1730,7 @@ RSpec.describe SafetyProcess do
       health_threshold: 20,
       stop_on_bleeding: true,
       safety_exit_on_bleeding: false,
+      safety_exit_when_stunned: false,
       safety_concentration_minimum: nil,
       safety_escape_health_threshold: nil
     }
@@ -1742,7 +1743,8 @@ RSpec.describe SafetyProcess do
   def build_game_state(**attrs)
     defaults = {
       danger: false,
-      retreating?: false
+      retreating?: false,
+      cleaning_up?: false
     }
     state = double('GameState', defaults.merge(attrs))
     allow(state).to receive(:danger=)
@@ -1936,6 +1938,54 @@ RSpec.describe SafetyProcess do
         expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
         expect_hunt_stopped
       end
+
+      it 'lets a Thief Vanish outrank the concentration halt when in danger' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+        # Low concentration AND bleeding: escape (Vanish) should win over the plain halt.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, safety_escape_health_threshold: 90,
+                        safety_concentration_minimum: 10, concentration: 5)
+
+        expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
+        expect_hunt_stopped
+      end
+
+      it 'still halts a Thief on low concentration alone (no escape-worthy danger)' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+        # Healthy and not bleeding/stunned: should_vanish? is false, so concentration halts.
+        run_safety_tick(safety_escape_health_threshold: 90, safety_concentration_minimum: 10,
+                        concentration: 5, health: 100)
+
+        expect(DRCA).not_to have_received(:activate_khri?)
+        expect_hunt_stopped
+        expect(displayed_messages).to include(a_string_matching(/Concentration below/))
+      end
+    end
+
+    # Once a stop is decided the combat loop runs a multi-tick cleanup; the safety chain must
+    # not keep firing (re-echoing / re-Vanishing) during it, but housekeeping should continue.
+    describe 'during cleanup' do
+      it 'skips the bail-out chain so it does not re-stop each tick' do
+        instance = build_safety_process(stop_on_bleeding: true)
+        stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true)
+
+        instance.execute(build_game_state(cleaning_up?: true))
+
+        expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+        expect($COMBAT_TRAINER).not_to have_received(:stop)
+      end
+
+      it 'still runs post-safety housekeeping during cleanup' do
+        instance = build_safety_process(stop_on_bleeding: true)
+        stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true)
+
+        instance.execute(build_game_state(cleaning_up?: true))
+
+        expect(instance).to have_received(:tend_parasite)
+      end
     end
 
     # Finding #6: the two stop reasons must be distinguishable in the log -- a plain
@@ -2053,7 +2103,10 @@ RSpec.describe SafetyProcess do
       end
     end
 
-    describe 'safety_exit_on_bleeding' do
+    # DEPRECATED setting. It historically bundled bleed-stop with the stunned-at-low-health
+    # exit; those are now stop_hunting_if_bleeding and safety_exit_when_stunned. It is still
+    # honored (drives both) and now warns at construction. These cases pin that legacy path.
+    describe 'safety_exit_on_bleeding (deprecated)' do
       it 'stops hunt when bleeding and setting is true' do
         # Disable stop_on_bleeding so only safety_exit_on_bleeding can drive the stop --
         # otherwise this passes even if safety_exit_on_bleeding were ignored.
@@ -2121,6 +2174,265 @@ RSpec.describe SafetyProcess do
         instance.execute(game_state)
 
         expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+      end
+
+      it 'prints a deprecation notice at construction when set' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: false, safety_exit_on_bleeding: true,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).to have_received(:message).with(/safety_exit_on_bleeding.*deprecated/)
+      end
+
+      it 'does not warn when the deprecated setting is unset' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).not_to have_received(:message).with(/deprecated/)
+      end
+    end
+
+    # REMOVED setting: the untendable tend-failure counter is gone; profiles that still set
+    # safety_untendable_threshold get a one-time notice at construction rather than silence.
+    describe 'safety_untendable_threshold (removed)' do
+      it 'warns that it has been removed when still set' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil,
+          safety_escape_health_threshold: nil, safety_untendable_threshold: 1
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).to have_received(:message).with(/safety_untendable_threshold.*removed/)
+      end
+
+      it 'does not warn when it is unset' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).not_to have_received(:message).with(/safety_untendable_threshold/)
+      end
+    end
+
+    # The stun half of the old safety_exit_on_bleeding, now its own opt-in. Stun-only:
+    # it must never react to a bleed.
+    describe 'safety_exit_when_stunned' do
+      it 'stops when stunned at low vitality' do
+        run_safety_tick(safety_exit_when_stunned: true, safety_exit_on_bleeding: false,
+                        stop_on_bleeding: false, stunned: true, health: 70)
+        expect_hunt_stopped
+      end
+
+      it 'does not stop when stunned at healthy vitality' do
+        run_safety_tick(safety_exit_when_stunned: true, safety_exit_on_bleeding: false,
+                        stop_on_bleeding: false, stunned: true, health: 95)
+        expect_hunt_continued
+      end
+
+      it 'does not stop on a bleed -- it is a stun-only exit' do
+        run_safety_tick(safety_exit_when_stunned: true, safety_exit_on_bleeding: false,
+                        stop_on_bleeding: false, bleeding: true, stunned: false, health: 50)
+        expect_hunt_continued
+      end
+    end
+
+    # Unit coverage for the extracted bail-out predicates (see #execute). These call the
+    # private predicates directly so each decision is pinned independently of dispatch order.
+    describe 'bail-out predicates' do
+      def predicate(instance, name)
+        instance.send(name)
+      end
+
+      describe '#concentration_too_low?' do
+        it 'is true below the minimum' do
+          instance = build_safety_process(safety_concentration_minimum: 10)
+          DRStats.concentration = 5
+          expect(predicate(instance, :concentration_too_low?)).to be_truthy
+        end
+
+        it 'is false at or above the minimum' do
+          instance = build_safety_process(safety_concentration_minimum: 10)
+          DRStats.concentration = 10
+          expect(predicate(instance, :concentration_too_low?)).to be_falsey
+        end
+
+        it 'is disabled (falsey) when unset' do
+          instance = build_safety_process(safety_concentration_minimum: nil)
+          DRStats.concentration = 0
+          expect(predicate(instance, :concentration_too_low?)).to be_falsey
+        end
+
+        it 'is disabled (falsey) at the default of 0, since concentration is never below 0' do
+          instance = build_safety_process(safety_concentration_minimum: 0)
+          DRStats.concentration = 0
+          expect(predicate(instance, :concentration_too_low?)).to be_falsey
+        end
+      end
+
+      describe '#should_vanish?' do
+        before(:each) do
+          DRStats.guild = 'Thief'
+          DRSpells._set_known_spells({ 'Vanish' => true })
+        end
+
+        it 'is true for a Thief who knows Vanish and is bleeding' do
+          instance = build_safety_process(safety_escape_health_threshold: 90)
+          DRStats.health = 100
+          allow(instance).to receive(:bleeding?).and_return(true)
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :should_vanish?)).to be_truthy
+        end
+
+        it 'is false for a non-Thief' do
+          instance = build_safety_process(safety_escape_health_threshold: 90)
+          DRStats.guild = 'Ranger'
+          DRStats.health = 10
+          allow(instance).to receive(:bleeding?).and_return(true)
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :should_vanish?)).to be_falsey
+        end
+
+        it 'is disabled (falsey) when the threshold is unset' do
+          instance = build_safety_process(safety_escape_health_threshold: nil)
+          DRStats.health = 10
+          allow(instance).to receive(:bleeding?).and_return(true)
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :should_vanish?)).to be_falsey
+        end
+      end
+
+      describe '#stunned_at_low_health?' do
+        it 'is true when safety_exit_when_stunned and stunned below the floor' do
+          instance = build_safety_process(safety_exit_when_stunned: true)
+          DRStats.health = 70
+          allow(instance).to receive(:stunned?).and_return(true)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_truthy
+        end
+
+        it 'is honored via the deprecated safety_exit_on_bleeding too' do
+          instance = build_safety_process(safety_exit_when_stunned: false, safety_exit_on_bleeding: true)
+          DRStats.health = 70
+          allow(instance).to receive(:stunned?).and_return(true)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_truthy
+        end
+
+        it 'is false at healthy vitality' do
+          instance = build_safety_process(safety_exit_when_stunned: true)
+          DRStats.health = 95
+          allow(instance).to receive(:stunned?).and_return(true)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_falsey
+        end
+
+        it 'is false when not stunned' do
+          instance = build_safety_process(safety_exit_when_stunned: true)
+          DRStats.health = 10
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_falsey
+        end
+      end
+
+      # bleeding_stop_reason returns nil (do not stop) or the stop message (stop, with the
+      # wording matching the reason) -- one method covering both the decision and the text.
+      describe '#bleeding_stop_reason' do
+        def bleeding_instance(**overrides)
+          instance = build_safety_process(**overrides)
+          allow(instance).to receive(:bleeding?).and_return(true)
+          instance
+        end
+
+        it 'is nil when no bleed-stop setting is enabled' do
+          instance = bleeding_instance(stop_on_bleeding: false, safety_exit_on_bleeding: false)
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
+        end
+
+        it 'is nil when not bleeding' do
+          instance = build_safety_process(stop_on_bleeding: true)
+          allow(instance).to receive(:bleeding?).and_return(false)
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
+        end
+
+        it 'is a plain-bleed message when bleeding with no heal-over-time' do
+          instance = bleeding_instance(stop_on_bleeding: true)
+          DRSpells._set_active_spells({})
+          expect(predicate(instance, :bleeding_stop_reason)).to match(/^Bleeding\. Stopping hunt/)
+        end
+
+        it 'is nil when a heal-over-time is tending at healthy vitality' do
+          instance = bleeding_instance(stop_on_bleeding: true)
+          DRStats.health = 100
+          DRSpells._set_active_spells({ 'Heal' => 20 })
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
+        end
+
+        it 'is the low-vitality message when a heal-over-time is active but vitality is below the floor' do
+          instance = bleeding_instance(stop_on_bleeding: true)
+          DRStats.health = 50
+          DRSpells._set_active_spells({ 'Heal' => 20 })
+          expect(predicate(instance, :bleeding_stop_reason)).to match(/despite an active heal-over-time/)
+        end
+      end
+
+      describe '#tend_bleeders?' do
+        it 'is true when bleeding, tendme not running, and no heal-over-time' do
+          instance = build_safety_process
+          allow(instance).to receive(:bleeding?).and_return(true)
+          DRSpells._set_active_spells({})
+          expect(predicate(instance, :tend_bleeders?)).to be_truthy
+        end
+
+        it 'is false while a heal-over-time is active' do
+          instance = build_safety_process
+          allow(instance).to receive(:bleeding?).and_return(true)
+          DRSpells._set_active_spells({ 'Heal' => 20 })
+          expect(predicate(instance, :tend_bleeders?)).to be_falsey
+        end
+
+        it 'is false while tendme is already running' do
+          instance = build_safety_process
+          allow(instance).to receive(:bleeding?).and_return(true)
+          DRSpells._set_active_spells({})
+          $running_scripts << 'tendme'
+          expect(predicate(instance, :tend_bleeders?)).to be_falsey
+        end
+      end
+
+      describe '#stop_hunt' do
+        it 'echoes the reason and stops both hunt and combat-trainer' do
+          instance = build_safety_process
+          instance.send(:stop_hunt, 'Reason here.')
+          expect(displayed_messages).to include('Reason here.')
+          expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+          expect($COMBAT_TRAINER).to have_received(:stop)
+        end
+
+        it 'stops without echoing when no message is given' do
+          instance = build_safety_process
+          instance.send(:stop_hunt)
+          expect($COMBAT_TRAINER).to have_received(:stop)
+        end
+
+        it 'does not raise when run standalone (nil hunting-buddy)' do
+          $HUNTING_BUDDY = nil
+          instance = build_safety_process
+          expect { instance.send(:stop_hunt, 'x') }.not_to raise_error
+          expect($COMBAT_TRAINER).to have_received(:stop)
+        end
       end
     end
   end
