@@ -1729,11 +1729,10 @@ RSpec.describe SafetyProcess do
       equipment_manager: double('EquipmentManager'),
       health_threshold: 20,
       stop_on_bleeding: true,
-      safety_untendable_threshold: 3,
       safety_exit_on_bleeding: false,
+      safety_exit_when_stunned: false,
       safety_concentration_minimum: nil,
-      safety_escape_health_threshold: nil,
-      untendable_counter: 0
+      safety_escape_health_threshold: nil
     }
     defaults.merge(overrides).each do |k, v|
       instance.instance_variable_set(:"@#{k}", v)
@@ -1744,7 +1743,8 @@ RSpec.describe SafetyProcess do
   def build_game_state(**attrs)
     defaults = {
       danger: false,
-      retreating?: false
+      retreating?: false,
+      cleaning_up?: false
     }
     state = double('GameState', defaults.merge(attrs))
     allow(state).to receive(:danger=)
@@ -1766,51 +1766,239 @@ RSpec.describe SafetyProcess do
     allow(DRCA).to receive(:activate_khri?).and_return(true)
   end
 
+  # DAMP helper: build a SafetyProcess, stub the post-safety tail, seed the exact
+  # game-state the safety branches read, then run one execute tick. Returns the
+  # instance so a caller can assert on the $HUNTING_BUDDY / $COMBAT_TRAINER doubles.
+  # Every scenario reads as one line: `run_safety_tick(bleeding: true, active_spells: { 'Heal' => 5 }, health: 80)`.
+  def run_safety_tick(bleeding: false, stunned: false, health: 100, concentration: 100,
+                      active_spells: {}, **process_overrides)
+    instance = build_safety_process(**process_overrides)
+    stub_post_safety(instance)
+    allow(instance).to receive(:bleeding?).and_return(bleeding)
+    allow(instance).to receive(:stunned?).and_return(stunned)
+    DRStats.health = health
+    DRStats.concentration = concentration
+    DRSpells._set_active_spells(active_spells)
+    instance.execute(build_game_state)
+    instance
+  end
+
   describe '#execute' do
-    describe 'safety_untendable_threshold' do
-      it 'stops hunt at default threshold of 3' do
-        instance = build_safety_process(untendable_counter: 3)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # stop is gated on active bleeding
-        game_state = build_game_state
+    # Readable assertion pairs. A "stop" means BOTH the parent hunt loop and the
+    # combat-trainer itself are told to stop; a "continue" means neither is.
+    def expect_hunt_stopped
+      expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+      expect($COMBAT_TRAINER).to have_received(:stop)
+    end
 
-        instance.execute(game_state)
+    def expect_hunt_continued
+      expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+      expect($COMBAT_TRAINER).not_to have_received(:stop)
+    end
 
-        expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+    # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure
+    # counter, so it never reliably stopped the hunt. It now stops as soon as we are
+    # bleeding (default-on), unless a heal-over-time spell is tending us and vitality
+    # is still healthy -- see the heal-over-time block below.
+    describe 'stop_hunting_if_bleeding' do
+      it 'stops the hunt as soon as bleeding with no heal-over-time active' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true)
+        expect_hunt_stopped
+      end
+
+      it 'does not stop when not bleeding' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: false)
+        expect_hunt_continued
+      end
+
+      it 'does not stop when the setting is disabled, even while bleeding' do
+        run_safety_tick(stop_on_bleeding: false, safety_exit_on_bleeding: false, bleeding: true)
+        expect_hunt_continued
+      end
+
+      it 'does not raise when run standalone without hunting-buddy' do
+        $HUNTING_BUDDY = nil # combat-trainer is often run on its own
+        expect { run_safety_tick(stop_on_bleeding: true, bleeding: true) }.not_to raise_error
         expect($COMBAT_TRAINER).to have_received(:stop)
       end
+    end
 
-      it 'does not stop hunt below default threshold' do
-        instance = build_safety_process(untendable_counter: 2)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # bleeding so the threshold (not the not-bleeding reset) is what is tested
-        game_state = build_game_state
+    # Finding #2: an active heal-over-time (Devour/Heal/Regenerate) tends the bleed for
+    # us, so a bleed alone must NOT end the hunt -- only a bleed *plus* low vitality
+    # (DRStats.health below safety_escape_health_threshold, default 80) should.
+    describe 'stop_hunting_if_bleeding with an active heal-over-time' do
+      %w[Devour Heal Regenerate].each do |hot|
+        it "keeps hunting while #{hot} is active and vitality is healthy" do
+          run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100, active_spells: { hot => 20 })
+          expect_hunt_continued
+        end
 
-        instance.execute(game_state)
-
-        expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+        it "still stops when #{hot} is active but vitality is below the 80 floor" do
+          run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 50, active_spells: { hot => 20 })
+          expect_hunt_stopped
+        end
       end
 
-      it 'stops hunt at custom threshold of 1' do
-        instance = build_safety_process(safety_untendable_threshold: 1, untendable_counter: 1)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # stop is gated on active bleeding
-        game_state = build_game_state
-
-        instance.execute(game_state)
-
-        expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+      it 'treats multiple simultaneous heal-over-times the same as one' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100,
+                        active_spells: { 'Heal' => 20, 'Regenerate' => 20 })
+        expect_hunt_continued
       end
 
-      it 'requires stop_on_bleeding to be true' do
-        instance = build_safety_process(untendable_counter: 3, stop_on_bleeding: false)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # bleeding so stop_on_bleeding=false is what prevents the stop
-        game_state = build_game_state
+      it 'is not suppressed by an unrelated active spell' do
+        # A random buff must not be mistaken for a heal-over-time.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100, active_spells: { 'Heroism' => 20 })
+        expect_hunt_stopped
+      end
 
-        instance.execute(game_state)
+      # Boundary: the gate is `health < threshold`, so exactly-at-threshold keeps hunting.
+      it 'keeps hunting at exactly the 80 vitality floor' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 80, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued
+      end
+
+      it 'stops one point below the 80 vitality floor' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 79, active_spells: { 'Heal' => 20 })
+        expect_hunt_stopped
+      end
+
+      # A non-thief with a custom safety_escape_health_threshold uses that value as the
+      # floor (the Thief/Vanish branch above is skipped for non-thieves), not the 80 default.
+      it 'honors a custom safety_escape_health_threshold as the floor' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 50,
+                        safety_escape_health_threshold: 40, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued # 50 >= 40, HoT keeps up
+
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 39,
+                        safety_escape_health_threshold: 40, active_spells: { 'Heal' => 20 })
+        expect_hunt_stopped # 39 < 40
+      end
+
+      it 'never stops on bleed when the setting is disabled, even at low vitality with a heal-over-time' do
+        run_safety_tick(stop_on_bleeding: false, safety_exit_on_bleeding: false,
+                        bleeding: true, health: 10, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued
+      end
+    end
+
+    # Guards the elsif ordering my new branch sits inside: the ;tendme fallback must
+    # remain reachable when we are NOT stopping, and must be pre-empted when we are.
+    describe 'tend (;tendme) fallback reachability' do
+      it 'attempts to tend bleeders when not stopping and no heal-over-time is active' do
+        allow(DRCH).to receive(:has_tendable_bleeders?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        run_safety_tick(stop_on_bleeding: false, safety_exit_on_bleeding: false, bleeding: true)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('tendme')
+      end
+
+      it 'does not tend while a heal-over-time is handling the bleed' do
+        allow(DRCH).to receive(:has_tendable_bleeders?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        # HoT active, vitality healthy: no stop AND no tend -- the HoT owns the bleed.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100, active_spells: { 'Heal' => 20 })
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect_hunt_continued
+      end
+
+      it 'stops instead of tending when stop_on_bleeding pre-empts the fallback' do
+        allow(DRCH).to receive(:has_tendable_bleeders?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100)
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect_hunt_stopped
+      end
+    end
+
+    # Adversarial: my branch must not jump ahead of higher-priority safety branches,
+    # and those branches must still fire in cases where my branch would NOT stop.
+    describe 'stop_hunting_if_bleeding branch precedence' do
+      # Non-theater precedence test: pick the exact state where the bleed branches do
+      # NOT stop (heal-over-time active + healthy vitality). If concentration did not
+      # take precedence / fire independently, nothing would stop the hunt here.
+      it 'still stops for low concentration even when a heal-over-time suppresses the bleed stop' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100,
+                        active_spells: { 'Heal' => 20 },
+                        safety_concentration_minimum: 10, concentration: 5)
+        expect_hunt_stopped
+        expect(displayed_messages).to include(a_string_matching(/Concentration below/))
+      end
+
+      it 'yields to the Thief Vanish escape when bleeding' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, safety_escape_health_threshold: 90)
+
+        expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
+        expect_hunt_stopped
+      end
+
+      it 'lets a Thief Vanish outrank the concentration halt when in danger' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+        # Low concentration AND bleeding: escape (Vanish) should win over the plain halt.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, safety_escape_health_threshold: 90,
+                        safety_concentration_minimum: 10, concentration: 5)
+
+        expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
+        expect_hunt_stopped
+      end
+
+      it 'still halts a Thief on low concentration alone (no escape-worthy danger)' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+        # Healthy and not bleeding/stunned: should_vanish? is false, so concentration halts.
+        run_safety_tick(safety_escape_health_threshold: 90, safety_concentration_minimum: 10,
+                        concentration: 5, health: 100)
+
+        expect(DRCA).not_to have_received(:activate_khri?)
+        expect_hunt_stopped
+        expect(displayed_messages).to include(a_string_matching(/Concentration below/))
+      end
+    end
+
+    # Once a stop is decided the combat loop runs a multi-tick cleanup; the safety chain must
+    # not keep firing (re-echoing / re-Vanishing) during it, but housekeeping should continue.
+    describe 'during cleanup' do
+      it 'skips the bail-out chain so it does not re-stop each tick' do
+        instance = build_safety_process(stop_on_bleeding: true)
+        stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true)
+
+        instance.execute(build_game_state(cleaning_up?: true))
 
         expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+        expect($COMBAT_TRAINER).not_to have_received(:stop)
+      end
+
+      it 'still runs post-safety housekeeping during cleanup' do
+        instance = build_safety_process(stop_on_bleeding: true)
+        stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true)
+
+        instance.execute(build_game_state(cleaning_up?: true))
+
+        expect(instance).to have_received(:tend_parasite)
+      end
+    end
+
+    # Finding #6: the two stop reasons must be distinguishable in the log -- a plain
+    # bleed vs. a bleed that only stopped because vitality fell under an active HoT.
+    describe 'stop_hunting_if_bleeding echo messages' do
+      it 'names a plain bleed stop' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100)
+        expect(displayed_messages).to include(a_string_matching(/Bleeding\. Stopping hunt/))
+      end
+
+      it 'names the low-vitality-under-heal-over-time stop distinctly' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 50, active_spells: { 'Heal' => 20 })
+        expect(displayed_messages).to include(a_string_matching(/vitality below 80 despite an active heal-over-time/))
       end
     end
 
@@ -1915,9 +2103,14 @@ RSpec.describe SafetyProcess do
       end
     end
 
-    describe 'safety_exit_on_bleeding' do
+    # DEPRECATED setting. It historically bundled bleed-stop with the stunned-at-low-health
+    # exit; those are now stop_hunting_if_bleeding and safety_exit_when_stunned. It is still
+    # honored (drives both) and now warns at construction. These cases pin that legacy path.
+    describe 'safety_exit_on_bleeding (deprecated)' do
       it 'stops hunt when bleeding and setting is true' do
-        instance = build_safety_process(safety_exit_on_bleeding: true)
+        # Disable stop_on_bleeding so only safety_exit_on_bleeding can drive the stop --
+        # otherwise this passes even if safety_exit_on_bleeding were ignored.
+        instance = build_safety_process(safety_exit_on_bleeding: true, stop_on_bleeding: false)
         stub_post_safety(instance)
         allow(instance).to receive(:bleeding?).and_return(true)
         game_state = build_game_state
@@ -1925,6 +2118,26 @@ RSpec.describe SafetyProcess do
         instance.execute(game_state)
 
         expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+      end
+
+      # The heal-over-time grace is shared: safety_exit_on_bleeding honors it too, not just
+      # stop_hunting_if_bleeding. stop_on_bleeding is disabled here so only the
+      # safety_exit_on_bleeding path can drive the decision.
+      it 'keeps hunting on a bleed a heal-over-time is tending at healthy vitality' do
+        run_safety_tick(safety_exit_on_bleeding: true, stop_on_bleeding: false,
+                        bleeding: true, health: 100, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued
+      end
+
+      it 'stops on a bleed when a heal-over-time is active but vitality is below the floor' do
+        run_safety_tick(safety_exit_on_bleeding: true, stop_on_bleeding: false,
+                        bleeding: true, health: 50, active_spells: { 'Heal' => 20 })
+        expect_hunt_stopped
+      end
+
+      it 'stops on a bleed with no heal-over-time active' do
+        run_safety_tick(safety_exit_on_bleeding: true, stop_on_bleeding: false, bleeding: true)
+        expect_hunt_stopped
       end
 
       it 'stops hunt when stunned with low health' do
@@ -1952,7 +2165,8 @@ RSpec.describe SafetyProcess do
       end
 
       it 'does not fire when setting is false' do
-        instance = build_safety_process(safety_exit_on_bleeding: false)
+        # stop_on_bleeding also stops on bleeding, so disable it too to isolate this case.
+        instance = build_safety_process(safety_exit_on_bleeding: false, stop_on_bleeding: false)
         stub_post_safety(instance)
         allow(instance).to receive(:bleeding?).and_return(true)
         game_state = build_game_state
@@ -1960,6 +2174,265 @@ RSpec.describe SafetyProcess do
         instance.execute(game_state)
 
         expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+      end
+
+      it 'prints a deprecation notice at construction when set' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: false, safety_exit_on_bleeding: true,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).to have_received(:message).with(/safety_exit_on_bleeding.*deprecated/)
+      end
+
+      it 'does not warn when the deprecated setting is unset' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).not_to have_received(:message).with(/deprecated/)
+      end
+    end
+
+    # REMOVED setting: the untendable tend-failure counter is gone; profiles that still set
+    # safety_untendable_threshold get a one-time notice at construction rather than silence.
+    describe 'safety_untendable_threshold (removed)' do
+      it 'warns that it has been removed when still set' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil,
+          safety_escape_health_threshold: nil, safety_untendable_threshold: 1
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).to have_received(:message).with(/safety_untendable_threshold.*removed/)
+      end
+
+      it 'does not warn when it is unset' do
+        allow(DRC).to receive(:message)
+        settings = OpenStruct.new(
+          health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+          safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+        )
+
+        SafetyProcess.new(settings, double('EquipmentManager'))
+
+        expect(DRC).not_to have_received(:message).with(/safety_untendable_threshold/)
+      end
+    end
+
+    # The stun half of the old safety_exit_on_bleeding, now its own opt-in. Stun-only:
+    # it must never react to a bleed.
+    describe 'safety_exit_when_stunned' do
+      it 'stops when stunned at low vitality' do
+        run_safety_tick(safety_exit_when_stunned: true, safety_exit_on_bleeding: false,
+                        stop_on_bleeding: false, stunned: true, health: 70)
+        expect_hunt_stopped
+      end
+
+      it 'does not stop when stunned at healthy vitality' do
+        run_safety_tick(safety_exit_when_stunned: true, safety_exit_on_bleeding: false,
+                        stop_on_bleeding: false, stunned: true, health: 95)
+        expect_hunt_continued
+      end
+
+      it 'does not stop on a bleed -- it is a stun-only exit' do
+        run_safety_tick(safety_exit_when_stunned: true, safety_exit_on_bleeding: false,
+                        stop_on_bleeding: false, bleeding: true, stunned: false, health: 50)
+        expect_hunt_continued
+      end
+    end
+
+    # Unit coverage for the extracted bail-out predicates (see #execute). These call the
+    # private predicates directly so each decision is pinned independently of dispatch order.
+    describe 'bail-out predicates' do
+      def predicate(instance, name)
+        instance.send(name)
+      end
+
+      describe '#concentration_too_low?' do
+        it 'is true below the minimum' do
+          instance = build_safety_process(safety_concentration_minimum: 10)
+          DRStats.concentration = 5
+          expect(predicate(instance, :concentration_too_low?)).to be_truthy
+        end
+
+        it 'is false at or above the minimum' do
+          instance = build_safety_process(safety_concentration_minimum: 10)
+          DRStats.concentration = 10
+          expect(predicate(instance, :concentration_too_low?)).to be_falsey
+        end
+
+        it 'is disabled (falsey) when unset' do
+          instance = build_safety_process(safety_concentration_minimum: nil)
+          DRStats.concentration = 0
+          expect(predicate(instance, :concentration_too_low?)).to be_falsey
+        end
+
+        it 'is disabled (falsey) at the default of 0, since concentration is never below 0' do
+          instance = build_safety_process(safety_concentration_minimum: 0)
+          DRStats.concentration = 0
+          expect(predicate(instance, :concentration_too_low?)).to be_falsey
+        end
+      end
+
+      describe '#should_vanish?' do
+        before(:each) do
+          DRStats.guild = 'Thief'
+          DRSpells._set_known_spells({ 'Vanish' => true })
+        end
+
+        it 'is true for a Thief who knows Vanish and is bleeding' do
+          instance = build_safety_process(safety_escape_health_threshold: 90)
+          DRStats.health = 100
+          allow(instance).to receive(:bleeding?).and_return(true)
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :should_vanish?)).to be_truthy
+        end
+
+        it 'is false for a non-Thief' do
+          instance = build_safety_process(safety_escape_health_threshold: 90)
+          DRStats.guild = 'Ranger'
+          DRStats.health = 10
+          allow(instance).to receive(:bleeding?).and_return(true)
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :should_vanish?)).to be_falsey
+        end
+
+        it 'is disabled (falsey) when the threshold is unset' do
+          instance = build_safety_process(safety_escape_health_threshold: nil)
+          DRStats.health = 10
+          allow(instance).to receive(:bleeding?).and_return(true)
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :should_vanish?)).to be_falsey
+        end
+      end
+
+      describe '#stunned_at_low_health?' do
+        it 'is true when safety_exit_when_stunned and stunned below the floor' do
+          instance = build_safety_process(safety_exit_when_stunned: true)
+          DRStats.health = 70
+          allow(instance).to receive(:stunned?).and_return(true)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_truthy
+        end
+
+        it 'is honored via the deprecated safety_exit_on_bleeding too' do
+          instance = build_safety_process(safety_exit_when_stunned: false, safety_exit_on_bleeding: true)
+          DRStats.health = 70
+          allow(instance).to receive(:stunned?).and_return(true)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_truthy
+        end
+
+        it 'is false at healthy vitality' do
+          instance = build_safety_process(safety_exit_when_stunned: true)
+          DRStats.health = 95
+          allow(instance).to receive(:stunned?).and_return(true)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_falsey
+        end
+
+        it 'is false when not stunned' do
+          instance = build_safety_process(safety_exit_when_stunned: true)
+          DRStats.health = 10
+          allow(instance).to receive(:stunned?).and_return(false)
+          expect(predicate(instance, :stunned_at_low_health?)).to be_falsey
+        end
+      end
+
+      # bleeding_stop_reason returns nil (do not stop) or the stop message (stop, with the
+      # wording matching the reason) -- one method covering both the decision and the text.
+      describe '#bleeding_stop_reason' do
+        def bleeding_instance(**overrides)
+          instance = build_safety_process(**overrides)
+          allow(instance).to receive(:bleeding?).and_return(true)
+          instance
+        end
+
+        it 'is nil when no bleed-stop setting is enabled' do
+          instance = bleeding_instance(stop_on_bleeding: false, safety_exit_on_bleeding: false)
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
+        end
+
+        it 'is nil when not bleeding' do
+          instance = build_safety_process(stop_on_bleeding: true)
+          allow(instance).to receive(:bleeding?).and_return(false)
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
+        end
+
+        it 'is a plain-bleed message when bleeding with no heal-over-time' do
+          instance = bleeding_instance(stop_on_bleeding: true)
+          DRSpells._set_active_spells({})
+          expect(predicate(instance, :bleeding_stop_reason)).to match(/^Bleeding\. Stopping hunt/)
+        end
+
+        it 'is nil when a heal-over-time is tending at healthy vitality' do
+          instance = bleeding_instance(stop_on_bleeding: true)
+          DRStats.health = 100
+          DRSpells._set_active_spells({ 'Heal' => 20 })
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
+        end
+
+        it 'is the low-vitality message when a heal-over-time is active but vitality is below the floor' do
+          instance = bleeding_instance(stop_on_bleeding: true)
+          DRStats.health = 50
+          DRSpells._set_active_spells({ 'Heal' => 20 })
+          expect(predicate(instance, :bleeding_stop_reason)).to match(/despite an active heal-over-time/)
+        end
+      end
+
+      describe '#tend_bleeders?' do
+        it 'is true when bleeding, tendme not running, and no heal-over-time' do
+          instance = build_safety_process
+          allow(instance).to receive(:bleeding?).and_return(true)
+          DRSpells._set_active_spells({})
+          expect(predicate(instance, :tend_bleeders?)).to be_truthy
+        end
+
+        it 'is false while a heal-over-time is active' do
+          instance = build_safety_process
+          allow(instance).to receive(:bleeding?).and_return(true)
+          DRSpells._set_active_spells({ 'Heal' => 20 })
+          expect(predicate(instance, :tend_bleeders?)).to be_falsey
+        end
+
+        it 'is false while tendme is already running' do
+          instance = build_safety_process
+          allow(instance).to receive(:bleeding?).and_return(true)
+          DRSpells._set_active_spells({})
+          $running_scripts << 'tendme'
+          expect(predicate(instance, :tend_bleeders?)).to be_falsey
+        end
+      end
+
+      describe '#stop_hunt' do
+        it 'echoes the reason and stops both hunt and combat-trainer' do
+          instance = build_safety_process
+          instance.send(:stop_hunt, 'Reason here.')
+          expect(displayed_messages).to include('Reason here.')
+          expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+          expect($COMBAT_TRAINER).to have_received(:stop)
+        end
+
+        it 'stops without echoing when no message is given' do
+          instance = build_safety_process
+          instance.send(:stop_hunt)
+          expect($COMBAT_TRAINER).to have_received(:stop)
+        end
+
+        it 'does not raise when run standalone (nil hunting-buddy)' do
+          $HUNTING_BUDDY = nil
+          instance = build_safety_process
+          expect { instance.send(:stop_hunt, 'x') }.not_to raise_error
+          expect($COMBAT_TRAINER).to have_received(:stop)
+        end
       end
     end
   end
@@ -3301,6 +3774,385 @@ RSpec.describe SpellProcess do
       gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
       expect(gs).to receive(:reset_stance=).with(true)
       instance.send(:cast_ritual, { 'ritual' => true }, gs)
+    end
+  end
+
+  # ===========================================================================
+  # Failed spell prep must not leave the character wedged (issue #7563).
+  #
+  # DRCA.prepare? returns false when preparation fails (unknown spell, area
+  # interference, exhausted retries, ...). The original bug discarded that value
+  # and set game_state.casting = true unconditionally, so #execute bailed on
+  # `if game_state.casting` and starved all offensive/training casting until
+  # check_timer cleared it 70s later. These specs also cover the follow-up work:
+  # disabling genuinely-unknown spells (by abbrev, centrally in prepare_spell so
+  # every caller is covered) and fully resetting casting state on the abort path.
+  # ===========================================================================
+  describe '#prepare_spell' do
+    def build_prep_state(**attrs)
+      gs = GameState.allocate
+      { casting: false, cast_timer: nil }.merge(attrs).each { |k, v| gs.send(:"#{k}=", v) }
+      gs
+    end
+
+    it 'sets casting when preparation succeeds' do
+      allow(DRCA).to receive(:prepare?).and_return('You feel fully prepared to cast your spell.')
+
+      instance = build_spell_process
+      gs = build_prep_state
+      data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'cambrinth' => [] }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(gs.casting).to be true
+    end
+
+    it 'leaves casting unset AND does not disable the spell on a transient failure' do
+      # prepare? returns false but the unknown-spell flag never trips (e.g. area
+      # interference). We must recover WITHOUT permanently disabling a castable
+      # spell -- disabling is reserved for the specific "no idea how to cast" line.
+      allow(DRCA).to receive(:prepare?).and_return(false)
+
+      instance = build_spell_process
+      gs = build_prep_state
+      data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3 }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(gs.casting).to be false
+      expect(gs.cast_timer).to be_nil
+      expect(instance.send(:spell_disabled?, 'fire')).to be false
+    end
+
+    it 'disables an unknown spell, announces it once, and does not set casting' do
+      # Mimic the game replying "You have no idea how to cast that spell".
+      allow(DRCA).to receive(:prepare?) do
+        Flags['ct-spell-unknown'] = true
+        false
+      end
+      allow(DRC).to receive(:message)
+
+      instance = build_spell_process
+      gs = build_prep_state
+      data = { 'abbrev' => 'EASE', 'name' => 'Ease Burden', 'mana' => 3 }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(instance.send(:spell_disabled?, 'ease')).to be true
+      expect(gs.casting).to be false
+      expect(DRC).to have_received(:message).once
+    end
+
+    it 'short-circuits a disabled spell before pinging the game or firing prep side-effects' do
+      # Central guard: a disabled spell must not re-send `prep` (DRCA.prepare?) or
+      # run destructive prep side-effects (release_cyclics) -- even a cyclic one.
+      instance = build_spell_process(disabled_spells: Set.new(['leth']))
+      gs = build_prep_state
+      data = { 'abbrev' => 'LETH', 'name' => 'Lethargy', 'mana' => 3, 'cyclic' => true }
+
+      expect(DRCA).not_to receive(:prepare?)
+      expect(DRCA).not_to receive(:release_cyclics)
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(gs.casting).to be false
+    end
+
+    it 'clears casting_* sub-flags on the abort path so they do not bleed into the next cast' do
+      # A cyclic prep sets casting_cyclic and releases cyclics BEFORE prepare?; a
+      # sorcery caller sets casting_sorcery. On failure all must be reset, or the
+      # next (non-cyclic/non-sorcery) cast mis-fires avtalia_cyclic / stows a weapon.
+      allow(DRCA).to receive(:prepare?).and_return(false)
+      allow(DRCA).to receive(:release_cyclics)
+
+      instance = build_spell_process
+      instance.instance_variable_set(:@should_invoke, [5]) # stale cambrinth intent from a prior cast
+      gs = build_prep_state(casting_sorcery: true)
+      data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'cyclic' => true }
+
+      instance.send(:prepare_spell, data, gs)
+
+      expect(DRCA).to have_received(:release_cyclics) # side-effect ran (spell not disabled)
+      expect(gs.casting_cyclic).to be false           # ...but the flag it set was reset
+      expect(gs.casting_sorcery).to be false
+      expect(gs.casting).to be false
+      expect(instance.instance_variable_get(:@should_invoke)).to be_nil # no stale cambrinth intent
+    end
+  end
+
+  # ===========================================================================
+  # #spell_disabled? / #disable_spell -- boundary and edge behavior
+  # ===========================================================================
+  describe '#disable_spell / #spell_disabled?' do
+    it 'is a no-op with no crash when the spell has no abbrev' do
+      instance = build_spell_process
+      allow(DRC).to receive(:message)
+
+      instance.send(:disable_spell, { 'name' => 'Nameless' })
+
+      expect(DRC).not_to have_received(:message)
+      expect(instance.send(:spell_disabled?, nil)).to be false
+    end
+
+    it 'returns false for a fresh instance that never disabled anything' do
+      instance = build_spell_process
+      expect(instance.send(:spell_disabled?, 'foc')).to be false
+    end
+
+    it 'matches case-insensitively and announces exactly once per abbrev' do
+      allow(DRC).to receive(:message)
+      instance = build_spell_process
+
+      instance.send(:disable_spell, { 'abbrev' => 'FOC', 'name' => 'Focus' })
+      instance.send(:disable_spell, { 'abbrev' => 'foc', 'name' => 'Focus' })
+
+      expect(DRC).to have_received(:message).once
+      expect(instance.send(:spell_disabled?, 'foc')).to be true
+      expect(instance.send(:spell_disabled?, 'FOC')).to be true
+    end
+  end
+
+  # ===========================================================================
+  # #check_timer -- the 70s recovery shares reset_casting_state, boundary-tested
+  # ===========================================================================
+  describe '#check_timer' do
+    it 'releases and fully resets casting state once the 70s window is exceeded' do
+      allow(DRC).to receive(:bput)
+      instance = build_spell_process
+      instance.instance_variable_set(:@should_invoke, [5]) # a cambrinth cast that timed out mid-flight
+      gs = GameState.allocate
+      gs.casting = true
+      gs.casting_sorcery = true
+      gs.cast_timer = Time.now - 71
+
+      instance.send(:check_timer, gs)
+
+      expect(DRC).to have_received(:bput).with('release spell', anything, anything)
+      expect(gs.casting).to be false
+      expect(gs.casting_sorcery).to be false
+      expect(gs.cast_timer).to be_nil
+      # cambrinth stays charged game-side, but the stale invoke intent must not
+      # bleed into the next cast (would wrongly gate check_current on charging).
+      expect(instance.instance_variable_get(:@should_invoke)).to be_nil
+    end
+
+    it 'does nothing while still inside the 70s window (boundary)' do
+      instance = build_spell_process
+      gs = GameState.allocate
+      gs.casting = true
+      gs.casting_sorcery = true
+      gs.cast_timer = Time.now - 10 # well inside the 70s window: must NOT fire
+
+      expect(DRC).not_to receive(:bput)
+      instance.send(:check_timer, gs)
+
+      expect(gs.casting).to be true
+      expect(gs.casting_sorcery).to be true
+    end
+  end
+
+  # ===========================================================================
+  # #check_buffs -- the disabled filter is load-bearing: without it a disabled
+  # always-due buff is re-selected by `find` every tick and monopolizes the one
+  # per-tick buff slot, starving every other due buff.
+  # ===========================================================================
+  describe '#check_buffs' do
+    it 'skips a disabled always-due buff and casts the next due buff instead' do
+      DRStats.mana = 100
+      DRSpells._set_active_spells({}) # nothing active -> every buff is "due"
+      # NB: don't touch the shared $weapon_buffs global (reset_data doesn't restore
+      # it). BadBuff/GoodBuff aren't weapon buffs, so check_buff_conditions? already
+      # returns true against the real $weapon_buffs list.
+
+      # Disabled buff listed FIRST: with the filter gone, `find` would pick it every tick.
+      buffs = {
+        'BadBuff'  => { 'abbrev' => 'bad',  'name' => 'BadBuff',  'recast' => 5 },
+        'GoodBuff' => { 'abbrev' => 'good', 'name' => 'GoodBuff', 'recast' => 5 }
+      }
+      instance = build_spell_process(
+        buff_spells: buffs,
+        buff_spell_mana_threshold: 0,
+        buff_force_cambrinth: nil,
+        disabled_spells: Set.new(['bad'])
+      )
+      gs = double('GameState', casting: false)
+      allow(gs).to receive(:casting_weapon_buff=)
+
+      # Must prepare the healthy buff, never the disabled one.
+      expect(instance).to receive(:prepare_spell).with(hash_including('abbrev' => 'good'), anything, anything)
+      instance.send(:check_buffs, gs)
+    end
+  end
+
+  # ===========================================================================
+  # #check_training -- same filter, same starvation risk on the training slot.
+  # ===========================================================================
+  describe '#check_training' do
+    it 'does not train a disabled spell (the skill is filtered out)' do
+      DRStats.mana = 100
+      ward = { 'abbrev' => 'ward', 'name' => 'Warding Spell', 'harmless' => true }
+
+      instance = build_spell_process(
+        training_spells: { 'Warding' => ward },
+        training_spells_max_threshold: nil,
+        release_cyclic_on_low_mana: nil,
+        training_spell_mana_threshold: 0,
+        magic_exp_training_max_threshold: 100,
+        training_spells_wait: 45,
+        training_cyclic_timer: Time.now,
+        disabled_spells: Set.new(['ward'])
+      )
+      gs = double('GameState', casting: false, is_offense_allowed?: false)
+      # Returns its input so, if the filter let 'Warding' through, it would be
+      # selected and prepare_spell would run -- the filter is what prevents it.
+      allow(gs).to receive(:sort_by_rate_then_rank) { |arr| arr }
+
+      expect(instance).not_to receive(:prepare_spell)
+      instance.send(:check_training, gs)
+    end
+  end
+
+  # ===========================================================================
+  # #check_offensive -- the select filter skips a disabled spell (slot efficiency)
+  # ===========================================================================
+  describe '#check_offensive' do
+    it 'filters out a disabled offensive spell rather than choosing it for the tick' do
+      DRStats.mana = 100
+      disabled_spell = { 'abbrev' => 'LETH', 'name' => 'Lethargy', 'skill' => 'Debilitation' }
+
+      instance = build_spell_process(
+        offensive_spells: [disabled_spell],
+        offensive_spell_cycle: [],
+        offensive_spell_mana_threshold: 0,
+        disabled_spells: Set.new(['leth'])
+      )
+      # sort_by_rate_then_rank returns the spell's skill so that, if the filter
+      # let the disabled spell through, `data` would resolve to it and
+      # prepare_spell would be called -- i.e. the filter, not `return unless data`,
+      # is what keeps prepare_spell from running.
+      gs = double('GameState', casting: false, npcs: ['an orc'],
+                               is_offense_allowed?: true, dancing?: false,
+                               sort_by_rate_then_rank: ['Debilitation'])
+
+      expect(instance).not_to receive(:prepare_spell)
+      instance.send(:check_offensive, gs)
+    end
+  end
+
+  # ===========================================================================
+  # #check_health_empath -- disable covers the rebuilt healing hashes, and the
+  # FOC->HEAL fallback still heals when only the primary spell is disabled.
+  # ===========================================================================
+  describe '#check_health_empath' do
+    it 'does not ping the game for a disabled Vitality Healing during regeneration' do
+      DRStats.health = 50
+      DRSpells._set_active_spells({ 'Regenerate' => 100 })
+      allow(DRCA).to receive(:prepare?)
+
+      instance = build_spell_process(
+        empath_spells: { 'VH' => [5] },
+        empath_vitality_threshold: 75,
+        wounds: {},
+        disabled_spells: Set.new(['vh'])
+      )
+      gs = GameState.allocate
+
+      instance.send(:check_health_empath, gs)
+
+      expect(DRCA).not_to have_received(:prepare?)
+    end
+
+    # Regression: the passive-heal guard was keyed off 'Regeneration', but the
+    # active_spells key the game reports is 'Regenerate'. The typo meant the guard
+    # never matched, so empaths actively burned FOC/HEAL mana on wounds a running
+    # Regenerate was already clearing. With Regenerate active we must early-return
+    # and NOT prepare an active healing spell.
+    it 'skips active FOC healing while Regenerate is running' do
+      DRStats.health = 100
+      DRSpells._set_active_spells({ 'Regenerate' => 100 })
+
+      instance = build_spell_process(
+        empath_spells: { 'FOC' => [5] },
+        empath_vitality_threshold: 75,
+        perc_health_timer: Time.now, # skip the perceive-health refresh branch
+        wounds: { 'chest' => 3 }
+      )
+      allow(instance).to receive(:prepare_spell)
+      gs = GameState.allocate
+
+      instance.send(:check_health_empath, gs)
+
+      expect(instance).not_to have_received(:prepare_spell)
+    end
+
+    it 'falls back to HEAL when FOC is disabled' do
+      DRStats.health = 100
+      DRSpells._set_active_spells({})
+      allow(DRCA).to receive(:prepare?).and_return('prepared')
+      allow(DRCA).to receive(:check_to_harness)
+
+      instance = build_spell_process(
+        empath_spells: { 'FOC' => [5], 'HEAL' => [5] },
+        empath_vitality_threshold: 75,
+        perc_health_timer: Time.now, # skip the perceive-health refresh branch
+        wounds: { 'head' => 5 },
+        disabled_spells: Set.new(['foc'])
+      )
+      gs = GameState.allocate
+      gs.casting = false
+
+      instance.send(:check_health_empath, gs)
+
+      expect(DRCA).to have_received(:prepare?).with('heal', any_args)
+    end
+  end
+
+  # ===========================================================================
+  # Necromancer callers -- UNGUARDED (no select filter): the central guard is what
+  # protects them, and it must also clear the casting_* sub-flag they set BEFORE
+  # calling prepare_spell, or necro_casting? sticks true and suppresses
+  # looting/rituals/pet creation for the rest of the session.
+  # ===========================================================================
+  describe '#check_consume' do
+    it 'does not ping the game for a disabled necromancer Siphon Vitality' do
+      DRStats.guild = 'Necromancer'
+      DRStats.health = 1
+      allow(DRCA).to receive(:prepare?)
+
+      instance = build_spell_process(
+        necromancer_healing: { 'Siphon Vitality' => { 'abbrev' => 'sv', 'name' => 'Siphon Vitality', 'mana' => 5 } },
+        siphon_vit_threshold: '100',
+        disabled_spells: Set.new(['sv'])
+      )
+      gs = GameState.allocate
+      gs.casting = false
+      allow(gs).to receive(:npcs).and_return(['an orc'])
+
+      instance.send(:check_consume, gs)
+
+      expect(DRCA).not_to have_received(:prepare?)
+    end
+  end
+
+  describe '#check_cfb' do
+    it 'does not leave casting_cfb set (necro_casting? stays false) when Call from Beyond is disabled' do
+      DRStats.guild = 'Necromancer'
+      allow(DRCA).to receive(:prepare?)
+
+      instance = build_spell_process(
+        necromancer_zombie: { 'Call from Beyond' => { 'abbrev' => 'cfb', 'name' => 'Call from Beyond', 'mana' => 5 } },
+        disabled_spells: Set.new(['cfb'])
+      )
+      gs = GameState.allocate
+      gs.casting = false
+      gs.casting_cfb = false
+      gs.prepare_cfb = true # a trigger fired, so check_cfb will try to cast it
+
+      instance.send(:check_cfb, gs)
+
+      expect(DRCA).not_to have_received(:prepare?) # central guard skipped it
+      expect(gs.casting_cfb).to be false           # ...and cleared the flag check_cfb set
+      expect(gs.necro_casting?).to be false         # so loot/rituals/pets are NOT suppressed
     end
   end
 end

@@ -1342,55 +1342,58 @@ class SafetyProcess
     @equipment_manager = equipment_manager
     @health_threshold = settings.health_threshold
     @stop_on_bleeding = settings.stop_hunting_if_bleeding
-    @safety_untendable_threshold = settings.safety_untendable_threshold || 3
+    @safety_exit_when_stunned = settings.safety_exit_when_stunned || false
+    # Deprecated: safety_exit_on_bleeding used to mean "stop on bleed AND on stun-at-low-
+    # health". Those are now the separate stop_hunting_if_bleeding and safety_exit_when_stunned
+    # settings; we still honor the old one (it drives both -- see bleed_stop_enabled? and
+    # stunned_at_low_health?) so existing profiles keep working.
     @safety_exit_on_bleeding = settings.safety_exit_on_bleeding || false
+    if @safety_exit_on_bleeding
+      DRC.message("*** combat-trainer: 'safety_exit_on_bleeding' is deprecated -- use 'stop_hunting_if_bleeding' (stop on bleed) and/or 'safety_exit_when_stunned' (stop when stunned at low vitality). Still honoring it for now.")
+    end
+    # Removed: safety_untendable_threshold gated an unreliable tend-failure counter that never
+    # reliably stopped the hunt. It is no longer read -- stop_hunting_if_bleeding now stops on
+    # bleeding directly -- so warn anyone whose profile still carries it.
+    unless settings.safety_untendable_threshold.nil?
+      DRC.message("*** combat-trainer: 'safety_untendable_threshold' has been removed and is ignored -- combat-trainer now stops on bleeding via 'stop_hunting_if_bleeding' (with its heal-over-time grace). Remove it from your profile.")
+    end
     @safety_concentration_minimum = settings.safety_concentration_minimum
     @safety_escape_health_threshold = settings.safety_escape_health_threshold
     echo("  @health_threshold: #{@health_threshold}") if $debug_mode_ct
-    echo("  @safety_untendable_threshold: #{@safety_untendable_threshold}") if $debug_mode_ct
     echo("  @safety_exit_on_bleeding: #{@safety_exit_on_bleeding}") if $debug_mode_ct
+    echo("  @safety_exit_when_stunned: #{@safety_exit_when_stunned}") if $debug_mode_ct
     echo("  @safety_concentration_minimum: #{@safety_concentration_minimum}") if $debug_mode_ct
     echo("  @safety_escape_health_threshold: #{@safety_escape_health_threshold}") if $debug_mode_ct
-    @untendable_counter = 0
   end
 
   def execute(game_state)
-    # Reset the failure count whenever we are not actively bleeding, so a stale
-    # count from an earlier, since-resolved bleed cannot trip the stop below.
-    @untendable_counter = 0 unless bleeding?
-    if @untendable_counter >= @safety_untendable_threshold && @stop_on_bleeding
-      echo('Skipping tendme check due to untendable backoff') if $debug_mode_ct
-      echo("Couldn't tend bleeders after trying #{@safety_untendable_threshold} time(s). Stopping hunt. Get healed!")
-      $HUNTING_BUDDY.stop_hunting
-      $COMBAT_TRAINER.stop
-    elsif @safety_concentration_minimum && DRStats.concentration < @safety_concentration_minimum
-      echo("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
-      $HUNTING_BUDDY.stop_hunting
-      $COMBAT_TRAINER.stop
-    elsif @safety_escape_health_threshold && DRStats.thief? && DRSpells.known_spells['Vanish'] && (bleeding? || stunned? || DRStats.health < @safety_escape_health_threshold)
-      pause 0.1 while stunned?
-      echo("Bleeding. Activating Vanish and stopping hunt.") if bleeding?
-      echo("Stunned. Activating Vanish and stopping hunt.") if stunned?
-      echo("Health below #{@safety_escape_health_threshold}. Activating Vanish and stopping hunt.") if DRStats.health < @safety_escape_health_threshold
-      DRCA.activate_khri?(false, "Vanish")
-      $HUNTING_BUDDY.stop_hunting
-      $COMBAT_TRAINER.stop
-    elsif @safety_exit_on_bleeding && (bleeding? || (stunned? && DRStats.health < (@safety_escape_health_threshold || 80)))
-      echo("Bleeding. Stopping hunt.") if bleeding?
-      echo("Stunned with low health. Stopping hunt.") if stunned?
-      $HUNTING_BUDDY.stop_hunting
-      $COMBAT_TRAINER.stop
-    # If no heal-over-time spells are active then attempt to tend bleeders using ;tendme
-    elsif bleeding? && !Script.running?('tendme') && !(DRSpells.active_spells['Devour'] || DRSpells.active_spells['Heal'] || DRSpells.active_spells['Regenerate'])
-      echo('Checking for tendable bleeders...') if $debug_mode_ct
-      DRC.wait_for_script_to_complete('tendme') if DRCH.has_tendable_bleeders?
-      # Only count a failed attempt if still bleeding afterwards, and reset once
-      # bleeding clears so separate, fully-tended episodes earlier in the hunt do
-      # not accumulate toward the stop threshold.
-      if bleeding?
-        @untendable_counter += 1
-      else
-        @untendable_counter = 0
+    # Once a stop has been decided the combat loop runs a multi-tick cleanup; skip the
+    # bail-out chain during it so we do not re-echo, re-stop, or (for thieves) re-Vanish on
+    # every cleanup tick. The housekeeping below still runs.
+    unless game_state.cleaning_up?
+      # Vanish is a Thief escape (it hides, not merely halts), so for a thief it outranks the
+      # plain concentration/bleed/stun stops -- someone in danger should get out, not just stop.
+      # should_vanish? already requires an escape-worthy state (bleeding/stunned/low health),
+      # so a thief who is merely low on concentration still falls through to the halt below.
+      if should_vanish?
+        vanish_and_stop
+      elsif concentration_too_low?
+        stop_hunt("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
+      # safety_exit_on_bleeding additionally exits when stunned at low health. That is a
+      # stun escape, not a bleed, so it stays separate from the shared bleed handling below.
+      elsif stunned_at_low_health?
+        stop_hunt("Stunned with low health. Stopping hunt.")
+      # Shared bleed handling for BOTH stop_hunting_if_bleeding and safety_exit_on_bleeding.
+      # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure counter
+      # and effectively never stopped the hunt. A heal-over-time spell tends the bleed for us
+      # (see bleeding_stop_reason), so bleeding alone stops the hunt only when no such spell is
+      # active or vitality has fallen below the floor it can no longer keep up with.
+      elsif (reason = bleeding_stop_reason)
+        stop_hunt(reason)
+      # No stop warranted: if no heal-over-time is tending the bleed, tend it via ;tendme.
+      elsif tend_bleeders?
+        echo('Checking for tendable bleeders...') if $debug_mode_ct
+        DRC.wait_for_script_to_complete('tendme') if DRCH.has_tendable_bleeders?
       end
     end
 
@@ -1405,6 +1408,83 @@ class SafetyProcess
   end
 
   private
+
+  # A heal-over-time spell tends bleeders on its own, so both the bleed-stop gate and
+  # the ;tendme fallback key off the same set. Kept in one place so the call sites
+  # cannot silently diverge.
+  def heal_over_time_active?
+    DRSpells.active_spells['Devour'] || DRSpells.active_spells['Heal'] || DRSpells.active_spells['Regenerate']
+  end
+
+  # stop_hunting_if_bleeding, or the deprecated safety_exit_on_bleeding, enables the shared
+  # bleed handling; the heal-over-time grace and vitality floor then apply identically.
+  def bleed_stop_enabled?
+    @stop_on_bleeding || @safety_exit_on_bleeding
+  end
+
+  # Vitality floor below which a heal-over-time is assumed to no longer keep up; also the
+  # stunned-exit floor. Defaults to 80 when safety_escape_health_threshold is unset.
+  def safety_escape_health_floor
+    @safety_escape_health_threshold || 80
+  end
+
+  # --- bail-out decision and actions (see #execute) ---
+
+  # Stop both the parent hunt loop (if any) and combat-trainer itself. Pass the reason to
+  # log; omit it when the caller has already echoed (e.g. the multi-line Vanish path).
+  def stop_hunt(message = nil)
+    echo(message) if message
+    $HUNTING_BUDDY&.stop_hunting
+    $COMBAT_TRAINER.stop
+  end
+
+  def concentration_too_low?
+    @safety_concentration_minimum && DRStats.concentration < @safety_concentration_minimum
+  end
+
+  def should_vanish?
+    @safety_escape_health_threshold && DRStats.thief? && DRSpells.known_spells['Vanish'] &&
+      (bleeding? || stunned? || DRStats.health < @safety_escape_health_threshold)
+  end
+
+  def vanish_and_stop
+    # Vanish (a khri) can't be used while stunned, so announce the wait up front (the old
+    # "Stunned. Activating Vanish" echo fired after the pause, when stunned? was already
+    # false, so it never actually printed), then wait out the stun before vanishing.
+    echo("Stunned. Waiting for it to clear, then activating Vanish and stopping hunt.") if stunned?
+    pause 0.1 while stunned?
+    echo("Bleeding. Activating Vanish and stopping hunt.") if bleeding?
+    echo("Health below #{@safety_escape_health_threshold}. Activating Vanish and stopping hunt.") if DRStats.health < @safety_escape_health_threshold
+    DRCA.activate_khri?(false, "Vanish")
+    stop_hunt
+  end
+
+  # safety_exit_when_stunned (or the deprecated safety_exit_on_bleeding) stops the hunt when
+  # stunned at low vitality -- a stun escape, independent of bleeding.
+  def stunned_at_low_health?
+    (@safety_exit_when_stunned || @safety_exit_on_bleeding) && stunned? && DRStats.health < safety_escape_health_floor
+  end
+
+  # The stop reason (message) when a bleed should stop the hunt, else nil. A bleed stops the
+  # hunt only if a bleed-stop setting is on AND either no heal-over-time is tending it, or
+  # vitality has dropped below the floor the HoT can no longer keep up with. Returning the
+  # message rather than a bool computes heal_over_time_active? once and keeps the decision
+  # and the wording in lockstep.
+  def bleeding_stop_reason
+    return nil unless bleed_stop_enabled? && bleeding?
+
+    if heal_over_time_active?
+      return nil unless DRStats.health < safety_escape_health_floor
+
+      "Bleeding with vitality below #{safety_escape_health_floor} despite an active heal-over-time. Stopping hunt."
+    else
+      "Bleeding. Stopping hunt."
+    end
+  end
+
+  def tend_bleeders?
+    bleeding? && !Script.running?('tendme') && !heal_over_time_active?
+  end
 
   def check_item_recovery(game_state)
     if Flags['ct-germshieldlost']
@@ -1663,6 +1743,7 @@ class SpellProcess
     Flags.add('ct-regalia-expired', 'Your .* glimmers? weakly') if DRStats.trader?
     Flags.add('ct-regalia-succeeded', 'You cup your palms skyward to bask in') if DRStats.trader?
     Flags.add('ct-shock-warning', 'You are distinctly aware that completion of this spell pattern may bring you shock')
+    Flags.add('ct-spell-unknown', 'You have no idea how to cast that spell')
 
     @offensive_spells
       .select { |spell| spell['expire'] }
@@ -1876,12 +1957,46 @@ class SpellProcess
   def check_timer(game_state)
     return if game_state.cast_timer.nil? || (Time.now - game_state.cast_timer) <= 70
 
-    game_state.cast_timer = nil
     if game_state.casting
       DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
       DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
     end
+    reset_casting_state(game_state)
+  end
+
+  # Clear the casting flags/ivars WITHOUT the success-path side-effects (weapon
+  # restore, moon-weapon re-wear, blacklist, command send) that cast_spell runs.
+  # Used by the two non-casting exits -- an aborted prep and the 70s check_timer
+  # recovery -- so stale casting_* sub-flags don't bleed into the next cast.
+  def reset_casting_state(game_state)
     game_state.casting = false
+    game_state.cast_timer = nil
+    game_state.hide_on_cast = false
+    game_state.casting_weapon_buff = false
+    game_state.casting_consume = false
+    game_state.casting_nr = false
+    game_state.casting_cfb = false
+    game_state.casting_cfw = false
+    game_state.casting_cyclic = false
+    game_state.casting_sorcery = false
+    game_state.casting_moonblade = false
+    game_state.casting_regalia = false
+    @custom_cast = nil
+    @symbiosis = nil
+    @barrage = nil
+    @before = nil
+    @after = nil
+    @skill = nil
+    @abbrev = nil
+    @use_auto_mana = nil
+    @prepared_spell = nil
+    # Clear the cambrinth invoke/harness intent for this (now-abandoned) cast.
+    # The cambrinth itself stays charged on the game side -- charges never leak --
+    # so a later cast can still use them; we just must not carry a stale invoke
+    # decision into the next spell, or check_current would wait on check_charging?
+    # for a spell that isn't using cambrinth.
+    @should_invoke = nil
+    @should_harness = false
   end
 
   def check_avtalia(game_state)
@@ -2117,6 +2232,7 @@ class SpellProcess
     needs_training = ['Warding', 'Utility', 'Augmentation', 'Sorcery', 'Debilitation', 'Targeted Magic'].select do |skill|
       data = @training_spells[skill]
       next false unless data
+      next false if spell_disabled?(data['abbrev'])
       next false unless game_state.is_offense_allowed? || data['harmless']
       next false unless %w[Warding Utility Augmentation].include?(skill) || (!@training_spells_combat_sorcery && skill == 'Sorcery') || !game_state.npcs.empty?
       next false unless DRSkill.getxp(skill) < @magic_exp_training_max_threshold
@@ -2177,11 +2293,33 @@ class SpellProcess
     DRCI.put_away_item?(data['runestone_name'], @runestone_storage)
   end
 
+  # Spells the game reports the character cannot cast ("You have no idea how to
+  # cast that spell") are disabled by abbrev so they are not retried every tick.
+  # Keyed by abbrev, not by a flag on the spell hash, because some callers
+  # (empath healing) rebuild the hash each tick, so a flag on it would not
+  # persist. See issue #7563.
+  def spell_disabled?(abbrev)
+    !!(abbrev && @disabled_spells&.include?(abbrev.downcase))
+  end
+
+  def disable_spell(data)
+    abbrev = data['abbrev']
+    return unless abbrev
+
+    @disabled_spells ||= Set.new
+    # add? returns nil when already present, so the message prints exactly once
+    # per run; the disable is cleared the next time combat-trainer is started.
+    return unless @disabled_spells.add?(abbrev.downcase)
+
+    DRC.message("Disabling #{data['name'] || abbrev} for this session: the game reports you have no idea how to cast it. Re-memorize it (or fix your spell lists) and restart combat-trainer to re-enable.")
+  end
+
   def check_buffs(game_state)
     return if game_state.casting
     return if DRStats.mana < @buff_spell_mana_threshold
 
     recastable_buffs = @buff_spells.select do |name, data|
+      next false if spell_disabled?(data['abbrev'])
       next false unless data['recast'] || data['recast_every'] || data['expire']
       next false if data['expire'] && !Flags["ct-#{data['abbrev']}"]
       next false unless check_buff_conditions?(name, game_state)
@@ -2247,7 +2385,7 @@ class SpellProcess
   def check_health_empath(game_state)
     return if DRStats.health > @empath_vitality_threshold && @wounds.empty?
 
-    if DRSpells.active_spells['Regeneration']
+    if DRSpells.active_spells['Regenerate']
       if @empath_spells['VH'] && DRStats.health <= @empath_vitality_threshold
         data = { 'abbrev' => 'vh', 'mana' => @empath_spells['VH'].first, 'cambrinth' => @empath_spells['VH'][1..-1], 'harmless' => true }
         prepare_spell(data, game_state)
@@ -2262,9 +2400,9 @@ class SpellProcess
 
     echo('Healing') if $debug_mode_ct
     if @wounds.any?
-      if @empath_spells['FOC']
+      if @empath_spells['FOC'] && !spell_disabled?('foc')
         data = { 'abbrev' => 'foc', 'mana' => @empath_spells['FOC'].first, 'cambrinth' => @empath_spells['FOC'][1..-1], 'harmless' => true }
-      elsif @empath_spells['HEAL']
+      elsif @empath_spells['HEAL'] && !spell_disabled?('heal')
         data = { 'abbrev' => 'heal', 'mana' => @empath_spells['HEAL'].first, 'cambrinth' => @empath_spells['HEAL'][1..-1], 'harmless' => true }
       end
       @wounds = {}
@@ -2423,6 +2561,7 @@ class SpellProcess
 
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
     ready_spells = @offensive_spells.select do |spell|
+      next false if spell_disabled?(spell['abbrev'])
       next false if spell['target_enemy'] && !game_state.npcs.include?(spell['target_enemy'])
       next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
       next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
@@ -2500,6 +2639,18 @@ class SpellProcess
 
   def prepare_spell(data, game_state, force_cambrinth = false)
     return unless data
+    # Central guard: a spell the game said we cannot cast is skipped here, so every
+    # caller (offensive/buff/training selects, empath/necro healing, regalia, ...)
+    # is covered and none re-send `prep` or trip destructive prep side-effects
+    # (release_cyclics, drop_moon_weapon?) below. See issue #7563.
+    # reset_casting_state clears any casting_* sub-flag a caller set before calling
+    # us -- check_cfb/check_cfw/heal_corpse/check_consume set casting_cfb/cfw/nr/
+    # consume before prepare_spell -- otherwise necro_casting? would stay true after
+    # a disabled necro spell and suppress looting, rituals, and pet creation.
+    if spell_disabled?(data['abbrev'])
+      reset_casting_state(game_state)
+      return
+    end
 
     data = DRCA.check_discern(data, @settings, spell_is_sorcery?(data)) if data['use_auto_mana']
     game_state.cast_timer = Time.now
@@ -2573,8 +2724,25 @@ class SpellProcess
     game_state.casting_regalia = data['abbrev'].casecmp('REGAL').zero?
 
     Flags.reset('ct-shock-warning')
+    Flags.reset('ct-spell-unknown')
     custom_prep = data['custom_prep'] || @settings['custom_spell_prep']
-    DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], custom_prep)
+    prepared = DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], command, data['tattoo_tm'], data['runestone_name'], data['runestone_tm'], custom_prep)
+
+    # The character does not know this spell (e.g. a scroll-memorized spell lost on
+    # death, or an Analogous Patterns spell forgotten at circle 10). Disable it so we
+    # do not retry it every tick; the check_* paths below skip disabled spells.
+    disable_spell(data) if Flags['ct-spell-unknown']
+    Flags.reset('ct-spell-unknown')
+
+    # Preparation failed (unknown spell, area interference, exhausted retries, etc.).
+    # Do NOT set casting; otherwise execute() bails on `if game_state.casting` and
+    # starves all offensive and training casting until check_timer clears it 70s later.
+    # reset_casting_state also clears the casting_* sub-flags set above (cyclic,
+    # moonblade, regalia) and by callers (sorcery, weapon_buff, hide_on_cast).
+    unless prepared
+      reset_casting_state(game_state)
+      return
+    end
 
     if Flags['ct-shock-warning'] && !game_state.is_permashocked?
       DRC.message('Dropping spell: Got shock warning.')
@@ -4184,7 +4352,12 @@ class AttackProcess
   def attack_thrown(game_state)
     attack_action = game_state.thrown_attack_verb
     attack_action += ' left' if game_state.offhand?
-    DRC.bput(attack_action, 'roundtime', 'What are you trying to')
+    # Some thrown hits (e.g. an offhand lob that shatters a limb) resolve without the
+    # game ever printing a 'roundtime' line, which would otherwise stall bput for its
+    # full timeout. Also match the throw's own success text so we return promptly and
+    # let waitrt? handle the actual roundtime from XML. See issue #7529.
+    attack_verb = attack_action.split(' ').first
+    DRC.bput(attack_action, /you #{Regexp.escape(attack_verb)}/i, 'roundtime', 'What are you trying to')
     waitrt?
     return game_state.action_taken if attack_action.include?('whip')
 
@@ -6658,6 +6831,7 @@ before_dying do
   Flags.delete('ct-germshieldlost')
   Flags.delete('ct-itemdropped')
   Flags.delete('ct-shock-warning')
+  Flags.delete('ct-spell-unknown')
   Flags.delete('ct-maneuver-cooldown-reduced')
   Flags.delete('ct-attack-out-of-range')
   Flags.delete('ct-battle-cry-not-facing')
