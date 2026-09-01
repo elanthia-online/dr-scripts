@@ -1367,25 +1367,34 @@ class SafetyProcess
   end
 
   def execute(game_state)
-    if concentration_too_low?
-      stop_hunt("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
-    elsif should_vanish?
-      vanish_and_stop
-    # safety_exit_on_bleeding additionally exits when stunned at low health. That is a
-    # stun escape, not a bleed, so it stays separate from the shared bleed handling below.
-    elsif stunned_at_low_health?
-      stop_hunt("Stunned with low health. Stopping hunt.")
-    # Shared bleed handling for BOTH stop_hunting_if_bleeding and safety_exit_on_bleeding.
-    # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure counter
-    # and effectively never stopped the hunt. A heal-over-time spell tends the bleed for us
-    # (see bleeding_stop_reason), so bleeding alone stops the hunt only when no such spell is
-    # active or vitality has fallen below the floor it can no longer keep up with.
-    elsif (reason = bleeding_stop_reason)
-      stop_hunt(reason)
-    # No stop warranted: if no heal-over-time is tending the bleed, tend it via ;tendme.
-    elsif tend_bleeders?
-      echo('Checking for tendable bleeders...') if $debug_mode_ct
-      DRC.wait_for_script_to_complete('tendme') if DRCH.has_tendable_bleeders?
+    # Once a stop has been decided the combat loop runs a multi-tick cleanup; skip the
+    # bail-out chain during it so we do not re-echo, re-stop, or (for thieves) re-Vanish on
+    # every cleanup tick. The housekeeping below still runs.
+    unless game_state.cleaning_up?
+      # Vanish is a Thief escape (it hides, not merely halts), so for a thief it outranks the
+      # plain concentration/bleed/stun stops -- someone in danger should get out, not just stop.
+      # should_vanish? already requires an escape-worthy state (bleeding/stunned/low health),
+      # so a thief who is merely low on concentration still falls through to the halt below.
+      if should_vanish?
+        vanish_and_stop
+      elsif concentration_too_low?
+        stop_hunt("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
+      # safety_exit_on_bleeding additionally exits when stunned at low health. That is a
+      # stun escape, not a bleed, so it stays separate from the shared bleed handling below.
+      elsif stunned_at_low_health?
+        stop_hunt("Stunned with low health. Stopping hunt.")
+      # Shared bleed handling for BOTH stop_hunting_if_bleeding and safety_exit_on_bleeding.
+      # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure counter
+      # and effectively never stopped the hunt. A heal-over-time spell tends the bleed for us
+      # (see bleeding_stop_reason), so bleeding alone stops the hunt only when no such spell is
+      # active or vitality has fallen below the floor it can no longer keep up with.
+      elsif (reason = bleeding_stop_reason)
+        stop_hunt(reason)
+      # No stop warranted: if no heal-over-time is tending the bleed, tend it via ;tendme.
+      elsif tend_bleeders?
+        echo('Checking for tendable bleeders...') if $debug_mode_ct
+        DRC.wait_for_script_to_complete('tendme') if DRCH.has_tendable_bleeders?
+      end
     end
 
     fput 'exit' if DRStats.health < @health_threshold

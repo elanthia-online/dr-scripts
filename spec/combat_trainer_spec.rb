@@ -1743,7 +1743,8 @@ RSpec.describe SafetyProcess do
   def build_game_state(**attrs)
     defaults = {
       danger: false,
-      retreating?: false
+      retreating?: false,
+      cleaning_up?: false
     }
     state = double('GameState', defaults.merge(attrs))
     allow(state).to receive(:danger=)
@@ -1936,6 +1937,54 @@ RSpec.describe SafetyProcess do
 
         expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
         expect_hunt_stopped
+      end
+
+      it 'lets a Thief Vanish outrank the concentration halt when in danger' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+        # Low concentration AND bleeding: escape (Vanish) should win over the plain halt.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, safety_escape_health_threshold: 90,
+                        safety_concentration_minimum: 10, concentration: 5)
+
+        expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
+        expect_hunt_stopped
+      end
+
+      it 'still halts a Thief on low concentration alone (no escape-worthy danger)' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+        # Healthy and not bleeding/stunned: should_vanish? is false, so concentration halts.
+        run_safety_tick(safety_escape_health_threshold: 90, safety_concentration_minimum: 10,
+                        concentration: 5, health: 100)
+
+        expect(DRCA).not_to have_received(:activate_khri?)
+        expect_hunt_stopped
+        expect(displayed_messages).to include(a_string_matching(/Concentration below/))
+      end
+    end
+
+    # Once a stop is decided the combat loop runs a multi-tick cleanup; the safety chain must
+    # not keep firing (re-echoing / re-Vanishing) during it, but housekeeping should continue.
+    describe 'during cleanup' do
+      it 'skips the bail-out chain so it does not re-stop each tick' do
+        instance = build_safety_process(stop_on_bleeding: true)
+        stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true)
+
+        instance.execute(build_game_state(cleaning_up?: true))
+
+        expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+        expect($COMBAT_TRAINER).not_to have_received(:stop)
+      end
+
+      it 'still runs post-safety housekeeping during cleanup' do
+        instance = build_safety_process(stop_on_bleeding: true)
+        stub_post_safety(instance)
+        allow(instance).to receive(:bleeding?).and_return(true)
+
+        instance.execute(build_game_state(cleaning_up?: true))
+
+        expect(instance).to have_received(:tend_parasite)
       end
     end
 
