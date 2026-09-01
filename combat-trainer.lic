@@ -1378,10 +1378,10 @@ class SafetyProcess
     # Shared bleed handling for BOTH stop_hunting_if_bleeding and safety_exit_on_bleeding.
     # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure counter
     # and effectively never stopped the hunt. A heal-over-time spell tends the bleed for us
-    # (see should_stop_for_bleeding?), so bleeding alone stops the hunt only when no such
-    # spell is active or vitality has fallen below the floor it can no longer keep up with.
-    elsif should_stop_for_bleeding?
-      stop_hunt(bleeding_stop_message)
+    # (see bleeding_stop_reason), so bleeding alone stops the hunt only when no such spell is
+    # active or vitality has fallen below the floor it can no longer keep up with.
+    elsif (reason = bleeding_stop_reason)
+      stop_hunt(reason)
     # No stop warranted: if no heal-over-time is tending the bleed, tend it via ;tendme.
     elsif tend_bleeders?
       echo('Checking for tendable bleeders...') if $debug_mode_ct
@@ -1439,9 +1439,12 @@ class SafetyProcess
   end
 
   def vanish_and_stop
+    # Vanish (a khri) can't be used while stunned, so announce the wait up front (the old
+    # "Stunned. Activating Vanish" echo fired after the pause, when stunned? was already
+    # false, so it never actually printed), then wait out the stun before vanishing.
+    echo("Stunned. Waiting for it to clear, then activating Vanish and stopping hunt.") if stunned?
     pause 0.1 while stunned?
     echo("Bleeding. Activating Vanish and stopping hunt.") if bleeding?
-    echo("Stunned. Activating Vanish and stopping hunt.") if stunned?
     echo("Health below #{@safety_escape_health_threshold}. Activating Vanish and stopping hunt.") if DRStats.health < @safety_escape_health_threshold
     DRCA.activate_khri?(false, "Vanish")
     stop_hunt
@@ -1453,18 +1456,17 @@ class SafetyProcess
     (@safety_exit_when_stunned || @safety_exit_on_bleeding) && stunned? && DRStats.health < safety_escape_health_floor
   end
 
-  # Bleeding is a reason to stop only if a bleed-stop setting is on AND either no
-  # heal-over-time is tending it or vitality has dropped below the floor the HoT can no
-  # longer keep up with.
-  def should_stop_for_bleeding?
-    return false unless bleed_stop_enabled? && bleeding?
-    return DRStats.health < safety_escape_health_floor if heal_over_time_active?
+  # The stop reason (message) when a bleed should stop the hunt, else nil. A bleed stops the
+  # hunt only if a bleed-stop setting is on AND either no heal-over-time is tending it, or
+  # vitality has dropped below the floor the HoT can no longer keep up with. Returning the
+  # message rather than a bool computes heal_over_time_active? once and keeps the decision
+  # and the wording in lockstep.
+  def bleeding_stop_reason
+    return nil unless bleed_stop_enabled? && bleeding?
 
-    true
-  end
-
-  def bleeding_stop_message
     if heal_over_time_active?
+      return nil unless DRStats.health < safety_escape_health_floor
+
       "Bleeding with vitality below #{safety_escape_health_floor} despite an active heal-over-time. Stopping hunt."
     else
       "Bleeding. Stopping hunt."

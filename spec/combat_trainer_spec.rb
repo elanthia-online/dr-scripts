@@ -2298,56 +2298,44 @@ RSpec.describe SafetyProcess do
         end
       end
 
-      describe '#should_stop_for_bleeding?' do
+      # bleeding_stop_reason returns nil (do not stop) or the stop message (stop, with the
+      # wording matching the reason) -- one method covering both the decision and the text.
+      describe '#bleeding_stop_reason' do
         def bleeding_instance(**overrides)
           instance = build_safety_process(**overrides)
           allow(instance).to receive(:bleeding?).and_return(true)
           instance
         end
 
-        it 'is false when no bleed-stop setting is enabled' do
+        it 'is nil when no bleed-stop setting is enabled' do
           instance = bleeding_instance(stop_on_bleeding: false, safety_exit_on_bleeding: false)
-          expect(predicate(instance, :should_stop_for_bleeding?)).to be_falsey
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
         end
 
-        it 'is false when not bleeding' do
+        it 'is nil when not bleeding' do
           instance = build_safety_process(stop_on_bleeding: true)
           allow(instance).to receive(:bleeding?).and_return(false)
-          expect(predicate(instance, :should_stop_for_bleeding?)).to be_falsey
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
         end
 
-        it 'is true when bleeding with no heal-over-time' do
+        it 'is a plain-bleed message when bleeding with no heal-over-time' do
           instance = bleeding_instance(stop_on_bleeding: true)
           DRSpells._set_active_spells({})
-          expect(predicate(instance, :should_stop_for_bleeding?)).to be_truthy
+          expect(predicate(instance, :bleeding_stop_reason)).to match(/^Bleeding\. Stopping hunt/)
         end
 
-        it 'is false when a heal-over-time is tending at healthy vitality' do
+        it 'is nil when a heal-over-time is tending at healthy vitality' do
           instance = bleeding_instance(stop_on_bleeding: true)
           DRStats.health = 100
           DRSpells._set_active_spells({ 'Heal' => 20 })
-          expect(predicate(instance, :should_stop_for_bleeding?)).to be_falsey
+          expect(predicate(instance, :bleeding_stop_reason)).to be_nil
         end
 
-        it 'is true when a heal-over-time is active but vitality is below the floor' do
+        it 'is the low-vitality message when a heal-over-time is active but vitality is below the floor' do
           instance = bleeding_instance(stop_on_bleeding: true)
           DRStats.health = 50
           DRSpells._set_active_spells({ 'Heal' => 20 })
-          expect(predicate(instance, :should_stop_for_bleeding?)).to be_truthy
-        end
-      end
-
-      describe '#bleeding_stop_message' do
-        it 'names a plain bleed when no heal-over-time is active' do
-          instance = build_safety_process
-          DRSpells._set_active_spells({})
-          expect(predicate(instance, :bleeding_stop_message)).to match(/^Bleeding\. Stopping hunt/)
-        end
-
-        it 'names the low-vitality-under-heal-over-time case' do
-          instance = build_safety_process
-          DRSpells._set_active_spells({ 'Regenerate' => 20 })
-          expect(predicate(instance, :bleeding_stop_message)).to match(/despite an active heal-over-time/)
+          expect(predicate(instance, :bleeding_stop_reason)).to match(/despite an active heal-over-time/)
         end
       end
 
