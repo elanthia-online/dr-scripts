@@ -1729,11 +1729,9 @@ RSpec.describe SafetyProcess do
       equipment_manager: double('EquipmentManager'),
       health_threshold: 20,
       stop_on_bleeding: true,
-      safety_untendable_threshold: 3,
       safety_exit_on_bleeding: false,
       safety_concentration_minimum: nil,
-      safety_escape_health_threshold: nil,
-      untendable_counter: 0
+      safety_escape_health_threshold: nil
     }
     defaults.merge(overrides).each do |k, v|
       instance.instance_variable_set(:"@#{k}", v)
@@ -1766,51 +1764,191 @@ RSpec.describe SafetyProcess do
     allow(DRCA).to receive(:activate_khri?).and_return(true)
   end
 
+  # DAMP helper: build a SafetyProcess, stub the post-safety tail, seed the exact
+  # game-state the safety branches read, then run one execute tick. Returns the
+  # instance so a caller can assert on the $HUNTING_BUDDY / $COMBAT_TRAINER doubles.
+  # Every scenario reads as one line: `run_safety_tick(bleeding: true, active_spells: { 'Heal' => 5 }, health: 80)`.
+  def run_safety_tick(bleeding: false, stunned: false, health: 100, concentration: 100,
+                      active_spells: {}, **process_overrides)
+    instance = build_safety_process(**process_overrides)
+    stub_post_safety(instance)
+    allow(instance).to receive(:bleeding?).and_return(bleeding)
+    allow(instance).to receive(:stunned?).and_return(stunned)
+    DRStats.health = health
+    DRStats.concentration = concentration
+    DRSpells._set_active_spells(active_spells)
+    instance.execute(build_game_state)
+    instance
+  end
+
   describe '#execute' do
-    describe 'safety_untendable_threshold' do
-      it 'stops hunt at default threshold of 3' do
-        instance = build_safety_process(untendable_counter: 3)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # stop is gated on active bleeding
-        game_state = build_game_state
+    # Readable assertion pairs. A "stop" means BOTH the parent hunt loop and the
+    # combat-trainer itself are told to stop; a "continue" means neither is.
+    def expect_hunt_stopped
+      expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+      expect($COMBAT_TRAINER).to have_received(:stop)
+    end
 
-        instance.execute(game_state)
+    def expect_hunt_continued
+      expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+      expect($COMBAT_TRAINER).not_to have_received(:stop)
+    end
 
-        expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+    # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure
+    # counter, so it never reliably stopped the hunt. It now stops as soon as we are
+    # bleeding (default-on), unless a heal-over-time spell is tending us and vitality
+    # is still healthy -- see the heal-over-time block below.
+    describe 'stop_hunting_if_bleeding' do
+      it 'stops the hunt as soon as bleeding with no heal-over-time active' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true)
+        expect_hunt_stopped
+      end
+
+      it 'does not stop when not bleeding' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: false)
+        expect_hunt_continued
+      end
+
+      it 'does not stop when the setting is disabled, even while bleeding' do
+        run_safety_tick(stop_on_bleeding: false, safety_exit_on_bleeding: false, bleeding: true)
+        expect_hunt_continued
+      end
+
+      it 'does not raise when run standalone without hunting-buddy' do
+        $HUNTING_BUDDY = nil # combat-trainer is often run on its own
+        expect { run_safety_tick(stop_on_bleeding: true, bleeding: true) }.not_to raise_error
         expect($COMBAT_TRAINER).to have_received(:stop)
       end
+    end
 
-      it 'does not stop hunt below default threshold' do
-        instance = build_safety_process(untendable_counter: 2)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # bleeding so the threshold (not the not-bleeding reset) is what is tested
-        game_state = build_game_state
+    # Finding #2: an active heal-over-time (Devour/Heal/Regenerate) tends the bleed for
+    # us, so a bleed alone must NOT end the hunt -- only a bleed *plus* low vitality
+    # (DRStats.health below safety_escape_health_threshold, default 80) should.
+    describe 'stop_hunting_if_bleeding with an active heal-over-time' do
+      %w[Devour Heal Regenerate].each do |hot|
+        it "keeps hunting while #{hot} is active and vitality is healthy" do
+          run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100, active_spells: { hot => 20 })
+          expect_hunt_continued
+        end
 
-        instance.execute(game_state)
-
-        expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+        it "still stops when #{hot} is active but vitality is below the 80 floor" do
+          run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 50, active_spells: { hot => 20 })
+          expect_hunt_stopped
+        end
       end
 
-      it 'stops hunt at custom threshold of 1' do
-        instance = build_safety_process(safety_untendable_threshold: 1, untendable_counter: 1)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # stop is gated on active bleeding
-        game_state = build_game_state
-
-        instance.execute(game_state)
-
-        expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+      it 'treats multiple simultaneous heal-over-times the same as one' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100,
+                        active_spells: { 'Heal' => 20, 'Regenerate' => 20 })
+        expect_hunt_continued
       end
 
-      it 'requires stop_on_bleeding to be true' do
-        instance = build_safety_process(untendable_counter: 3, stop_on_bleeding: false)
-        stub_post_safety(instance)
-        allow(instance).to receive(:bleeding?).and_return(true) # bleeding so stop_on_bleeding=false is what prevents the stop
-        game_state = build_game_state
+      it 'is not suppressed by an unrelated active spell' do
+        # A random buff must not be mistaken for a heal-over-time.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100, active_spells: { 'Heroism' => 20 })
+        expect_hunt_stopped
+      end
 
-        instance.execute(game_state)
+      # Boundary: the gate is `health < threshold`, so exactly-at-threshold keeps hunting.
+      it 'keeps hunting at exactly the 80 vitality floor' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 80, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued
+      end
 
-        expect($HUNTING_BUDDY).not_to have_received(:stop_hunting)
+      it 'stops one point below the 80 vitality floor' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 79, active_spells: { 'Heal' => 20 })
+        expect_hunt_stopped
+      end
+
+      # A non-thief with a custom safety_escape_health_threshold uses that value as the
+      # floor (the Thief/Vanish branch above is skipped for non-thieves), not the 80 default.
+      it 'honors a custom safety_escape_health_threshold as the floor' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 50,
+                        safety_escape_health_threshold: 40, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued # 50 >= 40, HoT keeps up
+
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 39,
+                        safety_escape_health_threshold: 40, active_spells: { 'Heal' => 20 })
+        expect_hunt_stopped # 39 < 40
+      end
+
+      it 'never stops on bleed when the setting is disabled, even at low vitality with a heal-over-time' do
+        run_safety_tick(stop_on_bleeding: false, safety_exit_on_bleeding: false,
+                        bleeding: true, health: 10, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued
+      end
+    end
+
+    # Guards the elsif ordering my new branch sits inside: the ;tendme fallback must
+    # remain reachable when we are NOT stopping, and must be pre-empted when we are.
+    describe 'tend (;tendme) fallback reachability' do
+      it 'attempts to tend bleeders when not stopping and no heal-over-time is active' do
+        allow(DRCH).to receive(:has_tendable_bleeders?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        run_safety_tick(stop_on_bleeding: false, safety_exit_on_bleeding: false, bleeding: true)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('tendme')
+      end
+
+      it 'does not tend while a heal-over-time is handling the bleed' do
+        allow(DRCH).to receive(:has_tendable_bleeders?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        # HoT active, vitality healthy: no stop AND no tend -- the HoT owns the bleed.
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100, active_spells: { 'Heal' => 20 })
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect_hunt_continued
+      end
+
+      it 'stops instead of tending when stop_on_bleeding pre-empts the fallback' do
+        allow(DRCH).to receive(:has_tendable_bleeders?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100)
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect_hunt_stopped
+      end
+    end
+
+    # Adversarial: my branch must not jump ahead of higher-priority safety branches,
+    # and those branches must still fire in cases where my branch would NOT stop.
+    describe 'stop_hunting_if_bleeding branch precedence' do
+      # Non-theater precedence test: pick the exact state where the bleed branches do
+      # NOT stop (heal-over-time active + healthy vitality). If concentration did not
+      # take precedence / fire independently, nothing would stop the hunt here.
+      it 'still stops for low concentration even when a heal-over-time suppresses the bleed stop' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100,
+                        active_spells: { 'Heal' => 20 },
+                        safety_concentration_minimum: 10, concentration: 5)
+        expect_hunt_stopped
+        expect(displayed_messages).to include(a_string_matching(/Concentration below/))
+      end
+
+      it 'yields to the Thief Vanish escape when bleeding' do
+        DRStats.guild = 'Thief'
+        DRSpells._set_known_spells({ 'Vanish' => true })
+
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, safety_escape_health_threshold: 90)
+
+        expect(DRCA).to have_received(:activate_khri?).with(false, 'Vanish')
+        expect_hunt_stopped
+      end
+    end
+
+    # Finding #6: the two stop reasons must be distinguishable in the log -- a plain
+    # bleed vs. a bleed that only stopped because vitality fell under an active HoT.
+    describe 'stop_hunting_if_bleeding echo messages' do
+      it 'names a plain bleed stop' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 100)
+        expect(displayed_messages).to include(a_string_matching(/Bleeding\. Stopping hunt/))
+      end
+
+      it 'names the low-vitality-under-heal-over-time stop distinctly' do
+        run_safety_tick(stop_on_bleeding: true, bleeding: true, health: 50, active_spells: { 'Heal' => 20 })
+        expect(displayed_messages).to include(a_string_matching(/vitality below 80 despite an active heal-over-time/))
       end
     end
 
@@ -1917,7 +2055,9 @@ RSpec.describe SafetyProcess do
 
     describe 'safety_exit_on_bleeding' do
       it 'stops hunt when bleeding and setting is true' do
-        instance = build_safety_process(safety_exit_on_bleeding: true)
+        # Disable stop_on_bleeding so only safety_exit_on_bleeding can drive the stop --
+        # otherwise this passes even if safety_exit_on_bleeding were ignored.
+        instance = build_safety_process(safety_exit_on_bleeding: true, stop_on_bleeding: false)
         stub_post_safety(instance)
         allow(instance).to receive(:bleeding?).and_return(true)
         game_state = build_game_state
@@ -1925,6 +2065,26 @@ RSpec.describe SafetyProcess do
         instance.execute(game_state)
 
         expect($HUNTING_BUDDY).to have_received(:stop_hunting)
+      end
+
+      # The heal-over-time grace is shared: safety_exit_on_bleeding honors it too, not just
+      # stop_hunting_if_bleeding. stop_on_bleeding is disabled here so only the
+      # safety_exit_on_bleeding path can drive the decision.
+      it 'keeps hunting on a bleed a heal-over-time is tending at healthy vitality' do
+        run_safety_tick(safety_exit_on_bleeding: true, stop_on_bleeding: false,
+                        bleeding: true, health: 100, active_spells: { 'Heal' => 20 })
+        expect_hunt_continued
+      end
+
+      it 'stops on a bleed when a heal-over-time is active but vitality is below the floor' do
+        run_safety_tick(safety_exit_on_bleeding: true, stop_on_bleeding: false,
+                        bleeding: true, health: 50, active_spells: { 'Heal' => 20 })
+        expect_hunt_stopped
+      end
+
+      it 'stops on a bleed with no heal-over-time active' do
+        run_safety_tick(safety_exit_on_bleeding: true, stop_on_bleeding: false, bleeding: true)
+        expect_hunt_stopped
       end
 
       it 'stops hunt when stunned with low health' do
@@ -1952,7 +2112,8 @@ RSpec.describe SafetyProcess do
       end
 
       it 'does not fire when setting is false' do
-        instance = build_safety_process(safety_exit_on_bleeding: false)
+        # stop_on_bleeding also stops on bleeding, so disable it too to isolate this case.
+        instance = build_safety_process(safety_exit_on_bleeding: false, stop_on_bleeding: false)
         stub_post_safety(instance)
         allow(instance).to receive(:bleeding?).and_return(true)
         game_state = build_game_state

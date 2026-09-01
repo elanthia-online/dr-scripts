@@ -1342,30 +1342,19 @@ class SafetyProcess
     @equipment_manager = equipment_manager
     @health_threshold = settings.health_threshold
     @stop_on_bleeding = settings.stop_hunting_if_bleeding
-    @safety_untendable_threshold = settings.safety_untendable_threshold || 3
     @safety_exit_on_bleeding = settings.safety_exit_on_bleeding || false
     @safety_concentration_minimum = settings.safety_concentration_minimum
     @safety_escape_health_threshold = settings.safety_escape_health_threshold
     echo("  @health_threshold: #{@health_threshold}") if $debug_mode_ct
-    echo("  @safety_untendable_threshold: #{@safety_untendable_threshold}") if $debug_mode_ct
     echo("  @safety_exit_on_bleeding: #{@safety_exit_on_bleeding}") if $debug_mode_ct
     echo("  @safety_concentration_minimum: #{@safety_concentration_minimum}") if $debug_mode_ct
     echo("  @safety_escape_health_threshold: #{@safety_escape_health_threshold}") if $debug_mode_ct
-    @untendable_counter = 0
   end
 
   def execute(game_state)
-    # Reset the failure count whenever we are not actively bleeding, so a stale
-    # count from an earlier, since-resolved bleed cannot trip the stop below.
-    @untendable_counter = 0 unless bleeding?
-    if @untendable_counter >= @safety_untendable_threshold && @stop_on_bleeding
-      echo('Skipping tendme check due to untendable backoff') if $debug_mode_ct
-      echo("Couldn't tend bleeders after trying #{@safety_untendable_threshold} time(s). Stopping hunt. Get healed!")
-      $HUNTING_BUDDY.stop_hunting
-      $COMBAT_TRAINER.stop
-    elsif @safety_concentration_minimum && DRStats.concentration < @safety_concentration_minimum
+    if @safety_concentration_minimum && DRStats.concentration < @safety_concentration_minimum
       echo("Concentration below #{@safety_concentration_minimum}. Stopping hunt.")
-      $HUNTING_BUDDY.stop_hunting
+      $HUNTING_BUDDY&.stop_hunting
       $COMBAT_TRAINER.stop
     elsif @safety_escape_health_threshold && DRStats.thief? && DRSpells.known_spells['Vanish'] && (bleeding? || stunned? || DRStats.health < @safety_escape_health_threshold)
       pause 0.1 while stunned?
@@ -1373,25 +1362,36 @@ class SafetyProcess
       echo("Stunned. Activating Vanish and stopping hunt.") if stunned?
       echo("Health below #{@safety_escape_health_threshold}. Activating Vanish and stopping hunt.") if DRStats.health < @safety_escape_health_threshold
       DRCA.activate_khri?(false, "Vanish")
-      $HUNTING_BUDDY.stop_hunting
+      $HUNTING_BUDDY&.stop_hunting
       $COMBAT_TRAINER.stop
-    elsif @safety_exit_on_bleeding && (bleeding? || (stunned? && DRStats.health < (@safety_escape_health_threshold || 80)))
-      echo("Bleeding. Stopping hunt.") if bleeding?
-      echo("Stunned with low health. Stopping hunt.") if stunned?
-      $HUNTING_BUDDY.stop_hunting
+    # safety_exit_on_bleeding additionally exits when stunned at low health. That is a
+    # stun escape, not a bleed, so it stays separate from the shared bleed handling below.
+    elsif @safety_exit_on_bleeding && stunned? && DRStats.health < safety_escape_health_floor
+      echo("Stunned with low health. Stopping hunt.")
+      $HUNTING_BUDDY&.stop_hunting
+      $COMBAT_TRAINER.stop
+    # Shared bleed handling for BOTH stop_hunting_if_bleeding and safety_exit_on_bleeding.
+    # The bug: stop_hunting_if_bleeding was gated behind an unreliable tend-failure
+    # counter and effectively never stopped the hunt.
+    #
+    # A heal-over-time spell (Devour/Heal/Regenerate) tends the bleed for us, so bleeding
+    # alone is not a reason to stop while one is active -- only stop once vitality has also
+    # dropped below the floor the HoT can no longer keep up with (the safety_escape_health
+    # floor, default 80). This branch is separate from the no-HoT one below so the echo can
+    # name the low-vitality trigger.
+    elsif bleed_stop_enabled? && bleeding? && heal_over_time_active? && DRStats.health < safety_escape_health_floor
+      echo("Bleeding with vitality below #{safety_escape_health_floor} despite an active heal-over-time. Stopping hunt.")
+      $HUNTING_BUDDY&.stop_hunting
+      $COMBAT_TRAINER.stop
+    # No heal-over-time to tend the bleed for us: stop as soon as we're bleeding.
+    elsif bleed_stop_enabled? && bleeding? && !heal_over_time_active?
+      echo("Bleeding. Stopping hunt.")
+      $HUNTING_BUDDY&.stop_hunting
       $COMBAT_TRAINER.stop
     # If no heal-over-time spells are active then attempt to tend bleeders using ;tendme
-    elsif bleeding? && !Script.running?('tendme') && !(DRSpells.active_spells['Devour'] || DRSpells.active_spells['Heal'] || DRSpells.active_spells['Regenerate'])
+    elsif bleeding? && !Script.running?('tendme') && !heal_over_time_active?
       echo('Checking for tendable bleeders...') if $debug_mode_ct
       DRC.wait_for_script_to_complete('tendme') if DRCH.has_tendable_bleeders?
-      # Only count a failed attempt if still bleeding afterwards, and reset once
-      # bleeding clears so separate, fully-tended episodes earlier in the hunt do
-      # not accumulate toward the stop threshold.
-      if bleeding?
-        @untendable_counter += 1
-      else
-        @untendable_counter = 0
-      end
     end
 
     fput 'exit' if DRStats.health < @health_threshold
@@ -1405,6 +1405,25 @@ class SafetyProcess
   end
 
   private
+
+  # A heal-over-time spell tends bleeders on its own, so both the bleed-stop gate and
+  # the ;tendme fallback key off the same set. Kept in one place so the call sites
+  # cannot silently diverge.
+  def heal_over_time_active?
+    DRSpells.active_spells['Devour'] || DRSpells.active_spells['Heal'] || DRSpells.active_spells['Regenerate']
+  end
+
+  # Either bleed-stop setting enables the shared bleed handling; the heal-over-time
+  # grace and vitality floor then apply identically to both.
+  def bleed_stop_enabled?
+    @stop_on_bleeding || @safety_exit_on_bleeding
+  end
+
+  # Vitality floor below which a heal-over-time is assumed to no longer keep up; also the
+  # stunned-exit floor. Defaults to 80 when safety_escape_health_threshold is unset.
+  def safety_escape_health_floor
+    @safety_escape_health_threshold || 80
+  end
 
   def check_item_recovery(game_state)
     if Flags['ct-germshieldlost']
