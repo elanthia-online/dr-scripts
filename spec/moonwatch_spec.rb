@@ -413,6 +413,8 @@ RSpec.describe 'moonwatch.lic' do
         expect(Moons.observed_phase_name('is a growing crescent of light')).to eq('waxing crescent')
         expect(Moons.observed_phase_name('has nearly turned its full face upon Elanthia')).to eq('waxing gibbous')
         expect(Moons.observed_phase_name('forms a perfect circle in the heavens')).to eq('full')
+        expect(Moons.observed_phase_name(', beginning to wane, travels slowly through the sky')).to eq('waning gibbous')
+        expect(Moons.observed_phase_name('moves across the skies')).to eq('third quarter')
         expect(Moons.observed_phase_name('has waned to a narrow crescent of light')).to eq('waning crescent')
       end
 

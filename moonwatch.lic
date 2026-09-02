@@ -3,7 +3,7 @@
 =begin
   Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-moonwatch.lic
 
-  Moonwatch v4.5.0 - Bresenham Moons + Empirical Sun Table + Lunar Phase
+  Moonwatch v4.5.1 - Bresenham Moons + Empirical Sun Table + Lunar Phase
   ======================================================================
 
   This script provides real-time tracking of DragonRealms moons (Katamba, Xibar, Yavash)
@@ -61,6 +61,12 @@
   notice at startup that the absolute phase self-calibrates from observed events
   (see the MoonwatchInstance module). No per-instance constants are maintained.
 
+  v4.5.1 maps two more observe wordings: "beginning to wane, travels slowly
+  through the sky" (waning gibbous) and "moves across the skies" (third quarter).
+  Both were confirmed by all three moons (independent sidereal periods) landing
+  on the same computed phase for each wording. Six of eight phase wordings are
+  now mapped; only new and first quarter remain unseen (logged raw until then).
+
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
   - Moons: Single responsibility for moon position calculations
@@ -101,7 +107,7 @@
 no_pause_all
 no_kill_all
 
-$MOONWATCH_VERSION = '4.5.0'
+$MOONWATCH_VERSION = '4.5.1'
 
 # =============================================================================
 # CONSTANTS: Game Event Patterns
@@ -902,13 +908,18 @@ module Moons
 
   # Maps DR's observed phase wording (the clause after "moon <M>") to a phase
   # name, so observations can be validated against the computed phase. Each regex
-  # matches a distinctive fragment of one wording. Four are model-validated so
-  # far; the remaining four (new, first quarter, waning gibbous, third quarter)
-  # are added as their wordings are seen (unmapped clauses are logged raw).
+  # matches a distinctive fragment of one wording. Six are model-validated so
+  # far; the remaining two (new, first quarter) are added as their wordings are
+  # seen (unmapped clauses are logged raw). The waning-gibbous and third-quarter
+  # wordings were confirmed by observing all three moons (independent sidereal
+  # periods) land on the same computed phase for each wording. Entries are in
+  # cycle order; find returns the first match, and the fragments are disjoint.
   OBSERVED_PHASE_MAP = [
     [/growing crescent/i, 'waxing crescent'],
     [/nearly turned its full face/i, 'waxing gibbous'],
     [/perfect circle/i, 'full'],
+    [/beginning to wane/i, 'waning gibbous'],
+    [/moves across the skies/i, 'third quarter'],
     [/waned to a narrow crescent/i, 'waning crescent']
   ].freeze
 
