@@ -3,7 +3,7 @@
 =begin
   Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-moonwatch.lic
 
-  Moonwatch v4.5.1 - Bresenham Moons + Empirical Sun Table + Lunar Phase
+  Moonwatch v4.5.2 - Bresenham Moons + Empirical Sun Table + Lunar Phase
   ======================================================================
 
   This script provides real-time tracking of DragonRealms moons (Katamba, Xibar, Yavash)
@@ -67,6 +67,17 @@
   on the same computed phase for each wording. Six of eight phase wordings are
   now mapped; only new and first quarter remain unseen (logged raw until then).
 
+  v4.5.2 completes observe-based phase coverage to its ceiling of 7/8. The first
+  quarter wording ("Waxing still, half of the ... moon <M> looks down from
+  above.") was being observed all along but silently dropped: MOON_PHASE_LINE_
+  PATTERN anchored on a leading "The", which this wording lacks. The anchor is
+  relaxed to key on "moon <M>" (safe -- every non-phase observe line names the
+  moon by bare name, never "moon <M>"). The eighth phase, new, is unobservable
+  by game design: DR broadcasts no rise for a dark moon (0 rises at model-new
+  across ~2700 logged rises, vs ~130 per other phase), so the rise-triggered
+  auto-observe never fires while new and no "new" wording exists. All findings
+  were validated against ~2700 observe responses logged across two characters.
+
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
   - Moons: Single responsibility for moon position calculations
@@ -107,7 +118,7 @@
 no_pause_all
 no_kill_all
 
-$MOONWATCH_VERSION = '4.5.1'
+$MOONWATCH_VERSION = '4.5.2'
 
 # =============================================================================
 # CONSTANTS: Game Event Patterns
@@ -132,9 +143,18 @@ MOON_SCAN_PATTERN = /^You scan the skies/i.freeze
 # "... forms a perfect circle in the heavens."), so we match the whole clause
 # after "moon <M>" and let Moons.observed_phase_name map it. The colour adjective
 # before "moon" varies per moon, so it is matched loosely.
+#
+# We anchor only on the literal "moon <M>", NOT on a leading "The": the first
+# quarter wording opens with "Waxing still, half of the ... moon <M> ..." rather
+# than "The ...", so a "^The" anchor silently dropped it. Anchoring on "moon <M>"
+# is still safe because every non-phase observe response (clouded / glimpsed /
+# not visible) refers to the moon by bare name ("Katamba is nowhere to be seen.",
+# "... betrays the presence of Katamba.") and never as "moon <M>", so only true
+# phase readouts match. Validated against ~2700 logged observe responses.
 # @example "The black moon Katamba is a growing crescent of light."
 # @example "The moon Katamba forms a perfect circle in the heavens."
-MOON_PHASE_LINE_PATTERN = /^The\b.*\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.*)\.\s*$/i.freeze
+# @example "Waxing still, half of the black moon Katamba looks down from above."
+MOON_PHASE_LINE_PATTERN = /\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.*)\.\s*$/i.freeze
 
 # Sun rise event patterns - multiple variations exist in-game
 # These cover dawn/sunrise messages across different weather conditions and locations
@@ -908,14 +928,23 @@ module Moons
 
   # Maps DR's observed phase wording (the clause after "moon <M>") to a phase
   # name, so observations can be validated against the computed phase. Each regex
-  # matches a distinctive fragment of one wording. Six are model-validated so
-  # far; the remaining two (new, first quarter) are added as their wordings are
-  # seen (unmapped clauses are logged raw). The waning-gibbous and third-quarter
-  # wordings were confirmed by observing all three moons (independent sidereal
-  # periods) land on the same computed phase for each wording. Entries are in
-  # cycle order; find returns the first match, and the fragments are disjoint.
+  # matches a distinctive fragment of one wording, so the map keys on the clause
+  # AFTER "moon <M>" (the distinctive prefix of first/third quarter -- "Waxing
+  # still, half of the" / "The waning half of the" -- is dropped by the capture,
+  # so the suffix "looks down from above" / "moves across the skies" is what
+  # disambiguates them). All seven OBSERVABLE phases are mapped and validated
+  # against ~2700 logged observe responses across all three moons.
+  #
+  # "new" is intentionally absent and unmappable: DR does not broadcast a rise
+  # for a dark (new) moon (0 rises at model-new across ~2700, vs ~130 per other
+  # phase), so the rise-triggered auto-observe never fires while new, and no
+  # "new" wording exists in the logs. The phase model still reports "new"
+  # correctly; there is simply no in-game observe text to validate it against.
+  #
+  # Entries are in cycle order; find returns the first match, fragments disjoint.
   OBSERVED_PHASE_MAP = [
     [/growing crescent/i, 'waxing crescent'],
+    [/looks down from above/i, 'first quarter'],
     [/nearly turned its full face/i, 'waxing gibbous'],
     [/perfect circle/i, 'full'],
     [/beginning to wane/i, 'waning gibbous'],

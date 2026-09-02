@@ -93,6 +93,7 @@ load_lic_class('moonwatch.lic', 'MoonwatchOffsetManager')
 load_lic_class('moonwatch.lic', 'MoonwatchLogger')
 load_lic_class('moonwatch.lic', 'ServerResetTracker')
 load_lic_class('moonwatch.lic', 'MoonwatchUI')
+load_lic_constant('moonwatch.lic', 'MOON_PHASE_LINE_PATTERN')
 
 RSpec.describe 'moonwatch.lic' do
   # A recent server_time landing on day-of-year 307, year 455.
@@ -411,6 +412,7 @@ RSpec.describe 'moonwatch.lic' do
     describe '.observed_phase_name' do
       it 'maps each known DR observe wording to its phase' do
         expect(Moons.observed_phase_name('is a growing crescent of light')).to eq('waxing crescent')
+        expect(Moons.observed_phase_name('looks down from above')).to eq('first quarter')
         expect(Moons.observed_phase_name('has nearly turned its full face upon Elanthia')).to eq('waxing gibbous')
         expect(Moons.observed_phase_name('forms a perfect circle in the heavens')).to eq('full')
         expect(Moons.observed_phase_name(', beginning to wane, travels slowly through the sky')).to eq('waning gibbous')
@@ -422,9 +424,52 @@ RSpec.describe 'moonwatch.lic' do
         expect(Moons.observed_phase_name('The black moon Katamba FORMS A PERFECT CIRCLE')).to eq('full')
       end
 
-      it 'returns nil for an unmapped wording' do
-        expect(Moons.observed_phase_name('looks down from above')).to be_nil
+      it 'returns nil for an unmapped wording (e.g. weather/not-visible lines)' do
+        expect(Moons.observed_phase_name('is nowhere to be seen')).to be_nil
         expect(Moons.observed_phase_name('')).to be_nil
+      end
+    end
+
+    # The parser scopes phase capture to the "moon <M>" clause. It must catch
+    # every phase wording -- including first quarter, which opens with "Waxing
+    # still, half of the ..." rather than "The ..." -- while ignoring the
+    # non-phase observe responses, which all name the moon by bare name.
+    describe 'MOON_PHASE_LINE_PATTERN' do
+      it 'captures the phase clause for every observable wording' do
+        {
+          'The black moon Katamba is a growing crescent of light.'                  => 'is a growing crescent of light',
+          'Waxing still, half of the black moon Katamba looks down from above.'     => 'looks down from above',
+          'The black moon Katamba has nearly turned its full face upon Elanthia.'   => 'has nearly turned its full face upon Elanthia',
+          'The moon Yavash forms a perfect circle in the heavens.'                  => 'forms a perfect circle in the heavens',
+          'The blue moon Xibar, beginning to wane, travels slowly through the sky.' => ', beginning to wane, travels slowly through the sky',
+          'The waning half of the red moon Yavash moves across the skies.'          => 'moves across the skies',
+          'The black moon Katamba has waned to a narrow crescent of light.'         => 'has waned to a narrow crescent of light'
+        }.each do |line, expected_desc|
+          m = MOON_PHASE_LINE_PATTERN.match(line)
+          expect(m).not_to be_nil, "expected to match: #{line}"
+          expect(m[:phase_desc].strip).to eq(expected_desc)
+        end
+      end
+
+      it 'ignores non-phase observe responses (they name the moon by bare name, not "moon <M>")' do
+        [
+          'Katamba is nowhere to be seen.',
+          'An eerie black glow behind the clouds betrays the presence of Katamba.',
+          'You are able to sense Xibar lurking somewhere behind the clouds.',
+          'Clouds obscure the sky where Yavash should appear.',
+          'Fully half of Katamba is blocked by the clouds overhead.'
+        ].each do |line|
+          expect(MOON_PHASE_LINE_PATTERN.match(line)).to be_nil, "should not match: #{line}"
+        end
+      end
+
+      # The one non-phase response that says "moon <M>" ("Your search ... turns
+      # up fruitless.") does match, but its clause maps to nil, so it is logged
+      # raw as an unmapped phrasing rather than mis-attributed to a phase.
+      it 'treats the rare "turns up fruitless" line as an unmapped clause, not a phase' do
+        m = MOON_PHASE_LINE_PATTERN.match('Your search for the black moon Katamba turns up fruitless.')
+        expect(m).not_to be_nil
+        expect(Moons.observed_phase_name(m[:phase_desc].strip)).to be_nil
       end
     end
   end
