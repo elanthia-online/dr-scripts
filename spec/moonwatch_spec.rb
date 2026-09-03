@@ -411,6 +411,7 @@ RSpec.describe 'moonwatch.lic' do
 
     describe '.observed_phase_name' do
       it 'maps each known DR observe wording to its phase' do
+        expect(Moons.observed_phase_name('turns up fruitless')).to eq('new') # Moon Mage dark-moon sense
         expect(Moons.observed_phase_name('is a growing crescent of light')).to eq('waxing crescent')
         expect(Moons.observed_phase_name('looks down from above')).to eq('first quarter')
         expect(Moons.observed_phase_name('has nearly turned its full face upon Elanthia')).to eq('waxing gibbous')
@@ -463,13 +464,14 @@ RSpec.describe 'moonwatch.lic' do
         end
       end
 
-      # The one non-phase response that says "moon <M>" ("Your search ... turns
-      # up fruitless.") does match, but its clause maps to nil, so it is logged
-      # raw as an unmapped phrasing rather than mis-attributed to a phase.
-      it 'treats the rare "turns up fruitless" line as an unmapped clause, not a phase' do
+      # A Moon Mage observing a dark (new) moon gets "Your search for the ... moon
+      # <M> turns up fruitless." -- it says "moon <M>", so the parser captures it,
+      # and its clause maps to 'new'. This is the only observe-validated signal
+      # for the new phase (and only a Moon Mage produces it).
+      it 'captures the Moon Mage "turns up fruitless" line and maps it to new' do
         m = MOON_PHASE_LINE_PATTERN.match('Your search for the black moon Katamba turns up fruitless.')
         expect(m).not_to be_nil
-        expect(Moons.observed_phase_name(m[:phase_desc].strip)).to be_nil
+        expect(Moons.observed_phase_name(m[:phase_desc].strip)).to eq('new')
       end
     end
   end
