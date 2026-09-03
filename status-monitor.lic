@@ -18,39 +18,64 @@ args = parse_args(arg_definitions)
 nowindow = args.nowindow || get_settings.status_monitor_no_window
 
 require 'sqlite3'
+require 'fileutils'
 
 module StatusMonitor
-  # Persists and retrieves the corpus of previously seen game messages
-  # using a SQLite database. Recent messages are held in memory for
-  # 10 minutes before migrating to the persistent store.
+  # Persists and retrieves the corpus of previously seen game messages using a
+  # single, INSTALLATION-WIDE SQLite database. A line that is safe on any
+  # character is treated as safe everywhere, so the corpus is not scoped per
+  # character -- 20 characters' worth of history is one shared whitelist.
   #
-  # On first run, auto-migrates any existing Marshal .dat file into
-  # the new database, then renames the .dat to .dat.migrated.
+  # Recent lines are held in memory briefly before migrating to the persistent
+  # store (batching writes). On first run, any legacy per-character .dat (Marshal)
+  # and seen_messages_<Char>.db files found in the working directory are merged
+  # into the shared corpus and renamed .migrated.
   #
-  # @note File paths are scoped per character via checkname.
+  # @note Novelty is judged against the persistent corpus: in_corpus? is what
+  #   gates detection, so a "known" line is never analysed or alerted on.
   class MessageStore
     # Seconds a line stays in the in-memory recent cache before migrate_recent
-    # flushes it to the persistent store (the "10 minutes" referenced above).
+    # flushes it to the persistent store.
     RECENT_TTL_SECONDS = 600
 
-    # @param character_name [String] character name for scoping storage files
-    def initialize(character_name)
-      @db_path = "seen_messages_#{character_name}.db"
-      @legacy_dat = "seen_messages_#{character_name}.dat"
+    # Installation-wide corpus path, shared by every character and the importer.
+    # @return [String] absolute path to the shared seen_messages database
+    def self.default_db_path
+      File.join(DATA_DIR, 'status-monitor', 'seen_messages.db')
+    end
+
+    # @param db_path [String] path to the shared corpus database
+    def initialize(db_path = self.class.default_db_path)
+      @db_path = db_path
+      FileUtils.mkdir_p(File.dirname(@db_path))
       @db = open_database
-      migrate_from_marshal if File.exist?(@legacy_dat)
+      migrate_legacy
       @recent_seen_lines = {}
     end
 
+    # Whether a line is already part of the known-safe corpus (recent cache or
+    # persistent store). This is the novelty gate: a line in the corpus is safe
+    # by construction and is never analysed for spam/AFK checks.
+    #
     # @param line [String] scrubbed message line
-    # @return [Boolean] true if the line has never been seen before
-    def unseen?(line)
-      return false if line.nil? || line.strip.empty?
-      return false if @recent_seen_lines[line]
-      return false if exists_in_db?(line)
+    # @return [Boolean] true if the line is already known
+    def in_corpus?(line)
+      return true if line.nil? || line.strip.empty?
 
-      @recent_seen_lines[line] = Time.now
-      true
+      @recent_seen_lines.key?(line) || exists_in_db?(line)
+    end
+
+    # Records a line as known-safe (adds it to the recent cache, which migrates
+    # to the persistent store). Used for the "plain" novel lines the hybrid
+    # whitelist chooses to silence; check-like lines are deliberately NOT
+    # recorded so recurrences keep alerting.
+    #
+    # @param line [String] scrubbed message line
+    # @return [void]
+    def record(line)
+      return if line.nil? || line.strip.empty?
+
+      @recent_seen_lines[line] ||= Time.now
     end
 
     # Migrates recent lines older than RECENT_TTL_SECONDS into the database.
@@ -70,11 +95,9 @@ module StatusMonitor
 
     # Flushes all recent lines to the database.
     #
-    # @param filter_strings [Array<Regexp>] patterns to reject (applied to recent lines only)
     # @return [void]
-    def save(filter_strings = [])
+    def save
       lines_to_save = @recent_seen_lines.keys
-      lines_to_save.reject! { |line| filter_strings.any? { |regex| line =~ regex } } unless filter_strings.empty?
       return if lines_to_save.empty?
 
       @db.transaction do
@@ -85,10 +108,9 @@ module StatusMonitor
 
     # Closes the database connection after flushing pending data.
     #
-    # @param filter_strings [Array<Regexp>] patterns to reject before final flush
     # @return [void]
-    def shutdown(filter_strings = [])
-      save(filter_strings)
+    def shutdown
+      save
       @db.close
     end
 
@@ -105,9 +127,9 @@ module StatusMonitor
     # @return [SQLite3::Database] initialized database connection
     def open_database
       db = SQLite3::Database.new(@db_path)
-      # Wait up to 5s on a locked db so a concurrent writer (e.g. a
-      # status-monitor-import run on the same per-character db) doesn't raise
-      # SQLITE_BUSY on transient contention.
+      # Wait up to 5s on a locked db: the shared corpus can have many concurrent
+      # writers (every running character, plus an import run), so a transient
+      # lock should wait rather than raise SQLITE_BUSY.
       db.busy_timeout = 5000
       db.execute('PRAGMA journal_mode=WAL')
       db.execute('PRAGMA synchronous=NORMAL')
@@ -134,12 +156,24 @@ module StatusMonitor
       @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, source])
     end
 
-    # Imports entries from a legacy Marshal .dat file and renames it.
+    # Merges any legacy per-character corpora (Marshal .dat and per-character
+    # seen_messages_<Char>.db) found in the working directory into the shared
+    # store, then renames each to .migrated so it runs only once.
     #
     # @return [void]
-    def migrate_from_marshal
-      echo "Migrating seen_messages from .dat to SQLite..."
-      data = File.open(@legacy_dat, 'rb') { |f| Marshal.load(f) }
+    def migrate_legacy
+      dats = Dir.glob('seen_messages_*.dat')
+      dbs = Dir.glob('seen_messages_*.db').reject { |f| File.expand_path(f) == File.expand_path(@db_path) }
+      return if dats.empty? && dbs.empty?
+
+      total = dats.sum { |f| migrate_dat(f) } + dbs.sum { |f| migrate_db(f) }
+      echo "status-monitor: merged #{total} entries from #{dats.size + dbs.size} legacy corpus file(s) into the shared store."
+    end
+
+    # @param path [String] legacy Marshal .dat file
+    # @return [Integer] entries merged
+    def migrate_dat(path)
+      data = File.open(path, 'rb') { |f| Marshal.load(f) }
       count = 0
       @db.transaction do
         data.each_key do |line|
@@ -147,12 +181,29 @@ module StatusMonitor
           count += 1
         end
       end
-      File.rename(@legacy_dat, "#{@legacy_dat}.migrated")
-      backup = "backup/#{File.basename(@legacy_dat, '.dat')}.bak"
+      File.rename(path, "#{path}.migrated")
+      backup = "backup/#{File.basename(path, '.dat')}.bak"
       File.rename(backup, "#{backup}.migrated") if File.exist?(backup)
-      echo "Migrated #{count} entries to SQLite. Old .dat renamed to .dat.migrated."
+      count
     rescue => e
-      echo "Warning: Marshal migration failed (#{e.message}). Starting fresh."
+      echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
+      0
+    end
+
+    # @param path [String] legacy per-character seen_messages_<Char>.db file
+    # @return [Integer] entries merged
+    def migrate_db(path)
+      src = SQLite3::Database.new(path)
+      rows = src.execute('SELECT line_text, source FROM seen_messages')
+      src.close
+      @db.transaction do
+        rows.each { |line, source| insert_line(line, source || 'migration') }
+      end
+      File.rename(path, "#{path}.migrated")
+      rows.size
+    rescue => e
+      echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
+      0
     end
   end
 
@@ -401,27 +452,35 @@ module StatusMonitor
       @slackbot = nil
     end
 
-    # Fires an alert: beeps, auto-responds, notifies Slack, optionally quits.
+    # Handles a novel line.
     #
-    # @param line [String] the suspicious line that triggered the alert
-    # @param counts [String] debug info about detection counts
+    # Novelty alone is a NOTIFY signal (audible beeps, echo to the window, Slack)
+    # -- because with a trusted corpus every unknown line is worth a glance, but
+    # far too many to auto-act on. The full bundle (auto-type embedded commands,
+    # canned response, auto-quit) only runs on a STRONG signal: the line repeated
+    # past threshold, or it actually contains an embedded command.
+    #
+    # @param line [String] the novel line
+    # @param strong [Boolean] whether the strong signal fired (repeat or command)
     # @return [void]
-    def fire(line, counts)
+    def handle(line, strong:)
       3.times do
         echo("\a")
         pause 0.25
       end
-      CommandDetector.check(line)
-      fput @responses.first if @settings.status_monitor_respond
+      if strong
+        CommandDetector.execute(line)
+        fput @responses.first if @settings.status_monitor_respond
+        # Queue the auto-quit before send_slack: constructing the SlackBot on the
+        # first alert can block for several seconds, and we do not want that to
+        # delay logout when quit_on_status_warning is set. The exit command is
+        # queued to the game, so the Slack notification still goes out afterward.
+        fput('exit') if @quit_on_flag
+        @responses.rotate!
+      end
       echo(line)
-      # Queue the auto-quit before send_slack: constructing the SlackBot on the
-      # first alert can block for several seconds, and we do not want that to
-      # delay logout when quit_on_status_warning is set. The exit command is
-      # queued to the game, so the Slack notification still goes out afterward.
-      fput('exit') if @quit_on_flag
-      send_slack(counts)
-      @responses.rotate!
-      pause 2
+      send_slack(line)
+      pause 2 if strong
     end
 
     private
@@ -480,11 +539,13 @@ module StatusMonitor
 
     VALID_COMMANDS = %w[ACTION ADVICE AFT AGREE ANSWER APPLAUD ASK AVOID AWAKEN BABBLE BALANCE BANDAGE BARK BARTER BASK BAWL BEAM BEARD BECKON BELCH BITE BLAME BLANCH BLAZE BLINK BLOCK BLUFF BLUSH BONDED BOO BOP BOUNCE BOW BRAWL BREAK BREATHE BRUSH BUTT BUY CACKLE CARDS CARVE CENTER CHANT CHAT CHECK CHEER CHIRR CHOKE CHOOSE CHOP CHORTLE CHORUS CHUCKLE CLAIM CLAP CLEAN CLENCH CLIMB CLOSE CLUTCH COIN COLLECT COMBAT COMPARE CONCENTRATE CONTACT COUGH COUNT COVER COWER CRAWL CRINGE CRUSH CRY CURSE CURTSY CUT DANCE DANCE FLOOR DAYDREAM DEAD DESCRIBE DRAG DRINK DROOL DROP DUCK DUMP EAR EAT ELBOW EMAIL EMPTY ENCUMBRANCE ENGAGE EXAMINE EXCHANGE EXHALE EXPRESS FACE FAINT FALL FATIGUE FEED FEMALE FIDGET FIGURE FIND FIRE FIT FIX FLAGS FLAIL FLAP FLETCH FLINCH FLIRT FLUSTER FLY FOCUS FOLLOW FORAGE FRET FROWN FURROW GASP GAWK GAZE GEM GET GIGGLE GLANCE GLARE GLOWER GNASH GO GOBBLE GRIEVE GRIMACE GRIN GRIND GROAN GROVEL GROWL GRUMBLE GRUNT GUARD GULP GUZZLE HACK HAIL HAIR HANGBACK HELLO HICCUP HIDE HISS HOLD HOME HOOT HOWL HUG HUM HUZZAH IGNORE INFAMY INFO INFUSE INHALE INSTRUCT INSULT INTELLIGENCE INVENTORY INVFIX JAB JOIN JUGGLE JUMP KHRI KICK KILL KISS KNEE KNEEL KNOCK LANGUAGE LATCH LAUGH LEAD LEAN LEAP LEAVE LECTURE LICK LIE LIGHT LINK LISTEN LOAD LOAN LOCK LOOK LOWER LUNGE MAKE MALE MANA MARCH MARK MEDITATE MEETING MENU MEOW MESSAGE MIND MIX MOAN MOCK MONEY MOOR MORE MOTION MOUNT MUMBLE MUSS MUTTER NAG NAME NIBBLE NOCK NOD NOTE NUDGE OBSERVE OFFER OPEN ORDER PACE PANIC PANT PARRY PAT PATHWAY PAY PEER PERCEIVE PET PICK PIN PINCH PLANT PLAY PLAYACT POACH POINT POKE POLICY PONDER PORT PORTRAIT POSE POUND POUR POUT PRACTICE PRAISE PRAY PREACH PREDICT PREEN PREMIUM PREPARE PROCRASTINATE PROD PROTECT PUCKER PULL PUMMEL PUNCH PUNISH PURR PUSH PUT PUZZLE QUEST QUEUE QUIT RAISE RASPBERRY READ RECALL RECITE REFER REFLEX REFUSE RELEASE REMOVE REPAIR REPENT REROLL RETREAT RETURN RING ROAR ROFL ROLL ROSHAMBO ROW RPA RUB RUMMAGE SALUTE SCOFF SCOUT SCOWL SCRAPE SCRATCH SCREAM SCRIBE SEARCH SELL SHAKE SHAPE SHARE SHEATHE SHIFT SHIP SHIVER SHOOT SHOVE SHOW SHRIEK SHRUG SHUDDER SHUFFLE SHUN SIGH SIGN SIGNAL SIGNATURE SING SIT SKATE SKILLS SKIN SLAP SLEEP SLICE SLINK SLIP SMELL SMILE SMIRK SMOOCH SNAP SNARL SNEAK SNEER SNEEZE SNICKER SNIFFLE SNORE SNORT SNUFF SNUGGLE SOB SONG SORT SPECULATE SPELLS SPIT SPLASH SPLUTTER SPRINKLE SQUINT SQUIRM STABLE STALK STAMINA STANCE STAND STARBOARD STARE STATUS STEAL STIR STITCH STOMP STOP STOW STRENGTH STRETCH STRING STUBBLE STUDY SULK SUMMON SURPRISE SURRENDER SURVEY SWAP SWEAR SWEAT SWEEP SWIM SWIMMING SWING TACKLE TAG TAIL TAKE TALK TAP TARGET TEACH TEASE TELL TEND THINK THROW THRUST THUMP TICKLE TIE TILT TIME TIP TITLE TOSS TOUCH TRACE TRACK TRAIN TRANSFER TRILL TUNE TURN TYPO UNBRAID UNBUNDLE UNCOIL UNHIDE UNLATCH UNLOAD UNLOCK UNTIE UNWRAP VAULT VOTE WAIL WAIT WAKE WARN WATCH WAVE WEALTH WEAR WEAVE WEDDING WEEP WHEEZE WHIMPER WHINE WHIRLWIND WHISTLE WHO WIELD WINCE WINK WIPE WITHDRAW WOBBLE WRING WRITE YANK YAWN YELP].freeze
 
-    # Scans a line for embedded game commands and executes any found.
+    # Detects embedded game commands in a line WITHOUT executing them. Used both
+    # to decide whether a line is "check-like" (an embedded command is a strong
+    # signal) and to drive execution.
     #
-    # @param line [String] suspicious line to scan
-    # @return [void]
-    def self.check(line)
+    # @param line [String] line to scan
+    # @return [Array<String>] valid commands found (upcased), denylisted included
+    def self.commands_in(line)
       normalized = line.gsub(/[^\x20-\x7E]/, '')
       found = Set.new
 
@@ -502,7 +563,15 @@ module StatusMonitor
         found << cleaned if VALID_COMMANDS.include?(cleaned)
       end
 
-      found.each do |cmd|
+      found.to_a
+    end
+
+    # Executes the non-denylisted commands found in a line (the "act" path).
+    #
+    # @param line [String] suspicious line to scan and act on
+    # @return [void]
+    def self.execute(line)
+      commands_in(line).each do |cmd|
         next if DENYLISTED_COMMANDS.include?(cmd)
 
         pause 3
@@ -545,8 +614,9 @@ module StatusMonitor
     attr_reader :last_clean_line
 
     # @param settings [OpenStruct] user settings from get_settings
-    def initialize(settings)
-      @store = MessageStore.new(checkname)
+    # @param store [MessageStore] shared corpus (defaults to the installation-wide store)
+    def initialize(settings, store = MessageStore.new)
+      @store = store
       @filter = MessageFilter.new(load_filter_strings)
       @detector = SpamDetector.new(settings)
       @alerter = AlertHandler.new(settings)
@@ -556,11 +626,16 @@ module StatusMonitor
 
     # Processes a single raw game line through the full pipeline.
     #
-    # Spam detection runs before the unseen? check so repeated lines
-    # within the recent window are still counted by the detector.
+    # Detection is novelty-gated: a line already in the trusted corpus is
+    # known-safe and is neither analysed nor alerted on. A NOVEL line always
+    # notifies (novel-alone). The strong signal -- the line repeated past
+    # threshold, or it embeds a command -- additionally runs the auto-action
+    # bundle. The hybrid whitelist then records plain novel lines so they go
+    # quiet, but never records check-like ones (own name / embedded command), so
+    # a recurring check keeps alerting.
     #
     # @param line [String] raw game stream line
-    # @return [Boolean] true if the line was unseen (potential alert)
+    # @return [Boolean] true if the line was novel (an alert fired)
     def process(line)
       @store.migrate_recent
       cleaned = @filter.clean(line)
@@ -570,14 +645,17 @@ module StatusMonitor
 
       scrubbed = @filter.similarity_scrub(cleaned).strip
       return false if scrubbed.empty?
+      return false if @store.in_corpus?(scrubbed) # known-safe -> silent
 
-      alert = @detector.check(scrubbed)
-      if alert
-        @alerter.fire(alert[:line], alert[:counts])
-        @spam_line = alert[:line]
-      end
+      commands = CommandDetector.commands_in(scrubbed)
+      repeated = !@detector.check(scrubbed).nil?
+      strong = repeated || commands.any?
+      check_like = own_name?(scrubbed) || commands.any?
 
-      @store.unseen?(scrubbed)
+      @alerter.handle(scrubbed, strong: strong)
+      @spam_line = scrubbed
+      @store.record(scrubbed) unless check_like
+      true
     end
 
     # Clears the current spam line after it has been consumed.
@@ -593,14 +671,14 @@ module StatusMonitor
     #
     # @return [void]
     def save
-      @store.save(@filter.filter_strings)
+      @store.save
     end
 
     # Flushes pending data and closes the database connection.
     #
     # @return [void]
     def shutdown
-      @store.shutdown(@filter.filter_strings)
+      @store.shutdown
     end
 
     # @return [String, nil] last seen room players component line
@@ -609,6 +687,19 @@ module StatusMonitor
     end
 
     private
+
+    # Whether a line names the current character. A message that addresses you
+    # by name is a classic targeted-check signal, so such lines are treated as
+    # "check-like" and never silently added to the corpus.
+    #
+    # @param line [String] scrubbed line
+    # @return [Boolean] true if the line contains the character's name as a word
+    def own_name?(line)
+      name = checkname
+      return false if name.nil? || name.to_s.empty?
+
+      line.match?(/\b#{Regexp.escape(name)}\b/)
+    end
 
     # Loads the configurable ignore patterns from the 'filters' data file.
     #

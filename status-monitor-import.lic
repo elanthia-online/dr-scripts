@@ -18,6 +18,7 @@
 
 require 'sqlite3'
 require 'zlib'
+require 'fileutils'
 
 arg_definitions = [
   [
@@ -42,13 +43,22 @@ module StatusMonitorImport
     /^>/, # upstream commands
   ].freeze
 
-  # Opens or creates the seen_messages SQLite database.
+  # Installation-wide corpus path. MUST match
+  # StatusMonitor::MessageStore.default_db_path so the importer and the live
+  # monitor share one corpus (a line safe on any character is safe everywhere).
+  #
+  # @return [String] absolute path to the shared seen_messages database
+  def self.default_db_path
+    File.join(DATA_DIR, 'status-monitor', 'seen_messages.db')
+  end
+
+  # Opens or creates the shared seen_messages SQLite database.
   # Schema must stay in sync with StatusMonitor::MessageStore#open_database.
   #
-  # @param character_name [String] character name for database filename
+  # @param db_path [String] path to the shared corpus database
   # @return [SQLite3::Database] database connection
-  def self.open_database(character_name)
-    db_path = "seen_messages_#{character_name}.db"
+  def self.open_database(db_path = default_db_path)
+    FileUtils.mkdir_p(File.dirname(db_path))
     db = SQLite3::Database.new(db_path)
     # Wait up to 5s on a locked db so a concurrent writer (e.g. a running
     # status-monitor writing to the same per-character db) doesn't raise
@@ -238,7 +248,7 @@ module StatusMonitorImport
   # @param reset [Boolean] if true, re-process all files
   # @return [void]
   def self.run(character_name, limit: nil, reset: false)
-    db = open_database(character_name)
+    db = open_database
 
     if reset
       db.execute("DELETE FROM seen_messages WHERE source = 'import'")

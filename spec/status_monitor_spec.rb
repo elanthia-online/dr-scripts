@@ -281,6 +281,8 @@ end
 # ---------------------------------------------------------------------------
 RSpec.describe StatusMonitor::MessageStore do
   let(:tmpdir) { Dir.mktmpdir('status-monitor-test') }
+  let(:db_path) { File.join(tmpdir, 'seen_messages.db') }
+  let(:store) { described_class.new(db_path) }
 
   before do
     @original_dir = Dir.pwd
@@ -292,110 +294,76 @@ RSpec.describe StatusMonitor::MessageStore do
     FileUtils.rm_rf(tmpdir)
   end
 
-  describe '#unseen?' do
-    it 'returns true for a never-seen line' do
-      store = described_class.new('Testchar')
-      expect(store.unseen?('hello world')).to be true
+  describe '#in_corpus? and #record' do
+    it 'is false for a never-seen line' do
+      expect(store.in_corpus?('hello world')).to be false
     end
 
-    it 'returns false for a line seen in the recent cache' do
-      store = described_class.new('Testchar')
-      store.unseen?('hello world')
-      expect(store.unseen?('hello world')).to be false
+    it 'becomes true after record (recent cache)' do
+      store.record('hello world')
+      expect(store.in_corpus?('hello world')).to be true
     end
 
-    it 'returns false for nil' do
-      store = described_class.new('Testchar')
-      expect(store.unseen?(nil)).to be false
-    end
-
-    it 'returns false for empty string' do
-      store = described_class.new('Testchar')
-      expect(store.unseen?('')).to be false
-    end
-
-    it 'returns false for a line that was saved to DB then flushed from cache' do
-      store = described_class.new('Testchar')
-      store.unseen?('persistent line')
+    it 'stays true after record then save (persistent store)' do
+      store.record('persistent line')
       store.save
-      # After save, recent cache is cleared but line is in DB
-      expect(store.unseen?('persistent line')).to be false
+      expect(store.in_corpus?('persistent line')).to be true
     end
 
-    it 'rejects whitespace-only lines' do
-      store = described_class.new('Testchar')
-      expect(store.unseen?('   ')).to be false
-    end
-
-    it 'rejects tabs and newlines' do
-      store = described_class.new('Testchar')
-      expect(store.unseen?("\t")).to be false
-      expect(store.unseen?("\n")).to be false
-      expect(store.unseen?(" \t \n ")).to be false
+    it 'treats nil/empty/whitespace as known (never novel) and never records them' do
+      expect(store.in_corpus?(nil)).to be true
+      expect(store.in_corpus?('')).to be true
+      expect(store.in_corpus?('   ')).to be true
+      store.record('')
+      store.record('   ')
+      store.save
+      expect(store.count).to eq(0)
     end
 
     it 'is case-sensitive' do
-      store = described_class.new('Testchar')
-      expect(store.unseen?('Hello')).to be true
-      expect(store.unseen?('hello')).to be true
+      store.record('Hello')
+      expect(store.in_corpus?('Hello')).to be true
+      expect(store.in_corpus?('hello')).to be false
     end
   end
 
   describe '#migrate_recent' do
     it 'moves lines older than 600 seconds to the database' do
-      store = described_class.new('Testchar')
-      store.unseen?('old line')
-      # Backdate the timestamp in @recent_seen_lines
+      store.record('old line')
       store.instance_variable_get(:@recent_seen_lines)['old line'] = Time.now - 601
       store.migrate_recent
-      # Line should now be in DB, not in recent cache
       recent = store.instance_variable_get(:@recent_seen_lines)
       expect(recent).not_to have_key('old line')
-      # And unseen? should return false (found in DB)
-      expect(store.unseen?('old line')).to be false
+      expect(store.count).to eq(1)
+      expect(store.in_corpus?('old line')).to be true
     end
 
     it 'does not migrate lines younger than 600 seconds' do
-      store = described_class.new('Testchar')
-      store.unseen?('new line')
+      store.record('new line')
       store.migrate_recent
-      recent = store.instance_variable_get(:@recent_seen_lines)
-      expect(recent).to have_key('new line')
+      expect(store.instance_variable_get(:@recent_seen_lines)).to have_key('new line')
     end
 
     it 'is a no-op when recent cache is empty' do
-      store = described_class.new('Testchar')
       expect { store.migrate_recent }.not_to raise_error
     end
   end
 
   describe '#save' do
     it 'flushes recent lines to the database' do
-      store = described_class.new('Testchar')
-      store.unseen?('line1')
-      store.unseen?('line2')
+      store.record('line1')
+      store.record('line2')
       store.save
       expect(store.count).to eq(2)
     end
 
     it 'clears the recent cache after save' do
-      store = described_class.new('Testchar')
-      store.unseen?('line1')
+      store.record('line1')
       store.save
-      recent = store.instance_variable_get(:@recent_seen_lines)
-      expect(recent).to be_empty
-    end
-
-    it 'applies filter patterns to reject matching lines' do
-      store = described_class.new('Testchar')
-      store.unseen?('gold coins')
-      store.unseen?('important message')
-      store.save([/gold/])
-      expect(store.count).to eq(1)
+      expect(store.instance_variable_get(:@recent_seen_lines)).to be_empty
     end
 
     it 'is a no-op when recent cache is empty' do
-      store = described_class.new('Testchar')
       store.save
       expect(store.count).to eq(0)
     end
@@ -403,24 +371,19 @@ RSpec.describe StatusMonitor::MessageStore do
 
   describe '#shutdown' do
     it 'flushes and closes the database' do
-      store = described_class.new('Testchar')
-      store.unseen?('persist me')
+      store.record('persist me')
       store.shutdown
-      # Verify the DB file exists and has the data
-      db = SQLite3::Database.new("seen_messages_Testchar.db")
-      count = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
-      expect(count).to eq(1)
+      db = SQLite3::Database.new(db_path)
+      expect(db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i).to eq(1)
       db.close
     end
 
     it 'raises on subsequent operations after close' do
-      store = described_class.new('Testchar')
       store.shutdown
       expect { store.count }.to raise_error(StandardError)
     end
 
     it 'survives double shutdown (before_dying can fire twice)' do
-      store = described_class.new('Testchar')
       store.shutdown
       expect { store.shutdown }.not_to raise_error
     end
@@ -428,110 +391,100 @@ RSpec.describe StatusMonitor::MessageStore do
 
   describe '#count' do
     it 'returns 0 for a fresh database' do
-      store = described_class.new('Testchar')
       expect(store.count).to eq(0)
     end
 
     it 'reflects saved entries' do
-      store = described_class.new('Testchar')
-      5.times { |i| store.unseen?("line_#{i}") }
+      5.times { |i| store.record("line_#{i}") }
       store.save
       expect(store.count).to eq(5)
     end
 
     it 'does not count recent (unflushed) entries' do
-      store = described_class.new('Testchar')
-      store.unseen?('unflushed')
+      store.record('unflushed')
       expect(store.count).to eq(0)
     end
   end
 
-  describe 'Marshal migration' do
-    it 'migrates .dat file entries into SQLite' do
-      dat_path = "seen_messages_Testchar.dat"
-      data = { 'old line one' => true, 'old line two' => true }
-      File.open(dat_path, 'wb') { |f| Marshal.dump(data, f) }
-      store = described_class.new('Testchar')
+  describe 'legacy migration (installation-wide merge)' do
+    it 'merges legacy per-character .dat entries into the shared corpus' do
+      File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump({ 'alice line' => true }, f) }
+      File.open('seen_messages_Bob.dat', 'wb') { |f| Marshal.dump({ 'bob line' => true }, f) }
       expect(store.count).to eq(2)
-      expect(store.unseen?('old line one')).to be false
-      expect(store.unseen?('old line two')).to be false
+      expect(store.in_corpus?('alice line')).to be true
+      expect(store.in_corpus?('bob line')).to be true
     end
 
-    it 'renames .dat to .dat.migrated' do
-      dat_path = "seen_messages_Testchar.dat"
-      File.open(dat_path, 'wb') { |f| Marshal.dump({}, f) }
-      described_class.new('Testchar')
-      expect(File.exist?("#{dat_path}.migrated")).to be true
-      expect(File.exist?(dat_path)).to be false
+    it 'merges legacy per-character .db entries into the shared corpus' do
+      legacy = SQLite3::Database.new('seen_messages_Alice.db')
+      legacy.execute('CREATE TABLE seen_messages (line_text TEXT PRIMARY KEY, first_seen_at DATETIME, source TEXT)')
+      legacy.execute("INSERT INTO seen_messages (line_text, source) VALUES ('legacy db line', 'live')")
+      legacy.close
+      expect(store.count).to eq(1)
+      expect(store.in_corpus?('legacy db line')).to be true
     end
 
-    it 'renames backup file if present' do
-      dat_path = "seen_messages_Testchar.dat"
-      bak_path = "backup/#{File.basename(dat_path, '.dat')}.bak"
+    it 'renames migrated legacy files to .migrated and does not re-migrate' do
+      File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump({ 'x' => true }, f) }
+      described_class.new(db_path)
+      expect(File.exist?('seen_messages_Alice.dat.migrated')).to be true
+      expect(File.exist?('seen_messages_Alice.dat')).to be false
+    end
+
+    it 'renames a legacy .dat backup if present' do
+      File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump({}, f) }
       FileUtils.mkdir_p('backup')
-      File.open(dat_path, 'wb') { |f| Marshal.dump({}, f) }
-      File.open(bak_path, 'wb') { |f| Marshal.dump({}, f) }
-      described_class.new('Testchar')
-      expect(File.exist?("#{bak_path}.migrated")).to be true
+      File.open('backup/seen_messages_Alice.bak', 'wb') { |f| Marshal.dump({}, f) }
+      described_class.new(db_path)
+      expect(File.exist?('backup/seen_messages_Alice.bak.migrated')).to be true
     end
 
-    it 'survives .dat containing non-Hash data (Array)' do
-      dat_path = "seen_messages_Testchar.dat"
-      File.open(dat_path, 'wb') { |f| Marshal.dump(["not", "a", "hash"], f) }
-      store = nil
-      expect { store = described_class.new('Testchar') }.not_to raise_error
+    it 'does not treat the shared db itself as a legacy per-character db' do
+      # db_path basename is seen_messages.db; the *_ glob must not match it.
+      store.record('keep me')
+      store.save
+      expect { described_class.new(db_path) }.not_to raise_error
+      expect(File.exist?("#{db_path}.migrated")).to be false
+    end
+
+    it 'survives a corrupt legacy .dat without crashing, and still migrates the rest' do
+      File.write('seen_messages_Bad.dat', 'corrupted garbage')
+      File.open('seen_messages_Good.dat', 'wb') { |f| Marshal.dump({ 'good' => true }, f) }
+      s = nil
+      expect { s = described_class.new(db_path) }.not_to raise_error
+      expect(s.in_corpus?('good')).to be true
+    end
+
+    it 'does nothing when no legacy files are present' do
       expect(store.count).to eq(0)
-      expect(displayed_messages.any? { |m| m.include?('Warning') }).to be true
-    end
-
-    it 'constructs the correct backup path (no doubled prefix)' do
-      dat_path = "seen_messages_Testchar.dat"
-      correct_bak = "backup/seen_messages_Testchar.bak"
-      wrong_bak = "backup/seen_messages_seen_messages_Testchar.bak"
-      FileUtils.mkdir_p('backup')
-      File.open(dat_path, 'wb') { |f| Marshal.dump({}, f) }
-      File.open(correct_bak, 'wb') { |f| Marshal.dump({}, f) }
-      described_class.new('Testchar')
-      expect(File.exist?("#{correct_bak}.migrated")).to be true
-      expect(File.exist?(wrong_bak)).to be false
-    end
-
-    it 'survives corrupted .dat without crashing' do
-      File.write("seen_messages_Testchar.dat", "corrupted garbage data")
-      store = nil
-      expect { store = described_class.new('Testchar') }.not_to raise_error
-      expect(store.count).to eq(0)
-      expect(displayed_messages.any? { |m| m.include?('Warning') }).to be true
-    end
-
-    it 'does not re-migrate if .dat is absent' do
-      store = described_class.new('Testchar')
-      expect(displayed_messages.none? { |m| m.include?('Migrating') }).to be true
-      expect(store.count).to eq(0)
+      expect(displayed_messages.none? { |m| m.include?('merged') }).to be true
     end
   end
 
   describe 'schema creation' do
     it 'creates seen_messages table with correct columns' do
-      described_class.new('Testchar')
-      db = SQLite3::Database.new("seen_messages_Testchar.db")
+      store
+      db = SQLite3::Database.new(db_path)
       columns = db.table_info('seen_messages').map { |c| c['name'] }
       expect(columns).to contain_exactly('line_text', 'first_seen_at', 'source')
       db.close
     end
 
     it 'uses WAL journal mode' do
-      described_class.new('Testchar')
-      db = SQLite3::Database.new("seen_messages_Testchar.db")
-      mode = db.get_first_value('PRAGMA journal_mode')
-      expect(mode).to eq('wal')
+      store
+      db = SQLite3::Database.new(db_path)
+      expect(db.get_first_value('PRAGMA journal_mode')).to eq('wal')
       db.close
     end
 
     it 'sets a busy_timeout so a concurrent writer waits instead of erroring' do
-      store = described_class.new('Testchar')
-      db = store.instance_variable_get(:@db)
-      expect(db.get_first_value('PRAGMA busy_timeout')).to eq(5000)
+      expect(store.instance_variable_get(:@db).get_first_value('PRAGMA busy_timeout')).to eq(5000)
+    end
+
+    it 'creates the parent directory for the db path if missing' do
+      nested = File.join(tmpdir, 'status-monitor', 'seen_messages.db')
+      expect { described_class.new(nested) }.not_to raise_error
+      expect(File.exist?(nested)).to be true
     end
   end
 end
@@ -547,99 +500,99 @@ RSpec.describe StatusMonitor::CommandDetector do
 
   describe '.check' do
     it 'detects uppercase commands in a line' do
-      described_class.check('you see JUMP here')
+      described_class.execute('you see JUMP here')
       expect(fput_commands).to include('jump')
     end
 
     it 'does not auto-execute denylisted destructive commands' do
-      described_class.check('you must QUIT and SELL and DROP now')
+      described_class.execute('you must QUIT and SELL and DROP now')
       expect(fput_commands).to be_empty
     end
 
     it 'does not execute a denylisted command even when obfuscated' do
-      described_class.check('try Q_U_I_T now')
+      described_class.execute('try Q_U_I_T now')
       expect(fput_commands).not_to include('quit')
     end
 
     it 'still executes safe commands in a line that also contains a denylisted one' do
-      described_class.check('you should JUMP but do not QUIT')
+      described_class.execute('you should JUMP but do not QUIT')
       expect(fput_commands).to include('jump')
       expect(fput_commands).not_to include('quit')
     end
 
     it 'detects obfuscated commands with separators' do
-      described_class.check('try J_U_M_P now')
+      described_class.execute('try J_U_M_P now')
       expect(fput_commands).to include('jump')
     end
 
     it 'deduplicates commands that match both scanners' do
-      described_class.check('do J_U_M_P or JUMP')
+      described_class.execute('do J_U_M_P or JUMP')
       jump_count = fput_commands.count('jump')
       expect(jump_count).to eq(1)
     end
 
     it 'detects multiple different commands' do
-      described_class.check('JUMP and LOOK around')
+      described_class.execute('JUMP and LOOK around')
       expect(fput_commands).to include('jump', 'look')
     end
 
     it 'ignores commands not in VALID_COMMANDS' do
-      described_class.check('XYZZY is not a command')
+      described_class.execute('XYZZY is not a command')
       expect(fput_commands).to be_empty
     end
 
     it 'ignores short uppercase sequences (< 3 chars)' do
-      described_class.check('I AM here')
+      described_class.execute('I AM here')
       expect(fput_commands).not_to include('am')
     end
 
     it 'handles a line with no commands' do
-      described_class.check('just a normal line of text')
+      described_class.execute('just a normal line of text')
       expect(fput_commands).to be_empty
     end
 
     it 'handles empty string' do
-      expect { described_class.check('') }.not_to raise_error
+      expect { described_class.execute('') }.not_to raise_error
       expect(fput_commands).to be_empty
     end
 
     it 'detects tilde-separated obfuscation' do
-      described_class.check('try L~O~O~K now')
+      described_class.execute('try L~O~O~K now')
       expect(fput_commands).to include('look')
     end
 
     it 'detects equals-separated obfuscation' do
-      described_class.check('try L=O=O=K now')
+      described_class.execute('try L=O=O=K now')
       expect(fput_commands).to include('look')
     end
 
     it 'handles mixed separators in one token' do
-      described_class.check('try J_U~M=P now')
+      described_class.execute('try J_U~M=P now')
       expect(fput_commands).to include('jump')
     end
 
     it 'detects dot-separated obfuscation via first scanner' do
-      described_class.check('try J.U.M.P now')
+      described_class.execute('try J.U.M.P now')
       expect(fput_commands).to include('jump')
     end
 
     it 'detects hyphen-separated obfuscation' do
-      described_class.check('try J-U-M-P now')
+      described_class.execute('try J-U-M-P now')
       expect(fput_commands).to include('jump')
     end
 
     it 'detects a bare command with no surrounding text' do
-      described_class.check('JUMP')
+      described_class.execute('JUMP')
       expect(fput_commands).to include('jump')
     end
 
     it 'detects uppercase runs embedded in lowercase words (character class scan)' do
-      described_class.check('theJUMPwasfast')
+      described_class.execute('theJUMPwasfast')
       expect(fput_commands).to include('jump')
     end
 
     it 'detects commands with multiple consecutive separators' do
-      described_class.check('try J__U__M__P now')
+      described_class.execute('try J__U__M__P now')
       expect(fput_commands).to include('jump')
     end
   end
@@ -648,26 +601,45 @@ RSpec.describe StatusMonitor::CommandDetector do
     it 'misses commands with Cyrillic lookalike letters (known gap, needs transliteration)' do
       cyrillic_em = 0x041C.chr(Encoding::UTF_8) # lookalike for Latin capital M
       line = "JU#{cyrillic_em}P here"
-      described_class.check(line)
+      described_class.execute(line)
       expect(fput_commands).not_to include('jump')
     end
 
     it 'detects commands despite zero-width characters inserted' do
       zero_width_space = 0x200B.chr(Encoding::UTF_8)
       line = "JU#{zero_width_space}MP here"
-      described_class.check(line)
+      described_class.execute(line)
       expect(fput_commands).to include('jump')
     end
 
     it 'detects mixed-case commands via second scanner upcase' do
-      described_class.check('try j_U_m_P now')
+      described_class.execute('try j_U_m_P now')
       expect(fput_commands).to include('jump')
     end
 
     it 'finds commands in very long lines' do
       padding = 'a' * 5000
-      described_class.check("#{padding} JUMP #{padding}")
+      described_class.execute("#{padding} JUMP #{padding}")
       expect(fput_commands).to include('jump')
+    end
+  end
+
+  describe '.commands_in (detect only, no side effects)' do
+    it 'returns detected valid commands without typing anything' do
+      expect(described_class.commands_in('you should JUMP and LOOK')).to contain_exactly('JUMP', 'LOOK')
+      expect(fput_commands).to be_empty
+    end
+
+    it 'includes denylisted commands (they are still a check signal)' do
+      expect(described_class.commands_in('you must QUIT now')).to include('QUIT')
+    end
+
+    it 'returns [] for a line with no commands' do
+      expect(described_class.commands_in('just some ordinary prose')).to eq([])
+    end
+
+    it 'detects obfuscated commands' do
+      expect(described_class.commands_in('try J_U_M_P')).to include('JUMP')
     end
   end
 end
@@ -676,7 +648,7 @@ end
 # AlertHandler -- alert responses
 # ---------------------------------------------------------------------------
 RSpec.describe StatusMonitor::AlertHandler do
-  # fire sends via the harness fput on the handler instance, and delegates
+  # handle sends via the harness fput on the handler instance, and delegates
   # command execution to CommandDetector (which sends on the module). Capture
   # both per-example rather than redefining the shared fput seam. echo output
   # (beeps, the alert line) lands in the harness displayed_messages.
@@ -694,43 +666,44 @@ RSpec.describe StatusMonitor::AlertHandler do
     )
   end
 
-  it 'calls echo three times for beeps' do
-    handler = described_class.new(make_alert_settings)
-    handler.fire('suspicious line', 'counts')
-    beeps = displayed_messages.count { |m| m == "\a" }
-    expect(beeps).to eq(3)
+  it 'beeps three times on any handled line (notify)' do
+    described_class.new(make_alert_settings).handle('suspicious line', strong: false)
+    expect(displayed_messages.count { |m| m == "\a" }).to eq(3)
   end
 
-  it 'executes detected commands via CommandDetector' do
-    handler = described_class.new(make_alert_settings)
-    handler.fire('you see JUMP here', 'counts')
-    expect(fput_commands).to include('jump')
+  context 'notify-only (novelty, not a strong signal)' do
+    it 'does not type commands, canned responses, or exit' do
+      handler = described_class.new(make_alert_settings(respond: true, quit: true))
+      handler.handle('you see JUMP here', strong: false)
+      expect(fput_commands).to be_empty
+    end
   end
 
-  it 'sends a response when status_monitor_respond is true' do
-    handler = described_class.new(make_alert_settings(respond: true))
-    handler.fire('suspicious line', 'counts')
-    responses = ["'Hmmm?", "'Yes", "'Ok?"]
-    expect(fput_commands.any? { |cmd| responses.include?(cmd) }).to be true
-  end
+  context 'strong signal (repeat or embedded command)' do
+    it 'executes detected commands via CommandDetector' do
+      described_class.new(make_alert_settings).handle('you see JUMP here', strong: true)
+      expect(fput_commands).to include('jump')
+    end
 
-  it 'does not send a response when status_monitor_respond is false' do
-    handler = described_class.new(make_alert_settings(respond: false))
-    handler.fire('a plain line with no commands', 'counts')
-    responses = ["'Hmmm?", "'Yes", "'Ok?"]
-    expect(fput_commands.none? { |cmd| responses.include?(cmd) }).to be true
-  end
+    it 'sends a canned response when status_monitor_respond is true' do
+      described_class.new(make_alert_settings(respond: true)).handle('suspicious line', strong: true)
+      expect(fput_commands.any? { |cmd| ["'Hmmm?", "'Yes", "'Ok?"].include?(cmd) }).to be true
+    end
 
-  it 'sends exit when quit_on_status_warning is true' do
-    handler = described_class.new(make_alert_settings(quit: true))
-    handler.fire('suspicious line', 'counts')
-    expect(fput_commands).to include('exit')
-  end
+    it 'does not respond when status_monitor_respond is false' do
+      described_class.new(make_alert_settings(respond: false)).handle('a plain line', strong: true)
+      expect(fput_commands.none? { |cmd| ["'Hmmm?", "'Yes", "'Ok?"].include?(cmd) }).to be true
+    end
 
-  it 'does not send exit when quit_on_status_warning is false' do
-    handler = described_class.new(make_alert_settings(quit: false))
-    handler.fire('a plain line', 'counts')
-    expect(fput_commands).not_to include('exit')
+    it 'sends exit when quit_on_status_warning is true' do
+      described_class.new(make_alert_settings(quit: true)).handle('suspicious line', strong: true)
+      expect(fput_commands).to include('exit')
+    end
+
+    it 'does not send exit when quit_on_status_warning is false' do
+      described_class.new(make_alert_settings(quit: false)).handle('a plain line', strong: true)
+      expect(fput_commands).not_to include('exit')
+    end
   end
 
   describe 'Slack delivery' do
@@ -739,10 +712,13 @@ RSpec.describe StatusMonitor::AlertHandler do
       Lich::DragonRealms::SlackBot.next_initialized = nil
     end
 
+    it 'notifies Slack even on a notify-only (non-strong) line' do
+      handler = described_class.new(make_alert_settings(slack: 'someuser'))
+      handler.handle('a novel line', strong: false)
+      expect(Lich::DragonRealms::SlackBot.instances.last.dm_calls.last).to eq(['someuser', 'a novel line'])
+    end
+
     it 'queues the auto-quit before the (possibly blocking) Slack send' do
-      # Record fput and Slack sends into one ordered log to assert their relative
-      # order. The instance fput spy from the outer before is replaced here so it
-      # feeds this log instead of fput_commands.
       events = []
       allow_any_instance_of(described_class).to receive(:fput) { |_receiver, cmd| events << [:fput, cmd] }
       allow_any_instance_of(Lich::DragonRealms::SlackBot).to receive(:direct_message) do |_receiver, _user, message|
@@ -750,7 +726,7 @@ RSpec.describe StatusMonitor::AlertHandler do
         { 'ok' => true }
       end
       handler = described_class.new(make_alert_settings(quit: true, slack: 'someuser'))
-      handler.fire('a plain line', 'counts')
+      handler.handle('a plain line', strong: true)
       exit_at = events.index([:fput, 'exit'])
       slack_at = events.index { |kind, _| kind == :slack }
       expect(exit_at).not_to be_nil
@@ -763,15 +739,14 @@ RSpec.describe StatusMonitor::AlertHandler do
       # after a failed first connect. direct_message reconnects on its own.
       Lich::DragonRealms::SlackBot.next_initialized = false
       handler = described_class.new(make_alert_settings(slack: 'someuser'))
-      handler.fire('a plain line', 'counts info')
+      handler.handle('a novel line', strong: false)
       bot = Lich::DragonRealms::SlackBot.instances.last
       expect(bot).not_to be_nil
-      expect(bot.dm_calls.last).to eq(['someuser', 'counts info'])
+      expect(bot.dm_calls.last).to eq(['someuser', 'a novel line'])
     end
 
     it 'does not construct a SlackBot when no username is configured' do
-      handler = described_class.new(make_alert_settings(slack: nil))
-      handler.fire('a plain line', 'counts')
+      described_class.new(make_alert_settings(slack: nil)).handle('a plain line', strong: false)
       expect(Lich::DragonRealms::SlackBot.instances).to be_empty
     end
 
@@ -782,8 +757,8 @@ RSpec.describe StatusMonitor::AlertHandler do
 
     it 'constructs the SlackBot only once across multiple alerts' do
       handler = described_class.new(make_alert_settings(slack: 'someuser'))
-      handler.fire('first', 'counts1')
-      handler.fire('second', 'counts2')
+      handler.handle('first', strong: false)
+      handler.handle('second', strong: false)
       expect(Lich::DragonRealms::SlackBot.instances.size).to eq(1)
       expect(Lich::DragonRealms::SlackBot.instances.first.dm_calls.size).to eq(2)
     end
@@ -960,15 +935,24 @@ RSpec.describe StatusMonitor::Monitor do
       slack_username: nil
     )
   end
+  # Injected shared corpus, scoped to the test's tmpdir (never the real DATA_DIR).
+  let(:store) { StatusMonitor::MessageStore.new(File.join(tmpdir, 'corpus.db')) }
+  # Capture strong-signal auto-actions (typed commands / responses / exit)
+  # without redefining the shared fput seam.
+  let(:fput_commands) { [] }
+
+  def build_monitor
+    described_class.new(settings, store)
+  end
 
   before do
     @original_dir = Dir.pwd
     Dir.chdir(tmpdir)
     # Monitor#load_filter_strings calls the harness get_data('filters'), which
     # returns $test_data[:filters] (reset before each example by reset_data).
-    # Default to an empty filter set; an example needing specific filters
-    # overrides it before constructing the Monitor.
     $test_data.filters = OpenStruct.new('filter_strings' => [])
+    allow_any_instance_of(StatusMonitor::AlertHandler).to receive(:fput) { |_r, cmd| fput_commands << cmd }
+    allow(StatusMonitor::CommandDetector).to receive(:fput) { |cmd| fput_commands << cmd }
   end
 
   after do
@@ -977,55 +961,86 @@ RSpec.describe StatusMonitor::Monitor do
   end
 
   it 'runs with no filters when the filter data never loads (degrades, does not raise)' do
-    # get_data returning nil (data files not yet loaded / no filters configured)
-    # must not crash construction or stall into a fatal raise -- it falls back to
-    # an empty filter set so the monitor still runs.
     $test_data.filters = nil
     monitor = nil
-    expect { monitor = described_class.new(settings) }.not_to raise_error
+    expect { monitor = build_monitor }.not_to raise_error
     expect(monitor.process(+'a wholly ordinary novel line')).to be true
   end
 
-  it 'detector runs before unseen? gate (spam detection regression test)' do
-    monitor = described_class.new(settings)
-    # Send the same clean line repeatedly -- detector must see all of them
-    4.times { monitor.process(+'A mysterious voice whispers to you') }
-    # The detector should have seen 4 occurrences in its buffer
-    # With threshold 3, the 4th should trigger (first is unseen, 2-4 are repeats
-    # but detector still gets them)
-    expect(monitor.spam_line).not_to be_nil, "SpamDetector should have fired after 4 repeats with threshold 3"
+  describe 'novelty gating (novel-alone)' do
+    it 'alerts on a novel line' do
+      monitor = build_monitor
+      expect(monitor.process(+'A mysterious voice whispers to you')).to be true
+      expect(monitor.spam_line).not_to be_nil
+    end
+
+    it 'stays silent on a line already persisted in the corpus' do
+      store.record('previously imported line')
+      store.save
+      monitor = build_monitor
+      expect(monitor.process(+'previously imported line')).to be false
+      expect(monitor.spam_line).to be_nil
+    end
   end
 
-  it 'process returns false for nil lines' do
-    monitor = described_class.new(settings)
-    expect(monitor.process(nil)).to be false
+  describe 'hybrid whitelist' do
+    it 'silences a plain novel line after the first alert (auto-added to corpus)' do
+      monitor = build_monitor
+      expect(monitor.process(+'a brand new benign remark')).to be true
+      expect(monitor.process(+'a brand new benign remark')).to be false
+    end
+
+    it 'keeps alerting on a line that names the character (never auto-added)' do
+      # checkname is 'Testchar' in the harness.
+      monitor = build_monitor
+      expect(monitor.process(+'Testchar, prove that you are present')).to be true
+      expect(monitor.process(+'Testchar, prove that you are present')).to be true
+    end
+
+    it 'keeps alerting on a line embedding a command (never auto-added)' do
+      monitor = build_monitor
+      expect(monitor.process(+'a voice says you should JUMP')).to be true
+      expect(monitor.process(+'a voice says you should JUMP')).to be true
+    end
   end
 
-  it 'process returns false for empty lines' do
-    monitor = described_class.new(settings)
-    expect(monitor.process('')).to be false
+  describe 'auto-actions gated behind the strong signal' do
+    it 'auto-types an embedded command on a novel line (command = strong)' do
+      build_monitor.process(+'a voice says you should JUMP')
+      expect(fput_commands).to include('jump')
+    end
+
+    it 'does not auto-type or quit on a plain novel line, even with those settings on' do
+      settings.status_monitor_respond = true
+      settings.quit_on_status_warning = true
+      build_monitor.process(+'an entirely new but harmless observation')
+      expect(fput_commands).to be_empty
+    end
   end
 
-  it 'returns false for lines that scrub to whitespace' do
-    monitor = described_class.new(settings)
-    result = monitor.process(+'42 kronars')
-    expect(result).to be false
-  end
+  describe 'lines that never reach the corpus gate' do
+    it 'returns false for nil lines' do
+      expect(build_monitor.process(nil)).to be false
+    end
 
-  it 'returns false for lines matching a filter pattern' do
-    # Override the shared default with a non-empty filter for this example only.
-    $test_data.filters = OpenStruct.new('filter_strings' => ['gold coins'])
+    it 'returns false for empty lines' do
+      expect(build_monitor.process('')).to be false
+    end
 
-    monitor = described_class.new(settings)
-    result = monitor.process(+'you see gold coins on the ground')
-    expect(result).to be false
+    it 'returns false for lines that scrub to whitespace' do
+      expect(build_monitor.process(+'42 kronars')).to be false
+    end
+
+    it 'returns false for lines matching a filter pattern' do
+      $test_data.filters = OpenStruct.new('filter_strings' => ['gold coins'])
+      expect(build_monitor.process(+'you see gold coins on the ground')).to be false
+    end
   end
 
   it 'consume_spam_line clears the spam line' do
-    monitor = described_class.new(settings)
+    monitor = build_monitor
     monitor.instance_variable_set(:@spam_line, 'test spam')
-    consumed = monitor.consume_spam_line
-    expect(consumed).to eq('test spam')
+    expect(monitor.consume_spam_line).to eq('test spam')
     expect(monitor.spam_line).to be_nil
   end
 end

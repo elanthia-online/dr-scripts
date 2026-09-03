@@ -34,10 +34,18 @@ end
 extract_lic_module('status-monitor.lic', 'StatusMonitor')
 extract_lic_module('status-monitor-import.lic', 'StatusMonitorImport')
 
+# default_db_path (below) builds a string from the Lich DATA_DIR constant; define
+# a stand-in so the path-parity assertion can run outside the Lich runtime.
+DATA_DIR = '/tmp/lich-test-data' unless defined?(DATA_DIR)
+
 RSpec.describe 'status-monitor / status-monitor-import parity' do
   # similarity_scrub is an instance method on the live filter and a module
   # method on the importer; build a bare live filter to reach the instance one.
   let(:live_filter) { StatusMonitor::MessageFilter.new([]) }
+
+  it 'the live monitor and the importer resolve the SAME shared corpus path' do
+    expect(StatusMonitorImport.default_db_path).to eq(StatusMonitor::MessageStore.default_db_path)
+  end
 
   describe 'similarity_scrub produces identical output in both scripts' do
     [
