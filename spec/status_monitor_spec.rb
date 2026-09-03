@@ -918,6 +918,16 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(result).to be_nil
     end
 
+    it 'filters lines containing an NPC name from UserVars.npcs' do
+      UserVars.npcs = ['Grubbnash']
+      expect(filter.clean(+'Grubbnash the orc snarls at you')).to be_nil
+    end
+
+    it 'does not raise when UserVars.npcs is nil' do
+      allow(UserVars).to receive(:npcs).and_return(nil)
+      expect { filter.clean(+'a plain line') }.not_to raise_error
+    end
+
     it 'resets room players on new room entry' do
       filter.clean(+"'room players'>Also here: Warrior Alice.</component>")
       filter.clean(+"'room players'>Also here: Warrior Charlie.</component>")
@@ -964,6 +974,16 @@ RSpec.describe StatusMonitor::Monitor do
   after do
     Dir.chdir(@original_dir)
     FileUtils.rm_rf(tmpdir)
+  end
+
+  it 'runs with no filters when the filter data never loads (degrades, does not raise)' do
+    # get_data returning nil (data files not yet loaded / no filters configured)
+    # must not crash construction or stall into a fatal raise -- it falls back to
+    # an empty filter set so the monitor still runs.
+    $test_data.filters = nil
+    monitor = nil
+    expect { monitor = described_class.new(settings) }.not_to raise_error
+    expect(monitor.process(+'a wholly ordinary novel line')).to be true
   end
 
   it 'detector runs before unseen? gate (spam detection regression test)' do

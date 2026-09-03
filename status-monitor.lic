@@ -202,7 +202,7 @@ module StatusMonitor
       return nil if @in_stream && FILTERED_STREAMS.include?(@current_stream)
       return nil if line.nil? || line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
       return nil if @room_players.any? { |name| line.include?(name) }
-      return nil if UserVars.npcs.any? { |name| line.include?(name) }
+      return nil if UserVars.npcs&.any? { |name| line.include?(name) }
 
       if UserVars.players_online
         players_to_check = UserVars.players_online - [checkname, 'Endith']
@@ -610,21 +610,26 @@ module StatusMonitor
 
     private
 
-    # @return [Array<Regexp>] compiled filter patterns from data file
+    # Loads the configurable ignore patterns from the 'filters' data file.
+    #
+    # get_data can briefly return nil (or data lacking the key) if it is read
+    # before Lich finishes loading its data files, so retry a bounded number of
+    # times. If no filter list is ever produced, run with no filters rather than
+    # failing: an unconfigured (or empty) filter list is valid, not fatal. Note
+    # get_data is a synchronous read, so this retry only helps a genuine
+    # not-yet-loaded race -- it will not conjure a key that the data file lacks.
+    #
+    # @return [Array<Regexp>] compiled filter patterns (empty if none configured)
     def load_filter_strings
-      retries = 0
-      filters = nil
-      while filters.nil?
+      10.times do
         data = get_data('filters')
-        filters = data['filter_strings']&.map { |string| /#{string}/ }
-        if filters.nil?
-          retries += 1
-          raise 'Failed to load filter data after 10 attempts' if retries >= 10
+        strings = data && data['filter_strings']
+        return strings.map { |string| /#{string}/ } if strings
 
-          pause 1
-        end
+        pause 1
       end
-      filters
+      echo 'status-monitor: no filter list available; running with no filters.'
+      []
     end
   end
 end

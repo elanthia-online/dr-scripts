@@ -233,8 +233,11 @@ module StatusMonitorImport
       return
     end
 
-    pending = pending_files(db, files, limit: limit)
-    already_done = files.size - files.reject { |file| already_imported?(db, file) }.size
+    # Scan the import_log once: the full not-yet-imported set drives both the
+    # already-done count and (after applying any limit) the list to process.
+    all_pending = pending_files(db, files)
+    already_done = files.size - all_pending.size
+    pending = limit ? all_pending.first(limit.to_i) : all_pending
 
     if pending.empty?
       echo "Found #{files.size} log files for #{character_name}; all already imported. Nothing to do."
