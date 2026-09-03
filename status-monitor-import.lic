@@ -138,7 +138,10 @@ module StatusMonitorImport
              end
 
     reader.each_line do |raw_line|
-      cleaned = clean_line(raw_line)
+      # Log bytes are not guaranteed valid UTF-8 (a corrupt or truncated write
+      # can leave stray bytes). Scrub invalid sequences so a single bad byte
+      # raises nothing and cannot abort the whole run mid-file.
+      cleaned = clean_line(raw_line.scrub)
       next unless cleaned
 
       scrubbed = similarity_scrub(cleaned).strip

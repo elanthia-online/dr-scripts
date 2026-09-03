@@ -330,6 +330,19 @@ RSpec.describe 'StatusMonitorImport database operations' do
       expect(actual).to eq(1)
       db.close
     end
+
+    it 'survives invalid UTF-8 bytes without aborting the file' do
+      db = StatusMonitorImport.open_database('Test')
+      log_path = File.join(tmpdir, 'badbytes.log')
+      # A stray \xFF\xFE is invalid UTF-8; regexes in clean_line would raise
+      # ArgumentError on it if the line were not scrubbed first.
+      File.binwrite(log_path, "2026-01-04 18:59:20 NZDT: bad \xFF\xFE byte line\n" \
+                              "2026-01-04 18:59:21 NZDT: A clean following line\n")
+      count = nil
+      expect { count = StatusMonitorImport.import_file(db, log_path) }.not_to raise_error
+      expect(count).to eq(2)
+      db.close
+    end
   end
 
   describe 'corrupt file resilience' do
