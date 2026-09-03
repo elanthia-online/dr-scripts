@@ -22,21 +22,28 @@ require 'fileutils'
 
 module StatusMonitor
   # Persists and retrieves the corpus of previously seen game messages using a
-  # single, INSTALLATION-WIDE SQLite database. A line that is safe on any
-  # character is treated as safe everywhere, so the corpus is not scoped per
-  # character -- 20 characters' worth of history is one shared whitelist.
+  # single, INSTALLATION-WIDE SQLite database. A line safe on any character is
+  # safe everywhere, so the corpus is one shared whitelist across all characters.
   #
-  # Recent lines are held in memory briefly before migrating to the persistent
-  # store (batching writes). On first run, any legacy per-character .dat (Marshal)
-  # and seen_messages_<Char>.db files found in the working directory are merged
-  # into the shared corpus and renamed .migrated.
+  # Writes are immediate (INSERT on record) so a line one character learns is
+  # visible to every other character at once -- there is no per-process cache to
+  # go stale. Because the shared file can have many concurrent writers (every
+  # running character, plus an import), all DB access goes through a
+  # busy-retry/backoff wrapper that logs-and-continues rather than crashing the
+  # monitor. A small in-process cache of KNOWN lines only avoids repeat SELECTs
+  # (known stays known, so it never needs invalidation).
   #
-  # @note Novelty is judged against the persistent corpus: in_corpus? is what
-  #   gates detection, so a "known" line is never analysed or alerted on.
+  # On first run, any legacy per-character .dat (Marshal) and seen_messages_<Char>.db
+  # files found in the working directory are merged in and renamed .migrated.
+  #
+  # @note in_corpus? is the novelty gate: a known line is never analysed/alerted.
   class MessageStore
-    # Seconds a line stays in the in-memory recent cache before migrate_recent
-    # flushes it to the persistent store.
-    RECENT_TTL_SECONDS = 600
+    # Attempts to ride out a busy shared DB after the SQLite busy_timeout is
+    # itself exceeded (e.g. a burst of simultaneous logins all writing at once).
+    BUSY_RETRIES = 5
+    # Soft cap on the in-process known-line cache before it is cleared (it is
+    # only a read optimisation; clearing just forces DB reads again).
+    KNOWN_CACHE_CAP = 50_000
 
     # Installation-wide corpus path, shared by every character and the importer.
     # @return [String] absolute path to the shared seen_messages database
@@ -49,68 +56,43 @@ module StatusMonitor
       @db_path = db_path
       FileUtils.mkdir_p(File.dirname(@db_path))
       @db = open_database
+      @known = {}
       migrate_legacy
-      @recent_seen_lines = {}
     end
 
-    # Whether a line is already part of the known-safe corpus (recent cache or
-    # persistent store). This is the novelty gate: a line in the corpus is safe
-    # by construction and is never analysed for spam/AFK checks.
+    # Whether a line is already part of the known-safe corpus. This is the
+    # novelty gate: a known line is safe by construction and never analysed.
+    #
+    # On a persistent DB failure this fails OPEN (returns false -> treated as
+    # novel -> alerts) rather than silently swallow a possible check.
     #
     # @param line [String] scrubbed message line
     # @return [Boolean] true if the line is already known
     def in_corpus?(line)
       return true if line.nil? || line.strip.empty?
+      return true if @known[line]
 
-      @recent_seen_lines.key?(line) || exists_in_db?(line)
+      found = with_retry { exists_in_db?(line) }
+      remember(line) if found
+      found ? true : false
     end
 
-    # Records a line as known-safe (adds it to the recent cache, which migrates
-    # to the persistent store). Used for the "plain" novel lines the hybrid
-    # whitelist chooses to silence; check-like lines are deliberately NOT
-    # recorded so recurrences keep alerting.
+    # Records a line as known-safe, writing it through to the shared store
+    # immediately so other characters see it at once.
     #
     # @param line [String] scrubbed message line
     # @return [void]
     def record(line)
       return if line.nil? || line.strip.empty?
 
-      @recent_seen_lines[line] ||= Time.now
+      remember(line)
+      with_retry { insert_line(line, 'live') }
     end
 
-    # Migrates recent lines older than RECENT_TTL_SECONDS into the database.
-    #
-    # @return [void]
-    def migrate_recent
-      expired = @recent_seen_lines.select { |_, timestamp| Time.now - timestamp > RECENT_TTL_SECONDS }
-      return if expired.empty?
-
-      @db.transaction do
-        expired.each_key do |line|
-          insert_line(line, 'live')
-          @recent_seen_lines.delete(line)
-        end
-      end
-    end
-
-    # Flushes all recent lines to the database.
-    #
-    # @return [void]
-    def save
-      lines_to_save = @recent_seen_lines.keys
-      return if lines_to_save.empty?
-
-      @db.transaction do
-        lines_to_save.each { |line| insert_line(line, 'live') }
-      end
-      @recent_seen_lines.clear
-    end
-
-    # Closes the database connection after flushing pending data.
+    # Closes the database connection.
     #
     # @return [void]
     def shutdown
-      save
       @db.close
     end
 
@@ -123,13 +105,35 @@ module StatusMonitor
 
     private
 
+    # Adds a line to the in-process known-line cache, bounding its size.
+    def remember(line)
+      @known.clear if @known.size >= KNOWN_CACHE_CAP
+      @known[line] = true
+    end
+
+    # Runs a DB operation, retrying past the busy_timeout on contention and
+    # logging-and-continuing (returning nil) rather than raising into process.
+    def with_retry
+      tries = 0
+      begin
+        yield
+      rescue SQLite3::BusyException, SQLite3::LockedException => e
+        tries += 1
+        if tries <= BUSY_RETRIES
+          pause(0.05 * tries)
+          retry
+        end
+        echo "status-monitor: corpus busy after #{tries} tries (#{e.message}); continuing."
+        nil
+      end
+    end
+
     # Schema must stay in sync with StatusMonitorImport.open_database.
     # @return [SQLite3::Database] initialized database connection
     def open_database
       db = SQLite3::Database.new(@db_path)
-      # Wait up to 5s on a locked db: the shared corpus can have many concurrent
-      # writers (every running character, plus an import run), so a transient
-      # lock should wait rather than raise SQLITE_BUSY.
+      # Wait up to 5s on a locked db before raising; with_retry rides out longer
+      # contention on top of that (many characters + an import share this file).
       db.busy_timeout = 5000
       db.execute('PRAGMA journal_mode=WAL')
       db.execute('PRAGMA synchronous=NORMAL')
@@ -175,10 +179,12 @@ module StatusMonitor
     def migrate_dat(path)
       data = File.open(path, 'rb') { |f| Marshal.load(f) }
       count = 0
-      @db.transaction do
-        data.each_key do |line|
-          insert_line(line.to_s, 'migration')
-          count += 1
+      with_retry do
+        @db.transaction do
+          data.each_key do |line|
+            insert_line(line.to_s, 'migration')
+            count += 1
+          end
         end
       end
       File.rename(path, "#{path}.migrated")
@@ -196,8 +202,10 @@ module StatusMonitor
       src = SQLite3::Database.new(path)
       rows = src.execute('SELECT line_text, source FROM seen_messages')
       src.close
-      @db.transaction do
-        rows.each { |line, source| insert_line(line, source || 'migration') }
+      with_retry do
+        @db.transaction do
+          rows.each { |line, source| insert_line(line, source || 'migration') }
+        end
       end
       File.rename(path, "#{path}.migrated")
       rows.size
@@ -596,6 +604,10 @@ module StatusMonitor
   #   - `status_monitor_respond` [Boolean] auto-respond with canned phrases
   #   - `quit_on_status_warning` [Boolean] auto-quit on alert
   #   - `slack_username` [String] Slack user to notify
+  #   - `status_monitor_learn` [Boolean] record novel lines silently, never alert
+  #     (used to prime the shared corpus)
+  #   - `status_monitor_grace_seconds` [Integer] warm-up window at session start
+  #     during which novel lines are learned silently (default 60; 0 disables)
   #
   # @example Basic usage
   #   ;status-monitor
@@ -608,6 +620,14 @@ module StatusMonitor
   #
   # @see https://elanthipedia.play.net/Lich_script_repository#status-monitor
   class Monitor
+    # Seconds at the start of a session during which novel lines are learned
+    # silently (no alert) to absorb the warm-up burst before the corpus is warm.
+    GRACE_SECONDS = 60
+    # Notification safety valve: at most this many alerts per rolling window;
+    # beyond it, novel lines are still learned but not announced.
+    ALERT_RATE_MAX = 10
+    ALERT_RATE_WINDOW = 60
+
     attr_reader :spam_line
 
     # @return [String, nil] the most recent cleaned line (tags stripped), for debug logging
@@ -620,24 +640,29 @@ module StatusMonitor
       @filter = MessageFilter.new(load_filter_strings)
       @detector = SpamDetector.new(settings)
       @alerter = AlertHandler.new(settings)
+      @learn = settings.status_monitor_learn ? true : false
+      @grace_seconds = settings.status_monitor_grace_seconds || GRACE_SECONDS
+      @started_at = Time.now
+      @alert_times = []
       @spam_line = nil
       @last_clean_line = nil
+      announce_mode
     end
 
     # Processes a single raw game line through the full pipeline.
     #
-    # Detection is novelty-gated: a line already in the trusted corpus is
-    # known-safe and is neither analysed nor alerted on. A NOVEL line always
-    # notifies (novel-alone). The strong signal -- the line repeated past
-    # threshold, or it embeds a command -- additionally runs the auto-action
-    # bundle. The hybrid whitelist then records plain novel lines so they go
-    # quiet, but never records check-like ones (own name / embedded command), so
-    # a recurring check keeps alerting.
+    # Detection is novelty-gated: a line already in the shared corpus is
+    # known-safe and is neither analysed nor alerted on. A NOVEL line alerts
+    # (novel-alone), unless alerts are being suppressed (learn mode, the start-up
+    # grace period, or the rate-limit valve) -- in which case it is learned
+    # silently. The strong signal (repeated past threshold, or an embedded
+    # command) additionally runs the auto-action bundle. The hybrid whitelist
+    # records the line so it goes quiet, EXCEPT check-like ones (embed a command),
+    # which stay hot so a recurring command-check keeps alerting.
     #
     # @param line [String] raw game stream line
-    # @return [Boolean] true if the line was novel (an alert fired)
+    # @return [Boolean] true if a novel line actually alerted
     def process(line)
-      @store.migrate_recent
       cleaned = @filter.clean(line)
       @last_clean_line = cleaned
       return false if cleaned.nil?
@@ -648,14 +673,17 @@ module StatusMonitor
       return false if @store.in_corpus?(scrubbed) # known-safe -> silent
 
       commands = CommandDetector.commands_in(scrubbed)
-      repeated = !@detector.check(scrubbed).nil?
-      strong = repeated || commands.any?
-      check_like = own_name?(scrubbed) || commands.any?
+      strong = !@detector.check(scrubbed).nil? || commands.any?
+      check_like = commands.any?
 
-      @alerter.handle(scrubbed, strong: strong)
-      @spam_line = scrubbed
+      alert = !suppress_alert?
+      if alert
+        @alerter.handle(scrubbed, strong: strong)
+        @spam_line = scrubbed
+        @alert_times << Time.now
+      end
       @store.record(scrubbed) unless check_like
-      true
+      alert
     end
 
     # Clears the current spam line after it has been consumed.
@@ -667,14 +695,7 @@ module StatusMonitor
       line
     end
 
-    # Persists state to disk.
-    #
-    # @return [void]
-    def save
-      @store.save
-    end
-
-    # Flushes pending data and closes the database connection.
+    # Closes the database connection.
     #
     # @return [void]
     def shutdown
@@ -688,17 +709,41 @@ module StatusMonitor
 
     private
 
-    # Whether a line names the current character. A message that addresses you
-    # by name is a classic targeted-check signal, so such lines are treated as
-    # "check-like" and never silently added to the corpus.
+    # Whether a novel line should be learned silently instead of alerted:
+    # explicit learn mode, the start-up grace period, or the rate-limit valve.
     #
-    # @param line [String] scrubbed line
-    # @return [Boolean] true if the line contains the character's name as a word
-    def own_name?(line)
-      name = checkname
-      return false if name.nil? || name.to_s.empty?
+    # @return [Boolean]
+    def suppress_alert?
+      return true if @learn
+      return true if @grace_seconds.positive? && (Time.now - @started_at < @grace_seconds)
 
-      line.match?(/\b#{Regexp.escape(name)}\b/)
+      rate_limited?
+    end
+
+    # Whether the alert rate cap has been reached in the current window.
+    #
+    # @return [Boolean]
+    def rate_limited?
+      cutoff = Time.now - ALERT_RATE_WINDOW
+      @alert_times.reject! { |t| t < cutoff }
+      if @alert_times.size >= ALERT_RATE_MAX
+        unless @rate_notice
+          echo "status-monitor: alert rate cap reached (#{ALERT_RATE_MAX}/#{ALERT_RATE_WINDOW}s); learning quietly until it clears."
+          @rate_notice = true
+        end
+        return true
+      end
+      @rate_notice = false
+      false
+    end
+
+    # One-time notice about which warm-up mode is active.
+    def announce_mode
+      if @learn
+        echo 'status-monitor: learn mode -- recording novel lines silently, no alerts.'
+      elsif @grace_seconds.positive?
+        echo "status-monitor: warming up for #{@grace_seconds}s -- learning novel lines quietly before alerting."
+      end
     end
 
     # Loads the configurable ignore patterns from the 'filters' data file.
@@ -847,7 +892,7 @@ begin
     if (spam = monitor.consume_spam_line)
       Gtk.queue do
         text_buffer = messages_tv.buffer
-        text_buffer.insert(text_buffer.end_iter, "spam:'#{spam}'")
+        text_buffer.insert(text_buffer.end_iter, "new:'#{spam}'")
         text_buffer.insert(text_buffer.end_iter, "\r\n")
         messages_tv.scroll_to_iter(text_buffer.end_iter, 0.0, true, 0, 0)
       end

@@ -274,7 +274,7 @@ RSpec.describe 'StatusMonitorImport database operations' do
 
     it 'returns true after recording' do
       db = StatusMonitorImport.open_database('Test')
-      StatusMonitorImport.record_import(db, '/some/file.log', 100)
+      StatusMonitorImport.record_import(db, '/some/file.log', 100, 'Test')
       expect(StatusMonitorImport.already_imported?(db, '/some/file.log')).to be true
       db.close
     end
@@ -375,7 +375,7 @@ RSpec.describe 'StatusMonitorImport database operations' do
       [good1, corrupt, good2].each do |file|
         begin
           lines = StatusMonitorImport.import_file(db, file)
-          StatusMonitorImport.record_import(db, file, lines)
+          StatusMonitorImport.record_import(db, file, lines, 'Test')
         rescue Zlib::GzipFile::Error, EOFError, SystemCallError
           errors += 1
           next
@@ -431,33 +431,42 @@ RSpec.describe 'StatusMonitorImport database operations' do
     end
   end
 
-  describe 'reset behavior' do
-    it 'deletes import-sourced rows but preserves live rows' do
-      db = StatusMonitorImport.open_database('Test')
-      db.execute("INSERT INTO seen_messages (line_text, source) VALUES ('live line', 'live')")
-      db.execute("INSERT INTO seen_messages (line_text, source) VALUES ('imported line', 'import')")
-      db.execute("INSERT INTO import_log (file_path, lines_imported) VALUES ('file.log', 1)")
-
-      # Simulate reset
-      db.execute("DELETE FROM seen_messages WHERE source = 'import'")
-      db.execute('DELETE FROM import_log')
-
-      live_count = db.get_first_value("SELECT COUNT(*) FROM seen_messages WHERE source = 'live'").to_i
-      import_count = db.get_first_value("SELECT COUNT(*) FROM seen_messages WHERE source = 'import'").to_i
-      log_count = db.get_first_value('SELECT COUNT(*) FROM import_log').to_i
-
-      expect(live_count).to eq(1)
-      expect(import_count).to eq(0)
-      expect(log_count).to eq(0)
+  describe 'per-character import tracking and reset' do
+    it 'records the owning character in import_log' do
+      db = StatusMonitorImport.open_database('shared.db')
+      StatusMonitorImport.record_import(db, '/logs/DR-Alice/1.log', 5, 'Alice')
+      character = db.get_first_value("SELECT character FROM import_log WHERE file_path = '/logs/DR-Alice/1.log'")
+      expect(character).to eq('Alice')
       db.close
     end
 
-    it 'preserves migration-sourced rows' do
-      db = StatusMonitorImport.open_database('Test')
-      db.execute("INSERT INTO seen_messages (line_text, source) VALUES ('migrated line', 'migration')")
-      db.execute("DELETE FROM seen_messages WHERE source = 'import'")
-      count = db.get_first_value("SELECT COUNT(*) FROM seen_messages WHERE source = 'migration'").to_i
-      expect(count).to eq(1)
+    it 'a per-character reset clears only that character and leaves the corpus intact' do
+      db = StatusMonitorImport.open_database('shared.db')
+      db.execute("INSERT INTO seen_messages (line_text, source) VALUES ('a safe line', 'import')")
+      StatusMonitorImport.record_import(db, '/logs/DR-Alice/1.log', 5, 'Alice')
+      StatusMonitorImport.record_import(db, '/logs/DR-Bob/1.log', 5, 'Bob')
+
+      # This is exactly what run(reset: true) does for character 'Alice'.
+      db.execute('DELETE FROM import_log WHERE character = ?', ['Alice'])
+
+      expect(StatusMonitorImport.already_imported?(db, '/logs/DR-Alice/1.log')).to be false
+      expect(StatusMonitorImport.already_imported?(db, '/logs/DR-Bob/1.log')).to be true
+      # Corpus (the shared whitelist) is never touched by reset.
+      expect(db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i).to eq(1)
+      db.close
+    end
+
+    it 'upgrades an old import_log that predates the character column' do
+      # Simulate a pre-existing DB with the old schema (no character column).
+      legacy = SQLite3::Database.new(File.join(tmpdir, 'old.db'))
+      legacy.execute('CREATE TABLE import_log (file_path TEXT PRIMARY KEY, lines_imported INTEGER, imported_at DATETIME)')
+      legacy.execute("INSERT INTO import_log (file_path, lines_imported) VALUES ('old.log', 1)")
+      legacy.close
+
+      db = StatusMonitorImport.open_database(File.join(tmpdir, 'old.db'))
+      columns = db.execute('PRAGMA table_info(import_log)').map { |c| c[1] }
+      expect(columns).to include('character')
+      expect { StatusMonitorImport.record_import(db, 'new.log', 2, 'Carol') }.not_to raise_error
       db.close
     end
   end
@@ -526,16 +535,16 @@ RSpec.describe 'StatusMonitorImport.pending_files' do
   end
 
   it 'excludes already-imported files' do
-    StatusMonitorImport.record_import(db, 'file1.log', 10)
-    StatusMonitorImport.record_import(db, 'file2.log', 10)
+    StatusMonitorImport.record_import(db, 'file1.log', 10, 'Test')
+    StatusMonitorImport.record_import(db, 'file2.log', 10, 'Test')
     expect(StatusMonitorImport.pending_files(db, files)).to eq(%w[file3.log file4.log file5.log])
   end
 
   it 'applies the limit to not-yet-imported files, not the raw list' do
     # Regression: slicing before filtering meant a resumed --limit run could
     # select only already-imported files and make zero progress.
-    StatusMonitorImport.record_import(db, 'file1.log', 10)
-    StatusMonitorImport.record_import(db, 'file2.log', 10)
+    StatusMonitorImport.record_import(db, 'file1.log', 10, 'Test')
+    StatusMonitorImport.record_import(db, 'file2.log', 10, 'Test')
     result = StatusMonitorImport.pending_files(db, files, limit: 2)
     expect(result).to eq(%w[file3.log file4.log])
   end
@@ -545,7 +554,7 @@ RSpec.describe 'StatusMonitorImport.pending_files' do
   end
 
   it 'returns [] when everything is already imported' do
-    files.each { |f| StatusMonitorImport.record_import(db, f, 1) }
+    files.each { |f| StatusMonitorImport.record_import(db, f, 1, 'Test') }
     expect(StatusMonitorImport.pending_files(db, files, limit: 3)).to eq([])
   end
 

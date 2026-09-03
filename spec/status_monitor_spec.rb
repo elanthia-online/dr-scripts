@@ -299,15 +299,12 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(store.in_corpus?('hello world')).to be false
     end
 
-    it 'becomes true after record (recent cache)' do
-      store.record('hello world')
-      expect(store.in_corpus?('hello world')).to be true
-    end
-
-    it 'stays true after record then save (persistent store)' do
-      store.record('persistent line')
-      store.save
-      expect(store.in_corpus?('persistent line')).to be true
+    it 'becomes true after record, written through immediately (visible to a fresh handle)' do
+      store.record('shared line')
+      expect(store.in_corpus?('shared line')).to be true
+      # A separate connection (another character's process) sees it at once.
+      other = described_class.new(db_path)
+      expect(other.in_corpus?('shared line')).to be true
     end
 
     it 'treats nil/empty/whitespace as known (never novel) and never records them' do
@@ -316,7 +313,6 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(store.in_corpus?('   ')).to be true
       store.record('')
       store.record('   ')
-      store.save
       expect(store.count).to eq(0)
     end
 
@@ -327,50 +323,8 @@ RSpec.describe StatusMonitor::MessageStore do
     end
   end
 
-  describe '#migrate_recent' do
-    it 'moves lines older than 600 seconds to the database' do
-      store.record('old line')
-      store.instance_variable_get(:@recent_seen_lines)['old line'] = Time.now - 601
-      store.migrate_recent
-      recent = store.instance_variable_get(:@recent_seen_lines)
-      expect(recent).not_to have_key('old line')
-      expect(store.count).to eq(1)
-      expect(store.in_corpus?('old line')).to be true
-    end
-
-    it 'does not migrate lines younger than 600 seconds' do
-      store.record('new line')
-      store.migrate_recent
-      expect(store.instance_variable_get(:@recent_seen_lines)).to have_key('new line')
-    end
-
-    it 'is a no-op when recent cache is empty' do
-      expect { store.migrate_recent }.not_to raise_error
-    end
-  end
-
-  describe '#save' do
-    it 'flushes recent lines to the database' do
-      store.record('line1')
-      store.record('line2')
-      store.save
-      expect(store.count).to eq(2)
-    end
-
-    it 'clears the recent cache after save' do
-      store.record('line1')
-      store.save
-      expect(store.instance_variable_get(:@recent_seen_lines)).to be_empty
-    end
-
-    it 'is a no-op when recent cache is empty' do
-      store.save
-      expect(store.count).to eq(0)
-    end
-  end
-
   describe '#shutdown' do
-    it 'flushes and closes the database' do
+    it 'persists records and closes the database' do
       store.record('persist me')
       store.shutdown
       db = SQLite3::Database.new(db_path)
@@ -394,15 +348,9 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(store.count).to eq(0)
     end
 
-    it 'reflects saved entries' do
+    it 'reflects recorded entries immediately (no flush step)' do
       5.times { |i| store.record("line_#{i}") }
-      store.save
       expect(store.count).to eq(5)
-    end
-
-    it 'does not count recent (unflushed) entries' do
-      store.record('unflushed')
-      expect(store.count).to eq(0)
     end
   end
 
@@ -442,7 +390,6 @@ RSpec.describe StatusMonitor::MessageStore do
     it 'does not treat the shared db itself as a legacy per-character db' do
       # db_path basename is seen_messages.db; the *_ glob must not match it.
       store.record('keep me')
-      store.save
       expect { described_class.new(db_path) }.not_to raise_error
       expect(File.exist?("#{db_path}.migrated")).to be false
     end
@@ -932,6 +879,8 @@ RSpec.describe StatusMonitor::Monitor do
       line_similarity_percentage: 80,
       status_monitor_respond: false,
       quit_on_status_warning: false,
+      status_monitor_learn: false,
+      status_monitor_grace_seconds: 0, # disable warm-up grace so alert behavior is testable
       slack_username: nil
     )
   end
@@ -976,7 +925,6 @@ RSpec.describe StatusMonitor::Monitor do
 
     it 'stays silent on a line already persisted in the corpus' do
       store.record('previously imported line')
-      store.save
       monitor = build_monitor
       expect(monitor.process(+'previously imported line')).to be false
       expect(monitor.spam_line).to be_nil
@@ -990,11 +938,12 @@ RSpec.describe StatusMonitor::Monitor do
       expect(monitor.process(+'a brand new benign remark')).to be false
     end
 
-    it 'keeps alerting on a line that names the character (never auto-added)' do
-      # checkname is 'Testchar' in the harness.
+    it 'whitelists an own-name line after first sight (seen = safe)' do
+      # checkname is 'Testchar' in the harness. Own-name is no longer special for
+      # whitelisting: a seen own-name line goes quiet like any other.
       monitor = build_monitor
       expect(monitor.process(+'Testchar, prove that you are present')).to be true
-      expect(monitor.process(+'Testchar, prove that you are present')).to be true
+      expect(monitor.process(+'Testchar, prove that you are present')).to be false
     end
 
     it 'keeps alerting on a line embedding a command (never auto-added)' do
@@ -1015,6 +964,34 @@ RSpec.describe StatusMonitor::Monitor do
       settings.quit_on_status_warning = true
       build_monitor.process(+'an entirely new but harmless observation')
       expect(fput_commands).to be_empty
+    end
+  end
+
+  describe 'warm-up suppression (learn / grace / rate-limit)' do
+    it 'learns silently with no alert when status_monitor_learn is true' do
+      settings.status_monitor_learn = true
+      monitor = build_monitor
+      expect(monitor.process(+'a novel line during learn mode')).to be false
+      # ...but it was still recorded, so it is now known-safe.
+      expect(store.in_corpus?(+'a novel line during learn mode')).to be true
+    end
+
+    it 'suppresses alerts during the start-up grace period, still learning' do
+      settings.status_monitor_grace_seconds = 300
+      monitor = build_monitor
+      expect(monitor.process(+'a novel line during grace')).to be false
+      expect(store.in_corpus?(+'a novel line during grace')).to be true
+    end
+
+    it 'rate-limits alerts past the cap, still learning the excess quietly' do
+      monitor = build_monitor
+      cap = StatusMonitor::Monitor::ALERT_RATE_MAX
+      # Distinct, digit-free novel lines so each is its own corpus key.
+      cap.times { |i| expect(monitor.process(+"distinct novel remark item #{('a'..'z').to_a[i]}")).to be true }
+      # The next distinct novel line is over the cap -> suppressed but learned.
+      over = 'yet another distinct novel line over the cap'
+      expect(monitor.process(+over)).to be false
+      expect(store.in_corpus?(over)).to be true
     end
   end
 

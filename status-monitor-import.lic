@@ -77,9 +77,13 @@ module StatusMonitorImport
       CREATE TABLE IF NOT EXISTS import_log (
         file_path TEXT PRIMARY KEY,
         lines_imported INTEGER,
-        imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        character TEXT
       )
     SQL
+    # Upgrade an import_log created before per-character tracking existed.
+    columns = db.execute('PRAGMA table_info(import_log)').map { |col| col[1] }
+    db.execute('ALTER TABLE import_log ADD COLUMN character TEXT') unless columns.include?('character')
     db
   end
 
@@ -92,14 +96,17 @@ module StatusMonitorImport
     db.get_first_value('SELECT 1 FROM import_log WHERE file_path = ?', [path]) ? true : false
   end
 
-  # Records that a file has been imported.
+  # Records that a file has been imported, tagged with the owning character so a
+  # per-character --reset can clear just that character's file tracking.
   #
   # @param db [SQLite3::Database] database connection
   # @param path [String] file path
   # @param count [Integer] number of lines imported
+  # @param character [String] character whose log this file is
   # @return [void]
-  def self.record_import(db, path, count)
-    db.execute('INSERT OR REPLACE INTO import_log (file_path, lines_imported) VALUES (?, ?)', [path, count])
+  def self.record_import(db, path, count, character)
+    db.execute('INSERT OR REPLACE INTO import_log (file_path, lines_imported, character) VALUES (?, ?, ?)',
+               [path, count, character])
   end
 
   # Scrubs a line for similarity comparison, removing numbers and currency.
@@ -251,9 +258,13 @@ module StatusMonitorImport
     db = open_database
 
     if reset
-      db.execute("DELETE FROM seen_messages WHERE source = 'import'")
-      db.execute('DELETE FROM import_log')
-      echo 'Import log and imported entries cleared -- will re-process all files.'
+      # Scoped to THIS character, and non-destructive to the shared corpus: only
+      # this character's file tracking is cleared, so its logs are re-scanned.
+      # The seen-messages corpus is an additive known-safe whitelist and is never
+      # deleted here (re-import re-adds via INSERT OR IGNORE), so a reset can
+      # never clobber another character's -- or this character's -- safe lines.
+      db.execute('DELETE FROM import_log WHERE character = ?', [character_name])
+      echo "Import tracking for #{character_name} cleared -- its logs will be re-scanned (corpus preserved)."
     end
 
     files = find_log_files(character_name)
@@ -286,7 +297,7 @@ module StatusMonitorImport
     pending.each do |file|
       begin
         lines = import_file(db, file)
-        record_import(db, file, lines)
+        record_import(db, file, lines, character_name)
         total_lines += lines
         processed += 1
       rescue Zlib::GzipFile::Error, EOFError, SystemCallError => e
