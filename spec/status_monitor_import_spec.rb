@@ -550,3 +550,35 @@ RSpec.describe 'StatusMonitorImport.pending_files' do
     expect(db.get_first_value('PRAGMA busy_timeout')).to eq(5000)
   end
 end
+
+# ---------------------------------------------------------------------------
+# arg_value -- pulling values out of raw args (parse_args stores whole,
+# downcased tokens, so its OpenStruct is unusable for values)
+# ---------------------------------------------------------------------------
+RSpec.describe 'StatusMonitorImport.arg_value' do
+  it 'extracts a numeric limit value from a --limit=N token' do
+    expect(StatusMonitorImport.arg_value(['--limit=5'], 'limit')).to eq('5')
+  end
+
+  it 'preserves the case of a character name (globbing is case-sensitive)' do
+    expect(StatusMonitorImport.arg_value(['--character=Mahtra'], 'character')).to eq('Mahtra')
+  end
+
+  it 'finds the value among several tokens' do
+    tokens = ['--character=Quilsilgas', '--limit=100']
+    expect(StatusMonitorImport.arg_value(tokens, 'limit')).to eq('100')
+    expect(StatusMonitorImport.arg_value(tokens, 'character')).to eq('Quilsilgas')
+  end
+
+  it 'returns nil when the argument is absent' do
+    expect(StatusMonitorImport.arg_value(['--reset'], 'limit')).to be_nil
+    expect(StatusMonitorImport.arg_value([], 'character')).to be_nil
+  end
+
+  it 'to_i of an extracted limit is the number, not 0 (regression: whole-token bug)' do
+    # The bug: args.limit was "--limit=5", whose .to_i is 0, so first(0) => []
+    # => "all already imported". The extracted value must to_i to the real number.
+    expect(StatusMonitorImport.arg_value(['--limit=5'], 'limit').to_i).to eq(5)
+    expect('--limit=5'.to_i).to eq(0) # documents why the raw token could not be used
+  end
+end

@@ -215,6 +215,22 @@ module StatusMonitorImport
     limit ? pending.first(limit.to_i) : pending
   end
 
+  # Extracts a "name=value" argument value from the raw, case-preserving arg
+  # tokens.
+  #
+  # parse_args matches on the regex but stores the whole matched token,
+  # downcased (e.g. "--limit=5", "--character=mahtra"), not the capture group --
+  # so its OpenStruct cannot be used for a value, and it destroys the case of a
+  # character name that log-directory globbing needs. Pull the value straight
+  # from `variable` (Script.current.vars) instead.
+  #
+  # @param raw_args [Array<String>] raw arg tokens (variable.drop(1))
+  # @param name [String] argument name (e.g. 'limit', 'character')
+  # @return [String, nil] the captured value, case preserved, or nil
+  def self.arg_value(raw_args, name)
+    raw_args.map { |token| token[/#{name}=(\w+)/i, 1] }.compact.first
+  end
+
   # Main entry point for the import process.
   #
   # @param character_name [String] character to import for
@@ -290,9 +306,15 @@ module StatusMonitorImport
   end
 end
 
-character = args.character || checkname
+# parse_args validates the arguments and drives --help, but it stores whole,
+# downcased tokens rather than the regex captures, so read the actual values
+# from the case-preserving raw args (variable == Script.current.vars).
+raw_args = variable.drop(1)
+character = StatusMonitorImport.arg_value(raw_args, 'character') || checkname
+limit = StatusMonitorImport.arg_value(raw_args, 'limit')&.to_i
+
 StatusMonitorImport.run(
   character,
-  limit: args.limit,
+  limit: limit,
   reset: args.reset
 )
