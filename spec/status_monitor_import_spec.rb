@@ -12,14 +12,11 @@ require 'fileutils'
 # reset behavior, and resumability. Aggressively tests edge cases
 # including custom timestamp formats (%F %T %Z) and corrupted files.
 
-$echo_messages = []
-def echo(msg)
-  $echo_messages << msg
-end
-
-def checkname
-  'Testchar'
-end
+# echo and checkname come from the shared harness (test/test_harness.rb, mixed
+# in at the top level by spec_helper's `include Harness`). Do NOT redefine them
+# here -- a top-level def wins for the whole process and clobbers every other
+# spec's harness seams. checkname already returns 'Testchar'; echo output is
+# captured in the harness's displayed_messages.
 
 LICH_DIR = Dir.mktmpdir('lich-test-import') unless defined?(LICH_DIR)
 
@@ -209,7 +206,6 @@ RSpec.describe 'StatusMonitorImport database operations' do
   let(:tmpdir) { Dir.mktmpdir('import-test') }
 
   before do
-    $echo_messages.clear
     @original_dir = Dir.pwd
     Dir.chdir(tmpdir)
   end
@@ -489,9 +485,8 @@ RSpec.describe 'StatusMonitorImport.find_log_files' do
   end
 
   it 'returns [] and reports when no directories match' do
-    $echo_messages.clear
     expect(StatusMonitorImport.find_log_files('NoSuchChar')).to eq([])
-    expect($echo_messages.any? { |m| m.include?('No log directories found') }).to be true
+    expect(displayed_messages.any? { |m| m.include?('No log directories found') }).to be true
   end
 end
 

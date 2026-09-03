@@ -11,65 +11,64 @@ require 'fileutils'
 # and Monitor orchestration. Aggressively tests edge cases, boundary
 # conditions, and error paths.
 
-$echo_messages = []
-def echo(msg)
-  $echo_messages << msg
+# echo, fput, checkname and pause all come from the shared harness
+# (test/test_harness.rb, mixed in at the top level by spec_helper's
+# `include Harness`). Do NOT redefine them here -- a top-level def wins for the
+# whole process and clobbers every other spec's harness seams. checkname already
+# returns 'Testchar' and pause is already a no-op. echo output is captured in the
+# harness's displayed_messages; fput is asserted via per-example spies.
+
+# The generic UserVars store lives in the harness (Harness::UserVars); reopen it
+# to add status-monitor's one domain default: npcs reads back an empty list when
+# unset so MessageFilter#clean can safely call UserVars.npcs.any?. Everything
+# else (players_online, ...) is handled by the shared store (unset -> nil).
+# Do NOT define a fresh top-level `UserVars` -- it would shadow the harness store
+# for the whole process. (See spec_helper's "Shared game doubles" notes.)
+class Harness::UserVars
+  class << self
+    def npcs
+      _store[:npcs] || []
+    end
+  end
 end
 
-def checkname
-  'Testchar'
-end
+# Minimal fake SlackBot so AlertHandler's delivery path can be exercised without
+# any network or lnet dependency. SlackBot is a genuinely new class the harness
+# does not provide, so it is added under the harness's Lich::DragonRealms
+# namespace (resolved as Lich::DragonRealms::SlackBot via `include Harness`).
+# Defining a fresh top-level `module Lich` instead would create a real ::Lich
+# constant that shadows the harness Lich and wipes out Lich::Messaging/Util for
+# every spec that runs after this file loads.
+module Harness
+  module Lich
+    module DragonRealms
+      class SlackBot
+        class << self
+          attr_accessor :next_initialized
+          attr_reader :instances
+        end
+        @instances = []
 
-def pause(_duration = 0)
-  # no-op in tests
-end
+        attr_reader :dm_calls
 
-$fput_commands = []
-# Ordered log of observable side effects (fput and Slack sends), used to assert
-# relative ordering across the two sinks.
-$event_log = []
-def fput(cmd)
-  $fput_commands << cmd
-  $event_log << [:fput, cmd]
-end
+        def initialize
+          @initialized = self.class.next_initialized
+          @dm_calls = []
+          self.class.instances << self
+        end
 
-module UserVars
-  def self.npcs; []; end
-  def self.players_online; nil; end
-end unless defined?(UserVars)
+        def initialized?
+          @initialized
+        end
 
-# Minimal fake SlackBot so AlertHandler's delivery path can be exercised
-# without any network or lnet dependency. Records direct_message calls and
-# lets a test dictate whether the bot reports itself as initialized.
-module Lich
-  module DragonRealms
-    class SlackBot
-      class << self
-        attr_accessor :next_initialized
-        attr_reader :instances
-      end
-      @instances = []
-
-      attr_reader :dm_calls
-
-      def initialize
-        @initialized = self.class.next_initialized
-        @dm_calls = []
-        self.class.instances << self
-      end
-
-      def initialized?
-        @initialized
-      end
-
-      def direct_message(username, message)
-        @dm_calls << [username, message]
-        $event_log << [:slack, message]
-        { 'ok' => true }
+        def direct_message(username, message)
+          @dm_calls << [username, message]
+          { 'ok' => true }
+        end
       end
     end
   end
-end unless defined?(Lich::DragonRealms::SlackBot)
+end
 
 # Extract the StatusMonitor module from the .lic file (lines 22-561).
 # Skip the top-level Lich runtime code (status_tags, parse_args, etc).
@@ -103,8 +102,6 @@ RSpec.describe StatusMonitor::SpamDetector do
     )
   end
 
-  before { $echo_messages.clear }
-
   describe '#check' do
     context 'repeat threshold' do
       it 'fires when the same line exceeds unique_line_threshold' do
@@ -119,7 +116,7 @@ RSpec.describe StatusMonitor::SpamDetector do
       it 'does not fire when count equals threshold (only exceeds)' do
         detector = described_class.new(make_settings(unique: 3))
         3.times { detector.check('hello') }
-        expect($echo_messages).to be_empty
+        expect(displayed_messages).to be_empty
       end
 
       it 'fires at threshold + 1' do
@@ -230,7 +227,7 @@ RSpec.describe StatusMonitor::SpamDetector do
     it 'with similarity 100%, never triggers similarity path' do
       detector = described_class.new(make_settings(unique: 100, frequency: 2, similarity: 100))
       20.times { |i| detector.check("similar line #{i}") }
-      expect($echo_messages.none? { |m| m.include?('freq_buffer') }).to be true
+      expect(displayed_messages.none? { |m| m.include?('freq_buffer') }).to be true
     end
   end
 
@@ -286,7 +283,6 @@ RSpec.describe StatusMonitor::MessageStore do
   let(:tmpdir) { Dir.mktmpdir('status-monitor-test') }
 
   before do
-    $echo_messages.clear
     @original_dir = Dir.pwd
     Dir.chdir(tmpdir)
   end
@@ -485,7 +481,7 @@ RSpec.describe StatusMonitor::MessageStore do
       store = nil
       expect { store = described_class.new('Testchar') }.not_to raise_error
       expect(store.count).to eq(0)
-      expect($echo_messages.any? { |m| m.include?('Warning') }).to be true
+      expect(displayed_messages.any? { |m| m.include?('Warning') }).to be true
     end
 
     it 'constructs the correct backup path (no doubled prefix)' do
@@ -505,12 +501,12 @@ RSpec.describe StatusMonitor::MessageStore do
       store = nil
       expect { store = described_class.new('Testchar') }.not_to raise_error
       expect(store.count).to eq(0)
-      expect($echo_messages.any? { |m| m.include?('Warning') }).to be true
+      expect(displayed_messages.any? { |m| m.include?('Warning') }).to be true
     end
 
     it 'does not re-migrate if .dat is absent' do
       store = described_class.new('Testchar')
-      expect($echo_messages.none? { |m| m.include?('Migrating') }).to be true
+      expect(displayed_messages.none? { |m| m.include?('Migrating') }).to be true
       expect(store.count).to eq(0)
     end
   end
@@ -544,104 +540,107 @@ end
 # CommandDetector -- deduplication and command extraction
 # ---------------------------------------------------------------------------
 RSpec.describe StatusMonitor::CommandDetector do
-  before { $fput_commands.clear }
+  # CommandDetector.check calls the harness fput on the module itself; capture
+  # those calls per-example instead of redefining the shared fput seam.
+  let(:fput_commands) { [] }
+  before { allow(described_class).to receive(:fput) { |cmd| fput_commands << cmd } }
 
   describe '.check' do
     it 'detects uppercase commands in a line' do
       described_class.check('you see JUMP here')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'does not auto-execute denylisted destructive commands' do
       described_class.check('you must QUIT and SELL and DROP now')
-      expect($fput_commands).to be_empty
+      expect(fput_commands).to be_empty
     end
 
     it 'does not execute a denylisted command even when obfuscated' do
       described_class.check('try Q_U_I_T now')
-      expect($fput_commands).not_to include('quit')
+      expect(fput_commands).not_to include('quit')
     end
 
     it 'still executes safe commands in a line that also contains a denylisted one' do
       described_class.check('you should JUMP but do not QUIT')
-      expect($fput_commands).to include('jump')
-      expect($fput_commands).not_to include('quit')
+      expect(fput_commands).to include('jump')
+      expect(fput_commands).not_to include('quit')
     end
 
     it 'detects obfuscated commands with separators' do
       described_class.check('try J_U_M_P now')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'deduplicates commands that match both scanners' do
       described_class.check('do J_U_M_P or JUMP')
-      jump_count = $fput_commands.count('jump')
+      jump_count = fput_commands.count('jump')
       expect(jump_count).to eq(1)
     end
 
     it 'detects multiple different commands' do
       described_class.check('JUMP and LOOK around')
-      expect($fput_commands).to include('jump', 'look')
+      expect(fput_commands).to include('jump', 'look')
     end
 
     it 'ignores commands not in VALID_COMMANDS' do
       described_class.check('XYZZY is not a command')
-      expect($fput_commands).to be_empty
+      expect(fput_commands).to be_empty
     end
 
     it 'ignores short uppercase sequences (< 3 chars)' do
       described_class.check('I AM here')
-      expect($fput_commands).not_to include('am')
+      expect(fput_commands).not_to include('am')
     end
 
     it 'handles a line with no commands' do
       described_class.check('just a normal line of text')
-      expect($fput_commands).to be_empty
+      expect(fput_commands).to be_empty
     end
 
     it 'handles empty string' do
       expect { described_class.check('') }.not_to raise_error
-      expect($fput_commands).to be_empty
+      expect(fput_commands).to be_empty
     end
 
     it 'detects tilde-separated obfuscation' do
       described_class.check('try L~O~O~K now')
-      expect($fput_commands).to include('look')
+      expect(fput_commands).to include('look')
     end
 
     it 'detects equals-separated obfuscation' do
       described_class.check('try L=O=O=K now')
-      expect($fput_commands).to include('look')
+      expect(fput_commands).to include('look')
     end
 
     it 'handles mixed separators in one token' do
       described_class.check('try J_U~M=P now')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'detects dot-separated obfuscation via first scanner' do
       described_class.check('try J.U.M.P now')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'detects hyphen-separated obfuscation' do
       described_class.check('try J-U-M-P now')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'detects a bare command with no surrounding text' do
       described_class.check('JUMP')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'detects uppercase runs embedded in lowercase words (character class scan)' do
       described_class.check('theJUMPwasfast')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'detects commands with multiple consecutive separators' do
       described_class.check('try J__U__M__P now')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
   end
 
@@ -650,25 +649,25 @@ RSpec.describe StatusMonitor::CommandDetector do
       cyrillic_em = 0x041C.chr(Encoding::UTF_8) # lookalike for Latin capital M
       line = "JU#{cyrillic_em}P here"
       described_class.check(line)
-      expect($fput_commands).not_to include('jump')
+      expect(fput_commands).not_to include('jump')
     end
 
     it 'detects commands despite zero-width characters inserted' do
       zero_width_space = 0x200B.chr(Encoding::UTF_8)
       line = "JU#{zero_width_space}MP here"
       described_class.check(line)
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'detects mixed-case commands via second scanner upcase' do
       described_class.check('try j_U_m_P now')
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
 
     it 'finds commands in very long lines' do
       padding = 'a' * 5000
       described_class.check("#{padding} JUMP #{padding}")
-      expect($fput_commands).to include('jump')
+      expect(fput_commands).to include('jump')
     end
   end
 end
@@ -677,9 +676,14 @@ end
 # AlertHandler -- alert responses
 # ---------------------------------------------------------------------------
 RSpec.describe StatusMonitor::AlertHandler do
+  # fire sends via the harness fput on the handler instance, and delegates
+  # command execution to CommandDetector (which sends on the module). Capture
+  # both per-example rather than redefining the shared fput seam. echo output
+  # (beeps, the alert line) lands in the harness displayed_messages.
+  let(:fput_commands) { [] }
   before do
-    $echo_messages.clear
-    $fput_commands.clear
+    allow_any_instance_of(described_class).to receive(:fput) { |_receiver, cmd| fput_commands << cmd }
+    allow(StatusMonitor::CommandDetector).to receive(:fput) { |cmd| fput_commands << cmd }
   end
 
   def make_alert_settings(respond: false, quit: false, slack: nil)
@@ -693,53 +697,62 @@ RSpec.describe StatusMonitor::AlertHandler do
   it 'calls echo three times for beeps' do
     handler = described_class.new(make_alert_settings)
     handler.fire('suspicious line', 'counts')
-    beeps = $echo_messages.count { |m| m == "\a" }
+    beeps = displayed_messages.count { |m| m == "\a" }
     expect(beeps).to eq(3)
   end
 
   it 'executes detected commands via CommandDetector' do
     handler = described_class.new(make_alert_settings)
     handler.fire('you see JUMP here', 'counts')
-    expect($fput_commands).to include('jump')
+    expect(fput_commands).to include('jump')
   end
 
   it 'sends a response when status_monitor_respond is true' do
     handler = described_class.new(make_alert_settings(respond: true))
     handler.fire('suspicious line', 'counts')
     responses = ["'Hmmm?", "'Yes", "'Ok?"]
-    expect($fput_commands.any? { |cmd| responses.include?(cmd) }).to be true
+    expect(fput_commands.any? { |cmd| responses.include?(cmd) }).to be true
   end
 
   it 'does not send a response when status_monitor_respond is false' do
     handler = described_class.new(make_alert_settings(respond: false))
     handler.fire('a plain line with no commands', 'counts')
     responses = ["'Hmmm?", "'Yes", "'Ok?"]
-    expect($fput_commands.none? { |cmd| responses.include?(cmd) }).to be true
+    expect(fput_commands.none? { |cmd| responses.include?(cmd) }).to be true
   end
 
   it 'sends exit when quit_on_status_warning is true' do
     handler = described_class.new(make_alert_settings(quit: true))
     handler.fire('suspicious line', 'counts')
-    expect($fput_commands).to include('exit')
+    expect(fput_commands).to include('exit')
   end
 
   it 'does not send exit when quit_on_status_warning is false' do
     handler = described_class.new(make_alert_settings(quit: false))
     handler.fire('a plain line', 'counts')
-    expect($fput_commands).not_to include('exit')
+    expect(fput_commands).not_to include('exit')
   end
 
   describe 'Slack delivery' do
     before do
       Lich::DragonRealms::SlackBot.instances.clear
-      $event_log.clear
+      Lich::DragonRealms::SlackBot.next_initialized = nil
     end
 
     it 'queues the auto-quit before the (possibly blocking) Slack send' do
+      # Record fput and Slack sends into one ordered log to assert their relative
+      # order. The instance fput spy from the outer before is replaced here so it
+      # feeds this log instead of fput_commands.
+      events = []
+      allow_any_instance_of(described_class).to receive(:fput) { |_receiver, cmd| events << [:fput, cmd] }
+      allow_any_instance_of(Lich::DragonRealms::SlackBot).to receive(:direct_message) do |_receiver, _user, message|
+        events << [:slack, message]
+        { 'ok' => true }
+      end
       handler = described_class.new(make_alert_settings(quit: true, slack: 'someuser'))
       handler.fire('a plain line', 'counts')
-      exit_at = $event_log.index([:fput, 'exit'])
-      slack_at = $event_log.index { |kind, _| kind == :slack }
+      exit_at = events.index([:fput, 'exit'])
+      slack_at = events.index { |kind, _| kind == :slack }
       expect(exit_at).not_to be_nil
       expect(slack_at).not_to be_nil
       expect(exit_at).to be < slack_at
@@ -938,29 +951,19 @@ RSpec.describe StatusMonitor::Monitor do
     )
   end
 
-  # Stub get_data for filter loading
   before do
-    $echo_messages.clear
     @original_dir = Dir.pwd
     Dir.chdir(tmpdir)
+    # Monitor#load_filter_strings calls the harness get_data('filters'), which
+    # returns $test_data[:filters] (reset before each example by reset_data).
+    # Default to an empty filter set; an example needing specific filters
+    # overrides it before constructing the Monitor.
+    $test_data.filters = OpenStruct.new('filter_strings' => [])
   end
 
   after do
     Dir.chdir(@original_dir)
     FileUtils.rm_rf(tmpdir)
-  end
-
-  # Monitor#load_filter_strings calls the top-level get_data. Define a default
-  # (empty filter_strings) around every example and always remove it afterward.
-  # An example that needs specific filters redefines get_data before it
-  # constructs the Monitor; the hook still removes it in the ensure.
-  around do |example|
-    Object.send(:define_method, :get_data) do |_type|
-      OpenStruct.new('filter_strings' => [])
-    end
-    example.run
-  ensure
-    Object.send(:remove_method, :get_data) if Object.method_defined?(:get_data)
   end
 
   it 'detector runs before unseen? gate (spam detection regression test)' do
@@ -991,9 +994,7 @@ RSpec.describe StatusMonitor::Monitor do
 
   it 'returns false for lines matching a filter pattern' do
     # Override the shared default with a non-empty filter for this example only.
-    Object.send(:define_method, :get_data) do |_type|
-      OpenStruct.new('filter_strings' => ['gold coins'])
-    end
+    $test_data.filters = OpenStruct.new('filter_strings' => ['gold coins'])
 
     monitor = described_class.new(settings)
     result = monitor.process(+'you see gold coins on the ground')
