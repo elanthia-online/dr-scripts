@@ -931,22 +931,22 @@ RSpec.describe StatusMonitor::Monitor do
     end
   end
 
-  describe 'hybrid whitelist' do
-    it 'silences a plain novel line after the first alert (auto-added to corpus)' do
+  describe 'alerted lines are never whitelisted' do
+    it 'keeps alerting on a plain novel line on every recurrence' do
       monitor = build_monitor
       expect(monitor.process(+'a brand new benign remark')).to be true
-      expect(monitor.process(+'a brand new benign remark')).to be false
+      expect(monitor.process(+'a brand new benign remark')).to be true
+      expect(store.in_corpus?('a brand new benign remark')).to be false
     end
 
-    it 'whitelists an own-name line after first sight (seen = safe)' do
-      # checkname is 'Testchar' in the harness. Own-name is no longer special for
-      # whitelisting: a seen own-name line goes quiet like any other.
+    it 'never whitelists an own-name line it alerted on (the Kaluto opener stays hot)' do
+      # checkname is 'Testchar' in the harness.
       monitor = build_monitor
-      expect(monitor.process(+'Testchar, prove that you are present')).to be true
-      expect(monitor.process(+'Testchar, prove that you are present')).to be false
+      expect(monitor.process(+'a crewman mutters that Testchar is wanted')).to be true
+      expect(monitor.process(+'a crewman mutters that Testchar is wanted')).to be true
     end
 
-    it 'keeps alerting on a line embedding a command (never auto-added)' do
+    it 'keeps alerting on a line embedding a command' do
       monitor = build_monitor
       expect(monitor.process(+'a voice says you should JUMP')).to be true
       expect(monitor.process(+'a voice says you should JUMP')).to be true
@@ -981,6 +981,13 @@ RSpec.describe StatusMonitor::Monitor do
       monitor = build_monitor
       expect(monitor.process(+'a novel line during grace')).to be false
       expect(store.in_corpus?(+'a novel line during grace')).to be true
+    end
+
+    it 'never silently whitelists a command line, even during grace' do
+      settings.status_monitor_grace_seconds = 300
+      monitor = build_monitor
+      expect(monitor.process(+'a voice says you should JUMP')).to be false # suppressed
+      expect(store.in_corpus?('a voice says you should JUMP')).to be false # but NOT recorded
     end
 
     it 'rate-limits alerts past the cap, still learning the excess quietly' do

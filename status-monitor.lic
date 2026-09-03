@@ -638,7 +638,6 @@ module StatusMonitor
     def initialize(settings, store = MessageStore.new)
       @store = store
       @filter = MessageFilter.new(load_filter_strings)
-      @detector = SpamDetector.new(settings)
       @alerter = AlertHandler.new(settings)
       @learn = settings.status_monitor_learn ? true : false
       @grace_seconds = settings.status_monitor_grace_seconds || GRACE_SECONDS
@@ -653,12 +652,17 @@ module StatusMonitor
     #
     # Detection is novelty-gated: a line already in the shared corpus is
     # known-safe and is neither analysed nor alerted on. A NOVEL line alerts
-    # (novel-alone), unless alerts are being suppressed (learn mode, the start-up
-    # grace period, or the rate-limit valve) -- in which case it is learned
-    # silently. The strong signal (repeated past threshold, or an embedded
-    # command) additionally runs the auto-action bundle. The hybrid whitelist
-    # records the line so it goes quiet, EXCEPT check-like ones (embed a command),
-    # which stay hot so a recurring command-check keeps alerting.
+    # (novel-alone).
+    #
+    # Whitelisting is deliberately one-directional: a line the tool ALERTED on is
+    # NEVER recorded, so it stays novel and every recurrence keeps alerting until
+    # an import (or a silent learn/grace window) retires it. Only lines learned
+    # SILENTLY -- during the start-up grace period, explicit learn mode, or the
+    # rate-limit valve -- are recorded, and even then a command-bearing line is
+    # never silently whitelisted so a command-check stays catchable.
+    #
+    # Auto-actions (type the command, canned response, auto-quit) fire only when
+    # the line embeds a command; mere novelty or repetition never triggers them.
     #
     # @param line [String] raw game stream line
     # @return [Boolean] true if a novel line actually alerted
@@ -672,18 +676,17 @@ module StatusMonitor
       return false if scrubbed.empty?
       return false if @store.in_corpus?(scrubbed) # known-safe -> silent
 
-      commands = CommandDetector.commands_in(scrubbed)
-      strong = !@detector.check(scrubbed).nil? || commands.any?
-      check_like = commands.any?
+      has_command = CommandDetector.commands_in(scrubbed).any?
 
-      alert = !suppress_alert?
-      if alert
-        @alerter.handle(scrubbed, strong: strong)
-        @spam_line = scrubbed
-        @alert_times << Time.now
+      if suppress_alert?
+        @store.record(scrubbed) unless has_command # learn silently, keep commands hot
+        return false
       end
-      @store.record(scrubbed) unless check_like
-      alert
+
+      @alerter.handle(scrubbed, strong: has_command)
+      @spam_line = scrubbed
+      @alert_times << Time.now
+      true
     end
 
     # Clears the current spam line after it has been consumed.
