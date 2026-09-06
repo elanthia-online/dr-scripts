@@ -5007,6 +5007,78 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
       expect(gs).to have_received(:prepare_summoned_weapon).with(false)
     end
   end
+
+  # -----------------------------------------------------------------
+  # #appraise -- targets live creatures by id (Creature migration)
+  #
+  # appraise now walks Lich::DragonRealms::Creature.targets (live +
+  # hostile) and issues `app #<id> <modifier>`, keying the "already
+  # appraised" memory (@no_app) on the creature id instead of the noun.
+  # Verify the id-based command, the id-keyed dedup, and the rank gate.
+  # -----------------------------------------------------------------
+  describe '#appraise' do
+    def build_appraiser(no_app: [])
+      trainer = TrainerProcess.allocate
+      trainer.instance_variable_set(:@no_app, no_app)
+      trainer
+    end
+
+    def appraise_state(retreating: false)
+      double('GameState', retreating?: retreating)
+    end
+
+    before(:each) do
+      allow(DRSkill).to receive(:getrank).with('Appraisal').and_return(100)
+    end
+
+    it 'issues `app #<id>` for the live creature, not `app <noun>`' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 444, noun: 'troll', name: 'a troll')])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      build_appraiser.send(:appraise, appraise_state, 'value')
+
+      expect(DRC).to have_received(:bput).with('app #444 value', any_args)
+      expect(DRC).not_to have_received(:bput).with('app troll value', any_args)
+    end
+
+    it 'records the id on a `Perhaps that` response and skips it next call' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 444, noun: 'troll', name: 'a troll')])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      trainer = build_appraiser
+      trainer.send(:appraise, appraise_state, 'value')
+      expect(trainer.instance_variable_get(:@no_app)).to eq([444])
+
+      # Only the one live target remains and it is already appraised -> no bput.
+      trainer.send(:appraise, appraise_state, 'value')
+      expect(DRC).to have_received(:bput).once
+    end
+
+    it 'appraises the next live target when the first id is already recorded' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([
+        OpenStruct.new(id: 444, noun: 'troll', name: 'a troll'),
+        OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre')
+      ])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      build_appraiser(no_app: [444]).send(:appraise, appraise_state, 'value')
+
+      expect(DRC).to have_received(:bput).with('app #555 value', any_args)
+    end
+
+    it 'does not appraise when Appraisal rank is below 76' do
+      allow(DRSkill).to receive(:getrank).with('Appraisal').and_return(75)
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 444, noun: 'troll', name: 'a troll')])
+      allow(DRC).to receive(:bput)
+
+      build_appraiser.send(:appraise, appraise_state, 'value')
+
+      expect(DRC).not_to have_received(:bput)
+    end
+  end
 end
 
 # ===================================================================

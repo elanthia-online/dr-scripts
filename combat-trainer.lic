@@ -4014,14 +4014,13 @@ class TrainerProcess
 
   def appraise(game_state, modifier)
     return if game_state.retreating?
-    return if game_state.npcs.empty?
 
-    target = (game_state.npcs - @no_app).first
+    target = Lich::DragonRealms::Creature.targets.find { |c| !@no_app.include?(c.id) }
     return unless target
     return if DRSkill.getrank('Appraisal') < 76
-    return if DRC.bput("app #{target} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what') != 'Perhaps that'
+    return if DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what') != 'Perhaps that'
 
-    @no_app << target
+    @no_app << target.id
   end
 
   def moon_mage_perc(game_state)
