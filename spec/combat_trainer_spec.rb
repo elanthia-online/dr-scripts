@@ -6257,3 +6257,119 @@ RSpec.describe LootProcess do
     end
   end
 end
+
+# ===================================================================
+# LootProcess -- dead-body targeting by creature id (non-necro path)
+#
+# `dissect` and last-rites `pray` used to interpolate the bare noun from
+# DRRoom.dead_npcs, which can bind to a LIVE same-noun mob that wandered
+# in between the kill and the dissect (dissect then fails on the living
+# creature). They now address the specific dead body by its stable
+# <crtrStatus> id, selected from Creature.in_room(:dead).
+# ===================================================================
+RSpec.describe LootProcess do
+  before(:each) do
+    ct_setup
+    allow(DRC).to receive(:message)
+  end
+
+  let(:corpse) { OpenStruct.new(id: 111, noun: 'rat', name: 'a giant rat') }
+
+  def dissect_game_state
+    state = double('GameState')
+    allow(state).to receive(:dissectable?).and_return(true)
+    allow(state).to receive(:construct)
+    allow(state).to receive(:undissectable)
+    state
+  end
+
+  def build_dissect_loot(**overrides)
+    lp = LootProcess.allocate
+    defaults = { dissect: true, skin: false, dissect_for_thanatology: false, dissect_cycle_skills: [] }
+    defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+    lp
+  end
+
+  describe '#dissected?' do
+    before(:each) { allow(DRSkill).to receive(:getxp).and_return(0) }
+
+    it 'addresses the corpse by id, never by noun' do
+      allow(DRC).to receive(:bput).and_return('You succeed in dissecting the corpse')
+      build_dissect_loot.send(:dissected?, corpse, dissect_game_state)
+      expect(DRC).to have_received(:bput).with('dissect #111', any_args)
+      expect(DRC).not_to have_received(:bput).with('dissect rat', any_args)
+    end
+
+    it 'falls back to a bare dissect for the nil-corpse retry' do
+      allow(DRC).to receive(:bput).and_return('You succeed in dissecting the corpse')
+      build_dissect_loot.send(:dissected?, nil, dissect_game_state)
+      expect(DRC).to have_received(:bput).with('dissect', any_args)
+    end
+
+    it 'retries with a bare dissect when the corpse "would probably object"' do
+      responses = ['would probably object', 'You succeed in dissecting the corpse']
+      allow(DRC).to receive(:bput) { responses.shift }
+      build_dissect_loot.send(:dissected?, corpse, dissect_game_state)
+      expect(DRC).to have_received(:bput).with('dissect #111', any_args)
+      expect(DRC).to have_received(:bput).with('dissect', any_args)
+    end
+
+    it 'marks a construct by noun when rituals do not work on it' do
+      allow(DRC).to receive(:bput).and_return('Rituals do not work upon constructs')
+      gs = dissect_game_state
+      expect(gs).to receive(:construct).with('rat')
+      expect(gs).to receive(:undissectable).with('rat')
+      build_dissect_loot.send(:dissected?, corpse, gs)
+    end
+
+    # name-less crtrStatus window: id present, noun not yet. We still dissect by
+    # id, and never pollute the species memory with a nil noun.
+    it 'does not construct-mark a nil-noun corpse' do
+      allow(DRC).to receive(:bput).and_return('Rituals do not work upon constructs')
+      nameless = OpenStruct.new(id: 55, noun: nil, name: nil)
+      gs = dissect_game_state
+      build_dissect_loot.send(:dissected?, nameless, gs)
+      expect(DRC).to have_received(:bput).with('dissect #55', any_args)
+      expect(gs).not_to have_received(:construct)
+      expect(gs).not_to have_received(:undissectable)
+    end
+  end
+
+  def build_dispose_loot(**overrides)
+    lp = LootProcess.allocate
+    defaults = {
+      loot_bodies: true, loot_timer: Time.now - 100, loot_delay: 0,
+      last_rites: true, last_rites_timer: Time.now - 700, custom_loot_type: ''
+    }
+    defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+    lp
+  end
+
+  describe '#dispose_body' do
+    it 'prays over the corpse by id for last rites' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You pray fervently')
+      gs = double('GameState', blessed_room: true)
+      allow(gs).to receive(:mob_died=)
+      build_dispose_loot.dispose_body(gs)
+      expect(DRC).to have_received(:bput).with('pray #111', any_args)
+    end
+
+    # DRRoom says a body is present, but no id is available yet (roster divergence
+    # / name-less window). We must NOT fall back to the noun -- that reintroduces
+    # the live/dead collision -- so we skip dead-body actions this tick.
+    it 'skips pray/dissect when no corpse id is available' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([])
+      allow(DRC).to receive(:bput).and_return('Roundtime')
+      gs = double('GameState', blessed_room: true, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      build_dispose_loot.dispose_body(gs)
+      expect(DRC).not_to have_received(:bput).with(/\Apray /, any_args)
+      expect(DRC).not_to have_received(:bput).with(/\Adissect/, any_args)
+    end
+  end
+end

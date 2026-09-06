@@ -1100,8 +1100,13 @@ class LootProcess
     waitrt?
     return if Flags['using-corpse']
 
-    if (Time.now - @last_rites_timer > 600) && @last_rites && game_state.blessed_room
-      DRC.bput("pray #{DRRoom.dead_npcs.first}", 'You beseech your god for mercy', 'You pray fervently', 'You continue praying for guidance', 'Quietly touching your lips with the tips of your fingers', 'murmur a brief prayer for')
+    # Target the specific dead body by its stable <crtrStatus> id, not the bare
+    # DRRoom.dead_npcs noun -- with a live same-noun mob in the room the noun can
+    # bind to the living creature. DRRoom.dead_npcs still gates presence above.
+    corpse = Lich::DragonRealms::Creature.in_room(:dead).first
+
+    if corpse && (Time.now - @last_rites_timer > 600) && @last_rites && game_state.blessed_room
+      DRC.bput("pray ##{corpse.id}", 'You beseech your god for mercy', 'You pray fervently', 'You continue praying for guidance', 'Quietly touching your lips with the tips of your fingers', 'murmur a brief prayer for')
       waitrt?
       fput "recite Meraud, power the holy fires that unleash my righteous vengeance;Chadatru, guide my sword to swing in justice;Everild, give me the power to conquer my enemies;Truffenyi, let me not lose sight of compassion and mercy;Else, I will become like those I despise;Urrem'tier, receive into your fetid grasp these wicked souls;May the Tamsine's realms never know their evil ways again;May all the Immortals guide your faithful soldier #{checkname}."
       waitrt?
@@ -1111,8 +1116,8 @@ class LootProcess
 
     game_state.sheath_whirlwind_offhand
 
-    echo("DRRoom.dead_npcs.first is: #{DRRoom.dead_npcs.first}") if $debug_mode_ct
-    skin_or_dissect(DRRoom.dead_npcs.first, game_state) if check_rituals?(game_state)
+    echo("corpse: #{corpse&.name || corpse&.noun} (##{corpse&.id})") if $debug_mode_ct
+    skin_or_dissect(corpse, game_state) if corpse && check_rituals?(game_state)
 
     game_state.wield_whirlwind_offhand
 
@@ -1152,7 +1157,8 @@ class LootProcess
     end
   end
 
-  def skin_or_dissect(mob_noun, game_state)
+  def skin_or_dissect(corpse, game_state)
+    mob_noun = corpse&.noun
     return unless (game_state.dissectable?(mob_noun) || game_state.skinnable?(mob_noun))
     return unless (@dissect || @skin)
 
@@ -1171,7 +1177,7 @@ class LootProcess
       end
 
       if skill_to_train == 'First Aid' || skill_to_train == 'Thanatology'
-        unless dissected?(mob_noun, game_state)
+        unless dissected?(corpse, game_state)
           arrange_mob(mob_noun, game_state) unless already_arranged
           check_skinning(mob_noun, game_state) if @skin
         end
@@ -1187,7 +1193,8 @@ class LootProcess
     end
   end
 
-  def dissected?(mob_noun, game_state)
+  def dissected?(corpse, game_state)
+    mob_noun = corpse&.noun
     return unless game_state.dissectable?(mob_noun)
 
     if @dissect_for_thanatology
@@ -1196,7 +1203,10 @@ class LootProcess
       return false if DRSkill.getxp('First Aid') == 34
     end
 
-    case DRC.bput("dissect #{mob_noun}",
+    # Address the specific corpse by id; a nil corpse (the retry below) falls back
+    # to a bare `dissect` on the game's current corpse, as before.
+    dissect_command = corpse ? "dissect ##{corpse.id}" : 'dissect'
+    case DRC.bput(dissect_command,
                   /You'll gain no insights from this attempt/,
                   /You succeed in dissecting the corpse/,
                   'What exactly are you trying to dissect',
@@ -1224,17 +1234,17 @@ class LootProcess
     when 'This ritual may only be performed on a corpse', 'A failed or completed ritual has rendered', 'You realize after a few seconds', 'prevents a meaningful dissection'
       return false
     when 'Rituals do not work upon constructs'
-      game_state.construct(mob_noun)
-      game_state.undissectable(mob_noun)
+      game_state.construct(mob_noun) if mob_noun
+      game_state.undissectable(mob_noun) if mob_noun
       return false
     when 'While likely a fascinating study', "That'd be a waste of time.", 'You do not yet possess the knowledge'
-      game_state.undissectable(mob_noun)
+      game_state.undissectable(mob_noun) if mob_noun
       @dissect_cycle_skills.delete("First Aid")
       @dissect_cycle_skills.delete("Thanatology") if @dissect_for_thanatology
       @dissect = false
       return false
     when 'would probably object', "should be left alone."
-      return dissected?('', game_state)
+      return dissected?(nil, game_state)
     end
     return false
   end
