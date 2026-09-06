@@ -3385,7 +3385,7 @@ class AbilityProcess
     Flags.reset('ct-battle-cry-not-facing')
 
     battle_cries = @battle_cries
-                   .select { |battle_cry| battle_cry['target_enemy'] ? game_state.npcs.include?(battle_cry['target_enemy']) : true }
+                   .select { |battle_cry| battle_cry['target_enemy'] ? Lich::DragonRealms::Creature.targets.any? { |c| c.noun == battle_cry['target_enemy'] } : true }
                    .select { |battle_cry| battle_cry['min_threshold'] ? game_state.npcs.length >= battle_cry['min_threshold'] : true }
                    .select { |battle_cry| battle_cry['max_threshold'] ? game_state.npcs.length <= battle_cry['max_threshold'] : true }
 
@@ -3400,7 +3400,10 @@ class AbilityProcess
       echo "Using roar helm: #{@roar_helm_noun}" if @roar_helm_noun && $debug_mode_ct
 
       command = battle_cry_data['command']
-      command = (command + " at " + battle_cry_data['target_enemy']) if battle_cry_data['target_enemy']
+      if battle_cry_data['target_enemy']
+        bc_target = Lich::DragonRealms::Creature.targets.find { |c| c.noun == battle_cry_data['target_enemy'] }
+        command += " at " + (bc_target ? "##{bc_target.id}" : battle_cry_data['target_enemy'])
+      end
 
       # Use roar helm if specified
       fput("scream #{@roar_helm_noun}") if @roar_helm_noun
