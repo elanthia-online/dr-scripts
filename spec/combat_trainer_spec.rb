@@ -4847,6 +4847,47 @@ RSpec.describe TrainerProcess do
 end
 
 # ===================================================================
+# TrainerProcess -- Recall ability (DRRoom->Creature migration)
+#
+# The Recall ability now targets a LIVE hostile creature by id
+# (recall #<id>) via Lich::DragonRealms::Creature.targets, instead of
+# an arbitrary DRRoom noun from game_state.npcs. Driven through
+# #execute with select_ability stubbed to 'Recall', the same way the
+# dispatch fires at runtime.
+# ===================================================================
+RSpec.describe 'TrainerProcess#execute Recall' do
+  before(:each) { ct_setup }
+
+  def build_trainer
+    trainer = TrainerProcess.allocate
+    allow(trainer).to receive(:waitrt?)
+    allow(trainer).to receive(:select_ability).and_return('Recall')
+    trainer
+  end
+
+  it 'recalls the live hostile target by id, not by DRRoom noun' do
+    allow(Lich::DragonRealms::Creature).to receive(:targets)
+      .and_return([OpenStruct.new(id: 333, noun: 'goblin', name: 'a goblin')])
+    allow(DRC).to receive(:bput)
+
+    build_trainer.execute(double('GameState', danger: false))
+
+    expect(DRC).to have_received(:bput)
+      .with('recall #333', 'Roundtime', 'You are far too occupied', 'You search your mind')
+    expect(DRC).not_to have_received(:bput).with('recall goblin', any_args)
+  end
+
+  it 'issues no recall when there are no live targets' do
+    allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+    allow(DRC).to receive(:bput)
+
+    build_trainer.execute(double('GameState', danger: false))
+
+    expect(DRC).not_to have_received(:bput)
+  end
+end
+
+# ===================================================================
 # Summoned-weapon-aware store/restore (Issue 1 regression)
 #
 # A moon mage (or warrior mage) trains with a SUMMONED weapon whose
