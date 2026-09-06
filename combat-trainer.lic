@@ -2562,7 +2562,7 @@ class SpellProcess
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
     ready_spells = @offensive_spells.select do |spell|
       next false if spell_disabled?(spell['abbrev'])
-      next false if spell['target_enemy'] && !game_state.npcs.include?(spell['target_enemy'])
+      next false if spell['target_enemy'] && Lich::DragonRealms::Creature.targets.none? { |c| c.noun == spell['target_enemy'] }
       next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
       next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
       next false if spell['expire'] && !Flags["ct-#{spell['abbrev']}"]
@@ -2658,7 +2658,8 @@ class SpellProcess
     echo("prepare spell: #{data}") if $debug_mode_ct
     if data['target_enemy']
       echo("  Target found: #{data['target_enemy']}") if $debug_mode_ct
-      fput("face #{data['target_enemy']}")
+      se_target = Lich::DragonRealms::Creature.targets.find { |c| c.noun == data['target_enemy'] }
+      fput(se_target ? "face ##{se_target.id}" : "face #{data['target_enemy']}")
     end
 
     command = 'prep'
