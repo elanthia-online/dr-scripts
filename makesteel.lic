@@ -18,6 +18,9 @@ class MakeSteel
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
     @stock_room = get_data('crafting')['blacksmithing'][@hometown]['stock-room']
+    @private_forge = get_data('crafting')['blacksmithing'][@hometown]['private_forge']
+    @use_private_forge = @settings.use_private_forge || false
+    validate_private_forge
 
     DRCM.ensure_copper_on_hand(2000 * total_count, @settings, @hometown)
 
@@ -28,7 +31,7 @@ class MakeSteel
 
   def refine
     DRCT.order_item(get_data('crafting')['blacksmithing'][@hometown]['finisher-room'], 9) unless DRCI.exists?('flux')
-    DRCC.find_empty_crucible(@hometown)
+    find_crucible
     DRCI.get_item('steel ingot')
     DRC.bput('put my steel ingot in crucible', /You put your.*in the.*crucible\./)
     DRC.wait_for_script_to_complete('smelt', ['refine'])
@@ -43,7 +46,7 @@ class MakeSteel
       order_stow(2) if type == 'h'
     end
 
-    DRCC.find_empty_crucible(@hometown)
+    find_crucible
 
     multiplier = case type
                  when 'l'
@@ -79,6 +82,28 @@ class MakeSteel
   def order_stow(num)
     DRCT.order_item(@stock_room, num)
     DRCI.stow_item?('nugget')
+  end
+
+  # Ensure the configured hometown actually has a private forge when the
+  # use_private_forge setting is enabled; otherwise there is nowhere to walk to.
+  def validate_private_forge
+    return unless @use_private_forge
+    return if @private_forge
+
+    blacksmithing_data = get_data('crafting')['blacksmithing']
+    towns_with_forges = blacksmithing_data.select { |_town, data| data['private_forge'] }.keys
+    Lich::Messaging.msg('bold', "makesteel: use_private_forge is enabled, but '#{@hometown}' has no private forge.")
+    Lich::Messaging.msg('bold', "makesteel: Towns with private forges: #{towns_with_forges.join(', ')}")
+    Lich::Messaging.msg('bold', 'makesteel: Either set use_private_forge: false, or change hometown/force_crafting_town.')
+    exit
+  end
+
+  # Locate a crucible to work in. When use_private_forge is set we first walk to
+  # the town's private forge so find_empty_crucible's in-room check keeps us
+  # there instead of falling back to the public crucible rooms.
+  def find_crucible
+    DRCT.walk_to(@private_forge) if @use_private_forge
+    DRCC.find_empty_crucible(@hometown)
   end
 end
 
