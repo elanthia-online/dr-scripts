@@ -869,6 +869,58 @@ RSpec.describe AbilityProcess do
       expect(gs).not_to have_received(:pounce)
     end
   end
+
+  # -----------------------------------------------------------------
+  # #check_battle_cries -- DRRoom->Creature target migration.
+  # A target_enemy battle cry now resolves its NOUN to a live creature
+  # id (#<id>) at command time, falling back to the noun when no live
+  # match exists. The readiness gate likewise uses live creatures.
+  # -----------------------------------------------------------------
+  describe '#check_battle_cries live-creature targeting' do
+    def build_cry_ability
+      ap = build_ability(
+        battle_cries: [{ 'name' => 'Roar', 'command' => 'roar', 'target_enemy' => 'orc' }],
+        battle_cry_cycle: ['Roar']
+      )
+      allow(ap).to receive(:waitrt?)
+      allow(ap).to receive(:fput)
+      ap
+    end
+
+    it 'targets a live orc by creature id (at #222), not the noun' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 222, noun: 'orc', name: 'an orc')])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).to have_received(:fput).with('roar at #222')
+    end
+
+    # Fallback: the gate saw a live orc, but by command time the creature
+    # is gone (e.g. died, or the name-less window). find returns nil, so
+    # the command falls back to the configured noun.
+    it 'falls back to the noun (at orc) when no live creature matches' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 222, noun: 'orc', name: 'an orc')], [])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).to have_received(:fput).with('roar at orc')
+    end
+
+    it 'gate keeps a target_enemy battle cry when a live match exists' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 222, noun: 'orc', name: 'an orc')])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).to have_received(:fput).with('roar at #222')
+    end
+
+    it 'gate drops a target_enemy battle cry when no live creature matches' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).not_to have_received(:fput)
+    end
+  end
 end
 
 # ===================================================================
