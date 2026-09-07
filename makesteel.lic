@@ -16,10 +16,10 @@ class MakeSteel
     total_count = args.count.to_i
     type = args.type || 'h'
     @settings = get_settings
-    @hometown = @settings.force_crafting_town || @settings.hometown
+    @hometown = crafting_hometown(@settings)
     @stock_room = get_data('crafting')['blacksmithing'][@hometown]['stock-room']
-    @private_forge = get_data('crafting')['blacksmithing'][@hometown]['private_forge']
-    @use_private_forge = @settings.use_private_forge || false
+    @private_forge = private_forge_room(@hometown)
+    @use_private_forge = use_private_forge?(@settings)
     validate_private_forge
 
     DRCM.ensure_copper_on_hand(2000 * total_count, @settings, @hometown)
@@ -90,20 +90,64 @@ class MakeSteel
     return unless @use_private_forge
     return if @private_forge
 
-    blacksmithing_data = get_data('crafting')['blacksmithing']
-    towns_with_forges = blacksmithing_data.select { |_town, data| data['private_forge'] }.keys
     Lich::Messaging.msg('bold', "makesteel: use_private_forge is enabled, but '#{@hometown}' has no private forge.")
-    Lich::Messaging.msg('bold', "makesteel: Towns with private forges: #{towns_with_forges.join(', ')}")
+    Lich::Messaging.msg('bold', "makesteel: Towns with private forges: #{towns_with_private_forge.join(', ')}")
     Lich::Messaging.msg('bold', 'makesteel: Either set use_private_forge: false, or change hometown/force_crafting_town.')
     exit
   end
 
-  # Locate a crucible to work in. When use_private_forge is set we first walk to
+  # Locate a crucible to work in. When use_private_forge is set we first travel to
   # the town's private forge so find_empty_crucible's in-room check keeps us
   # there instead of falling back to the public crucible rooms.
   def find_crucible
-    DRCT.walk_to(@private_forge) if @use_private_forge
+    go_to_private_forge(@hometown, @settings) if @use_private_forge
     DRCC.find_empty_crucible(@hometown)
+  end
+
+  # --- Private-forge helpers (normalized across smith/forge/makesteel). --------
+  # Prefer the shared DRCC helpers (lich-5 #1560); fall back to a local copy so
+  # the script keeps working on an older lich-5. The fallbacks can be deleted
+  # once DRCC ships these methods everywhere.
+
+  def crafting_hometown(settings)
+    return DRCC.crafting_hometown(settings) if DRCC.respond_to?(:crafting_hometown)
+
+    settings.force_crafting_town || settings.hometown
+  end
+
+  def use_private_forge?(settings)
+    return DRCC.use_private_forge?(settings) if DRCC.respond_to?(:use_private_forge?)
+
+    settings.use_private_forge || settings.forge_use_private_forge || false
+  end
+
+  def private_forge_cost(settings)
+    return DRCC.private_forge_cost(settings) if DRCC.respond_to?(:private_forge_cost)
+
+    settings.forge_private_forge_cost || 50_000
+  end
+
+  def private_forge_room(hometown)
+    return DRCC.private_forge_room(hometown) if DRCC.respond_to?(:private_forge_room)
+
+    get_data('crafting')['blacksmithing'][hometown]['private_forge']
+  end
+
+  def towns_with_private_forge
+    return DRCC.towns_with_private_forge if DRCC.respond_to?(:towns_with_private_forge)
+
+    get_data('crafting')['blacksmithing'].select { |_town, data| data['private_forge'] }.keys
+  end
+
+  def go_to_private_forge(hometown, settings)
+    return DRCC.go_to_private_forge(hometown, settings) if DRCC.respond_to?(:go_to_private_forge)
+
+    room = private_forge_room(hometown)
+    return false unless room
+    return false unless DRCM.ensure_copper_on_hand(private_forge_cost(settings), settings, hometown)
+
+    DRCT.walk_to(room)
+    Room.current.id == room
   end
 end
 

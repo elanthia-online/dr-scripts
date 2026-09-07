@@ -26,7 +26,7 @@ class Smith
     args = parse_args(arg_definitions)
 
     @settings = get_settings
-    @hometown = @settings.force_crafting_town || @settings.hometown
+    @hometown = crafting_hometown(@settings)
     @bag = @settings.crafting_container
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.forging_belt
@@ -37,21 +37,18 @@ class Smith
     recipes = get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /blacksmithing|weaponsmithing|armorsmithing/i }
     recipe = DRCC.recipe_lookup(recipes, args.item_name)
     # Private forge setting - defaults to false
-    blacksmithing_data = get_data('crafting')['blacksmithing']
-    @private_forge = blacksmithing_data[@hometown]['private_forge']
-    @use_private_forge = @settings.use_private_forge || false
+    @private_forge = private_forge_room(@hometown)
+    @use_private_forge = use_private_forge?(@settings)
 
     if @use_private_forge && !@private_forge
-      towns_with_forges = blacksmithing_data.select { |_town, data| data['private_forge'] }.keys
       Lich::Messaging.msg('bold', "smith: use_private_forge is enabled, but '#{@hometown}' has no private forge.")
-      Lich::Messaging.msg('bold', "smith: Towns with private forges: #{towns_with_forges.join(', ')}")
+      Lich::Messaging.msg('bold', "smith: Towns with private forges: #{towns_with_private_forge.join(', ')}")
       Lich::Messaging.msg('bold', "smith: Either set use_private_forge: false, or change hometown/force_crafting_town.")
       exit
     end
     return unless recipe
 
     DRCM.ensure_copper_on_hand(3000, @settings, @hometown) unless args.here
-    DRCM.ensure_copper_on_hand(50_000, @settings, @hometown) if @use_private_forge
 
     parts = recipe['part'] || []
     parts << "leather strip" if args.reinforce # adds part to the list for reinforce
@@ -69,7 +66,7 @@ class Smith
     buy_parts(parts) unless stay
     buy_ingot(discipline) if buy
     if @use_private_forge && !stay
-      DRCT.walk_to(@private_forge)
+      go_to_private_forge(@hometown, @settings)
       check_and_renew_forge_rental
     elsif @use_private_forge && stay
       Lich::Messaging.msg('plain', "smith: Using 'here' -- skipping private forge walk and rental check.")
@@ -190,6 +187,52 @@ class Smith
     rescue StandardError => e
       Lich::Messaging.msg('bold', "smith: Error parsing expiration time '#{expiration_str}': #{e.message}")
     end
+  end
+
+  # --- Private-forge helpers (normalized across smith/forge/makesteel). --------
+  # Prefer the shared DRCC helpers (lich-5 #1560); fall back to a local copy so
+  # the script keeps working on an older lich-5. The fallbacks can be deleted
+  # once DRCC ships these methods everywhere.
+
+  def crafting_hometown(settings)
+    return DRCC.crafting_hometown(settings) if DRCC.respond_to?(:crafting_hometown)
+
+    settings.force_crafting_town || settings.hometown
+  end
+
+  def use_private_forge?(settings)
+    return DRCC.use_private_forge?(settings) if DRCC.respond_to?(:use_private_forge?)
+
+    settings.use_private_forge || settings.forge_use_private_forge || false
+  end
+
+  def private_forge_cost(settings)
+    return DRCC.private_forge_cost(settings) if DRCC.respond_to?(:private_forge_cost)
+
+    settings.forge_private_forge_cost || 50_000
+  end
+
+  def private_forge_room(hometown)
+    return DRCC.private_forge_room(hometown) if DRCC.respond_to?(:private_forge_room)
+
+    get_data('crafting')['blacksmithing'][hometown]['private_forge']
+  end
+
+  def towns_with_private_forge
+    return DRCC.towns_with_private_forge if DRCC.respond_to?(:towns_with_private_forge)
+
+    get_data('crafting')['blacksmithing'].select { |_town, data| data['private_forge'] }.keys
+  end
+
+  def go_to_private_forge(hometown, settings)
+    return DRCC.go_to_private_forge(hometown, settings) if DRCC.respond_to?(:go_to_private_forge)
+
+    room = private_forge_room(hometown)
+    return false unless room
+    return false unless DRCM.ensure_copper_on_hand(private_forge_cost(settings), settings, hometown)
+
+    DRCT.walk_to(room)
+    Room.current.id == room
   end
 end
 
