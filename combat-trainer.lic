@@ -3438,6 +3438,9 @@ class ManipulateProcess
     @manip_to_train = settings.manipulate_only_to_train
     echo("  @manip_to_train: #{@manip_to_train}") if $debug_mode_ct
 
+    @ignored_npcs = settings.ignored_npcs || []
+    echo("  @ignored_npcs: #{@ignored_npcs}") if $debug_mode_ct
+
     @last_manip = Time.now - 200
   end
 
@@ -3445,48 +3448,49 @@ class ManipulateProcess
     waitrt?
     return if game_state.danger || @threshold.nil? || game_state.construct_mode?
 
-    @filtered_npcs = game_state.npcs
+    @targets = manipulable_targets
     manipulate(game_state) if should_manipulate?
   end
 
   private
 
+  # Live, hostile creatures we may manipulate this tick, keyed by stable
+  # <crtrStatus> id, minus the ignore list. Constructs are still counted here
+  # (matching the pre-migration threshold, which read the hostility-agnostic
+  # game_state.npcs) but skipped in #manipulate below.
+  def manipulable_targets
+    Lich::DragonRealms::Creature.targets.reject do |creature|
+      creature.noun && @ignored_npcs.include?(creature.noun)
+    end
+  end
+
   def should_manipulate?
     return false if @manip_to_train && DRSkill.getxp('Empathy') > 30
 
-    @filtered_npcs.length >= @threshold && Time.now - @last_manip > 120
+    @targets.length >= @threshold && Time.now - @last_manip > 120
   end
 
   def manipulate(game_state)
     DRC.bput('manipulate stop all', /^You relax your will/, /^But you aren't manipulating anything/)
 
     manipulate_count = 0
-    npc_occurrences = Hash.new(0)
 
-    @filtered_npcs.each do |npc|
-      next if game_state.construct?(npc)
+    @targets.each do |creature|
+      next if creature.noun && game_state.construct?(creature.noun)
       break if manipulate_count >= @threshold
 
-      # Lich already disambiguates a second/third/etc. duplicate NPC by prefixing
-      # the noun itself
-      already_ordinal = $ORDINALS.any? { |ord| npc.start_with?("#{ord} ") }
-      target = if already_ordinal
-                 npc
-               else
-                 index = npc_occurrences[npc]
-                 "#{$ORDINALS[index]} #{npc}"
-               end
-
-      case DRC.bput("manipulate friendship #{target}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what', 'deep sense of loss')
+      # Target the specific creature by its stable <crtrStatus> id, so duplicate
+      # same-noun mobs no longer need ordinal disambiguation (a construct check
+      # by noun still applies; the noun may be nil during the name-less window).
+      case DRC.bput("manipulate friendship ##{creature.id}", 'You\'re already manipulating', 'beyond your ken', 'You attempt to empathically manipulate', 'You strain', 'does not seem to have a life essence', 'Manipulate what', 'deep sense of loss')
       when 'does not seem to have a life essence' then
-        game_state.construct(npc)
+        game_state.construct(creature.noun) if creature.noun
       when 'deep sense of loss'
         DRC.message("***WARNING*** Too shocked to manipulate -- disabling manipulation for this hunt")
         @threshold = nil
         break
       else
         manipulate_count += 1
-        npc_occurrences[npc] += 1
       end
     end
 

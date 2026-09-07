@@ -1389,17 +1389,20 @@ module Harness
       # spec only needs to seed the room roster, so any object answering the
       # attributes the script under test reads (an OpenStruct is plenty) works.
       #
-      # in_room ignores its status filters (:dead, :undead, ...) and returns
-      # whatever was seeded -- seed the roster you want the filtered call to
-      # produce. The filters are still recorded in _in_room_filters so a spec
-      # can assert the script asked for the right ones.
+      # in_room/targets ignore their status filters (:dead, :not_dead, :hostile,
+      # ...) and return whatever was seeded -- seed the roster you want the
+      # filtered call to produce. The filters are still recorded (in
+      # _in_room_filters / _targets_filters) so a spec can assert the script
+      # asked for the right ones. [] resolves a seeded creature by its id.
       module Creature
         @@_room = []
         @@_in_room_filters = []
+        @@_targets_filters = []
 
         def self._reset
           @@_room = []
           @@_in_room_filters = []
+          @@_targets_filters = []
         end
 
         # Seed the roster with an array of creature-like objects.
@@ -1411,9 +1414,22 @@ module Harness
           @@_in_room_filters
         end
 
+        def self._targets_filters
+          @@_targets_filters
+        end
+
         def self.in_room(*filters)
           @@_in_room_filters << filters
           @@_room
+        end
+
+        def self.targets(*filters)
+          @@_targets_filters << filters
+          @@_room
+        end
+
+        def self.[](id)
+          @@_room.find { |creature| creature.id == id }
         end
       end
     end

@@ -545,17 +545,27 @@ end
 RSpec.describe ManipulateProcess do
   before(:each) { ct_setup }
 
-  def build_manipulate(threshold: 2, manip_to_train: false, last_manip: Time.now - 200)
+  def build_manipulate(threshold: 2, manip_to_train: false, last_manip: Time.now - 200, ignored_npcs: [])
     mp = ManipulateProcess.allocate
     mp.instance_variable_set(:@threshold, threshold)
     mp.instance_variable_set(:@manip_to_train, manip_to_train)
     mp.instance_variable_set(:@last_manip, last_manip)
+    mp.instance_variable_set(:@ignored_npcs, ignored_npcs)
     mp
   end
 
   def gs_double(**attrs)
-    defaults = { danger: false, construct_mode?: false, npcs: %w[rat kobold] }
+    defaults = { danger: false, construct_mode?: false }
     double('GameState', defaults.merge(attrs))
+  end
+
+  # Live, hostile creatures are now sourced from Creature.targets, keyed by id.
+  def seed_targets(*creatures)
+    Lich::DragonRealms::Creature._set_room(creatures)
+  end
+
+  def creature(id:, noun: 'rat', name: 'a giant rat')
+    OpenStruct.new(id: id, noun: noun, name: name)
   end
 
   describe '#execute' do
@@ -582,17 +592,32 @@ RSpec.describe ManipulateProcess do
 
     it 'skips when empathy XP > 30 and manip_to_train set' do
       allow(DRSkill).to receive(:getxp).with('Empathy').and_return(31)
+      seed_targets(creature(id: 1))
       mp = build_manipulate(manip_to_train: true)
       mp.execute(gs_double)
       expect(mp.instance_variable_get(:@threshold)).not_to be_nil
     end
 
-    it 'manipulates when threshold met and cooldown elapsed' do
+    it 'manipulates live targets by id when threshold met and cooldown elapsed' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
-      gs = gs_double(npcs: %w[rat kobold])
+      seed_targets(creature(id: 1, noun: 'rat'), creature(id: 2, noun: 'kobold', name: 'a kobold'))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       build_manipulate(threshold: 2).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #2', any_args)
+    end
+
+    it 'excludes ignored npcs from the manipulate set' do
+      allow(DRSkill).to receive(:getxp).and_return(10)
+      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+      seed_targets(creature(id: 1, noun: 'rat'), creature(id: 2, noun: 'kobold', name: 'a kobold'))
+      gs = gs_double
+      allow(gs).to receive(:construct?).and_return(false)
+      build_manipulate(threshold: 1, ignored_npcs: ['kobold']).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).not_to have_received(:bput).with('manipulate friendship #2', any_args)
     end
 
     # BUG-FINDING: shock disables manipulation permanently for this hunt
@@ -600,38 +625,42 @@ RSpec.describe ManipulateProcess do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('deep sense of loss')
       allow(DRC).to receive(:message)
-      gs = gs_double(npcs: ['rat'])
+      seed_targets(creature(id: 1))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       mp = build_manipulate(threshold: 1)
       mp.execute(gs)
       expect(mp.instance_variable_get(:@threshold)).to be_nil
     end
 
-    # BUG-FINDING: verify construct marking propagates to game_state
+    # BUG-FINDING: verify construct marking propagates to game_state, keyed by noun
     it 'marks NPC as construct and that state persists' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('does not seem to have a life essence')
-      gs = gs_double(npcs: ['golem'])
+      seed_targets(creature(id: 1, noun: 'golem', name: 'a golem'))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       expect(gs).to receive(:construct).with('golem')
       build_manipulate(threshold: 1).execute(gs)
     end
 
-    # BUG-FINDING: threshold 0 with empty npcs still enters manipulate
+    # BUG-FINDING: threshold 0 with empty roster still enters manipulate
     # (0 >= 0 is true), verifying the loop body is a no-op
-    it 'threshold 0 with empty npcs enters manipulate but does nothing offensive' do
+    it 'threshold 0 with empty roster enters manipulate but does nothing offensive' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return("But you aren't manipulating anything")
+      seed_targets
       mp = build_manipulate(threshold: 0)
-      mp.execute(gs_double(npcs: []))
+      mp.execute(gs_double)
       expect(mp.instance_variable_get(:@last_manip)).to be_within(2).of(Time.now)
     end
 
     # BUG-FINDING: cooldown boundary -- 119 seconds should NOT trigger (needs > 120)
     it 'does not manipulate at 119s cooldown' do
       allow(DRSkill).to receive(:getxp).and_return(10)
+      seed_targets(creature(id: 1))
       mp = build_manipulate(threshold: 1, last_manip: Time.now - 119)
-      gs = gs_double(npcs: ['rat'])
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       mp.execute(gs)
       expect(mp.instance_variable_get(:@last_manip)).to be < Time.now - 100
@@ -641,7 +670,8 @@ RSpec.describe ManipulateProcess do
     it 'manipulates at 121s cooldown' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
-      gs = gs_double(npcs: ['rat'])
+      seed_targets(creature(id: 1))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       mp = build_manipulate(threshold: 1, last_manip: Time.now - 121)
       mp.execute(gs)
@@ -1261,8 +1291,10 @@ RSpec.describe 'Multi-tick simulation' do
     mp.instance_variable_set(:@threshold, 1)
     mp.instance_variable_set(:@manip_to_train, false)
     mp.instance_variable_set(:@last_manip, Time.now - 200)
+    mp.instance_variable_set(:@ignored_npcs, [])
+    Lich::DragonRealms::Creature._set_room([OpenStruct.new(id: 1, noun: 'rat', name: 'a giant rat')])
 
-    gs = double('GameState', danger: false, construct_mode?: false, npcs: ['rat'])
+    gs = double('GameState', danger: false, construct_mode?: false)
     allow(gs).to receive(:construct?).and_return(false)
 
     manip_count = 0
@@ -1386,8 +1418,13 @@ RSpec.describe 'Nil and type-confused settings' do
     mp.instance_variable_set(:@threshold, "2".to_i)
     mp.instance_variable_set(:@manip_to_train, false)
     mp.instance_variable_set(:@last_manip, Time.now - 200)
+    mp.instance_variable_set(:@ignored_npcs, [])
+    Lich::DragonRealms::Creature._set_room([
+                                             OpenStruct.new(id: 1, noun: 'rat', name: 'a giant rat'),
+                                             OpenStruct.new(id: 2, noun: 'kobold', name: 'a kobold')
+                                           ])
 
-    gs = double('GameState', danger: false, construct_mode?: false, npcs: %w[rat kobold])
+    gs = double('GameState', danger: false, construct_mode?: false)
     allow(gs).to receive(:construct?).and_return(false)
 
     expect { mp.execute(gs) }.not_to raise_error
@@ -1594,7 +1631,11 @@ RSpec.describe SetupProcess do
 end
 
 # ===========================================================================
-# ManipulateProcess#manipulate -- ordinal targeting for duplicate NPCs
+# ManipulateProcess#manipulate -- id-based targeting (no ordinals)
+#
+# Duplicate same-noun mobs are told apart by their stable <crtrStatus> id,
+# so the old $ORDINALS "second kobold" disambiguation is gone: every
+# manipulate addresses '#<id>'.
 # ===========================================================================
 RSpec.describe ManipulateProcess do
   def build_manipulate_process(**overrides)
@@ -1603,7 +1644,8 @@ RSpec.describe ManipulateProcess do
       threshold: 5,
       manip_to_train: false,
       last_manip: Time.now - 200,
-      filtered_npcs: []
+      ignored_npcs: [],
+      targets: []
     }
     defaults.merge(overrides).each do |k, v|
       instance.instance_variable_set(:"@#{k}", v)
@@ -1612,15 +1654,14 @@ RSpec.describe ManipulateProcess do
   end
 
   def build_game_state(**attrs)
-    defaults = {
-      npcs: [],
-      danger: false,
-      construct_mode?: false
-    }
-    state = double('GameState', defaults.merge(attrs))
+    state = double('GameState', { danger: false, construct_mode?: false }.merge(attrs))
     allow(state).to receive(:construct?).and_return(false)
     allow(state).to receive(:construct)
     state
+  end
+
+  def creature(id:, noun: 'rat', name: 'a giant rat')
+    OpenStruct.new(id: id, noun: noun, name: name)
   end
 
   describe '#manipulate' do
@@ -1628,70 +1669,54 @@ RSpec.describe ManipulateProcess do
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
     end
 
-    context 'when all NPCs have different nouns' do
-      it 'uses "first" ordinal for each NPC' do
+    context 'when all creatures have different nouns' do
+      it 'targets each creature by its id' do
         game_state = build_game_state
         instance = build_manipulate_process(
           threshold: 3,
-          filtered_npcs: %w[rat kobold goblin]
+          targets: [creature(id: 11, noun: 'rat'), creature(id: 22, noun: 'kobold'), creature(id: 33, noun: 'goblin')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first goblin/, any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #22', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #33', any_args)
       end
     end
 
-    context 'when multiple NPCs share the same noun' do
-      it 'uses incrementing ordinals for duplicate nouns' do
+    context 'when multiple creatures share the same noun' do
+      it 'tells them apart by distinct id, with no ordinal prefixes' do
         game_state = build_game_state
         instance = build_manipulate_process(
           threshold: 3,
-          filtered_npcs: %w[rat rat rat]
+          targets: [creature(id: 11, noun: 'rat'), creature(id: 12, noun: 'rat'), creature(id: 13, noun: 'rat')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship third rat/, any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #12', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #13', any_args)
+        expect(DRC).not_to have_received(:bput).with(/first|second|third/, any_args)
       end
     end
 
-    context 'when mixed duplicate and unique NPCs are present' do
-      it 'tracks ordinals independently per noun' do
-        game_state = build_game_state
-        instance = build_manipulate_process(
-          threshold: 4,
-          filtered_npcs: %w[rat kobold rat kobold]
-        )
-
-        instance.send(:manipulate, game_state)
-
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second kobold/, any_args)
-      end
-    end
-
-    context 'when an NPC is a construct' do
-      it 'skips constructs and does not increment ordinal for that noun' do
+    context 'when a creature is a construct' do
+      it 'skips it by noun and manipulates the rest by id' do
         game_state = build_game_state
         allow(game_state).to receive(:construct?).with('golem').and_return(true)
         allow(game_state).to receive(:construct?).with('rat').and_return(false)
 
         instance = build_manipulate_process(
           threshold: 2,
-          filtered_npcs: %w[golem rat]
+          targets: [creature(id: 11, noun: 'golem'), creature(id: 22, noun: 'rat')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).not_to have_received(:bput).with(/manipulate friendship .* golem/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
+        expect(DRC).not_to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #22', any_args)
       end
     end
 
@@ -1700,14 +1725,33 @@ RSpec.describe ManipulateProcess do
         game_state = build_game_state
         instance = build_manipulate_process(
           threshold: 2,
-          filtered_npcs: %w[rat rat rat]
+          targets: [creature(id: 11, noun: 'rat'), creature(id: 12, noun: 'rat'), creature(id: 13, noun: 'rat')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
-        expect(DRC).not_to have_received(:bput).with(/manipulate friendship third rat/, any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #12', any_args)
+        expect(DRC).not_to have_received(:bput).with('manipulate friendship #13', any_args)
+      end
+    end
+
+    context 'during the name-less crtrStatus window' do
+      # An id can arrive before its noun. We still manipulate it by id, and
+      # never construct-mark a nil noun.
+      it 'manipulates a nil-noun creature by id and does not construct-mark it' do
+        game_state = build_game_state
+        allow(DRC).to receive(:bput).and_return('does not seem to have a life essence')
+
+        instance = build_manipulate_process(
+          threshold: 1,
+          targets: [creature(id: 55, noun: nil, name: nil)]
+        )
+
+        instance.send(:manipulate, game_state)
+
+        expect(DRC).to have_received(:bput).with('manipulate friendship #55', any_args)
+        expect(game_state).not_to have_received(:construct)
       end
     end
   end
