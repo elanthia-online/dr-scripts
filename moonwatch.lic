@@ -3,7 +3,7 @@
 =begin
   Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-moonwatch.lic
 
-  Moonwatch v4.5.3 - Bresenham Moons + Empirical Sun Table + Lunar Phase
+  Moonwatch v4.5.4 - Bresenham Moons + Empirical Sun Table + Lunar Phase
   ======================================================================
 
   This script provides real-time tracking of DragonRealms moons (Katamba, Xibar, Yavash)
@@ -89,6 +89,18 @@
   seen"). The moon does rise during new -- observe finds it, hidden, rather than
   "nowhere" -- so DR merely suppresses the visible rise broadcast for a dark moon.
 
+  v4.5.4 maps the OTHER dark-moon clause v4.5.3 had already identified but could
+  not capture: the up-and-new reading "<M> is hidden from you, but its energy is
+  quite strong." (45/45 = new, an even cleaner signal than "fruitless"). It uses
+  the bare moon name, so MOON_PHASE_LINE_PATTERN (keyed on "moon <M>") never saw
+  it; a dedicated MOON_HIDDEN_PHASE_LINE_PATTERN now captures it, scoped by the
+  same scan line, and it maps to new. A dark moon reads "fruitless" while below
+  the horizon and "hidden ... energy strong" once it has risen, so new is now
+  validated on a Moon Mage in BOTH arcs (above-horizon new was silently dropped
+  before). Confirmed against a fresh Moon Mage (Quilsilgas) capture where the
+  reading flipped from "fruitless" to "hidden ... energy strong" exactly at the
+  model-predicted new-moon rise tick.
+
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
   - Moons: Single responsibility for moon position calculations
@@ -129,7 +141,7 @@
 no_pause_all
 no_kill_all
 
-$MOONWATCH_VERSION = '4.5.3'
+$MOONWATCH_VERSION = '4.5.4'
 
 # =============================================================================
 # CONSTANTS: Game Event Patterns
@@ -166,6 +178,18 @@ MOON_SCAN_PATTERN = /^You scan the skies/i.freeze
 # @example "The moon Katamba forms a perfect circle in the heavens."
 # @example "Waxing still, half of the black moon Katamba looks down from above."
 MOON_PHASE_LINE_PATTERN = /\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.*)\.\s*$/i.freeze
+
+# The one dark-moon reading MOON_PHASE_LINE_PATTERN cannot catch. When a new
+# (dark) moon is UP, a Moon Mage's `observe` reads "<M> is hidden from you, but
+# its energy is quite strong." -- the bare moon name, no "moon <M>" clause -- so
+# the pattern above never captures it (see the OBSERVED_PHASE_MAP notes). This
+# captures that single wording; its clause maps to new (45/45 in validation, the
+# 0 outliers making it a cleaner new signal than "fruitless"). The energy
+# adjective varies, so the capture keys on the stable "is hidden from you, but
+# its energy" fragment. A dark moon below the horizon reads "fruitless" instead;
+# that one already says "moon <M>", so MOON_PHASE_LINE_PATTERN handles it.
+# @example "Xibar is hidden from you, but its energy is quite strong."
+MOON_HIDDEN_PHASE_LINE_PATTERN = /^(?<moon>Katamba|Xibar|Yavash) (?<phase_desc>is hidden from you, but its energy.*)\.\s*$/i.freeze
 
 # Sun rise event patterns - multiple variations exist in-game
 # These cover dawn/sunrise messages across different weather conditions and locations
@@ -950,19 +974,23 @@ module Moons
   # rise for it either (0 rises at model-new across ~2700 logged rises, vs ~130
   # per other phase), so the rise-triggered auto-observe rarely fires while new.
   # It IS observable, but only by a Moon Mage: their `observe` senses the dark
-  # moon's mana and returns "...moon <M> turns up fruitless." (40/42 = new; the
-  # 2 outliers are new->waxing-crescent boundary reads) or "...<M> is hidden from
-  # you, but its energy is quite strong." (45/45 = new, but that clause lacks
-  # "moon <M>" so the parser above never captures it). Non-Moon-Mage characters
-  # get only "nowhere to be seen", which is below-horizon and spans every phase,
-  # so it is deliberately NOT mapped. The "turns up fruitless" entry is therefore
-  # Moon-Mage-only in practice; it needs no gating because no other guild emits
-  # it. Determined from a Moon Mage (Quilsilgas) vs a non-Moon-Mage (Ytterby):
-  # the dark-moon clauses appear only in the Moon Mage's logs.
+  # moon's mana and returns one of two clauses depending on the moon's arc.
+  # Below the horizon it reads "...moon <M> turns up fruitless." (40/42 = new; the
+  # 2 outliers are new->waxing-crescent boundary reads); once risen it reads
+  # "...<M> is hidden from you, but its energy is quite strong." (45/45 = new).
+  # The "hidden ... energy" clause lacks "moon <M>", so MOON_PHASE_LINE_PATTERN
+  # cannot see it -- MOON_HIDDEN_PHASE_LINE_PATTERN captures it instead (v4.5.4);
+  # both clauses map to new here. Non-Moon-Mage characters get only "nowhere to
+  # be seen", which is below-horizon and spans every phase, so it is deliberately
+  # NOT mapped. Both new entries are therefore Moon-Mage-only in practice; they
+  # need no gating because no other guild emits them. Determined from a Moon Mage
+  # (Quilsilgas) vs a non-Moon-Mage (Ytterby): the dark-moon clauses appear only
+  # in the Moon Mage's logs.
   #
   # Entries are in cycle order; find returns the first match, fragments disjoint.
   OBSERVED_PHASE_MAP = [
-    [/turns up fruitless/i, 'new'], # Moon Mage only (dark-moon sense)
+    [/turns up fruitless/i, 'new'],               # Moon Mage, dark moon below horizon
+    [/hidden from you, but its energy/i, 'new'],  # Moon Mage, dark moon risen
     [/growing crescent/i, 'waxing crescent'],
     [/looks down from above/i, 'first quarter'],
     [/nearly turned its full face/i, 'waxing gibbous'],
@@ -2625,6 +2653,21 @@ loop do
     # Phase readout from an observe, scoped by the scan line above so ambient sky
     # text is not logged. DR varies the wording per phase; we capture the whole
     # clause and let the logger map/validate it.
+    if awaiting_phase
+      awaiting_phase = false
+      moon_name = Regexp.last_match[:moon].downcase
+      phase_desc = Regexp.last_match[:phase_desc].strip
+      game_time = XMLData.server_time
+      MoonwatchMessaging.debug("phase_obs #{moon_name}: #{phase_desc}", $debug_mode_mm)
+      logger.log_phase_observation(moon_name, phase_desc, game_time)
+    end
+
+  when MOON_HIDDEN_PHASE_LINE_PATTERN
+    # The up-and-new (dark) moon reads by bare name ("<M> is hidden from you, but
+    # its energy ..."), which MOON_PHASE_LINE_PATTERN cannot catch. Capture it here,
+    # scoped by the same scan line, and feed it through the normal phase logger so
+    # the new phase is validated above-horizon too (below-horizon new reads
+    # "fruitless", handled by the branch above).
     if awaiting_phase
       awaiting_phase = false
       moon_name = Regexp.last_match[:moon].downcase
