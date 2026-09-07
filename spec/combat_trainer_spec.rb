@@ -3977,6 +3977,101 @@ RSpec.describe SpellProcess do
   end
 
   # ===========================================================================
+  # target_enemy -> live-creature migration. An offensive spell's configured
+  # target_enemy stays a NOUN in config (ids are not stable across hunts), but at
+  # runtime we resolve that noun to a LIVE + HOSTILE Lich::DragonRealms::Creature
+  # and face it by #<id>, falling back to the noun when no live creature matches
+  # (e.g. the name-less crtrStatus window). This branch's harness Creature stub
+  # has no `targets`, so it is stubbed per-example (verify_partial_doubles is off).
+  # ===========================================================================
+  describe 'target_enemy live-creature targeting' do
+    def build_prep_state(**attrs)
+      gs = GameState.allocate
+      { casting: false, cast_timer: nil }.merge(attrs).each { |k, v| gs.send(:"#{k}=", v) }
+      gs
+    end
+
+    describe '#prepare_spell' do
+      before(:each) do
+        # prepare_spell continues into DRCA.prepare? after facing; stop it there
+        # so these examples isolate the face command.
+        allow(DRCA).to receive(:prepare?).and_return(false)
+      end
+
+      it 'faces the live creature by id (#111) when a matching noun is on the roster' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets)
+          .and_return([OpenStruct.new(id: 111, noun: 'kobold', name: 'a kobold')])
+
+        instance = build_spell_process
+        allow(instance).to receive(:fput)
+        gs = build_prep_state
+        data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'target_enemy' => 'kobold' }
+
+        instance.send(:prepare_spell, data, gs)
+
+        expect(instance).to have_received(:fput).with('face #111')
+        expect(instance).not_to have_received(:fput).with('face kobold')
+      end
+
+      it 'falls back to the configured noun when no live creature matches' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+
+        instance = build_spell_process
+        allow(instance).to receive(:fput)
+        gs = build_prep_state
+        data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'target_enemy' => 'kobold' }
+
+        instance.send(:prepare_spell, data, gs)
+
+        expect(instance).to have_received(:fput).with('face kobold')
+      end
+    end
+
+    describe '#check_offensive selection gate' do
+      def build_offensive_state
+        double('GameState', casting: false, npcs: ['a kobold'],
+                            is_offense_allowed?: true, dancing?: false,
+                            sort_by_rate_then_rank: ['Warding'])
+      end
+
+      let(:target_enemy_spell) do
+        { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'skill' => 'Warding', 'target_enemy' => 'kobold' }
+      end
+
+      def build_target_enemy_process
+        build_spell_process(
+          offensive_spells: [target_enemy_spell],
+          offensive_spell_cycle: [],
+          offensive_spell_mana_threshold: 0
+        )
+      end
+
+      it 'rejects the spell when no live creature matches the configured noun' do
+        DRStats.mana = 100
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+
+        instance = build_target_enemy_process
+        gs = build_offensive_state
+
+        expect(instance).not_to receive(:prepare_spell)
+        instance.send(:check_offensive, gs)
+      end
+
+      it 'keeps the spell when a live creature matches the configured noun' do
+        DRStats.mana = 100
+        allow(Lich::DragonRealms::Creature).to receive(:targets)
+          .and_return([OpenStruct.new(id: 111, noun: 'kobold', name: 'a kobold')])
+
+        instance = build_target_enemy_process
+        gs = build_offensive_state
+
+        expect(instance).to receive(:prepare_spell).with(hash_including('target_enemy' => 'kobold'), gs)
+        instance.send(:check_offensive, gs)
+      end
+    end
+  end
+
+  # ===========================================================================
   # #spell_disabled? / #disable_spell -- boundary and edge behavior
   # ===========================================================================
   describe '#disable_spell / #spell_disabled?' do
