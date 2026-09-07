@@ -185,10 +185,6 @@ RSpec.describe Forge do
       expect(Forge::FORGE_EMPTY_PATTERN).to eq('There is nothing')
     end
 
-    it 'defines DEFAULT_PRIVATE_FORGE_COST as 5000 copper (5 plat)' do
-      expect(Forge::DEFAULT_PRIVATE_FORGE_COST).to eq(5000)
-    end
-
     it 'defines PRIVATE_FORGE_ENTRY_SUCCESS as frozen array' do
       expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to be_frozen
       expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('You head through')
@@ -1062,6 +1058,28 @@ RSpec.describe Forge do
         expect(forge_instance.instance_variable_get(:@home_tool)).to eq('forging hammer')
         expect(forge_instance.instance_variable_get(:@location)).to eq('on anvil')
       end
+    end
+  end
+
+  # The dr-scripts harness stubs a DRCC without the new private-forge helpers,
+  # so these exercise forge's local fallbacks (the path on an older lich-5).
+  describe 'private-forge settings (gated DRCC helpers with local fallback)' do
+    let(:forge_instance) { Forge.allocate }
+
+    it 'crafting_hometown prefers force_crafting_town over hometown' do
+      expect(forge_instance.send(:crafting_hometown, OpenStruct.new(force_crafting_town: 'Shard', hometown: 'Crossing'))).to eq('Shard')
+      expect(forge_instance.send(:crafting_hometown, OpenStruct.new(hometown: 'Crossing'))).to eq('Crossing')
+    end
+
+    it 'use_private_forge? honors use_private_forge and the legacy forge_use_private_forge' do
+      expect(forge_instance.send(:use_private_forge?, OpenStruct.new(use_private_forge: true))).to be true
+      expect(forge_instance.send(:use_private_forge?, OpenStruct.new(forge_use_private_forge: true))).to be true
+      expect(forge_instance.send(:use_private_forge?, OpenStruct.new)).to be false
+    end
+
+    it 'private_forge_cost uses the setting, else defaults to 50_000' do
+      expect(forge_instance.send(:private_forge_cost, OpenStruct.new(forge_private_forge_cost: 7_500))).to eq(7_500)
+      expect(forge_instance.send(:private_forge_cost, OpenStruct.new)).to eq(50_000)
     end
   end
 end
