@@ -6811,7 +6811,10 @@ RSpec.describe LootProcess do
 
     it 'check_skinning targets the corpse by id while it is still present' do
       Lich::DragonRealms::Creature._set_room([corpse])
-      allow(DRC).to receive(:bput).and_return('roundtime')
+      # DRC.bput returns the matched substring from the game line ("Roundtime"),
+      # not the matcher -- stub it realistically so the case-insensitive branch
+      # is exercised.
+      allow(DRC).to receive(:bput).and_return('Roundtime')
       build_gate_loot.send(:check_skinning, 'rat', gate_game_state, corpse)
       expect(DRC).to have_received(:bput).with('skin #111', any_args)
     end
@@ -6821,7 +6824,9 @@ RSpec.describe LootProcess do
     # arrange/skin passes ("...already been skinned, there's no point.").
     it 'check_skinning records the corpse id after a successful skin' do
       Lich::DragonRealms::Creature._set_room([corpse])
-      allow(DRC).to receive(:bput).and_return('roundtime')
+      # Realistic bput return: the matched substring from "Roundtime: 2 sec.".
+      # (A stub of 'roundtime' would mask a regression to `when 'roundtime'`.)
+      allow(DRC).to receive(:bput).and_return('Roundtime')
       lp = build_gate_loot
       lp.send(:check_skinning, 'rat', gate_game_state, corpse)
       expect(lp.instance_variable_get(:@skinned_corpse_ids)).to include(111)

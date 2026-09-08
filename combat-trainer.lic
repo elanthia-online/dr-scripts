@@ -1355,9 +1355,11 @@ class LootProcess
 
     snap = [DRC.left_hand, DRC.right_hand]
     case DRC.bput("skin ##{corpse.id}", 'roundtime', 'skin what', 'cannot be skinned', 'already been skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
-    when 'roundtime'
+    when /roundtime/i
       # Skin started -> this corpse is done; don't re-arrange/re-skin it while it
-      # lingers dead in the roster for the ~6-7s until it decays.
+      # lingers dead in the roster for the ~6-7s until it decays. NB: DRC.bput
+      # returns the matched substring from the game line ("Roundtime"), not the
+      # matcher, so this branch must be case-insensitive, not `when 'roundtime'`.
       @skinned_corpse_ids << corpse.id
       echo("corpse-track: mark ##{corpse.id} skinned") if $debug_mode_ct
     when 'already been skinned'
