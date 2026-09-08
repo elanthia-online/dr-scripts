@@ -6737,6 +6737,24 @@ RSpec.describe LootProcess do
       expect(lp.instance_variable_get(:@looted_corpse_ids)).to include(111)
     end
 
+    # Group hunt: a teammate searches the corpse first, so loot-by-id gets
+    # "The <mob> has already been searched for that!". That must be a matcher, or
+    # bput hangs the full 15s mid-combat. Terminal -> loop exits, corpse marked.
+    it 'treats "already been searched" as terminal loot and marks the corpse looted' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('already been searched')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(DRC).to have_received(:bput).with('loot #111', 'You search', 'I could not find what you were referring to', 'and get ready to search it', 'already been searched')
+      expect(lp.instance_variable_get(:@looted_corpse_ids)).to include(111)
+    end
+
     # A looted corpse lingers dead in the roster until decay; don't re-search it.
     it 'does not re-loot a corpse already recorded as looted' do
       DRRoom.dead_npcs = ['rat']

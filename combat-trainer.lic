@@ -1144,7 +1144,11 @@ class LootProcess
       else
         loot_target = corpse ? "##{corpse.id}" : nil
         loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
-        while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it') == 'and get ready to search it'
+        # 'already been searched' terminates the loop too: with loot-by-id a
+        # group-mate can search the corpse first, and the game replies "The <mob>
+        # has already been searched for that!" -- unmatched, that hangs bput for
+        # its full 15s timeout mid-combat.
+        while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it', 'already been searched') == 'and get ready to search it'
           pause
           waitrt?
         end
