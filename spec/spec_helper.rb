@@ -74,6 +74,63 @@
 #     other file). Put spec-specific world setup in a describe-scoped before
 #     instead.
 
+# Line ranges (0-based, inclusive) each extractor actually eval'd out of a .lic,
+# keyed by absolute path. Lets the coverage backfill below distinguish "no spec
+# ever eval'd this line" from "eval'd, but Ruby attributed the statement to a
+# neighbouring line". Harmless and cheap when coverage is off.
+LIC_EVAL_RANGES = Hash.new { |h, k| h[k] = [] }
+
+# Coverage (opt-in): COVERAGE=1 bundle exec rspec, report in coverage/index.html.
+#
+# This has to run before anything else here, and it needs `enable_coverage :eval`
+# -- the .lic files are never required, they are eval'd by load_lic_class below,
+# and Ruby only measures eval'd source when Coverage is set up with eval: true.
+# Starting here is early enough: RSpec requires spec_helper (via .rspec) before
+# it loads any *_spec.rb, so every load_lic_class call still lies ahead of us.
+if ENV['COVERAGE']
+  require 'simplecov'
+  SimpleCov.enable_coverage :eval
+  SimpleCov.enable_coverage :branch
+
+  # Only the class/module bodies a spec extracts are ever eval'd, so a script's
+  # remaining code -- the before_dying block, the `Klass.new` entry point, a
+  # top-level def -- is invisible to Coverage rather than counted as missed,
+  # which quietly flatters the percentage. Backfill those lines from SimpleCov's
+  # own static line classifier (the same one it uses for files that were never
+  # loaded at all) so they land in the denominator as uncovered.
+  #
+  # Restricted to lines OUTSIDE every range an extractor eval'd. Inside an eval'd
+  # range Ruby is authoritative and the static classifier is not: it calls each
+  # element line of a multi-line literal relevant, while Ruby attributes the
+  # whole literal to one line. Backfilling there invents missed lines for code
+  # that demonstrably ran (astrology.lic's OBSERVE_SUCCESS_PATTERNS is the
+  # example -- line 73 opens the array, but Ruby records the hit on line 74).
+  SimpleCov.at_exit do
+    raw = SimpleCov.result.original_result
+
+    raw.each do |filename, data|
+      next unless filename.end_with?('.lic')
+
+      static = SimpleCov::SimulateCoverage.call(filename)
+      static = static['lines'] || static[:lines] if static.is_a?(Hash)
+      next unless static
+
+      evaled = LIC_EVAL_RANGES[filename]
+      measured = data['lines'] || data[:lines]
+      static.each_index do |i|
+        next unless measured[i].nil? && !static[i].nil?
+        next if evaled.any? { |range| range.cover?(i) }
+
+        measured[i] = 0
+      end
+    end
+
+    SimpleCov::Result.new(raw, command_name: SimpleCov.command_name).format!
+  end
+
+  SimpleCov.start
+end
+
 require 'ostruct'
 
 # Load the test harness, which provides the mock game objects and commons
@@ -81,6 +138,31 @@ require 'ostruct'
 load File.join(File.dirname(__FILE__), '..', 'test', 'test_harness.rb')
 
 include Harness
+
+# Absolute, symlink-free path to a .lic in the repo root. Expanded rather than
+# left as "<root>/spec/../foo.lic" so eval attributes the source to the file's
+# real path -- backtraces point at it, and coverage tooling does not mistake it
+# for something under spec/.
+def lic_path(filename)
+  File.expand_path(File.join(__dir__, '..', filename))
+end
+
+# Ruby allocates a file's eval-coverage line array on the FIRST eval attributed
+# to that filename and never grows it. A .lic holding several classes is eval'd
+# once per class, so any class starting past the end of the first-eval'd one
+# would be silently dropped from coverage -- not counted as missed, just absent
+# (combat-trainer.lic reported 2 of its 11 classes). Priming with a blank eval
+# spanning the whole file sizes the array once so every later eval lands inside.
+# No-op when coverage is not running.
+def prime_lic_coverage(filepath, line_count)
+  return unless defined?(Coverage) && Coverage.running?
+
+  @primed_lic_files ||= {}
+  return if @primed_lic_files[filepath]
+
+  @primed_lic_files[filepath] = true
+  eval(("\n" * (line_count - 1)) + 'nil', TOPLEVEL_BINDING, filepath, 1)
+end
 
 # Extract and eval a class from a .lic file without executing the top-level code
 # (before_dying blocks, Klass.new, etc.) that sits outside the class body.
@@ -91,8 +173,9 @@ include Harness
 def load_lic_class(filename, class_name)
   return if Object.const_defined?(class_name)
 
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
+  filepath = lic_path(filename)
   lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
 
   start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
   raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
@@ -107,7 +190,29 @@ def load_lic_class(filename, class_name)
   raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
 
   class_source = lines[start_idx..end_idx].join
+  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
   eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
+end
+
+# Module counterpart to load_lic_class, with the same strategy and guard.
+# Lived as a duplicated top-level def in automap_spec and moonwatch_spec, which
+# is the exact "a duplicate top-level definition wins for the entire process by
+# load order" hazard described above -- it belongs here, defined once.
+def load_lic_module(filename, module_name)
+  return if Object.const_defined?(module_name)
+
+  filepath = lic_path(filename)
+  lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
+
+  start_idx = lines.index { |l| l =~ /^module\s+#{module_name}\b/ }
+  raise "Could not find 'module #{module_name}' in #{filename}" unless start_idx
+
+  end_idx = (start_idx + 1...lines.size).find { |i| lines[i] =~ /^end\s*$/ }
+  raise "Could not find matching end for 'module #{module_name}' in #{filename}" unless end_idx
+
+  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
+  eval(lines[start_idx..end_idx].join, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
 # Extract and eval a single top-level constant assignment (CONST = ...) from a
@@ -116,13 +221,17 @@ end
 def load_lic_constant(filename, const_name)
   return if Object.const_defined?(const_name)
 
-  filepath = File.join(File.dirname(__FILE__), '..', filename)
+  filepath = lic_path(filename)
   lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
 
-  line = lines.find { |l| l =~ /^#{const_name}\s*=/ }
-  raise "Could not find '#{const_name}' in #{filename}" unless line
+  idx = lines.index { |l| l =~ /^#{const_name}\s*=/ }
+  raise "Could not find '#{const_name}' in #{filename}" unless idx
 
-  eval(line, TOPLEVEL_BINDING, filepath)
+  # Pass the real line number so the eval'd assignment is attributed to where it
+  # actually lives, rather than to line 1 of the file.
+  LIC_EVAL_RANGES[filepath] << (idx..idx)
+  eval(lines[idx], TOPLEVEL_BINDING, filepath, idx + 1)
 end
 
 RSpec.configure do |config|
