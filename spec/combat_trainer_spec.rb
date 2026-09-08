@@ -6589,7 +6589,7 @@ RSpec.describe LootProcess do
 
   def build_dissect_loot(**overrides)
     lp = LootProcess.allocate
-    defaults = { dissect: true, skin: false, dissect_for_thanatology: false, dissect_cycle_skills: [] }
+    defaults = { dissect: true, skin: false, dissect_for_thanatology: false, dissect_cycle_skills: [], dissected_corpse_ids: [] }
     defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
     lp
   end
@@ -6637,13 +6637,30 @@ RSpec.describe LootProcess do
       expect(gs).not_to have_received(:construct)
       expect(gs).not_to have_received(:undissectable)
     end
+
+    # A dissected corpse lingers dead in the roster until decay; track the id so
+    # we don't re-fire dissect at it every pass.
+    it 'records the corpse id on a successful dissect' do
+      allow(DRC).to receive(:bput).and_return('You succeed in dissecting the corpse')
+      lp = build_dissect_loot
+      lp.send(:dissected?, corpse, dissect_game_state)
+      expect(lp.instance_variable_get(:@dissected_corpse_ids)).to include(111)
+    end
+
+    it 'reports dissected without re-firing for an already-dissected corpse' do
+      allow(DRC).to receive(:bput)
+      lp = build_dissect_loot(dissected_corpse_ids: [corpse.id])
+      expect(lp.send(:dissected?, corpse, dissect_game_state)).to be true
+      expect(DRC).not_to have_received(:bput).with(/\Adissect/, any_args)
+    end
   end
 
   def build_dispose_loot(**overrides)
     lp = LootProcess.allocate
     defaults = {
       loot_bodies: true, loot_timer: Time.now - 100, loot_delay: 0,
-      last_rites: true, last_rites_timer: Time.now - 700, custom_loot_type: ''
+      last_rites: true, last_rites_timer: Time.now - 700, custom_loot_type: '',
+      looted_corpse_ids: []
     }
     defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
     lp
@@ -6705,6 +6722,35 @@ RSpec.describe LootProcess do
       lp.dispose_body(gs)
       expect(DRC).to have_received(:bput).with('loot #111', any_args)
     end
+
+    it 'records the corpse id after looting it' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(lp.instance_variable_get(:@looted_corpse_ids)).to include(111)
+    end
+
+    # A looted corpse lingers dead in the roster until decay; don't re-search it.
+    it 'does not re-loot a corpse already recorded as looted' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot(looted_corpse_ids: [corpse.id])
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(DRC).not_to have_received(:bput).with(/\Aloot/, any_args)
+    end
   end
 
   describe 'corpse-existence gates' do
@@ -6719,7 +6765,7 @@ RSpec.describe LootProcess do
     def build_gate_loot
       lp = LootProcess.allocate
       { skin: true, arrange_for_dissect: true, arrange_count: 1, arrange_all: false,
-        arrange_types: {}, tie_bundle: false }.each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+        arrange_types: {}, tie_bundle: false, skinned_corpse_ids: [] }.each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
       lp
     end
 
@@ -6768,6 +6814,51 @@ RSpec.describe LootProcess do
       allow(DRC).to receive(:bput).and_return('roundtime')
       build_gate_loot.send(:check_skinning, 'rat', gate_game_state, corpse)
       expect(DRC).to have_received(:bput).with('skin #111', any_args)
+    end
+
+    # A looted corpse lingers dead in the roster for ~6-7s until it decays, so
+    # corpse_present? stays true; per-id tracking is what stops the redundant
+    # arrange/skin passes ("...already been skinned, there's no point.").
+    it 'check_skinning records the corpse id after a successful skin' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('roundtime')
+      lp = build_gate_loot
+      lp.send(:check_skinning, 'rat', gate_game_state, corpse)
+      expect(lp.instance_variable_get(:@skinned_corpse_ids)).to include(111)
+    end
+
+    it 'check_skinning records the id and stops on "already been skinned"' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('already been skinned')
+      lp = build_gate_loot
+      lp.send(:check_skinning, 'rat', gate_game_state, corpse)
+      expect(lp.instance_variable_get(:@skinned_corpse_ids)).to include(111)
+    end
+
+    it 'check_skinning does not re-skin a corpse already recorded as skinned' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput)
+      lp = build_gate_loot
+      lp.instance_variable_set(:@skinned_corpse_ids, [corpse.id])
+      lp.send(:check_skinning, 'rat', gate_game_state, corpse)
+      expect(DRC).not_to have_received(:bput).with(/\Askin/, any_args)
+    end
+
+    it 'arrange_mob skips a corpse already recorded as skinned' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput)
+      lp = build_gate_loot
+      lp.instance_variable_set(:@skinned_corpse_ids, [corpse.id])
+      lp.send(:arrange_mob, 'rat', gate_game_state, corpse)
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it 'arrange_mob records the id and stops on "already been skinned"' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('already been skinned')
+      lp = build_gate_loot
+      lp.send(:arrange_mob, 'rat', gate_game_state, corpse)
+      expect(lp.instance_variable_get(:@skinned_corpse_ids)).to include(111)
     end
   end
 end

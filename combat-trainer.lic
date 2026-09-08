@@ -626,6 +626,16 @@ class LootProcess
     Flags.add('pouch-needs-tie', /You'd better tie it up before putting/)
     Flags.add('container-full', 'There isn\'t any more room')
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
+
+    # Corpse ids we've finished a given action on this session. A looted corpse
+    # lingers in Creature.in_room(:dead) until it DECAYS (~6-7s after loot,
+    # several crtrStatus pulses later), so corpse_present? alone can't stop us
+    # re-arranging/re-skinning/re-dissecting/re-looting it -- track each action
+    # per id and skip it. Marked on terminal outcomes only (success or
+    # already-done), not on retryable ones. Bounded by kills per room.
+    @skinned_corpse_ids = []
+    @dissected_corpse_ids = []
+    @looted_corpse_ids = []
   end
 
   def execute(game_state)
@@ -1126,12 +1136,17 @@ class LootProcess
       # body we consumed -- a looted corpse disappears very shortly after. Fall
       # back to a bare/typed loot when no id is known (Creature roster and
       # DRRoom.dead_npcs can disagree). @custom_loot_type, when set, still
-      # selects the LOOT type (treasure/equipment/all).
-      loot_target = corpse ? "##{corpse.id}" : nil
-      loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
-      while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it') == 'and get ready to search it'
-        pause
-        waitrt?
+      # selects the LOOT type (treasure/equipment/all). Skip a corpse we've
+      # already looted: it lingers dead in the roster until decay, so without
+      # this we re-search it every pass.
+      unless corpse && @looted_corpse_ids.include?(corpse.id)
+        loot_target = corpse ? "##{corpse.id}" : nil
+        loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
+        while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it') == 'and get ready to search it'
+          pause
+          waitrt?
+        end
+        @looted_corpse_ids << corpse.id if corpse
       end
       @last_ritual = nil
     end
@@ -1155,6 +1170,7 @@ class LootProcess
     return unless game_state.skinnable?(mob_noun)
     return if game_state.necro_casting?
     return unless corpse_present?(corpse)
+    return if corpse && @skinned_corpse_ids.include?(corpse.id)
 
     arranges = 0
     type = @arrange_types[mob_noun] || 'skin'
@@ -1166,8 +1182,11 @@ class LootProcess
     arrange_message = "#{arrange_verb} for #{type}"
     while arranges < @arrange_count
       arranges += 1 # rubocop:disable Lint/UselessAssignment
-      case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
+      case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'already been skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
       when 'You complete arranging', 'That has already been arranged', 'You make a serious mistake in the arranging process', 'Arrange what'
+        break
+      when 'already been skinned'
+        @skinned_corpse_ids << corpse.id if corpse
         break
       when 'cannot be skinned'
         game_state.unskinnable(mob_noun)
@@ -1220,6 +1239,9 @@ class LootProcess
   def dissected?(corpse, game_state)
     mob_noun = corpse&.noun
     return unless game_state.dissectable?(mob_noun)
+    # Already dissected this corpse -> it's dissected; don't re-fire dissect at a
+    # corpse still lingering dead in the roster until it decays.
+    return true if corpse && @dissected_corpse_ids.include?(corpse.id)
 
     if @dissect_for_thanatology
       return false if (DRSkill.getxp('Thanatology') == 34 && DRSkill.getxp('First Aid') == 34)
@@ -1250,6 +1272,7 @@ class LootProcess
                   "With less concern than you'd give a fresh corpse",
                   'Rituals do not work upon constructs')
     when /You succeed in dissecting the corpse/, /You learn something/i, "With less concern than you'd give a fresh corpse"
+      @dissected_corpse_ids << corpse.id if corpse
       return true
     when /You'll gain no insights from this attempt/
       waitrt?
@@ -1276,6 +1299,7 @@ class LootProcess
   def check_skinning(mob_noun, game_state, corpse)
     return unless game_state.skinnable?(mob_noun)
     return unless corpse_present?(corpse)
+    return if corpse && @skinned_corpse_ids.include?(corpse.id)
 
     if game_state.need_bundle
       case DRC.bput('tap my bundle', 'You tap a \w+ bundle\b.*that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
@@ -1310,7 +1334,14 @@ class LootProcess
     end
 
     snap = [DRC.left_hand, DRC.right_hand]
-    case DRC.bput("skin ##{corpse.id}", 'roundtime', 'skin what', 'cannot be skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
+    case DRC.bput("skin ##{corpse.id}", 'roundtime', 'skin what', 'cannot be skinned', 'already been skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
+    when 'roundtime'
+      # Skin started -> this corpse is done; don't re-arrange/re-skin it while it
+      # lingers dead in the roster for the ~6-7s until it decays.
+      @skinned_corpse_ids << corpse.id
+    when 'already been skinned'
+      @skinned_corpse_ids << corpse.id
+      return
     when 'You must have one hand free to skin'
       temp_item = DRC.left_hand
       if DRCI.lower_item?(temp_item)
