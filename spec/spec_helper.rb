@@ -90,7 +90,6 @@ LIC_EVAL_RANGES = Hash.new { |h, k| h[k] = [] }
 if ENV['COVERAGE']
   require 'simplecov'
   SimpleCov.enable_coverage :eval
-  SimpleCov.enable_coverage :branch
 
   # Only the class/module bodies a spec extracts are ever eval'd, so a script's
   # remaining code -- the before_dying block, the `Klass.new` entry point, a
