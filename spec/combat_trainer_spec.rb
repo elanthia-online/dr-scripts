@@ -5549,6 +5549,137 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
       expect(DRC).not_to have_received(:bput)
     end
   end
+
+  # -----------------------------------------------------------------
+  # #appraise_all -- the 'App All' training ability
+  #
+  # Quick-appraises every live creature by id in one pass, skipping ids
+  # already in @no_app, recording new 'Perhaps that' ids, and stopping
+  # mid-sweep on retreat or once Appraisal reaches the training target.
+  # -----------------------------------------------------------------
+  describe '#appraise_all' do
+    let(:troll) { OpenStruct.new(id: 444, noun: 'troll', name: 'a troll') }
+    let(:ogre)  { OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre') }
+    let(:goblin) { OpenStruct.new(id: 666, noun: 'goblin', name: 'a goblin') }
+
+    def build_all_appraiser(no_app: [], target: 34)
+      trainer = TrainerProcess.allocate
+      trainer.instance_variable_set(:@no_app, no_app)
+      trainer.instance_variable_set(:@combat_training_abilities_target, target)
+      trainer
+    end
+
+    def all_state(retreating: false)
+      double('GameState', retreating?: retreating)
+    end
+
+    before(:each) do
+      allow(DRSkill).to receive(:getrank).with('Appraisal').and_return(100)
+      allow(DRSkill).to receive(:getxp).with('Appraisal').and_return(0)
+      allow(DRC).to receive(:bput).and_return('Taking stock of')
+    end
+
+    it 'quick-appraises every live creature by id' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll, ogre, goblin])
+
+      build_all_appraiser.send(:appraise_all, all_state)
+
+      expect(DRC).to have_received(:bput).with('app #444 quick', any_args).ordered
+      expect(DRC).to have_received(:bput).with('app #555 quick', any_args).ordered
+      expect(DRC).to have_received(:bput).with('app #666 quick', any_args).ordered
+      expect(DRC).to have_received(:bput).exactly(3).times
+    end
+
+    it 'waits out roundtime after each appraise' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll, ogre])
+      trainer = build_all_appraiser
+      allow(trainer).to receive(:waitrt?)
+
+      trainer.send(:appraise_all, all_state)
+
+      expect(trainer).to have_received(:waitrt?).twice
+    end
+
+    it 'skips ids already recorded in @no_app' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll, ogre])
+
+      build_all_appraiser(no_app: [444]).send(:appraise_all, all_state)
+
+      expect(DRC).to have_received(:bput).once
+      expect(DRC).to have_received(:bput).with('app #555 quick', any_args)
+    end
+
+    it 'records only the `Perhaps that` ids and skips them on the next pass' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll, ogre])
+      allow(DRC).to receive(:bput).with('app #444 quick', any_args).and_return('Perhaps that')
+      allow(DRC).to receive(:bput).with('app #555 quick', any_args).and_return('Taking stock of')
+
+      trainer = build_all_appraiser
+      trainer.send(:appraise_all, all_state)
+      expect(trainer.instance_variable_get(:@no_app)).to eq([444])
+
+      trainer.send(:appraise_all, all_state)
+      expect(DRC).to have_received(:bput).with('app #444 quick', any_args).once
+      expect(DRC).to have_received(:bput).with('app #555 quick', any_args).twice
+    end
+
+    it 'shares the skip list with single-target App' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      trainer = build_all_appraiser
+      trainer.send(:appraise, all_state, '')
+      trainer.send(:appraise_all, all_state)
+
+      expect(DRC).to have_received(:bput).once
+    end
+
+    it 'stops mid-sweep once Appraisal reaches the training target' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll, ogre, goblin])
+      allow(DRSkill).to receive(:getxp).with('Appraisal').and_return(33, 34)
+
+      build_all_appraiser(target: 34).send(:appraise_all, all_state)
+
+      expect(DRC).to have_received(:bput).once
+      expect(DRC).to have_received(:bput).with('app #444 quick', any_args)
+    end
+
+    it 'does nothing when Appraisal is already at the training target' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll])
+      allow(DRSkill).to receive(:getxp).with('Appraisal').and_return(34)
+
+      build_all_appraiser(target: 34).send(:appraise_all, all_state)
+
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it 'stops mid-sweep once the character starts retreating' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll, ogre])
+      state = double('GameState')
+      allow(state).to receive(:retreating?).and_return(false, true)
+
+      build_all_appraiser.send(:appraise_all, state)
+
+      expect(DRC).to have_received(:bput).once
+    end
+
+    it 'does not appraise when Appraisal rank is below 76' do
+      allow(DRSkill).to receive(:getrank).with('Appraisal').and_return(75)
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([troll])
+
+      build_all_appraiser.send(:appraise_all, all_state)
+
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it 'does nothing when there are no live creatures' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+
+      build_all_appraiser.send(:appraise_all, all_state)
+
+      expect(DRC).not_to have_received(:bput)
+    end
+  end
 end
 
 # ===================================================================
