@@ -6675,5 +6675,99 @@ RSpec.describe LootProcess do
       expect(DRC).not_to have_received(:bput).with(/\Apray /, any_args)
       expect(DRC).not_to have_received(:bput).with(/\Adissect/, any_args)
     end
+
+    # Loot the exact corpse we processed by its id -- a looted corpse vanishes
+    # shortly after, so a bare LOOT can bind to the wrong/absent body.
+    it 'loots the corpse by its id, keeping the configured loot type' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot(custom_loot_type: 'treasure')
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(DRC).to have_received(:bput).with('loot #111 treasure', any_args)
+    end
+
+    it 'omits the loot-type token when none is configured' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(DRC).to have_received(:bput).with('loot #111', any_args)
+    end
+  end
+
+  describe 'corpse-existence gates' do
+    def gate_game_state
+      gs = double('GameState')
+      allow(gs).to receive(:skinnable?).and_return(true)
+      allow(gs).to receive(:necro_casting?).and_return(false)
+      allow(gs).to receive(:need_bundle).and_return(false)
+      gs
+    end
+
+    def build_gate_loot
+      lp = LootProcess.allocate
+      { skin: true, arrange_for_dissect: true, arrange_count: 1, arrange_all: false,
+        arrange_types: {}, tie_bundle: false }.each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+      lp
+    end
+
+    it 'arrange_mob does nothing once the corpse has left the room (looted/decayed)' do
+      Lich::DragonRealms::Creature._set_room([])
+      allow(DRC).to receive(:bput)
+      build_gate_loot.send(:arrange_mob, 'rat', gate_game_state, corpse)
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it 'arrange_mob targets the corpse by id while it is still present' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You complete arranging')
+      build_gate_loot.send(:arrange_mob, 'rat', gate_game_state, corpse)
+      expect(DRC).to have_received(:bput).with('arrange #111 for skin', any_args)
+    end
+
+    it 'arrange_mob keeps the id target in the all-variant' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You complete arranging')
+      lp = build_gate_loot
+      lp.instance_variable_set(:@arrange_all, true)
+      lp.send(:arrange_mob, 'rat', gate_game_state, corpse)
+      expect(DRC).to have_received(:bput).with('arrange #111 all for skin', any_args)
+    end
+
+    # "That creature cannot" be arranged for that type -> retry generically, but
+    # still against the same corpse id (not a bare arrange).
+    it 'arrange_mob retries the id target without the type clause' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      responses = ['That creature cannot', 'You complete arranging']
+      allow(DRC).to receive(:bput) { responses.shift }
+      build_gate_loot.send(:arrange_mob, 'rat', gate_game_state, corpse)
+      expect(DRC).to have_received(:bput).with('arrange #111', any_args)
+    end
+
+    it 'check_skinning does nothing once the corpse has left the room' do
+      Lich::DragonRealms::Creature._set_room([])
+      allow(DRC).to receive(:bput)
+      build_gate_loot.send(:check_skinning, 'rat', gate_game_state, corpse)
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it 'check_skinning targets the corpse by id while it is still present' do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('roundtime')
+      build_gate_loot.send(:check_skinning, 'rat', gate_game_state, corpse)
+      expect(DRC).to have_received(:bput).with('skin #111', any_args)
+    end
   end
 end

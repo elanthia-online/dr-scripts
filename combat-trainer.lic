@@ -1122,7 +1122,14 @@ class LootProcess
     game_state.wield_whirlwind_offhand
 
     unless game_state.necro_casting?
-      while DRC.bput("loot #{@custom_loot_type}".strip, 'You search', 'I could not find what you were referring to', 'and get ready to search it') == 'and get ready to search it'
+      # Loot the specific corpse by its <crtrStatus> id so we know exactly which
+      # body we consumed -- a looted corpse disappears very shortly after. Fall
+      # back to a bare/typed loot when no id is known (Creature roster and
+      # DRRoom.dead_npcs can disagree). @custom_loot_type, when set, still
+      # selects the LOOT type (treasure/equipment/all).
+      loot_target = corpse ? "##{corpse.id}" : nil
+      loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
+      while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it') == 'and get ready to search it'
         pause
         waitrt?
       end
@@ -1131,15 +1138,32 @@ class LootProcess
     @loot_timer = Time.now
   end
 
-  def arrange_mob(mob_noun, game_state)
+  # Whether a specific corpse (by its <crtrStatus> id) is still present in the
+  # room. Looting a corpse makes it vanish very shortly after, so arrange/skin
+  # must confirm the id is still around before firing a command at a corpse that
+  # may already be gone -- otherwise the bare verb returns "Arrange what?" /
+  # "Skin what?" and burns roundtime mid-combat.
+  def corpse_present?(corpse)
+    return false unless corpse
+
+    Lich::DragonRealms::Creature.in_room(:dead).any? { |c| c.id == corpse.id }
+  end
+
+  def arrange_mob(mob_noun, game_state, corpse)
     return unless @skin || @arrange_for_dissect
     return unless @arrange_count > 0
     return unless game_state.skinnable?(mob_noun)
     return if game_state.necro_casting?
+    return unless corpse_present?(corpse)
 
     arranges = 0
     type = @arrange_types[mob_noun] || 'skin'
-    arrange_message = @arrange_all ? "arrange all for #{type}" : "arrange for #{type}"
+    # Target the specific corpse by id (e.g. "arrange #12345 for skin") so the
+    # verb can't bind to a live same-noun mob or the wrong corpse. "all" (arrange
+    # up to five times in one command) goes after the id: "arrange #12345 all for
+    # skin". The noun->type lookup above is unchanged.
+    arrange_verb = @arrange_all ? "arrange ##{corpse.id} all" : "arrange ##{corpse.id}"
+    arrange_message = "#{arrange_verb} for #{type}"
     while arranges < @arrange_count
       arranges += 1 # rubocop:disable Lint/UselessAssignment
       case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
@@ -1152,7 +1176,7 @@ class LootProcess
         break
       when 'That creature cannot'
         arranges = 0
-        arrange_message = @arrange_all ? 'arrange all' : 'arrange'
+        arrange_message = arrange_verb
       end
     end
   end
@@ -1166,7 +1190,7 @@ class LootProcess
 
     if @dissect && game_state.dissectable?(mob_noun)
       if @arrange_for_dissect
-        arrange_mob(mob_noun, game_state)
+        arrange_mob(mob_noun, game_state, corpse)
         already_arranged = true
       end
 
@@ -1178,16 +1202,16 @@ class LootProcess
 
       if skill_to_train == 'First Aid' || skill_to_train == 'Thanatology'
         unless dissected?(corpse, game_state)
-          arrange_mob(mob_noun, game_state) unless already_arranged
-          check_skinning(mob_noun, game_state) if @skin
+          arrange_mob(mob_noun, game_state, corpse) unless already_arranged
+          check_skinning(mob_noun, game_state, corpse) if @skin
         end
       elsif skill_to_train == 'Skinning'
-        arrange_mob(mob_noun, game_state) unless already_arranged
-        check_skinning(mob_noun, game_state) if @skin
+        arrange_mob(mob_noun, game_state, corpse) unless already_arranged
+        check_skinning(mob_noun, game_state, corpse) if @skin
       end
     elsif @skin && game_state.skinnable?(mob_noun)
-      arrange_mob(mob_noun, game_state) unless already_arranged
-      check_skinning(mob_noun, game_state)
+      arrange_mob(mob_noun, game_state, corpse) unless already_arranged
+      check_skinning(mob_noun, game_state, corpse)
     else
       return
     end
@@ -1249,8 +1273,9 @@ class LootProcess
     return false
   end
 
-  def check_skinning(mob_noun, game_state)
+  def check_skinning(mob_noun, game_state, corpse)
     return unless game_state.skinnable?(mob_noun)
+    return unless corpse_present?(corpse)
 
     if game_state.need_bundle
       case DRC.bput('tap my bundle', 'You tap a \w+ bundle\b.*that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
@@ -1285,11 +1310,11 @@ class LootProcess
     end
 
     snap = [DRC.left_hand, DRC.right_hand]
-    case DRC.bput('skin', 'roundtime', 'skin what', 'cannot be skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
+    case DRC.bput("skin ##{corpse.id}", 'roundtime', 'skin what', 'cannot be skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
     when 'You must have one hand free to skin'
       temp_item = DRC.left_hand
       if DRCI.lower_item?(temp_item)
-        check_skinning(mob_noun, game_state)
+        check_skinning(mob_noun, game_state, corpse)
         DRCI.get_item?(temp_item)
       end
     when 'need a more appropriate weapon', 'need to have a bladed instrument to skin'
