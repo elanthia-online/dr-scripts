@@ -1139,14 +1139,19 @@ class LootProcess
       # selects the LOOT type (treasure/equipment/all). Skip a corpse we've
       # already looted: it lingers dead in the roster until decay, so without
       # this we re-search it every pass.
-      unless corpse && @looted_corpse_ids.include?(corpse.id)
+      if corpse && @looted_corpse_ids.include?(corpse.id)
+        echo("corpse-track: skip loot ##{corpse.id} (already looted)") if $debug_mode_ct
+      else
         loot_target = corpse ? "##{corpse.id}" : nil
         loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
         while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it') == 'and get ready to search it'
           pause
           waitrt?
         end
-        @looted_corpse_ids << corpse.id if corpse
+        if corpse
+          @looted_corpse_ids << corpse.id
+          echo("corpse-track: mark ##{corpse.id} looted") if $debug_mode_ct
+        end
       end
       @last_ritual = nil
     end
@@ -1170,7 +1175,10 @@ class LootProcess
     return unless game_state.skinnable?(mob_noun)
     return if game_state.necro_casting?
     return unless corpse_present?(corpse)
-    return if corpse && @skinned_corpse_ids.include?(corpse.id)
+    if corpse && @skinned_corpse_ids.include?(corpse.id)
+      echo("corpse-track: skip arrange ##{corpse.id} (already skinned)") if $debug_mode_ct
+      return
+    end
 
     arranges = 0
     type = @arrange_types[mob_noun] || 'skin'
@@ -1186,7 +1194,10 @@ class LootProcess
       when 'You complete arranging', 'That has already been arranged', 'You make a serious mistake in the arranging process', 'Arrange what'
         break
       when 'already been skinned'
-        @skinned_corpse_ids << corpse.id if corpse
+        if corpse
+          @skinned_corpse_ids << corpse.id
+          echo("corpse-track: mark ##{corpse.id} skinned (via arrange)") if $debug_mode_ct
+        end
         break
       when 'cannot be skinned'
         game_state.unskinnable(mob_noun)
@@ -1241,7 +1252,10 @@ class LootProcess
     return unless game_state.dissectable?(mob_noun)
     # Already dissected this corpse -> it's dissected; don't re-fire dissect at a
     # corpse still lingering dead in the roster until it decays.
-    return true if corpse && @dissected_corpse_ids.include?(corpse.id)
+    if corpse && @dissected_corpse_ids.include?(corpse.id)
+      echo("corpse-track: skip dissect ##{corpse.id} (already dissected)") if $debug_mode_ct
+      return true
+    end
 
     if @dissect_for_thanatology
       return false if (DRSkill.getxp('Thanatology') == 34 && DRSkill.getxp('First Aid') == 34)
@@ -1272,7 +1286,10 @@ class LootProcess
                   "With less concern than you'd give a fresh corpse",
                   'Rituals do not work upon constructs')
     when /You succeed in dissecting the corpse/, /You learn something/i, "With less concern than you'd give a fresh corpse"
-      @dissected_corpse_ids << corpse.id if corpse
+      if corpse
+        @dissected_corpse_ids << corpse.id
+        echo("corpse-track: mark ##{corpse.id} dissected") if $debug_mode_ct
+      end
       return true
     when /You'll gain no insights from this attempt/
       waitrt?
@@ -1299,7 +1316,10 @@ class LootProcess
   def check_skinning(mob_noun, game_state, corpse)
     return unless game_state.skinnable?(mob_noun)
     return unless corpse_present?(corpse)
-    return if corpse && @skinned_corpse_ids.include?(corpse.id)
+    if corpse && @skinned_corpse_ids.include?(corpse.id)
+      echo("corpse-track: skip skin ##{corpse.id} (already skinned)") if $debug_mode_ct
+      return
+    end
 
     if game_state.need_bundle
       case DRC.bput('tap my bundle', 'You tap a \w+ bundle\b.*that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
@@ -1339,8 +1359,10 @@ class LootProcess
       # Skin started -> this corpse is done; don't re-arrange/re-skin it while it
       # lingers dead in the roster for the ~6-7s until it decays.
       @skinned_corpse_ids << corpse.id
+      echo("corpse-track: mark ##{corpse.id} skinned") if $debug_mode_ct
     when 'already been skinned'
       @skinned_corpse_ids << corpse.id
+      echo("corpse-track: mark ##{corpse.id} skinned (already)") if $debug_mode_ct
       return
     when 'You must have one hand free to skin'
       temp_item = DRC.left_hand
