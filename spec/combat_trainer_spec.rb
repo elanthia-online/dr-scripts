@@ -545,17 +545,27 @@ end
 RSpec.describe ManipulateProcess do
   before(:each) { ct_setup }
 
-  def build_manipulate(threshold: 2, manip_to_train: false, last_manip: Time.now - 200)
+  def build_manipulate(threshold: 2, manip_to_train: false, last_manip: Time.now - 200, ignored_npcs: [])
     mp = ManipulateProcess.allocate
     mp.instance_variable_set(:@threshold, threshold)
     mp.instance_variable_set(:@manip_to_train, manip_to_train)
     mp.instance_variable_set(:@last_manip, last_manip)
+    mp.instance_variable_set(:@ignored_npcs, ignored_npcs)
     mp
   end
 
   def gs_double(**attrs)
-    defaults = { danger: false, construct_mode?: false, npcs: %w[rat kobold] }
+    defaults = { danger: false, construct_mode?: false }
     double('GameState', defaults.merge(attrs))
+  end
+
+  # Live, hostile creatures are now sourced from Creature.targets, keyed by id.
+  def seed_targets(*creatures)
+    Lich::DragonRealms::Creature._set_room(creatures)
+  end
+
+  def creature(id:, noun: 'rat', name: 'a giant rat')
+    OpenStruct.new(id: id, noun: noun, name: name)
   end
 
   describe '#execute' do
@@ -582,17 +592,32 @@ RSpec.describe ManipulateProcess do
 
     it 'skips when empathy XP > 30 and manip_to_train set' do
       allow(DRSkill).to receive(:getxp).with('Empathy').and_return(31)
+      seed_targets(creature(id: 1))
       mp = build_manipulate(manip_to_train: true)
       mp.execute(gs_double)
       expect(mp.instance_variable_get(:@threshold)).not_to be_nil
     end
 
-    it 'manipulates when threshold met and cooldown elapsed' do
+    it 'manipulates live targets by id when threshold met and cooldown elapsed' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
-      gs = gs_double(npcs: %w[rat kobold])
+      seed_targets(creature(id: 1, noun: 'rat'), creature(id: 2, noun: 'kobold', name: 'a kobold'))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       build_manipulate(threshold: 2).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #2', any_args)
+    end
+
+    it 'excludes ignored npcs from the manipulate set' do
+      allow(DRSkill).to receive(:getxp).and_return(10)
+      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+      seed_targets(creature(id: 1, noun: 'rat'), creature(id: 2, noun: 'kobold', name: 'a kobold'))
+      gs = gs_double
+      allow(gs).to receive(:construct?).and_return(false)
+      build_manipulate(threshold: 1, ignored_npcs: ['kobold']).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).not_to have_received(:bput).with('manipulate friendship #2', any_args)
     end
 
     # BUG-FINDING: shock disables manipulation permanently for this hunt
@@ -600,38 +625,42 @@ RSpec.describe ManipulateProcess do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('deep sense of loss')
       allow(DRC).to receive(:message)
-      gs = gs_double(npcs: ['rat'])
+      seed_targets(creature(id: 1))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       mp = build_manipulate(threshold: 1)
       mp.execute(gs)
       expect(mp.instance_variable_get(:@threshold)).to be_nil
     end
 
-    # BUG-FINDING: verify construct marking propagates to game_state
+    # BUG-FINDING: verify construct marking propagates to game_state, keyed by noun
     it 'marks NPC as construct and that state persists' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('does not seem to have a life essence')
-      gs = gs_double(npcs: ['golem'])
+      seed_targets(creature(id: 1, noun: 'golem', name: 'a golem'))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       expect(gs).to receive(:construct).with('golem')
       build_manipulate(threshold: 1).execute(gs)
     end
 
-    # BUG-FINDING: threshold 0 with empty npcs still enters manipulate
+    # BUG-FINDING: threshold 0 with empty roster still enters manipulate
     # (0 >= 0 is true), verifying the loop body is a no-op
-    it 'threshold 0 with empty npcs enters manipulate but does nothing offensive' do
+    it 'threshold 0 with empty roster enters manipulate but does nothing offensive' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return("But you aren't manipulating anything")
+      seed_targets
       mp = build_manipulate(threshold: 0)
-      mp.execute(gs_double(npcs: []))
+      mp.execute(gs_double)
       expect(mp.instance_variable_get(:@last_manip)).to be_within(2).of(Time.now)
     end
 
     # BUG-FINDING: cooldown boundary -- 119 seconds should NOT trigger (needs > 120)
     it 'does not manipulate at 119s cooldown' do
       allow(DRSkill).to receive(:getxp).and_return(10)
+      seed_targets(creature(id: 1))
       mp = build_manipulate(threshold: 1, last_manip: Time.now - 119)
-      gs = gs_double(npcs: ['rat'])
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       mp.execute(gs)
       expect(mp.instance_variable_get(:@last_manip)).to be < Time.now - 100
@@ -641,7 +670,8 @@ RSpec.describe ManipulateProcess do
     it 'manipulates at 121s cooldown' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
-      gs = gs_double(npcs: ['rat'])
+      seed_targets(creature(id: 1))
+      gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       mp = build_manipulate(threshold: 1, last_manip: Time.now - 121)
       mp.execute(gs)
@@ -837,6 +867,58 @@ RSpec.describe AbilityProcess do
       allow(gs).to receive(:npcs).and_return(['rat'])
       build_ability(pounce_on_cooldown: true).execute(gs)
       expect(gs).not_to have_received(:pounce)
+    end
+  end
+
+  # -----------------------------------------------------------------
+  # #check_battle_cries -- DRRoom->Creature target migration.
+  # A target_enemy battle cry now resolves its NOUN to a live creature
+  # id (#<id>) at command time, falling back to the noun when no live
+  # match exists. The readiness gate likewise uses live creatures.
+  # -----------------------------------------------------------------
+  describe '#check_battle_cries live-creature targeting' do
+    def build_cry_ability
+      ap = build_ability(
+        battle_cries: [{ 'name' => 'Roar', 'command' => 'roar', 'target_enemy' => 'orc' }],
+        battle_cry_cycle: ['Roar']
+      )
+      allow(ap).to receive(:waitrt?)
+      allow(ap).to receive(:fput)
+      ap
+    end
+
+    it 'targets a live orc by creature id (at #222), not the noun' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 222, noun: 'orc', name: 'an orc')])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).to have_received(:fput).with('roar at #222')
+    end
+
+    # Fallback: the gate saw a live orc, but by command time the creature
+    # is gone (e.g. died, or the name-less window). find returns nil, so
+    # the command falls back to the configured noun.
+    it 'falls back to the noun (at orc) when no live creature matches' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 222, noun: 'orc', name: 'an orc')], [])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).to have_received(:fput).with('roar at orc')
+    end
+
+    it 'gate keeps a target_enemy battle cry when a live match exists' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 222, noun: 'orc', name: 'an orc')])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).to have_received(:fput).with('roar at #222')
+    end
+
+    it 'gate drops a target_enemy battle cry when no live creature matches' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+      ap = build_cry_ability
+      ap.send(:check_battle_cries, gs_double)
+      expect(ap).not_to have_received(:fput)
     end
   end
 end
@@ -1261,8 +1343,10 @@ RSpec.describe 'Multi-tick simulation' do
     mp.instance_variable_set(:@threshold, 1)
     mp.instance_variable_set(:@manip_to_train, false)
     mp.instance_variable_set(:@last_manip, Time.now - 200)
+    mp.instance_variable_set(:@ignored_npcs, [])
+    Lich::DragonRealms::Creature._set_room([OpenStruct.new(id: 1, noun: 'rat', name: 'a giant rat')])
 
-    gs = double('GameState', danger: false, construct_mode?: false, npcs: ['rat'])
+    gs = double('GameState', danger: false, construct_mode?: false)
     allow(gs).to receive(:construct?).and_return(false)
 
     manip_count = 0
@@ -1386,8 +1470,13 @@ RSpec.describe 'Nil and type-confused settings' do
     mp.instance_variable_set(:@threshold, "2".to_i)
     mp.instance_variable_set(:@manip_to_train, false)
     mp.instance_variable_set(:@last_manip, Time.now - 200)
+    mp.instance_variable_set(:@ignored_npcs, [])
+    Lich::DragonRealms::Creature._set_room([
+                                             OpenStruct.new(id: 1, noun: 'rat', name: 'a giant rat'),
+                                             OpenStruct.new(id: 2, noun: 'kobold', name: 'a kobold')
+                                           ])
 
-    gs = double('GameState', danger: false, construct_mode?: false, npcs: %w[rat kobold])
+    gs = double('GameState', danger: false, construct_mode?: false)
     allow(gs).to receive(:construct?).and_return(false)
 
     expect { mp.execute(gs) }.not_to raise_error
@@ -1594,7 +1683,11 @@ RSpec.describe SetupProcess do
 end
 
 # ===========================================================================
-# ManipulateProcess#manipulate -- ordinal targeting for duplicate NPCs
+# ManipulateProcess#manipulate -- id-based targeting (no ordinals)
+#
+# Duplicate same-noun mobs are told apart by their stable <crtrStatus> id,
+# so the old $ORDINALS "second kobold" disambiguation is gone: every
+# manipulate addresses '#<id>'.
 # ===========================================================================
 RSpec.describe ManipulateProcess do
   def build_manipulate_process(**overrides)
@@ -1603,7 +1696,8 @@ RSpec.describe ManipulateProcess do
       threshold: 5,
       manip_to_train: false,
       last_manip: Time.now - 200,
-      filtered_npcs: []
+      ignored_npcs: [],
+      targets: []
     }
     defaults.merge(overrides).each do |k, v|
       instance.instance_variable_set(:"@#{k}", v)
@@ -1612,15 +1706,14 @@ RSpec.describe ManipulateProcess do
   end
 
   def build_game_state(**attrs)
-    defaults = {
-      npcs: [],
-      danger: false,
-      construct_mode?: false
-    }
-    state = double('GameState', defaults.merge(attrs))
+    state = double('GameState', { danger: false, construct_mode?: false }.merge(attrs))
     allow(state).to receive(:construct?).and_return(false)
     allow(state).to receive(:construct)
     state
+  end
+
+  def creature(id:, noun: 'rat', name: 'a giant rat')
+    OpenStruct.new(id: id, noun: noun, name: name)
   end
 
   describe '#manipulate' do
@@ -1628,70 +1721,54 @@ RSpec.describe ManipulateProcess do
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
     end
 
-    context 'when all NPCs have different nouns' do
-      it 'uses "first" ordinal for each NPC' do
+    context 'when all creatures have different nouns' do
+      it 'targets each creature by its id' do
         game_state = build_game_state
         instance = build_manipulate_process(
           threshold: 3,
-          filtered_npcs: %w[rat kobold goblin]
+          targets: [creature(id: 11, noun: 'rat'), creature(id: 22, noun: 'kobold'), creature(id: 33, noun: 'goblin')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first goblin/, any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #22', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #33', any_args)
       end
     end
 
-    context 'when multiple NPCs share the same noun' do
-      it 'uses incrementing ordinals for duplicate nouns' do
+    context 'when multiple creatures share the same noun' do
+      it 'tells them apart by distinct id, with no ordinal prefixes' do
         game_state = build_game_state
         instance = build_manipulate_process(
           threshold: 3,
-          filtered_npcs: %w[rat rat rat]
+          targets: [creature(id: 11, noun: 'rat'), creature(id: 12, noun: 'rat'), creature(id: 13, noun: 'rat')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship third rat/, any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #12', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #13', any_args)
+        expect(DRC).not_to have_received(:bput).with(/first|second|third/, any_args)
       end
     end
 
-    context 'when mixed duplicate and unique NPCs are present' do
-      it 'tracks ordinals independently per noun' do
-        game_state = build_game_state
-        instance = build_manipulate_process(
-          threshold: 4,
-          filtered_npcs: %w[rat kobold rat kobold]
-        )
-
-        instance.send(:manipulate, game_state)
-
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first kobold/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second kobold/, any_args)
-      end
-    end
-
-    context 'when an NPC is a construct' do
-      it 'skips constructs and does not increment ordinal for that noun' do
+    context 'when a creature is a construct' do
+      it 'skips it by noun and manipulates the rest by id' do
         game_state = build_game_state
         allow(game_state).to receive(:construct?).with('golem').and_return(true)
         allow(game_state).to receive(:construct?).with('rat').and_return(false)
 
         instance = build_manipulate_process(
           threshold: 2,
-          filtered_npcs: %w[golem rat]
+          targets: [creature(id: 11, noun: 'golem'), creature(id: 22, noun: 'rat')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).not_to have_received(:bput).with(/manipulate friendship .* golem/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
+        expect(DRC).not_to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #22', any_args)
       end
     end
 
@@ -1700,14 +1777,33 @@ RSpec.describe ManipulateProcess do
         game_state = build_game_state
         instance = build_manipulate_process(
           threshold: 2,
-          filtered_npcs: %w[rat rat rat]
+          targets: [creature(id: 11, noun: 'rat'), creature(id: 12, noun: 'rat'), creature(id: 13, noun: 'rat')]
         )
 
         instance.send(:manipulate, game_state)
 
-        expect(DRC).to have_received(:bput).with(/manipulate friendship first rat/, any_args)
-        expect(DRC).to have_received(:bput).with(/manipulate friendship second rat/, any_args)
-        expect(DRC).not_to have_received(:bput).with(/manipulate friendship third rat/, any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #11', any_args)
+        expect(DRC).to have_received(:bput).with('manipulate friendship #12', any_args)
+        expect(DRC).not_to have_received(:bput).with('manipulate friendship #13', any_args)
+      end
+    end
+
+    context 'during the name-less crtrStatus window' do
+      # An id can arrive before its noun. We still manipulate it by id, and
+      # never construct-mark a nil noun.
+      it 'manipulates a nil-noun creature by id and does not construct-mark it' do
+        game_state = build_game_state
+        allow(DRC).to receive(:bput).and_return('does not seem to have a life essence')
+
+        instance = build_manipulate_process(
+          threshold: 1,
+          targets: [creature(id: 55, noun: nil, name: nil)]
+        )
+
+        instance.send(:manipulate, game_state)
+
+        expect(DRC).to have_received(:bput).with('manipulate friendship #55', any_args)
+        expect(game_state).not_to have_received(:construct)
       end
     end
   end
@@ -3881,6 +3977,101 @@ RSpec.describe SpellProcess do
   end
 
   # ===========================================================================
+  # target_enemy -> live-creature migration. An offensive spell's configured
+  # target_enemy stays a NOUN in config (ids are not stable across hunts), but at
+  # runtime we resolve that noun to a LIVE + HOSTILE Lich::DragonRealms::Creature
+  # and face it by #<id>, falling back to the noun when no live creature matches
+  # (e.g. the name-less crtrStatus window). This branch's harness Creature stub
+  # has no `targets`, so it is stubbed per-example (verify_partial_doubles is off).
+  # ===========================================================================
+  describe 'target_enemy live-creature targeting' do
+    def build_prep_state(**attrs)
+      gs = GameState.allocate
+      { casting: false, cast_timer: nil }.merge(attrs).each { |k, v| gs.send(:"#{k}=", v) }
+      gs
+    end
+
+    describe '#prepare_spell' do
+      before(:each) do
+        # prepare_spell continues into DRCA.prepare? after facing; stop it there
+        # so these examples isolate the face command.
+        allow(DRCA).to receive(:prepare?).and_return(false)
+      end
+
+      it 'faces the live creature by id (#111) when a matching noun is on the roster' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets)
+          .and_return([OpenStruct.new(id: 111, noun: 'kobold', name: 'a kobold')])
+
+        instance = build_spell_process
+        allow(instance).to receive(:fput)
+        gs = build_prep_state
+        data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'target_enemy' => 'kobold' }
+
+        instance.send(:prepare_spell, data, gs)
+
+        expect(instance).to have_received(:fput).with('face #111')
+        expect(instance).not_to have_received(:fput).with('face kobold')
+      end
+
+      it 'falls back to the configured noun when no live creature matches' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+
+        instance = build_spell_process
+        allow(instance).to receive(:fput)
+        gs = build_prep_state
+        data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'target_enemy' => 'kobold' }
+
+        instance.send(:prepare_spell, data, gs)
+
+        expect(instance).to have_received(:fput).with('face kobold')
+      end
+    end
+
+    describe '#check_offensive selection gate' do
+      def build_offensive_state
+        double('GameState', casting: false, npcs: ['a kobold'],
+                            is_offense_allowed?: true, dancing?: false,
+                            sort_by_rate_then_rank: ['Warding'])
+      end
+
+      let(:target_enemy_spell) do
+        { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'skill' => 'Warding', 'target_enemy' => 'kobold' }
+      end
+
+      def build_target_enemy_process
+        build_spell_process(
+          offensive_spells: [target_enemy_spell],
+          offensive_spell_cycle: [],
+          offensive_spell_mana_threshold: 0
+        )
+      end
+
+      it 'rejects the spell when no live creature matches the configured noun' do
+        DRStats.mana = 100
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+
+        instance = build_target_enemy_process
+        gs = build_offensive_state
+
+        expect(instance).not_to receive(:prepare_spell)
+        instance.send(:check_offensive, gs)
+      end
+
+      it 'keeps the spell when a live creature matches the configured noun' do
+        DRStats.mana = 100
+        allow(Lich::DragonRealms::Creature).to receive(:targets)
+          .and_return([OpenStruct.new(id: 111, noun: 'kobold', name: 'a kobold')])
+
+        instance = build_target_enemy_process
+        gs = build_offensive_state
+
+        expect(instance).to receive(:prepare_spell).with(hash_including('target_enemy' => 'kobold'), gs)
+        instance.send(:check_offensive, gs)
+      end
+    end
+  end
+
+  # ===========================================================================
   # #spell_disabled? / #disable_spell -- boundary and edge behavior
   # ===========================================================================
   describe '#disable_spell / #spell_disabled?' do
@@ -4847,6 +5038,47 @@ RSpec.describe TrainerProcess do
 end
 
 # ===================================================================
+# TrainerProcess -- Recall ability (DRRoom->Creature migration)
+#
+# The Recall ability now targets a LIVE hostile creature by id
+# (recall #<id>) via Lich::DragonRealms::Creature.targets, instead of
+# an arbitrary DRRoom noun from game_state.npcs. Driven through
+# #execute with select_ability stubbed to 'Recall', the same way the
+# dispatch fires at runtime.
+# ===================================================================
+RSpec.describe 'TrainerProcess#execute Recall' do
+  before(:each) { ct_setup }
+
+  def build_trainer
+    trainer = TrainerProcess.allocate
+    allow(trainer).to receive(:waitrt?)
+    allow(trainer).to receive(:select_ability).and_return('Recall')
+    trainer
+  end
+
+  it 'recalls the live hostile target by id, not by DRRoom noun' do
+    allow(Lich::DragonRealms::Creature).to receive(:targets)
+      .and_return([OpenStruct.new(id: 333, noun: 'goblin', name: 'a goblin')])
+    allow(DRC).to receive(:bput)
+
+    build_trainer.execute(double('GameState', danger: false))
+
+    expect(DRC).to have_received(:bput)
+      .with('recall #333', 'Roundtime', 'You are far too occupied', 'You search your mind')
+    expect(DRC).not_to have_received(:bput).with('recall goblin', any_args)
+  end
+
+  it 'issues no recall when there are no live targets' do
+    allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([])
+    allow(DRC).to receive(:bput)
+
+    build_trainer.execute(double('GameState', danger: false))
+
+    expect(DRC).not_to have_received(:bput)
+  end
+end
+
+# ===================================================================
 # Summoned-weapon-aware store/restore (Issue 1 regression)
 #
 # A moon mage (or warrior mage) trains with a SUMMONED weapon whose
@@ -5005,6 +5237,78 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
       gs.stow_or_store_weapon
       gs.restore_weapon
       expect(gs).to have_received(:prepare_summoned_weapon).with(false)
+    end
+  end
+
+  # -----------------------------------------------------------------
+  # #appraise -- targets live creatures by id (Creature migration)
+  #
+  # appraise now walks Lich::DragonRealms::Creature.targets (live +
+  # hostile) and issues `app #<id> <modifier>`, keying the "already
+  # appraised" memory (@no_app) on the creature id instead of the noun.
+  # Verify the id-based command, the id-keyed dedup, and the rank gate.
+  # -----------------------------------------------------------------
+  describe '#appraise' do
+    def build_appraiser(no_app: [])
+      trainer = TrainerProcess.allocate
+      trainer.instance_variable_set(:@no_app, no_app)
+      trainer
+    end
+
+    def appraise_state(retreating: false)
+      double('GameState', retreating?: retreating)
+    end
+
+    before(:each) do
+      allow(DRSkill).to receive(:getrank).with('Appraisal').and_return(100)
+    end
+
+    it 'issues `app #<id>` for the live creature, not `app <noun>`' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 444, noun: 'troll', name: 'a troll')])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      build_appraiser.send(:appraise, appraise_state, 'value')
+
+      expect(DRC).to have_received(:bput).with('app #444 value', any_args)
+      expect(DRC).not_to have_received(:bput).with('app troll value', any_args)
+    end
+
+    it 'records the id on a `Perhaps that` response and skips it next call' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 444, noun: 'troll', name: 'a troll')])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      trainer = build_appraiser
+      trainer.send(:appraise, appraise_state, 'value')
+      expect(trainer.instance_variable_get(:@no_app)).to eq([444])
+
+      # Only the one live target remains and it is already appraised -> no bput.
+      trainer.send(:appraise, appraise_state, 'value')
+      expect(DRC).to have_received(:bput).once
+    end
+
+    it 'appraises the next live target when the first id is already recorded' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([
+        OpenStruct.new(id: 444, noun: 'troll', name: 'a troll'),
+        OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre')
+      ])
+      allow(DRC).to receive(:bput).and_return('Perhaps that')
+
+      build_appraiser(no_app: [444]).send(:appraise, appraise_state, 'value')
+
+      expect(DRC).to have_received(:bput).with('app #555 value', any_args)
+    end
+
+    it 'does not appraise when Appraisal rank is below 76' do
+      allow(DRSkill).to receive(:getrank).with('Appraisal').and_return(75)
+      allow(Lich::DragonRealms::Creature).to receive(:targets)
+        .and_return([OpenStruct.new(id: 444, noun: 'troll', name: 'a troll')])
+      allow(DRC).to receive(:bput)
+
+      build_appraiser.send(:appraise, appraise_state, 'value')
+
+      expect(DRC).not_to have_received(:bput)
     end
   end
 end
@@ -6254,6 +6558,122 @@ RSpec.describe LootProcess do
       expect(DRC).to have_received(:message)
         .with("*** combat-trainer: butcher failed - wrong/missing corpse target (tried 'a giant rat' #111)")
       expect(perform_commands).to eq(['perform preserve on #111', 'perform butcher on #111'])
+    end
+  end
+end
+
+# ===================================================================
+# LootProcess -- dead-body targeting by creature id (non-necro path)
+#
+# `dissect` and last-rites `pray` used to interpolate the bare noun from
+# DRRoom.dead_npcs, which can bind to a LIVE same-noun mob that wandered
+# in between the kill and the dissect (dissect then fails on the living
+# creature). They now address the specific dead body by its stable
+# <crtrStatus> id, selected from Creature.in_room(:dead).
+# ===================================================================
+RSpec.describe LootProcess do
+  before(:each) do
+    ct_setup
+    allow(DRC).to receive(:message)
+  end
+
+  let(:corpse) { OpenStruct.new(id: 111, noun: 'rat', name: 'a giant rat') }
+
+  def dissect_game_state
+    state = double('GameState')
+    allow(state).to receive(:dissectable?).and_return(true)
+    allow(state).to receive(:construct)
+    allow(state).to receive(:undissectable)
+    state
+  end
+
+  def build_dissect_loot(**overrides)
+    lp = LootProcess.allocate
+    defaults = { dissect: true, skin: false, dissect_for_thanatology: false, dissect_cycle_skills: [] }
+    defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+    lp
+  end
+
+  describe '#dissected?' do
+    before(:each) { allow(DRSkill).to receive(:getxp).and_return(0) }
+
+    it 'addresses the corpse by id, never by noun' do
+      allow(DRC).to receive(:bput).and_return('You succeed in dissecting the corpse')
+      build_dissect_loot.send(:dissected?, corpse, dissect_game_state)
+      expect(DRC).to have_received(:bput).with('dissect #111', any_args)
+      expect(DRC).not_to have_received(:bput).with('dissect rat', any_args)
+    end
+
+    it 'falls back to a bare dissect for the nil-corpse retry' do
+      allow(DRC).to receive(:bput).and_return('You succeed in dissecting the corpse')
+      build_dissect_loot.send(:dissected?, nil, dissect_game_state)
+      expect(DRC).to have_received(:bput).with('dissect', any_args)
+    end
+
+    it 'retries with a bare dissect when the corpse "would probably object"' do
+      responses = ['would probably object', 'You succeed in dissecting the corpse']
+      allow(DRC).to receive(:bput) { responses.shift }
+      build_dissect_loot.send(:dissected?, corpse, dissect_game_state)
+      expect(DRC).to have_received(:bput).with('dissect #111', any_args)
+      expect(DRC).to have_received(:bput).with('dissect', any_args)
+    end
+
+    it 'marks a construct by noun when rituals do not work on it' do
+      allow(DRC).to receive(:bput).and_return('Rituals do not work upon constructs')
+      gs = dissect_game_state
+      expect(gs).to receive(:construct).with('rat')
+      expect(gs).to receive(:undissectable).with('rat')
+      build_dissect_loot.send(:dissected?, corpse, gs)
+    end
+
+    # name-less crtrStatus window: id present, noun not yet. We still dissect by
+    # id, and never pollute the species memory with a nil noun.
+    it 'does not construct-mark a nil-noun corpse' do
+      allow(DRC).to receive(:bput).and_return('Rituals do not work upon constructs')
+      nameless = OpenStruct.new(id: 55, noun: nil, name: nil)
+      gs = dissect_game_state
+      build_dissect_loot.send(:dissected?, nameless, gs)
+      expect(DRC).to have_received(:bput).with('dissect #55', any_args)
+      expect(gs).not_to have_received(:construct)
+      expect(gs).not_to have_received(:undissectable)
+    end
+  end
+
+  def build_dispose_loot(**overrides)
+    lp = LootProcess.allocate
+    defaults = {
+      loot_bodies: true, loot_timer: Time.now - 100, loot_delay: 0,
+      last_rites: true, last_rites_timer: Time.now - 700, custom_loot_type: ''
+    }
+    defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+    lp
+  end
+
+  describe '#dispose_body' do
+    it 'prays over the corpse by id for last rites' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You pray fervently')
+      gs = double('GameState', blessed_room: true)
+      allow(gs).to receive(:mob_died=)
+      build_dispose_loot.dispose_body(gs)
+      expect(DRC).to have_received(:bput).with('pray #111', any_args)
+    end
+
+    # DRRoom says a body is present, but no id is available yet (roster divergence
+    # / name-less window). We must NOT fall back to the noun -- that reintroduces
+    # the live/dead collision -- so we skip dead-body actions this tick.
+    it 'skips pray/dissect when no corpse id is available' do
+      DRRoom.dead_npcs = ['rat']
+      Lich::DragonRealms::Creature._set_room([])
+      allow(DRC).to receive(:bput).and_return('Roundtime')
+      gs = double('GameState', blessed_room: true, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      build_dispose_loot.dispose_body(gs)
+      expect(DRC).not_to have_received(:bput).with(/\Apray /, any_args)
+      expect(DRC).not_to have_received(:bput).with(/\Adissect/, any_args)
     end
   end
 end
