@@ -94,6 +94,7 @@ load_lic_class('moonwatch.lic', 'MoonwatchLogger')
 load_lic_class('moonwatch.lic', 'ServerResetTracker')
 load_lic_class('moonwatch.lic', 'MoonwatchUI')
 load_lic_constant('moonwatch.lic', 'MOON_PHASE_LINE_PATTERN')
+load_lic_constant('moonwatch.lic', 'MOON_HIDDEN_PHASE_LINE_PATTERN')
 
 RSpec.describe 'moonwatch.lic' do
   # A recent server_time landing on day-of-year 307, year 455.
@@ -411,7 +412,8 @@ RSpec.describe 'moonwatch.lic' do
 
     describe '.observed_phase_name' do
       it 'maps each known DR observe wording to its phase' do
-        expect(Moons.observed_phase_name('turns up fruitless')).to eq('new') # Moon Mage dark-moon sense
+        expect(Moons.observed_phase_name('turns up fruitless')).to eq('new') # Moon Mage, dark moon below horizon
+        expect(Moons.observed_phase_name('is hidden from you, but its energy is quite strong')).to eq('new') # Moon Mage, dark moon risen
         expect(Moons.observed_phase_name('is a growing crescent of light')).to eq('waxing crescent')
         expect(Moons.observed_phase_name('looks down from above')).to eq('first quarter')
         expect(Moons.observed_phase_name('has nearly turned its full face upon Elanthia')).to eq('waxing gibbous')
@@ -472,6 +474,45 @@ RSpec.describe 'moonwatch.lic' do
         m = MOON_PHASE_LINE_PATTERN.match('Your search for the black moon Katamba turns up fruitless.')
         expect(m).not_to be_nil
         expect(Moons.observed_phase_name(m[:phase_desc].strip)).to eq('new')
+      end
+
+      # The above-horizon dark-moon reading uses the bare moon name, so
+      # MOON_PHASE_LINE_PATTERN cannot see it -- it must NOT match here.
+      it 'does not match the bare-name "hidden ... energy" reading' do
+        expect(MOON_PHASE_LINE_PATTERN.match('Xibar is hidden from you, but its energy is quite strong.')).to be_nil
+      end
+    end
+
+    # A Moon Mage observing a RISEN dark (new) moon gets "<M> is hidden from you,
+    # but its energy is quite strong." -- bare name, no "moon <M>", so the main
+    # phase pattern misses it. This dedicated pattern captures it, and its clause
+    # maps to 'new'. Below the horizon the same moon reads "fruitless" instead.
+    describe 'MOON_HIDDEN_PHASE_LINE_PATTERN' do
+      it 'captures the up-and-new reading for each moon and maps it to new' do
+        [
+          'Katamba is hidden from you, but its energy is quite strong.',
+          'Xibar is hidden from you, but its energy is quite strong.',
+          'Yavash is hidden from you, but its energy is quite strong.'
+        ].each do |line|
+          m = MOON_HIDDEN_PHASE_LINE_PATTERN.match(line)
+          expect(m).not_to be_nil, "expected to match: #{line}"
+          expect(Moons.observed_phase_name(m[:phase_desc].strip)).to eq('new')
+        end
+      end
+
+      it 'extracts the moon name via the named capture' do
+        m = MOON_HIDDEN_PHASE_LINE_PATTERN.match('Xibar is hidden from you, but its energy is quite strong.')
+        expect(m[:moon].downcase).to eq('xibar')
+      end
+
+      it 'ignores the below-horizon and weather non-readings' do
+        [
+          'Your search for the blue moon Xibar turns up fruitless.',
+          'Katamba is nowhere to be seen.',
+          'Xibar is unobscured by clouds.'
+        ].each do |line|
+          expect(MOON_HIDDEN_PHASE_LINE_PATTERN.match(line)).to be_nil, "should not match: #{line}"
+        end
       end
     end
   end
