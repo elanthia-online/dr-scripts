@@ -145,11 +145,16 @@ class Healer
   TRANSFER_NOT_FOUND_PATTERN = /What do you want to get/.freeze
   TRANSFER_RESPONSES = [TRANSFER_SUCCESS_PATTERN, TRANSFER_NOT_FOUND_PATTERN].freeze
 
-  # Patterns for whisper responses
+  # Patterns for whisper responses. "Whisper what to who?" is the game's reply when
+  # the target isn't a valid whisper recipient (e.g. the patient left the room in the
+  # window between our in-room check and the whisper). Without it, DRC.bput finds no
+  # match and blocks for its full timeout while spamming "No match found" before
+  # returning -- so it's matched here to let the whisper fail fast.
   WHISPER_RESPONSES = [
     /^You whisper/i,
     /could not find/i,
-    /You are unable to whisper/i
+    /You are unable to whisper/i,
+    /^Whisper what to who\?/i
   ].freeze
 
   # All trigger patterns for healing requests (order matters - first match wins)
