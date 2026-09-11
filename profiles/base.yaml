@@ -2446,8 +2446,9 @@ inventory_manager_vault_surfaces:
 
 # Declares BriefInv's known on/off state so add_current_inv can skip the
 # `toggle list` check before toggling it off (and back on) around a
-# character inventory scan. Leave unset to have the script check for you.
-inventory_manager_briefinv: true
+# character inventory scan. Leave empty (or set true/false per-character) to
+# have the script check for you.
+inventory_manager_briefinv:
 
 ####################
 # Stabbity
