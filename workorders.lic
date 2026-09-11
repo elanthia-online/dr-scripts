@@ -213,7 +213,7 @@ class WorkOrders
       materials_info = crafting_data['stock'][@workorders_materials['wood_type']]
       skill = 'Engineering'
       @engineering_room = @settings.engineering_room
-      tools = @settings.engineering_tools
+      tools = @settings.shaping_tools || @settings.engineering_tools
       @belt = @settings.engineering_belt
       craft_method = :shape_items
     when 'carving'
@@ -224,7 +224,7 @@ class WorkOrders
                        end
       skill = 'Engineering'
       @engineering_room = @settings.engineering_room
-      tools = @settings.engineering_tools
+      tools = @settings.carving_tools || @settings.engineering_tools
       @belt = @settings.engineering_belt
       craft_method = :carve_items
     when 'remedies'
