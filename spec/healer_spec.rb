@@ -316,7 +316,7 @@ RSpec.describe Healer do
       allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(dead_clear)
 
       expect(DRC).to receive(:bput)
-        .with("whisper Tenuk You're dead -- get a cleric!", anything, anything, anything)
+        .with("whisper Tenuk You're dead -- get a cleric!", *Healer::WHISPER_RESPONSES)
 
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
 
@@ -348,6 +348,36 @@ RSpec.describe Healer do
       healer.send(:heal_patient, healer.get_patient('Tenuk'))
 
       expect(healer.instance_variable_get(:@spell_task)).to be_nil
+    end
+  end
+
+  # ============================================================
+  # Whisper Responses
+  # ============================================================
+
+  describe 'WHISPER_RESPONSES' do
+    # Regression: the game replies "Whisper what to who?" when the target isn't a
+    # valid recipient (e.g. the patient left between our room check and the whisper).
+    # If no pattern matches it, DRC.bput blocks for its full timeout and spams
+    # "No match found" before returning. See complete_healing / dead-patient whispers.
+    it 'matches the "Whisper what to who?" failure so bput does not block on timeout' do
+      expect(Healer::WHISPER_RESPONSES.any? { |p| p.match?('Whisper what to who?') }).to be true
+    end
+
+    it 'still matches a successful whisper' do
+      expect(Healer::WHISPER_RESPONSES.any? { |p| p.match?('You whisper to Tenuk, "Done!"') }).to be true
+    end
+
+    it 'passes the whisper responses to bput when completing healing' do
+      healer = build_healer(friends: ['Tenuk'])
+      healer.add_patient('Tenuk')
+
+      expect(DRC).to receive(:bput)
+        .with('whisper Tenuk Done!', *Healer::WHISPER_RESPONSES)
+
+      healer.send(:complete_healing, 'Tenuk')
+
+      expect(healer.patients).to be_empty
     end
   end
 
