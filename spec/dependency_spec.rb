@@ -235,12 +235,12 @@ end
 
 RSpec.describe 'Dependency Structure' do
   describe 'version' do
-    it 'declares version 4.2.2' do
-      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.2.2'")
+    it 'declares version 4.2.3' do
+      expect(DEP_SOURCE).to include("$DEPENDENCY_VERSION = '4.2.3'")
     end
 
-    it 'requires minimum lich version 5.20.0' do
-      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.20.0'")
+    it 'requires minimum lich version 5.21.0' do
+      expect(DEP_SOURCE).to include("$MIN_LICH_VERSION = '5.21.0'")
     end
   end
 
