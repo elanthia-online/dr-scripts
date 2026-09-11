@@ -465,7 +465,43 @@ class InventoryManager
   end
 
   def add_current_inv
-    check_inventory("inv list", /^You have:/, 'character')
+    was_on = briefinv_state
+    if was_on.nil?
+      DRC.message('inventory-manager: could not determine BriefInv state -- skipping automatic toggle.')
+      return check_inventory("inv list", /^You have:/, 'character')
+    end
+
+    DRC.bput('toggle briefinv', /^You will/) if was_on
+    begin
+      check_inventory("inv list", /^You have:/, 'character')
+    ensure
+      DRC.bput('toggle briefinv', /^You will/) if was_on
+    end
+  end
+
+  # inventory_manager_briefinv lets a profile declare BriefInv's known state so
+  # add_current_inv can skip the `toggle list` round trip. Unset falls back to
+  # checking live.
+  def briefinv_state
+    configured = @settings.inventory_manager_briefinv
+    return configured unless configured.nil?
+
+    briefinv_on?
+  end
+
+  # Reads the BriefInv row out of `toggle list`'s ASCII table without flipping
+  # anything. Returns nil if the row can't be found, so the caller can leave
+  # the toggle alone rather than guess.
+  def briefinv_on?
+    capture = capture_command('toggle list', /^Your current toggles are:/)
+    capture.each do |line|
+      clean = clean_item_line(line)
+      next if clean.nil?
+      next unless (match = clean.match(/^\|(.)\|\s*BriefInv\s*\|/))
+
+      return match[1].strip.casecmp('X').zero?
+    end
+    nil
   end
 
   def add_register_inv
