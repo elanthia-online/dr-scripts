@@ -827,6 +827,14 @@ instrument:
   specific_descriptions:
     first-aid: Used just as a Zills check. If you have this specified, first-aid won't try to pause playing.
 
+inventory_manager_briefinv:
+  description: Declares whether BriefInv is currently on, so inventory-manager can skip live-checking `toggle list` before toggling it off (and back on) around a character inventory scan.
+  example: true/false
+  referenced_by:
+    - inventory-manager
+  specific_descriptions:
+    inventory-manager:
+
 lockpick_container:
   description: Name of the container containing a loose lockpick for use with various lockpicking scripts
   example: sturdy backpack
