@@ -5,6 +5,14 @@
 require 'time'
 
 class Sew
+  CLOTH = [
+    'silk', 'wool', 'burlap', 'cotton', 'felt', 'linen',
+    'electroweave', 'steelsilk', 'arzumodine', 'bourde',
+    'dergatine', 'dragonar', 'faeweave', 'farandine',
+    'imperial weave', 'jaspe', 'khaddar', 'ruazin',
+    'titanese', 'zenganne'
+  ].freeze
+
   def initialize
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
@@ -57,7 +65,7 @@ class Sew
     @chapter = args.chapter.nil? ? 1 : args.chapter.to_i
     @info = get_data('crafting')['tailoring'][@hometown]
     @instructions = args.instructions
-    @cloth = %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne]
+    @cloth = CLOTH
     @pin_pokes = 0
 
     DRC.wait_for_script_to_complete('buff', ['sew'])
