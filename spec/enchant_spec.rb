@@ -430,4 +430,55 @@ RSpec.describe Enchant do
       instance.send(:handle_resume)
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # handle_imbue_resume - regression: single-item brazier must not time out
+  # (issue #7553)
+  # ---------------------------------------------------------------------------
+
+  describe '#handle_imbue_resume' do
+    it 'imbues directly when the fount is the only item on the brazier' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount.')
+
+      expect(instance).to receive(:imbue)
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:handle_imbue_resume)
+    end
+
+    it 'imbues directly when the fount is present alongside other items' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount and a totem.')
+
+      expect(instance).to receive(:imbue)
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:handle_imbue_resume)
+    end
+
+    it 'detects the fount on a public enchanter\'s brazier' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return("On the enchanter's brazier you see a fount.")
+
+      expect(instance).to receive(:imbue)
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:handle_imbue_resume)
+    end
+
+    it 'fetches and waves a fount when none is on the brazier' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).with(/^look on/, anything, anything)
+                                  .and_return('On the brass brazier you see a totem.')
+      allow(DRC).to receive(:bput).with(/^wave my fount/, anything, anything)
+                                  .and_return(Enchant::WAVE_FOUNT_NOT_NEEDED)
+
+      expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
+      expect(DRCC).to receive(:stow_crafting_item).with('fount', 'backpack', 'toolbelt')
+      expect(instance).to receive(:imbue)
+
+      instance.send(:handle_imbue_resume)
+    end
+  end
 end
