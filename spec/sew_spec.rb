@@ -1107,7 +1107,7 @@ RSpec.describe Sew do
       sew.instance_variable_set(:@mat_type, 'burlap')
       sew.instance_variable_set(:@knit, nil)
       sew.instance_variable_set(:@chapter, 1)
-      sew.instance_variable_set(:@cloth, %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne] << 'imperial weave')
+      sew.instance_variable_set(:@cloth, Sew::CLOTH)
       sew.instance_variable_set(:@cube, nil)
     end
 
@@ -1460,6 +1460,15 @@ RSpec.describe Sew do
         end
       end
 
+      it 'falls through to leather for bare imperial' do
+        sew.instance_variable_set(:@mat_type, 'imperial')
+        sew.instance_variable_set(:@recipe_name, 'small rucksack')
+
+        result = sew.send(:prep)
+
+        expect(result).to eq('cut my imperial leather with my scissors')
+      end
+
       it 'falls through to leather for non-cloth materials' do
         sew.instance_variable_set(:@mat_type, 'deer')
         sew.instance_variable_set(:@recipe_name, 'small rucksack')
@@ -1637,6 +1646,17 @@ RSpec.describe Sew do
           "Unguarded .include? on hand at line #{idx + 1}: #{line.strip}"
         )
       end
+    end
+  end
+
+  describe 'CLOTH' do
+    it 'includes imperial weave and excludes bare imperial' do
+      expect(Sew::CLOTH).to include('imperial weave')
+      expect(Sew::CLOTH).not_to include('imperial')
+    end
+
+    it 'is frozen' do
+      expect(Sew::CLOTH).to be_frozen
     end
   end
 end
