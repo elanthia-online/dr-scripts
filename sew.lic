@@ -57,7 +57,7 @@ class Sew
     @chapter = args.chapter.nil? ? 1 : args.chapter.to_i
     @info = get_data('crafting')['tailoring'][@hometown]
     @instructions = args.instructions
-    @cloth = %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne]
+    @cloth = %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne] << 'imperial weave'
     @pin_pokes = 0
 
     DRC.wait_for_script_to_complete('buff', ['sew'])

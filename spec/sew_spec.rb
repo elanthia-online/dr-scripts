@@ -1107,7 +1107,7 @@ RSpec.describe Sew do
       sew.instance_variable_set(:@mat_type, 'burlap')
       sew.instance_variable_set(:@knit, nil)
       sew.instance_variable_set(:@chapter, 1)
-      sew.instance_variable_set(:@cloth, %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne])
+      sew.instance_variable_set(:@cloth, %w[silk wool burlap cotton felt linen electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine imperial jaspe khaddar ruazin titanese zenganne] << 'imperial weave')
       sew.instance_variable_set(:@cube, nil)
     end
 
@@ -1450,7 +1450,7 @@ RSpec.describe Sew do
       end
 
       it 'recognizes exotic cloth types' do
-        %w[electroweave steelsilk arzumodine bourde dergatine dragonar faeweave farandine].each do |mat|
+        ['electroweave', 'steelsilk', 'arzumodine', 'bourde', 'dergatine', 'dragonar', 'faeweave', 'farandine', 'imperial weave'].each do |mat|
           sew.instance_variable_set(:@mat_type, mat)
           sew.instance_variable_set(:@recipe_name, 'small rucksack')
 
