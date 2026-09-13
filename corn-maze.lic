@@ -716,11 +716,8 @@ class CornMaze
   end
 
   def stow_thing(thing)
-    if @settings.cornmaze_containers.any?
-      @settings.cornmaze_containers.each do |container|
-        return if DRCI.put_away_item?(thing, container)
-      end
-    end
+    return if @settings.cornmaze_containers.any? { |container| DRCI.put_away_item?(thing, container) }
+
     unless DRCI.stow_item?(thing)
       DRC.message("YOU'VE RUN OUT OF ROOM!  GET SOME MORE SPACE, YOU LAZY SLOB!")
       DRCI.dispose_trash(thing, @worn_trashcan, @worn_trashcan_verb)
