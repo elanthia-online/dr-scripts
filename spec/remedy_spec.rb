@@ -70,4 +70,32 @@ RSpec.describe Remedy do
       end
     end
   end
+
+  describe '#work' do
+    let(:instance) { build_instance(['rustic mortar', 'rustic pestle', 'mesh sieve']) }
+
+    before do
+      allow(instance).to receive(:waitrt?)
+      allow(DRCA).to receive(:crafting_magic_routine)
+    end
+
+    it 'finishes when not enough pieces of the plant to begin' do
+      expect(DRC).to receive(:bput).with(
+        'crush my some eye wash with my rustic pestle',
+        'Applying the final touches',
+        'Interesting thought really... but no.',
+        'you just can\'t mix',
+        'Try as you might',
+        'That craftable requires more pieces of that plant to begin',
+        'Roundtime:'
+      ).and_return('That craftable requires more pieces of that plant to begin')
+      expect(instance).to receive(:finish).and_raise(SystemExit)
+
+      instance.instance_variable_set(:@container, 'rustic mortar')
+      instance.instance_variable_set(:@noun, 'some eye wash')
+      instance.instance_variable_set(:@pestle, 'rustic pestle')
+      instance.instance_variable_set(:@verb, 'crush')
+      expect { instance.send(:work, 'crush my some eye wash with my rustic pestle') }.to raise_error(SystemExit)
+    end
+  end
 end
