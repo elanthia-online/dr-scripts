@@ -280,8 +280,9 @@ class Remedy
                     'Interesting thought really... but no.',
                     'you just can\'t mix',
                     'Try as you might',
+                    'That craftable requires more pieces of that plant to begin',
                     'Roundtime:')
-      when 'Applying the final touches', 'Interesting thought really... but no.', 'you just can\'t mix', 'Try as you might'
+      when 'Applying the final touches', 'Interesting thought really... but no.', 'you just can\'t mix', 'Try as you might', 'That craftable requires more pieces of that plant to begin'
         finish
       when 'Roundtime:'
         waitrt?
