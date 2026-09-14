@@ -3659,8 +3659,6 @@ class TrainerProcess
         end
       end
 
-    @no_app = []
-
     @dont_stalk = settings.dont_stalk
     echo("  @dont_stalk: #{@dont_stalk}") if $debug_mode_ct
 
@@ -4117,13 +4115,24 @@ class TrainerProcess
 
   def appraise(game_state, modifier)
     return if game_state.retreating?
-
-    target = Lich::DragonRealms::Creature.targets.find { |c| !@no_app.include?(c.id) }
-    return unless target
     return if DRSkill.getrank('Appraisal') < 76
-    return if DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what') != 'Perhaps that'
+    # XP gate: once Appraisal mindstate is at/over the training threshold there's
+    # nothing left to learn this pulse, so don't appraise anything at all.
+    return if DRSkill.getxp('Appraisal') >= @combat_training_abilities_target
 
-    @no_app << target.id
+    # Now that every creature carries a stable <crtrStatus> id, appraise EVERY mob
+    # in the room on each pass rather than a single one. The App ability's own
+    # cooldown (e.g. `App Quick: 120`) already spaces these passes out via
+    # select_ability, so it doubles as the per-mob "don't re-appraise within the
+    # timer" gate -- appraise runs at most once per cooldown, so no id bookkeeping
+    # is needed. Un-appraisable mobs ('Perhaps that ...') simply get retried on the
+    # next pass rather than being permanently skipped.
+    Lich::DragonRealms::Creature.targets.each do |target|
+      break if game_state.retreating?
+
+      DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what')
+      waitrt?
+    end
   end
 
   def moon_mage_perc(game_state)
