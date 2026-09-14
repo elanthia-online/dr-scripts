@@ -80,6 +80,16 @@
 # neighbouring line". Harmless and cheap when coverage is off.
 LIC_EVAL_RANGES = Hash.new { |h, k| h[k] = [] }
 
+# Which .lic file each top-level method was eval'd out of, keyed by method name.
+# Top-level defs land as PRIVATE INSTANCE METHODS ON Object and share one
+# namespace for the whole single-process suite, so two scripts that each define a
+# generically-named helper (e.g. circlecheck.lic's `main`) collide. A plain
+# idempotence guard would let whichever spec loaded first win *silently* -- the
+# exact "a duplicate top-level definition wins by load order" hazard the header
+# above warns about. This registry lets load_lic_method stay idempotent for the
+# SAME file but raise loudly on a same-name-different-file collision.
+LIC_METHOD_SOURCES = {}
+
 # Coverage (opt-in): COVERAGE=1 bundle exec rspec, report in coverage/index.html.
 #
 # This has to run before anything else here, and it needs `enable_coverage :eval`
@@ -231,6 +241,51 @@ def load_lic_constant(filename, const_name)
   # actually lives, rather than to line 1 of the file.
   LIC_EVAL_RANGES[filepath] << (idx..idx)
   eval(lines[idx], TOPLEVEL_BINDING, filepath, idx + 1)
+end
+
+# Extract and eval a single top-level `def` from a .lic file without executing
+# the rest of the file. Counterpart to load_lic_class/module/constant, for the
+# scripts that keep behavior in bare top-level defs (some class-less entirely).
+# Handles a def at any indent: it takes from `def <name>` through the matching
+# `end` at that same indent, strips the common indent, and evals the slice at its
+# real start line so backtraces and coverage attribute correctly.
+#
+# Guard: idempotent for repeat calls on the same file, but fatal on a
+# same-name-different-file collision (see LIC_METHOD_SOURCES above) -- a source
+# so a second spec extracting a same-named method from a different script fails
+# loudly instead of silently binding to whichever loaded first.
+#
+# Limitation shared with the class/module extractors: the `^<indent>end` scan is
+# defeated by a heredoc or string literal that contains `end` at the def's indent.
+def load_lic_method(filename, method_name)
+  filepath = lic_path(filename)
+
+  if (prior = LIC_METHOD_SOURCES[method_name])
+    return if prior == filepath
+
+    raise "Top-level method '#{method_name}' already loaded from #{prior}; " \
+          "#{filepath} would overwrite it in the shared Object namespace. " \
+          'Rename one, or wrap the script in a class/module and use load_lic_class.'
+  end
+
+  lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
+
+  # Anchor the end of the name so `foo` matches neither `foobar` nor `foo?`: the
+  # name must be followed by whitespace, `(`, `;`, or end-of-line.
+  start_idx = lines.index { |l| l =~ /^(\s*)def\s+#{Regexp.escape(method_name)}(?=[\s(;]|$)/ }
+  raise "Could not find 'def #{method_name}' in #{filename}" unless start_idx
+
+  indent = lines[start_idx][/^\s*/]
+  rel_end = lines[(start_idx + 1)..].index { |l| l =~ /^#{indent}end\s*$/ }
+  raise "Could not find matching 'end' for 'def #{method_name}' in #{filename}" unless rel_end
+
+  end_idx = start_idx + 1 + rel_end
+  source = lines[start_idx..end_idx].map { |l| l.sub(/^#{indent}/, '') }.join
+
+  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
+  LIC_METHOD_SOURCES[method_name] = filepath
+  eval(source, TOPLEVEL_BINDING, filepath, start_idx + 1)
 end
 
 RSpec.configure do |config|
