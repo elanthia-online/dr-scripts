@@ -15,7 +15,7 @@ class Enchant
   ANALYZE_IMBUE_PATTERN = /application of an imbue spell to advance the enchanting process\./.freeze
 
   # Look on brazier
-  BRAZIER_HAS_FOUNT_PATTERN = /On the.*brazier you see.*and a.*/.freeze
+  BRAZIER_LOOK_PATTERN = /On the.*brazier you see/.freeze
   BRAZIER_CONTENTS_PATTERN = /On the (?:\w+ )?brazier you see (?<items>.*)\./.freeze
 
   # Wave fount
@@ -182,8 +182,8 @@ class Enchant
   end
 
   def handle_imbue_resume
-    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_HAS_FOUNT_PATTERN, 'There is nothing')
-    if BRAZIER_HAS_FOUNT_PATTERN.match?(result)
+    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_LOOK_PATTERN, 'There is nothing')
+    if result.include?('fount')
       imbue
     else
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)

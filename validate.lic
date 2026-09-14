@@ -222,10 +222,15 @@ class DRYamlValidator
     return if !settings.use_favor_altars
     return if settings.favor_goal == 0
 
-    valid_hometown_altars = get_data('theurgy')[settings.hometown]['favor_altars'].keys
+    # Resolve the effective favor town the same way favor.lic/checkfavors.lic do,
+    # so a Fang Cove character using fang_cove_override_town (or favor_town) is
+    # validated against the town they actually gather favors in.
+    favor_town = settings.favor_town || settings.fang_cove_override_town || settings.hometown
+    town_altars = (get_data('theurgy')[favor_town] || {})['favor_altars']
+    valid_hometown_altars = town_altars ? town_altars.keys : []
     return if valid_hometown_altars.include?(settings.favor_god.capitalize)
 
-    warn("The favor_god: #{settings.favor_god} you have set does not have a favor altar in your hometown: #{settings.hometown}.  You will not be able to get favors if you fall below your favor_goal. Consider setting a favor_town where #{settings.favor_god} does have an altar.")
+    warn("The favor_god: #{settings.favor_god} you have set does not have a favor altar in your favor town: #{favor_town}.  You will not be able to get favors if you fall below your favor_goal. Consider setting a favor_town where #{settings.favor_god} does have an altar.")
   end
 
   def assert_that_water_holder_is_set_when_using_altars(settings)
@@ -296,7 +301,7 @@ class DRYamlValidator
     return unless settings.crafting_training_spells
 
     settings.crafting_training_spells.select { |_spell, data| data['cambrinth'] }
-                                     .each_key { |spell| warn("#{spell} in crafting_training_spells uses cambrinth which increases crafting time, you may want to remove it.") }
+            .each_key { |spell| warn("#{spell} in crafting_training_spells uses cambrinth which increases crafting time, you may want to remove it.") }
   end
 
   def assert_that_cycle_armors_are_skills(settings)
@@ -883,12 +888,12 @@ class DRYamlValidator
     return unless settings.buff_spells
 
     settings.buff_spells.select { |_name, data| data['pet_type'] }
-                        .reject { |_name, data| data.include? 'recast_every' }
-                        .each_key { |name| error("Pet buffs require a custom recast timer. Please include a \"recast_every:\" setting for #{name}.") }
+            .reject { |_name, data| data.include? 'recast_every' }
+            .each_key { |name| error("Pet buffs require a custom recast timer. Please include a \"recast_every:\" setting for #{name}.") }
 
     settings.buff_spells.select { |_name, data| data['pet_type'] }
-                        .reject { |_name, data| data.include? 'cast' }
-                        .each_key { |name| error("Pet buffs require a custom cast message. Please include a \"cast:\" setting for #{name}.") }
+            .reject { |_name, data| data.include? 'cast' }
+            .each_key { |name| error("Pet buffs require a custom cast message. Please include a \"cast:\" setting for #{name}.") }
   end
 
   def assert_that_restock_shop_items_recipes_are_valid(settings)
@@ -995,11 +1000,11 @@ class DRYamlValidator
             .each { |skill, _cooldown| error("caravan_training_skills has an invalid cooldown at skill: '#{skill}'") }
 
     settings.caravan_training_skills.reject { |skill, _cooldown| @valid_caravan_skills.include?(skill) }
-                                    .each { |skill, _cooldown| error("caravan_training_skills: skills not recognized as valid skills '#{skill}'") }
+            .each { |skill, _cooldown| error("caravan_training_skills: skills not recognized as valid skills '#{skill}'") }
 
     settings.caravan_training_skills.select { |skill, _cooldown| %w[Augmentation Utility Warding].include?(skill) }
-                                    .reject { |skill, _cooldown| settings.crafting_training_spells.keys.include?(skill) }
-                                    .each { |skill, _cooldown| error("caravan_training_skills: #{skill} is included, but no corresponding spell in crafting_training_spells!") }
+            .reject { |skill, _cooldown| settings.crafting_training_spells.keys.include?(skill) }
+            .each { |skill, _cooldown| error("caravan_training_skills: #{skill} is included, but no corresponding spell in crafting_training_spells!") }
   end
 
   def assert_that_avtalia_array_is_valid(settings)
