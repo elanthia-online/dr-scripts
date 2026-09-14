@@ -28,18 +28,9 @@ prime_lic_coverage(dep_path, dep_lines.size)
 
 DEP_SOURCE = File.read(dep_path)
 
-def extract_method(lines, path, method_name)
-  start = lines.index { |l| l =~ /^\s*def #{Regexp.escape(method_name)}[\s(]?/ }
-  raise "Could not find def #{method_name} in #{path}" unless start
-
-  indent = lines[start][/^(\s*)/, 1]
-  end_offset = lines[start + 1..].index { |l| l =~ /^#{indent}end\s*$/ }
-  raise "Could not find matching end for #{method_name}" unless end_offset
-
-  source = lines[start..start + 1 + end_offset].map { |l| l.sub(/^#{indent}/, '') }.join
-  eval(source, TOPLEVEL_BINDING, path, start + 1)
-end
-
+# Extract the top-level runtime helpers via the shared load_lic_method extractor
+# (spec_helper.rb). This used to carry a private extract_method here -- the same
+# duplicated-top-level-def hazard load_lic_module was consolidated to avoid.
 %w[
   save_bankbot_transaction
   load_bankbot_ledger
@@ -49,7 +40,7 @@ end
   clear_hometown
   obsolete_script_dirs
   warn_obsolete_scripts
-].each { |fn| extract_method(dep_lines, dep_path, fn) }
+].each { |fn| load_lic_method('dependency.lic', fn) }
 
 # Extract the frozen DR_OBSOLETE_SCRIPTS constant (assignment line through the
 # terminating ".freeze"); extract_method only handles def bodies.
