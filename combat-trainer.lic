@@ -4491,7 +4491,7 @@ class AttackProcess
     when 'What were you'
       # Workaround for a game bug when you lob an unblessed weapon at a noncorporeal mob
       # The weapon lands on the ground, not in the 'at feet' slot, and 'my' will not work
-      DRC.bput("get #{game_state.weapon_name}", 'You pick up', 'You get')
+      DRC.bput("get #{game_state.weapon_name}", 'You pick up', 'You get', 'spins back towards you, returning safely to your outstretched hand')
     when *bonded_invoke_success
       DRC.bput('swap', 'You move', 'You have nothing') if game_state.offhand?
     end
