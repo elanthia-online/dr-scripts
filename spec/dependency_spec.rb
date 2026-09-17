@@ -28,22 +28,26 @@ prime_lic_coverage(dep_path, dep_lines.size)
 
 DEP_SOURCE = File.read(dep_path)
 
-# Extract the top-level runtime helpers via the shared load_lic_method extractor
-# (spec_helper.rb). This used to carry a private extract_method here -- the same
-# duplicated-top-level-def hazard load_lic_module was consolidated to avoid.
-%w[
-  save_bankbot_transaction
-  load_bankbot_ledger
-  register_slackbot
-  send_slackbot_message
-  shift_hometown
-  clear_hometown
-  obsolete_script_dirs
-  warn_obsolete_scripts
-].each { |fn| load_lic_method('dependency.lic', fn) }
+# Extract the top-level runtime helpers via the shared load_lic_methods extractor
+# (spec_helper.rb), which wraps them in a module. This used to carry a private
+# extract_method here -- the same duplicated-top-level-def hazard load_lic_module
+# was consolidated to avoid.
+Dependency = load_lic_methods(
+  'dependency.lic',
+  'save_bankbot_transaction',
+  'load_bankbot_ledger',
+  'register_slackbot',
+  'send_slackbot_message',
+  'shift_hometown',
+  'clear_hometown',
+  'obsolete_script_dirs',
+  'warn_obsolete_scripts'
+)
 
 # Extract the frozen DR_OBSOLETE_SCRIPTS constant (assignment line through the
-# terminating ".freeze"); extract_method only handles def bodies.
+# terminating ".freeze"); load_lic_methods only handles def bodies and
+# load_lic_constant only a single-line assignment, so this multi-line constant
+# is carved out by hand.
 obsolete_const_start = dep_lines.index { |l| l =~ /^DR_OBSOLETE_SCRIPTS\s*=/ }
 raise 'Could not find DR_OBSOLETE_SCRIPTS in dependency.lic' unless obsolete_const_start
 
@@ -66,12 +70,12 @@ RSpec.describe 'Bankbot Functions' do
     File.delete(transaction_log_path) if File.exist?(transaction_log_path)
   end
 
-  describe '#save_bankbot_transaction' do
+  describe '.save_bankbot_transaction' do
     let(:ledger) { { 'Testchar' => { 'kronars' => 500, 'lirums' => 200 } } }
     let(:transaction) { 'Testchar, deposit, 100, kronars, tip' }
 
     it 'writes the transaction to the log file' do
-      save_bankbot_transaction(transaction, ledger)
+      Dependency.save_bankbot_transaction(transaction, ledger)
 
       log_content = File.read(transaction_log_path)
       expect(log_content).to include(transaction)
@@ -79,7 +83,7 @@ RSpec.describe 'Bankbot Functions' do
     end
 
     it 'writes the ledger to the YAML file' do
-      save_bankbot_transaction(transaction, ledger)
+      Dependency.save_bankbot_transaction(transaction, ledger)
 
       saved_ledger = YAML.unsafe_load_file(ledger_path)
       expect(saved_ledger['Testchar']['kronars']).to eq(500)
@@ -87,8 +91,8 @@ RSpec.describe 'Bankbot Functions' do
     end
 
     it 'appends to the transaction log on successive calls' do
-      save_bankbot_transaction('first transaction', ledger)
-      save_bankbot_transaction('second transaction', ledger)
+      Dependency.save_bankbot_transaction('first transaction', ledger)
+      Dependency.save_bankbot_transaction('second transaction', ledger)
 
       log_content = File.read(transaction_log_path)
       expect(log_content).to include('first transaction')
@@ -96,7 +100,7 @@ RSpec.describe 'Bankbot Functions' do
     end
   end
 
-  describe '#load_bankbot_ledger' do
+  describe '.load_bankbot_ledger' do
     context 'when the ledger file exists' do
       before do
         ledger_data = { 'Testchar' => { 'kronars' => 1000 } }
@@ -104,7 +108,7 @@ RSpec.describe 'Bankbot Functions' do
       end
 
       it 'returns the ledger as a hash' do
-        result = load_bankbot_ledger
+        result = Dependency.load_bankbot_ledger
         expect(result).to be_a(Hash)
         expect(result[:Testchar]['kronars']).to eq(1000)
       end
@@ -112,7 +116,7 @@ RSpec.describe 'Bankbot Functions' do
 
     context 'when the ledger file does not exist' do
       it 'returns an empty hash' do
-        result = load_bankbot_ledger
+        result = Dependency.load_bankbot_ledger
         expect(result).to eq({})
       end
     end
@@ -127,7 +131,7 @@ RSpec.describe 'Slackbot Functions' do
     $slackbot_username = nil
   end
 
-  describe '#register_slackbot' do
+  describe '.register_slackbot' do
     before do
       stub_const('Lich::DragonRealms::SlackBot', Class.new {
         define_method(:initialize) {}
@@ -137,51 +141,51 @@ RSpec.describe 'Slackbot Functions' do
 
     context 'with a valid username' do
       it 'sets the global slackbot instance' do
-        register_slackbot('myuser')
+        Dependency.register_slackbot('myuser')
         expect($slackbot_instance).not_to be_nil
       end
 
       it 'stores the username' do
-        register_slackbot('myuser')
+        Dependency.register_slackbot('myuser')
         expect($slackbot_username).to eq('myuser')
       end
     end
 
     context 'with nil username' do
       it 'does not create a slackbot instance' do
-        register_slackbot(nil)
+        Dependency.register_slackbot(nil)
         expect($slackbot_instance).to be_nil
       end
     end
 
     context 'with blank username' do
       it 'does not create a slackbot instance' do
-        register_slackbot('  ')
+        Dependency.register_slackbot('  ')
         expect($slackbot_instance).to be_nil
       end
     end
 
     context 'when already registered' do
       it 'does not replace the existing instance' do
-        register_slackbot('first_user')
+        Dependency.register_slackbot('first_user')
         original = $slackbot_instance
-        register_slackbot('second_user')
+        Dependency.register_slackbot('second_user')
         expect($slackbot_instance).to equal(original)
         expect($slackbot_username).to eq('first_user')
       end
     end
   end
 
-  describe '#send_slackbot_message' do
+  describe '.send_slackbot_message' do
     context 'when slackbot is not registered' do
       it 'does nothing' do
-        expect { send_slackbot_message('hello') }.not_to raise_error
+        expect { Dependency.send_slackbot_message('hello') }.not_to raise_error
       end
     end
 
     context 'with nil message' do
       it 'returns early' do
-        expect { send_slackbot_message(nil) }.not_to raise_error
+        expect { Dependency.send_slackbot_message(nil) }.not_to raise_error
       end
     end
 
@@ -195,7 +199,7 @@ RSpec.describe 'Slackbot Functions' do
 
       it 'sends the message via the slackbot instance' do
         expect(mock_slackbot).to receive(:direct_message).with('testuser', 'hello world')
-        send_slackbot_message('hello world')
+        Dependency.send_slackbot_message('hello world')
       end
     end
   end
@@ -204,19 +208,19 @@ end
 # --- Utility helpers ---
 
 RSpec.describe 'Utility Functions' do
-  describe '#shift_hometown' do
+  describe '.shift_hometown' do
     after { $HOMETOWN = nil }
 
     it 'sets the $HOMETOWN global' do
-      shift_hometown('Shard')
+      Dependency.shift_hometown('Shard')
       expect($HOMETOWN).to eq('Shard')
     end
   end
 
-  describe '#clear_hometown' do
+  describe '.clear_hometown' do
     it 'clears the $HOMETOWN global' do
       $HOMETOWN = 'Shard'
-      clear_hometown
+      Dependency.clear_hometown
       expect($HOMETOWN).to be_nil
     end
   end
@@ -331,20 +335,20 @@ RSpec.describe 'Obsolete Script Detection' do
     end
   end
 
-  describe '#obsolete_script_dirs' do
+  describe '.obsolete_script_dirs' do
     it 'searches the custom directory before the main script directory' do
-      expect(obsolete_script_dirs).to eq([custom_dir, main_dir])
+      expect(Dependency.obsolete_script_dirs).to eq([custom_dir, main_dir])
     end
   end
 
-  describe '#warn_obsolete_scripts' do
+  describe '.warn_obsolete_scripts' do
     context 'when no obsolete script exists on disk' do
       it 'returns an empty array' do
-        expect(warn_obsolete_scripts).to eq([])
+        expect(Dependency.warn_obsolete_scripts).to eq([])
       end
 
       it 'emits no warnings' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages).to be_empty
       end
     end
@@ -353,16 +357,16 @@ RSpec.describe 'Obsolete Script Detection' do
       before { write_script(main_dir, 'roomnumbers.lic') }
 
       it 'returns the offending script name' do
-        expect(warn_obsolete_scripts).to eq(['roomnumbers'])
+        expect(Dependency.warn_obsolete_scripts).to eq(['roomnumbers'])
       end
 
       it 'warns that the file is obsolete and should be deleted' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages.first).to include("'roomnumbers.lic' is obsolete")
       end
 
       it 'names the main script directory in the warning' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages.first).to include(main_dir)
       end
     end
@@ -371,11 +375,11 @@ RSpec.describe 'Obsolete Script Detection' do
       before { write_script(custom_dir, 'roomnumbers.lic') }
 
       it 'still detects and returns it' do
-        expect(warn_obsolete_scripts).to eq(['roomnumbers'])
+        expect(Dependency.warn_obsolete_scripts).to eq(['roomnumbers'])
       end
 
       it 'names the custom directory in the warning' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages.first).to include(custom_dir)
       end
     end
@@ -387,12 +391,12 @@ RSpec.describe 'Obsolete Script Detection' do
       end
 
       it 'reports the script only once' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages.length).to eq(1)
       end
 
       it 'reports the higher-priority custom directory' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages.first).to include(custom_dir)
       end
     end
@@ -401,11 +405,11 @@ RSpec.describe 'Obsolete Script Detection' do
       before { write_script(main_dir, 'combat-trainer.lic') }
 
       it 'ignores it and returns an empty array' do
-        expect(warn_obsolete_scripts).to eq([])
+        expect(Dependency.warn_obsolete_scripts).to eq([])
       end
 
       it 'emits no warnings' do
-        warn_obsolete_scripts
+        Dependency.warn_obsolete_scripts
         expect($respond_messages).to be_empty
       end
     end
@@ -414,11 +418,11 @@ RSpec.describe 'Obsolete Script Detection' do
       before { write_script(main_dir, 'legacy-thing.lic') }
 
       it 'checks the provided names instead of the default constant' do
-        expect(warn_obsolete_scripts(['legacy-thing'])).to eq(['legacy-thing'])
+        expect(Dependency.warn_obsolete_scripts(['legacy-thing'])).to eq(['legacy-thing'])
       end
 
       it 'does not mutate the frozen default constant' do
-        warn_obsolete_scripts(['legacy-thing'])
+        Dependency.warn_obsolete_scripts(['legacy-thing'])
         expect(DR_OBSOLETE_SCRIPTS).to eq(['roomnumbers'])
       end
     end
@@ -426,27 +430,27 @@ RSpec.describe 'Obsolete Script Detection' do
     describe 'adversarial inputs' do
       it 'returns an empty array for an empty obsolete list' do
         write_script(main_dir, 'roomnumbers.lic')
-        expect(warn_obsolete_scripts([])).to eq([])
+        expect(Dependency.warn_obsolete_scripts([])).to eq([])
       end
 
       it 'does not match a file whose name lacks the .lic extension' do
         write_script(main_dir, 'roomnumbers') # no extension
-        expect(warn_obsolete_scripts).to eq([])
+        expect(Dependency.warn_obsolete_scripts).to eq([])
       end
 
       it 'does not match a directory that shares the script name' do
         FileUtils.mkdir_p(File.join(main_dir, 'roomnumbers.lic'))
-        expect(warn_obsolete_scripts).to eq([])
+        expect(Dependency.warn_obsolete_scripts).to eq([])
       end
 
       it 'does not raise when the custom directory is absent' do
         FileUtils.rm_rf(custom_dir)
-        expect { warn_obsolete_scripts }.not_to raise_error
+        expect { Dependency.warn_obsolete_scripts }.not_to raise_error
       end
 
       it 'does not warn for a script whose name is only a substring of a present file' do
         write_script(main_dir, 'roomnumbers-extra.lic')
-        expect(warn_obsolete_scripts).to eq([])
+        expect(Dependency.warn_obsolete_scripts).to eq([])
       end
     end
   end

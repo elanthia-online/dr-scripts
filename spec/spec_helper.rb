@@ -14,9 +14,11 @@
 #
 # Lich runtime isolation:
 #   - Scripts (.lic files) cannot be required directly -- they depend on the full
-#     Lich runtime. Extract the class or a single constant via eval of specific
-#     line ranges with load_lic_class / load_lic_constant (defined below; see
-#     dependency_spec.rb for the method-level extraction pattern).
+#     Lich runtime. Extract just the unit under test via eval of specific line
+#     ranges with one of the load_lic_* helpers defined below: load_lic_class /
+#     load_lic_module for a class or module body, load_lic_constant for a
+#     single-line constant, or load_lic_methods for the top-level defs of a
+#     class-less script (returned wrapped in a module).
 #
 # Shared game doubles -- READ THIS before adding or copying a spec:
 #   The game/commons layer is stubbed ONCE, centrally, so the whole suite can run
@@ -59,8 +61,9 @@
 # Shared setup / why reset_data lives here (do not move it):
 #   - This file is loaded before every spec via .rspec (--require spec_helper). It
 #     loads the test harness, includes Harness at the top level, provides the
-#     load_lic_class / load_lic_constant extraction helpers, and registers the
-#     single global before(:each) { reset_data } hook.
+#     load_lic_class / load_lic_module / load_lic_constant / load_lic_methods
+#     extraction helpers, and registers the single global before(:each)
+#     { reset_data } hook.
 #   - Do NOT register a global RSpec.configure { config.before } in a spec.
 #     Same-scope before(:each) hooks run in the order they are registered, so a
 #     config.before(:each) runs before a group's own before hooks only when it
@@ -79,16 +82,6 @@
 # ever eval'd this line" from "eval'd, but Ruby attributed the statement to a
 # neighbouring line". Harmless and cheap when coverage is off.
 LIC_EVAL_RANGES = Hash.new { |h, k| h[k] = [] }
-
-# Which .lic file each top-level method was eval'd out of, keyed by method name.
-# Top-level defs land as PRIVATE INSTANCE METHODS ON Object and share one
-# namespace for the whole single-process suite, so two scripts that each define a
-# generically-named helper (e.g. circlecheck.lic's `main`) collide. A plain
-# idempotence guard would let whichever spec loaded first win *silently* -- the
-# exact "a duplicate top-level definition wins by load order" hazard the header
-# above warns about. This registry lets load_lic_method stay idempotent for the
-# SAME file but raise loudly on a same-name-different-file collision.
-LIC_METHOD_SOURCES = {}
 
 # Coverage (opt-in): COVERAGE=1 bundle exec rspec, report in coverage/index.html.
 #
@@ -243,49 +236,62 @@ def load_lic_constant(filename, const_name)
   eval(lines[idx], TOPLEVEL_BINDING, filepath, idx + 1)
 end
 
-# Extract and eval a single top-level `def` from a .lic file without executing
-# the rest of the file. Counterpart to load_lic_class/module/constant, for the
-# scripts that keep behavior in bare top-level defs (some class-less entirely).
-# Handles a def at any indent: it takes from `def <name>` through the matching
-# `end` at that same indent, strips the common indent, and evals the slice at its
-# real start line so backtraces and coverage attribute correctly.
+# Extract one or more TOP-LEVEL `def`s from a .lic file without executing the
+# rest of the file, and return them wrapped in a fresh anonymous module.
+# Counterpart to load_lic_class/module/constant, for the scripts that keep
+# behavior in bare top-level defs (some class-less entirely).
 #
-# Guard: idempotent for repeat calls on the same file, but fatal on a
-# same-name-different-file collision (see LIC_METHOD_SOURCES above) -- a source
-# so a second spec extracting a same-named method from a different script fails
-# loudly instead of silently binding to whichever loaded first.
+#   CircleCheck = load_lic_methods('circlecheck.lic', 'clamp_progress', 'progress_bar')
+#   CircleCheck.progress_bar(25)   # => "[###-------]"
 #
-# Limitation shared with the class/module extractors: the `^<indent>end` scan is
-# defeated by a heredoc or string literal that contains `end` at the def's indent.
-def load_lic_method(filename, method_name)
+# Each def is eval'd into the module at its real start line (so backtraces and
+# coverage attribute correctly). The module `extend self`s, so the script's own
+# helpers still resolve each other's bare calls, host/harness methods still fall
+# through to Object, and the extracted names never touch the shared Object
+# namespace -- so two scripts that each define a generically-named helper (e.g.
+# `main`) simply get their own module instead of silently colliding by load
+# order. `allow(mod).to receive(:foo)` stubs cleanly, including for sibling calls.
+#
+# Only column-0 `def`s are matched, so an instance method that happens to share
+# a name inside a class earlier in the file is never lifted out by mistake.
+#
+# Limitations shared with the class/module extractors: the `^end` scan is
+# defeated by a heredoc or string literal containing `end` at column 0, and a
+# one-line or endless def (`def x; 1; end` / `def x = 1`) has no `^end` of its
+# own -- both are caught by the single-def slice guard below, which raises rather
+# than silently swallowing a neighbouring def.
+def load_lic_methods(filename, *method_names)
   filepath = lic_path(filename)
-
-  if (prior = LIC_METHOD_SOURCES[method_name])
-    return if prior == filepath
-
-    raise "Top-level method '#{method_name}' already loaded from #{prior}; " \
-          "#{filepath} would overwrite it in the shared Object namespace. " \
-          'Rename one, or wrap the script in a class/module and use load_lic_class.'
-  end
-
   lines = File.readlines(filepath)
   prime_lic_coverage(filepath, lines.size)
 
-  # Anchor the end of the name so `foo` matches neither `foobar` nor `foo?`: the
-  # name must be followed by whitespace, `(`, `;`, or end-of-line.
-  start_idx = lines.index { |l| l =~ /^(\s*)def\s+#{Regexp.escape(method_name)}(?=[\s(;]|$)/ }
-  raise "Could not find 'def #{method_name}' in #{filename}" unless start_idx
+  mod = Module.new
+  mod.extend(mod) # ancestor-based, so it covers defs added afterwards too
 
-  indent = lines[start_idx][/^\s*/]
-  rel_end = lines[(start_idx + 1)..].index { |l| l =~ /^#{indent}end\s*$/ }
-  raise "Could not find matching 'end' for 'def #{method_name}' in #{filename}" unless rel_end
+  method_names.each do |method_name|
+    # Column-0 anchor: these are top-level defs. Anchor the end of the name so
+    # `foo` matches neither `foobar` nor `foo?` -- it must be followed by
+    # whitespace, `(`, `;`, or end-of-line.
+    start_idx = lines.index { |l| l =~ /^def\s+#{Regexp.escape(method_name)}(?=[\s(;]|$)/ }
+    raise "Could not find top-level 'def #{method_name}' in #{filename}" unless start_idx
 
-  end_idx = start_idx + 1 + rel_end
-  source = lines[start_idx..end_idx].map { |l| l.sub(/^#{indent}/, '') }.join
+    rel_end = lines[(start_idx + 1)..].index { |l| l =~ /^end\s*$/ }
+    raise "Could not find matching 'end' for 'def #{method_name}' in #{filename}" unless rel_end
 
-  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
-  LIC_METHOD_SOURCES[method_name] = filepath
-  eval(source, TOPLEVEL_BINDING, filepath, start_idx + 1)
+    end_idx = start_idx + 1 + rel_end
+    slice = lines[start_idx..end_idx]
+
+    # A one-line/endless def has no `^end` of its own, so the scan above runs on
+    # to a later def's `end` and would silently pull that sibling in too. Refuse.
+    defs = slice.count { |l| l =~ /^def\s/ }
+    raise "Extraction of 'def #{method_name}' from #{filename} spans #{defs} " \
+          'top-level defs; rewrite it as a multi-line def' unless defs == 1
+
+    LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
+    mod.module_eval(slice.join, filepath, start_idx + 1)
+  end
+
+  mod
 end
 
 RSpec.configure do |config|
