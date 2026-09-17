@@ -6807,7 +6807,7 @@ RSpec.describe LootProcess do
       lp = build_gate_loot
       lp.instance_variable_set(:@arrange_all, true)
       lp.send(:arrange_mob, 'rat', gate_game_state, corpse)
-      expect(DRC).to have_received(:bput).with('arrange #111 all for skin', any_args)
+      expect(DRC).to have_received(:bput).with('arrange all #111 for skin', any_args)
     end
 
     # "That creature cannot" be arranged for that type -> retry generically, but
