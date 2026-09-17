@@ -112,16 +112,18 @@ class Almanac
   end
 
   def study_almanac
-    if @report_usage_details && !Script.running?('exp-monitor')
+    if @report_usage_details
       UserVars.echo_exp = true
       DRSkill.gained_skills.clear
     end
-    case DRC.bput("study my #{@almanac}", /You believe you've learned something significant about .+/, /^You've gleaned all the insight you can/, /^Study what/, 'interrupt your research', /^The pages of the .* seem worn/, /is only usable by a character with a Premium subscription/, /STUDY its contents\./)
+    case DRC.bput("study my #{@almanac}", /You believe you've learned something significant about .+/, /^You've gleaned all the insight you can/, /^Study what/, 'interrupt your research', /^The pages of the .* seem worn/, /^You don't seem to learn anything/, /is only usable by a character with a Premium subscription/, /STUDY its contents\./)
     when /^You've gleaned all the insight you can/, /^The pages of the .* seem worn/
       UserVars.almanac_last_use = Time.now - 540
-    when /You believe you've learned something significant about (?<gained_skill>.+)!/
-      if @report_usage_details && !Script.running?('exp-monitor')
-        gained_skill_name = Regexp.last_match[:gained_skill]
+    # Both a significant gain and a read with no gain ("You don't seem to learn
+    # anything") consume the almanac's use timer, so both get the full cooldown.
+    when /You believe you've learned something significant about (?<gained_skill>.+)!/, /^You don't seem to learn anything/
+      gained_skill_name = Regexp.last_match.named_captures['gained_skill']
+      if gained_skill_name && @report_usage_details
         gained_skill_change = DRSkill.gained_skills.select { |item| item[:skill] == gained_skill_name }.sum { |item| item[:change] }
         DRC.message("Almanac picked skill: #{gained_skill_name}, gained exp: (+#{gained_skill_change}:#{DRSkill.getxp(gained_skill_name)}/34)", false) if gained_skill_change.positive?
       end
@@ -130,7 +132,7 @@ class Almanac
       DRC.message('Premium almanac detected in a non-premium account.')
       DRC.message('Exiting')
       DRCI.put_away_item?(@almanac)
-      if @report_usage_details && !Script.running?('exp-monitor')
+      if @report_usage_details
         UserVars.echo_exp = false
         DRSkill.gained_skills.clear
       end
@@ -139,7 +141,7 @@ class Almanac
       DRC.bput("open my #{@almanac}", /^You open/)
       study_almanac
     end
-    if @report_usage_details && !Script.running?('exp-monitor')
+    if @report_usage_details
       UserVars.echo_exp = false
       DRSkill.gained_skills.clear
     end
