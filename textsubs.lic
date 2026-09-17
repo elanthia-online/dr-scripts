@@ -1806,7 +1806,7 @@ TextSubs.add('ability has made you (a|an) prominent crafter within the Society',
 TextSubs.add('ability has made you (a|an) honored crafter within the Society', 'ability has made you \1 honored (9/14) crafter within the Society')
 TextSubs.add('ability has made you (a|an) acclaimed crafter within the Society', 'ability has made you \1 acclaimed (10/14) crafter within the Society')
 TextSubs.add('ability has made you (a|an) famous crafter within the Society', 'ability has made you \1 famous (11/14) crafter within the Society')
-TextSubs.add('ability has made you (a|an) peerless crafter within the Society', 'ability has made you \1 perless (12/14) crafter within the Society')
+TextSubs.add('ability has made you (a|an) peerless crafter within the Society', 'ability has made you \1 peerless (12/14) crafter within the Society')
 TextSubs.add('ability has made you (a|an) illustrious crafter within the Society', 'ability has made you \1 illustrious (13/14) crafter within the Society')
 TextSubs.add('ability has made you (a|an) legendary crafter within the Society', 'ability has made you \1 legendary (14/14) crafter within the Society')
 
