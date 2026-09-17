@@ -1188,9 +1188,11 @@ class LootProcess
     type = @arrange_types[mob_noun] || 'skin'
     # Target the specific corpse by id (e.g. "arrange #12345 for skin") so the
     # verb can't bind to a live same-noun mob or the wrong corpse. "all" (arrange
-    # up to five times in one command) goes after the id: "arrange #12345 all for
-    # skin". The noun->type lookup above is unchanged.
-    arrange_verb = @arrange_all ? "arrange ##{corpse.id} all" : "arrange ##{corpse.id}"
+    # up to five times in one command, at a higher roundtime) goes *before* the
+    # id: "arrange all #12345 for skin". Putting it after the id ("arrange #12345
+    # all") silently drops the "all" and arranges only once. The noun->type
+    # lookup above is unchanged.
+    arrange_verb = @arrange_all ? "arrange all ##{corpse.id}" : "arrange ##{corpse.id}"
     arrange_message = "#{arrange_verb} for #{type}"
     while arranges < @arrange_count
       arranges += 1 # rubocop:disable Lint/UselessAssignment
