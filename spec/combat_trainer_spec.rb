@@ -6769,6 +6769,48 @@ RSpec.describe LootProcess do
       lp.dispose_body(gs)
       expect(DRC).not_to have_received(:bput).with(/\Aloot/, any_args)
     end
+
+    # Regression: a looted corpse lingers dead in the roster (~6-7s until decay),
+    # and the roster is oldest-id-first, so it sits at the head. dispose_body used
+    # to act only on the roster's first corpse and skip when it was already
+    # looted -- so a stale looted body at the head blocked every newer corpse
+    # behind it until it decayed (one loot per decay window). We must skip the
+    # looted head and loot the next un-looted corpse the same pass.
+    it 'skips a lingering looted corpse and loots the next un-looted one the same pass' do
+      fresh = OpenStruct.new(id: 222, noun: 'rat', name: 'a giant rat')
+      DRRoom.dead_npcs = %w[rat rat]
+      Lich::DragonRealms::Creature._set_room([corpse, fresh])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot(looted_corpse_ids: [corpse.id])
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(DRC).to have_received(:bput).with('loot #222', any_args)
+      expect(DRC).not_to have_received(:bput).with('loot #111', any_args)
+      expect(lp.instance_variable_get(:@looted_corpse_ids)).to include(222)
+    end
+
+    # The all-looted no-op must not fall back to a bare LOOT: with every roster
+    # corpse already searched, a bare `loot` would re-search a decaying body
+    # every tick. (A genuinely empty roster still uses the bare-loot fallback --
+    # covered by 'skips pray/dissect when no corpse id is available'.)
+    it 'issues no loot command when every roster corpse is already looted' do
+      other = OpenStruct.new(id: 222, noun: 'rat', name: 'a giant rat')
+      DRRoom.dead_npcs = %w[rat rat]
+      Lich::DragonRealms::Creature._set_room([corpse, other])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot(looted_corpse_ids: [corpse.id, other.id])
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(DRC).not_to have_received(:bput).with(/\Aloot/, any_args)
+    end
   end
 
   describe 'corpse-existence gates' do
