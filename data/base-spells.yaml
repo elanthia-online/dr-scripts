@@ -278,6 +278,8 @@ cast_messages:
 - Sutures of reddish-black energy delve deep
 - Tears of hot regret flow down your eyes
 - Your eyes flare with a whorl
+# Prosperity in Absentia raising a new kiosk
+- ^Your \w+ grows cold
 
 khri_preps:
 - Releasing a deep breath, you focus on your ability to survive the
@@ -3240,6 +3242,14 @@ spell_data:
     abbrev: PHK
     mana: 15
     skill: Augmentation
+    guild: Trader
+    recast: 1
+    mana_type: lunar
+    prep: prepare
+  Prosperity in Absentia:
+    abbrev: PRIA
+    mana: 30
+    skill: Utility
     guild: Trader
     recast: 1
     mana_type: lunar
