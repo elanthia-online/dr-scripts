@@ -255,6 +255,16 @@ end
 # Only column-0 `def`s are matched, so an instance method that happens to share
 # a name inside a class earlier in the file is never lifted out by mistake.
 #
+# Instance-variable state: the returned module is a single object that lives for
+# the whole process, so `Mod.foo` runs with `self == Mod` and any @ivar a def
+# assigns persists from one example into the next (the global reset_data hook does
+# NOT clear it). Harmless for pure / $global-only helpers -- call `Mod.foo` as
+# shown above. For a script whose defs read or write @ivars (e.g. heal-remedy.lic,
+# jail-buddy.lic, trigger-watcher.lic), `include` the module in the describe block
+# instead: the defs are plain instance methods, so they then run on the
+# per-example RSpec instance -- `before { @ivar = ... }` reaches them and each
+# example stays isolated for free.
+#
 # Limitations shared with the class/module extractors: the `^end` scan is
 # defeated by a heredoc or string literal containing `end` at column 0, and a
 # one-line or endless def (`def x; 1; end` / `def x = 1`) has no `^end` of its
