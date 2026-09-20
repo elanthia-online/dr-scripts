@@ -6660,7 +6660,7 @@ RSpec.describe LootProcess do
     defaults = {
       loot_bodies: true, loot_timer: Time.now - 100, loot_delay: 0,
       last_rites: true, last_rites_timer: Time.now - 700, custom_loot_type: '',
-      looted_corpse_ids: []
+      looted_corpse_ids: [], skinned_corpse_ids: [], dissected_corpse_ids: []
     }
     defaults.merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
     lp
@@ -6810,6 +6810,31 @@ RSpec.describe LootProcess do
       allow(lp).to receive(:check_rituals?).and_return(false)
       lp.dispose_body(gs)
       expect(DRC).not_to have_received(:bput).with(/\Aloot/, any_args)
+    end
+
+    # The action trackers must stay bounded to the current room. Every pulse
+    # rebuilds the dead roster, so an id we recorded that is no longer present
+    # belongs to a decayed corpse and is dropped -- otherwise the lists grow for
+    # the whole session. Ids still present are kept so we don't re-act on them.
+    it 'prunes tracked corpse ids that are no longer in the dead roster' do
+      DRRoom.dead_npcs = ['rat']
+      # Only #111 is still present; 999/888/777 are ids of corpses that decayed.
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot(
+        looted_corpse_ids: [corpse.id, 999],
+        skinned_corpse_ids: [corpse.id, 888],
+        dissected_corpse_ids: [777]
+      )
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(lp.instance_variable_get(:@looted_corpse_ids)).to eq([corpse.id])
+      expect(lp.instance_variable_get(:@skinned_corpse_ids)).to eq([corpse.id])
+      expect(lp.instance_variable_get(:@dissected_corpse_ids)).to eq([])
     end
   end
 

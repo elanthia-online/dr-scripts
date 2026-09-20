@@ -627,12 +627,15 @@ class LootProcess
     Flags.add('container-full', 'There isn\'t any more room')
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
 
-    # Corpse ids we've finished a given action on this session. A looted corpse
-    # lingers in Creature.in_room(:dead) until it DECAYS (~6-7s after loot,
-    # several crtrStatus pulses later), so corpse_present? alone can't stop us
+    # Corpse ids we've finished a given action on. A looted corpse lingers in
+    # Creature.in_room(:dead) until it DECAYS (~6-7s after loot, several
+    # crtrStatus pulses later), so corpse_present? alone can't stop us
     # re-arranging/re-skinning/re-dissecting/re-looting it -- track each action
     # per id and skip it. Marked on terminal outcomes only (success or
-    # already-done), not on retryable ones. Bounded by kills per room.
+    # already-done), not on retryable ones. dispose_body prunes each list every
+    # pass to the ids still present in the dead roster, so they stay bounded to
+    # the current room's corpses -- an id no longer in the room is a corpse that
+    # has decayed and is gone, so we no longer need to track it.
     @skinned_corpse_ids = []
     @dissected_corpse_ids = []
     @looted_corpse_ids = []
@@ -1123,6 +1126,18 @@ class LootProcess
     # each pass (necromancer corpses are consumed by rituals, never looted, so
     # they are never in @looted_corpse_ids and this reject leaves them untouched).
     dead_corpses = Lich::DragonRealms::Creature.in_room(:dead)
+
+    # Prune the per-corpse action trackers to corpses still present. Every pulse
+    # rebuilds the dead roster, so an id we recorded that is no longer in it is a
+    # corpse that has decayed away and is done with -- drop it. This only sheds
+    # dead weight and keeps the lists bounded to the current room (never a whole
+    # session). Selection/skip behaviour is unchanged: the ids removed here are
+    # exactly the ones no longer in dead_corpses, which selection ignores anyway.
+    present_ids = dead_corpses.map(&:id)
+    @looted_corpse_ids &= present_ids
+    @skinned_corpse_ids &= present_ids
+    @dissected_corpse_ids &= present_ids
+
     corpse = dead_corpses.reject { |c| @looted_corpse_ids.include?(c.id) }.first
 
     # Every corpse the roster still knows about is one we have already looted (a
