@@ -4526,6 +4526,35 @@ RSpec.describe LootProcess do
       end
     end
   end
+
+  # Regression: a stray blank/nil entry in the lootables list -- e.g. an empty
+  # line in a profile's loot_additions YAML, which parses to nil -- must be
+  # dropped before it reaches the stow path. A nil raises on item.split (and on
+  # GameState#lootable?'s downcase); an empty string builds a bare "stow " that
+  # the game applies to whatever is in hand, stowing the character's weapon
+  # mid-combat and leaving them punching barehanded.
+  describe '#stow_lootables with a blank or nil lootable entry' do
+    before(:each) do
+      allow(DRC).to receive(:bput).and_return('You put')
+      $left_hand = nil
+      $right_hand = nil
+      DRRoom.room_objs = ['a pale seahorse sapphire']
+    end
+
+    it 'does not fire a bare stow (which would stow a held weapon) for an empty entry' do
+      gs = build_game_state(sheath_whirlwind_offhand: nil, wield_whirlwind_offhand: nil)
+      instance = build_loot_process(lootables: ['sapphire', ''])
+      instance.send(:stow_lootables, gs)
+      expect(DRC).not_to have_received(:bput).with(/\Astow\s*\z/, any_args)
+    end
+
+    it 'does not raise on a nil entry and still loots valid items' do
+      gs = build_game_state(sheath_whirlwind_offhand: nil, wield_whirlwind_offhand: nil)
+      instance = build_loot_process(lootables: [nil, 'sapphire'])
+      expect { instance.send(:stow_lootables, gs) }.not_to raise_error
+      expect(DRC).to have_received(:bput).with('stow sapphire', any_args)
+    end
+  end
 end
 
 # ###################################################################
