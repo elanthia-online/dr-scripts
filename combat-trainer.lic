@@ -627,12 +627,15 @@ class LootProcess
     Flags.add('container-full', 'There isn\'t any more room')
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
 
-    # Corpse ids we've finished a given action on this session. A looted corpse
-    # lingers in Creature.in_room(:dead) until it DECAYS (~6-7s after loot,
-    # several crtrStatus pulses later), so corpse_present? alone can't stop us
+    # Corpse ids we've finished a given action on. A looted corpse lingers in
+    # Creature.in_room(:dead) until it DECAYS (~6-7s after loot, several
+    # crtrStatus pulses later), so corpse_present? alone can't stop us
     # re-arranging/re-skinning/re-dissecting/re-looting it -- track each action
     # per id and skip it. Marked on terminal outcomes only (success or
-    # already-done), not on retryable ones. Bounded by kills per room.
+    # already-done), not on retryable ones. dispose_body prunes each list every
+    # pass to the ids still present in the dead roster, so they stay bounded to
+    # the current room's corpses -- an id no longer in the room is a corpse that
+    # has decayed and is gone, so we no longer need to track it.
     @skinned_corpse_ids = []
     @dissected_corpse_ids = []
     @looted_corpse_ids = []
@@ -1113,7 +1116,46 @@ class LootProcess
     # Target the specific dead body by its stable <crtrStatus> id, not the bare
     # DRRoom.dead_npcs noun -- with a live same-noun mob in the room the noun can
     # bind to the living creature. DRRoom.dead_npcs still gates presence above.
-    corpse = Lich::DragonRealms::Creature.in_room(:dead).first
+    #
+    # Pick the first corpse we have NOT already looted, not just the roster's
+    # first. A looted corpse lingers dead in the roster (~6-7s until it decays),
+    # and the roster is ordered oldest-id-first, so a stale already-looted body
+    # sits at the head and would otherwise block every newer corpse behind it
+    # until it decays -- one dead body per decay window instead of looting them
+    # as they fall. Skipping looted ids here advances to the next lootable corpse
+    # each pass (necromancer corpses are consumed by rituals, never looted, so
+    # they are never in @looted_corpse_ids and this reject leaves them untouched).
+    dead_corpses = Lich::DragonRealms::Creature.in_room(:dead)
+
+    # Prune the per-corpse action trackers to corpses still present. Every pulse
+    # rebuilds the dead roster, so an id we recorded that is no longer in it is a
+    # corpse that has decayed away and is done with -- drop it. This only sheds
+    # dead weight and keeps the lists bounded to the current room (never a whole
+    # session). Selection/skip behaviour is unchanged: the ids removed here are
+    # exactly the ones no longer in dead_corpses, which selection ignores anyway.
+    present_ids = dead_corpses.map(&:id)
+    @looted_corpse_ids &= present_ids
+    @skinned_corpse_ids &= present_ids
+    @dissected_corpse_ids &= present_ids
+
+    corpse = dead_corpses.reject { |c| @looted_corpse_ids.include?(c.id) }.first
+
+    # Every corpse the roster still knows about is one we have already looted (a
+    # looted body lingers dead until it decays). Nothing left to do this pass --
+    # return rather than fall through, so we do not re-fire a bare `loot` at an
+    # already-searched corpse every tick. A genuinely empty roster (corpse nil
+    # AND no dead corpses) still falls through: DRRoom.dead_npcs said a body is
+    # here, so the two feeds disagree and the bare-loot fallback below covers it.
+    if corpse.nil? && !dead_corpses.empty?
+      @last_ritual = nil
+      # Reset the loot timer like every other exit that gets past the gate above,
+      # so @loot_delay throttles this no-op path too. Without it, at loot_delay > 0
+      # the prune + selection re-runs every tick while already-looted corpses
+      # linger (~6-7s until decay) instead of once per loot_delay. Harmless at
+      # loot_delay: 0, where the gate never blocks and every tick runs regardless.
+      @loot_timer = Time.now
+      return
+    end
 
     if corpse && (Time.now - @last_rites_timer > 600) && @last_rites && game_state.blessed_room
       DRC.bput("pray ##{corpse.id}", 'You beseech your god for mercy', 'You pray fervently', 'You continue praying for guidance', 'Quietly touching your lips with the tips of your fingers', 'murmur a brief prayer for')
@@ -1133,29 +1175,25 @@ class LootProcess
 
     unless game_state.necro_casting?
       # Loot the specific corpse by its <crtrStatus> id so we know exactly which
-      # body we consumed -- a looted corpse disappears very shortly after. Fall
-      # back to a bare/typed loot when no id is known (Creature roster and
-      # DRRoom.dead_npcs can disagree). @custom_loot_type, when set, still
-      # selects the LOOT type (treasure/equipment/all). Skip a corpse we've
-      # already looted: it lingers dead in the roster until decay, so without
-      # this we re-search it every pass.
-      if corpse && @looted_corpse_ids.include?(corpse.id)
-        echo("corpse-track: skip loot ##{corpse.id} (already looted)") if $debug_mode_ct
-      else
-        loot_target = corpse ? "##{corpse.id}" : nil
-        loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
-        # 'already been searched' terminates the loop too: with loot-by-id a
-        # group-mate can search the corpse first, and the game replies "The <mob>
-        # has already been searched for that!" -- unmatched, that hangs bput for
-        # its full 15s timeout mid-combat.
-        while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it', 'already been searched') == 'and get ready to search it'
-          pause
-          waitrt?
-        end
-        if corpse
-          @looted_corpse_ids << corpse.id
-          echo("corpse-track: mark ##{corpse.id} looted") if $debug_mode_ct
-        end
+      # body we consumed -- a looted corpse disappears very shortly after. The
+      # corpse selected above is always one we have NOT looted yet, so we loot it
+      # unconditionally here and record its id. Fall back to a bare/typed loot
+      # when no id is known (corpse nil: the Creature roster and DRRoom.dead_npcs
+      # can disagree). @custom_loot_type, when set, still selects the LOOT type
+      # (treasure/equipment/all).
+      loot_target = corpse ? "##{corpse.id}" : nil
+      loot_command = ['loot', loot_target, @custom_loot_type].compact.reject(&:empty?).join(' ')
+      # 'already been searched' terminates the loop too: with loot-by-id a
+      # group-mate can search the corpse first, and the game replies "The <mob>
+      # has already been searched for that!" -- unmatched, that hangs bput for
+      # its full 15s timeout mid-combat.
+      while DRC.bput(loot_command, 'You search', 'I could not find what you were referring to', 'and get ready to search it', 'already been searched') == 'and get ready to search it'
+        pause
+        waitrt?
+      end
+      if corpse
+        @looted_corpse_ids << corpse.id
+        echo("corpse-track: mark ##{corpse.id} looted") if $debug_mode_ct
       end
       @last_ritual = nil
     end
