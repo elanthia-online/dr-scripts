@@ -6812,6 +6812,25 @@ RSpec.describe LootProcess do
       expect(DRC).not_to have_received(:bput).with(/\Aloot/, any_args)
     end
 
+    # Regression: the all-looted early return must reset @loot_timer like every
+    # other exit that gets past the loot-delay gate, so @loot_delay throttles it.
+    # Without the reset, at loot_delay > 0 the prune + selection re-ran every tick
+    # while already-looted corpses lingered instead of once per loot_delay.
+    it 'resets the loot timer on the all-looted early return so the delay gate throttles it' do
+      other = OpenStruct.new(id: 222, noun: 'rat', name: 'a giant rat')
+      DRRoom.dead_npcs = %w[rat rat]
+      Lich::DragonRealms::Creature._set_room([corpse, other])
+      allow(DRC).to receive(:bput).and_return('You search')
+      gs = double('GameState', blessed_room: false, necro_casting?: false)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      lp = build_dispose_loot(looted_corpse_ids: [corpse.id, other.id], loot_timer: Time.now - 100)
+      allow(lp).to receive(:check_rituals?).and_return(false)
+      lp.dispose_body(gs)
+      expect(lp.instance_variable_get(:@loot_timer)).to be_within(2).of(Time.now)
+    end
+
     # The action trackers must stay bounded to the current room. Every pulse
     # rebuilds the dead roster, so an id we recorded that is no longer present
     # belongs to a decayed corpse and is dropped -- otherwise the lists grow for

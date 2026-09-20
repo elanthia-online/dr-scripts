@@ -1148,6 +1148,12 @@ class LootProcess
     # here, so the two feeds disagree and the bare-loot fallback below covers it.
     if corpse.nil? && !dead_corpses.empty?
       @last_ritual = nil
+      # Reset the loot timer like every other exit that gets past the gate above,
+      # so @loot_delay throttles this no-op path too. Without it, at loot_delay > 0
+      # the prune + selection re-runs every tick while already-looted corpses
+      # linger (~6-7s until decay) instead of once per loot_delay. Harmless at
+      # loot_delay: 0, where the gate never blocks and every tick runs regardless.
+      @loot_timer = Time.now
       return
     end
 
