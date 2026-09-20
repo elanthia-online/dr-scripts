@@ -38,9 +38,9 @@ premium_festival:
     - seagull
 
 memory_garden:
-  return_room: 51913
+  return_room: 52474
   return_surface: wagon
-  room_list: [51914, 51915, 51916, 51917, 51918, 51919, 51920, 51921]
+  room_list: [52474, 52480, 52476, 52477, 52473, 52472, 52471, 52475, 52478, 52479]
   critter_names:
     - effigy
     - doll
