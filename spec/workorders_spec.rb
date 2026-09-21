@@ -189,7 +189,7 @@ RSpec.describe WorkOrders do
 
     it 'defines VERSION as frozen string' do
       expect(described_class::VERSION).to be_frozen
-      expect(described_class::VERSION).to eq('1.0.1')
+      expect(described_class::VERSION).to eq('1.0.2')
     end
   end
 
@@ -698,6 +698,92 @@ RSpec.describe WorkOrders do
         expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
 
         workorders.send(:repair_items, info, tools)
+      end
+    end
+
+    context 'when the clerk refuses the item outright' do
+      # The else branch must stow the tool; otherwise it is left in hand and
+      # the next iteration double-grabs or the trailing ticket loop misbehaves.
+      it 'stows a tool that gets no quote and no no-need response' do
+        allow(DRC).to receive(:bput).and_return("I don't repair those here")
+        allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+
+        expect(workorders).to receive(:get_tool).with('hammer')
+        expect(workorders).to receive(:get_tool).with('tongs')
+        expect(workorders).to receive(:stow_tool).with('hammer')
+        expect(workorders).to receive(:stow_tool).with('tongs')
+
+        workorders.send(:repair_items, info, tools)
+      end
+    end
+  end
+
+  # ===========================================================================
+  # #confirm_repair - two-give handshake, incl. the re-quote after a bank run
+  # ===========================================================================
+  describe '#confirm_repair' do
+    let(:info) do
+      {
+        'repair-room' => 200,
+        'repair-npc'  => 'Rangu'
+      }
+    end
+
+    before do
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(DRCT).to receive(:walk_to)
+    end
+
+    context 'when the clerk finalizes on the first give' do
+      it 'stows the ticket' do
+        allow(DRC).to receive(:bput).and_return('You hand a clerk 190 Dokoras and he gives you back a repair ticket.')
+
+        expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true)
+
+        workorders.send(:confirm_repair, info, 'cauldron', 190)
+      end
+    end
+
+    context 'when short on coin and the clerk re-quotes after the bank run' do
+      # Regression: previously the post-withdrawal re-quote matched neither
+      # 'repair ticket' nor 'more coin', so bput timed out and the tool was
+      # skipped (workorders hung). The re-quote must now be consumed and the
+      # repair finalized on the following give.
+      it 'consumes the re-quote and finalizes the repair' do
+        responses = [
+          'A clerk shakes his head and says, "You will need more coin before I\'ll repair that."',
+          'A clerk looks over the cauldron and says, "That will cost 190 Dokoras to repair.  Just give it to me again if you want, and I\'ll have it ready in 1 roisaen."',
+          'You hand a clerk 190 Dokoras and he gives you back a repair ticket.'
+        ]
+        call = 0
+        allow(DRC).to receive(:bput) do |cmd, *_patterns|
+          next 'default' unless cmd.include?('give Rangu')
+
+          resp = responses[call]
+          call += 1
+          resp
+        end
+
+        expect(DRCM).to receive(:ensure_copper_on_hand).with(1900, anything, anything).and_return(true)
+        expect(workorders).to receive(:get_tool).with('cauldron')
+        expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true)
+
+        workorders.send(:confirm_repair, info, 'cauldron', 190)
+
+        expect(call).to eq(3)
+      end
+    end
+
+    context 'when the clerk repeatedly refuses for lack of coin' do
+      it 'gives up without finalizing a ticket' do
+        allow(DRC).to receive(:bput).and_return('A clerk shakes his head and says, "You will need more coin before I\'ll repair that."')
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+
+        expect(DRCI).not_to receive(:put_away_item?).with('ticket')
+        expect(workorders).to receive(:stow_tool).with('cauldron').at_least(:once)
+
+        workorders.send(:confirm_repair, info, 'cauldron', 190)
       end
     end
   end
