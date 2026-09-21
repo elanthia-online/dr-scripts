@@ -5,7 +5,7 @@
 =end
 
 class WorkOrders
-  VERSION = '1.0.1'.freeze
+  VERSION = '1.0.2'.freeze
 
   # Pattern constants for game responses
   GIVE_LOGBOOK_SUCCESS_PATTERNS = [
@@ -400,6 +400,8 @@ class WorkOrders
         stow_tool(tool_name)
       elsif result.include?('give')
         confirm_repair(info, tool_name, repair_cost_copper(result))
+      else
+        stow_tool(tool_name)
       end
     end
 
@@ -423,12 +425,20 @@ class WorkOrders
 
   # Hand the item over to finalize a repair. If the clerk says we need more
   # coin, withdraw 10x the quoted cost from the bank, walk back, and retry.
+  # Walking away and re-offering the tool restarts the clerk's two-give
+  # handshake, so after a bank run the next give is a fresh quote rather than
+  # the ticket; treat that quote as a normal step (refresh the cost and give
+  # again) instead of an unexpected response.
   def confirm_repair(info, tool_name, cost)
     attempts = 0
     loop do
-      case DRC.bput("give #{info['repair-npc']}", 'repair ticket', REPAIR_NEED_COIN_PATTERN)
+      result = DRC.bput("give #{info['repair-npc']}", 'repair ticket', REPAIR_NEED_COIN_PATTERN, REPAIR_QUOTE_PATTERN, 'Just give it to me again')
+      case result
       when /repair ticket/
         break
+      when REPAIR_QUOTE_PATTERN, /Just give it to me again/
+        new_cost = repair_cost_copper(result)
+        cost = new_cost if new_cost
       when /#{REPAIR_NEED_COIN_PATTERN}/
         attempts += 1
         if cost.nil? || attempts > 3
