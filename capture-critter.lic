@@ -10,6 +10,7 @@ class CaptureCritter
   def initialize
     @settings = get_settings
     @capture_settings = @settings.capture_critter_settings
+    @capture_settings["reward_container"] = @settings.capture_container_override if @settings.capture_container_override
     @debug = @capture_settings["debug"]
     event_data = get_data('capture')
 
