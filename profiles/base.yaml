@@ -2990,3 +2990,7 @@ capture_critter_settings:
       # Names of capturable critters
       critter_names: []
     debug: false
+# Per-character override for capture_critter_settings.reward_container, so a
+# character file can change the container without redefining the whole hash
+# (and its shared junk list).
+# capture_container_override: backpack

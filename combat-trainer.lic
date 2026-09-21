@@ -793,6 +793,11 @@ class LootProcess
     tried_loot = false
     items_to_loot = []
     @lootables
+      # Drop blank/nil entries first: an empty line in a profile's loot_additions
+      # YAML parses to nil, which crashes on item.split below (and lootable?'s
+      # downcase), while an empty string builds a bare "stow " that the game
+      # applies to whatever is in hand -- stowing the character's weapon.
+      .reject { |item| item.to_s.strip.empty? }
       .select { |item| game_state.lootable?(item) }
       .reject { |item| @box_nouns.include?(item) && @box_loot_limit && at_box_limit? }
       .each do |item|
