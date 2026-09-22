@@ -50,16 +50,31 @@ class ScrollSorter
   end
 
   def populate_cases
-    c = Array.new
     DRCI.open_container?(@stacker_container)
-    capture = Lich::Util.issue_command("inv #{@stacker_container}", /^Inside.+you see:/)
-    capture.each do |line|
-      case line
-      when /^.*#{@stacker}.*labeled "(.*)"/
-        c.push(Regexp.last_match(1))
-      end
+    rummage_stacker_labels
+  end
+
+  def rummage_stacker_labels
+    result = DRC.bput("rummage /c #{@stacker.split.last} my #{@stacker_container}",
+                      'but there is nothing in there like that\.',
+                      'looking for .* and see .*',
+                      'While it\'s closed',
+                      "I don't know what you are referring to",
+                      'You feel about',
+                      'That would accomplish nothing')
+
+    case result
+    when 'You feel about'
+      DRC.release_invisibility
+      return rummage_stacker_labels
+    when 'but there is nothing in there like that.', "While it's closed", "I don't know what you are referring to", 'That would accomplish nothing'
+      return []
     end
-    return c
+
+    match = result.match(/looking for .* and see (.*)\.$/)
+    return [] unless match
+
+    DRC.list_to_array(match[1]).filter_map { |item| item[/labeled "(.*)"/, 1] }
   end
 
   def unknown(guild)
