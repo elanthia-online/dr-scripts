@@ -1539,6 +1539,19 @@ sell_loot_money_on_hand: 3 silver
 sell_loot_skip_bank: false
 sell_loot_skip_exchange: false
 sell_loot_skip_pouch_close: false
+# To sell tied gem pouches and bundles to a Trader's kiosk instead of the
+# gemshop and tannery. Also needs `sell_loot_trader_room`.
+sell_loot_trader: false
+# The room id the kiosks are in.
+sell_loot_trader_room:
+# Nouns to look for there. Kiosks can be altered, the noun included.
+sell_loot_trader_nouns:
+  - kiosk
+  - plinth
+# Lowest markup percent a kiosk must advertise before selling to it. Its owner
+# can set anywhere from -10 to 80, so this defaults to 0 -- never sell below
+# base price. Set it to -10 to sell to any kiosk in the room.
+sell_loot_minimum_markup: 0
 sell_pouches_for_trading: false
 sale_pouches_container: backpack
 
