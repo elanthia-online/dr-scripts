@@ -102,6 +102,12 @@ class SellLoot
     # the clerk for " pouch" and count " gem pouch" -- malformed game commands.
     if @settings.spare_gem_pouch_container && @settings.gem_pouch_adjective
       check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective)
+    elsif @settings.spare_gem_pouch_container || @settings.gem_pouch_adjective
+      # Half-configured is almost certainly a mistake -- say so instead of
+      # silently skipping, or the pouches run dry with no visible cause.
+      DRC.message("***STATUS*** Spare-pouch restock SKIPPED: need both settings set. " \
+                  "spare_gem_pouch_container=#{@settings.spare_gem_pouch_container.inspect}, " \
+                  "gem_pouch_adjective=#{@settings.gem_pouch_adjective.inspect}")
     end
 
     # Handle banking
@@ -427,7 +433,11 @@ class SellLoot
     return if current_count >= @spare_gem_pouch_target
 
     gemshop_id = @hometown.dig('gemshop', 'id')
-    return unless gemshop_id
+    unless gemshop_id
+      DRC.message("***STATUS*** Need #{@spare_gem_pouch_target - current_count} more #{pouch_type}(s), " \
+                  "but no gemshop is mapped for #{@settings.hometown} -- cannot restock here.")
+      return
+    end
 
     DRCT.walk_to(gemshop_id)
     clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
