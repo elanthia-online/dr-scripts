@@ -581,7 +581,14 @@ RSpec.describe SellLoot do
   # =========================================================================
   describe '#exchange_coins' do
     it 'exchanges every non-local currency into the local one' do
-      commands = capture_commands { build_instance(hometown: make_hometown, local_currency: 'kronars').exchange_coins }
+      # exchange_coins bputs now, so capture_commands -- which collects fput --
+      # no longer sees the command.
+      commands = []
+      allow(DRC).to receive(:bput) do |command, *_patterns|
+        commands << command
+        ''
+      end
+      build_instance(hometown: make_hometown, local_currency: 'kronars').exchange_coins
       expect(commands).to include('exchange all lirums for kronars', 'exchange all dokoras for kronars')
       expect(commands).not_to include('exchange all kronars for kronars')
     end
