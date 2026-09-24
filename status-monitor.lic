@@ -17,294 +17,687 @@ args = parse_args(arg_definitions)
 
 nowindow = args.nowindow || get_settings.status_monitor_no_window
 
-class GameFilter
-  attr_accessor :seen_lines, :spam_line
+require 'sqlite3'
+require 'fileutils'
 
-  def initialize
-    @seen_cache_name = "seen_messages_#{checkname}.dat"
-    @seen_backup_name = "backup/seen_messages_#{checkname}.bak"
-    @seen_lines = if File.exist?(@seen_cache_name)
-                    begin
-                      loaded = Marshal.load(File.open(@seen_cache_name, 'rb'))
-                      save_backup
-                      loaded
-                    rescue => e
-                      echo "Error loading seen_messages: #{e}"
-                      restore_backup
-                    end
-                  else
-                    {}
-                  end
-    @recent_seen_lines = {}
-    @valid_commands = %w[ACTION ADVICE AFT AGREE ANSWER APPLAUD ASK AVOID AWAKEN BABBLE BALANCE BANDAGE BARK BARTER BASK BAWL BEAM BEARD BECKON BELCH BITE BLAME BLANCH BLAZE BLINK BLOCK BLUFF BLUSH BONDED BOO BOP BOUNCE BOW BRAWL BREAK BREATHE BRUSH BUTT BUY CACKLE CARDS CARVE CENTER CHANT CHAT CHECK CHEER CHIRR CHOKE CHOOSE CHOP CHORTLE CHORUS CHUCKLE CLAIM CLAP CLEAN CLENCH CLIMB CLOSE CLUTCH COIN COLLECT COMBAT COMPARE CONCENTRATE CONTACT COUGH COUNT COVER COWER CRAWL CRINGE CRUSH CRY CURSE CURTSY CUT DANCE DANCE FLOOR DAYDREAM DEAD DESCRIBE DRAG DRINK DROOL DROP DUCK DUMP EAR EAT ELBOW EMAIL EMPTY ENCUMBRANCE ENGAGE EXAMINE EXCHANGE EXHALE EXPRESS FACE FAINT FALL FATIGUE FEED FEMALE FIDGET FIGURE FIND FIRE FIT FIX FLAGS FLAIL FLAP FLETCH FLINCH FLIRT FLUSTER FLY FOCUS FOLLOW FORAGE FRET FROWN FURROW GASP GAWK GAZE GEM GET GIGGLE GLANCE GLARE GLOWER GNASH GO GOBBLE GRIEVE GRIMACE GRIN GRIND GROAN GROVEL GROWL GRUMBLE GRUNT GUARD GULP GUZZLE HACK HAIL HAIR HANGBACK HELLO HICCUP HIDE HISS HOLD HOME HOOT HOWL HUG HUM HUZZAH IGNORE INFAMY INFO INFUSE INHALE INSTRUCT INSULT INTELLIGENCE INVENTORY INVFIX JAB JOIN JUGGLE JUMP KHRI KICK KILL KISS KNEE KNEEL KNOCK LANGUAGE LATCH LAUGH LEAD LEAN LEAP LEAVE LECTURE LICK LIE LIGHT LINK LISTEN LOAD LOAN LOCK LOOK LOWER LUNGE MAKE MALE MANA MARCH MARK MEDITATE MEETING MENU MEOW MESSAGE MIND MIX MOAN MOCK MONEY MOOR MORE MOTION MOUNT MUMBLE MUSS MUTTER NAG NAME NIBBLE NOCK NOD NOTE NUDGE OBSERVE OFFER OPEN ORDER PACE PANIC PANT PARRY PAT PATHWAY PAY PEER PERCEIVE PET PICK PIN PINCH PLANT PLAY PLAYACT POACH POINT POKE POLICY PONDER PORT PORTRAIT POSE POUND POUR POUT PRACTICE PRAISE PRAY PREACH PREDICT PREEN PREMIUM PREPARE PROCRASTINATE PROD PROTECT PUCKER PULL PUMMEL PUNCH PUNISH PURR PUSH PUT PUZZLE QUEST QUEUE QUIT RAISE RASPBERRY READ RECALL RECITE REFER REFLEX REFUSE RELEASE REMOVE REPAIR REPENT REROLL RETREAT RETURN RING ROAR ROFL ROLL ROSHAMBO ROW RPA RUB RUMMAGE SALUTE SCOFF SCOUT SCOWL SCRAPE SCRATCH SCREAM SCRIBE SEARCH SELL SHAKE SHAPE SHARE SHEATHE SHIFT SHIP SHIVER SHOOT SHOVE SHOW SHRIEK SHRUG SHUDDER SHUFFLE SHUN SIGH SIGN SIGNAL SIGNATURE SING SIT SKATE SKILLS SKIN SLAP SLEEP SLICE SLINK SLIP SMELL SMILE SMIRK SMOOCH SNAP SNARL SNEAK SNEER SNEEZE SNICKER SNIFFLE SNORE SNORT SNUFF SNUGGLE SOB SONG SORT SPECULATE SPELLS SPIT SPLASH SPLUTTER SPRINKLE SQUINT SQUIRM STABLE STALK STAMINA STANCE STAND STARBOARD STARE STATUS STEAL STIR STITCH STOMP STOP STOW STRENGTH STRETCH STRING STUBBLE STUDY SULK SUMMON SURPRISE SURRENDER SURVEY SWAP SWEAR SWEAT SWEEP SWIM SWIMMING SWING TACKLE TAG TAIL TAKE TALK TAP TARGET TEACH TEASE TELL TEND THINK THROW THRUST THUMP TICKLE TIE TILT TIME TIP TITLE TOSS TOUCH TRACE TRACK TRAIN TRANSFER TRILL TUNE TURN TYPO UNBRAID UNBUNDLE UNCOIL UNHIDE UNLATCH UNLOAD UNLOCK UNTIE UNWRAP VAULT VOTE WAIL WAIT WAKE WARN WATCH WAVE WEALTH WEAR WEAVE WEDDING WEEP WHEEZE WHIMPER WHINE WHIRLWIND WHISTLE WHO WIELD WINCE WINK WIPE WITHDRAW WOBBLE WRING WRITE YANK YAWN YELP]
-    @room_players = []
-    @filter_strings = get_data('filters')['filter_strings'].map { |string| /#{string}/ } while @filter_strings.nil?
-    @non_useful_tags = [
-      /<preset id='roomDesc'>/i,
-      /pushStream id="assess"/i,
-      /pushStream id="ooc"/i,
-      /pushStream id="atmospherics"/i,
-      /pushStream id="thoughts"/i,
-      /pushStream id="talk"/i,
-      /pushStream id="death"/i,
-      /pushStream id="group"/i,
-      /pushStream id="percWindow"/i,
-      /pushStream id="logons"/i,
-      /pushStream id="death"/i,
-      /pushStream id="shopWindow"/i,
-      /pushStream id="percWindow"/i,
-      /component id='room/i,
-      /component id='exp/i,
-      %r{</prompt>$},
-      /preset id='roomDesc'/,
-      /style id="roomName"/,
-      /<spell exist='spell'>/,
-      %r{<spell>None</spell>},
-      /&lt; .*/,
-      /<clearContainer/,
-      /<right/,
-      /<left/,
-      /<indicator id='IconINVISIBLE'/,
-      %r{<roundTime value='\d+'/>}
-    ]
-    @perc_window_check = false
-    @responses = ["'Hmmm?", "'Yes", "'Ok?"].shuffle
-    @settings = get_settings
-    @recent_seen = []
-    @frequency_buffer = []
-    @quit_on_flag = @settings.quit_on_status_warning
-    @unique_line_threshold = @settings.unique_line_threshold
-    @line_frequency_threshold = @settings.line_frequency_threshold
-    @line_similarity_percentage = @settings.line_similarity_percentage
-  end
+module StatusMonitor
+  # Persists and retrieves the corpus of previously seen game messages using a
+  # single, INSTALLATION-WIDE SQLite database. A line safe on any character is
+  # safe everywhere, so the corpus is one shared whitelist across all characters.
+  #
+  # Writes are immediate (INSERT on record) so a line one character learns is
+  # visible to every other character at once -- there is no per-process cache to
+  # go stale. Because the shared file can have many concurrent writers (every
+  # running character, plus an import), all DB access goes through a
+  # busy-retry/backoff wrapper that logs-and-continues rather than crashing the
+  # monitor. A small in-process cache of KNOWN lines only avoids repeat SELECTs
+  # (known stays known, so it never needs invalidation).
+  #
+  # On first run, any legacy per-character .dat (Marshal) and seen_messages_<Char>.db
+  # files found in the working directory are merged in and renamed .migrated.
+  #
+  # @note in_corpus? is the novelty gate: a known line is never analysed/alerted.
+  class MessageStore
+    # Attempts to ride out a busy shared DB after the SQLite busy_timeout is
+    # itself exceeded (e.g. a burst of simultaneous logins all writing at once).
+    BUSY_RETRIES = 5
+    # Soft cap on the in-process known-line cache before it is cleared (it is
+    # only a read optimisation; clearing just forces DB reads again).
+    KNOWN_CACHE_CAP = 50_000
 
-  def clean_seen_with_filters
-    @seen_lines.reject! { |line, _| @filter_strings.find { |regex| line =~ regex } }
-  end
-
-  def save
-    base = {}
-    if File.exist?(@seen_cache_name)
-      base = Marshal.load(File.open(@seen_cache_name, 'rb'))
-    end
-    @seen_lines.merge!(base)
-    clean_seen_with_filters
-    File.open(@seen_cache_name, 'wb') { |file| Marshal.dump(@seen_lines, file) }
-  end
-
-  def save_backup
-    loaded_file = Marshal.load(File.open(@seen_cache_name, 'rb'))
-    File.open(@seen_backup_name, 'wb') { |file| Marshal.dump(loaded_file, file) }
-  end
-
-  def restore_backup
-    echo 'The marshal data was corrupted!  Restoring from backup.'
-    return {} unless File.exist?(@seen_backup_name)
-
-    loaded_file = Marshal.load(File.open(@seen_backup_name, 'rb'))
-    File.open(@seen_cache_name, 'wb') { |file| Marshal.dump(loaded_file, file) }
-    Marshal.load(File.open(@seen_cache_name, 'rb'))
-  end
-
-  def migrate_recent
-    save_required = false
-    @recent_seen_lines.select { |_, timestamp| Time.now - timestamp > 600 }.each_key do |line|
-      save_required = true
-      @seen_lines[line] = true
-      @recent_seen_lines.delete(line)
-    end
-    save if save_required
-  end
-
-  def check_spells(line) # toggle for the percWindow changes.  Ignores lines until percWindow spell updates are done.
-    @perc_window_check ||= line =~ /pushStream id="percWindow"/i
-    @perc_window_check = line !~ /<popStream/ if @perc_window_check
-  end
-
-  def unseen?(line)
-    return nil if line.nil? || line.empty?
-    return nil if @filter_strings.find { |regex| line =~ regex }
-
-    line = similarity_scrub(line)
-    return nil if @seen_lines[line]
-
-    spam_check(line)
-    return nil if @recent_seen_lines[line]
-
-    @recent_seen_lines[line] = Time.now
-  end
-
-  def find_pcs(room_players)
-    room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
-                .split(', ')
-                .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '') }
-                .map { |obj| obj.strip.scan(/\w+$/).first }
-  end
-
-  attr_reader :last_player_line
-
-  def update_players(line)
-    return unless line =~ %r{\'room players\'>Also here: (.*)\.</component>}
-
-    @last_player_line = line
-    @room_players += find_pcs(Regexp.last_match(1).dup)
-    @room_players.uniq!
-  end
-
-  def spam_check(line)
-    @recent_seen << line
-    @recent_seen = @recent_seen[1..20] if @recent_seen.length > 20
-    counts = @recent_seen.each_with_object(Hash.new(0)) { |phrase, count| count[phrase] += 1 }
-    if counts.values.max > @unique_line_threshold
-      echo "Passed unique line threshold #{counts.inspect}"
-      return spam_alert(line, counts.inspect)
+    # Installation-wide corpus path, shared by every character and the importer.
+    # @return [String] absolute path to the shared seen_messages database
+    def self.default_db_path
+      File.join(DATA_DIR, 'status-monitor', 'seen_messages.db')
     end
 
-    return if counts[line] > 1
-    return unless check_distance?(line)
-    return if @frequency_buffer.any? { |x| (Time.now - x) < 0.5 }
-
-    @frequency_buffer.delete_if { |x| (Time.now - x) > 90 }
-    @frequency_buffer << Time.now
-    if @frequency_buffer.size >= @line_frequency_threshold
-      echo 'Passed freq_buffer size'
-      return spam_alert(line, counts.inspect)
+    # @param db_path [String] path to the shared corpus database
+    def initialize(db_path = self.class.default_db_path)
+      @db_path = db_path
+      FileUtils.mkdir_p(File.dirname(@db_path))
+      @db = open_database
+      @known = {}
+      migrate_legacy
     end
-  end
 
-  def spam_alert(line, counts)
-    echo("\a")
-    pause 0.25
-    echo("\a")
-    pause 0.25
-    echo("\a")
-    pause 0.25
-    command_check(line)
-    fput @responses.first if @settings.status_monitor_respond
-    echo(line)
-    send_slackbot_message(counts)
-    fput('exit') if @quit_on_flag
-    @responses.rotate!
-    @spam_line = line
-    pause 2
-    @recent_seen = []
-    @frequency_buffer = []
-  end
+    # Whether a line is already part of the known-safe corpus. This is the
+    # novelty gate: a known line is safe by construction and never analysed.
+    #
+    # On a persistent DB failure this fails OPEN (returns false -> treated as
+    # novel -> alerts) rather than silently swallow a possible check.
+    #
+    # @param line [String] scrubbed message line
+    # @return [Boolean] true if the line is already known
+    def in_corpus?(line)
+      return true if line.nil? || line.strip.empty?
+      return true if @known[line]
 
-  def check_distance?(line)
-    @recent_seen.each do |seen|
-      size_of_string = line.length
-      return true if levenshtein_distance(seen, line) < size_of_string * ((100 - @line_similarity_percentage.to_f) / 100) && levenshtein_distance(seen, line) > 0
+      found = with_retry { exists_in_db?(line) }
+      remember(line) if found
+      found ? true : false
     end
-    false
-  end
 
-  def levenshtein_distance(source, compare)
-    # Calculates minimum required edits to change one string into another
-    # For an understanding of the concept, look at http://devnull.absolventa.de/2015/11/24/exploring-levenshtein-algorithm-with-ruby/
-    source_length = source.length
-    compare_length = compare.length
-    return source_length if compare_length == 0
-    return compare_length if source_length == 0
+    # Records a line as known-safe, writing it through to the shared store
+    # immediately so other characters see it at once.
+    #
+    # @param line [String] scrubbed message line
+    # @return [void]
+    def record(line)
+      return if line.nil? || line.strip.empty?
 
-    lev_array = Array.new(source_length + 1) { Array.new(compare_length + 1) } # create a 2D array with the dimensions of both string lengths
-
-    (0..source_length).each { |i| lev_array[i][0] = i }
-    (0..compare_length).each { |j| lev_array[0][j] = j }
-
-    # Work through the two strings to determine the various ways to adjust each string by propogating costs forward until it reaches the final element.
-    (1..compare_length).each do |j|
-      (1..source_length).each do |i|
-        lev_array[i][j] = if source[i - 1] == compare[j - 1] # What's the minimum cost to adjust nearby characters
-                            lev_array[i - 1][j - 1] # The same. No operation required
-                          else
-                            [lev_array[i - 1][j] + 1, # Look left in the matrix. This would be a "deletion". It costs + 1 more than d[i-1][j]]
-                             lev_array[i][j - 1] + 1, # Look directly above the current entry in matrix. This would correspond to an insertion which costs +1 additionally
-                             lev_array[i - 1][j - 1] + 1] # Completely substitute the character, this also costs +1 more  than d[j-1, i-1]
-                              .min
-                          end
-      end
+      remember(line)
+      with_retry { insert_line(line, 'live') }
     end
-    lev_array[source_length][compare_length]
-  end
 
-  def command_check(line)
-    line.gsub(/_|~|-|=|\./, '')
-        .scan(/[A-Z\s]{3,}/)
-        .each do |match|
-          match = match.gsub(/\s/, '')
-          next unless @valid_commands.include?(match)
+    # Closes the database connection.
+    #
+    # @return [void]
+    def shutdown
+      @db.close
+    end
 
-          pause 3
-          fput(match.downcase)
-          pause 5
+    # Returns the total count of seen messages in the database.
+    #
+    # @return [Integer] number of stored messages
+    def count
+      @db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
+    end
+
+    private
+
+    # Adds a line to the in-process known-line cache, bounding its size.
+    def remember(line)
+      @known.clear if @known.size >= KNOWN_CACHE_CAP
+      @known[line] = true
+    end
+
+    # Runs a DB operation, retrying past the busy_timeout on contention and
+    # logging-and-continuing (returning nil) rather than raising into process.
+    def with_retry
+      tries = 0
+      begin
+        yield
+      rescue SQLite3::BusyException, SQLite3::LockedException => e
+        tries += 1
+        if tries <= BUSY_RETRIES
+          pause(0.05 * tries)
+          retry
         end
+        echo "status-monitor: corpus busy after #{tries} tries (#{e.message}); continuing."
+        nil
+      end
+    end
 
-    ## Look for mixed-case prompts like J_u_M_p
-    tokens = line.split(' ')
-    tokens.each do |token|
-      if token =~ /[_~=-]/
-        token = token.gsub(/_|~|-|=/, '')
-        fput(token.downcase) if @valid_commands.include?(token.upcase)
+    # Schema must stay in sync with StatusMonitorImport.open_database.
+    # @return [SQLite3::Database] initialized database connection
+    def open_database
+      db = SQLite3::Database.new(@db_path)
+      # Wait up to 5s on a locked db before raising; with_retry rides out longer
+      # contention on top of that (many characters + an import share this file).
+      db.busy_timeout = 5000
+      db.execute('PRAGMA journal_mode=WAL')
+      db.execute('PRAGMA synchronous=NORMAL')
+      db.execute(<<~SQL)
+        CREATE TABLE IF NOT EXISTS seen_messages (
+          line_text TEXT PRIMARY KEY,
+          first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          source TEXT DEFAULT 'live'
+        )
+      SQL
+      db
+    end
+
+    # @param line [String] message line to check
+    # @return [Boolean] true if line exists in the database
+    def exists_in_db?(line)
+      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_text = ?', [line]) ? true : false
+    end
+
+    # @param line [String] message line to insert
+    # @param source [String] origin of the line ('live', 'import', 'migration')
+    # @return [void]
+    def insert_line(line, source = 'live')
+      @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, source])
+    end
+
+    # Merges any legacy per-character corpora (Marshal .dat and per-character
+    # seen_messages_<Char>.db) found in the working directory into the shared
+    # store, then renames each to .migrated so it runs only once.
+    #
+    # @return [void]
+    def migrate_legacy
+      dats = Dir.glob('seen_messages_*.dat')
+      dbs = Dir.glob('seen_messages_*.db').reject { |f| File.expand_path(f) == File.expand_path(@db_path) }
+      return if dats.empty? && dbs.empty?
+
+      total = dats.sum { |f| migrate_dat(f) } + dbs.sum { |f| migrate_db(f) }
+      echo "status-monitor: merged #{total} entries from #{dats.size + dbs.size} legacy corpus file(s) into the shared store."
+    end
+
+    # @param path [String] legacy Marshal .dat file
+    # @return [Integer] entries merged
+    def migrate_dat(path)
+      data = File.open(path, 'rb') { |f| Marshal.load(f) }
+      count = 0
+      with_retry do
+        @db.transaction do
+          data.each_key do |line|
+            insert_line(line.to_s, 'migration')
+            count += 1
+          end
+        end
+      end
+      File.rename(path, "#{path}.migrated")
+      backup = "backup/#{File.basename(path, '.dat')}.bak"
+      File.rename(backup, "#{backup}.migrated") if File.exist?(backup)
+      count
+    rescue => e
+      echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
+      0
+    end
+
+    # @param path [String] legacy per-character seen_messages_<Char>.db file
+    # @return [Integer] entries merged
+    def migrate_db(path)
+      src = SQLite3::Database.new(path)
+      rows = src.execute('SELECT line_text, source FROM seen_messages')
+      src.close
+      with_retry do
+        @db.transaction do
+          rows.each { |line, source| insert_line(line, source || 'migration') }
+        end
+      end
+      File.rename(path, "#{path}.migrated")
+      rows.size
+    rescue => e
+      echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
+      0
+    end
+  end
+
+  # Filters raw game stream lines, stripping XML tags and removing
+  # lines from known players, NPCs, and non-useful UI elements.
+  #
+  # @note Uses status_tags mode to receive raw XML from the game stream.
+  class MessageFilter
+    # @return [String, nil] the last raw "Also here:" room players component line seen
+    attr_reader :last_player_line
+
+    FILTERED_STREAMS = %w[assess ooc atmospherics thoughts talk death group percWindow logons shopWindow].freeze
+
+    # @param filter_strings [Array<Regexp>] configurable patterns to ignore
+    def initialize(filter_strings)
+      @filter_strings = filter_strings
+      @room_players = []
+      @in_stream = false
+      @current_stream = ''
+      @non_useful_tags = [
+        /<preset id='roomDesc'>/i,
+        /component id='room/i,
+        /component id='exp/i,
+        %r{</prompt>$},
+        /preset id='roomDesc'/,
+        /style id="roomName"/,
+        /<spell exist='spell'>/,
+        %r{<spell>None</spell>},
+        /&lt; .*/,
+        /<clearContainer/,
+        /<right/,
+        /<left/,
+        /<indicator id='IconINVISIBLE'/,
+        %r{<roundTime value='\d+'/>}
+      ]
+    end
+
+    # Cleans a raw game line by stripping tags and filtering known sources.
+    #
+    # Does not mutate its argument: tag stripping returns a new String.
+    #
+    # @param line [String] raw game stream line with XML tags
+    # @return [String, nil] a new cleaned line, or nil if it should be ignored
+    def clean(line)
+      update_players(line)
+      update_stream_state(line)
+      return nil if @in_stream && FILTERED_STREAMS.include?(@current_stream)
+      return nil if line.nil? || line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
+      return nil if @room_players.any? { |name| line.include?(name) }
+      return nil if UserVars.npcs&.any? { |name| line.include?(name) }
+
+      if UserVars.players_online
+        players_to_check = UserVars.players_online - [checkname, 'Endith']
+        return nil if players_to_check.any? { |name| line.include?(name) }
+      end
+      line.gsub(/<[^>]+>/, '')
+    end
+
+    # Checks whether a cleaned line matches any configured filter patterns.
+    #
+    # @param line [String] cleaned message line
+    # @return [Boolean] true if the line matches a filter
+    def filtered?(line)
+      return true if line.nil? || line.empty?
+
+      @filter_strings.any? { |regex| line =~ regex }
+    end
+
+    # Normalizes a line by stripping variable content (numbers, currency)
+    # so that semantically identical messages compare as equal.
+    # Must stay in sync with StatusMonitorImport.similarity_scrub.
+    #
+    # @param line [String] cleaned message line
+    # @return [String] scrubbed copy of the line
+    def similarity_scrub(line)
+      result = line.dup
+      [/[0-9]+/, /(kronars|lirums|dokoras)/i].each { |pattern| result.gsub!(pattern, '') }
+      result
+    end
+
+    # @return [Array<Regexp>] the configured filter patterns
+    attr_reader :filter_strings
+
+    private
+
+    # Extracts player names from the room players component.
+    #
+    # @param room_players [String] raw "Also here:" component text
+    # @return [Array<String>] list of player short names
+    def find_pcs(room_players)
+      room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
+                  .split(', ')
+                  .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '') }
+                  .map { |obj| obj.strip.scan(/\w+$/).first }
+    end
+
+    # @param line [String] raw game stream line to check for player component
+    # @return [void]
+    def update_players(line)
+      return unless line =~ %r{\'room players\'>Also here: (.*)\.</component>}
+
+      @last_player_line = line
+      @room_players = find_pcs(Regexp.last_match(1).dup)
+    end
+
+    # @param line [String] raw game stream line
+    # @return [void]
+    def update_stream_state(line)
+      if line =~ /<pushStream id="([^"]+)"/i
+        @in_stream = true
+        @current_stream = Regexp.last_match(1)
+      elsif line =~ /<popStream/i
+        @in_stream = false
+        @current_stream = ''
       end
     end
   end
 
-  def clean(line)
-    update_players(line)
-    migrate_recent
-    check_spells(line)
-    return nil if line.nil? || line.empty? || @non_useful_tags.find { |bad_tag| bad_tag =~ line } || @perc_window_check
-    return nil if @room_players.find { |name| line.include?(name) } || UserVars.npcs.find { |name| line.include?(name) }
-
-    if UserVars.players_online
-      players_to_check = UserVars.players_online - [checkname, 'Endith']
-      return nil if players_to_check.find { |name| line.include?(name) }
+  # Handles alert responses when spam is detected: audio beeps,
+  # optional auto-response, Slack notification, and optional auto-quit.
+  #
+  # @note Configurable via YAML settings:
+  #   - `status_monitor_respond` [Boolean] whether to auto-respond
+  #   - `quit_on_status_warning` [Boolean] whether to auto-quit
+  #   - `slack_username` [String] Slack user to notify
+  class AlertHandler
+    # @param settings [OpenStruct] user settings from get_settings
+    def initialize(settings)
+      @settings = settings
+      @responses = ["'Hmmm?", "'Yes", "'Ok?"].shuffle
+      @quit_on_flag = settings.quit_on_status_warning
+      @slack_enabled = !@settings.slack_username.nil? && !@settings.slack_username.to_s.strip.empty?
+      @slackbot = nil
     end
-    line.gsub!(/<[^>]+>/, '')
-    line
+
+    # Handles a novel line.
+    #
+    # Novelty alone is a NOTIFY signal (audible beeps, echo to the window, Slack)
+    # -- because with a trusted corpus every unknown line is worth a glance, but
+    # far too many to auto-act on. The full bundle (auto-type embedded commands,
+    # canned response, auto-quit) only runs on a STRONG signal: the line repeated
+    # past threshold, or it actually contains an embedded command.
+    #
+    # @param line [String] the novel line
+    # @param strong [Boolean] whether the strong signal fired (repeat or command)
+    # @return [void]
+    def handle(line, strong:)
+      3.times do
+        echo("\a")
+        pause 0.25
+      end
+      if strong
+        CommandDetector.execute(line)
+        fput @responses.first if @settings.status_monitor_respond
+        # Queue the auto-quit before send_slack: constructing the SlackBot on the
+        # first alert can block for several seconds, and we do not want that to
+        # delay logout when quit_on_status_warning is set. The exit command is
+        # queued to the game, so the Slack notification still goes out afterward.
+        fput('exit') if @quit_on_flag
+        @responses.rotate!
+      end
+      echo(line)
+      send_slack(line)
+      pause 2 if strong
+    end
+
+    private
+
+    # Lazily constructs the SlackBot on first use.
+    #
+    # SlackBot.new can block for several seconds (lnet startup, users.list
+    # fetch, jitter/backoff). Building it here rather than in the constructor
+    # keeps script startup and the status window responsive, and defers the
+    # connection until an alert actually needs to be sent (by which point lnet
+    # is far more likely to be up).
+    #
+    # @return [Lich::DragonRealms::SlackBot, nil] the bot, or nil if construction failed
+    def slackbot
+      return @slackbot if @slackbot
+
+      @slackbot = Lich::DragonRealms::SlackBot.new
+    rescue => e
+      echo "SlackBot init failed: #{e.message}"
+      nil
+    end
+
+    # @param message [String] message body to send
+    # @return [void]
+    #
+    # @note Delegates the connection check to SlackBot#direct_message, which
+    #   reconnects itself when not yet initialized. Gating on #initialized?
+    #   here would permanently suppress delivery whenever the first connection
+    #   attempt failed (e.g. lnet not up yet at login), because the self-healing
+    #   reconnect path inside direct_message would never be reached.
+    def send_slack(message)
+      return unless @slack_enabled
+
+      bot = slackbot
+      return unless bot
+
+      bot.direct_message(@settings.slack_username, message.to_s)
+    rescue => e
+      echo "SlackBot error: #{e.message}"
+    end
   end
 
-  def similarity_scrub(line)
-    # pulls items from the line that are likely to be variable, and unlikely to be indicative of a hit
-    # currently, numerals, currency names
-    sub_array = [/[0-9]+/, /(kronars|lirums|dokoras)/i]
-    sub_array.each { |reg_ex| line.gsub!(reg_ex, '') }
-    line
+  # Scans suspicious lines for embedded game commands and executes them.
+  # Handles both uppercase sequences (JUMP) and obfuscated separators (J_u_M_p).
+  module CommandDetector
+    # Commands that are destructive, irreversible, or session-ending and must
+    # never be auto-executed from an untrusted line, even when they match. A
+    # legitimate GM sanity-probe would never ask you to run these, so there is
+    # no upside to obeying them and real downside (forced logout, etc).
+    #
+    # @note Today the parser only ever fires a bare verb (targets never survive
+    #   scanning), so most of these are no-ops without an argument -- QUIT is
+    #   the one with a real effect. The denylist keeps them safe regardless if
+    #   the scanner is ever taught to attach arguments.
+    DENYLISTED_COMMANDS = %w[QUIT SELL DROP DUMP EMPTY WITHDRAW RELEASE GET PUT KILL].freeze
+
+    VALID_COMMANDS = %w[ACTION ADVICE AFT AGREE ANSWER APPLAUD ASK AVOID AWAKEN BABBLE BALANCE BANDAGE BARK BARTER BASK BAWL BEAM BEARD BECKON BELCH BITE BLAME BLANCH BLAZE BLINK BLOCK BLUFF BLUSH BONDED BOO BOP BOUNCE BOW BRAWL BREAK BREATHE BRUSH BUTT BUY CACKLE CARDS CARVE CENTER CHANT CHAT CHECK CHEER CHIRR CHOKE CHOOSE CHOP CHORTLE CHORUS CHUCKLE CLAIM CLAP CLEAN CLENCH CLIMB CLOSE CLUTCH COIN COLLECT COMBAT COMPARE CONCENTRATE CONTACT COUGH COUNT COVER COWER CRAWL CRINGE CRUSH CRY CURSE CURTSY CUT DANCE DANCE FLOOR DAYDREAM DEAD DESCRIBE DRAG DRINK DROOL DROP DUCK DUMP EAR EAT ELBOW EMAIL EMPTY ENCUMBRANCE ENGAGE EXAMINE EXCHANGE EXHALE EXPRESS FACE FAINT FALL FATIGUE FEED FEMALE FIDGET FIGURE FIND FIRE FIT FIX FLAGS FLAIL FLAP FLETCH FLINCH FLIRT FLUSTER FLY FOCUS FOLLOW FORAGE FRET FROWN FURROW GASP GAWK GAZE GEM GET GIGGLE GLANCE GLARE GLOWER GNASH GO GOBBLE GRIEVE GRIMACE GRIN GRIND GROAN GROVEL GROWL GRUMBLE GRUNT GUARD GULP GUZZLE HACK HAIL HAIR HANGBACK HELLO HICCUP HIDE HISS HOLD HOME HOOT HOWL HUG HUM HUZZAH IGNORE INFAMY INFO INFUSE INHALE INSTRUCT INSULT INTELLIGENCE INVENTORY INVFIX JAB JOIN JUGGLE JUMP KHRI KICK KILL KISS KNEE KNEEL KNOCK LANGUAGE LATCH LAUGH LEAD LEAN LEAP LEAVE LECTURE LICK LIE LIGHT LINK LISTEN LOAD LOAN LOCK LOOK LOWER LUNGE MAKE MALE MANA MARCH MARK MEDITATE MEETING MENU MEOW MESSAGE MIND MIX MOAN MOCK MONEY MOOR MORE MOTION MOUNT MUMBLE MUSS MUTTER NAG NAME NIBBLE NOCK NOD NOTE NUDGE OBSERVE OFFER OPEN ORDER PACE PANIC PANT PARRY PAT PATHWAY PAY PEER PERCEIVE PET PICK PIN PINCH PLANT PLAY PLAYACT POACH POINT POKE POLICY PONDER PORT PORTRAIT POSE POUND POUR POUT PRACTICE PRAISE PRAY PREACH PREDICT PREEN PREMIUM PREPARE PROCRASTINATE PROD PROTECT PUCKER PULL PUMMEL PUNCH PUNISH PURR PUSH PUT PUZZLE QUEST QUEUE QUIT RAISE RASPBERRY READ RECALL RECITE REFER REFLEX REFUSE RELEASE REMOVE REPAIR REPENT REROLL RETREAT RETURN RING ROAR ROFL ROLL ROSHAMBO ROW RPA RUB RUMMAGE SALUTE SCOFF SCOUT SCOWL SCRAPE SCRATCH SCREAM SCRIBE SEARCH SELL SHAKE SHAPE SHARE SHEATHE SHIFT SHIP SHIVER SHOOT SHOVE SHOW SHRIEK SHRUG SHUDDER SHUFFLE SHUN SIGH SIGN SIGNAL SIGNATURE SING SIT SKATE SKILLS SKIN SLAP SLEEP SLICE SLINK SLIP SMELL SMILE SMIRK SMOOCH SNAP SNARL SNEAK SNEER SNEEZE SNICKER SNIFFLE SNORE SNORT SNUFF SNUGGLE SOB SONG SORT SPECULATE SPELLS SPIT SPLASH SPLUTTER SPRINKLE SQUINT SQUIRM STABLE STALK STAMINA STANCE STAND STARBOARD STARE STATUS STEAL STIR STITCH STOMP STOP STOW STRENGTH STRETCH STRING STUBBLE STUDY SULK SUMMON SURPRISE SURRENDER SURVEY SWAP SWEAR SWEAT SWEEP SWIM SWIMMING SWING TACKLE TAG TAIL TAKE TALK TAP TARGET TEACH TEASE TELL TEND THINK THROW THRUST THUMP TICKLE TIE TILT TIME TIP TITLE TOSS TOUCH TRACE TRACK TRAIN TRANSFER TRILL TUNE TURN TYPO UNBRAID UNBUNDLE UNCOIL UNHIDE UNLATCH UNLOAD UNLOCK UNTIE UNWRAP VAULT VOTE WAIL WAIT WAKE WARN WATCH WAVE WEALTH WEAR WEAVE WEDDING WEEP WHEEZE WHIMPER WHINE WHIRLWIND WHISTLE WHO WIELD WINCE WINK WIPE WITHDRAW WOBBLE WRING WRITE YANK YAWN YELP].freeze
+
+    # Detects embedded game commands in a line WITHOUT executing them. Used both
+    # to decide whether a line is "check-like" (an embedded command is a strong
+    # signal) and to drive execution.
+    #
+    # @param line [String] line to scan
+    # @return [Array<String>] valid commands found (upcased), denylisted included
+    def self.commands_in(line)
+      normalized = line.gsub(/[^\x20-\x7E]/, '')
+      found = Set.new
+
+      normalized.gsub(/_|~|-|=|\./, '')
+                .scan(/[A-Z\s]{3,}/)
+                .each do |match|
+                  match = match.gsub(/\s/, '')
+                  found << match if VALID_COMMANDS.include?(match)
+                end
+
+      normalized.split(' ').each do |token|
+        next unless token =~ /[_~=-]/
+
+        cleaned = token.gsub(/_|~|-|=/, '').upcase
+        found << cleaned if VALID_COMMANDS.include?(cleaned)
+      end
+
+      found.to_a
+    end
+
+    # Executes the non-denylisted commands found in a line (the "act" path).
+    #
+    # @param line [String] suspicious line to scan and act on
+    # @return [void]
+    def self.execute(line)
+      commands_in(line).each do |cmd|
+        next if DENYLISTED_COMMANDS.include?(cmd)
+
+        pause 3
+        fput(cmd.downcase)
+        pause 5
+      end
+    end
+  end
+
+  # Top-level orchestrator for status monitoring.
+  #
+  # Coordinates message filtering, seen tracking, spam detection,
+  # and alert handling. Provides both headless and GTK windowed modes.
+  #
+  # @note Required settings keys:
+  #   - `unique_line_threshold` [Integer] repeat count before alert
+  #   - `line_frequency_threshold` [Integer] novel line burst count (90s window)
+  #   - `line_similarity_percentage` [Integer] Levenshtein similarity cutoff
+  #
+  # @note Optional settings keys:
+  #   - `status_monitor_no_window` [Boolean] disable GTK window
+  #   - `status_monitor_respond` [Boolean] auto-respond with canned phrases
+  #   - `quit_on_status_warning` [Boolean] auto-quit on alert
+  #   - `slack_username` [String] Slack user to notify
+  #   - `status_monitor_learn` [Boolean] record novel lines silently, never alert
+  #     (used to prime the shared corpus)
+  #   - `status_monitor_grace_seconds` [Integer] warm-up window at session start
+  #     during which novel lines are learned silently (default 60; 0 disables)
+  #
+  # @example Basic usage
+  #   ;status-monitor
+  #
+  # @example Headless mode
+  #   ;status-monitor nowindow
+  #
+  # @example Debug mode
+  #   ;status-monitor debug
+  #
+  # @see https://elanthipedia.play.net/Lich_script_repository#status-monitor
+  class Monitor
+    # Seconds at the start of a session during which novel lines are learned
+    # silently (no alert) to absorb the warm-up burst before the corpus is warm.
+    GRACE_SECONDS = 60
+    # Notification safety valve: at most this many alerts per rolling window;
+    # beyond it, novel lines are still learned but not announced.
+    ALERT_RATE_MAX = 10
+    ALERT_RATE_WINDOW = 60
+
+    attr_reader :spam_line
+
+    # @return [String, nil] the most recent cleaned line (tags stripped), for debug logging
+    attr_reader :last_clean_line
+
+    # @param settings [OpenStruct] user settings from get_settings
+    # @param store [MessageStore] shared corpus (defaults to the installation-wide store)
+    def initialize(settings, store = MessageStore.new)
+      @store = store
+      @filter = MessageFilter.new(load_filter_strings)
+      @alerter = AlertHandler.new(settings)
+      @learn = settings.status_monitor_learn ? true : false
+      @grace_seconds = settings.status_monitor_grace_seconds || GRACE_SECONDS
+      @started_at = Time.now
+      @alert_times = []
+      @spam_line = nil
+      @last_clean_line = nil
+      announce_mode
+    end
+
+    # Processes a single raw game line through the full pipeline.
+    #
+    # Detection is novelty-gated: a line already in the shared corpus is
+    # known-safe and is neither analysed nor alerted on. A NOVEL line alerts
+    # (novel-alone).
+    #
+    # Whitelisting is deliberately one-directional: a line the tool ALERTED on is
+    # NEVER recorded, so it stays novel and every recurrence keeps alerting until
+    # an import (or a silent learn/grace window) retires it. Only lines learned
+    # SILENTLY -- during the start-up grace period, explicit learn mode, or the
+    # rate-limit valve -- are recorded, and even then a command-bearing line is
+    # never silently whitelisted so a command-check stays catchable.
+    #
+    # Auto-actions (type the command, canned response, auto-quit) fire only when
+    # the line embeds a command; mere novelty or repetition never triggers them.
+    #
+    # @param line [String] raw game stream line
+    # @return [Boolean] true if a novel line actually alerted
+    def process(line)
+      cleaned = @filter.clean(line)
+      @last_clean_line = cleaned
+      return false if cleaned.nil?
+      return false if @filter.filtered?(cleaned)
+
+      scrubbed = @filter.similarity_scrub(cleaned).strip
+      return false if scrubbed.empty?
+      return false if @store.in_corpus?(scrubbed) # known-safe -> silent
+
+      has_command = CommandDetector.commands_in(scrubbed).any?
+
+      if suppress_alert?
+        @store.record(scrubbed) unless has_command # learn silently, keep commands hot
+        return false
+      end
+
+      @alerter.handle(scrubbed, strong: has_command)
+      @spam_line = scrubbed
+      @alert_times << Time.now
+      true
+    end
+
+    # Clears the current spam line after it has been consumed.
+    #
+    # @return [String, nil] the spam line that was cleared
+    def consume_spam_line
+      line = @spam_line
+      @spam_line = nil
+      line
+    end
+
+    # Closes the database connection.
+    #
+    # @return [void]
+    def shutdown
+      @store.shutdown
+    end
+
+    # @return [String, nil] last seen room players component line
+    def last_player_line
+      @filter.last_player_line
+    end
+
+    private
+
+    # Whether a novel line should be learned silently instead of alerted:
+    # explicit learn mode, the start-up grace period, or the rate-limit valve.
+    #
+    # @return [Boolean]
+    def suppress_alert?
+      return true if @learn
+      return true if @grace_seconds.positive? && (Time.now - @started_at < @grace_seconds)
+
+      rate_limited?
+    end
+
+    # Whether the alert rate cap has been reached in the current window.
+    #
+    # @return [Boolean]
+    def rate_limited?
+      cutoff = Time.now - ALERT_RATE_WINDOW
+      @alert_times.reject! { |t| t < cutoff }
+      if @alert_times.size >= ALERT_RATE_MAX
+        unless @rate_notice
+          echo "status-monitor: alert rate cap reached (#{ALERT_RATE_MAX}/#{ALERT_RATE_WINDOW}s); learning quietly until it clears."
+          @rate_notice = true
+        end
+        return true
+      end
+      @rate_notice = false
+      false
+    end
+
+    # One-time notice about which warm-up mode is active.
+    def announce_mode
+      if @learn
+        echo 'status-monitor: learn mode -- recording novel lines silently, no alerts.'
+      elsif @grace_seconds.positive?
+        echo "status-monitor: warming up for #{@grace_seconds}s -- learning novel lines quietly before alerting."
+      end
+    end
+
+    # Loads the configurable ignore patterns from the 'filters' data file.
+    #
+    # get_data can briefly return nil (or data lacking the key) if it is read
+    # before Lich finishes loading its data files, so retry a bounded number of
+    # times. If no filter list is ever produced, run with no filters rather than
+    # failing: an unconfigured (or empty) filter list is valid, not fatal. Note
+    # get_data is a synchronous read, so this retry only helps a genuine
+    # not-yet-loaded race -- it will not conjure a key that the data file lacks.
+    #
+    # @return [Array<Regexp>] compiled filter patterns (empty if none configured)
+    def load_filter_strings
+      10.times do
+        data = get_data('filters')
+        strings = data && data['filter_strings']
+        return strings.map { |string| /#{string}/ } if strings
+
+        pause 1
+      end
+      echo 'status-monitor: no filter list available; running with no filters.'
+      []
+    end
   end
 end
 
-register_slackbot(get_settings.slack_username)
-
+# @param entry [Gtk::Entry] health bar widget to update
+# @return [void]
 def update_health_bar(entry)
   hp = health
   if hp >= 75
     entry.override_background_color(:normal, Gdk::RGBA.parse('green'))
   else
-    entry.override_background_color(:normal, Gdk::RBGA.parse('red'))
+    entry.override_background_color(:normal, Gdk::RGBA.parse('red'))
   end
   entry.text = "#{hp}%"
 end
 
-filter = GameFilter.new
+# @param raw [String, nil] original raw line as received from the game stream
+# @param cleaned [String, nil] the line after tag stripping and source filtering
+# @param player_line [String, nil] last room players component
+# @return [void]
+def write_debug_log(raw, cleaned, player_line)
+  File.open("status-monitor-debug-#{checkname}.txt", 'a') do |f|
+    f.puts(raw)
+    f.puts(cleaned)
+    f.puts(player_line)
+  end
+end
+
+settings = get_settings
+monitor = StatusMonitor::Monitor.new(settings)
+
+before_dying do
+  monitor.shutdown
+end
 
 if nowindow
   loop do
     line = script.gets
-    back = line.dup if args.debug
-    if filter.unseen?(filter.clean(line))
-      if args.debug
-        open("status-monitor-debug-#{checkname}.txt", 'a') do |f|
-          f.puts(back)
-          f.puts(line)
-          f.puts(filter.last_player_line)
-        end
-      end
+    if monitor.process(line) && args.debug
+      write_debug_log(line, monitor.last_clean_line, monitor.last_player_line)
     end
-    if filter.spam_line
-      filter.spam_line.dup
-      filter.spam_line = nil
-    end
+    monitor.consume_spam_line
   end
 end
 
@@ -332,7 +725,6 @@ before_dying do
   CharSettings['window_width']    = save_window_width    if (save_window_width.class == Integer) && (save_window_width > 100)
   CharSettings['window_height']   = save_window_height   if (save_window_height.class == Integer) && (save_window_height > 100)
   Gtk.queue { window.destroy }
-  filter.save
 end
 
 begin
@@ -378,38 +770,22 @@ begin
 
   loop do
     line = script.gets?
-    back = line.dup if args.debug
     if prev_health != health
       prev_health = health
       Gtk.queue { update_health_bar(healthbar_et) }
     end
-    if filter.unseen?(filter.clean(line))
-      if args.debug
-        open("status-monitor-debug-#{checkname}.txt", 'a') do |f|
-          f.puts(back)
-          f.puts(line)
-          f.puts(filter.last_player_line)
-        end
-      end
-      # Gtk.queue do
-      #   text_buffer = messages_tv.buffer
-      #   text_buffer.insert(text_buffer.end_iter, line)
-      #   text_buffer.insert(text_buffer.end_iter, "\r\n")
-      #   messages_tv.scroll_to_iter(text_buffer.end_iter, 0.0, true, 0, 0)
-      # end
+    if monitor.process(line)
+      write_debug_log(line, monitor.last_clean_line, monitor.last_player_line) if args.debug
     else
-      pause 0.1 unless back
+      pause 0.1 unless args.debug && line
     end
-    if filter.spam_line
-      spam = filter.spam_line.dup
-      filter.spam_line = nil
+    if (spam = monitor.consume_spam_line)
       Gtk.queue do
         text_buffer = messages_tv.buffer
-        text_buffer.insert(text_buffer.end_iter, "spam:'#{spam}'")
+        text_buffer.insert(text_buffer.end_iter, "new:'#{spam}'")
         text_buffer.insert(text_buffer.end_iter, "\r\n")
         messages_tv.scroll_to_iter(text_buffer.end_iter, 0.0, true, 0, 0)
       end
-      send_slackbot_message(spam)
     end
     break if window_done
   end
