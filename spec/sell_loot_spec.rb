@@ -601,6 +601,125 @@ RSpec.describe SellLoot do
   end
 
   # =========================================================================
+  # #exchange_all
+  # =========================================================================
+  describe '#exchange_all' do
+    let(:jar_refusal) do
+      'One of the guards barks out, "No, sir.  I\'m afraid you\'ll have to work with values ' \
+        'no greater than %<cap>s platinum at a time."'
+    end
+    let(:changer_refusal) do
+      'The money-changer shakes his head, "I\'d really rather not handle transactions ' \
+        'larger than a thousand platinum."'
+    end
+    let(:messages) { [] }
+
+    before { allow(DRC).to receive(:message) { |text| messages << text } }
+
+    # Stand in for a money-changer. The cap is on the coin handed over, so
+    # `exchange all` is refused while the purse is over it, and an explicit
+    # amount is refused when it is over it. The fee varies by bank, so the
+    # success line quotes whatever fee the example asks for.
+    #
+    # @param purse [Integer] platinum dokoras on hand
+    # @param cap [Integer] most platinum the changer takes at once
+    # @param refusal [String] refusal line; %<cap>s is filled in with cap
+    # @param done [String] success line
+    # @param refuse_amounts [Boolean] refuse every explicit amount
+    # @return [Array<String>] the commands sent, filled in as the example runs
+    def simulate_changer(purse:, refusal:, cap: 1000, done: 'After figuring a 5% fee, the money-changer hands you your coins.',
+                         refuse_amounts: false)
+      commands = []
+      refused = format(refusal, cap: cap.to_s.reverse.scan(/\d{1,3}/).join(',').reverse)
+      allow(DRC).to receive(:bput) do |command, *_patterns|
+        commands << command
+        case command
+        when /^exchange all /
+          if purse.zero?
+            "You don't have any dokoras."
+          elsif purse > cap
+            refused
+          else
+            purse = 0
+            done
+          end
+        when /^exchange (\d+) platinum /
+          amount = Regexp.last_match(1).to_i
+          next refused if refuse_amounts || amount > cap
+
+          purse -= amount
+          done
+        end
+      end
+      commands
+    end
+
+    def chunks(commands)
+      commands.grep(/^exchange \d+ platinum/)
+    end
+
+    it 'chunks past a money-changer that spells the cap out, then exchanges the rest' do
+      commands = simulate_changer(purse: 2500, refusal: changer_refusal)
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(commands).to eq([
+                               'exchange all dokoras for kronars',
+                               'exchange 1000 platinum dokoras to kronars',
+                               'exchange all dokoras for kronars',
+                               'exchange 1000 platinum dokoras to kronars',
+                               'exchange all dokoras for kronars'
+                             ])
+      expect(messages).to be_empty
+    end
+
+    it 'reads a comma-grouped cap out of the jar-bank wording' do
+      commands = simulate_changer(purse: 2500, refusal: jar_refusal,
+                                  done: 'After collecting a 1% fee, the clerk reaches into a jar.')
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(chunks(commands)).to eq(['exchange 1000 platinum dokoras to kronars'] * 2)
+      expect(messages).to be_empty
+    end
+
+    it 'chunks by whatever cap the changer quotes' do
+      commands = simulate_changer(purse: 1200, cap: 500, refusal: jar_refusal,
+                                  done: 'After figuring a 10% fee, the money-changer hands you your coins.')
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(chunks(commands)).to eq(['exchange 500 platinum dokoras to kronars'] * 2)
+      expect(commands.last).to eq('exchange all dokoras for kronars')
+      expect(messages).to be_empty
+    end
+
+    it 'stops with a message after one refused chunk instead of looping on it' do
+      commands = simulate_changer(purse: 2500, refusal: changer_refusal, refuse_amounts: true)
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(chunks(commands).size).to eq(1)
+      expect(messages.size).to eq(1)
+      expect(messages.first).to include('would not take 1000 platinum dokoras')
+    end
+
+    it 'gives up with a message after 12 passes rather than spinning' do
+      commands = simulate_changer(purse: 13_000, refusal: changer_refusal)
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(chunks(commands).size).to eq(12)
+      expect(messages.size).to eq(1)
+      expect(messages.first).to include('after 12 exchange passes')
+    end
+
+    it 'fully exchanges exactly 12 passes worth without the give-up message' do
+      commands = simulate_changer(purse: 12_000, refusal: changer_refusal)
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(chunks(commands).size).to eq(11)
+      expect(commands.last).to eq('exchange all dokoras for kronars')
+      expect(messages).to be_empty
+    end
+  end
+
+  # =========================================================================
   # #give_money_to_bankbot
   # =========================================================================
   describe '#give_money_to_bankbot' do

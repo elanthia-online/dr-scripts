@@ -301,6 +301,8 @@ class SellLoot
   # The changer refuses a transaction over its cap outright, and since
   # 'deposit all' banks only the local currency, a refused purse rides around
   # in hand. So read the cap out of the refusal and go over in chunks.
+  # The cap is on the coin handed over, not the coin received (verified in
+  # game), so a chunk of `cap` platinum is safe whichever way the rate runs.
   EXCHANGE_MAX_PLAT   = 1000
   EXCHANGE_MAX_PASSES = 12 # enough for the largest purse worth carrying
   # Two wordings seen, at a jar bank and at a money-changer. The second
