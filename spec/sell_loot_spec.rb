@@ -631,8 +631,7 @@ RSpec.describe SellLoot do
                          refuse_amounts: false)
       commands = []
       refused = format(refusal, cap: cap.to_s.reverse.scan(/\d{1,3}/).join(',').reverse)
-      allow(DRC).to receive(:bput) do |command, *_patterns|
-        commands << command
+      reply = lambda do |command|
         case command
         when /^exchange all /
           if purse.zero?
@@ -650,6 +649,12 @@ RSpec.describe SellLoot do
           purse -= amount
           done
         end
+      end
+      # Like DRC.bput: the first pattern that matches wins, '' on no match.
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        commands << command
+        line = reply.call(command).to_s
+        patterns.lazy.map { |pattern| line[pattern] }.find(&:itself).to_s
       end
       commands
     end
