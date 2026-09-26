@@ -1610,6 +1610,9 @@ herbs_override_herbstock: false
 # Setting to override combat-trainer skipping herbs that require a hand to use while in combat
 combat_trainer_herbs_allowhands: false
 
+# Setting to pass 'override' to heal-remedy to prioritize manufactured remedies over raw herbs
+combat_trainer_use_remedies: false
+
 # Skip harnessing before infusing or not
 osrel_no_harness: false
 osrel_amount:
