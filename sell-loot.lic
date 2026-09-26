@@ -298,6 +298,22 @@ class SellLoot
     local > keep_copper || foreign.positive?
   end
 
+  # The changer refuses a transaction over its cap outright, and since
+  # 'deposit all' banks only the local currency, a refused purse rides around
+  # in hand. So read the cap out of the refusal and go over in chunks.
+  # The cap is on the coin handed over, not the coin received (verified in
+  # game), so a chunk of `cap` platinum is safe whichever way the rate runs.
+  EXCHANGE_MAX_PLAT   = 1000
+  EXCHANGE_MAX_PASSES = 12 # enough for the largest purse worth carrying
+  # Two wordings seen, at a jar bank and at a money-changer. The second
+  # spells the number out, so the capture is optional and EXCHANGE_MAX_PLAT
+  # is the fallback:
+  #   ... values no greater than 1000 platinum at a time.
+  #   ... rather not handle transactions larger than a thousand platinum.
+  EXCHANGE_CAPPED = /no greater than ([\d,]+) platinum at a time|rather not handle transactions larger than/i
+  EXCHANGE_DONE   = /After (?:figuring|collecting) a .*?fee|reach into the one filled with/i
+  EXCHANGE_NONE   = /don't have (?:that many|any)/i
+
   def exchange_coins
     exchange_id = @hometown.dig('exchange', 'id')
     return unless exchange_id
@@ -307,7 +323,37 @@ class SellLoot
     exchange_to = @hometown['currency']
     $CURRENCIES
       .reject { |currency| currency =~ /#{exchange_to}/i }
-      .each { |currency| fput("exchange all #{currency} for #{exchange_to}") }
+      .each { |currency| exchange_all(currency, exchange_to) }
+  end
+
+  def exchange_all(currency, exchange_to)
+    EXCHANGE_MAX_PASSES.times do
+      result = DRC.bput("exchange all #{currency} for #{exchange_to}",
+                        EXCHANGE_DONE, EXCHANGE_CAPPED, EXCHANGE_NONE).to_s
+      return unless result =~ EXCHANGE_CAPPED
+
+      cap = Regexp.last_match(1).to_s.delete(',').to_i
+      cap = EXCHANGE_MAX_PLAT unless cap.positive?
+      return unless exchange_chunk(currency, exchange_to, cap)
+    end
+
+    DRC.message("***STATUS*** Still carrying #{currency} after #{EXCHANGE_MAX_PASSES} exchange passes " \
+                '-- stopping so this does not spin.')
+  end
+
+  # @return [Boolean] false if the changer would not take an explicit amount,
+  #   so the caller stops rather than looping on it
+  def exchange_chunk(currency, exchange_to, cap)
+    # "to", not "for": the bare "exchange all X for Y" takes "for", but the
+    # amount form was verified as "exchange 1000 platinum kronars to dokoras".
+    result = DRC.bput("exchange #{cap} platinum #{currency} to #{exchange_to}",
+                      EXCHANGE_DONE, EXCHANGE_CAPPED, EXCHANGE_NONE).to_s
+    return true if result =~ EXCHANGE_DONE
+
+    DRC.message("***STATUS*** The changer would not take #{cap} platinum #{currency} " \
+                "(#{result.inspect}). Your #{currency} is still in hand and 'deposit all' will " \
+                'not bank it -- exchange it by hand.')
+    false
   end
 
   def give_money_to_bankbot(currency, keep)
