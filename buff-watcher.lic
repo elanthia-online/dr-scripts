@@ -57,7 +57,7 @@ class BuffWatcher
   end
 
   def should_activate_buffs?
-    !(hidden? || invisible? || running_no_use_scripts? || inside_no_use_room? || need_inner_fire? || buffs_active? || DRStats.guild.nil?)
+    !(hidden? || invisible? || running_no_use_scripts? || inside_no_use_room? || need_inner_fire? || buffs_active? || almanac? || DRStats.guild.nil?)
   end
 
   def activate_buffs
@@ -129,6 +129,10 @@ class BuffWatcher
 
   def use_stored_cambrinth?
     @settings.stored_cambrinth || @settings.cambrinth_items.any? { |item| item['stored'] }
+  end
+
+  def almanac?
+    Script.running?('almanac') || [DRC.left_hand, DRC.right_hand].any? { |item| item =~ /almanac/i }
   end
 end
 
