@@ -37,6 +37,7 @@ RSpec.describe SellLoot do
       'currency'     => 'kronars',
       'exchange'     => { 'id' => 100 },
       'gemshop'      => { 'id' => 200, 'name' => 'Grishna' },
+      'pawnshop'     => { 'id' => 500, 'name' => 'Cormyn' },
       'tannery'      => { 'id' => 300 },
       'locksmithing' => { 'id' => 400, 'name' => 'Locke' }
     }.merge(overrides)
@@ -509,8 +510,8 @@ RSpec.describe SellLoot do
     it 'sells matching runestones by recognized mineral material and noun, dropping descriptive adjectives' do
       allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone', 'flawed calavarite runestone', 'a runestone', 'burden runestone'])
       commands = capture_commands { build_instance.sell_runestones('sack') }
-      expect(commands).to include('get my quartz runestone from my sack', 'sell my quartz runestone to Grishna')
-      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Grishna')
+      expect(commands).to include('get my quartz runestone from my sack', 'sell my quartz runestone to Cormyn')
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Cormyn')
       expect(commands.none? { |c| c.include?('burden') }).to be true
       expect(commands.none? { |c| c.end_with?('my runestone from my sack') }).to be true
     end
@@ -520,7 +521,7 @@ RSpec.describe SellLoot do
       instance = build_instance(settings: settings)
       allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone', 'elbaite runestone', 'flawed calavarite runestone'])
       commands = capture_commands { instance.sell_runestones('sack') }
-      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Grishna')
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Cormyn')
       expect(commands.none? { |c| c.include?('quartz') }).to be true
       expect(commands.none? { |c| c.include?('elbaite') }).to be true
     end
@@ -537,7 +538,7 @@ RSpec.describe SellLoot do
       instance = build_instance(settings: settings)
       allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone', 'topaz runestone'])
       commands = capture_commands { instance.sell_runestones('sack') }
-      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Grishna')
+      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Cormyn')
       expect(commands.none? { |c| c.include?('quartz') }).to be true
     end
 
@@ -567,13 +568,13 @@ RSpec.describe SellLoot do
       instance = build_instance(settings: settings)
       allow(DRCI).to receive(:get_item_list).and_return(['quartzite runestone', 'xtopaz runestone', 'calavarite runestone'])
       commands = capture_commands { instance.sell_runestones('sack') }
-      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Grishna')
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Cormyn')
     end
 
     it 'correctly handles mineral names with apostrophes' do
       allow(DRCI).to receive(:get_item_list).and_return(["glossy iheaneu'a runestone"])
       commands = capture_commands { build_instance.sell_runestones('sack') }
-      expect(commands).to include("get my iheaneu'a runestone from my sack", "sell my iheaneu'a runestone to Grishna")
+      expect(commands).to include("get my iheaneu'a runestone from my sack", "sell my iheaneu'a runestone to Cormyn")
     end
 
     it 'handles sell_loot_ignored_runestones provided as a bare string without error' do
@@ -581,14 +582,28 @@ RSpec.describe SellLoot do
       instance = build_instance(settings: settings)
       allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone', 'topaz runestone'])
       commands = capture_commands { instance.sell_runestones('sack') }
-      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Grishna')
+      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Cormyn')
       expect(commands.none? { |c| c.include?('quartz') }).to be true
     end
 
-    it 'does not walk to the gemshop when nothing is sellable' do
+    it 'walks to the pawnshop when sellable runestones are present' do
+      allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone'])
+      expect(DRCT).to receive(:walk_to).with(500).and_return(true)
+      build_instance.sell_runestones('sack')
+    end
+
+    it 'does not walk to the pawnshop when nothing is sellable' do
       allow(DRCI).to receive(:get_item_list).and_return(['a worthless rock'])
       expect(DRCT).not_to receive(:walk_to)
       build_instance.sell_runestones('sack')
+    end
+
+    it 'does not walk or sell when the hometown has no pawnshop configured' do
+      instance = build_instance(hometown: make_hometown('pawnshop' => nil))
+      allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone'])
+      expect(DRCT).not_to receive(:walk_to)
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands).to be_empty
     end
 
     [
@@ -615,7 +630,7 @@ RSpec.describe SellLoot do
     end
 
     it 'does not sell when no configured clerk is present' do
-      instance = build_instance(hometown: make_hometown('gemshop' => { 'id' => 200, 'name' => %w[Wickett attendant] }))
+      instance = build_instance(hometown: make_hometown('pawnshop' => { 'id' => 500, 'name' => %w[Wickett attendant] }))
       DRRoom.npcs = []
       allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone'])
       commands = capture_commands { instance.sell_runestones('sack') }

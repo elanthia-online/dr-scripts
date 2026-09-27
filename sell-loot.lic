@@ -664,9 +664,10 @@ class SellLoot
 
     items = sellable_runestone_items(container)
     return if items.empty?
-    return unless walk_to_gemshop
+    pawnshop_id = @hometown.dig('pawnshop', 'id')
+    return unless pawnshop_id && DRCT.walk_to(pawnshop_id)
 
-    clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+    clerk = wait_for_clerk(@hometown.dig('pawnshop', 'name'))
     return unless clerk
 
     items.each do |item|
