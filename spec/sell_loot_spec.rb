@@ -1171,6 +1171,8 @@ RSpec.describe SellLoot do
           commands = kiosk_room([])
           seller.sell_stored_pouches(['kiosk'], 1)
           expect(commands.grep(/^open /)).to be_empty
+          expect(messages).to include(a_string_including('did not show as a gem pouch'))
+          expect(messages.grep(/untied/)).to be_empty
         end
       end
     end

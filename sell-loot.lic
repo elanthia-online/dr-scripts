@@ -779,6 +779,7 @@ class SellLoot
     empties = 0
     partial = 0
     untied = 0
+    unrecognised = 0
     kept = 0
     @spare_pouches_held = if @settings.spare_gem_pouch_container
                             DRCI.count_items_in_container(gem_pouch_display_name,
@@ -802,6 +803,12 @@ class SellLoot
         # Never tie it: UNTIE is Trader-only.
         untied += 1
         break unless keep_stored_pouch?(pouch, 'untied')
+
+        kept += 1
+        next
+      when :unrecognised
+        unrecognised += 1
+        break unless keep_stored_pouch?(pouch, 'unrecognised')
 
         kept += 1
         next
@@ -832,6 +839,10 @@ class SellLoot
       DRC.message("***STATUS*** Left #{untied} untied pouch(es) in #{@full_pouch_container} -- a kiosk only " \
                   'buys tied ones.')
     end
+    if unrecognised.positive?
+      DRC.message("***STATUS*** Left #{unrecognised} pouch(es) in #{@full_pouch_container} that did not show " \
+                  'as a gem pouch in hand -- not offered.')
+    end
     if partial.positive?
       DRC.message("***STATUS*** #{partial} partial sale(s) -- those kiosks are out of reserves and need " \
                   'refunding before the rest will sell.')
@@ -839,9 +850,9 @@ class SellLoot
     sold
   end
 
-  # @return [Symbol] :tied, :untied, :empty, or :missing
+  # @return [Symbol] :tied, :untied, :empty, :unrecognised, or :missing
   def stored_pouch_state(pouch)
-    return :untied unless "#{DRC.left_hand} #{DRC.right_hand}" =~ /\bgem #{Regexp.escape(@settings.gem_pouch_noun.to_s)}\b/i
+    return :unrecognised unless "#{DRC.left_hand} #{DRC.right_hand}" =~ /\bgem #{Regexp.escape(@settings.gem_pouch_noun.to_s)}\b/i
 
     case DRC.bput("open my #{pouch}", 'You open', 'has been tied off', 'What were you referring to', 'That is already open')
     when 'has been tied off' then :tied
