@@ -83,6 +83,19 @@ class SellLoot
         end
       end
 
+      if @settings.sell_loot_runestones
+        if @settings.sell_loot_runestones_container.is_a?(String)
+          sell_runestones(@settings.sell_loot_runestones_container)
+        elsif @settings.sell_loot_runestones_container.is_a?(Array)
+          @settings.sell_loot_runestones_container.each do |container|
+            sell_runestones(container)
+          end
+        else
+          DRC.message("sell_loot_runestones_container is: #{@settings.sell_loot_runestones_container}")
+          DRC.message("This is invalid. Skipping selling runestones.")
+        end
+      end
+
       sell_bundle if @settings.sell_loot_bundle
 
       sell_traps(@settings.pick['component_container'] || @settings.component_container) if @settings.sell_loot_traps
@@ -151,6 +164,13 @@ class SellLoot
       end
     end
 
+    if @settings.sell_loot_runestones
+      unless @settings.sell_loot_runestones_container
+        DRC.message("***ERROR: sell_loot_runestones is enabled but sell_loot_runestones_container is missing***")
+        valid = false
+      end
+    end
+
     valid
   end
 
@@ -197,6 +217,23 @@ class SellLoot
       if has_traps_to_sell?(container)
         DRC.message("Found traps to sell")
         has_loot = true
+      end
+    end
+
+    if @settings.sell_loot_runestones
+      containers_to_check = []
+
+      if @settings.sell_loot_runestones_container.is_a?(String)
+        containers_to_check << @settings.sell_loot_runestones_container
+      elsif @settings.sell_loot_runestones_container.is_a?(Array)
+        containers_to_check.concat(@settings.sell_loot_runestones_container)
+      end
+
+      containers_to_check.each do |container|
+        if has_runestones_to_sell?(container)
+          DRC.message("Found runestones to sell in #{container}")
+          has_loot = true
+        end
       end
     end
 
@@ -264,6 +301,38 @@ class SellLoot
     !sellable_metal_and_stone_items(container).empty?
   rescue StandardError => e
     DRC.message("Error checking metals/stones in #{container}: #{e.message}")
+    false
+  end
+
+  # Item descriptions in +container+ matching runestones the gemshop buys
+  # (e.g. "quartz runestone"), after removing anything on the configured
+  # ignore list. Safe to call on an unreadable or empty container.
+  #
+  # @param container [String] the container noun to inspect
+  # @return [Array<String>] sellable runestone phrases; empty if none
+  def sellable_runestone_items(container)
+    items = DRCI.get_item_list(container)
+    return [] if items.nil? || items.empty?
+
+    ignore_types = @settings.sell_loot_ignored_runestones || []
+    ignored_regex = /\b#{ignore_types.map { |type| Regexp.escape(type) }.join('|')}\b/i unless ignore_types.empty?
+    runestone_regex = /(?:\b(?<material>[a-z'-]+)\s+)?runestone$/i
+
+    items
+      .select { |item| item =~ runestone_regex }
+      .reject { |item| ignored_regex ? item =~ ignored_regex : false }
+      .map do |item|
+        clean = item.sub(/^(?:an?|some|the)\s+/i, '')
+        clean =~ runestone_regex
+        material = Regexp.last_match[:material]
+        material ? "#{material} runestone" : 'runestone'
+      end
+  end
+
+  def has_runestones_to_sell?(container)
+    !sellable_runestone_items(container).empty?
+  rescue StandardError => e
+    DRC.message("Error checking runestones in #{container}: #{e.message}")
     false
   end
 
@@ -525,6 +594,22 @@ class SellLoot
     DRC.release_invisibility
 
     items = sellable_metal_and_stone_items(container)
+    return if items.empty?
+    return unless walk_to_gemshop
+
+    clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
+    return unless clerk
+
+    items.each do |item|
+      fput("get my #{item} from my #{container}")
+      fput("sell my #{item} to #{clerk}")
+    end
+  end
+
+  def sell_runestones(container)
+    DRC.release_invisibility
+
+    items = sellable_runestone_items(container)
     return if items.empty?
     return unless walk_to_gemshop
 

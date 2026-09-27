@@ -1535,6 +1535,37 @@ sell_loot_ignored_metals_and_stones:
 # For thieves to sell their component pouch of harvested traps.
 # If set to true, you likely also want to set harvest_traps and component_container.
 sell_loot_traps: false
+# To sell runestones from designated container(s).
+sell_loot_runestones: false
+# The container that has the runestones to sell.
+sell_loot_runestones_container:
+# Specify the runestones (by mineral material) NOT TO SELL.
+# Mineral materials map to specific spell templates.
+sell_loot_ignored_runestones:
+  # - asketine # Compost
+  # - avaes # Clear Vision
+  # - axinite # Mental Blast
+  # - azurite # Shadows
+  # - calavarite # Arc Light
+  # - elbaite # Bless
+  # - electrum # Eagle's Cry
+  # - erythrite # Rejuvenation
+  # - hafaltu # Ethereal Shield
+  # - iheaneu'a # Psychic Shield
+  # - ilmenite # Clear Vision
+  # - imnera # Zephyr
+  # - indakar # Protection from Evil
+  # - lemicule # Heroic Strength
+  # - malachite # Air Bubble
+  # - quartz # Refresh
+  # - rhodonite # Fire Shards
+  # - scheelite # Fire Ball
+  # - selenite # Frostbite
+  # - sraeth # Minor Physical Protection
+  # - sunstone # Compost
+  # - topaz # Protection from Evil
+  # - xibaryl # Hypnotize
+  # - zengalmi # Gar Zeng
 sell_loot_money_on_hand: 3 silver
 sell_loot_skip_bank: false
 sell_loot_skip_exchange: false
