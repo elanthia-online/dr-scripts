@@ -1150,6 +1150,8 @@ RSpec.describe SellLoot do
         it 'keeps a pouch whose OPEN got no reply' do
           kiosk_room([], open_reply: '')
           seller.sell_stored_pouches(['kiosk'], 1)
+          expect(messages).to include(a_string_including('could not be read as a gem pouch'))
+          expect(messages.grep(/untied/)).to be_empty
         end
 
         it 'keeps a pouch whose RUMMAGE got no recognised reply' do
@@ -1164,6 +1166,8 @@ RSpec.describe SellLoot do
             command.start_with?('open') ? 'You open' : ''
           end
           expect { seller.sell_stored_pouches(['kiosk'], 1) }.not_to raise_error
+          expect(messages).to include(a_string_including('could not be read as a gem pouch'))
+          expect(messages.grep(/untied/)).to be_empty
         end
 
         it 'leaves a same-adjective pouch that is not a gem pouch unopened' do
@@ -1171,7 +1175,7 @@ RSpec.describe SellLoot do
           commands = kiosk_room([])
           seller.sell_stored_pouches(['kiosk'], 1)
           expect(commands.grep(/^open /)).to be_empty
-          expect(messages).to include(a_string_including('did not show as a gem pouch'))
+          expect(messages).to include(a_string_including('could not be read as a gem pouch'))
           expect(messages.grep(/untied/)).to be_empty
         end
       end

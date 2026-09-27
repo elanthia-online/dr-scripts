@@ -840,8 +840,8 @@ class SellLoot
                   'buys tied ones.')
     end
     if unrecognised.positive?
-      DRC.message("***STATUS*** Left #{unrecognised} pouch(es) in #{@full_pouch_container} that did not show " \
-                  'as a gem pouch in hand -- not offered.')
+      DRC.message("***STATUS*** Left #{unrecognised} pouch(es) in #{@full_pouch_container} that could not be " \
+                  'read as a gem pouch -- not offered.')
     end
     if partial.positive?
       DRC.message("***STATUS*** #{partial} partial sale(s) -- those kiosks are out of reserves and need " \
@@ -859,11 +859,11 @@ class SellLoot
     when 'What were you referring to' then :missing
     when 'You open', 'That is already open'
       DRC.bput("rummage my #{pouch}", /there is nothing in there/i, /You rummage/i) =~ /nothing in there/i ? :empty : :untied
-    else :untied
+    else :unrecognised
     end
   rescue StandardError => e
     DRC.message("Error reading the stored #{pouch}: #{e.message}")
-    :untied
+    :unrecognised
   end
 
   # @return [Boolean] false if it would not go back -- caller stops
