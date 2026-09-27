@@ -160,6 +160,22 @@ RSpec.describe SellLoot do
       expect(instance.validate_settings).to be false
     end
 
+    it 'fails when runestone container is an empty array or non-String/Array type' do
+      expect(build_instance(settings: make_settings(sell_loot_runestones: true, sell_loot_runestones_container: [])).validate_settings).to be false
+      expect(build_instance(settings: make_settings(sell_loot_runestones: true, sell_loot_runestones_container: { 'a' => 1 })).validate_settings).to be false
+    end
+
+    it 'fails when runestone selling container includes runestone_storage' do
+      instance = build_instance(
+        settings: make_settings(
+          sell_loot_runestones: true,
+          sell_loot_runestones_container: 'zillinen pouch',
+          runestone_storage: 'zillinen pouch'
+        )
+      )
+      expect(instance.validate_settings).to be false
+    end
+
     it 'reports every problem at once rather than short-circuiting on the first' do
       instance = build_instance(
         settings: make_settings(
@@ -490,22 +506,83 @@ RSpec.describe SellLoot do
   # #sell_runestones  (and detection/action parity)
   # =========================================================================
   describe '#sell_runestones' do
-    it 'sells matching runestones by material and noun, dropping descriptive adjectives' do
-      allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone', 'flawed granite runestone', 'a runestone'])
+    it 'sells matching runestones by recognized mineral material and noun, dropping descriptive adjectives' do
+      allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone', 'flawed calavarite runestone', 'a runestone', 'burden runestone'])
       commands = capture_commands { build_instance.sell_runestones('sack') }
       expect(commands).to include('get my quartz runestone from my sack', 'sell my quartz runestone to Grishna')
-      expect(commands).to include('get my granite runestone from my sack', 'sell my granite runestone to Grishna')
-      expect(commands).to include('get my runestone from my sack', 'sell my runestone to Grishna')
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Grishna')
+      expect(commands.none? { |c| c.include?('burden') }).to be true
+      expect(commands.none? { |c| c.end_with?('my runestone from my sack') }).to be true
     end
 
     it 'filters out runestones configured in sell_loot_ignored_runestones' do
       settings = make_settings(sell_loot_ignored_runestones: %w[quartz elbaite])
       instance = build_instance(settings: settings)
-      allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone', 'elbaite runestone', 'flawed granite runestone'])
+      allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone', 'elbaite runestone', 'flawed calavarite runestone'])
       commands = capture_commands { instance.sell_runestones('sack') }
-      expect(commands).to include('get my granite runestone from my sack', 'sell my granite runestone to Grishna')
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Grishna')
       expect(commands.none? { |c| c.include?('quartz') }).to be true
       expect(commands.none? { |c| c.include?('elbaite') }).to be true
+    end
+
+    it 'automatically protects runestones configured for waggle spells' do
+      settings = make_settings(
+        sell_loot_runestones: true,
+        waggle_sets: {
+          'default' => {
+            'Refresh' => { 'runestone_name' => 'quartz runestone' }
+          }
+        }
+      )
+      instance = build_instance(settings: settings)
+      allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone', 'topaz runestone'])
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Grishna')
+      expect(commands.none? { |c| c.include?('quartz') }).to be true
+    end
+
+    it 'sells only excess runestones when keep_count is configured' do
+      settings = make_settings(sell_loot_runestones_keep_count: 1)
+      instance = build_instance(settings: settings)
+      allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone', 'quartz runestone', 'quartz runestone'])
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands.count { |c| c.start_with?('sell my quartz runestone') }).to eq(2)
+    end
+
+    it 'does not sell bare runestones without a recognized mineral material' do
+      allow(DRCI).to receive(:get_item_list).and_return(['elbaite runestone', 'runestone'])
+      instance = build_instance(settings: make_settings(sell_loot_ignored_runestones: %w[elbaite]))
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands).to be_empty
+    end
+
+    it 'does not treat crafting adjectives on artificed runestones as sellable mineral materials' do
+      allow(DRCI).to receive(:get_item_list).and_return(['burden runestone', 'manifest force runestone'])
+      commands = capture_commands { build_instance.sell_runestones('sack') }
+      expect(commands).to be_empty
+    end
+
+    it 'anchors ignore-regex terms with word boundaries to avoid prefix/suffix false matches' do
+      settings = make_settings(sell_loot_ignored_runestones: %w[quartz topaz])
+      instance = build_instance(settings: settings)
+      allow(DRCI).to receive(:get_item_list).and_return(['quartzite runestone', 'xtopaz runestone', 'calavarite runestone'])
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Grishna')
+    end
+
+    it 'correctly handles mineral names with apostrophes' do
+      allow(DRCI).to receive(:get_item_list).and_return(["glossy iheaneu'a runestone"])
+      commands = capture_commands { build_instance.sell_runestones('sack') }
+      expect(commands).to include("get my iheaneu'a runestone from my sack", "sell my iheaneu'a runestone to Grishna")
+    end
+
+    it 'handles sell_loot_ignored_runestones provided as a bare string without error' do
+      settings = make_settings(sell_loot_ignored_runestones: 'quartz')
+      instance = build_instance(settings: settings)
+      allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone', 'topaz runestone'])
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Grishna')
+      expect(commands.none? { |c| c.include?('quartz') }).to be true
     end
 
     it 'does not walk to the gemshop when nothing is sellable' do
@@ -515,10 +592,11 @@ RSpec.describe SellLoot do
     end
 
     [
-      ['a mixed bag', ['smooth quartz runestone', 'a rock'], true],
-      ['only junk',   ['a rock', 'a stick'],                false],
-      ['empty',       [],                                   false],
-      ['plain',       ['a runestone'],                      true]
+      ['a mixed bag',    ['smooth quartz runestone', 'a rock'],   true],
+      ['only junk',      ['a rock', 'a stick'],                  false],
+      ['empty',          [],                                     false],
+      ['bare runestone', ['a runestone'],                        false],
+      ['valid mineral',  ['flawed calavarite runestone'],        true]
     ].each do |label, contents, expected|
       it "detection and selling agree for #{label}" do
         allow(DRCI).to receive(:get_item_list).and_return(contents)

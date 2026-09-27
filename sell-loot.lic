@@ -3,6 +3,12 @@
 =end
 
 class SellLoot
+  RUNESTONE_MINERALS = %w[
+    asketine avaes axinite azurite calavarite celestite elbaite electrum
+    erythrite hafaltu iheaneu'a ilmenite imnera indakar lemicule malachite
+    quartz rhodonite scheelite selenite sraeth sunstone topaz xibaryl zengalmi
+  ].freeze
+
   def initialize
     arg_definitions = [
       [
@@ -68,15 +74,12 @@ class SellLoot
       sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
 
       if @settings.sell_loot_metals_and_stones
-        if @settings.sell_loot_metals_and_stones_container.is_a?(String)
-          sell_metals_and_stones(@settings.sell_loot_metals_and_stones_container)
-        elsif @settings.sell_loot_metals_and_stones_container.is_a?(Array)
-          @settings.sell_loot_metals_and_stones_container.each do |container|
-            sell_metals_and_stones(container)
-          end
-        else
+        containers = normalize_containers(@settings.sell_loot_metals_and_stones_container)
+        if containers.empty?
           DRC.message("sell_loot_metals_and_stones_container is: #{@settings.sell_loot_metals_and_stones_container}")
           DRC.message("This is invalid. Skipping selling stones and metals.")
+        else
+          containers.each { |container| sell_metals_and_stones(container) }
         end
         if @autoloot_container && @autoloot_metals
           sell_metals_and_stones(@autoloot_container)
@@ -84,15 +87,12 @@ class SellLoot
       end
 
       if @settings.sell_loot_runestones
-        if @settings.sell_loot_runestones_container.is_a?(String)
-          sell_runestones(@settings.sell_loot_runestones_container)
-        elsif @settings.sell_loot_runestones_container.is_a?(Array)
-          @settings.sell_loot_runestones_container.each do |container|
-            sell_runestones(container)
-          end
-        else
+        containers = normalize_containers(@settings.sell_loot_runestones_container)
+        if containers.empty?
           DRC.message("sell_loot_runestones_container is: #{@settings.sell_loot_runestones_container}")
           DRC.message("This is invalid. Skipping selling runestones.")
+        else
+          containers.each { |container| sell_runestones(container) }
         end
       end
 
@@ -140,6 +140,17 @@ class SellLoot
     end
   end
 
+  # Normalizes a container setting (String or Array) into an array of stripped,
+  # non-empty container names. Returns [] if nil, empty, or an unexpected type.
+  #
+  # @param setting [Object] container configuration value
+  # @return [Array<String>] list of container nouns
+  def normalize_containers(setting)
+    return [] unless setting.is_a?(String) || setting.is_a?(Array)
+
+    Array(setting).map(&:to_s).map(&:strip).reject(&:empty?)
+  end
+
   def validate_settings
     valid = true
 
@@ -151,8 +162,9 @@ class SellLoot
     end
 
     if @settings.sell_loot_metals_and_stones
-      unless @settings.sell_loot_metals_and_stones_container
-        DRC.message("***ERROR: sell_loot_metals_and_stones is enabled but sell_loot_metals_and_stones_container is missing***")
+      containers = normalize_containers(@settings.sell_loot_metals_and_stones_container)
+      if containers.empty?
+        DRC.message("***ERROR: sell_loot_metals_and_stones is enabled but sell_loot_metals_and_stones_container is missing or invalid***")
         valid = false
       end
     end
@@ -165,8 +177,12 @@ class SellLoot
     end
 
     if @settings.sell_loot_runestones
-      unless @settings.sell_loot_runestones_container
-        DRC.message("***ERROR: sell_loot_runestones is enabled but sell_loot_runestones_container is missing***")
+      containers = normalize_containers(@settings.sell_loot_runestones_container)
+      if containers.empty?
+        DRC.message("***ERROR: sell_loot_runestones is enabled but sell_loot_runestones_container is missing or invalid***")
+        valid = false
+      elsif @settings.runestone_storage && containers.include?(@settings.runestone_storage)
+        DRC.message("***ERROR: sell_loot_runestones_container cannot include runestone_storage ('#{@settings.runestone_storage}')***")
         valid = false
       end
     end
@@ -185,17 +201,8 @@ class SellLoot
     end
 
     if @settings.sell_loot_metals_and_stones
-      containers_to_check = []
-
-      if @settings.sell_loot_metals_and_stones_container.is_a?(String)
-        containers_to_check << @settings.sell_loot_metals_and_stones_container
-      elsif @settings.sell_loot_metals_and_stones_container.is_a?(Array)
-        containers_to_check.concat(@settings.sell_loot_metals_and_stones_container)
-      end
-
-      if @autoloot_container && @autoloot_metals
-        containers_to_check << @autoloot_container
-      end
+      containers_to_check = normalize_containers(@settings.sell_loot_metals_and_stones_container)
+      containers_to_check << @autoloot_container if @autoloot_container && @autoloot_metals
 
       containers_to_check.each do |container|
         if has_metals_to_sell?(container)
@@ -221,15 +228,7 @@ class SellLoot
     end
 
     if @settings.sell_loot_runestones
-      containers_to_check = []
-
-      if @settings.sell_loot_runestones_container.is_a?(String)
-        containers_to_check << @settings.sell_loot_runestones_container
-      elsif @settings.sell_loot_runestones_container.is_a?(Array)
-        containers_to_check.concat(@settings.sell_loot_runestones_container)
-      end
-
-      containers_to_check.each do |container|
+      normalize_containers(@settings.sell_loot_runestones_container).each do |container|
         if has_runestones_to_sell?(container)
           DRC.message("Found runestones to sell in #{container}")
           has_loot = true
@@ -282,7 +281,7 @@ class SellLoot
     # Escape config-driven values so a stray metacharacter cannot raise
     # RegexpError or match unexpectedly.
     materials_regex = /^(?<size>\w+) (?<material>#{material_types.map { |type| Regexp.escape(type) }.join('|')}) (?<noun>nugget|bar)$/i
-    ignored_regex = /\b#{ignore_types.map { |type| Regexp.escape(type) }.join('|')}\b/i unless ignore_types.empty?
+    ignored_regex = /\b(?:#{ignore_types.map { |type| Regexp.escape(type) }.join('|')})\b/i unless ignore_types.empty?
 
     items = DRCI.get_item_list(container)
     return [] if items.nil? || items.empty?
@@ -304,9 +303,10 @@ class SellLoot
     false
   end
 
-  # Item descriptions in +container+ matching runestones the gemshop buys
-  # (e.g. "quartz runestone"), after removing anything on the configured
-  # ignore list. Safe to call on an unreadable or empty container.
+  # Item descriptions in +container+ matching recognized mineral runestones
+  # the shop buys (e.g. "quartz runestone"), after removing anything on the
+  # configured ignore list or used by character casting settings. Safe to call
+  # on an unreadable or empty container.
   #
   # @param container [String] the container noun to inspect
   # @return [Array<String>] sellable runestone phrases; empty if none
@@ -314,19 +314,72 @@ class SellLoot
     items = DRCI.get_item_list(container)
     return [] if items.nil? || items.empty?
 
-    ignore_types = @settings.sell_loot_ignored_runestones || []
-    ignored_regex = /\b#{ignore_types.map { |type| Regexp.escape(type) }.join('|')}\b/i unless ignore_types.empty?
-    runestone_regex = /(?:\b(?<material>[a-z'-]+)\s+)?runestone$/i
+    ignore_types = Array(@settings.sell_loot_ignored_runestones).map(&:to_s).reject(&:empty?)
+    ignore_types.concat(configured_cast_runestone_materials)
+    ignore_types.uniq!
 
-    items
-      .select { |item| item =~ runestone_regex }
-      .reject { |item| ignored_regex ? item =~ ignored_regex : false }
-      .map do |item|
-        clean = item.sub(/^(?:an?|some|the)\s+/i, '')
-        clean =~ runestone_regex
-        material = Regexp.last_match[:material]
-        material ? "#{material} runestone" : 'runestone'
+    ignored_regex = /\b(?:#{ignore_types.map { |type| Regexp.escape(type) }.join('|')})\b/i unless ignore_types.empty?
+    minerals_pattern = RUNESTONE_MINERALS.map { |m| Regexp.escape(m) }.join('|')
+    runestone_regex = /\b(?<material>#{minerals_pattern})\s+runestone$/i
+
+    keep_count = (@settings.sell_loot_runestones_keep_count || @settings.sell_loot_runestone_keep_count).to_i
+
+    counts = Hash.new(0)
+    matched_items = []
+
+    items.each do |item|
+      match = runestone_regex.match(item)
+      next unless match
+      next if ignored_regex&.match?(item)
+
+      material = match[:material].downcase
+      counts[material] += 1
+
+      next if keep_count.positive? && counts[material] <= keep_count
+
+      matched_items << "#{material} runestone"
+    end
+
+    matched_items
+  end
+
+  # Minerals of runestones demonstrably configured for character buffing,
+  # waggling, or restocking. Automatically added to the ignore list to protect
+  # casting tools from being sold.
+  #
+  # @return [Array<String>] mineral names to protect
+  def configured_cast_runestone_materials
+    materials = []
+    materials << @settings.runestone_name if @settings.respond_to?(:runestone_name) && @settings.runestone_name
+
+    spells_to_scan = []
+    if @settings.respond_to?(:waggle_sets) && @settings.waggle_sets.is_a?(Hash)
+      spells_to_scan.concat(@settings.waggle_sets.values.flat_map { |v| v.is_a?(Hash) ? v.values : [] })
+    end
+    if @settings.respond_to?(:buff_spells) && @settings.buff_spells.is_a?(Hash)
+      spells_to_scan.concat(@settings.buff_spells.values)
+    end
+    if @settings.respond_to?(:offensive_spells) && @settings.offensive_spells.is_a?(Array)
+      spells_to_scan.concat(@settings.offensive_spells)
+    end
+    if @settings.respond_to?(:restock) && @settings.restock.is_a?(Hash)
+      spells_to_scan.concat(@settings.restock.values)
+    end
+
+    spells_to_scan.each do |entry|
+      next unless entry.is_a?(Hash)
+
+      name = entry['runestone_name'] || entry['name']
+      materials << name if name
+    end
+
+    minerals = []
+    materials.each do |phrase|
+      RUNESTONE_MINERALS.each do |mineral|
+        minerals << mineral if phrase.to_s =~ /\b#{Regexp.escape(mineral)}\b/i
       end
+    end
+    minerals.uniq
   end
 
   def has_runestones_to_sell?(container)

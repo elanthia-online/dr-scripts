@@ -1537,17 +1537,21 @@ sell_loot_ignored_metals_and_stones:
 sell_loot_traps: false
 # To sell runestones from designated container(s).
 sell_loot_runestones: false
-# The container that has the runestones to sell.
+# The container that has the runestones to sell (e.g. a loot sack or haversack).
+# CAUTION: Do NOT set this to your runestone_storage pouch, or casting runestones may be sold.
 sell_loot_runestones_container:
+# Number of each runestone mineral to keep in container before selling excess (default 0 sells all non-ignored).
+sell_loot_runestones_keep_count: 0
 # Specify the runestones (by mineral material) NOT TO SELL.
 # Mineral materials map to specific spell templates.
 sell_loot_ignored_runestones:
   # - asketine # Compost
   # - avaes # Clear Vision
-  # - axinite # Mental Blast
+  # - axinite # Mental Blast / Glythtide's Gift
   # - azurite # Shadows
   # - calavarite # Arc Light
-  # - elbaite # Bless
+  # - celestite # Geyser
+  # - elbaite # Instinct / Bless
   # - electrum # Eagle's Cry
   # - erythrite # Rejuvenation
   # - hafaltu # Ethereal Shield
@@ -1560,11 +1564,11 @@ sell_loot_ignored_runestones:
   # - quartz # Refresh
   # - rhodonite # Fire Shards
   # - scheelite # Fire Ball
-  # - selenite # Frostbite
-  # - sraeth # Minor Physical Protection
+  # - selenite # Athleticism
+  # - sraeth # Visage
   # - sunstone # Compost
   # - topaz # Protection from Evil
-  # - xibaryl # Hypnotize
+  # - xibaryl # Hypnotize / Calm
   # - zengalmi # Gar Zeng
 sell_loot_money_on_hand: 3 silver
 sell_loot_skip_bank: false
