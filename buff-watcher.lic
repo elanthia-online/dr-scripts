@@ -132,7 +132,7 @@ class BuffWatcher
   end
 
   def almanac?
-    Script.running?('almanac') || [DRC.left_hand, DRC.right_hand].any? { |item| item =~ /almanac/i }
+    [DRC.left_hand, DRC.right_hand].any? { |item| item =~ /almanac/i }
   end
 end
 

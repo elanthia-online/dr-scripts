@@ -14,11 +14,6 @@ describe 'BuffWatcher' do
       allow(DRC).to receive(:right_hand).and_return(nil)
     end
 
-    it 'returns true when the almanac script is running' do
-      allow(Script).to receive(:running?).with('almanac').and_return(true)
-      expect(buff_watcher.almanac?).to be(true)
-    end
-
     it 'returns true when holding an almanac in the left hand' do
       allow(DRC).to receive(:left_hand).and_return('omnibus almanac')
       expect(buff_watcher.almanac?).to be(true)
@@ -29,13 +24,18 @@ describe 'BuffWatcher' do
       expect(buff_watcher.almanac?).to be(true)
     end
 
-    it 'returns false when neither hand holds an almanac and script is not running' do
+    it 'returns false when neither hand holds an almanac' do
       allow(DRC).to receive(:left_hand).and_return('broadsword')
       allow(DRC).to receive(:right_hand).and_return('targe')
       expect(buff_watcher.almanac?).to be(false)
     end
 
-    it 'returns false when hands are empty and script is not running' do
+    it 'returns false when hands are empty' do
+      expect(buff_watcher.almanac?).to be(false)
+    end
+
+    it 'returns false when hands are empty even if the almanac script is running in the background' do
+      allow(Script).to receive(:running?).with('almanac').and_return(true)
       expect(buff_watcher.almanac?).to be(false)
     end
   end
