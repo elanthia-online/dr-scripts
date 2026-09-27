@@ -1540,7 +1540,9 @@ sell_loot_skip_bank: false
 sell_loot_skip_exchange: false
 sell_loot_skip_pouch_close: false
 # To sell tied gem pouches and bundles to a Trader's kiosk instead of the
-# gemshop and tannery. Also needs `sell_loot_trader_room`.
+# gemshop and tannery. Also needs `sell_loot_trader_room`. Only pouches that
+# are already tied are offered; if you keep spares, `spare_gem_pouch_container`
+# must be a different container from `full_pouch_container`.
 sell_loot_trader: false
 # The room id the kiosks are in.
 sell_loot_trader_room:

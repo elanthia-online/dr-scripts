@@ -164,6 +164,35 @@ RSpec.describe SellLoot do
       instance.validate_settings
       expect(messages.count { |m| m.include?('ERROR') }).to eq(2)
     end
+
+    context 'when trader selling is on' do
+      def trader_settings(full, spare)
+        make_settings(sell_loot_trader: true, sell_loot_trader_room: 5000,
+                      full_pouch_container: full, spare_gem_pouch_container: spare)
+      end
+
+      it 'fails when full and spare pouches share a container' do
+        instance = build_instance(settings: trader_settings('haversack', ' Haversack'))
+        expect(instance.validate_settings).to be false
+      end
+
+      it 'passes when they are different containers' do
+        instance = build_instance(settings: trader_settings('pack', 'sack'))
+        expect(instance.validate_settings).to be true
+      end
+
+      it 'passes when no spares container is set' do
+        instance = build_instance(settings: trader_settings('pack', nil))
+        expect(instance.validate_settings).to be true
+      end
+    end
+
+    it 'allows a shared container when trader selling is off' do
+      instance = build_instance(
+        settings: make_settings(full_pouch_container: 'haversack', spare_gem_pouch_container: 'haversack')
+      )
+      expect(instance.validate_settings).to be true
+    end
   end
 
   # =========================================================================
@@ -964,6 +993,152 @@ RSpec.describe SellLoot do
       allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(true)
       expect(DRCM).not_to receive(:deposit_coins)
       SellLoot.new
+    end
+  end
+
+  # =========================================================================
+  # Trader kiosks
+  # =========================================================================
+  describe 'trader kiosks' do
+    let(:sold_line) { 'a tidy pile of 90 platinum Kronars rises from its surface, which you quickly pocket.' }
+    let(:messages) { [] }
+
+    before do
+      allow(DRC).to receive(:message) { |text| messages << text }
+      $right_hand = 'soft gem pouch'
+    end
+
+    after { $right_hand = nil }
+
+    # Each entry in +sales+ is how the next offer goes: :empty or :partial sell,
+    # :too_cheap refuses the pouch, :dry refuses for funds.
+    def kiosk_room(sales, open_reply: 'The soft gem pouch has been tied off.')
+      commands = []
+      sales = sales.dup
+      quoted = false
+      reply = lambda do |command|
+        case command
+        when /^open my / then open_reply
+        when /^give /
+          if quoted
+            quoted = false
+            Flags["sell-loot-returned-#{sales.shift}"] = true
+            sold_line
+          elsif sales.first == :too_cheap
+            sales.shift
+            'The assessed value of this asset is within range of empty-null.'
+          elsif sales.first == :dry
+            sales.shift
+            'Acquisition cannot proceed without additional allocation.'
+          else
+            quoted = true
+            'The kiosk will purchase the pouch for 90 platinum Kronars based on the markup of 55%.'
+          end
+        end
+      end
+      # Like DRC.bput: the first pattern that matches wins, '' on no match.
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        commands << command
+        line = reply.call(command).to_s
+        patterns.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : /#{Regexp.escape(pattern)}/i] }
+                .find(&:itself).to_s
+      end
+      commands
+    end
+
+    describe '#confirm_sale' do
+      def confirm(handback)
+        allow(DRC).to receive(:bput) do
+          handback.each { |flag| Flags["sell-loot-returned-#{flag}"] = true }
+          sold_line
+        end
+        build_instance.confirm_sale('kiosk', 'soft pouch', 'give kiosk')
+      end
+
+      it 'is a full sale when the pouch comes back empty' do
+        expect(confirm([:empty])).to eq(:sold)
+      end
+
+      it 'is a partial sale when the pouch comes back lighter' do
+        expect(confirm([:partial])).to eq(:sold_partial)
+      end
+
+      it 'keeps the pouch when no handback line arrives' do
+        expect(confirm([])).to eq(:sold_partial)
+        expect(messages.last).to include('could not tell')
+      end
+
+      it "ignores an earlier pouch's handback (a partial sale after a full one)" do
+        Flags['sell-loot-returned-empty'] = true
+        expect(confirm([:partial])).to eq(:sold_partial)
+      end
+
+      it "ignores an earlier pouch's handback when this one is late" do
+        Flags['sell-loot-returned-empty'] = true
+        expect(confirm([])).to eq(:sold_partial)
+      end
+
+      it 'treats both handbacks at once as partial, so any doubt keeps the pouch' do
+        expect(confirm(%i[empty partial])).to eq(:sold_partial)
+      end
+    end
+
+    describe '#sell_stored_pouches' do
+      let(:fetched) { [] }
+
+      before do
+        allow(DRCI).to receive(:get_item?) { |item, _container| fetched << item }
+        allow(DRCI).to receive(:dispose_trash).and_return(true)
+      end
+
+      def seller(spare: nil)
+        build_instance(full_pouch_container: 'pack',
+                       settings: make_settings(spare_gem_pouch_container: spare))
+      end
+
+      it 'keeps a part-full pouch that follows a fully sold one' do
+        kiosk_room(%i[empty partial])
+        expect(DRCI).to receive(:dispose_trash).with('soft pouch', anything, anything).once.and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').once.and_return(true)
+
+        expect(seller.sell_stored_pouches(['kiosk'], 3)).to eq(2)
+        expect(fetched.size).to eq(2) # the partial drained the only kiosk
+      end
+
+      it 'steps past a refused pouch instead of stopping the run' do
+        kiosk_room(%i[too_cheap empty empty])
+        seller.sell_stored_pouches(['kiosk'], 3)
+
+        # Put back at the front, so the next fetch is the second.
+        expect(fetched).to eq(['first soft pouch', 'second soft pouch', 'second soft pouch'])
+      end
+
+      it 'stops once every kiosk is out of funds' do
+        kiosk_room(%i[dry])
+        expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').and_return(true)
+
+        seller.sell_stored_pouches(['kiosk'], 3)
+        expect(fetched.size).to eq(1)
+      end
+
+      it 'never ties an untied pouch, and puts it back as found' do
+        commands = kiosk_room([], open_reply: 'You open your soft gem pouch.')
+        allow(DRC).to receive(:get_gems).and_return(['a ruby'])
+        expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').twice.and_return(true)
+
+        seller.sell_stored_pouches(['kiosk'], 2)
+        expect(commands.grep(/^(tie|give) /)).to be_empty
+        expect(fetched).to eq(['first soft pouch', 'second soft pouch'])
+        expect(messages).to include(a_string_including('Left 2 untied pouch(es)'))
+      end
+
+      it 'moves an empty untied pouch to the spares container' do
+        kiosk_room([], open_reply: 'You open your soft gem pouch.')
+        allow(DRC).to receive(:get_gems).and_return([])
+        expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'sack').and_return(true)
+
+        seller(spare: 'sack').sell_stored_pouches(['kiosk'], 1)
+      end
     end
   end
 end
