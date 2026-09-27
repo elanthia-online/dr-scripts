@@ -1012,13 +1012,14 @@ RSpec.describe SellLoot do
 
     # Each entry in +sales+ is how the next offer goes: :empty or :partial sell,
     # :too_cheap refuses the pouch, :dry refuses for funds.
-    def kiosk_room(sales, open_reply: 'The soft gem pouch has been tied off.')
+    def kiosk_room(sales, open_reply: 'The soft gem pouch has been tied off.', rummage_reply: '')
       commands = []
       sales = sales.dup
       quoted = false
       reply = lambda do |command|
         case command
         when /^open my / then open_reply
+        when /^rummage my / then rummage_reply
         when /^give /
           if quoted
             quoted = false
@@ -1122,8 +1123,8 @@ RSpec.describe SellLoot do
       end
 
       it 'never ties an untied pouch, and puts it back as found' do
-        commands = kiosk_room([], open_reply: 'You open your soft gem pouch.')
-        allow(DRC).to receive(:get_gems).and_return(['a ruby'])
+        commands = kiosk_room([], open_reply: 'You open your soft gem pouch.',
+                                  rummage_reply: 'You rummage through a soft gem pouch and see a ruby.')
         expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').twice.and_return(true)
 
         seller.sell_stored_pouches(['kiosk'], 2)
@@ -1133,11 +1134,60 @@ RSpec.describe SellLoot do
       end
 
       it 'moves an empty untied pouch to the spares container' do
-        kiosk_room([], open_reply: 'You open your soft gem pouch.')
-        allow(DRC).to receive(:get_gems).and_return([])
+        kiosk_room([], open_reply: 'You open your soft gem pouch.',
+                       rummage_reply: 'You rummage through a soft gem pouch but there is nothing in there.')
         expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'sack').and_return(true)
 
         seller(spare: 'sack').sell_stored_pouches(['kiosk'], 1)
+      end
+
+      context 'without positive evidence that the pouch is empty' do
+        before do
+          expect(DRCI).not_to receive(:dispose_trash)
+          expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').and_return(true)
+        end
+
+        it 'keeps a pouch whose OPEN got no reply' do
+          kiosk_room([], open_reply: '')
+          seller.sell_stored_pouches(['kiosk'], 1)
+        end
+
+        it 'keeps a pouch whose RUMMAGE got no recognised reply' do
+          kiosk_room([], open_reply: 'You open your soft gem pouch.')
+          seller.sell_stored_pouches(['kiosk'], 1)
+        end
+
+        it 'keeps the pouch, and carries on, when reading it raises' do
+          allow(DRC).to receive(:bput) do |command, *_patterns|
+            raise NoMethodError, "undefined method 'strip' for nil" if command.start_with?('rummage')
+
+            command.start_with?('open') ? 'You open' : ''
+          end
+          expect { seller.sell_stored_pouches(['kiosk'], 1) }.not_to raise_error
+        end
+
+        it 'leaves a same-adjective pouch that is not a gem pouch unopened' do
+          $right_hand = 'soft silk pouch'
+          commands = kiosk_room([])
+          seller.sell_stored_pouches(['kiosk'], 1)
+          expect(commands.grep(/^open /)).to be_empty
+        end
+      end
+    end
+
+    describe '#stored_pouch_count' do
+      def counter(tie)
+        build_instance(full_pouch_container: 'pack', settings: make_settings(tie_gem_pouches: tie))
+      end
+
+      it 'skips stored pouches when tie_gem_pouches is off, since none can be tied' do
+        expect(DRCI).not_to receive(:count_items_in_container)
+        expect(counter(false).stored_pouch_count).to eq(0)
+      end
+
+      it 'counts them when tie_gem_pouches is on' do
+        allow(DRCI).to receive(:count_items_in_container).with('soft gem pouch', 'pack').and_return(3)
+        expect(counter(true).stored_pouch_count).to eq(3)
       end
     end
   end

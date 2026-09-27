@@ -73,7 +73,6 @@ class SellLoot
     # banking entirely, stranding excess coins, and any single missing loot type
     # -- e.g. no bundle -- could take the whole run down with it.)
     if has_loot_to_sell?
-      # Whatever the kiosks will not take falls through to the shops below.
       sold_at_trader_room = sell_at_trader_room
 
       if @settings.sell_loot_pouch && !sold_at_trader_room[:pouch]
@@ -269,8 +268,6 @@ class SellLoot
     end
   end
 
-  # Only an already-tied pouch: tying one here could not be undone (see
-  # sell_worn_pouch).
   def worn_pouch_sellable?
     gem_pouch_state(gem_pouch_command_name) == :tied
   rescue StandardError => e
@@ -456,7 +453,6 @@ class SellLoot
   # the pouch back, so a sale is read from the sale line, not from our hands.
   # ===========================================================================
 
-  # Kiosks can be altered, noun included; sell_loot_trader_nouns overrides.
   DEFAULT_TRADER_NOUNS = %w[kiosk plinth].freeze
   ORDINALS = $ORDINALS # Lich global: first..twentieth
 
@@ -550,7 +546,6 @@ class SellLoot
     @trader_nouns ||= DEFAULT_TRADER_NOUNS
   end
 
-  # A noun or a list, comma- or space-separated; blank falls back to the default.
   def trader_nouns_from(setting)
     nouns = Array(setting).flat_map { |noun| noun.to_s.split(/[,\s]+/) }
                           .map { |noun| noun.strip.downcase }
@@ -558,7 +553,6 @@ class SellLoot
     nouns.empty? ? DEFAULT_TRADER_NOUNS : nouns.uniq
   end
 
-  # An unreadable markup cannot be shown to clear the floor.
   def meets_minimum_markup?(markup)
     return false if markup.nil?
 
@@ -573,6 +567,7 @@ class SellLoot
   # ones with tied pouches to sell.
   def stored_pouch_count
     return 0 unless @full_pouch_container
+    return 0 unless @settings.tie_gem_pouches
 
     unless gem_pouch_command_name
       DRC.message('***STATUS*** Trader-room pouch selling needs gem_pouch_adjective and gem_pouch_noun ' \
@@ -708,7 +703,6 @@ class SellLoot
                     'out of reserves, and the pouch still holds gems.')
         :sold_partial
       else
-        # No handback line: assume gems remain rather than bin the pouch.
         DRC.message("***STATUS*** Sold the #{item} to the #{target} for #{sale[1]}, but could not tell " \
                     'whether it was emptied -- keeping it rather than discarding it.')
         :sold_partial
@@ -770,7 +764,6 @@ class SellLoot
     end
   end
 
-  # Hands show the full description, so match on the noun.
   def holding?(item)
     noun = item.to_s.split.last
     return false if noun.nil?
@@ -848,11 +841,18 @@ class SellLoot
 
   # @return [Symbol] :tied, :untied, :empty, or :missing
   def stored_pouch_state(pouch)
-    case gem_pouch_state(pouch)
-    when :tied then :tied
-    when :missing then :missing
-    else DRC.get_gems(pouch).empty? ? :empty : :untied
+    return :untied unless "#{DRC.left_hand} #{DRC.right_hand}" =~ /\bgem #{Regexp.escape(@settings.gem_pouch_noun.to_s)}\b/i
+
+    case DRC.bput("open my #{pouch}", 'You open', 'has been tied off', 'What were you referring to', 'That is already open')
+    when 'has been tied off' then :tied
+    when 'What were you referring to' then :missing
+    when 'You open', 'That is already open'
+      DRC.bput("rummage my #{pouch}", /there is nothing in there/i, /You rummage/i) =~ /nothing in there/i ? :empty : :untied
+    else :untied
     end
+  rescue StandardError => e
+    DRC.message("Error reading the stored #{pouch}: #{e.message}")
+    :untied
   end
 
   # @return [Boolean] false if it would not go back -- caller stops
@@ -921,7 +921,6 @@ class SellLoot
     false
   end
 
-  # A spare is only needed if the kiosk kept the pouch.
   def wear_emptied_pouch(pouch)
     return replace_worn_pouch unless holding?(pouch)
 
@@ -959,7 +958,6 @@ class SellLoot
     return false unless DRC.bput('count my bundle', /^You flip through .* bundle and find \d+ skins? in it/, /^I could not find/).scan(/\d+/).first.to_i.positive?
     return false if DRC.bput('remove my bundle', 'You remove', 'You sling', 'Remove what', 'You take') == 'Remove what'
 
-    # Tying a bundle takes a confirmation pass.
     if DRC.bput('tie my bundle', 'you tie the bundle', 'TIE the bundle again', 'has already been tied').to_s =~ /TIE the bundle again/i
       DRC.bput('tie my bundle', 'you tie the bundle', 'has already been tied')
     end
@@ -970,7 +968,6 @@ class SellLoot
       return true
     end
 
-    # Back where sell_bundle expects it, for the tannery leg.
     DRC.message('***STATUS*** Nothing here would buy the bundle -- taking it to the tannery instead.')
     DRCI.put_away_item?('bundle') unless DRCI.wear_item?('bundle')
     false
