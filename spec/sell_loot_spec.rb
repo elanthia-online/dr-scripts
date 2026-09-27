@@ -962,17 +962,17 @@ RSpec.describe SellLoot do
         allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
       end
 
-      it 'says why when a spare container is set without an adjective' do
+      it 'says restocking is off when a spare container is set without an adjective' do
         $test_settings = make_settings(spare_gem_pouch_container: 'sack', gem_pouch_adjective: nil)
         SellLoot.new
-        expect(messages).to include(a_string_including('restock SKIPPED'))
+        expect(messages).to include(a_string_including('restocking is off'))
       end
 
       it 'stays quiet for an adjective without a spare container' do
         # sell_loot_pouch users set the adjective and may not restock at all.
         $test_settings = make_settings(spare_gem_pouch_container: nil)
         SellLoot.new
-        expect(messages.grep(/SKIPPED/)).to be_empty
+        expect(messages.grep(/restocking is off/)).to be_empty
       end
     end
 

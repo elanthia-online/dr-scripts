@@ -103,10 +103,8 @@ class SellLoot
     if @settings.spare_gem_pouch_container && @settings.gem_pouch_adjective
       check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective)
     elsif @settings.spare_gem_pouch_container
-      # A spares container means restocking was wanted. An adjective alone is
-      # normal (sell_loot_pouch without spares), so only this half warns.
-      DRC.message("***STATUS*** Spare-pouch restock SKIPPED: spare_gem_pouch_container is set " \
-                  "(#{@settings.spare_gem_pouch_container.inspect}) but gem_pouch_adjective is not.")
+      # Not an error: appraisal uses a spares container without an adjective.
+      DRC.message('***STATUS*** Spare-pouch restocking is off: set gem_pouch_adjective to enable it.')
     end
 
     # Handle banking
