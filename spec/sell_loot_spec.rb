@@ -574,6 +574,14 @@ RSpec.describe SellLoot do
       commands = capture_commands { instance.check_spare_pouch('sack', 'soft') }
       expect(commands.none? { |c| c.start_with?('ask') }).to be true
     end
+
+    it 'names the town in use, not the profile hometown, when it has no gemshop' do
+      instance = build_instance(character_hometown: 'Riverhaven', hometown: make_hometown('gemshop' => nil),
+                                settings: make_settings(hometown: 'Crossing'))
+      allow(DRCI).to receive(:count_items_in_container).and_return(0)
+      expect(DRC).to receive(:message).with(a_string_including('no gemshop is mapped for Riverhaven'))
+      instance.check_spare_pouch('sack', 'soft')
+    end
   end
 
   # =========================================================================
@@ -941,6 +949,31 @@ RSpec.describe SellLoot do
       allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
       expect_any_instance_of(SellLoot).not_to receive(:check_spare_pouch)
       SellLoot.new
+    end
+
+    context 'when spare-pouch restocking is half-configured' do
+      let(:messages) { [] }
+
+      before do
+        $test_data.town = { 'Crossing' => make_hometown }
+        $test_data.items = items_data
+        allow(DRC).to receive(:get_town_name).and_return('Crossing')
+        allow(DRC).to receive(:message) { |text| messages << text }
+        allow_any_instance_of(SellLoot).to receive(:has_loot_to_sell?).and_return(false)
+      end
+
+      it 'says why when a spare container is set without an adjective' do
+        $test_settings = make_settings(spare_gem_pouch_container: 'sack', gem_pouch_adjective: nil)
+        SellLoot.new
+        expect(messages).to include(a_string_including('restock SKIPPED'))
+      end
+
+      it 'stays quiet for an adjective without a spare container' do
+        # sell_loot_pouch users set the adjective and may not restock at all.
+        $test_settings = make_settings(spare_gem_pouch_container: nil)
+        SellLoot.new
+        expect(messages.grep(/SKIPPED/)).to be_empty
+      end
     end
 
     it 'still exchanges and deposits excess coins even when there is no loot to sell' do
