@@ -1535,12 +1535,14 @@ sell_loot_ignored_metals_and_stones:
 # For thieves to sell their component pouch of harvested traps.
 # If set to true, you likely also want to set harvest_traps and component_container.
 sell_loot_traps: false
-# To sell runestones from designated container(s).
+# To sell runestones from designated container(s) to the hometown pawnshop.
 sell_loot_runestones: false
 # The container that has the runestones to sell (e.g. a loot sack or haversack).
-# CAUTION: Do NOT set this to your runestone_storage pouch, or casting runestones may be sold.
+# CAUTION: Do NOT set this to your runestone_storage container. If this container matches
+# runestone_storage, sell-loot will automatically skip runestone sales to protect casting runestones.
 sell_loot_runestones_container:
-# Number of each runestone mineral to keep in container before selling excess (default 0 sells all non-ignored).
+# Number of each runestone mineral to keep per container before selling excess (default 0 sells all non-ignored).
+# Note: Keep count applies individually to each configured container.
 sell_loot_runestones_keep_count: 0
 # Specify the runestones (by mineral material) NOT TO SELL.
 # Mineral materials map to specific spell templates.

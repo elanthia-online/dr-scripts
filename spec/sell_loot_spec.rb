@@ -166,15 +166,33 @@ RSpec.describe SellLoot do
       expect(build_instance(settings: make_settings(sell_loot_runestones: true, sell_loot_runestones_container: { 'a' => 1 })).validate_settings).to be false
     end
 
-    it 'fails when runestone selling container includes runestone_storage' do
+    it 'passes validation but skips runestones when container matches runestone_storage by noun' do
+      %w[pouch zill\ pouch Zillinen\ Pouch zillinen\ pouch].each do |c|
+        instance = build_instance(
+          settings: make_settings(
+            sell_loot_runestones: true,
+            sell_loot_runestones_container: c,
+            runestone_storage: 'zillinen pouch'
+          )
+        )
+        messages = []
+        allow(DRC).to receive(:message) { |m| messages << m }
+        expect(instance.validate_settings).to be true
+        expect(instance.instance_variable_get(:@skip_runestones)).to be true
+        expect(messages.any? { |m| m.include?('WARNING') && m.include?('skipping runestone sales') }).to be true
+      end
+    end
+
+    it 'passes validation and does not skip runestones when container differs from runestone_storage' do
       instance = build_instance(
         settings: make_settings(
           sell_loot_runestones: true,
-          sell_loot_runestones_container: 'zillinen pouch',
+          sell_loot_runestones_container: 'haversack',
           runestone_storage: 'zillinen pouch'
         )
       )
-      expect(instance.validate_settings).to be false
+      expect(instance.validate_settings).to be true
+      expect(instance.instance_variable_get(:@skip_runestones)).to be_falsey
     end
 
     it 'reports every problem at once rather than short-circuiting on the first' do
@@ -542,6 +560,41 @@ RSpec.describe SellLoot do
       expect(commands.none? { |c| c.include?('quartz') }).to be true
     end
 
+    it 'automatically protects runestones configured in buff_spells and offensive_spells' do
+      settings = make_settings(
+        sell_loot_runestones: true,
+        buff_spells: { 'Bless' => { 'runestone_name' => 'elbaite runestone' } },
+        offensive_spells: [{ 'runestone_name' => 'rhodonite runestone' }]
+      )
+      instance = build_instance(settings: settings)
+      expect(instance.configured_cast_runestone_materials).to contain_exactly('elbaite', 'rhodonite')
+    end
+
+    it 'automatically protects runestones configured via short-form restock without explicit name' do
+      $test_data.consumables = { 'Crossing' => { 'Refresh' => { 'name' => 'quartz runestone' } } }
+      settings = make_settings(
+        sell_loot_runestones: true,
+        restock: { 'Refresh' => { 'quantity' => 2 } }
+      )
+      instance = build_instance(settings: settings)
+      allow(DRCI).to receive(:get_item_list).and_return(['quartz runestone', 'topaz runestone'])
+      commands = capture_commands { instance.sell_runestones('sack') }
+      expect(commands).to include('get my topaz runestone from my sack', 'sell my topaz runestone to Cormyn')
+      expect(commands.none? { |c| c.include?('quartz') }).to be true
+      expect(instance.configured_cast_runestone_materials).to include('quartz')
+    end
+
+    it 'skips runestone materials entirely if a marked runestone of that material is present in the container' do
+      allow(DRCI).to receive(:get_item_list).and_return([
+        'sunstone runestone marked with a symbol for Compost',
+        'sunstone runestone',
+        'calavarite runestone'
+      ])
+      commands = capture_commands { build_instance.sell_runestones('sack') }
+      expect(commands).to include('get my calavarite runestone from my sack', 'sell my calavarite runestone to Cormyn')
+      expect(commands.none? { |c| c.include?('sunstone') }).to be true
+    end
+
     it 'sells only excess runestones when keep_count is configured' do
       settings = make_settings(sell_loot_runestones_keep_count: 1)
       instance = build_instance(settings: settings)
@@ -598,12 +651,15 @@ RSpec.describe SellLoot do
       build_instance.sell_runestones('sack')
     end
 
-    it 'does not walk or sell when the hometown has no pawnshop configured' do
-      instance = build_instance(hometown: make_hometown('pawnshop' => nil))
+    it 'does not walk or sell and notifies user when the hometown has no pawnshop configured' do
+      instance = build_instance(hometown: make_hometown('pawnshop' => nil), character_hometown: 'Fang Cove')
       allow(DRCI).to receive(:get_item_list).and_return(['smooth quartz runestone'])
+      messages = []
+      allow(DRC).to receive(:message) { |m| messages << m }
       expect(DRCT).not_to receive(:walk_to)
       commands = capture_commands { instance.sell_runestones('sack') }
       expect(commands).to be_empty
+      expect(messages).to include('No pawnshop configured for Fang Cove; skipping runestone sales.')
     end
 
     [

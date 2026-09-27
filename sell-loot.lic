@@ -86,7 +86,7 @@ class SellLoot
         end
       end
 
-      if @settings.sell_loot_runestones
+      if @settings.sell_loot_runestones && !@skip_runestones
         containers = normalize_containers(@settings.sell_loot_runestones_container)
         if containers.empty?
           DRC.message("sell_loot_runestones_container is: #{@settings.sell_loot_runestones_container}")
@@ -181,9 +181,12 @@ class SellLoot
       if containers.empty?
         DRC.message("***ERROR: sell_loot_runestones is enabled but sell_loot_runestones_container is missing or invalid***")
         valid = false
-      elsif @settings.runestone_storage && containers.include?(@settings.runestone_storage)
-        DRC.message("***ERROR: sell_loot_runestones_container cannot include runestone_storage ('#{@settings.runestone_storage}')***")
-        valid = false
+      else
+        storage_noun = @settings.runestone_storage.to_s.strip.split.last&.downcase
+        if storage_noun && containers.any? { |c| c.to_s.strip.split.last&.downcase == storage_noun }
+          DRC.message("***WARNING: sell_loot_runestones_container matches runestone_storage ('#{@settings.runestone_storage}'); skipping runestone sales to protect casting runestones.***")
+          @skip_runestones = true
+        end
       end
     end
 
@@ -227,7 +230,7 @@ class SellLoot
       end
     end
 
-    if @settings.sell_loot_runestones
+    if @settings.sell_loot_runestones && !@skip_runestones
       normalize_containers(@settings.sell_loot_runestones_container).each do |container|
         if has_runestones_to_sell?(container)
           DRC.message("Found runestones to sell in #{container}")
@@ -314,15 +317,26 @@ class SellLoot
     items = DRCI.get_item_list(container)
     return [] if items.nil? || items.empty?
 
+    # If a marked runestone (e.g. "sunstone runestone marked with a symbol for Compost")
+    # shares the container, skip that material completely to prevent a plain
+    # "get my <material> runestone" from accidentally grabbing the marked stone in-game.
+    marked_materials = []
+    items.each do |item|
+      RUNESTONE_MINERALS.each do |mineral|
+        marked_materials << mineral if item =~ /\b#{Regexp.escape(mineral)}\s+runestone\s+marked\b/i
+      end
+    end
+
     ignore_types = Array(@settings.sell_loot_ignored_runestones).map(&:to_s).reject(&:empty?)
     ignore_types.concat(configured_cast_runestone_materials)
+    ignore_types.concat(marked_materials)
     ignore_types.uniq!
 
     ignored_regex = /\b(?:#{ignore_types.map { |type| Regexp.escape(type) }.join('|')})\b/i unless ignore_types.empty?
     minerals_pattern = RUNESTONE_MINERALS.map { |m| Regexp.escape(m) }.join('|')
     runestone_regex = /\b(?<material>#{minerals_pattern})\s+runestone$/i
 
-    keep_count = (@settings.sell_loot_runestones_keep_count || @settings.sell_loot_runestone_keep_count).to_i
+    keep_count = @settings.sell_loot_runestones_keep_count.to_i
 
     counts = Hash.new(0)
     matched_items = []
@@ -362,8 +376,24 @@ class SellLoot
     if @settings.respond_to?(:offensive_spells) && @settings.offensive_spells.is_a?(Array)
       spells_to_scan.concat(@settings.offensive_spells)
     end
+
     if @settings.respond_to?(:restock) && @settings.restock.is_a?(Hash)
-      spells_to_scan.concat(@settings.restock.values)
+      consumables_data = get_data('consumables') rescue nil
+      @settings.restock.each do |key, entry|
+        if entry.is_a?(Hash)
+          name = entry['runestone_name'] || entry['name']
+          if name
+            materials << name
+          elsif consumables_data.is_a?(Hash)
+            # Short-form restock keyed by spell name (e.g. Refresh: { quantity: 2 })
+            consumables_data.each_value do |town_data|
+              if town_data.is_a?(Hash) && town_data[key].is_a?(Hash) && town_data[key]['name']
+                materials << town_data[key]['name']
+              end
+            end
+          end
+        end
+      end
     end
 
     spells_to_scan.each do |entry|
@@ -660,12 +690,19 @@ class SellLoot
   end
 
   def sell_runestones(container)
+    return if @skip_runestones
+
     DRC.release_invisibility
 
     items = sellable_runestone_items(container)
     return if items.empty?
+
     pawnshop_id = @hometown.dig('pawnshop', 'id')
-    return unless pawnshop_id && DRCT.walk_to(pawnshop_id)
+    unless pawnshop_id
+      DRC.message("No pawnshop configured for #{@character_hometown}; skipping runestone sales.")
+      return
+    end
+    return unless DRCT.walk_to(pawnshop_id)
 
     clerk = wait_for_clerk(@hometown.dig('pawnshop', 'name'))
     return unless clerk
