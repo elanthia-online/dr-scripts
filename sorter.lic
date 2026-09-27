@@ -9,6 +9,25 @@ script.want_downstream = false
 script.want_downstream_xml = true
 hide_me
 
+before_dying do
+  DownstreamHook.remove('sorter')
+end
+
+def categorize_item(item, item_data, ignore_categories = 'nil')
+  return 'NPC' if item =~ /pushBold|popBold/
+
+  item_data.each do |key, value|
+    next unless value.is_a?(Array) && !value.empty?
+
+    pattern = /(?:#{value.join('$|')}$)/i
+    if DRC.get_noun(item) =~ pattern || DRC.remove_flavor_text(item) =~ pattern
+      category_name = key.to_s.sub(/_nouns|_types/, '')
+      return category_name if category_name !~ /#{ignore_categories}/i
+    end
+  end
+  'other'
+end
+
 best_column_count = proc { |list|
   num_columns = 1
   loop do
@@ -31,20 +50,24 @@ best_column_count = proc { |list|
   [num_columns, 1].max
 }
 
-begin
-  action = proc { |s|
-    if s =~ /^(?:[IO]n the .*? you see |You rummage .*? and see .*?(?:, | and )(?:a|an|some) |You take a moment to look for all the items in the area and see|(?:You are|He is|She is) wearing )/ && @settings.sorter['mute_old_inventory']
-      if s =~ /You take a moment to look for all the items in the area and see/ && !@settings.sorter['sort_look_items_command']
-        s
-      elsif s =~ /You are wearing/ && !@settings.sorter['sort_inv_command']
-        s
-      elsif s =~ /(?:He is|She is) wearing/ && !@settings.sorter['sort_look_others']
-        s
-      end
-    else
-      s
+def filter_inventory_line(line, sorter_settings = {})
+  return line unless sorter_settings && sorter_settings['mute_old_inventory']
+
+  if line =~ /^(?:[IO]n the .*? you see |You rummage .*? and see .*?(?:, | and )(?:a|an|some) |You take a moment to look for all the items in the area and see|(?:You are|He is|She is) wearing )/
+    if line =~ /You take a moment to look for all the items in the area and see/ && !sorter_settings['sort_look_items_command']
+      line
+    elsif line =~ /You are wearing/ && !sorter_settings['sort_inv_command']
+      line
+    elsif line =~ /(?:He is|She is) wearing/ && !sorter_settings['sort_look_others']
+      line
     end
-  }
+  else
+    line
+  end
+end
+
+begin
+  action = proc { |s| filter_inventory_line(s, @settings.sorter) }
   DownstreamHook.add('sorter', action)
   while (line = get)
     if line =~ /^([IO]n the .*?) (you see .*\.)/
@@ -78,18 +101,7 @@ begin
 
         contents.each do |item|
           item = item.sub(/^\s*?\b(?:a|an|some|and|the)\b\s/, '')
-          category_name = 'other'
-          item_data.each do |key, value|
-            if item =~ /pushBold|popBold/
-              category_name = 'NPC'
-              break
-            elsif DRC.get_noun(item) =~ /#{value.join('$|').concat('$')}/i || DRC.remove_flavor_text(item) =~ /(?:#{value.join('$|').concat('$')})/i
-              if key.to_s.sub(/_nouns|_types/, '') !~ /#{@settings.sorter['ignore_categories']}/i
-                category_name = key.to_s.sub(/_nouns|_types/, '')
-                break
-              end
-            end
-          end
+          category_name = categorize_item(item, item_data, @settings.sorter['ignore_categories'])
           sorted_contents[category_name] ||= {}
           sorted_contents ||= {}
           if sorted_contents[category_name][item].nil?

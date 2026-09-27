@@ -1167,6 +1167,7 @@ module Harness
       def left_hand_noun; Harness._noun($left_hand); end
       def right_hand_noun; Harness._noun($right_hand); end
       def get_noun(long_name); Harness._noun(long_name); end
+      def remove_flavor_text(item); item.to_s.sub(FLAVOR_TEXT_PATTERN, '').strip; end
 
       # Mirrors the real DRC.list_to_array: split a game item sentence on the
       # comma/and separators, keeping the article that begins each item (so
