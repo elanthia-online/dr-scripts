@@ -87,7 +87,7 @@ class SellLoot
       end
 
       if @settings.sell_loot_runestones && !@skip_runestones
-        containers = normalize_containers(@settings.sell_loot_runestones_container)
+        containers = safe_runestone_containers
         if containers.empty?
           DRC.message("sell_loot_runestones_container is: #{@settings.sell_loot_runestones_container}")
           DRC.message("This is invalid. Skipping selling runestones.")
@@ -151,6 +151,39 @@ class SellLoot
     Array(setting).map(&:to_s).map(&:strip).reject(&:empty?)
   end
 
+  # Checks whether a loot container collides with a storage container.
+  # A collision occurs if:
+  # 1. Normalized strings match exactly (case-insensitive), or
+  # 2. Either container is specified as a bare single noun (e.g. 'pouch') and
+  #    both share that trailing noun, which causes game command ambiguity.
+  # Distinct multi-word containers sharing a noun (e.g. 'leather pouch' vs
+  # 'silk pouch') do not collide because DragonRealms disambiguates by adjective.
+  #
+  # @param container [String] loot container
+  # @param storage [String] storage container
+  # @return [Boolean] true if containers collide, false otherwise
+  def container_collides?(container, storage)
+    return false if container.nil? || storage.nil?
+
+    c_words = container.to_s.strip.downcase.split
+    s_words = storage.to_s.strip.downcase.split
+    return false if c_words.empty? || s_words.empty?
+
+    return true if c_words.join(' ') == s_words.join(' ')
+
+    (c_words.length == 1 || s_words.length == 1) && c_words.last == s_words.last
+  end
+
+  # Returns configured runestone containers that do not collide with runestone_storage.
+  #
+  # @return [Array<String>] safe runestone containers
+  def safe_runestone_containers
+    storage = @settings.runestone_storage
+    normalize_containers(@settings.sell_loot_runestones_container).reject do |container|
+      container_collides?(container, storage)
+    end
+  end
+
   def validate_settings
     valid = true
 
@@ -182,10 +215,14 @@ class SellLoot
         DRC.message("***ERROR: sell_loot_runestones is enabled but sell_loot_runestones_container is missing or invalid***")
         valid = false
       else
-        storage_noun = @settings.runestone_storage.to_s.strip.split.last&.downcase
-        if storage_noun && containers.any? { |c| c.to_s.strip.split.last&.downcase == storage_noun }
+        colliding = containers.select { |c| container_collides?(c, @settings.runestone_storage) }
+        if colliding.size == containers.size
           DRC.message("***WARNING: sell_loot_runestones_container matches runestone_storage ('#{@settings.runestone_storage}'); skipping runestone sales to protect casting runestones.***")
           @skip_runestones = true
+        elsif colliding.any?
+          colliding.each do |c|
+            DRC.message("***WARNING: sell_loot_runestones_container '#{c}' matches runestone_storage ('#{@settings.runestone_storage}'); skipping this container to protect casting runestones.***")
+          end
         end
       end
     end
@@ -231,7 +268,7 @@ class SellLoot
     end
 
     if @settings.sell_loot_runestones && !@skip_runestones
-      normalize_containers(@settings.sell_loot_runestones_container).each do |container|
+      safe_runestone_containers.each do |container|
         if has_runestones_to_sell?(container)
           DRC.message("Found runestones to sell in #{container}")
           has_loot = true
@@ -690,7 +727,7 @@ class SellLoot
   end
 
   def sell_runestones(container)
-    return if @skip_runestones
+    return if @skip_runestones || container_collides?(container, @settings.runestone_storage)
 
     DRC.release_invisibility
 
