@@ -26,6 +26,8 @@ class SellLoot
     Flags.add('tip-accepted', '.* accepts your tip and slips it away with a smile')
     Flags.add('tip-declined', '.* declines your tip offer')
     Flags.add('tip-expired', 'Your tip offer to .* has expired')
+    Flags.add('sell-loot-returned-empty', GIVE_RETURNED_EMPTY)
+    Flags.add('sell-loot-returned-partial', GIVE_RETURNED_PARTIAL)
 
     @settings = get_settings
     town_data = get_data('town')
@@ -51,6 +53,12 @@ class SellLoot
     @autoloot_metals = @settings.autoloot_metals
     # How many spare gem pouches to keep stocked (default 5).
     @spare_gem_pouch_target = (@settings.spare_gem_pouch_target || 5).to_i
+    @sell_loot_trader = @settings.sell_loot_trader
+    @trader_room = @settings.sell_loot_trader_room.to_i
+    @trader_nouns = trader_nouns_from(@settings.sell_loot_trader_nouns)
+    # Owners set markup from -10% to +80%; the default 0 skips any below base price.
+    @minimum_markup = (@settings.sell_loot_minimum_markup || 0).to_i
+    @full_pouch_container = @settings.full_pouch_container
 
     # Validate settings before checking for loot
     unless validate_settings
@@ -65,7 +73,11 @@ class SellLoot
     # banking entirely, stranding excess coins, and any single missing loot type
     # -- e.g. no bundle -- could take the whole run down with it.)
     if has_loot_to_sell?
-      sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}") if @settings.sell_loot_pouch
+      sold_at_trader_room = sell_at_trader_room
+
+      if @settings.sell_loot_pouch && !sold_at_trader_room[:pouch]
+        sell_gems("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
+      end
 
       if @settings.sell_loot_metals_and_stones
         if @settings.sell_loot_metals_and_stones_container.is_a?(String)
@@ -83,7 +95,7 @@ class SellLoot
         end
       end
 
-      sell_bundle if @settings.sell_loot_bundle
+      sell_bundle if @settings.sell_loot_bundle && @found_bundle && !sold_at_trader_room[:bundle]
 
       sell_traps(@settings.pick['component_container'] || @settings.component_container) if @settings.sell_loot_traps
     else
@@ -102,6 +114,9 @@ class SellLoot
     # the clerk for " pouch" and count " gem pouch" -- malformed game commands.
     if @settings.spare_gem_pouch_container && @settings.gem_pouch_adjective
       check_spare_pouch(@settings.spare_gem_pouch_container, @settings.gem_pouch_adjective)
+    elsif @settings.spare_gem_pouch_container
+      # Not an error: appraisal uses a spares container without an adjective.
+      DRC.message('***STATUS*** Spare-pouch restocking is off: set gem_pouch_adjective to enable it.')
     end
 
     # Handle banking
@@ -144,6 +159,21 @@ class SellLoot
       end
     end
 
+    if @settings.sell_loot_trader
+      unless @settings.sell_loot_trader_room.to_i.positive?
+        DRC.message("***ERROR: sell_loot_trader is enabled but sell_loot_trader_room is " \
+                    "missing or not a room number (got #{@settings.sell_loot_trader_room.inspect})***")
+        valid = false
+      end
+
+      full = @settings.full_pouch_container.to_s.strip
+      if !full.empty? && full.casecmp?(@settings.spare_gem_pouch_container.to_s.strip)
+        DRC.message('***ERROR: sell_loot_trader needs full_pouch_container and spare_gem_pouch_container ' \
+                    'to be different containers -- emptied pouches would be mixed back in with the full ones***')
+        valid = false
+      end
+    end
+
     if @settings.sell_loot_traps
       unless @settings.pick && (@settings.pick['component_container'] || @settings.component_container)
         DRC.message("***ERROR: sell_loot_traps is enabled but component_container is missing***")
@@ -158,8 +188,19 @@ class SellLoot
     has_loot = false
 
     if @settings.sell_loot_pouch
-      if has_gems_to_sell?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
+      @found_gems = has_gems_to_sell?("#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}")
+      if @found_gems
         DRC.message("Found gems to sell")
+        has_loot = true
+      end
+    end
+
+    # A TIED worn pouch is full and is what a kiosk buys; one that opened
+    # (@found_gems) is gemshop work.
+    if trader_room_enabled? && gem_pouch_command_name && !@found_gems
+      @sell_worn_at_kiosk = worn_pouch_sellable?
+      if @sell_worn_at_kiosk
+        DRC.message('Found a tied worn gem pouch to sell')
         has_loot = true
       end
     end
@@ -186,8 +227,17 @@ class SellLoot
     end
 
     if @settings.sell_loot_bundle
-      if has_bundle_to_sell?
+      @found_bundle = has_bundle_to_sell?
+      if @found_bundle
         DRC.message("Found bundle to sell")
+        has_loot = true
+      end
+    end
+
+    if trader_room_enabled?
+      @found_stored_pouches = stored_pouch_count
+      if @found_stored_pouches.positive?
+        DRC.message("Found #{@found_stored_pouches} gem pouch(es) in #{@full_pouch_container}")
         has_loot = true
       end
     end
@@ -209,12 +259,23 @@ class SellLoot
   # @return [Boolean] true if the pouch is open (or already was), false if it is
   #   tied off or cannot be found
   def open_gem_pouch?(container)
+    gem_pouch_state(container) == :open
+  end
+
+  # @return [Symbol] :open, :tied, or :missing
+  def gem_pouch_state(container)
     case DRC.bput("open my #{container}", 'You open your', 'You open a', 'has been tied off', 'What were you referring to', 'That is already open')
-    when 'has been tied off', 'What were you referring to'
-      false
-    else
-      true
+    when 'has been tied off' then :tied
+    when 'What were you referring to' then :missing
+    else :open
     end
+  end
+
+  def worn_pouch_sellable?
+    gem_pouch_state(gem_pouch_command_name) == :tied
+  rescue StandardError => e
+    DRC.message("Error checking the worn gem pouch: #{e.message}")
+    false
   end
 
   def has_gems_to_sell?(container)
@@ -298,6 +359,22 @@ class SellLoot
     local > keep_copper || foreign.positive?
   end
 
+  # The changer refuses a transaction over its cap outright, and since
+  # 'deposit all' banks only the local currency, a refused purse rides around
+  # in hand. So read the cap out of the refusal and go over in chunks.
+  # The cap is on the coin handed over, not the coin received (verified in
+  # game), so a chunk of `cap` platinum is safe whichever way the rate runs.
+  EXCHANGE_MAX_PLAT   = 1000
+  EXCHANGE_MAX_PASSES = 12 # enough for the largest purse worth carrying
+  # Two wordings seen, at a jar bank and at a money-changer. The second
+  # spells the number out, so the capture is optional and EXCHANGE_MAX_PLAT
+  # is the fallback:
+  #   ... values no greater than 1000 platinum at a time.
+  #   ... rather not handle transactions larger than a thousand platinum.
+  EXCHANGE_CAPPED = /no greater than ([\d,]+) platinum at a time|rather not handle transactions larger than/i
+  EXCHANGE_DONE   = /After (?:figuring|collecting) a .*?fee|reach into the one filled with/i
+  EXCHANGE_NONE   = /don't have (?:that many|any)/i
+
   def exchange_coins
     exchange_id = @hometown.dig('exchange', 'id')
     return unless exchange_id
@@ -307,7 +384,37 @@ class SellLoot
     exchange_to = @hometown['currency']
     $CURRENCIES
       .reject { |currency| currency =~ /#{exchange_to}/i }
-      .each { |currency| fput("exchange all #{currency} for #{exchange_to}") }
+      .each { |currency| exchange_all(currency, exchange_to) }
+  end
+
+  def exchange_all(currency, exchange_to)
+    EXCHANGE_MAX_PASSES.times do
+      result = DRC.bput("exchange all #{currency} for #{exchange_to}",
+                        EXCHANGE_DONE, EXCHANGE_CAPPED, EXCHANGE_NONE).to_s
+      return unless result =~ EXCHANGE_CAPPED
+
+      cap = Regexp.last_match(1).to_s.delete(',').to_i
+      cap = EXCHANGE_MAX_PLAT unless cap.positive?
+      return unless exchange_chunk(currency, exchange_to, cap)
+    end
+
+    DRC.message("***STATUS*** Still carrying #{currency} after #{EXCHANGE_MAX_PASSES} exchange passes " \
+                '-- stopping so this does not spin.')
+  end
+
+  # @return [Boolean] false if the changer would not take an explicit amount,
+  #   so the caller stops rather than looping on it
+  def exchange_chunk(currency, exchange_to, cap)
+    # "to", not "for": the bare "exchange all X for Y" takes "for", but the
+    # amount form was verified as "exchange 1000 platinum kronars to dokoras".
+    result = DRC.bput("exchange #{cap} platinum #{currency} to #{exchange_to}",
+                      EXCHANGE_DONE, EXCHANGE_CAPPED, EXCHANGE_NONE).to_s
+    return true if result =~ EXCHANGE_DONE
+
+    DRC.message("***STATUS*** The changer would not take #{cap} platinum #{currency} " \
+                "(#{result.inspect}). Your #{currency} is still in hand and 'deposit all' will " \
+                'not bank it -- exchange it by hand.')
+    false
   end
 
   def give_money_to_bankbot(currency, keep)
@@ -340,6 +447,544 @@ class SellLoot
     end
 
     pause 0.5 until Flags['tip-accepted'] || Flags['tip-expired'] || Flags['tip-declined']
+  end
+
+  # ===========================================================================
+  # TRADER ROOM -- opt-in (sell_loot_trader). A kiosk buys a TIED pouch or
+  # bundle outright: GIVE, then repeat the GIVE within ten seconds. Kiosks are
+  # tried richest markup first, above sell_loot_minimum_markup. The kiosk hands
+  # the pouch back, so a sale is read from the sale line, not from our hands.
+  # ===========================================================================
+
+  DEFAULT_TRADER_NOUNS = %w[kiosk plinth].freeze
+  ORDINALS = $ORDINALS # Lich global: first..twentieth
+
+  # STUDY has three reply shapes and this phrase is in all of them; it is also
+  # literal enough to miss the help menu's "5% increments".
+  STUDY_MARKUP = /mark(?:up|down) is set to (-?\d+)%/i
+
+  TRADER_NO_TARGET = [/That's not something you can/i, /What were you referring to/i, /I could not find/i].freeze
+
+  # About the ITEM, so every kiosk answers the same: stop asking.
+  GIVE_ITEM_REFUSED = [
+    /assessed value of this asset is within range of empty-null/i,
+    /Increase its worth/i,
+    /remains divisible/i,
+    /irrevocably consolidate/i,
+    /tie it up/i,
+    /isn't tied/i,
+    /not interested/i
+  ].freeze
+
+  # About this KIOSK; the next may still buy. Not "influence-reserves": the
+  # partial-sale notice uses that too.
+  GIVE_KIOSK_REFUSED = [
+    /Acquisition cannot proceed/i,
+    /below the minimum held fiat-value/i,
+    /cannot afford|can't afford|does not have enough|doesn't have enough|insufficient|no funds|not enough funds/i,
+    /not (?:actively )?buying/i,
+    /What is it you're trying to give/i
+  ].freeze
+
+  GIVE_QUOTE          = /will purchase the .+? for (.+?) based on the markup of/i
+  GIVE_CONFIRM_PROMPT = /Repeat the command within \d+ seconds to proceed/i
+  GIVE_SOLD           = /a tidy pile of (.+?) rises from its surface/i
+
+  # "now lighter" is a PARTIAL sale: that kiosk is dry, but the pouch still
+  # holds gems.
+  GIVE_RETURNED_EMPTY   = /Retrieving your now empty/i
+  GIVE_RETURNED_PARTIAL = /Retrieving your now lighter/i
+  HANDBACK_WAIT_STEPS   = 30 # of 0.1s
+
+  GIVE_BAD_SYNTAX = /What is it you're trying to give|What were you referring to|not something you can/i
+
+  # @return [Hash] { pouch: Boolean, bundle: Boolean } -- true means sold here
+  def sell_at_trader_room
+    sold = { pouch: false, bundle: false }
+    return sold unless trader_room_enabled?
+
+    stored_pouches = @found_stored_pouches.to_i
+    sell_worn = gem_pouch_command_name && @sell_worn_at_kiosk
+    sell_bundle_here = @settings.sell_loot_bundle && @found_bundle
+
+    return sold unless stored_pouches.positive? || sell_worn || sell_bundle_here
+
+    unless DRCT.walk_to(@trader_room)
+      DRC.message("***STATUS*** Could not reach trader room #{@trader_room} -- falling back to the shops.")
+      return sold
+    end
+
+    DRC.release_invisibility
+    targets = ranked_trader_objects
+    if targets.empty?
+      DRC.message('***STATUS*** No kiosk in the trader room -- falling back to the shops.')
+      return sold
+    end
+
+    DRC.message("***STATUS*** #{targets.size} kiosk(s) here; trying #{targets.join(', then ')}.")
+
+    sell_stored_pouches(targets, stored_pouches) if stored_pouches.positive?
+    sold[:pouch] = sell_worn_pouch(targets) if sell_worn
+    sold[:bundle] = sell_bundle_to_trader(targets) if sell_bundle_here
+
+    sold
+  end
+
+  # Commands take "red pouch" ("gem" breaks the parser), but counting matches
+  # the printed "red gem pouch" -- see gem_pouch_display_name.
+  def gem_pouch_command_name
+    return nil unless @settings.gem_pouch_adjective && @settings.gem_pouch_noun
+
+    "#{@settings.gem_pouch_adjective} #{@settings.gem_pouch_noun}"
+  end
+
+  def gem_pouch_display_name
+    adj = @settings.gem_pouch_adjective
+    return 'gem pouch' unless adj
+
+    adj == 'gem' ? "#{adj} pouch" : "#{adj} gem pouch"
+  end
+
+  def trader_nouns
+    @trader_nouns ||= DEFAULT_TRADER_NOUNS
+  end
+
+  def trader_nouns_from(setting)
+    nouns = Array(setting).flat_map { |noun| noun.to_s.split(/[,\s]+/) }
+                          .map { |noun| noun.strip.downcase }
+                          .reject(&:empty?)
+    nouns.empty? ? DEFAULT_TRADER_NOUNS : nouns.uniq
+  end
+
+  def meets_minimum_markup?(markup)
+    return false if markup.nil?
+
+    markup >= @minimum_markup
+  end
+
+  def trader_room_enabled?
+    @sell_loot_trader && @trader_room.to_i.positive?
+  end
+
+  # Not gated on sell_loot_pouch: tie-users set that false, yet they are the
+  # ones with tied pouches to sell.
+  def stored_pouch_count
+    return 0 unless @full_pouch_container
+    return 0 unless @settings.tie_gem_pouches
+
+    unless gem_pouch_command_name
+      DRC.message('***STATUS*** Trader-room pouch selling needs gem_pouch_adjective and gem_pouch_noun ' \
+                  'set -- skipping the stored pouches.')
+      return 0
+    end
+
+    # The "gem" keeps coin and component pouches out of the count.
+    DRCI.count_items_in_container(gem_pouch_display_name, @full_pouch_container).to_i
+  rescue StandardError => e
+    DRC.message("Error counting pouches in #{@full_pouch_container}: #{e.message}")
+    0
+  end
+
+  # Richest first. A kiosk that will not state its markup is skipped: it could
+  # be the -10% the floor exists to avoid.
+  def ranked_trader_objects
+    targets = trader_targets
+    return [] if targets.empty?
+
+    scored = targets.each_with_index.map do |target, index|
+      markup = study_markup(target)
+      DRC.message("***STATUS*** #{target}: #{markup.nil? ? 'markup unknown' : "#{markup}% markup"}.")
+      { target: target, markup: markup, index: index }
+    end
+
+    qualifying = scored.select { |obj| meets_minimum_markup?(obj[:markup]) }
+    report_skipped_kiosks(scored - qualifying)
+
+    qualifying
+      .sort_by { |obj| [-obj[:markup], obj[:index]] }
+      .map { |obj| obj[:target] }
+  end
+
+  def report_skipped_kiosks(skipped)
+    return if skipped.empty?
+
+    unreadable, below = skipped.partition { |obj| obj[:markup].nil? }
+
+    if below.any?
+      DRC.message("***STATUS*** #{below.size} here are under the #{@minimum_markup}% minimum " \
+                  'markup -- skipping those.')
+    end
+    return if unreadable.empty?
+
+    DRC.message("***STATUS*** #{unreadable.size} here would not state a markup, so it cannot be " \
+                "checked against the #{@minimum_markup}% minimum -- skipping those.")
+  end
+
+  # Several of one noun need ordinals; "my kiosk" is not valid syntax.
+  def trader_targets
+    fput('look')
+    pause 0.5
+
+    trader_nouns.flat_map do |noun|
+      count = DRRoom.room_objs.count { |obj| obj =~ /\b#{noun}s?\b/i }
+      next [] if count.zero?
+      next [noun] if count == 1
+
+      (1..[count, ORDINALS.size].min).map { |i| "#{ORDINALS[i - 1]} #{noun}" }
+    end
+  end
+
+  def study_markup(target)
+    result = DRC.bput("study #{target}", STUDY_MARKUP, *TRADER_NO_TARGET).to_s
+    waitrt?
+
+    match = result.match(STUDY_MARKUP)
+    match && match[1].to_i
+  end
+
+  # Kiosks out of reserves are removed from +targets+ so later items skip them.
+  #
+  # @return [Symbol, false] :sold, :sold_partial, :item_refused, or false
+  def sell_held_item(targets, item)
+    targets.dup.each do |target|
+      case give_to_trader_object(target, item)
+      when :sold then return :sold
+      when :sold_partial
+        targets.delete(target) # paid out what it had left
+        return :sold_partial
+      when :kiosk_refused
+        targets.delete(target)
+      when :item_refused then return :item_refused
+      end
+    end
+
+    false
+  end
+
+  # @return [Array(Boolean, Integer, Symbol)] whether the item ended up empty,
+  #   how many partial sales it took, and why it stopped
+  def offer_around(targets, item)
+    partials = 0
+
+    while targets.any?
+      case sell_held_item(targets, item)
+      when :sold then return [true, partials, :sold]
+      when :sold_partial then partials += 1
+      when :item_refused then return [false, partials, :item_refused]
+      else return [false, partials, :kiosks_dry]
+      end
+    end
+
+    [false, partials, :kiosks_dry]
+  end
+
+  # @return [Symbol] :sold, :sold_partial, :item_refused (stop), :kiosk_refused
+  def give_to_trader_object(target, item)
+    return :item_refused unless holding?(item)
+
+    outcome, command = offer_item(target, item)
+    return outcome unless outcome == :quoted
+
+    confirm_sale(target, item, command)
+  end
+
+  # +command+ is the GIVE that got the quote; the kiosk wants it repeated.
+  def confirm_sale(target, item, command)
+    Flags.reset('sell-loot-returned-empty')
+    Flags.reset('sell-loot-returned-partial')
+    result = DRC.bput(command, GIVE_SOLD, *GIVE_ITEM_REFUSED,
+                      *GIVE_KIOSK_REFUSED, GIVE_QUOTE).to_s
+    waitrt?
+
+    if (sale = result.match(GIVE_SOLD))
+      case wait_for_handback
+      when :empty
+        DRC.message("***STATUS*** Sold the #{item} to the #{target} for #{sale[1]}.")
+        :sold
+      when :partial
+        DRC.message("***STATUS*** The #{target} could only partly buy the #{item} (paid #{sale[1]}) -- it is " \
+                    'out of reserves, and the pouch still holds gems.')
+        :sold_partial
+      else
+        DRC.message("***STATUS*** Sold the #{item} to the #{target} for #{sale[1]}, but could not tell " \
+                    'whether it was emptied -- keeping it rather than discarding it.')
+        :sold_partial
+      end
+    elsif GIVE_ITEM_REFUSED.any? { |pattern| result =~ pattern }
+      :item_refused
+    elsif GIVE_KIOSK_REFUSED.any? { |pattern| result =~ pattern }
+      :kiosk_refused
+    elsif !holding?(item)
+      DRC.message("***STATUS*** The #{target} kept the #{item}; treating it as sold.")
+      :sold
+    else
+      # Still held and nothing matched: the ten-second fuse probably lapsed.
+      DRC.message("***STATUS*** The #{target} did not complete the sale of the #{item}.")
+      :kiosk_refused
+    end
+  end
+
+  # bput returns only the sale line, so read the handback from flags reset
+  # before the GIVE -- scrollback still holds the last pouch's "now empty".
+  #
+  # @return [Symbol, nil] :partial (checked first), :empty, or nil
+  def wait_for_handback
+    HANDBACK_WAIT_STEPS.times do
+      break if Flags['sell-loot-returned-partial'] || Flags['sell-loot-returned-empty']
+
+      pause 0.1
+    end
+    return :partial if Flags['sell-loot-returned-partial']
+
+    Flags['sell-loot-returned-empty'] ? :empty : nil
+  end
+
+  # An unrecognised reply counts as :quoted: a reword costs a timeout, not a sale.
+  #
+  # @return [Array(Symbol, String)] the outcome, and the GIVE to repeat
+  def offer_item(target, item)
+    command = "give #{target}"
+    result = DRC.bput(command, *GIVE_ITEM_REFUSED, *GIVE_KIOSK_REFUSED,
+                      GIVE_QUOTE, GIVE_CONFIRM_PROMPT).to_s
+    waitrt?
+
+    if result =~ GIVE_BAD_SYNTAX
+      # Some objects want the item named.
+      command = "give my #{item} to #{target}"
+      result = DRC.bput(command, *GIVE_ITEM_REFUSED,
+                        *GIVE_KIOSK_REFUSED, GIVE_QUOTE, GIVE_CONFIRM_PROMPT).to_s
+      waitrt?
+    end
+
+    if GIVE_ITEM_REFUSED.any? { |pattern| result =~ pattern }
+      DRC.message("***STATUS*** No kiosk will take the #{item}: #{result}")
+      [:item_refused, command]
+    elsif GIVE_KIOSK_REFUSED.any? { |pattern| result =~ pattern }
+      DRC.message("***STATUS*** The #{target} would not buy the #{item}: #{result}")
+      [:kiosk_refused, command]
+    else
+      [:quoted, command]
+    end
+  end
+
+  def holding?(item)
+    noun = item.to_s.split.last
+    return false if noun.nil?
+
+    !("#{DRC.left_hand} #{DRC.right_hand}" =~ /\b#{Regexp.escape(noun)}\b/i).nil?
+  end
+
+  # A pouch put back goes to the FRONT of the container, so each one moves the
+  # next fetch an ordinal further in.
+  def sell_stored_pouches(targets, limit)
+    pouch = gem_pouch_command_name
+    sold = 0
+    empties = 0
+    partial = 0
+    untied = 0
+    unrecognised = 0
+    kept = 0
+    @spare_pouches_held = if @settings.spare_gem_pouch_container
+                            DRCI.count_items_in_container(gem_pouch_display_name,
+                                                          @settings.spare_gem_pouch_container).to_i
+                          else
+                            0
+                          end
+
+    limit.times do
+      break if targets.empty? || kept >= ORDINALS.size
+      break unless DRCI.get_item?("#{ORDINALS[kept]} #{pouch}", @full_pouch_container)
+
+      case stored_pouch_state(pouch)
+      when :missing then break
+      when :empty
+        empties += 1
+        break unless stow_emptied_pouch?(pouch)
+
+        next
+      when :untied
+        # Never tie it: UNTIE is Trader-only.
+        untied += 1
+        break unless keep_stored_pouch?(pouch, 'untied')
+
+        kept += 1
+        next
+      when :unrecognised
+        unrecognised += 1
+        break unless keep_stored_pouch?(pouch, 'unrecognised')
+
+        kept += 1
+        next
+      end
+
+      emptied, partials_here, reason = offer_around(targets, pouch)
+      partial += partials_here
+      sold += 1 if emptied || partials_here.positive?
+
+      if emptied
+        break unless stow_emptied_pouch?(pouch)
+
+        next
+      end
+
+      break unless keep_stored_pouch?(pouch, partials_here.positive? ? 'part-full' : 'unsold')
+
+      kept += 1
+      # Too cheap is about THIS pouch; anything else means the kiosks are dry.
+      break unless reason == :item_refused
+    end
+
+    DRC.message("***STATUS*** Sold #{sold} stored pouch(es) at the trader room.") if sold.positive?
+    if empties.positive?
+      DRC.message("***STATUS*** Cleared #{empties} empty pouch(es) out of #{@full_pouch_container} along the way.")
+    end
+    if untied.positive?
+      DRC.message("***STATUS*** Left #{untied} untied pouch(es) in #{@full_pouch_container} -- a kiosk only " \
+                  'buys tied ones.')
+    end
+    if unrecognised.positive?
+      DRC.message("***STATUS*** Left #{unrecognised} pouch(es) in #{@full_pouch_container} that could not be " \
+                  'read as a gem pouch -- not offered.')
+    end
+    if partial.positive?
+      DRC.message("***STATUS*** #{partial} partial sale(s) -- those kiosks are out of reserves and need " \
+                  'refunding before the rest will sell.')
+    end
+    sold
+  end
+
+  # @return [Symbol] :tied, :untied, :empty, :unrecognised, or :missing
+  def stored_pouch_state(pouch)
+    return :unrecognised unless "#{DRC.left_hand} #{DRC.right_hand}" =~ /\bgem #{Regexp.escape(@settings.gem_pouch_noun.to_s)}\b/i
+
+    case DRC.bput("open my #{pouch}", 'You open', 'has been tied off', 'What were you referring to', 'That is already open')
+    when 'has been tied off' then :tied
+    when 'What were you referring to' then :missing
+    when 'You open', 'That is already open'
+      DRC.bput("rummage my #{pouch}", /there is nothing in there/i, /You rummage/i) =~ /nothing in there/i ? :empty : :untied
+    else :unrecognised
+    end
+  rescue StandardError => e
+    DRC.message("Error reading the stored #{pouch}: #{e.message}")
+    :unrecognised
+  end
+
+  # @return [Boolean] false if it would not go back -- caller stops
+  def keep_stored_pouch?(pouch, why)
+    DRC.message("***STATUS*** Returning the #{why} #{pouch} to #{@full_pouch_container}.")
+    return true if DRCI.put_away_item?(pouch, @full_pouch_container)
+
+    DRC.message("***STATUS*** Could not put the #{pouch} back in #{@full_pouch_container} -- stopping here.")
+    false
+  end
+
+  # Never back into the full-pouch container, or the next fetch finds it.
+  # Spares are topped up to target and the rest discarded.
+  #
+  # @return [Boolean] false if it could not be put anywhere -- caller stops
+  def stow_emptied_pouch?(pouch)
+    return true unless holding?(pouch)
+
+    spare = @settings.spare_gem_pouch_container
+    if spare && @spare_pouches_held < @spare_gem_pouch_target
+      DRC.message("***STATUS*** Keeping an empty #{pouch} as a spare " \
+                  "(#{@spare_pouches_held + 1}/#{@spare_gem_pouch_target}).")
+      if DRCI.put_away_item?(pouch, spare)
+        @spare_pouches_held += 1
+        return true
+      end
+
+      DRC.message("***STATUS*** Could not put the emptied #{pouch} in #{spare} -- discarding it instead.")
+    end
+
+    discard_emptied_pouch?(pouch)
+  end
+
+  def discard_emptied_pouch?(pouch)
+    return true if DRCI.dispose_trash(pouch, @settings.worn_trashcan, @settings.worn_trashcan_verb)
+
+    DRC.message("***STATUS*** Could not dispose of the emptied #{pouch}, so stopping with it in " \
+                "#{@full_pouch_container}. Empty pouches mixed in with the full ones stall the next run " \
+                '-- clear it out, set worn_trashcan, or raise spare_gem_pouch_target.')
+    DRCI.put_away_item?(pouch, @full_pouch_container)
+    false
+  end
+
+  # Offered exactly as worn, never tied: UNTIE is Trader-only, so a refused
+  # pouch would be locked shut.
+  def sell_worn_pouch(targets)
+    pouch = gem_pouch_command_name
+
+    unless DRCI.remove_item?(pouch)
+      DRC.message("***STATUS*** Could not remove #{pouch} -- leaving it for the gemshop.")
+      return false
+    end
+
+    emptied, partials = offer_around(targets, pouch)
+    if emptied
+      wear_emptied_pouch(pouch)
+      return true
+    end
+
+    if partials.positive?
+      DRC.message('***STATUS*** Only part of the working pouch sold -- putting it back on.')
+    else
+      DRC.message('***STATUS*** Nothing here would buy the working pouch -- putting it back on.')
+    end
+    DRCI.wear_item?(pouch) || DRCI.put_away_item?(pouch)
+    false
+  end
+
+  def wear_emptied_pouch(pouch)
+    return replace_worn_pouch unless holding?(pouch)
+
+    DRCI.wear_item?(pouch) || DRCI.put_away_item?(pouch)
+  end
+
+  # check_spare_pouch refills the spares later in this run.
+  def replace_worn_pouch
+    pouch = gem_pouch_command_name
+    container = @settings.spare_gem_pouch_container
+    unless container
+      DRC.message('***STATUS*** WARNING: sold the working gem pouch but spare_gem_pouch_container is not set ' \
+                  '-- you are now carrying no gem pouch.')
+      return
+    end
+
+    unless DRCI.get_item?(pouch, container)
+      DRC.message("***STATUS*** WARNING: no spare #{pouch} in #{container} -- you are now carrying no gem pouch.")
+      return
+    end
+
+    DRCI.wear_item?(pouch) || DRCI.put_away_item?(pouch)
+  end
+
+  # Worn, never stowed: has_bundle_to_sell? still finds a stowed bundle, but
+  # sell_bundle cannot remove it, so it would be re-offered forever.
+  def wear_emptied_bundle
+    return if DRCI.wear_item?('bundle')
+
+    DRC.message('***STATUS*** Could not wear the emptied bundle -- discarding it.')
+    DRCI.dispose_trash('bundle', @settings.worn_trashcan, @settings.worn_trashcan_verb)
+  end
+
+  def sell_bundle_to_trader(targets)
+    return false unless DRC.bput('count my bundle', /^You flip through .* bundle and find \d+ skins? in it/, /^I could not find/).scan(/\d+/).first.to_i.positive?
+    return false if DRC.bput('remove my bundle', 'You remove', 'You sling', 'Remove what', 'You take') == 'Remove what'
+
+    if DRC.bput('tie my bundle', 'you tie the bundle', 'TIE the bundle again', 'has already been tied').to_s =~ /TIE the bundle again/i
+      DRC.bput('tie my bundle', 'you tie the bundle', 'has already been tied')
+    end
+
+    emptied, = offer_around(targets, 'bundle')
+    if emptied
+      wear_emptied_bundle
+      return true
+    end
+
+    DRC.message('***STATUS*** Nothing here would buy the bundle -- taking it to the tannery instead.')
+    DRCI.put_away_item?('bundle') unless DRCI.wear_item?('bundle')
+    false
   end
 
   def sell_bundle
@@ -381,7 +1026,11 @@ class SellLoot
     return if current_count >= @spare_gem_pouch_target
 
     gemshop_id = @hometown.dig('gemshop', 'id')
-    return unless gemshop_id
+    unless gemshop_id
+      DRC.message("***STATUS*** Need #{@spare_gem_pouch_target - current_count} more #{pouch_type}(s), " \
+                  "but no gemshop is mapped for #{@character_hometown} -- cannot restock here.")
+      return
+    end
 
     DRCT.walk_to(gemshop_id)
     clerk = wait_for_clerk(@hometown.dig('gemshop', 'name'))
@@ -546,6 +1195,8 @@ before_dying do
   Flags.delete('tip-accepted')
   Flags.delete('tip-declined')
   Flags.delete('tip-expired')
+  Flags.delete('sell-loot-returned-empty')
+  Flags.delete('sell-loot-returned-partial')
 end
 
 SellLoot.new
