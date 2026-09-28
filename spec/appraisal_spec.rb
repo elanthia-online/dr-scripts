@@ -12,10 +12,12 @@ require_relative 'spec_helper'
 #   - pouch_name: label assembly from adjective + noun.
 #   - classify_pouch: the appraise -> open -> re-appraise -> route decision, including
 #     the reopen-reclassify fix (a closed pouch must still be routed by value/emptiness
-#     after it is opened, not silently left in the default container).
+#     after it is opened, not silently left in the default container), and values
+#     printed with thousands commas.
 #   - count_kit_pouches: scraping the highest pouch index out of RUMMAGE output.
-#   - train_appraisal_with_kit_pouches: the TURN-to-slot / PULL loop ordering and the
-#     skip-on-failed-pull guard.
+#   - train_appraisal_with_kit_pouches: the TURN-to-slot / PULL loop ordering, the
+#     skip-on-failed-pull guard, handling the pouch in hand as bare "pouch", and
+#     recovering (or stopping) when a pouch is left in hand.
 load_lic_class('appraisal.lic', 'Appraisal')
 
 describe Appraisal do
@@ -63,6 +65,22 @@ describe Appraisal do
       stub_bput_by_command('appraise my' => 'The pouch is worth a total of about 500 dokoras.')
 
       result = appraisal.classify_pouch('gem pouch', 1000, 'lowbox', 'sparebox')
+
+      expect(result).to eq('lowbox')
+    end
+
+    it 'reads a comma-grouped value in full, so a valuable pouch is not filed as low-value' do
+      stub_bput_by_command('appraise my' => 'The pouch is worth a total of about 12,500 dokoras.')
+
+      result = appraisal.classify_pouch('gem pouch', 1000, 'lowbox', 'sparebox')
+
+      expect(result).to be_nil
+    end
+
+    it 'still routes a comma-grouped value below the threshold to the low_value container' do
+      stub_bput_by_command('appraise my' => 'The pouch is worth a total of about 1,500 dokoras.')
+
+      result = appraisal.classify_pouch('gem pouch', 5000, 'lowbox', 'sparebox')
 
       expect(result).to eq('lowbox')
     end
@@ -221,17 +239,20 @@ describe Appraisal do
       allow(DRCI).to receive(:put_away_item?).and_return(true)
     end
 
-    it 'iterates kit slots from highest to lowest, pulling and putting away each pouch' do
+    it 'iterates kit slots from highest to lowest, appraising and putting away the pouch in hand' do
       stub_bput_by_command(
         'turn my' => 'You turn the gem kit to a new setting.',
         'pull my' => 'You get a gem pouch from your gem kit.'
       )
 
-      appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000, 'deep', 'gem pouch')
+      appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
 
       expect(DRC).to have_received(:bput).with('turn my gem kit to 2', any_args).ordered
       expect(DRC).to have_received(:bput).with('turn my gem kit to 1', any_args).ordered
-      expect(DRCI).to have_received(:put_away_item?).with('deep gem pouch', 'lowbox').twice
+      # Bare "pouch": a kit pouch's colour can differ from gem_pouch_adjective, and
+      # "<adjective> pouch" would then name the worn gathering pouch.
+      expect(appraisal).to have_received(:classify_pouch).with('pouch', 1000, 'lowbox', 'sparebox').twice
+      expect(DRCI).to have_received(:put_away_item?).with('pouch', 'lowbox').twice
     end
 
     it 'skips a slot when the pull does not yield a pouch' do
@@ -240,7 +261,7 @@ describe Appraisal do
         'pull my' => 'The gem kit is empty.'
       )
 
-      appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000, 'deep', 'gem pouch')
+      appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
 
       expect(appraisal).not_to have_received(:classify_pouch)
       expect(DRCI).not_to have_received(:put_away_item?)
@@ -249,15 +270,71 @@ describe Appraisal do
     it 'does nothing when the kit is empty' do
       allow(appraisal).to receive(:count_kit_pouches).and_return(0)
 
-      appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000, 'deep', 'gem pouch')
+      appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
 
       expect(appraisal).not_to have_received(:classify_pouch)
     end
 
     it 'does nothing when no gem_kit_name is configured' do
-      appraisal.train_appraisal_with_kit_pouches('', 'sparebox', 'lowbox', 1000, 'deep', 'gem pouch')
+      appraisal.train_appraisal_with_kit_pouches('', 'sparebox', 'lowbox', 1000)
 
       expect(appraisal).not_to have_received(:count_kit_pouches)
+    end
+
+    context 'when a pouch is left in hand' do
+      before { allow(DRC).to receive(:message) }
+
+      it 'parks it back in the kit and retries the slot once' do
+        allow(appraisal).to receive(:count_kit_pouches).and_return(1)
+        stub_bput_by_command(
+          'turn my' => 'You turn the gem kit to a new setting.',
+          'pull my' => ['You need an empty hand to do that.', 'You get a gem pouch from your gem kit.']
+        )
+
+        appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
+
+        expect(DRCI).to have_received(:put_away_item?).with('pouch', 'gem kit').ordered
+        expect(DRCI).to have_received(:put_away_item?).with('pouch', 'lowbox').ordered
+      end
+
+      it 'stops the run when the held pouch will not go back in the kit' do
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        stub_bput_by_command(
+          'turn my' => 'You turn the gem kit to a new setting.',
+          'pull my' => 'You need an empty hand to do that.'
+        )
+
+        appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
+
+        expect(DRC).not_to have_received(:bput).with('turn my gem kit to 1', any_args)
+        expect(appraisal).not_to have_received(:classify_pouch)
+      end
+
+      it 'returns a pouch to the kit when it will not go into its target' do
+        allow(appraisal).to receive(:count_kit_pouches).and_return(1)
+        allow(DRCI).to receive(:put_away_item?).with('pouch', 'lowbox').and_return(false)
+        allow(DRCI).to receive(:put_away_item?).with('pouch', 'gem kit').and_return(true)
+        stub_bput_by_command(
+          'turn my' => 'You turn the gem kit to a new setting.',
+          'pull my' => 'You get a gem pouch from your gem kit.'
+        )
+
+        appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
+
+        expect(DRCI).to have_received(:put_away_item?).with('pouch', 'gem kit')
+      end
+
+      it 'stops the run when the pouch will not stow anywhere' do
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        stub_bput_by_command(
+          'turn my' => 'You turn the gem kit to a new setting.',
+          'pull my' => 'You get a gem pouch from your gem kit.'
+        )
+
+        appraisal.train_appraisal_with_kit_pouches('gem kit', 'sparebox', 'lowbox', 1000)
+
+        expect(DRC).not_to have_received(:bput).with('turn my gem kit to 1', any_args)
+      end
     end
   end
 end
