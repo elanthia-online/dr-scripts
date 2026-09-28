@@ -5,7 +5,8 @@
 
   Accepts, works and turns in forage tasks, using base-forage.yaml plus any
   entries added under task_forage_settings. Supports Crossing and Shard; defaults
-  to your hometown. Pass "resume" to pick up a task already in progress.
+  to fang_cove_override_town, then your hometown. Pass "resume" to pick up a
+  task already in progress.
 =end
 
 class TaskForage
@@ -156,7 +157,7 @@ class TaskForage
     # Used to store the last known location of wandering task givers
     UserVars.task_forage['npcs'] = {} if UserVars.task_forage['npcs'].nil?
 
-    @task_town = (@args.town.nil? ? @hometown : @args.town).downcase
+    @task_town = resolve_task_town
     @task_giver = @task_givers[@task_town]['npc']
 
     @forage_container = @forage_settings['container'] || @settings.forage_container || 'backpack'
@@ -194,6 +195,17 @@ class TaskForage
       find_giver
       complete_task
     end
+  end
+
+  # Fang Cove has no forage task giver, so fall back through fang_cove_override_town
+  # the way other town-bound scripts do.
+  def resolve_task_town
+    town = (@args.town || @settings.fang_cove_override_town || @hometown).to_s.downcase
+    return town if @task_givers.key?(town)
+
+    DRC.message("No forage task giver in '#{town}'. Try ;task-forage crossing or ;task-forage shard, " \
+                'or set fang_cove_override_town.')
+    exit
   end
 
   # Adopt a task that's already in progress rather than canceling it. Returns false if
@@ -436,12 +448,61 @@ class TaskForage
   # container. Count those toward the task rather than foraging duplicates.
   def use_stored_items
     echo 'use_stored_items' if @debug
-    stored = @item_variants.sum { |noun| DRCI.count_items_in_container(noun, @forage_container) }
+    stored = @item_variants.sum { |noun| count_stored_items(noun) }
     echo "stored #{@item_variants.join('/')}: #{stored}" if @debug
-    return unless stored.positive?
+    unless stored.positive?
+      DRC.message("No #{@item} already in your #{@forage_container}; gathering all #{@number}.")
+      return
+    end
 
     @item_count = [@item_count + stored, @number].min
     DRC.message("Found #{stored} #{@item} in your #{@forage_container}. Using #{@item_count} of the #{@number} needed.")
+  end
+
+  # Not DRCI.count_items_in_container: it scans one line for the singular noun, so
+  # plural stacks ("some nuloe stems") count as 0, and it never reads the "(N)"
+  # totals that RUMMAGE /C prints on later lines when it groups the contents.
+  #   inline:      You rummage ... and see some nuloe stems, a jadice flower and some nuloe stems.
+  #   categorized: You rummage ... similar to "stem":  then indented "... (35)" lines
+  def count_stored_items(noun)
+    # Herb items carry a qualifier ("nuloe stem (limbs: internal scars)").
+    clean = noun.sub(/\s*\(.*\)\s*\z/, '').strip
+    entry_pattern = /\b#{Regexp.escape(clean)}(?:e?s)?\b/
+    # bput returns only the matched text, so the inline pattern spans the whole listing.
+    rummage_matches = [
+      /^You rummage .* looking for something similar to .* and see .*\.\s*$/,
+      /^You rummage .* but can.t (?:seem to )?find anything/,
+      /^You rummage .* looking for something similar to/,
+      /That would accomplish nothing/,
+      /What were you referring to/
+    ]
+    command = "rummage /C #{clean.split.last} in my #{@forage_container}"
+    result = DRC.bput(command, /While it's closed/, *rummage_matches)
+    if result =~ /While it's closed/
+      DRC.bput("open my #{@forage_container}", 'You open', 'That is already open')
+      result = DRC.bput(command, *rummage_matches)
+    end
+    return 0 unless result =~ /looking for something similar to/
+    return 0 if result =~ /can.t (?:seem to )?find anything/
+    return Regexp.last_match(1).scan(entry_pattern).size if result =~ /and see (.*)\.\s*$/
+
+    # Categorized: the "(N)" lines can arrive seconds after the header.
+    total = 0
+    timer = Time.now
+    while Time.now - timer < 4
+      line = get?
+      if line.nil?
+        pause 0.1
+        next
+      end
+      break if total.positive? && line.strip.empty?
+      next if line =~ /^\s*\w+ \(\d+\):\s*$/ # a category header, not an item
+      next unless line =~ entry_pattern
+
+      total += Regexp.last_match(1).to_i if line =~ /\((\d+)\)\s*$/
+    end
+    echo "count_stored_items(#{noun}): #{total}" if @debug
+    total
   end
 
   def decline_task
