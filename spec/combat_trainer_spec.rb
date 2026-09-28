@@ -123,6 +123,8 @@ def build_ability_process(**overrides)
   defaults.merge(overrides).each do |k, v|
     instance.instance_variable_set(:"@#{k}", v)
   end
+  # Item discovery polls the hands between short sleeps; never really sleep.
+  allow(instance).to receive(:sleep)
   instance
 end
 
@@ -136,9 +138,53 @@ def build_game_state(**attrs)
   state
 end
 
-def stub_right_hand_with_id(id)
-  hand = OpenStruct.new(name: 'item', noun: 'item', id: id)
-  allow(GameObj).to receive(:right_hand).and_return(hand)
+# A hand as Lich reports it: an empty hand is an "Empty" placeholder with a
+# nil id, never nil.
+#
+# @param id [String, nil] game ID of the held item, or nil for an empty hand
+# @param noun [String, nil] noun of the held item
+# @return [OpenStruct]
+def hand_object(id = nil, noun = nil)
+  return OpenStruct.new(id: nil, noun: 'Empty', name: 'Empty') unless id
+
+  OpenStruct.new(id: id, noun: noun, name: noun)
+end
+
+# Stubs both hands with live state that #take_into_hand and the stubbed
+# DRCI.stow_item?/wear_item? change, following the game's rules: a fetched
+# item goes to the right hand if it is free, else the left; stowing or
+# wearing an item by "#id" empties its hand.
+#
+# @param right [Array(String, String), nil] [id, noun] held in the right hand
+# @param left [Array(String, String), nil] [id, noun] held in the left hand
+# @return [Hash{Symbol=>OpenStruct}] the live hands, keyed :right and :left
+def stub_hands(right: nil, left: nil)
+  hands = { right: hand_object(*right), left: hand_object(*left) }
+  allow(GameObj).to receive(:right_hand) { hands[:right] }
+  allow(GameObj).to receive(:left_hand) { hands[:left] }
+  allow(DRCI).to receive(:in_right_hand?) { |noun| hands[:right].noun == noun }
+  allow(DRCI).to receive(:in_left_hand?) { |noun| hands[:left].noun == noun }
+  put_away = lambda do |ref|
+    slot = hands.key(hands.values.find { |hand| "##{hand.id}" == ref })
+    hands[slot] = hand_object if slot
+    true
+  end
+  allow(DRCI).to receive(:stow_item?, &put_away)
+  allow(DRCI).to receive(:wear_item?, &put_away)
+  hands
+end
+
+# The game putting a fetched item in a hand: the right one if free, else the
+# left.
+#
+# @param hands [Hash{Symbol=>OpenStruct}] live hands from #stub_hands
+# @param id [String] game ID of the fetched item
+# @param noun [String] its noun
+# @return [true] so it can end a stubbed DRCI.get_item?/remove_item? block
+def take_into_hand(hands, id, noun)
+  slot = hands[:right].id.nil? ? :right : :left
+  hands[slot] = hand_object(id, noun)
+  true
 end
 
 # ===================================================================
@@ -2553,9 +2599,8 @@ RSpec.describe AbilityProcess do
   describe '#discover_egg' do
     it 'records the game ID when egg is found' do
       instance = build_ability_process
-      stub_right_hand_with_id('12345')
-      allow(DRCI).to receive(:get_item?).with('egg').and_return(true)
-      allow(DRCI).to receive(:stow_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '12345', 'egg') }
 
       instance.send(:discover_egg, 'egg')
 
@@ -2564,13 +2609,97 @@ RSpec.describe AbilityProcess do
 
     it 'stows by game ID after discovery' do
       instance = build_ability_process
-      stub_right_hand_with_id('12345')
-      allow(DRCI).to receive(:get_item?).with('egg').and_return(true)
-      allow(DRCI).to receive(:stow_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '12345', 'egg') }
 
       instance.send(:discover_egg, 'egg')
 
       expect(DRCI).to have_received(:stow_item?).with('#12345')
+    end
+
+    # Alexzander, 2026-09-29 03:20:01: a traveler's pack (#120784424) filled
+    # the right hand, "get my egg" put the egg in the left hand, and the pack's
+    # ID was recorded as the egg. Every later "invoke #120784424" answered "You
+    # hold the traveler's pack..." and timed out after 15s (291 times that day).
+    context 'when the right hand is already holding something' do
+      it 'records the egg that landed in the left hand' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', 'pack'])
+        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '116118694', 'egg') }
+
+        instance.send(:discover_egg, 'egg')
+
+        expect(instance.instance_variable_get(:@egg_ids)).to eq(['116118694'])
+      end
+
+      it 'stows the egg, not the right-hand item' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', 'pack'])
+        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '116118694', 'egg') }
+
+        instance.send(:discover_egg, 'egg')
+
+        expect(DRCI).to have_received(:stow_item?).with('#116118694')
+      end
+    end
+
+    context 'when the egg is already in hand ("You are already holding that")' do
+      it 'records the held egg' do
+        instance = build_ability_process
+        stub_hands(right: ['120784424', 'pack'], left: ['116118694', 'egg'])
+        allow(DRCI).to receive(:get_item?).with('egg').and_return(true)
+
+        instance.send(:discover_egg, 'egg')
+
+        expect(instance.instance_variable_get(:@egg_ids)).to eq(['116118694'])
+      end
+
+      it 'recognizes the second egg by its noun, not by the ordinal' do
+        instance = build_ability_process(egg_ids: ['116118694']) # first egg already stowed
+        stub_hands(left: ['130000001', 'egg'])
+        allow(DRCI).to receive(:get_item?).with('second egg').and_return(true)
+
+        instance.send(:discover_egg, 'second egg')
+
+        expect(instance.instance_variable_get(:@egg_ids)).to eq(%w[116118694 130000001])
+      end
+    end
+
+    # A character with no STOW container keeps its first egg in hand, and
+    # DRCI.get_item? reports success whenever an egg is in hand -- even when
+    # "get my second egg" found nothing.
+    context 'when the first egg is still in hand and the second get finds nothing' do
+      it 'does not record the first egg twice' do
+        instance = build_ability_process(egg_ids: ['116118694'])
+        stub_hands(right: ['116118694', 'egg'])
+        allow(DRCI).to receive(:get_item?).with('second egg').and_return(true)
+
+        instance.send(:discover_egg, 'second egg')
+
+        expect(instance.instance_variable_get(:@egg_ids)).to eq(['116118694'])
+      end
+
+      it 'warns that the second egg was not found' do
+        instance = build_ability_process(egg_ids: ['116118694'])
+        stub_hands(right: ['116118694', 'egg'])
+        allow(DRCI).to receive(:get_item?).with('second egg').and_return(true)
+
+        instance.send(:discover_egg, 'second egg')
+
+        expect(DRC).to have_received(:message).with(/Could not find 'second egg'/)
+      end
+    end
+
+    context 'when the second egg lands beside a first egg still in hand' do
+      it 'records the second egg' do
+        instance = build_ability_process(egg_ids: ['116118694'])
+        hands = stub_hands(right: ['116118694', 'egg'])
+        allow(DRCI).to receive(:get_item?).with('second egg') { take_into_hand(hands, '130000001', 'egg') }
+
+        instance.send(:discover_egg, 'second egg')
+
+        expect(instance.instance_variable_get(:@egg_ids)).to eq(%w[116118694 130000001])
+      end
     end
 
     it 'warns and does not record when egg is not found' do
@@ -2590,9 +2719,8 @@ RSpec.describe AbilityProcess do
   describe '#discover_warhorn' do
     it 'records worn warhorn when remove succeeds' do
       instance = build_ability_process
-      stub_right_hand_with_id('99')
-      allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(true)
-      allow(DRCI).to receive(:wear_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '99', 'warhorn') }
 
       instance.send(:discover_warhorn, 'warhorn')
 
@@ -2602,9 +2730,8 @@ RSpec.describe AbilityProcess do
 
     it 're-wears a worn warhorn after discovery' do
       instance = build_ability_process
-      stub_right_hand_with_id('99')
-      allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(true)
-      allow(DRCI).to receive(:wear_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '99', 'warhorn') }
 
       instance.send(:discover_warhorn, 'warhorn')
 
@@ -2613,15 +2740,58 @@ RSpec.describe AbilityProcess do
 
     it 'records stowed warhorn when remove fails but get succeeds' do
       instance = build_ability_process
-      stub_right_hand_with_id('50')
+      hands = stub_hands
       allow(DRCI).to receive(:remove_item?).with('horn').and_return(false)
-      allow(DRCI).to receive(:get_item?).with('horn').and_return(true)
-      allow(DRCI).to receive(:stow_item?).and_return(true)
+      allow(DRCI).to receive(:get_item?).with('horn') { take_into_hand(hands, '50', 'horn') }
 
       instance.send(:discover_warhorn, 'horn')
 
       items = instance.instance_variable_get(:@warhorn_items)
       expect(items).to eq([{ id: '50', worn: false }])
+    end
+
+    context 'when the right hand is already holding something' do
+      it 'records a removed warhorn that landed in the left hand' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', 'pack'])
+        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '116110152', 'warhorn') }
+
+        instance.send(:discover_warhorn, 'warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '116110152', worn: true }])
+      end
+
+      it 'waits for a hand update that arrives after the remove text' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', 'pack'])
+        allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(true)
+        allow(instance).to receive(:sleep) { take_into_hand(hands, '116110152', 'warhorn') }
+
+        instance.send(:discover_warhorn, 'warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '116110152', worn: true }])
+      end
+
+      it 're-wears the warhorn, not the right-hand item' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', 'pack'])
+        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '116110152', 'warhorn') }
+
+        instance.send(:discover_warhorn, 'warhorn')
+
+        expect(DRCI).to have_received(:wear_item?).with('#116110152')
+      end
+
+      it 'records a fetched warhorn that landed in the left hand' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', 'pack'])
+        allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(false)
+        allow(DRCI).to receive(:get_item?).with('warhorn') { take_into_hand(hands, '116110152', 'warhorn') }
+
+        instance.send(:discover_warhorn, 'warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '116110152', worn: false }])
+      end
     end
 
     it 'warns when warhorn is not found at all' do
@@ -2642,11 +2812,9 @@ RSpec.describe AbilityProcess do
   describe '#set_warhorn_or_egg' do
     it 'builds rotation with both egg and warhorn when both are found' do
       instance = build_ability_process(egg_count: 1, warhorn_nouns: ['warhorn'])
-      stub_right_hand_with_id('10')
-      allow(DRCI).to receive(:get_item?).and_return(true)
-      allow(DRCI).to receive(:stow_item?).and_return(true)
-      allow(DRCI).to receive(:remove_item?).and_return(true)
-      allow(DRCI).to receive(:wear_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '10', 'egg') }
+      allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '11', 'warhorn') }
 
       instance.send(:set_warhorn_or_egg)
 
@@ -2655,9 +2823,8 @@ RSpec.describe AbilityProcess do
 
     it 'builds rotation with only egg when no warhorns configured' do
       instance = build_ability_process(egg_count: 1, warhorn_nouns: [])
-      stub_right_hand_with_id('10')
-      allow(DRCI).to receive(:get_item?).and_return(true)
-      allow(DRCI).to receive(:stow_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '10', 'egg') }
 
       instance.send(:set_warhorn_or_egg)
 
@@ -2676,18 +2843,10 @@ RSpec.describe AbilityProcess do
     end
 
     it 'warns when fewer eggs found than configured' do
-      call_count = 0
       instance = build_ability_process(egg_count: 2, warhorn_nouns: [])
-      allow(DRCI).to receive(:get_item?) do |_arg|
-        call_count += 1
-        if call_count == 1
-          stub_right_hand_with_id('10')
-          true
-        else
-          false
-        end
-      end
-      allow(DRCI).to receive(:stow_item?).and_return(true)
+      hands = stub_hands
+      allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '10', 'egg') }
+      allow(DRCI).to receive(:get_item?).with('second egg').and_return(false)
 
       instance.send(:set_warhorn_or_egg)
 
@@ -3204,9 +3363,8 @@ RSpec.describe AbilityProcess do
     describe 'set_warhorn_or_egg with degenerate configs' do
       it 'handles egg_count 0 with warhorn_nouns present (warhorn only)' do
         instance = build_ability_process(egg_count: 0, warhorn_nouns: ['warhorn'])
-        stub_right_hand_with_id('10')
-        allow(DRCI).to receive(:remove_item?).and_return(true)
-        allow(DRCI).to receive(:wear_item?).and_return(true)
+        hands = stub_hands
+        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '10', 'warhorn') }
 
         instance.send(:set_warhorn_or_egg)
 
@@ -3227,13 +3385,12 @@ RSpec.describe AbilityProcess do
 
       it 'handles egg_count 3 (only discovers first 2, skips unsupported ordinal)' do
         instance = build_ability_process(egg_count: 3, warhorn_nouns: [])
+        hands = stub_hands
         call_count = 0
-        allow(DRCI).to receive(:get_item?) do |_arg|
+        allow(DRCI).to receive(:get_item?) do |_ordinal|
           call_count += 1
-          stub_right_hand_with_id("e#{call_count}")
-          true
+          take_into_hand(hands, "e#{call_count}", 'egg')
         end
-        allow(DRCI).to receive(:stow_item?).and_return(true)
 
         instance.send(:set_warhorn_or_egg)
 
@@ -3244,9 +3401,8 @@ RSpec.describe AbilityProcess do
 
       it 'handles empty warhorn_nouns array (no discovery attempted)' do
         instance = build_ability_process(egg_count: 1, warhorn_nouns: [])
-        stub_right_hand_with_id('10')
-        allow(DRCI).to receive(:get_item?).and_return(true)
-        allow(DRCI).to receive(:stow_item?).and_return(true)
+        hands = stub_hands
+        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '10', 'egg') }
 
         instance.send(:set_warhorn_or_egg)
 
