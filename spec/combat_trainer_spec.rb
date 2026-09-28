@@ -123,8 +123,6 @@ def build_ability_process(**overrides)
   defaults.merge(overrides).each do |k, v|
     instance.instance_variable_set(:"@#{k}", v)
   end
-  # Item discovery polls the hands between short sleeps; never really sleep.
-  allow(instance).to receive(:sleep)
   instance
 end
 
@@ -138,16 +136,17 @@ def build_game_state(**attrs)
   state
 end
 
-# A hand as Lich reports it: an empty hand is an "Empty" placeholder with a
-# nil id, never nil.
+# A hand as Lich reports it: +name+ is GameObj's short name (e.g.
+# "mammoth-tusk warhorn"), +noun+ its last word; an empty hand is an "Empty"
+# placeholder with a nil id, never nil.
 #
 # @param id [String, nil] game ID of the held item, or nil for an empty hand
-# @param noun [String, nil] noun of the held item
+# @param name [String, nil] short name of the held item
 # @return [OpenStruct]
-def hand_object(id = nil, noun = nil)
+def hand_object(id = nil, name = nil)
   return OpenStruct.new(id: nil, noun: 'Empty', name: 'Empty') unless id
 
-  OpenStruct.new(id: id, noun: noun, name: noun)
+  OpenStruct.new(id: id, noun: name.split.last, name: name)
 end
 
 # Stubs both hands with live state that #take_into_hand and the stubbed
@@ -155,15 +154,13 @@ end
 # item goes to the right hand if it is free, else the left; stowing or
 # wearing an item by "#id" empties its hand.
 #
-# @param right [Array(String, String), nil] [id, noun] held in the right hand
-# @param left [Array(String, String), nil] [id, noun] held in the left hand
+# @param right [Array(String, String), nil] [id, short name] held in the right hand
+# @param left [Array(String, String), nil] [id, short name] held in the left hand
 # @return [Hash{Symbol=>OpenStruct}] the live hands, keyed :right and :left
 def stub_hands(right: nil, left: nil)
   hands = { right: hand_object(*right), left: hand_object(*left) }
   allow(GameObj).to receive(:right_hand) { hands[:right] }
   allow(GameObj).to receive(:left_hand) { hands[:left] }
-  allow(DRCI).to receive(:in_right_hand?) { |noun| hands[:right].noun == noun }
-  allow(DRCI).to receive(:in_left_hand?) { |noun| hands[:left].noun == noun }
   put_away = lambda do |ref|
     slot = hands.key(hands.values.find { |hand| "##{hand.id}" == ref })
     hands[slot] = hand_object if slot
@@ -179,11 +176,11 @@ end
 #
 # @param hands [Hash{Symbol=>OpenStruct}] live hands from #stub_hands
 # @param id [String] game ID of the fetched item
-# @param noun [String] its noun
+# @param name [String] its short name
 # @return [true] so it can end a stubbed DRCI.get_item?/remove_item? block
-def take_into_hand(hands, id, noun)
+def take_into_hand(hands, id, name)
   slot = hands[:right].id.nil? ? :right : :left
-  hands[slot] = hand_object(id, noun)
+  hands[slot] = hand_object(id, name)
   true
 end
 
@@ -2624,8 +2621,8 @@ RSpec.describe AbilityProcess do
     context 'when the right hand is already holding something' do
       it 'records the egg that landed in the left hand' do
         instance = build_ability_process
-        hands = stub_hands(right: ['120784424', 'pack'])
-        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '116118694', 'egg') }
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '116118694', 'glass egg') }
 
         instance.send(:discover_egg, 'egg')
 
@@ -2634,8 +2631,8 @@ RSpec.describe AbilityProcess do
 
       it 'stows the egg, not the right-hand item' do
         instance = build_ability_process
-        hands = stub_hands(right: ['120784424', 'pack'])
-        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '116118694', 'egg') }
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:get_item?).with('egg') { take_into_hand(hands, '116118694', 'glass egg') }
 
         instance.send(:discover_egg, 'egg')
 
@@ -2753,19 +2750,8 @@ RSpec.describe AbilityProcess do
     context 'when the right hand is already holding something' do
       it 'records a removed warhorn that landed in the left hand' do
         instance = build_ability_process
-        hands = stub_hands(right: ['120784424', 'pack'])
-        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '116110152', 'warhorn') }
-
-        instance.send(:discover_warhorn, 'warhorn')
-
-        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '116110152', worn: true }])
-      end
-
-      it 'waits for a hand update that arrives after the remove text' do
-        instance = build_ability_process
-        hands = stub_hands(right: ['120784424', 'pack'])
-        allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(true)
-        allow(instance).to receive(:sleep) { take_into_hand(hands, '116110152', 'warhorn') }
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '116110152', 'mammoth-tusk warhorn') }
 
         instance.send(:discover_warhorn, 'warhorn')
 
@@ -2774,19 +2760,86 @@ RSpec.describe AbilityProcess do
 
       it 're-wears the warhorn, not the right-hand item' do
         instance = build_ability_process
-        hands = stub_hands(right: ['120784424', 'pack'])
-        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '116110152', 'warhorn') }
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '116110152', 'mammoth-tusk warhorn') }
 
         instance.send(:discover_warhorn, 'warhorn')
 
         expect(DRCI).to have_received(:wear_item?).with('#116110152')
       end
 
+      # In game, 2026-09-29: "You get a mammoth tusk warhorn gilded with gold
+      # flames ..." -> GameObj.left_hand.name "mammoth-tusk warhorn".
+      it "finds the warhorn by the noun in its hand name" do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:remove_item?).with('warhorn') { take_into_hand(hands, '122645043', 'mammoth-tusk warhorn') }
+
+        instance.send(:discover_warhorn, 'warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '122645043', worn: true }])
+      end
+
+      it 'finds the warhorn by a shortened noun, as the game allows' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:remove_item?).with('warh') { take_into_hand(hands, '122645043', 'mammoth-tusk warhorn') }
+
+        instance.send(:discover_warhorn, 'warh')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '122645043', worn: true }])
+      end
+
+      # The game matches nouns by prefix only: "horn" never names a warhorn.
+      it 'does not take a warhorn in the other hand for a configured "horn"' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['122645043', 'mammoth-tusk warhorn'])
+        allow(DRCI).to receive(:remove_item?).with('horn') { take_into_hand(hands, '140000001', "ram's horn") }
+
+        instance.send(:discover_warhorn, 'horn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '140000001', worn: true }])
+      end
+
+      # e.g. combat-trainer restarted after dying mid-exhale: "remove my
+      # warhorn" -> "Remove what?", "get my warhorn" -> "You are already
+      # holding that".
+      it 'records a warhorn already in hand as stowed, not worn, when remove fails' do
+        instance = build_ability_process
+        stub_hands(right: ['120784424', "traveler's pack"], left: ['122645043', 'mammoth-tusk warhorn'])
+        allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(false)
+        allow(DRCI).to receive(:get_item?).with('warhorn').and_return(true)
+
+        instance.send(:discover_warhorn, 'warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '122645043', worn: false }])
+      end
+
+      it 'matches an adjective + noun warhorn name by its noun' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:remove_item?).with('kertig warhorn') { take_into_hand(hands, '116110152', 'mammoth-tusk warhorn') }
+
+        instance.send(:discover_warhorn, 'kertig warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '116110152', worn: true }])
+      end
+
+      it 'matches the noun regardless of how the name is capitalized' do
+        instance = build_ability_process
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
+        allow(DRCI).to receive(:remove_item?).with('Warhorn') { take_into_hand(hands, '116110152', 'mammoth-tusk warhorn') }
+
+        instance.send(:discover_warhorn, 'Warhorn')
+
+        expect(instance.instance_variable_get(:@warhorn_items)).to eq([{ id: '116110152', worn: true }])
+      end
+
       it 'records a fetched warhorn that landed in the left hand' do
         instance = build_ability_process
-        hands = stub_hands(right: ['120784424', 'pack'])
+        hands = stub_hands(right: ['120784424', "traveler's pack"])
         allow(DRCI).to receive(:remove_item?).with('warhorn').and_return(false)
-        allow(DRCI).to receive(:get_item?).with('warhorn') { take_into_hand(hands, '116110152', 'warhorn') }
+        allow(DRCI).to receive(:get_item?).with('warhorn') { take_into_hand(hands, '116110152', 'mammoth-tusk warhorn') }
 
         instance.send(:discover_warhorn, 'warhorn')
 
