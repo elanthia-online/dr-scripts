@@ -365,6 +365,19 @@ class Bescort
           exit
         end
         DRC.bput("command #{type} to #{speed}", /You command your/, /You signal the/)
+      when /spire/i # Valid speeds: slow/drift/surge/storm (not fly/glide like the other types)
+        DRCI.get_item?(type)
+        case DRC.bput("stare my #{type}", /vanishing entirely from your grasp/, /What were you referring/)
+        when /What were you referring/
+          DRC.message("Can't activate your #{type}, where is it?")
+          exit
+        end
+        case DRC.bput('push maelstrom', /yielding to your command/, /Push what/)
+        when /Push what/
+          DRC.message("Conjured the maelstrom but couldn't find it to push -- something went wrong.")
+          exit
+        end
+        DRC.bput("command maelstrom to #{speed}", /You signal the/, /is already moving at/)
       else
         DRC.message("#{type} is not a valid type of flying mount.")
         exit
@@ -388,6 +401,9 @@ class Bescort
         DRCI.wear_item?(@flying_mount_item)
         DRCI.put_away_item?(@flying_mount_item) if checkright
         DRCI.put_away_item?(@flying_mount_item) if checkleft
+      when /spire/i
+        DRC.bput('punch maelstrom', /drops heavily into your waiting hand/)
+        DRCI.put_away_item?(type)
       else
         DRC.message("#{type} is not a valid type of flying mount.")
         exit
@@ -1151,7 +1167,7 @@ class Bescort
       case @flying_mount
       when /broom|dirigible|carpet|rug|phoenix feather/i
         use_flying_mount(@flying_mount, 'mount', 'glide')
-      when /cloud/i
+      when /cloud|spire/i
         use_flying_mount(@flying_mount, 'mount', 'drift')
       else
         DRC.message("#{@flying_mount} is not a valid type of flying mount.")
@@ -1240,6 +1256,8 @@ class Bescort
       case @flying_mount
       when /phoenix feather/i
         use_flying_mount(@flying_mount, 'mount', 'streak')
+      when /spire/i
+        use_flying_mount(@flying_mount, 'mount', 'storm')
       else
         use_flying_mount(@flying_mount, 'mount')
       end
@@ -1556,6 +1574,8 @@ class Bescort
         use_flying_mount(@flying_mount, 'mount', 'hover')
       when /phoenix feather/i
         use_flying_mount(@flying_mount, 'mount', 'fly')
+      when /spire/i
+        use_flying_mount(@flying_mount, 'mount', 'storm')
       else
         DRC.message("#{@flying_mount} is not a valid type of flying mount.")
         exit
