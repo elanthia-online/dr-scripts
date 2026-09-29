@@ -56,7 +56,7 @@ class Appraisal
         when 'pouches'
           train_appraisal_with_pouches(settings.full_pouch_container, settings.spare_gem_pouch_container, settings.low_value_gem_pouch_container, pouch_low_value, pouch_adjective, settings.gem_pouch_noun)
         when 'kit_pouches'
-          train_appraisal_with_kit_pouches(settings.gem_kit_name, settings.spare_gem_pouch_container, settings.low_value_gem_pouch_container, pouch_low_value, pouch_adjective, settings.gem_pouch_noun)
+          train_appraisal_with_kit_pouches(settings.gem_kit_name, settings.spare_gem_pouch_container, settings.low_value_gem_pouch_container, pouch_low_value)
         when 'gear'
           train_appraisal_with_gear
         when 'bundle'
@@ -90,18 +90,18 @@ class Appraisal
 
   def classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container)
     opened_here = false
-    result = DRC.bput("appraise my #{name} quick", 'Roundtime', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/, /worth a total of about \d+/)
+    result = DRC.bput("appraise my #{name} quick", 'Roundtime', /You.ll need to open the .* to examine its contents./, /There doesn.t appear to be anything in/, /worth a total of about [\d,]+/)
 
     if result =~ /You.ll need to open the .* to examine its contents./
       DRC.bput("open my #{name}", /You open your .* ./, /That is already open/)
       opened_here = true
-      result = DRC.bput("appraise my #{name} quick", 'Roundtime', /There doesn.t appear to be anything in/, /worth a total of about \d+/)
+      result = DRC.bput("appraise my #{name} quick", 'Roundtime', /There doesn.t appear to be anything in/, /worth a total of about [\d,]+/)
     end
 
     chosen_container = nil
     case result
-    when /worth a total of about (\d+)/
-      pouch_value = Regexp.last_match(1).to_i
+    when /worth a total of about ([\d,]+)/
+      pouch_value = Regexp.last_match(1).delete(',').to_i
       if pouch_value < low_value
         DRC.message("Low value pouch found, putting it into low_value_gem_pouch_container")
         chosen_container = low_value_gem_pouch_container
@@ -175,7 +175,7 @@ class Appraisal
     count
   end
 
-  def train_appraisal_with_kit_pouches(gem_kit_name, spare_gem_pouch_container, low_value_gem_pouch_container, low_value, gem_pouch_adjective, gem_pouch_noun)
+  def train_appraisal_with_kit_pouches(gem_kit_name, spare_gem_pouch_container, low_value_gem_pouch_container, low_value)
     if gem_kit_name.to_s.empty?
       DRC.message("No gem_kit_name defined. Skipping kit_pouches task.")
       return
@@ -187,7 +187,6 @@ class Appraisal
       return
     end
 
-    name = pouch_name(gem_pouch_adjective, gem_pouch_noun)
     kit_pattern = Regexp.escape(gem_kit_name)
 
     total.downto(1) do |slot|
@@ -198,11 +197,27 @@ class Appraisal
         next
       end
 
-      pull_result = DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
+      pull_result = DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /You need an empty hand/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
+      if pull_result =~ /You need an empty hand/
+        # Hands are full, e.g. a pouch left from an interrupted run: park it and retry once.
+        unless DRCI.put_away_item?('pouch', gem_kit_name)
+          DRC.message("Hands are full; couldn't park a held pouch in the #{gem_kit_name}. Stopping the kit task.")
+          break
+        end
+        pull_result = DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
+      end
       next unless pull_result =~ /You get .* from your .*#{kit_pattern}/
 
-      target = classify_pouch(name, low_value, low_value_gem_pouch_container, spare_gem_pouch_container) || gem_kit_name
-      DRCI.put_away_item?(name, target)
+      # Bare "pouch" is the one in hand. Kits hold mixed colours, so the configured
+      # "<adjective> pouch" can name the WORN gathering pouch instead.
+      target = classify_pouch('pouch', low_value, low_value_gem_pouch_container, spare_gem_pouch_container) || gem_kit_name
+      unless DRCI.put_away_item?('pouch', target)
+        DRC.message("Could not put the pouch into #{target}; returning it to the #{gem_kit_name}.")
+        unless DRCI.put_away_item?('pouch', gem_kit_name)
+          DRC.message("Held pouch won't stow anywhere. Stopping the kit task so we don't carry on with full hands.")
+          break
+        end
+      end
       pause 1
     end
   end
