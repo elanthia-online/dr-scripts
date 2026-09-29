@@ -366,6 +366,9 @@ class Bescort
         end
         DRC.bput("command #{type} to #{speed}", /You command your/, /You signal the/)
       when /spire/i # Valid speeds: slow/drift/surge/storm (not fly/glide like the other types)
+        # If a caller left `speed` at the 'fly' default, treat it as if they
+        # wanted 'storm' instead of sending an invalid command.
+        speed = 'storm' if speed == 'fly'
         DRCI.get_item?(type)
         case DRC.bput("stare my #{type}", /vanishing entirely from your grasp/, /What were you referring/)
         when /What were you referring/
