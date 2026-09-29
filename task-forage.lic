@@ -475,7 +475,7 @@ class TaskForage
   # plural stacks ("some nuloe stems") count as 0, and it never reads the "(N)"
   # totals that RUMMAGE /C prints on later lines when it groups the contents.
   #   inline:  You rummage ... and see some nuloe stems (limbs: internal scars), a jadice flower and ...
-  #   grouped: You rummage ... similar to "stem":  then indented "... (35)" lines
+  #   grouped (assumed; not yet captured): You rummage ... similar to "stem":  then indented "... (35)" lines
   #
   # @return [Integer, nil] nil when the container couldn't be read
   def count_stored_items(noun)
@@ -515,7 +515,7 @@ class TaskForage
     forms.map { |form| Regexp.escape(form) }.join('|')
   end
 
-  # The grouped listing's lines are indented and can arrive well after the header.
+  # Assumed format, not yet captured: indented lines, possibly arriving after the header.
   # Lich never passes blank lines, so the first unindented line after the listing ends it.
   def count_grouped_listing(names)
     entry = /\A(?:(?:an?|some|the)\s+)?(?:#{names})(?=\s*\(|\s*\z)/i
