@@ -46,44 +46,64 @@ RSpec.describe TaskForage do
 
   describe '#count_stored_items' do
     let(:header) { 'You rummage through a leather backpack looking for something similar to "stem"' }
+    let(:root_header) { 'You rummage through a leather backpack looking for something similar to "root"' }
+    let(:sentinel) { 'The petal-crested dryanoxie moves into a position to parry.' }
 
-    it 'counts plural stacks in an inline listing' do
+    it 'counts each listed item, including the herb qualifier the game appends' do
       stub_game('rummage /C stem in my backpack' =>
-                  "#{header} and see some nuloe stems, a jadice flower and some nuloe stems.")
+                  "#{header} and see some nuloe stems (limbs: internal scars), a jadice flower " \
+                  'and some nuloe stems (limbs: internal scars).')
       expect(build_instance.count_stored_items('nuloe stem')).to eq(2)
     end
 
-    it 'sums the "(N)" totals of a categorized listing, skipping category headers' do
-      stub_game('rummage /C stem in my backpack' => "#{header}:")
-      $history = ['  herbs (38):', '    some nuloe stems (35)', '    some jadice flowers (3)',
-                  '  other (2):', '    some nuloe stems (2)', '']
-      expect(build_instance.count_stored_items('nuloe stem')).to eq(37)
+    it 'counts only the plain item, not other items sharing its noun' do
+      stub_game('rummage /C root in my backpack' =>
+                  "#{root_header} and see some ojhenik roots, a tree root, a pig root and a root.")
+      expect(build_instance.count_stored_items('root')).to eq(1)
     end
 
-    it 'is zero when nothing matches' do
-      stub_game('rummage /C stem in my backpack' => "#{header} but can't find anything.")
+    it 'is zero for an empty reply, without waiting on a grouped listing' do
+      stub_game('rummage /C stem in my backpack' => "#{header} but there is nothing in there like that.")
+      $history = [sentinel]
       expect(build_instance.count_stored_items('nuloe stem')).to eq(0)
+      expect($history).to eq([sentinel])
+    end
+
+    context 'with a grouped listing' do
+      before { stub_game('rummage /C stem in my backpack' => "#{header}:") }
+
+      it 'sums the "(N)" totals, counts a bare entry as one, and skips category headers' do
+        $history = ['  herbs (38):', '    some nuloe stems (35)', '    some jadice flowers (3)',
+                    '  other (3):', '    some nuloe stems (2)', '    some nuloe stems', sentinel, 'later line']
+        expect(build_instance.count_stored_items('nuloe stem')).to eq(38)
+      end
+
+      it 'stops at the first unindented line after the listing (Lich passes no blank lines)' do
+        $history = ['  herbs (35):', '    some nuloe stems (35)', sentinel, 'later line']
+        build_instance.count_stored_items('nuloe stem')
+        expect($history).to eq(['later line'])
+      end
     end
 
     it 'opens a closed container and looks again' do
       open = false
-      commands = stub_game(
-        'rummage /C stem in my backpack' => lambda {
-          open ? "#{header} and see some nuloe stems." : "While it's closed, you can't rummage through it."
-        },
-        'open my backpack'               => lambda {
-          open = true
-          'You open your leather backpack.'
-        }
-      )
+      stub_game('rummage /C stem in my backpack' => lambda {
+        open ? "#{header} and see some nuloe stems." : "While it's closed, you can't rummage through it."
+      })
+      expect(DRCI).to receive(:open_container?).with('my backpack') { open = true }
       expect(build_instance.count_stored_items('nuloe stem')).to eq(1)
-      expect(commands).to eq(['rummage /C stem in my backpack', 'open my backpack', 'rummage /C stem in my backpack'])
     end
 
-    it 'drops an herb qualifier before building the command and matching' do
-      commands = stub_game('rummage /C stem in my backpack' => "#{header} and see some nuloe stems.")
-      expect(build_instance.count_stored_items('nuloe stem (limbs: internal scars)')).to eq(1)
+    it 'is nil when a closed container will not open, without rummaging again' do
+      commands = stub_game('rummage /C stem in my backpack' => "While it's closed, you can't rummage through it.")
+      allow(DRCI).to receive(:open_container?).and_return(false)
+      expect(build_instance.count_stored_items('nuloe stem')).to be_nil
       expect(commands).to eq(['rummage /C stem in my backpack'])
+    end
+
+    it 'is nil when the container is missing' do
+      stub_game('rummage /C stem in my backpack' => 'What were you referring to?')
+      expect(build_instance.count_stored_items('nuloe stem')).to be_nil
     end
   end
 
@@ -106,6 +126,13 @@ RSpec.describe TaskForage do
       instance.use_stored_items
       expect(instance.instance_variable_get(:@item_count)).to eq(1)
       expect(messages.last).to include('No nuloe stem already in your backpack; gathering all 5.')
+    end
+
+    it 'says the container could not be checked, rather than that none were found' do
+      instance = forager(nil)
+      instance.use_stored_items
+      expect(instance.instance_variable_get(:@item_count)).to eq(1)
+      expect(messages.last).to include("Couldn't check your backpack for nuloe stem; gathering all 5.")
     end
   end
 
@@ -131,8 +158,15 @@ RSpec.describe TaskForage do
       expect(resolved_town(instance)).to eq('crossing')
     end
 
+    it 'skips a leftover override with no task giver and uses the hometown' do
+      instance = build_instance(hometown: 'Crossing',
+                                settings: OpenStruct.new(fang_cove_override_town: 'Riverhaven'))
+      expect(resolved_town(instance)).to eq('crossing')
+    end
+
     it 'exits with advice instead of crashing when no task giver can be found' do
       instance = build_instance(hometown: 'Fang Cove')
+      allow(instance).to receive(:room_safe?)
       expect { instance.resolve_task_town }.to raise_error(SystemExit)
       expect(messages.last).to include("No forage task giver in 'fang cove'")
     end

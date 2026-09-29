@@ -198,14 +198,15 @@ class TaskForage
   end
 
   # Fang Cove has no forage task giver, so fall back through fang_cove_override_town
-  # the way other town-bound scripts do.
+  # the way other town-bound scripts do, taking the first town that has one.
   def resolve_task_town
-    town = (@args.town || @settings.fang_cove_override_town || @hometown).to_s.downcase
-    return town if @task_givers.key?(town)
+    candidates = [@args.town, @settings.fang_cove_override_town, @hometown].compact.map { |town| town.to_s.downcase }
+    town = candidates.find { |candidate| @task_givers.key?(candidate) }
+    return town if town
 
-    DRC.message("No forage task giver in '#{town}'. Try ;task-forage crossing or ;task-forage shard, " \
-                'or set fang_cove_override_town.')
-    exit
+    DRC.message("No forage task giver in #{candidates.map { |candidate| "'#{candidate}'" }.join(' or ')}. " \
+                'Try ;task-forage crossing or ;task-forage shard, or set fang_cove_override_town.')
+    safe_exit
   end
 
   # Adopt a task that's already in progress rather than canceling it. Returns false if
@@ -448,8 +449,14 @@ class TaskForage
   # container. Count those toward the task rather than foraging duplicates.
   def use_stored_items
     echo 'use_stored_items' if @debug
-    stored = @item_variants.sum { |noun| count_stored_items(noun) }
-    echo "stored #{@item_variants.join('/')}: #{stored}" if @debug
+    counts = @item_variants.map { |noun| count_stored_items(noun) }
+    echo "stored #{@item_variants.join('/')}: #{counts.inspect}" if @debug
+    if counts.include?(nil)
+      DRC.message("Couldn't check your #{@forage_container} for #{@item}; gathering all #{@number}.")
+      return
+    end
+
+    stored = counts.sum
     unless stored.positive?
       DRC.message("No #{@item} already in your #{@forage_container}; gathering all #{@number}.")
       return
@@ -459,49 +466,82 @@ class TaskForage
     DRC.message("Found #{stored} #{@item} in your #{@forage_container}. Using #{@item_count} of the #{@number} needed.")
   end
 
+  STORED_EMPTY = /but there is nothing in there like that|but can.t (?:seem to )?find anything/
+  # Empty 0.1s polls allowed for a grouped listing to start, then after its last line.
+  GROUPED_START_POLLS = 40
+  GROUPED_IDLE_POLLS = 10
+
   # Not DRCI.count_items_in_container: it scans one line for the singular noun, so
   # plural stacks ("some nuloe stems") count as 0, and it never reads the "(N)"
   # totals that RUMMAGE /C prints on later lines when it groups the contents.
-  #   inline:      You rummage ... and see some nuloe stems, a jadice flower and some nuloe stems.
-  #   categorized: You rummage ... similar to "stem":  then indented "... (35)" lines
+  #   inline:  You rummage ... and see some nuloe stems (limbs: internal scars), a jadice flower and ...
+  #   grouped: You rummage ... similar to "stem":  then indented "... (35)" lines
+  #
+  # @return [Integer, nil] nil when the container couldn't be read
   def count_stored_items(noun)
-    # Herb items carry a qualifier ("nuloe stem (limbs: internal scars)").
-    clean = noun.sub(/\s*\(.*\)\s*\z/, '').strip
-    entry_pattern = /\b#{Regexp.escape(clean)}(?:e?s)?\b/
-    # bput returns only the matched text, so the inline pattern spans the whole listing.
+    # bput returns only the matched text, so the inline pattern spans the whole listing,
+    # and the empty reply is listed before the bare header that it also contains.
     rummage_matches = [
       /^You rummage .* looking for something similar to .* and see .*\.\s*$/,
-      /^You rummage .* but can.t (?:seem to )?find anything/,
+      /^You rummage .* (?:#{STORED_EMPTY.source})/,
       /^You rummage .* looking for something similar to/,
       /That would accomplish nothing/,
       /What were you referring to/
     ]
-    command = "rummage /C #{clean.split.last} in my #{@forage_container}"
+    command = "rummage /C #{noun.split.last} in my #{@forage_container}"
     result = DRC.bput(command, /While it's closed/, *rummage_matches)
     if result =~ /While it's closed/
-      DRC.bput("open my #{@forage_container}", 'You open', 'That is already open')
+      return nil unless DRCI.open_container?("my #{@forage_container}")
+
       result = DRC.bput(command, *rummage_matches)
     end
-    return 0 unless result =~ /looking for something similar to/
-    return 0 if result =~ /can.t (?:seem to )?find anything/
-    return Regexp.last_match(1).scan(entry_pattern).size if result =~ /and see (.*)\.\s*$/
+    return nil unless result =~ /looking for something similar to/
+    return 0 if result =~ STORED_EMPTY
 
-    # Categorized: the "(N)" lines can arrive seconds after the header.
+    names = stored_item_names(noun)
+    total = if result =~ /and see (.*)\.\s*$/
+              Regexp.last_match(1).scan(/(?:\A|,\s+|\s+and\s+)(?:an?|some|the)\s+(?:#{names})(?=\s*\(|,|\s+and\s|\s*\z)/i).size
+            else
+              count_grouped_listing(names)
+            end
+    echo "count_stored_items(#{noun}): #{total}" if @debug
+    total
+  end
+
+  # The task item exactly, so "some ojhenik roots" and "a tree root" are not a "root":
+  # Mags only takes the plain item.
+  def stored_item_names(noun)
+    forms = [noun, "#{noun}s", "#{noun}es", noun.sub(/y\z/, 'ies'), noun.sub(/f\z/, 'ves')].uniq
+    forms.map { |form| Regexp.escape(form) }.join('|')
+  end
+
+  # The grouped listing's lines are indented and can arrive well after the header.
+  # Lich never passes blank lines, so the first unindented line after the listing ends it.
+  def count_grouped_listing(names)
+    entry = /\A(?:(?:an?|some|the)\s+)?(?:#{names})(?=\s*\(|\s*\z)/i
     total = 0
-    timer = Time.now
-    while Time.now - timer < 4
+    started = false
+    polls = 0
+    loop do
       line = get?
-      if line.nil?
-        pause 0.1
+      unless line =~ /\A\s+\S/
+        break if started && line
+
+        polls += 1
+        break if polls >= (started ? GROUPED_IDLE_POLLS : GROUPED_START_POLLS)
+
+        pause 0.1 if line.nil?
         next
       end
-      break if total.positive? && line.strip.empty?
-      next if line =~ /^\s*\w+ \(\d+\):\s*$/ # a category header, not an item
-      next unless line =~ entry_pattern
 
-      total += Regexp.last_match(1).to_i if line =~ /\((\d+)\)\s*$/
+      started = true
+      polls = 0
+      item = line.strip
+      next if item =~ /\A\w+ \(\d+\):\z/ # a category header, not an item
+      next unless item =~ entry
+
+      total += item =~ /\((\d+)\)\z/ ? Regexp.last_match(1).to_i : 1
     end
-    echo "count_stored_items(#{noun}): #{total}" if @debug
     total
   end
 
