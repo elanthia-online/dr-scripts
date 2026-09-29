@@ -735,10 +735,16 @@ class TaskForage
     others = shared_noun_items(item)
     (@task_item_search[item]...$ORDINALS.size).each do |index|
       ref = "#{$ORDINALS[index]} #{item}"
-      # You tap an ojhenik root inside your leather backpack.
-      tapped = DRCI.tap(ref, @forage_container).to_s[/^You tap (.+?) inside /, 1]
-      return nil unless tapped
-      next if others.any? { |other| names_item?(tapped, other) }
+      reply = DRCI.tap(ref, @forage_container).to_s
+      # You tap some ojhenik root inside your void-black rift.
+      tapped = reply[/^You tap (.+?) inside /, 1]
+      if tapped
+        next if others.any? { |other| names_item?(tapped, other) }
+      elsif reply.empty? || DRCI::TAP_FAILURE_PATTERNS.any? { |pattern| reply =~ pattern }
+        return nil # No more matches
+      end
+      # Otherwise a reply that doesn't name the item. Take it on trust, since a wrong
+      # item is refused at turn-in.
 
       @task_item_search[item] = index
       return ref
@@ -955,7 +961,8 @@ class TaskForage
   def give_item(noun = @item)
     echo "give_item: #{noun}" if @debug
     case DRC.bput("give #{noun} to #{@task_giver}", 'and says, "Thanks,', '^What is it you\'re trying to give?',
-                  ' I have a few things here for you, thank you so much for your help', 'Mags sighs and says')
+                  ' I have a few things here for you, thank you so much for your help',
+                  /isnae somethin' I take/, 'Mags sighs and says')
     when /^What is it you're trying to give?/
       find_giver
       give_item(noun)
@@ -968,6 +975,8 @@ class TaskForage
       @item = nil
       kill_time(2) if determine_task_necessary
       true
+    when /isnae somethin' I take/ # Mags sighs and says, "Aye-yah!  Tha' isnae somethin' I take. ..."
+      refuse_item(noun)
     when /Mags sighs and says/
       @item = nil
       safe_exit
@@ -978,12 +987,18 @@ class TaskForage
         return true
       end
 
-      # Still held, so it was refused. Put it back rather than carry it into the next
-      # GET, where it would pass for the task item.
-      DRC.message("#{@task_giver} didn't take the #{noun}. Putting it back in your #{@forage_container}.")
-      DRCI.put_away_item?(noun, @forage_container)
-      false
+      refuse_item(noun)
     end
+  end
+
+  # Put a refused item back rather than carry it into the next GET, where it would pass
+  # for the task item.
+  #
+  # @return [false]
+  def refuse_item(noun)
+    DRC.message("#{@task_giver} didn't take the #{noun}. Putting it back in your #{@forage_container}.")
+    DRCI.put_away_item?(noun, @forage_container)
+    false
   end
 
   def complete_task

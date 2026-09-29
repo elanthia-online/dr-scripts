@@ -187,8 +187,9 @@ RSpec.describe TaskForage do
   # it into a hand.
   #
   # @param contents [Array<String>] item names in container order
-  # @param put_back [Symbol] where PUT lands an item, :front or :end (unverified in game)
-  def stub_container(contents, put_back: :end)
+  # @param put_back [Symbol] where PUT lands an item. The game puts it at the front
+  #   (seen in game), but the fetch shouldn't depend on it, so specs try :end as well.
+  def stub_container(contents, put_back: :front)
     container = contents.dup
     taps = []
     resolve = lambda do |ref|
@@ -324,6 +325,32 @@ RSpec.describe TaskForage do
       expect($right_hand).to eq('red fox blossom')
     end
 
+    context 'with the TAP replies seen in game' do
+      def tap_replies(replies)
+        allow(DRCI).to receive(:tap) { |ref, _container| replies.fetch(ref, 'I could not find what you were referring to.') }
+      end
+
+      it 'reads "some <item>" and skips the look-alike' do
+        tap_replies('first root'  => 'You tap some ojhenik root inside your void-black rift.',
+                    'second root' => 'You tap a root inside your void-black rift.')
+        expect(DRCI).to receive(:get_item?).with('second root', 'backpack').and_return(true)
+        expect(build_instance.get_task_item).to eq('root')
+      end
+
+      it 'takes an ordinal whose reply does not name the item, not the look-alike before it' do
+        tap_replies('first root'  => 'You tap some ojhenik root inside your void-black rift.',
+                    'second root' => 'You drum your fingers on a root.')
+        expect(DRCI).to receive(:get_item?).with('second root', 'backpack').and_return(true)
+        expect(build_instance.get_task_item).to eq('root')
+      end
+
+      it 'stops without a GET when TAP gets no reply' do
+        tap_replies('first root' => '')
+        expect(DRCI).not_to receive(:get_item?)
+        expect(build_instance.get_task_item).to be_nil
+      end
+    end
+
     it 'fetches by noun alone, with no TAP, when no other forage item shares the noun' do
       game = stub_container(['piece of wild corn'])
       expect(build_instance(item: 'corn', item_variants: ['corn']).get_task_item).to eq('corn')
@@ -418,6 +445,27 @@ RSpec.describe TaskForage do
       expect(instance.instance_variable_get(:@delivered)).to eq(0)
       expect(messages.last).to include("Mags didn't take the root")
     end
+
+    it "puts back an item Mags says she doesn't take, rather than exiting with it in hand" do
+      reply(%(Mags sighs and says, "Aye-yah!  Tha' isnae somethin' I take.  P'rhaps a stick, or a branch -- ) +
+            %(or a sack full of both!  Aye-yah, return when ye hae one of those!"))
+      expect(DRCI).to receive(:put_away_item?).with('stem', 'backpack')
+      instance = build_instance(item: 'stick')
+      allow(instance).to receive(:room_safe?)
+      # An unexpected exit would otherwise end the whole rspec run with status 0.
+      given = nil
+      expect { given = instance.give_item('stem') }.not_to raise_error
+      expect(given).to be(false)
+      expect(instance.instance_variable_get(:@item)).to eq('stick')
+      expect(messages.last).to include("Mags didn't take the stem")
+    end
+
+    it 'still exits on any other sigh from Mags' do
+      reply('Mags sighs and says, "(some other reply)"')
+      instance = build_instance
+      allow(instance).to receive(:room_safe?)
+      expect { instance.give_item('root') }.to raise_error(SystemExit)
+    end
   end
 
   describe '#complete_task' do
@@ -438,7 +486,8 @@ RSpec.describe TaskForage do
       instance.instance_variable_set(:@task_item_search, Hash.new(0).merge('root' => 3))
       game = stub_container(%w[root])
       allow(instance).to receive(:give_item) { hand_over }
-      instance.complete_task
+      allow(instance).to receive(:room_safe?)
+      expect { instance.complete_task }.not_to raise_error
       expect(game[:taps]).to eq(['first root'])
     end
   end
