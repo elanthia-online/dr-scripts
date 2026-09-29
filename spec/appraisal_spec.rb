@@ -31,15 +31,30 @@ describe Appraisal do
   # patterns become case-insensitive regexps, the first pattern in list order that
   # matches wins, and only the matched text comes back ('' when nothing matches).
   # So the specs cover the patterns a call passes and their order, not just the
-  # code that parses the result.
+  # code that parses the result. Like bput, it also skips a leading options Hash
+  # and flattens array patterns (e.g. *_PATTERNS constants).
   def stub_bput_by_command(responses)
     allow(DRC).to receive(:bput) do |command, *patterns|
       key = responses.keys.find { |prefix| command.start_with?(prefix) }
       raise "unexpected bput command in test: #{command.inspect}" unless key
 
+      patterns.shift if patterns.first.is_a?(Hash)
       value = responses[key]
       line = (value.is_a?(Array) ? value.shift : value).to_s
-      patterns.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : /#{pattern}/i] }.find(&:itself).to_s
+      patterns.flatten.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : /#{pattern}/i] }.find(&:itself).to_s
+    end
+  end
+
+  describe 'stub_bput_by_command' do
+    it 'skips a leading options Hash and flattens array patterns, like DRC.bput' do
+      options = { 'timeout' => 1 }
+      # The line opens with the options' own text, so an options Hash treated as
+      # a pattern would match first instead of being skipped.
+      stub_bput_by_command('pull my' => "#{options} You get a gem pouch from your gem kit.")
+
+      result = DRC.bput('pull my gem kit', options, [/nope/, /You get/], 'x')
+
+      expect(result).to eq('You get')
     end
   end
 
