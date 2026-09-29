@@ -696,8 +696,61 @@ class TaskForage
 
   # Pull any of the nouns this task accepts out of the forage container.
   # Returns the noun actually taken, or nil if none were there.
+  #
+  # GET takes the first item with a matching noun, so "get my root" can pull an
+  # "ojhenik root" when the task wants a plain root, and only the plain item counts.
+  # Where another forage item shares the noun, TAP by ordinal (TAP moves nothing) to
+  # find the first item that isn't one of those, then GET that ordinal.
   def get_task_item
-    @item_variants.find { |noun| DRCI.get_item?(noun, @forage_container) }
+    @item_variants.find do |item|
+      ref = shared_noun?(item) ? find_task_item_ordinal(item) : item
+      ref && DRCI.get_item?(ref, @forage_container)
+    end
+  end
+
+  # Other forage items with the same noun as this one, e.g. "ojhenik root" for "root"
+  def shared_noun_items(item)
+    noun = item.split.last
+    @foraging_data.map { |entry| entry['item'] }.select { |other| other != item && other.split.last == noun }
+  end
+
+  # Anything else is fetched by noun as before
+  def shared_noun?(item)
+    shared_noun_items(item).any?
+  end
+
+  # Taking an item only moves the ones after it down, so within one round of turning
+  # in, the next task item is never at a lower ordinal than the last. Anything put into
+  # the container can land anywhere, so each round starts again from the first.
+  def reset_task_item_search
+    @task_item_search = Hash.new(0)
+  end
+
+  # Skips only the known forage items sharing the noun, rather than insisting on an exact
+  # name, since the game's name for the task item may not be the one in base-forage.yaml.
+  #
+  # @return [String, nil] e.g. "second root"
+  def find_task_item_ordinal(item)
+    @task_item_search ||= Hash.new(0)
+    others = shared_noun_items(item)
+    (@task_item_search[item]...$ORDINALS.size).each do |index|
+      ref = "#{$ORDINALS[index]} #{item}"
+      # You tap an ojhenik root inside your leather backpack.
+      tapped = DRCI.tap(ref, @forage_container).to_s[/^You tap (.+?) inside /, 1]
+      return nil unless tapped
+      next if others.any? { |other| names_item?(tapped, other) }
+
+      @task_item_search[item] = index
+      return ref
+    end
+    DRC.message("No plain #{item} among the first #{$ORDINALS.size} matches in your #{@forage_container}.")
+    nil
+  end
+
+  # Whether a name the game shows is this item: "an ojhenik root" or "some ojhenik
+  # roots" is an "ojhenik root", while "a root" isn't.
+  def names_item?(name, item)
+    /\A(?:(?:an?|some|the)\s+)?(?:#{stored_item_names(item)})\z/i.match?(name.strip.sub(/\s*\(.*\)\z/, ''))
   end
 
   # Check if we have a location for the item
@@ -799,12 +852,12 @@ class TaskForage
     DRC.message("Your #{@forage_container} is full. Turning in #{@item_count - @delivered} #{@item} before gathering more.")
     find_giver
     give_item # The item still in hand is the one that wouldn't fit
+    reset_task_item_search
     from_container = 0
     while @delivered < @item_count
       noun = get_task_item
-      break unless noun
+      break unless noun && give_item(noun)
 
-      give_item(noun)
       from_container += 1
     end
 
@@ -898,6 +951,7 @@ class TaskForage
     false
   end
 
+  # @return [Boolean] whether the task giver took it
   def give_item(noun = @item)
     echo "give_item: #{noun}" if @debug
     case DRC.bput("give #{noun} to #{@task_giver}", 'and says, "Thanks,', '^What is it you\'re trying to give?',
@@ -907,14 +961,28 @@ class TaskForage
       give_item(noun)
     when /and says, "Thanks,/
       @delivered += 1
+      true
     when /I have a few things here for you, thank you so much for your help/
       @delivered += 1
       @tasks_completed += 1
       @item = nil
       kill_time(2) if determine_task_necessary
+      true
     when /Mags sighs and says/
       @item = nil
       safe_exit
+    else
+      # A reply we don't know. Gone from hand means it was taken all the same.
+      unless DRCI.in_hands?(noun)
+        @delivered += 1
+        return true
+      end
+
+      # Still held, so it was refused. Put it back rather than carry it into the next
+      # GET, where it would pass for the task item.
+      DRC.message("#{@task_giver} didn't take the #{noun}. Putting it back in your #{@forage_container}.")
+      DRCI.put_away_item?(noun, @forage_container)
+      false
     end
   end
 
@@ -922,13 +990,15 @@ class TaskForage
     echo 'complete_task' if @debug
     UserVars.task_forage['item_failures'].delete(@item) unless UserVars.task_forage['item_failures'][@item].nil?
     # Items already handed over during a mid-task container emptying don't need giving again
+    reset_task_item_search
     (@number - @delivered).times do
       noun = get_task_item
       if noun.nil?
         DRC.message('ERROR: Task item not found.')
         safe_exit
-      else
-        give_item(noun)
+      elsif !give_item(noun)
+        DRC.message("ERROR: #{@task_giver} wouldn't take the #{noun}. #{@delivered} of #{@number} turned in.")
+        safe_exit
       end
     end
   end

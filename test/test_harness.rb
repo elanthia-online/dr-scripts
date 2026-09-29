@@ -1203,6 +1203,7 @@ module Harness
       def lift?(*_args); false; end
       def wearing?(*_args); false; end
       def inside?(*_args); false; end
+      def tap(*_args); end
       def get_item?(*_args); true; end
       def get_item_if_not_held?(*_args); true; end
       def get_item_unsafe(*_args); end
