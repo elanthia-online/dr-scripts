@@ -199,9 +199,9 @@ class Appraisal
 
       pull_result = DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /You need an empty hand/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
       if pull_result =~ /You need an empty hand/
-        # A pouch from an earlier slot is still in hand: park it and retry once.
+        # Hands are full, e.g. a pouch left from an interrupted run: park it and retry once.
         unless DRCI.put_away_item?('pouch', gem_kit_name)
-          DRC.message("Hands are full and the held pouch won't go back into the #{gem_kit_name}. Stopping kit run.")
+          DRC.message("Hands are full; couldn't park a held pouch in the #{gem_kit_name}. Stopping the kit task.")
           break
         end
         pull_result = DRC.bput("pull my #{gem_kit_name}", /You get .* from your .*#{kit_pattern}/, /empty/, /nothing/, /no .* in that/, /Pull what/, /You need to TURN/)
@@ -214,7 +214,7 @@ class Appraisal
       unless DRCI.put_away_item?('pouch', target)
         DRC.message("Could not put the pouch into #{target}; returning it to the #{gem_kit_name}.")
         unless DRCI.put_away_item?('pouch', gem_kit_name)
-          DRC.message("Held pouch won't stow anywhere. Stopping kit run so we don't spin with full hands.")
+          DRC.message("Held pouch won't stow anywhere. Stopping the kit task so we don't carry on with full hands.")
           break
         end
       end

@@ -26,13 +26,20 @@ describe Appraisal do
   # Route DRC.bput by the command that was issued. Values may be a scalar (returned
   # every time) or an Array (shifted per call, so the same command can echo different
   # results on successive invocations -- e.g. appraise before and after opening).
+  #
+  # The canned game line is filtered the way lich-5's DRC.bput does it: string
+  # patterns become case-insensitive regexps, the first pattern in list order that
+  # matches wins, and only the matched text comes back ('' when nothing matches).
+  # So the specs cover the patterns a call passes and their order, not just the
+  # code that parses the result.
   def stub_bput_by_command(responses)
-    allow(DRC).to receive(:bput) do |command, *_patterns|
+    allow(DRC).to receive(:bput) do |command, *patterns|
       key = responses.keys.find { |prefix| command.start_with?(prefix) }
       raise "unexpected bput command in test: #{command.inspect}" unless key
 
       value = responses[key]
-      value.is_a?(Array) ? value.shift : value
+      line = (value.is_a?(Array) ? value.shift : value).to_s
+      patterns.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : /#{pattern}/i] }.find(&:itself).to_s
     end
   end
 
@@ -297,7 +304,7 @@ describe Appraisal do
         expect(DRCI).to have_received(:put_away_item?).with('pouch', 'lowbox').ordered
       end
 
-      it 'stops the run when the held pouch will not go back in the kit' do
+      it 'stops the kit task when the held pouch will not go back in the kit' do
         allow(DRCI).to receive(:put_away_item?).and_return(false)
         stub_bput_by_command(
           'turn my' => 'You turn the gem kit to a new setting.',
@@ -324,7 +331,7 @@ describe Appraisal do
         expect(DRCI).to have_received(:put_away_item?).with('pouch', 'gem kit')
       end
 
-      it 'stops the run when the pouch will not stow anywhere' do
+      it 'stops the kit task when the pouch will not stow anywhere' do
         allow(DRCI).to receive(:put_away_item?).and_return(false)
         stub_bput_by_command(
           'turn my' => 'You turn the gem kit to a new setting.',
