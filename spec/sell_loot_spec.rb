@@ -778,6 +778,20 @@ RSpec.describe SellLoot do
       expect(sent.first.last).not_to be_nil
       expect(messages).to be_empty
     end
+
+    # Seen in game on a holiday. An unmatched chunk reads as a refusal, so
+    # this would stop after one chunk and tell the user to exchange by hand.
+    it 'treats the holiday no-fee exchange as done' do
+      holiday = 'You hand your money to the money-changer.  He whispers, "Enjoy the holiday, friend!  ' \
+                'There\'s no fee this time!"  He hands you 7 copper Dokoras.'
+      commands = simulate_changer(purse: 1500, refusal: changer_refusal, done: holiday)
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(commands).to eq(['exchange all dokoras for kronars',
+                              'exchange 1000 platinum dokoras to kronars',
+                              'exchange all dokoras for kronars'])
+      expect(messages).to be_empty
+    end
   end
 
   # =========================================================================
