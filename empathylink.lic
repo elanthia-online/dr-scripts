@@ -96,8 +96,9 @@ class Empathylink
                     'begins to seep through the connection',
                     'I could not find',
                     'You have not established an empathic link',
-                    'the diagnostic link is too fragile')
-      when 'begins to seep through the connection'
+                    'the diagnostic link is too fragile',
+                    'You sense that you already have such a connection')
+      when 'begins to seep through the connection', 'You sense that you already have such a connection'
         DRC.message("Established link of Hodierna with #{target}")
         UserVars.empathylink[target] = Time.now.to_i + 1800 # Put them on hold for 30m
       else
