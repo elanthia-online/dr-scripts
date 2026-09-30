@@ -72,3 +72,54 @@ describe 'Empathylink#touch' do
     expect(link.respond_to?(:u_script, true)).to be(false)
   end
 end
+
+# `link <target> hodierna` on a patient who already has the Hodierna connection
+# answers "You sense that you already have such a connection with <target>."
+# That response was not in the bput match list, so every re-link attempt hung for
+# the full 15s bput timeout (with other scripts paused) before failing.
+describe 'Empathylink#hodierna_heal_patient' do
+  before(:all) { load_lic_class('empathylink.lic', 'Empathylink') }
+
+  let(:link) { Empathylink.allocate }
+
+  before do
+    UserVars.empathylink = {}
+    allow(DRC).to receive(:message)
+    allow(DRC).to receive(:bput)
+      .with('link Tenuk persistent', any_args)
+      .and_return('You already have a persistent empathic link')
+  end
+
+  it 'offers the already-connected response to bput so it matches instead of timing out' do
+    allow(DRC).to receive(:bput).with('link Tenuk hodierna', any_args).and_return('begins to seep through the connection')
+
+    link.hodierna_heal_patient('Tenuk')
+
+    expect(DRC).to have_received(:bput)
+      .with('link Tenuk hodierna', any_args, 'You sense that you already have such a connection')
+  end
+
+  it 'treats an existing Hodierna connection as linked and holds the target for 30 minutes' do
+    allow(DRC).to receive(:bput)
+      .with('link Tenuk hodierna', any_args)
+      .and_return('You sense that you already have such a connection')
+
+    now = Time.now.to_i
+    link.hodierna_heal_patient('Tenuk')
+
+    expect(DRC).to have_received(:message).with('Established link of Hodierna with Tenuk')
+    expect(UserVars.empathylink['Tenuk']).to be_between(now + 1800, now + 1801)
+  end
+
+  it 'still backs off 5 minutes when the diagnostic link is too fragile' do
+    allow(DRC).to receive(:bput)
+      .with('link Tenuk hodierna', any_args)
+      .and_return('the diagnostic link is too fragile')
+
+    now = Time.now.to_i
+    link.hodierna_heal_patient('Tenuk')
+
+    expect(DRC).to have_received(:message).with('Failed to establish link Hodierna with Tenuk')
+    expect(UserVars.empathylink['Tenuk']).to be_between(now + 300, now + 301)
+  end
+end

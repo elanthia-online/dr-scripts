@@ -5,7 +5,8 @@
 
   Accepts, works and turns in forage tasks, using base-forage.yaml plus any
   entries added under task_forage_settings. Supports Crossing and Shard; defaults
-  to your hometown. Pass "resume" to pick up a task already in progress.
+  to fang_cove_override_town, then your hometown. Pass "resume" to pick up a
+  task already in progress.
 =end
 
 class TaskForage
@@ -156,7 +157,7 @@ class TaskForage
     # Used to store the last known location of wandering task givers
     UserVars.task_forage['npcs'] = {} if UserVars.task_forage['npcs'].nil?
 
-    @task_town = (@args.town.nil? ? @hometown : @args.town).downcase
+    @task_town = resolve_task_town
     @task_giver = @task_givers[@task_town]['npc']
 
     @forage_container = @forage_settings['container'] || @settings.forage_container || 'backpack'
@@ -194,6 +195,18 @@ class TaskForage
       find_giver
       complete_task
     end
+  end
+
+  # Fang Cove has no forage task giver, so fall back through fang_cove_override_town
+  # the way other town-bound scripts do, taking the first town that has one.
+  def resolve_task_town
+    candidates = [@args.town, @settings.fang_cove_override_town, @hometown].compact.map { |town| town.to_s.downcase }
+    town = candidates.find { |candidate| @task_givers.key?(candidate) }
+    return town if town
+
+    DRC.message("No forage task giver in #{candidates.map { |candidate| "'#{candidate}'" }.join(' or ')}. " \
+                'Try ;task-forage crossing or ;task-forage shard, or set fang_cove_override_town.')
+    safe_exit
   end
 
   # Adopt a task that's already in progress rather than canceling it. Returns false if
@@ -436,12 +449,100 @@ class TaskForage
   # container. Count those toward the task rather than foraging duplicates.
   def use_stored_items
     echo 'use_stored_items' if @debug
-    stored = @item_variants.sum { |noun| DRCI.count_items_in_container(noun, @forage_container) }
-    echo "stored #{@item_variants.join('/')}: #{stored}" if @debug
-    return unless stored.positive?
+    counts = @item_variants.map { |noun| count_stored_items(noun) }
+    echo "stored #{@item_variants.join('/')}: #{counts.inspect}" if @debug
+    if counts.include?(nil)
+      DRC.message("Couldn't check your #{@forage_container} for #{@item}; gathering all #{@number}.")
+      return
+    end
+
+    stored = counts.sum
+    unless stored.positive?
+      DRC.message("No #{@item} already in your #{@forage_container}; gathering all #{@number}.")
+      return
+    end
 
     @item_count = [@item_count + stored, @number].min
     DRC.message("Found #{stored} #{@item} in your #{@forage_container}. Using #{@item_count} of the #{@number} needed.")
+  end
+
+  STORED_EMPTY = /but there is nothing in there like that|but can.t (?:seem to )?find anything/
+  # Empty 0.1s polls allowed for a grouped listing to start, then after its last line.
+  GROUPED_START_POLLS = 40
+  GROUPED_IDLE_POLLS = 10
+
+  # Not DRCI.count_items_in_container: it scans one line for the singular noun, so
+  # plural stacks ("some nuloe stems") count as 0, and it never reads the "(N)"
+  # totals that RUMMAGE /C prints on later lines when it groups the contents.
+  #   inline:  You rummage ... and see some nuloe stems (limbs: internal scars), a jadice flower and ...
+  #   grouped (assumed; not yet captured): You rummage ... similar to "stem":  then indented "... (35)" lines
+  #
+  # @return [Integer, nil] nil when the container couldn't be read
+  def count_stored_items(noun)
+    # bput returns only the matched text, so the inline pattern spans the whole listing,
+    # and the empty reply is listed before the bare header that it also contains.
+    rummage_matches = [
+      /^You rummage .* looking for something similar to .* and see .*\.\s*$/,
+      /^You rummage .* (?:#{STORED_EMPTY.source})/,
+      /^You rummage .* looking for something similar to/,
+      /That would accomplish nothing/,
+      /What were you referring to/
+    ]
+    command = "rummage /C #{noun.split.last} in my #{@forage_container}"
+    result = DRC.bput(command, /While it's closed/, *rummage_matches)
+    if result =~ /While it's closed/
+      return nil unless DRCI.open_container?("my #{@forage_container}")
+
+      result = DRC.bput(command, *rummage_matches)
+    end
+    return nil unless result =~ /looking for something similar to/
+    return 0 if result =~ STORED_EMPTY
+
+    names = stored_item_names(noun)
+    total = if result =~ /and see (.*)\.\s*$/
+              Regexp.last_match(1).scan(/(?:\A|,\s+|\s+and\s+)(?:an?|some|the)\s+(?:#{names})(?=\s*\(|,|\s+and\s|\s*\z)/i).size
+            else
+              count_grouped_listing(names)
+            end
+    echo "count_stored_items(#{noun}): #{total}" if @debug
+    total
+  end
+
+  # The task item exactly, so "some ojhenik roots" and "a tree root" are not a "root":
+  # Mags only takes the plain item.
+  def stored_item_names(noun)
+    forms = [noun, "#{noun}s", "#{noun}es", noun.sub(/y\z/, 'ies'), noun.sub(/f\z/, 'ves')].uniq
+    forms.map { |form| Regexp.escape(form) }.join('|')
+  end
+
+  # Assumed format, not yet captured: indented lines, possibly arriving after the header.
+  # Lich never passes blank lines, so the first unindented line after the listing ends it.
+  def count_grouped_listing(names)
+    entry = /\A(?:(?:an?|some|the)\s+)?(?:#{names})(?=\s*\(|\s*\z)/i
+    total = 0
+    started = false
+    polls = 0
+    loop do
+      line = get?
+      unless line =~ /\A\s+\S/
+        break if started && line
+
+        polls += 1
+        break if polls >= (started ? GROUPED_IDLE_POLLS : GROUPED_START_POLLS)
+
+        pause 0.1 if line.nil?
+        next
+      end
+
+      started = true
+      polls = 0
+      item = line.strip
+      next if item =~ /\A\w+ \(\d+\):\z/ # a category header, not an item
+      next unless item =~ entry
+
+      total += item =~ /\((\d+)\)\z/ ? Regexp.last_match(1).to_i : 1
+    end
+    total
   end
 
   def decline_task
