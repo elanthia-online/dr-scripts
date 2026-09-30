@@ -372,8 +372,12 @@ class SellLoot
   #   ... values no greater than 1000 platinum at a time.
   #   ... rather not handle transactions larger than a thousand platinum.
   EXCHANGE_CAPPED = /no greater than ([\d,]+) platinum at a time|rather not handle transactions larger than/i
-  EXCHANGE_DONE   = /After (?:figuring|collecting) a .*?fee|reach into the one filled with/i
-  EXCHANGE_NONE   = /don't have (?:that many|any)/i
+  # On holidays the changer waives the fee and says so instead:
+  #   ... He whispers, "Enjoy the holiday, friend!  There's no fee this time!" ...
+  EXCHANGE_DONE   = /After (?:figuring|collecting) a .*?fee|reach into the one filled with|There's no fee this time/i
+  # A purse under the changer's minimum (one bronze or ten coppers) is
+  # refused too; there is nothing more to do with it, so treat it as none.
+  EXCHANGE_NONE   = /don't have (?:that many|any)|transaction that small isn't worth my time/i
 
   def exchange_coins
     exchange_id = @hometown.dig('exchange', 'id')
