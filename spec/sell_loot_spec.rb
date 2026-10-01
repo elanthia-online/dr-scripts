@@ -823,9 +823,16 @@ RSpec.describe SellLoot do
       expect(instance.container_collides?('pouch', 'pouch')).to be true
     end
 
+    it 'detects prefix-abbreviated adjectives and additional adjectives on matching containers' do
+      expect(instance.container_collides?('zill pouch', 'zillinen pouch')).to be true
+      expect(instance.container_collides?('zillinen pouch', 'zill pouch')).to be true
+      expect(instance.container_collides?('small zillinen pouch', 'zillinen pouch')).to be true
+      expect(instance.container_collides?('zillinen pouch', 'small zillinen pouch')).to be true
+    end
+
     it 'allows distinct multi-word containers sharing a noun' do
       expect(instance.container_collides?('leather pouch', 'silk pouch')).to be false
-      expect(instance.container_collides?('zill pouch', 'zillinen pouch')).to be false
+      expect(instance.container_collides?('small leather pouch', 'zillinen pouch')).to be false
     end
 
     it 'returns false for containers with different nouns' do

@@ -168,25 +168,28 @@ class SellLoot
 
   # Checks whether a loot container collides with a storage container.
   # A collision occurs if:
-  # 1. Normalized strings match exactly (case-insensitive), or
-  # 2. Either container is specified as a bare single noun (e.g. 'pouch') and
-  #    both share that trailing noun, which causes game command ambiguity.
-  # Distinct multi-word containers sharing a noun (e.g. 'leather pouch' vs
-  # 'silk pouch') do not collide because DragonRealms disambiguates by adjective.
+  # 1. Nouns are prefix-compatible (e.g. 'pouch' matches 'pouch'), and
+  # 2. Either container has no adjectives (bare noun matches any adjective variation),
+  #    or all adjectives of the shorter phrase prefix-match one in the longer phrase
+  #    (e.g. 'zill pouch' matches 'zillinen pouch', 'small zillinen pouch' matches
+  #    'zillinen pouch').
+  # Distinct adjectives (e.g. 'leather pouch' vs 'silk pouch') do not collide.
   #
   # @param container [String] loot container
   # @param storage [String] storage container
   # @return [Boolean] true if containers collide, false otherwise
   def container_collides?(container, storage)
-    return false if container.nil? || storage.nil?
-
     c_words = container.to_s.strip.downcase.split
     s_words = storage.to_s.strip.downcase.split
     return false if c_words.empty? || s_words.empty?
+    return false unless c_words.last.start_with?(s_words.last) || s_words.last.start_with?(c_words.last)
 
-    return true if c_words.join(' ') == s_words.join(' ')
+    c_adj = c_words[0...-1]
+    s_adj = s_words[0...-1]
+    return true if c_adj.empty? || s_adj.empty?
 
-    (c_words.length == 1 || s_words.length == 1) && c_words.last == s_words.last
+    short, long = c_adj.size <= s_adj.size ? [c_adj, s_adj] : [s_adj, c_adj]
+    short.all? { |w| long.any? { |l| l.start_with?(w) || w.start_with?(l) } }
   end
 
   # Returns configured runestone containers that do not collide with runestone_storage.
