@@ -3178,8 +3178,8 @@ class AbilityProcess
   # @param ordinal [String] the ordinal noun to get (e.g. "egg", "second egg")
   # @return [void]
   def discover_egg(ordinal)
-    if DRCI.get_item?(ordinal)
-      id = GameObj.right_hand.id
+    id = id_taken_into_hand(ordinal, known: @egg_ids) { DRCI.get_item?(ordinal) }
+    if id
       @egg_ids << id
       echo "Discovered #{ordinal} ##{id}" if $debug_mode_ct
       DRCI.stow_item?("##{id}")
@@ -3193,19 +3193,52 @@ class AbilityProcess
   # @param noun [String] the warhorn noun to find (e.g. "warhorn", "horn")
   # @return [void]
   def discover_warhorn(noun)
-    if DRCI.remove_item?(noun)
-      id = GameObj.right_hand.id
+    known = @warhorn_items.map { |item| item[:id] }
+    if (id = id_taken_into_hand(noun, known: known) { DRCI.remove_item?(noun) })
       @warhorn_items << { id: id, worn: true }
       echo "Discovered warhorn '#{noun}' ##{id} (worn)" if $debug_mode_ct
       DRCI.wear_item?("##{id}")
-    elsif DRCI.get_item?(noun)
-      id = GameObj.right_hand.id
+    elsif (id = id_taken_into_hand(noun, known: known) { DRCI.get_item?(noun) })
       @warhorn_items << { id: id, worn: false }
       echo "Discovered warhorn '#{noun}' ##{id} (stowed)" if $debug_mode_ct
       DRCI.stow_item?("##{id}")
     else
       DRC.message("Could not find warhorn '#{noun}' in inventory.")
     end
+  end
+
+  # Runs a get/remove and returns the game ID of the item it put in a hand.
+  #
+  # The game puts the item in whichever hand is free -- the left one when the
+  # right is already full -- so the right hand cannot be assumed. Doing so
+  # recorded whatever the right hand held (e.g. a traveler's pack) as the egg,
+  # and every later INVOKE of that ID timed out. Instead the item is the hand
+  # whose noun starts with the expected noun, the way the game matches a noun
+  # ("warhorn" or "warh" find a "mammoth-tusk warhorn"; "horn" never does).
+  # That also covers "You are already holding that". IDs already
+  # discovered are skipped: DRCI.get_item? reports success whenever an egg is
+  # in hand, so a failed "get my second egg" would otherwise find the first egg
+  # again. No wait is needed: the game sends the hand update before the
+  # confirmation text (a raw capture of "get my egg" had <right exist=...> 70
+  # lines ahead of "You get ..."), and Lich applies each line's XML before
+  # scripts see later lines, so the hands are current when the get/remove
+  # returns.
+  #
+  # @param name [String] the item name used for the get/remove (e.g. "egg",
+  #   "second egg", "warhorn", "warh"); its noun is matched against the start
+  #   of each hand's noun
+  # @param known [Array<String>] game IDs already discovered, never returned
+  # @yieldreturn [Boolean] whether the get/remove succeeded
+  # @return [String, nil] the item's game ID, or nil if the command failed or
+  #   no undiscovered item with that noun is in hand
+  def id_taken_into_hand(name, known: [])
+    return nil unless yield
+
+    noun = DRC.get_noun(name.to_s).to_s.downcase
+    hand = [GameObj.right_hand, GameObj.left_hand].find do |held|
+      held.id && !known.include?(held.id) && held.noun.to_s.downcase.start_with?(noun)
+    end
+    hand&.id
   end
 
   # Rotate through the configured egg/warhorn types and, if the room effect is

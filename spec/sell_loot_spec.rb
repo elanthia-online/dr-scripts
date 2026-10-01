@@ -1130,6 +1130,39 @@ RSpec.describe SellLoot do
       expect(commands.last).to eq('exchange all dokoras for kronars')
       expect(messages).to be_empty
     end
+
+    # A stub returning '' looks the same to exchange_all as a matched
+    # refusal, but the real bput only gets to '' by waiting out its timeout.
+    # So check that a pattern actually matches the changer's reply.
+    it 'recognizes the under-minimum refusal instead of timing out on it' do
+      line = 'The money-changer says crossly, "A transaction that small isn\'t worth my time.  ' \
+             'The minimum is one bronze or ten coppers."'
+      sent = []
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        matched = patterns.lazy.map { |pattern| line[pattern] }.find(&:itself)
+        sent << [command, matched]
+        matched.to_s
+      end
+      build_instance.exchange_all('lirums', 'kronars')
+
+      expect(sent.map(&:first)).to eq(['exchange all lirums for kronars'])
+      expect(sent.first.last).not_to be_nil
+      expect(messages).to be_empty
+    end
+
+    # Seen in game on a holiday. An unmatched chunk reads as a refusal, so
+    # this would stop after one chunk and tell the user to exchange by hand.
+    it 'treats the holiday no-fee exchange as done' do
+      holiday = 'You hand your money to the money-changer.  He whispers, "Enjoy the holiday, friend!  ' \
+                'There\'s no fee this time!"  He hands you 7 copper Dokoras.'
+      commands = simulate_changer(purse: 1500, refusal: changer_refusal, done: holiday)
+      build_instance.exchange_all('dokoras', 'kronars')
+
+      expect(commands).to eq(['exchange all dokoras for kronars',
+                              'exchange 1000 platinum dokoras to kronars',
+                              'exchange all dokoras for kronars'])
+      expect(messages).to be_empty
+    end
   end
 
   # =========================================================================
