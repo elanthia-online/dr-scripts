@@ -68,27 +68,18 @@ RSpec.describe MoonieFill do
   end
 
   describe 'before_dying teardown' do
-    it 'stows the telescope when held in hands upon exiting' do
-      allow(DRC).to receive(:right_hand).and_return('telescope')
-      allow(DRC).to receive(:left_hand).and_return(nil)
-      allow(self).to receive(:get_settings).and_return(settings)
+    it 'registers a before_dying block that stows the telescope' do
+      $test_settings = settings
+      captured_block = nil
+      main_obj = TOPLEVEL_BINDING.eval('self')
+      allow(main_obj).to receive(:before_dying) { |&block| captured_block = block }
+      allow(MoonieFill).to receive(:new)
 
+      load lic_path('mooniefill.lic')
+
+      expect(captured_block).not_to be_nil
       expect(DRCMM).to receive(:store_telescope?).with('mahogany telescope', { 'container' => 'rucksack' })
-
-      # Simulate the before_dying block defined in mooniefill.lic
-      settings = get_settings
-      DRCMM.store_telescope?(settings.telescope_name, settings.telescope_storage) if DRC.right_hand || DRC.left_hand
-    end
-
-    it 'does not stow when hands are empty' do
-      allow(DRC).to receive(:right_hand).and_return(nil)
-      allow(DRC).to receive(:left_hand).and_return(nil)
-      allow(self).to receive(:get_settings).and_return(settings)
-
-      expect(DRCMM).not_to receive(:store_telescope?)
-
-      settings = get_settings
-      DRCMM.store_telescope?(settings.telescope_name, settings.telescope_storage) if DRC.right_hand || DRC.left_hand
+      captured_block.call
     end
   end
 end
