@@ -59,6 +59,24 @@ innocent_lines = [
   'A Dwarven bartender says, "I was polishing glassware."'
 ].freeze
 
+# INFO output (verbatim, from a real log) with and without an unused cruise charge.
+info_with_charge = [
+  'Name: Emerald Knight Mahtra Rotschreck   Race: Elf   Guild: Ranger',
+  '  No debt.',
+  'You have 3 active purchases:',
+  '  Urchin Guides, charges remaining: 394',
+  '  Urchin Runners (limited use), charges remaining: 251',
+  '  Fantasy Excursions Taisidon Cruise, charges remaining: 1'
+].freeze
+
+info_without_charge = [
+  'Name: Emerald Knight Mahtra Rotschreck   Race: Elf   Guild: Ranger',
+  '  No debt.',
+  'You have 2 active purchases:',
+  '  Urchin Guides, charges remaining: 394',
+  '  Urchin Runners (limited use), charges remaining: 251'
+].freeze
+
 RSpec.describe Taisidon do
   subject(:taisidon) { described_class.allocate }
 
@@ -629,6 +647,127 @@ RSpec.describe Taisidon do
 
       expect { taisidon.send(:redeem_and_board) }.to raise_error(SystemExit)
       expect(DRC).to have_received(:bput).exactly(described_class::MAX_REDEEM_ATTEMPTS).times
+    end
+  end
+
+  # ===========================================================================
+  # cruise_charges (INFO parsing seam)
+  # ===========================================================================
+  describe '#cruise_charges' do
+    it 'reads the remaining Taisidon Cruise charges from real INFO output' do
+      expect(taisidon.cruise_charges(info_with_charge)).to eq(1)
+    end
+
+    it 'reads multi-digit counts' do
+      expect(taisidon.cruise_charges(['  Fantasy Excursions Taisidon Cruise, charges remaining: 12'])).to eq(12)
+    end
+
+    it 'returns 0 when the cruise is not among the active purchases' do
+      expect(taisidon.cruise_charges(info_without_charge)).to eq(0)
+    end
+
+    it 'does not confuse other purchases\' charges with cruise charges' do
+      expect(taisidon.cruise_charges(['  Urchin Guides, charges remaining: 394'])).to eq(0)
+    end
+
+    it 'reports an explicit zero count as 0' do
+      expect(taisidon.cruise_charges(['  Fantasy Excursions Taisidon Cruise, charges remaining: 0'])).to eq(0)
+    end
+
+    it 'returns 0 for a nil capture (issue_command timeout) or empty capture' do
+      expect(taisidon.cruise_charges(nil)).to eq(0)
+      expect(taisidon.cruise_charges([])).to eq(0)
+    end
+
+    it 'matches when the line is wrapped in XML tags (issue_command captures with usexml)' do
+      expect(taisidon.cruise_charges(['<output class="mono"/>  Fantasy Excursions Taisidon Cruise, charges remaining: 2'])).to eq(2)
+    end
+  end
+
+  # ===========================================================================
+  # board_and_solve (charge check before redeeming)
+  # ===========================================================================
+  describe '#board_and_solve' do
+    before do
+      allow(DRC).to receive(:bput)
+      allow(DRC).to receive(:message)
+      allow(taisidon).to receive(:board_ship)
+      allow(taisidon).to receive(:redeem_and_board)
+    end
+
+    it 'captures INFO starting at the Name line' do
+      expect(Lich::Util).to receive(:issue_command).with('info', described_class::INFO_START).and_return(info_with_charge)
+
+      taisidon.send(:board_and_solve)
+
+      expect(info_with_charge.first).to match(described_class::INFO_START)
+    end
+
+    it 'boards directly without getting or redeeming a pass when a charge remains' do
+      allow(Lich::Util).to receive(:issue_command).and_return(info_with_charge)
+
+      taisidon.send(:board_and_solve)
+
+      expect(taisidon).to have_received(:board_ship).once
+      expect(taisidon).not_to have_received(:redeem_and_board)
+      expect(DRC).not_to have_received(:bput).with('get my boarding pass', any_args)
+    end
+
+    it 'gets and redeems a pass when no cruise charge is listed' do
+      allow(Lich::Util).to receive(:issue_command).and_return(info_without_charge)
+
+      taisidon.send(:board_and_solve)
+
+      expect(DRC).to have_received(:bput).with('get my boarding pass', 'You get', 'What were')
+      expect(taisidon).to have_received(:redeem_and_board).once
+      expect(taisidon).not_to have_received(:board_ship)
+    end
+
+    it 'falls back to redeeming a pass when INFO cannot be captured (nil)' do
+      allow(Lich::Util).to receive(:issue_command).and_return(nil)
+
+      taisidon.send(:board_and_solve)
+
+      expect(taisidon).to have_received(:redeem_and_board).once
+      expect(taisidon).not_to have_received(:board_ship)
+    end
+  end
+
+  # ===========================================================================
+  # board_ship (ASK ABOUT ACCESS)
+  # ===========================================================================
+  describe '#board_ship' do
+    before do
+      allow(taisidon).to receive(:empty_hands)
+      allow(taisidon).to receive(:morgue)
+      allow(DRC).to receive(:message)
+    end
+
+    it 'proceeds to the morgue once the task is assigned' do
+      allow(DRC).to receive(:bput)
+        .with('ask coordinator about access', described_class::TASK_ASSIGNED, described_class::NO_COORDINATOR)
+        .and_return('Your task is to identify')
+
+      taisidon.send(:board_ship)
+
+      expect(taisidon).to have_received(:morgue).once
+    end
+
+    it 'aborts (exit) immediately when the coordinator is not in the room' do
+      # Real response to ASK COORDINATOR ABOUT ACCESS in a room without the coordinator.
+      response = simulate_bput('To whom are you speaking?', [described_class::TASK_ASSIGNED, described_class::NO_COORDINATOR])
+      allow(DRC).to receive(:bput).and_return(response)
+
+      expect(response).to eq('To whom are you speaking')
+      expect { taisidon.send(:board_ship) }.to raise_error(SystemExit)
+      expect(taisidon).not_to have_received(:morgue)
+    end
+
+    it 'aborts (exit) without going to the morgue when access is never granted (bput timeout)' do
+      allow(DRC).to receive(:bput).and_return('')
+
+      expect { taisidon.send(:board_ship) }.to raise_error(SystemExit)
+      expect(taisidon).not_to have_received(:morgue)
     end
   end
 end
