@@ -8,8 +8,9 @@
 # the room where the murder happened -- and then you ACCUSE person WITH weapon IN room.
 # This script gathers all three clues automatically and makes the accusation:
 #
-#   1. Board: get a boarding pass, REDEEM it at the Taisidon cruise coordinator, then ASK
-#      the coordinator ABOUT ACCESS to be moved onto the Morada.
+#   1. Board: if INFO already shows a Taisidon Cruise charge, skip straight to boarding.
+#      Otherwise get a boarding pass and REDEEM it at the Taisidon cruise coordinator. Then
+#      ASK the coordinator ABOUT ACCESS to be moved onto the Morada.
 #   2. Weapon: STUDY the corpse in the morgue. Each murder weapon leaves a unique wound
 #      description, so the wound text alone identifies the weapon (no APPRAISE needed).
 #   3. Murderer + crime scene: patrol the six cruise rooms. In each room, ASK the lone
@@ -24,7 +25,8 @@
 #
 # @note Requirements before running:
 #   - You must be standing with the Taisidon cruise coordinator (the event representative).
-#   - You must hold, or be able to GET, a boarding pass ("get my boarding pass").
+#   - You must have an unused cruise charge (shown in INFO), or hold / be able to GET a
+#     boarding pass ("get my boarding pass").
 #   - Both hands are emptied automatically at the start (via EquipmentManager).
 #
 # @example Solve a cruise from the dock (default)
@@ -94,12 +96,20 @@ class Taisidon
   # short window, so a couple of iterations are normal; this only bounds a pathological loop.
   MAX_REDEEM_ATTEMPTS = 5
 
+  # INFO line listing unused cruise charges, e.g.
+  # "Fantasy Excursions Taisidon Cruise, charges remaining: 1". Captures the count.
+  CRUISE_CHARGES = /Fantasy Excursions Taisidon Cruise, charges remaining: (\d+)/
+
+  # Start of INFO output, used to begin capturing it.
+  INFO_START = /Name:.*Race:.*Guild:/
+
   # Response fragments matched while boarding.
   REDEEM_REPEAT  = /Once you redeem this/    # repeat REDEEM within the timing window
   REDEEM_NO_PASS = /The REDEEM verb is used/ # you have no boarding passes
   WRONG_ROOM     = /The representative for a short cruise/ # not standing with the coordinator
   PASS_ACCEPTED  = /The cruise coordinator takes/         # pass consumed; access is next
   TASK_ASSIGNED  = /Your task is to identify/             # aboard; the mystery has begun
+  NO_COORDINATOR = /To whom are you speaking/             # ASK with no coordinator in the room
 
   # Response fragments matched while gathering clues.
   SEARCH_SCENE   = /uncovers an area of/        # this room is the crime scene
@@ -171,6 +181,16 @@ class Taisidon
     murderer_found? && weapon_found? && scene_found?
   end
 
+  # Counts unused Taisidon Cruise charges listed in INFO output.
+  # @param info_lines [Array<String>, nil] captured INFO lines
+  # @return [Integer] remaining charges, or 0 if none are listed (or nothing was captured)
+  def cruise_charges(info_lines)
+    return 0 if info_lines.nil?
+
+    match = info_lines.map { |line| line.match(CRUISE_CHARGES) }.compact.first
+    match ? match[1].to_i : 0
+  end
+
   # Builds the exact accusation command from the gathered clues.
   # @return [String] e.g. "accuse chef with the knife in bar"
   def accuse_command
@@ -202,9 +222,16 @@ class Taisidon
 
   # --- Boarding ---
 
-  # Full solve from the dock: acquire a boarding pass and begin the redeem/board flow.
+  # Full solve from the dock. An existing cruise charge (from a previous REDEEM) is used
+  # directly, so no boarding pass is wasted; otherwise acquire a pass and redeem it first.
   # @return [void]
   def board_and_solve
+    if cruise_charges(Lich::Util.issue_command('info', INFO_START)).positive?
+      DRC.message('Taisidon: cruise charge already available; skipping boarding pass.')
+      board_ship
+      return
+    end
+
     DRC.bput('get my boarding pass', 'You get', 'What were')
     redeem_and_board
   end
@@ -249,10 +276,15 @@ class Taisidon
   end
 
   # Asks the coordinator for access (which moves you aboard) and proceeds to the morgue.
+  # Aborts if the coordinator is not here or the task is never assigned.
   # @return [void]
   def board_ship
     empty_hands
-    DRC.bput('ask coordinator about access', TASK_ASSIGNED)
+    unless DRC.bput('ask coordinator about access', TASK_ASSIGNED, NO_COORDINATOR) =~ TASK_ASSIGNED
+      DRC.message("Taisidon: could not board the Morada. Go to room #{REPRESENTATIVE_ROOM} and rerun.")
+      exit
+    end
+
     morgue
   end
 
