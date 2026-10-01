@@ -1195,14 +1195,6 @@ module Harness
   end
 
   module DRCI
-    # Copied from lich-5 common-items.rb, for scripts that tell a failed TAP apart.
-    TAP_FAILURE_PATTERNS = [
-      /^You don't seem to be able to move/,
-      /^I could not find/,
-      /^I don't know what you are referring to/,
-      /^What were you referring to/
-    ].freeze
-
     class << self
       def in_hands?(*_args); false; end
       def in_left_hand?(*_args); false; end
@@ -1211,7 +1203,6 @@ module Harness
       def lift?(*_args); false; end
       def wearing?(*_args); false; end
       def inside?(*_args); false; end
-      def tap(*_args); end
       def get_item?(*_args); true; end
       def get_item_if_not_held?(*_args); true; end
       def get_item_unsafe(*_args); end
