@@ -56,8 +56,8 @@ RSpec.describe 'heal-remedy.lic' do
         'external' => {
           'limbs' => ['jadice salve', 'yelith potion']
         },
-        'scars' => {
-          'limbs' => ['blocil ointment', 'nuloe draught'],
+        'scars'    => {
+          'limbs'   => ['blocil ointment', 'nuloe draught'],
           'general' => ['dioica ointment', 'belradi draught']
         }
       }
@@ -70,6 +70,14 @@ RSpec.describe 'heal-remedy.lic' do
     allow(DRC).to receive(:bput).and_return('You')
     allow(DRCI).to receive(:get_item?).and_return(true)
     allow(DRCI).to receive(:put_away_item?).and_return(true)
+  end
+
+  after do
+    $debug_mode_hr = nil
+    $heal_level = nil
+    $quick_mode = nil
+    $nohands_mode = nil
+    $remedies = nil
   end
 
   describe '#wounds routing with override' do
@@ -131,6 +139,16 @@ RSpec.describe 'heal-remedy.lic' do
         runner.remedy_apply_wounds('limbs')
       end
     end
+
+    context 'when an elixir is configured for wounds' do
+      it 'eats the elixir directly without getting it into hand' do
+        $remedies['remedies']['external']['limbs'] = ['hulij elixir']
+        expect(runner).to receive(:eat_remedy?).with('hulij elixir').and_return(true)
+        expect(DRCI).not_to receive(:get_item?).with('hulij elixir', any_args)
+
+        runner.remedy_apply_wounds('limbs')
+      end
+    end
   end
 
   describe '#remedy_apply_scars' do
@@ -139,6 +157,16 @@ RSpec.describe 'heal-remedy.lic' do
         $nohands_mode = true
         expect(DRCI).not_to receive(:get_item?).with('blocil ointment', any_args)
         expect(runner).to receive(:drink_remedy?).with('nuloe draught').and_return(true)
+
+        runner.remedy_apply_scars('limbs')
+      end
+    end
+
+    context 'when an elixir is configured for scars' do
+      it 'eats the elixir directly without getting it into hand' do
+        $remedies['remedies']['scars']['limbs'] = ['hulij elixir']
+        expect(runner).to receive(:eat_remedy?).with('hulij elixir').and_return(true)
+        expect(DRCI).not_to receive(:get_item?).with('hulij elixir', any_args)
 
         runner.remedy_apply_scars('limbs')
       end
