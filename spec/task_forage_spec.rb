@@ -21,7 +21,13 @@ RSpec.describe TaskForage do
       args: OpenStruct.new(town: nil),
       settings: OpenStruct.new(fang_cove_override_town: nil),
       hometown: 'Crossing',
-      task_givers: { 'shard' => { 'npc' => 'peddler' }, 'crossing' => { 'npc' => 'Mags' } }
+      task_givers: { 'shard' => { 'npc' => 'peddler' }, 'crossing' => { 'npc' => 'Mags' } },
+      item: 'root',
+      item_variants: ['root'],
+      task_giver: 'Mags',
+      number: 5,
+      delivered: 0,
+      item_count: 0
     }
     defaults.merge(ivars).each { |k, v| instance.instance_variable_set(:"@#{k}", v) }
     instance
@@ -169,6 +175,97 @@ RSpec.describe TaskForage do
       allow(instance).to receive(:room_safe?)
       expect { instance.resolve_task_town }.to raise_error(SystemExit)
       expect(messages.last).to include("No forage task giver in 'fang cove'")
+    end
+  end
+
+  describe '#give_item' do
+    def reply(line)
+      allow(DRC).to receive(:bput) do |_command, *patterns|
+        patterns.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : Regexp.new(pattern)] }.find(&:itself).to_s
+      end
+    end
+
+    it 'counts a thanked item' do
+      reply('The firewood peddler Mags takes the stems and says, "Thanks, Someone!  I need 4 more."')
+      instance = build_instance
+      expect(instance.give_item('root')).to be(true)
+      expect(instance.instance_variable_get(:@delivered)).to eq(1)
+    end
+
+    it 'counts an item taken with a reply it does not know, once it has left the hand' do
+      reply('(a reply the script does not know)')
+      allow(DRCI).to receive(:in_hands?).with('root').and_return(false)
+      instance = build_instance
+      expect(instance.give_item('root')).to be(true)
+      expect(instance.instance_variable_get(:@delivered)).to eq(1)
+    end
+
+    it 'puts back an item still in hand after a reply it does not know, or none at all' do
+      ['(a reply the script does not know)', ''].each do |line|
+        reply(line)
+        allow(DRCI).to receive(:in_hands?).with('root').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('root', 'backpack').and_return(true)
+        instance = build_instance
+        expect(instance.give_item('root')).to be(false)
+        expect(instance.instance_variable_get(:@delivered)).to eq(0)
+        expect(messages.last).to eq("Mags didn't take the root. Put it back in your backpack.")
+      end
+    end
+
+    it 'says the item is still in hand when it will not go back in the container' do
+      reply('(a reply the script does not know)')
+      allow(DRCI).to receive(:in_hands?).with('root').and_return(true)
+      allow(DRCI).to receive(:put_away_item?).and_return(false)
+      expect(build_instance.give_item('root')).to be(false)
+      expect(messages.last).to include("it wouldn't go back in your backpack. It's still in your hand.")
+    end
+
+    it "puts back an item Mags says she doesn't take, rather than exiting with it in hand" do
+      reply(%(Mags sighs and says, "Aye-yah!  Tha' isnae somethin' I take.  P'rhaps a stick, or a branch -- ) +
+            %(or a sack full of both!  Aye-yah, return when ye hae one of those!"))
+      expect(DRCI).to receive(:put_away_item?).with('stem', 'backpack').and_return(true)
+      instance = build_instance(item: 'stick')
+      allow(instance).to receive(:room_safe?)
+      # An unexpected exit would otherwise end the whole rspec run with status 0.
+      given = nil
+      expect { given = instance.give_item('stem') }.not_to raise_error
+      expect(given).to be(false)
+      expect(instance.instance_variable_get(:@item)).to eq('stick')
+      expect(messages.last).to include("Mags didn't take the stem")
+    end
+
+    it 'still exits on any other sigh from Mags' do
+      reply('Mags sighs and says, "(some other reply)"')
+      instance = build_instance
+      allow(instance).to receive(:room_safe?)
+      expect { instance.give_item('root') }.to raise_error(SystemExit)
+    end
+  end
+
+  describe '#complete_task' do
+    before { UserVars.task_forage = { 'item_failures' => {} } }
+
+    it 'stops with an error when an item is refused, rather than carrying on silently' do
+      instance = build_instance(number: 3)
+      allow(instance).to receive(:get_task_item).and_return('root')
+      allow(instance).to receive(:give_item).and_return(true, false)
+      allow(instance).to receive(:room_safe?)
+      expect { instance.complete_task }.to raise_error(SystemExit)
+      expect(instance).to have_received(:give_item).twice
+      expect(messages.last).to include("Mags wouldn't take the root")
+    end
+  end
+
+  describe '#deliver_gathered_items' do
+    it 'stops emptying the container when an item is refused, instead of looping on it' do
+      instance = build_instance(item_count: 4, number: 10, item_location: 1)
+      allow(instance).to receive(:find_giver)
+      allow(instance).to receive(:give_item).with(no_args) { instance.instance_variable_set(:@delivered, 1) }
+      allow(instance).to receive(:give_item).with('root').and_return(false)
+      allow(instance).to receive(:get_task_item).and_return('root')
+      allow(DRCT).to receive(:walk_to)
+      instance.deliver_gathered_items
+      expect(instance).to have_received(:get_task_item).once
     end
   end
 end

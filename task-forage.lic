@@ -802,9 +802,8 @@ class TaskForage
     from_container = 0
     while @delivered < @item_count
       noun = get_task_item
-      break unless noun
+      break unless noun && give_item(noun)
 
-      give_item(noun)
       from_container += 1
     end
 
@@ -898,24 +897,51 @@ class TaskForage
     false
   end
 
+  # @return [Boolean] whether the task giver took it
   def give_item(noun = @item)
     echo "give_item: #{noun}" if @debug
     case DRC.bput("give #{noun} to #{@task_giver}", 'and says, "Thanks,', '^What is it you\'re trying to give?',
-                  ' I have a few things here for you, thank you so much for your help', 'Mags sighs and says')
+                  ' I have a few things here for you, thank you so much for your help',
+                  /isnae somethin' I take/, 'Mags sighs and says')
     when /^What is it you're trying to give?/
       find_giver
       give_item(noun)
     when /and says, "Thanks,/
       @delivered += 1
+      true
     when /I have a few things here for you, thank you so much for your help/
       @delivered += 1
       @tasks_completed += 1
       @item = nil
       kill_time(2) if determine_task_necessary
+      true
+    when /isnae somethin' I take/ # Mags sighs and says, "Aye-yah!  Tha' isnae somethin' I take. ..."
+      refuse_item(noun)
     when /Mags sighs and says/
       @item = nil
       safe_exit
+    else
+      # A reply we don't know. Gone from hand means it was taken all the same.
+      unless DRCI.in_hands?(noun)
+        @delivered += 1
+        return true
+      end
+
+      refuse_item(noun)
     end
+  end
+
+  # Put a refused item back rather than hold on to it, where the next GIVE would offer
+  # it again.
+  #
+  # @return [false]
+  def refuse_item(noun)
+    if DRCI.put_away_item?(noun, @forage_container)
+      DRC.message("#{@task_giver} didn't take the #{noun}. Put it back in your #{@forage_container}.")
+    else
+      DRC.message("#{@task_giver} didn't take the #{noun}, and it wouldn't go back in your #{@forage_container}. It's still in your hand.")
+    end
+    false
   end
 
   def complete_task
@@ -927,8 +953,9 @@ class TaskForage
       if noun.nil?
         DRC.message('ERROR: Task item not found.')
         safe_exit
-      else
-        give_item(noun)
+      elsif !give_item(noun)
+        DRC.message("ERROR: #{@task_giver} wouldn't take the #{noun}. #{@delivered} of #{@number} turned in.")
+        safe_exit
       end
     end
   end
