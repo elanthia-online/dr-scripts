@@ -171,5 +171,29 @@ RSpec.describe 'heal-remedy.lic' do
         runner.remedy_apply_scars('limbs')
       end
     end
+
+    context 'when the area-specific scar remedy is missing' do
+      it 'falls back to the general scar remedies' do
+        $nohands_mode = true
+        $remedies['remedies']['scars']['limbs'] = ['nuloe draught']
+        allow(DRC).to receive(:bput).with('drink my nuloe draught', any_args).and_return('Drink what?')
+        expect(DRC).to receive(:bput).with('drink my belradi draught', any_args).and_return('You drink')
+
+        runner.remedy_apply_scars('limbs')
+
+        expect(runner.wounds_applied).to be(true)
+      end
+    end
+  end
+
+  describe 'when no remedy could be used' do
+    it 'leaves wounds_applied false so the scar pass is skipped' do
+      $nohands_mode = true
+      allow(DRC).to receive(:bput).with('drink my yelith potion', any_args).and_return('Drink what?')
+
+      runner.remedy_apply_wounds('limbs')
+
+      expect(runner.wounds_applied).to be(false)
+    end
   end
 end
