@@ -85,4 +85,9 @@ class MoonieFill
   end
 end
 
+before_dying do
+  settings = get_settings
+  DRCMM.store_telescope?(settings.telescope_name, settings.telescope_storage)
+end
+
 MoonieFill.new
