@@ -1663,6 +1663,10 @@ herbs_override_herbstock: false
 # Setting to override combat-trainer skipping herbs that require a hand to use while in combat
 combat_trainer_herbs_allowhands: false
 
+# When herbs: true, have combat-trainer's Herbs ability use remedies (remedies.yaml) instead of raw herbs.
+# No effect when herbs: false.
+combat_trainer_use_remedies: false
+
 # Skip harnessing before infusing or not
 osrel_no_harness: false
 osrel_amount:

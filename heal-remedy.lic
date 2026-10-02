@@ -80,8 +80,8 @@ def wounds
   hurt.each do |key|
     DRC.message("In hurt loop.") if $debug_mode_hr
     DRC.message("Wounded area healing now: #{key}") if $debug_mode_hr
-    remedy_apply_wounds(key) if !@settings.herbs || @override
-    herb_apply_wounds(key) if @settings.herbs && !@override
+    remedy_apply_wounds(key) if !@settings.herbs || @override_mode
+    herb_apply_wounds(key) if @settings.herbs && !@override_mode
   end
   return unless @wounds_applied
 
@@ -89,8 +89,8 @@ def wounds
   scar.each do |key|
     DRC.message("In scar loop.") if $debug_mode_hr
     DRC.message("Scar area healing now: #{key}") if $debug_mode_hr
-    remedy_apply_scars(key) if !@settings.herbs || @override
-    herb_apply_scars(key) if @settings.herbs && !@override
+    remedy_apply_scars(key) if !@settings.herbs || @override_mode
+    herb_apply_scars(key) if @settings.herbs && !@override_mode
   end
 end
 
@@ -99,17 +99,29 @@ def remedy_apply_wounds(body_part)
   rem_wounds = $remedies['remedies']['external'][body_part]
   DRC.message("rem_wounds: #{rem_wounds}") if $debug_mode_hr
   rem_wounds.each do |remedy|
-    if DRCI.get_item?(remedy, @remedy_container)
-      case remedy
-      when /salve/, /unguent/, /poultices/, /ointment/
+    case remedy
+    when /salve/, /unguent/, /poultices/, /ointment/
+      next if $nohands_mode
+
+      if DRCI.get_item?(remedy, @remedy_container)
         DRC.bput("rub my #{remedy}", 'You')
-      when /potion/, /tonic/, /elixir/, /draught/
-        drink_remedy?(remedy)
+        DRCI.put_away_item?(remedy, @remedy_container)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
       end
-      DRCI.put_away_item?(remedy, @remedy_container)
-      @wounds_applied = true
-    else
-      DRC.message("*** No more #{remedy}! ***")
+    when /potion/, /tonic/, /draught/
+      if drink_remedy?(remedy)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+      end
+    when /elixir/
+      if eat_remedy?(remedy)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+      end
     end
   end
 end
@@ -119,19 +131,35 @@ def remedy_apply_scars(body_part)
   rem_scars = $remedies['remedies']['scars'][body_part]
   DRC.message("rem_scars: #{rem_scars}") if $debug_mode_hr
   rem_scars.each do |remedy|
-    if DRCI.get_item?(remedy, @remedy_container)
-      case remedy
-      when /salve/, /unguent/, /poultices/, /ointment/
+    case remedy
+    when /salve/, /unguent/, /poultices/, /ointment/
+      next if $nohands_mode
+
+      if DRCI.get_item?(remedy, @remedy_container)
         DRC.bput("rub my #{remedy}", 'You')
-      when /potion/, /tonic/, /elixir/, /draught/
-        drink_remedy?(remedy)
+        DRCI.put_away_item?(remedy, @remedy_container)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+        DRC.message('Trying general scar remedies.')
+        remedy_apply_general_scar('general')
       end
-      DRCI.put_away_item?(remedy, @remedy_container)
-      @wounds_applied = true
-    else
-      DRC.message("*** No more #{remedy}! ***")
-      DRC.message('Trying general scar remedies.')
-      remedy_apply_general_scar('general')
+    when /potion/, /tonic/, /draught/
+      if drink_remedy?(remedy)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+        DRC.message('Trying general scar remedies.')
+        remedy_apply_general_scar('general')
+      end
+    when /elixir/
+      if eat_remedy?(remedy)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+        DRC.message('Trying general scar remedies.')
+        remedy_apply_general_scar('general')
+      end
     end
   end
 end
@@ -141,17 +169,29 @@ def remedy_apply_general_scar(body_part)
   rem_scars_general = $remedies['remedies']['scars'][body_part]
   DRC.message("rem_scars_general: #{rem_scars_general}") if $debug_mode_hr
   rem_scars_general.each do |remedy|
-    if DRCI.get_item?(remedy, @remedy_container)
-      case remedy
-      when /salve/, /unguent/, /poultices/, /ointment/
+    case remedy
+    when /salve/, /unguent/, /poultices/, /ointment/
+      next if $nohands_mode
+
+      if DRCI.get_item?(remedy, @remedy_container)
         DRC.bput("rub my #{remedy}", 'You')
-      when /potion/, /tonic/, /elixir/, /draught/
-        drink_remedy?(remedy)
+        DRCI.put_away_item?(remedy, @remedy_container)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
       end
-      DRCI.put_away_item?(remedy, @remedy_container)
-      @wounds_applied = true
-    else
-      DRC.message("*** No more #{remedy}! ***")
+    when /potion/, /tonic/, /draught/
+      if drink_remedy?(remedy)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+      end
+    when /elixir/
+      if eat_remedy?(remedy)
+        @wounds_applied = true
+      else
+        DRC.message("*** No more #{remedy}! ***")
+      end
     end
   end
 end
