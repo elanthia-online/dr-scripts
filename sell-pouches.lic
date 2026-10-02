@@ -4,16 +4,20 @@
   Sells a gem pouch at the hometown gem shop.
 
   Takes a pouch from sale_pouches_container, walks to the gem shop, sells it and
-  runs sell-loot afterwards.
+  runs sell-loot afterwards. The empty pouch goes to worn_trashcan if set,
+  otherwise a bin in the room. If the shop doesn't buy it, the pouch goes back
+  into sale_pouches_container.
 =end
 
 class PouchSeller
   def initialize
     settings = get_settings
-    pouch_container = settings.sale_pouches_container
+    @pouch_container = settings.sale_pouches_container
+    @worn_trashcan = settings.worn_trashcan
+    @worn_trashcan_verb = settings.worn_trashcan_verb
     hometown = settings.hometown
 
-    exit unless have_pouch?(pouch_container)
+    exit unless have_pouch?(@pouch_container)
 
     gemshop = get_data('town')[hometown]['gemshop']['id']
     unless gemshop
@@ -36,9 +40,24 @@ class PouchSeller
 
     DRCT.walk_to(shop_id)
     DRC.wait_for_script_to_complete('buff', [Script.current.name])
-    fput('sell pouch')
-    fput('put pouch in bucket')
+    if pouch_sold?
+      discard_pouch
+    else
+      DRC.message("***STATUS*** The gem shop didn't buy the pouch -- putting it back in your #{@pouch_container}.")
+      DRCI.put_away_item?('pouch', @pouch_container)
+    end
     DRC.wait_for_script_to_complete('sell-loot')
+  end
+
+  # Anything but a sale (a refusal, or no reply) may leave gems in the pouch.
+  def pouch_sold?
+    DRC.bput('sell pouch', /hands you [\d,]+/, /not a market for that/i, /not interested/i, 'What were you').match?(/hands you/)
+  end
+
+  def discard_pouch
+    return if DRCI.dispose_trash('pouch', @worn_trashcan, @worn_trashcan_verb)
+
+    DRC.message("***STATUS*** Couldn't throw away the empty pouch -- it's still in your hand.")
   end
 end
 
