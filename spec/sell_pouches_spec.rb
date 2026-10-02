@@ -15,6 +15,7 @@ RSpec.describe PouchSeller do
     allow(DRC).to receive(:wait_for_script_to_complete)
     allow(DRCI).to receive(:dispose_trash).and_return(true)
     allow(DRCI).to receive(:put_away_item?).and_return(true)
+    allow(DRCI).to receive(:in_hands?).with('pouch').and_return(true)
   end
 
   # Instantiate without running initialize, setting only what sell_pouch reads.
@@ -23,6 +24,7 @@ RSpec.describe PouchSeller do
     { pouch_container: 'backpack', worn_trashcan: nil, worn_trashcan_verb: nil }
       .merge(ivars).each { |k, v| seller.instance_variable_set(:"@#{k}", v) }
     allow(seller).to receive(:fput)
+    allow(seller).to receive(:pause)
     seller
   end
 
@@ -56,12 +58,29 @@ RSpec.describe PouchSeller do
         expect(seller).not_to have_received(:fput).with(/bucket/)
       end
 
-      it 'says the empty pouch is still in hand when it cannot be thrown away' do
-        allow(DRCI).to receive(:dispose_trash).and_return(false)
+      it 'says to check your hands when the empty pouch cannot be thrown away' do
+        allow(DRCI).to receive(:dispose_trash).and_return(nil)
 
         build_seller.sell_pouch(1234)
 
-        expect(messages).to include(a_string_matching(/still in your hand/))
+        expect(messages).to include(a_string_matching(/Couldn't throw away the empty pouch -- check your hands/))
+      end
+
+      it 'throws nothing away when the empty pouch is not in hand' do
+        allow(DRCI).to receive(:in_hands?).with('pouch').and_return(false)
+
+        build_seller.sell_pouch(1234)
+
+        expect(DRCI).not_to have_received(:dispose_trash)
+        expect(messages).to include(a_string_matching(/isn't in your hand -- not throwing anything away/))
+      end
+
+      it 'waits for a hand update that trails the sale' do
+        allow(DRCI).to receive(:in_hands?).with('pouch').and_return(false, false, true)
+
+        build_seller.sell_pouch(1234)
+
+        expect(DRCI).to have_received(:dispose_trash).once
       end
 
       it 'runs sell-loot afterwards' do
@@ -85,6 +104,21 @@ RSpec.describe PouchSeller do
           expect(DRCI).to have_received(:put_away_item?).with('pouch', 'backpack')
           expect(DRCI).not_to have_received(:dispose_trash)
           expect(messages).to include(a_string_matching(/didn't buy the pouch/))
+        end
+
+        it 'says the same pouch will be tried first next time' do
+          build_seller.sell_pouch(1234)
+
+          expect(messages).to include(a_string_matching(/tried first again next time -- sell it by hand or move it out of your backpack/))
+        end
+
+        it 'says the pouch is still in hand with its gems when it will not go back' do
+          allow(DRCI).to receive(:put_away_item?).and_return(false)
+
+          build_seller.sell_pouch(1234)
+
+          expect(messages).to include(a_string_matching(/won't go back in your backpack -- it's still in your hand with its gems/))
+          expect(messages).not_to include(a_string_matching(/it's back in your/))
         end
 
         it 'still runs sell-loot afterwards' do
