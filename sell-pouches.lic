@@ -1,32 +1,80 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#sell-pouches
 
-  Sells a gem pouch at the hometown gem shop.
+  Sells gem pouches at the hometown gem shop, one at a time, until
+  sale_pouches_container has none left or Trading is above
+  sell_pouches_trading_limit (default 30). Each pouch is appraised first so the
+  sale can be reported with the bonus over its appraised value. Runs sell-loot
+  afterwards, including when there was nothing to sell.
 
-  Takes a pouch from sale_pouches_container, walks to the gem shop, sells it and
-  runs sell-loot afterwards. The empty pouch goes to worn_trashcan if set,
-  otherwise a bin in the room, or is dropped if there isn't one. If the shop
-  doesn't buy it, the pouch goes back into sale_pouches_container.
+  A sold pouch's empty goes to worn_trashcan if set, otherwise a bin in the room,
+  or is dropped if there isn't one. A pouch with nothing in it goes to
+  spare_gem_pouch_container when that is a different container, and is thrown
+  away when it isn't set. If the shop doesn't buy a pouch, it goes back into
+  sale_pouches_container and selling stops.
 =end
 
 class PouchSeller
   def initialize
     settings = get_settings
     @pouch_container = settings.sale_pouches_container
+    @spare_container = settings.spare_gem_pouch_container
+    @trading_limit = (settings.sell_pouches_trading_limit || 30).to_i
     @worn_trashcan = settings.worn_trashcan
     @worn_trashcan_verb = settings.worn_trashcan_verb
     hometown = settings.hometown
 
-    exit unless have_pouch?(@pouch_container)
-
     gemshop = get_data('town')[hometown]['gemshop']['id']
     unless gemshop
       echo('NO GEMSHOP DATA FOUND?')
-      fput('stow pouch')
       exit
     end
 
-    sell_pouch(gemshop)
+    unless nothing_to_sell?
+      DRCT.walk_to(gemshop)
+      DRC.wait_for_script_to_complete('buff', [Script.current.name])
+      sell_pouches
+    end
+    DRC.wait_for_script_to_complete('sell-loot')
+  end
+
+  # Checked before walking, so a run with nothing to sell doesn't make the trip.
+  def nothing_to_sell?
+    return true if trading_capped?
+    return false if @pouch_container && DRCI.inside?('pouch', @pouch_container)
+
+    DRC.message("***STATUS*** No pouches in your #{@pouch_container} -- nothing to sell.")
+    true
+  end
+
+  def trading_capped?
+    return false unless DRSkill.getxp('Trading') > @trading_limit
+
+    DRC.message("***STATUS*** Trading mindstate is above #{@trading_limit} -- stopping pouch sales.")
+    true
+  end
+
+  def sell_pouches
+    loop do
+      break if trading_capped?
+      break unless have_pouch?(@pouch_container)
+
+      appraised = appraise_pouch
+      if appraised == :empty
+        break unless set_aside_empty_pouch?
+
+        next
+      end
+
+      sold, currency = sell_pouch_for_price
+      unless sold
+        return_unsold_pouch
+        break
+      end
+
+      report_sale(appraised, sold, currency)
+      break unless discard_pouch?
+    end
   end
 
   def have_pouch?(container)
@@ -35,49 +83,81 @@ class PouchSeller
     DRC.bput("get pouch from my #{container}", 'You get a', 'What were you') == 'You get a'
   end
 
-  def sell_pouch(shop_id)
-    return unless shop_id
-
-    DRCT.walk_to(shop_id)
-    DRC.wait_for_script_to_complete('buff', [Script.current.name])
-    if pouch_sold?
-      discard_pouch
+  # Returns the value in copper, :empty, or nil when the reply isn't understood.
+  def appraise_pouch
+    result = DRC.bput('appraise my pouch quick',
+                      /worth a total of about [\d,]+/,
+                      /doesn.t appear to be anything in/,
+                      'You can.t appraise',
+                      'Appraise what')
+    waitrt?
+    case result
+    when /worth a total of about ([\d,]+)/
+      Regexp.last_match(1).delete(',').to_i
+    when /doesn.t appear to be anything in/
+      :empty
     else
-      return_unsold_pouch
+      DRC.message("***STATUS*** Could not read the appraisal: #{result}")
+      nil
     end
-    DRC.wait_for_script_to_complete('sell-loot')
   end
 
-  # Anything but a sale (a refusal, or no reply) may leave gems in the pouch.
-  def pouch_sold?
-    DRC.bput('sell pouch', /hands you [\d,]+/, /not a market for that/i, /not interested/i, 'What were you').match?(/hands you/)
+  # Returns [copper, currency], or [nil, nil] for anything but a sale (a refusal,
+  # or no reply), which may leave gems in the pouch.
+  def sell_pouch_for_price
+    result = DRC.bput('sell pouch', /hands you [\d,]+(?: \w+)?/, /not a market for that/i, /not interested/i, 'What were you')
+    return [nil, nil] unless result =~ /hands you ([\d,]+)(?: (\w+))?/
+
+    [Regexp.last_match(1).delete(',').to_i, Regexp.last_match(2)]
+  end
+
+  # Empty pouches can't be sold. Putting one back in the sale container would
+  # only fetch it again on the next pass, so that case stops instead.
+  def set_aside_empty_pouch?
+    if @spare_container.to_s.empty?
+      DRC.message('***STATUS*** Pouch is empty -- throwing it away.')
+      return discard_pouch?
+    end
+
+    if @spare_container == @pouch_container
+      DRC.message("***STATUS*** Pouch is empty -- putting it back and stopping, since your #{@pouch_container} is also your spare_gem_pouch_container.")
+      DRCI.put_away_item?('pouch', @pouch_container)
+      return false
+    end
+
+    DRC.message("***STATUS*** Pouch is empty -- moving it to your #{@spare_container}.")
+    return true if DRCI.put_away_item?('pouch', @spare_container)
+
+    DRC.message("***STATUS*** Couldn't put the empty pouch in your #{@spare_container} -- it's still in your hand. Stopping.")
+    false
   end
 
   # PUT goes to the front of a container, so the next run fetches this same pouch first.
   def return_unsold_pouch
-    unless DRCI.in_hands?('pouch')
-      DRC.message("***STATUS*** Nothing was sold, and there's no pouch in your hand to put back -- check where it went.")
+    unless pouch_in_hand?
+      DRC.message("***STATUS*** Nothing was sold, and there's no pouch in your hand to put back -- check where it went. Stopping.")
       return
     end
 
     if DRCI.put_away_item?('pouch', @pouch_container)
-      DRC.message("***STATUS*** The gem shop didn't buy the pouch, so it's back in your #{@pouch_container}. " \
+      DRC.message("***STATUS*** The gem shop didn't buy the pouch, so it's back in your #{@pouch_container}. Stopping. " \
                   "It will be tried first again next time -- sell it by hand or move it out of your #{@pouch_container}.")
     else
-      DRC.message("***STATUS*** The gem shop didn't buy the pouch and it won't go back in your #{@pouch_container} -- it's still in your hand with its gems.")
+      DRC.message("***STATUS*** The gem shop didn't buy the pouch and it won't go back in your #{@pouch_container} -- it's still in your hand with its gems. Stopping.")
     end
   end
 
   # dispose_trash fetches with a bare GET when nothing is held, which could pick
   # up the next full pouch, so only throw away a pouch seen in hand.
-  def discard_pouch
+  def discard_pouch?
     unless pouch_in_hand?
-      DRC.message("***STATUS*** Sold, but the empty pouch isn't in your hand -- not throwing anything away.")
-      return
+      DRC.message("***STATUS*** The empty pouch isn't in your hand -- not throwing anything away. Stopping.")
+      return false
     end
-    return if DRCI.dispose_trash('pouch', @worn_trashcan, @worn_trashcan_verb)
+    return true if DRCI.dispose_trash('pouch', @worn_trashcan, @worn_trashcan_verb)
 
-    DRC.message("***STATUS*** Couldn't throw away the empty pouch -- check your hands.")
+    DRC.message("***STATUS*** Couldn't throw away the empty pouch -- check your hands. Stopping.")
+    false
   end
 
   # The hand update can trail the clerk's text.
@@ -88,6 +168,18 @@ class PouchSeller
       pause 0.5 if attempt < 2
     end
     false
+  end
+
+  def report_sale(appraised, sold, currency)
+    coin_label = currency.to_s.empty? ? 'plat' : "plat #{currency}"
+    sold_plat = (sold / 10_000.0).round(1)
+    if appraised && appraised > 0
+      appraised_plat = (appraised / 10_000.0).round(1)
+      bonus_pct = ((sold.to_f - appraised) / appraised * 100).round(2)
+      DRC.message("***STATUS*** Pouch appraised at #{appraised_plat} #{coin_label}, sold for #{sold_plat} #{coin_label} (#{bonus_pct}% bonus)")
+    else
+      DRC.message("***STATUS*** Pouch sold for #{sold_plat} #{coin_label} (no appraisal)")
+    end
   end
 end
 
