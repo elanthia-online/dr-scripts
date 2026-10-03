@@ -128,6 +128,27 @@ RSpec.describe PouchSeller do
         end
       end
     end
+
+    context 'when there is no pouch in hand to sell' do
+      before do
+        stub_game('sell pouch' => 'What were you referring to?')
+        allow(DRCI).to receive(:in_hands?).with('pouch').and_return(false)
+      end
+
+      it 'says so instead of claiming the pouch is still in hand' do
+        build_seller.sell_pouch(1234)
+
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(messages).to include(a_string_matching(/no pouch in your hand to put back/))
+        expect(messages).not_to include(a_string_matching(/with its gems/))
+      end
+
+      it 'still runs sell-loot afterwards' do
+        build_seller.sell_pouch(1234)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('sell-loot')
+      end
+    end
   end
 
   describe '#initialize' do

@@ -55,6 +55,11 @@ class PouchSeller
 
   # PUT goes to the front of a container, so the next run fetches this same pouch first.
   def return_unsold_pouch
+    unless DRCI.in_hands?('pouch')
+      DRC.message("***STATUS*** Nothing was sold, and there's no pouch in your hand to put back -- check where it went.")
+      return
+    end
+
     if DRCI.put_away_item?('pouch', @pouch_container)
       DRC.message("***STATUS*** The gem shop didn't buy the pouch, so it's back in your #{@pouch_container}. " \
                   "It will be tried first again next time -- sell it by hand or move it out of your #{@pouch_container}.")
