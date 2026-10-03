@@ -1594,6 +1594,8 @@ sell_loot_trader_nouns:
 sell_loot_minimum_markup: 0
 sell_pouches_for_trading: false
 sale_pouches_container: backpack
+# sell-pouches keeps selling pouches until Trading is above this mindstate (0-34).
+sell_pouches_trading_limit: 30
 
 # Misc settings
 storage_containers:
