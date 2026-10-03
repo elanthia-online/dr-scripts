@@ -3686,6 +3686,7 @@ class TrainerProcess
       'Ambush Choke'               => 'Debilitation',
       'Ambush Stun'                => settings.stun_skill,
       'Analyze'                    => 'Tactics',
+      'App All'                    => 'Appraisal',
       'App Bundle'                 => 'Appraisal',
       'App Careful'                => 'Appraisal',
       'App Pouch'                  => 'Appraisal',
@@ -3847,6 +3848,8 @@ class TrainerProcess
       waitfor('Obvious') unless DRC.bput('flee bluff', 'You begin', 'see anything engaged with you', 'You suddenly realize') == 'see anything engaged with you'
     when /^App$/i
       appraise(game_state, '')
+    when /^App All$/i
+      appraise_all(game_state)
     when /^App Quick$/i
       appraise(game_state, 'quick')
     when /^App Careful$/i
@@ -4204,9 +4207,28 @@ class TrainerProcess
     target = Lich::DragonRealms::Creature.targets.find { |c| !@no_app.include?(c.id) }
     return unless target
     return if DRSkill.getrank('Appraisal') < 76
-    return if DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what') != 'Perhaps that'
+    return if appraise_creature(target, modifier) != 'Perhaps that'
 
     @no_app << target.id
+  end
+
+  # App All: quick-appraise every live mob in the room by id, once per cooldown.
+  # Shares @no_app with appraise so un-appraisable mobs are skipped, and stops
+  # mid-sweep once Appraisal reaches the training target.
+  def appraise_all(game_state)
+    return if DRSkill.getrank('Appraisal') < 76
+
+    Lich::DragonRealms::Creature.targets.reject { |c| @no_app.include?(c.id) }.each do |target|
+      break if game_state.retreating?
+      break if DRSkill.getxp('Appraisal') >= @combat_training_abilities_target
+
+      @no_app << target.id if appraise_creature(target, 'quick') == 'Perhaps that'
+      waitrt?
+    end
+  end
+
+  def appraise_creature(target, modifier)
+    DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what')
   end
 
   def moon_mage_perc(game_state)
