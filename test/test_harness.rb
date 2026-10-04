@@ -1370,6 +1370,7 @@ module Harness
       def use_div_tool(*_args); end
       def center_telescope(*_args); end
       def peer_telescope(*_args); []; end
+      def update_astral_data(data, *_args); data; end
     end
   end
 
