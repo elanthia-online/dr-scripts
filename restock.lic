@@ -275,9 +275,7 @@ class Restock
       when /The \S+ has about one use of .* remaining.  It is labeled/
         count += 1
       when /is empty\.$/
-        echo "#{ordinal} #{item} is finished: trashing"
-        dispose(item)
-        redo
+        echo "#{ordinal} #{item['name']} is empty; skipping it"
       else
         count_txt = count_msg.match(/and see there \w+ (.+) left./).captures.first.tr('-', ' ')
         count += DRC.text2num(count_txt)
