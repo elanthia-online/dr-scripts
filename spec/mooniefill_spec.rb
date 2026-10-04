@@ -60,10 +60,15 @@ RSpec.describe MoonieFill do
   let(:sent) { [] }
   let(:messages) { [] }
 
+  # The one-pool form, as captured in game:
+  #   > predict state offense
+  #   You consider your recent observations and you have no understanding of the celestial influences over offensive combat.
   def predict_reply(pool)
     words = pool_states.fetch(pool, ['complete'])
     word = words.size > 1 ? words.shift : words.first
-    "You have a #{word} understanding of the celestial influences over #{pool}."
+    skillset = { 'offense' => 'offensive combat', 'defense' => 'defensive combat' }.fetch(pool, pool)
+    understanding = word == 'no' ? 'no understanding' : "#{word == 'insightful' ? 'an' : 'a'} #{word} understanding"
+    "You consider your recent observations and you have #{understanding} of the celestial influences over #{skillset}."
   end
 
   def game_reply(command)
@@ -672,6 +677,24 @@ RSpec.describe MoonieFill do
         expect(mooniefill.peer_outcome('You learned something useful from your observation of Wolf.')).to eq(:success)
         expect(mooniefill.peer_outcome('Although you were nearly overwhelmed, you still learned more of the future.')).to eq(:success)
         expect(mooniefill.peer_outcome('The pain is too much for you to bear.')).to eq(:injured)
+      end
+    end
+  end
+
+  describe '#pool_level' do
+    it 'reads the one-pool PREDICT STATE reply captured in game' do
+      allow(DRC).to receive(:bput).with('predict state offense', MoonieFill::POOL_STATE_PATTERN) do |_command, pattern|
+        bput_result('You consider your recent observations and you have no understanding of the celestial influences over offensive combat.', [pattern])
+      end
+
+      expect(mooniefill.pool_level('Offense')).to eq(0)
+    end
+
+    it 'reads every level, weakest to strongest' do
+      MoonieFill::UNDERSTANDING_LEVELS.each_with_index do |word, level|
+        pool_states['defense'] = [word]
+
+        expect(mooniefill.pool_level('Defense')).to eq(level)
       end
     end
   end
