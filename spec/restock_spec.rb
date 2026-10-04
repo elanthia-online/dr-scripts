@@ -283,7 +283,7 @@ RSpec.describe Restock do
 
     it 'does nothing when the item was handed over' do
       instance = build_instance
-      allow(instance).to receive(:reget).and_return(nil)
+      allow(instance).to receive(:reget).with(3, 'Seeing that you are too encumbered').and_return(nil)
       allow(DRC).to receive(:bput)
 
       instance.send(:handle_encumbrance, make_item)
