@@ -47,7 +47,8 @@ RSpec.describe Restock do
         crossing_item = make_item('hometown' => 'Crossing', 'name' => 'arrow')
         shard_item = make_item('hometown' => 'Shard', 'name' => 'bolt')
         instance = build_instance(
-          settings: OpenStruct.new(hometown: 'Riverhaven')
+          settings: OpenStruct.new(hometown: 'Riverhaven'),
+          hometown: 'Riverhaven'
         )
 
         allow(instance).to receive(:parse_restockable_items).and_return([crossing_item, shard_item])
@@ -94,6 +95,30 @@ RSpec.describe Restock do
         expect(call_log.length).to eq(1)
         expect(call_log.first[:town]).to eq('Crossing')
         expect(call_log.first[:count]).to eq(1)
+      end
+    end
+
+    context 'with fang_cove_override_town set' do
+      it 'gets and banks the coins in the override town, where it buys' do
+        $test_settings = OpenStruct.new(
+          hometown: 'Fang Cove', fang_cove_override_town: 'Crossing',
+          restock: { 'arrow' => { 'quantity' => 30 } },
+          sell_loot_money_on_hand: '3 silver', storage_containers: []
+        )
+        $test_data.consumables = { 'Crossing' => { 'arrow' => make_item('room' => 8263) } }
+        instance = Restock.allocate
+        allow(instance).to receive(:count_nonstackable_item).and_return(0)
+        allow(instance).to receive(:purchase_item)
+        allow(instance).to receive(:handle_encumbrance)
+        allow(instance).to receive(:stow_item)
+        allow(DRCM).to receive(:ensure_copper_on_hand)
+        allow(DRCM).to receive(:deposit_coins)
+
+        instance.send(:initialize)
+
+        expect(instance).to have_received(:purchase_item).with(hash_including('room' => 8263)).exactly(3).times
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(anything, $test_settings, 'Crossing')
+        expect(DRCM).to have_received(:deposit_coins).with(anything, $test_settings, 'Crossing')
       end
     end
   end
@@ -267,6 +292,32 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
+  # #handle_encumbrance -- picking a purchase up off the counter
+  # ===========================================================================
+  describe '#handle_encumbrance' do
+    it 'gets the item from the counter when too encumbered to take it' do
+      instance = build_instance
+      allow(instance).to receive(:reget).with(3, 'Seeing that you are too encumbered')
+                                        .and_return(['Seeing that you are too encumbered...'])
+      allow(DRC).to receive(:bput)
+
+      instance.send(:handle_encumbrance, make_item)
+
+      expect(DRC).to have_received(:bput).with('get arrow from counter', 'You get a')
+    end
+
+    it 'does nothing when the item was handed over' do
+      instance = build_instance
+      allow(instance).to receive(:reget).with(3, 'Seeing that you are too encumbered').and_return(nil)
+      allow(DRC).to receive(:bput)
+
+      instance.send(:handle_encumbrance, make_item)
+
+      expect(DRC).not_to have_received(:bput)
+    end
+  end
+
+  # ===========================================================================
   # #stow_item -- container, runestone, and default stow
   # ===========================================================================
   describe '#stow_item' do
@@ -324,6 +375,35 @@ RSpec.describe Restock do
 
       # container takes priority
       expect(DRCI).to have_received(:put_away_item?).with('runestone', 'satchel')
+    end
+  end
+
+  # ===========================================================================
+  # #count_stackable_item -- empty ones
+  # ===========================================================================
+  describe '#count_stackable_item' do
+    let(:item) { make_item('name' => 'jar', 'stackable' => true) }
+
+    it 'skips an empty one and counts the stacks either side of it' do
+      instance = build_instance
+      replies = {
+        'count my first jar'  => 'and see there are ten left.',
+        'count my second jar' => 'The jar is empty.',
+        'count my third jar'  => 'and see there are five left.'
+      }
+      calls = 0
+      allow(DRC).to receive(:bput) do |command, *|
+        calls += 1
+        raise 'counted the same item forever' if calls > 10
+
+        replies.fetch(command, 'I could not find what you were referring to.')
+      end
+      allow(DRC).to receive(:text2num) { |text| { 'ten' => 10, 'five' => 5 }.fetch(text) }
+      allow(DRCI).to receive(:dispose_trash)
+
+      expect(instance.send(:count_stackable_item, item)).to eq(15)
+      expect(DRC).to have_received(:bput).with('count my second jar', any_args).once
+      expect(DRCI).not_to have_received(:dispose_trash)
     end
   end
 

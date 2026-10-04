@@ -107,7 +107,7 @@ class Restock
     # Remove those custom location items from the primary restock items list
     items -= custom_loc_items
     # Call the restock_items method on restock items that don't have custom location set
-    restock_items(items, @settings.hometown)
+    restock_items(items, @hometown)
 
     # Restock items that have a custom location set
     custom_loc_items.group_by { |v| v['hometown'] }
@@ -186,7 +186,7 @@ class Restock
   # @return [void]
   def handle_encumbrance(item)
     if reget(3, 'Seeing that you are too encumbered')
-      bput("get #{item['name']} from counter", "You get a")
+      DRC.bput("get #{item['name']} from counter", "You get a")
     end
   end
 
@@ -275,9 +275,7 @@ class Restock
       when /The \S+ has about one use of .* remaining.  It is labeled/
         count += 1
       when /is empty\.$/
-        echo "#{ordinal} #{item} is finished: trashing"
-        dispose(item)
-        redo
+        echo "#{ordinal} #{item['name']} is empty; skipping it"
       else
         count_txt = count_msg.match(/and see there \w+ (.+) left./).captures.first.tr('-', ' ')
         count += DRC.text2num(count_txt)
