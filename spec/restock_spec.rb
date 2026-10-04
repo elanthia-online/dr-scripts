@@ -328,6 +328,40 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
+  # #count_stackable_item -- throwing away empty ones
+  # ===========================================================================
+  describe '#count_stackable_item' do
+    let(:item) { make_item('name' => 'jar', 'stackable' => true) }
+
+    it 'throws an empty one away and counts the stack that takes its place' do
+      instance = build_instance
+      replies = ['The jar is empty.', 'and see there are ten left.', 'I could not find what you were referring to.']
+      allow(DRC).to receive(:bput) { replies.shift }
+      allow(DRC).to receive(:text2num).with('ten').and_return(10)
+      allow(DRCI).to receive(:dispose_trash).and_return(true)
+
+      expect(instance.send(:count_stackable_item, item)).to eq(10)
+      expect(DRCI).to have_received(:dispose_trash).with('first jar').once
+      expect(DRC).to have_received(:bput).with('count my first jar', any_args).twice
+    end
+
+    it 'moves on to the next one when the empty one cannot be thrown away' do
+      instance = build_instance
+      calls = 0
+      allow(DRC).to receive(:bput) do |command, *|
+        calls += 1
+        raise 'counted the same item forever' if calls > 10
+
+        command == 'count my first jar' ? 'The jar is empty.' : 'I could not find what you were referring to.'
+      end
+      allow(DRCI).to receive(:dispose_trash).and_return(false)
+
+      expect(instance.send(:count_stackable_item, item)).to eq(0)
+      expect(DRCI).to have_received(:dispose_trash).once
+    end
+  end
+
+  # ===========================================================================
   # #count_nonstackable_item -- countable_name and container discovery
   # ===========================================================================
   describe '#count_nonstackable_item' do
