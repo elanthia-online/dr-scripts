@@ -62,7 +62,7 @@ class WalkingAstro
     finished
   end
 
-  # Returns false only when there was no free hand for the telescope, so that
+  # Returns false only when the hands aren't free for the telescope, so that
   # main_loop tries again as soon as both hands are empty.
   def get_telescope
     if Flags['offense-full'] && Flags['defense-full'] && Flags['magic-full'] && Flags['survival-full'] && Flags['lore-full']
@@ -79,8 +79,9 @@ class WalkingAstro
     end
 
     # A timed-out or unrecognised reply can fail the get with the telescope
-    # already in hand.
-    store_telescope
+    # already in hand. If it won't go away, store_telescope has said so.
+    return false unless store_telescope
+
     if lefthand && righthand
       DRC.message("walkingastro: No free hand to get your #{@telescope_name}. Trying again once your hands are empty.")
       return false
@@ -90,10 +91,12 @@ class WalkingAstro
     true
   end
 
+  # Returns false, after saying so, when the telescope is still in hand.
   def store_telescope
-    return if DRCMM.store_telescope?(@telescope_name, @telescope_storage)
+    return true if DRCMM.store_telescope?(@telescope_name, @telescope_storage)
 
     DRC.message("walkingastro: Couldn't put your #{@telescope_name} away. Observing waits until your hands are empty.")
+    false
   end
 
   def determine_time

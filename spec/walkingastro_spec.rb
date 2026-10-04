@@ -131,6 +131,16 @@ RSpec.describe WalkingAstro do
 
         walker.get_telescope
       end
+
+      it 'only says the telescope will not go away when a slow reply left it in hand and it will not store' do
+        walker = build_walker
+        allow(DRCMM).to receive(:store_telescope?).and_return(false)
+
+        expect(walker.get_telescope).to be(false)
+        expect(DRC).to have_received(:message).with(/Couldn't put your telescope away/)
+        expect(DRC).not_to have_received(:message).with(/Couldn't get your telescope/)
+        expect(DRC).not_to have_received(:message).with(/No free hand/)
+      end
     end
 
     context 'when every prediction pool is already full' do
@@ -146,12 +156,19 @@ RSpec.describe WalkingAstro do
   end
 
   describe '#store_telescope' do
-    it 'says so when the telescope will not go away' do
+    it 'returns true once the telescope is away' do
+      walker = build_walker
+      allow(DRCMM).to receive(:store_telescope?).and_return(true)
+
+      expect(walker.store_telescope).to be(true)
+      expect(DRC).not_to have_received(:message)
+    end
+
+    it 'says so and returns false when the telescope will not go away' do
       walker = build_walker
       allow(DRCMM).to receive(:store_telescope?).and_return(false)
 
-      walker.store_telescope
-
+      expect(walker.store_telescope).to be(false)
       expect(DRC).to have_received(:message).with(/Couldn't put your telescope away/)
     end
   end
