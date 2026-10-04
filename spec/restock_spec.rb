@@ -292,6 +292,32 @@ RSpec.describe Restock do
   end
 
   # ===========================================================================
+  # #handle_encumbrance -- picking a purchase up off the counter
+  # ===========================================================================
+  describe '#handle_encumbrance' do
+    it 'gets the item from the counter when too encumbered to take it' do
+      instance = build_instance
+      allow(instance).to receive(:reget).with(3, 'Seeing that you are too encumbered')
+                                        .and_return(['Seeing that you are too encumbered...'])
+      allow(DRC).to receive(:bput)
+
+      instance.send(:handle_encumbrance, make_item)
+
+      expect(DRC).to have_received(:bput).with('get arrow from counter', 'You get a')
+    end
+
+    it 'does nothing when the item was handed over' do
+      instance = build_instance
+      allow(instance).to receive(:reget).with(3, 'Seeing that you are too encumbered').and_return(nil)
+      allow(DRC).to receive(:bput)
+
+      instance.send(:handle_encumbrance, make_item)
+
+      expect(DRC).not_to have_received(:bput)
+    end
+  end
+
+  # ===========================================================================
   # #stow_item -- container, runestone, and default stow
   # ===========================================================================
   describe '#stow_item' do
