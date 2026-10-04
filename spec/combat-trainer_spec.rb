@@ -78,3 +78,59 @@ describe 'AttackProcess#attack_thrown' do
     expect(result).to eq(:action_taken)
   end
 end
+
+describe 'TrainerProcess#execute with Herbs' do
+  before(:all) { load_lic_class('combat-trainer.lic', 'TrainerProcess') }
+
+  let(:trainer_process) { TrainerProcess.allocate }
+  let(:game_state) do
+    double('game_state',
+           danger: false,
+           npcs: [],
+           sheath_whirlwind_offhand: nil,
+           wield_whirlwind_offhand: nil)
+  end
+
+  before do
+    allow(trainer_process).to receive(:select_ability).with(game_state).and_return('Herbs')
+    allow(trainer_process).to receive(:waitrt?)
+  end
+
+  context 'when combat_trainer_use_remedies is false or nil' do
+    it 'calls heal-remedy with quick when hands are allowed' do
+      trainer_process.instance_variable_set(:@combat_trainer_use_remedies, false)
+      trainer_process.instance_variable_set(:@combat_trainer_herbs_allowhands, true)
+
+      expect(DRC).to receive(:wait_for_script_to_complete).with('heal-remedy', ['quick'])
+      trainer_process.execute(game_state)
+    end
+
+    it 'calls heal-remedy with quick and nohands when enemies are present and hands are not allowed' do
+      trainer_process.instance_variable_set(:@combat_trainer_use_remedies, false)
+      trainer_process.instance_variable_set(:@combat_trainer_herbs_allowhands, false)
+      allow(game_state).to receive(:npcs).and_return(['rock troll'])
+
+      expect(DRC).to receive(:wait_for_script_to_complete).with('heal-remedy', %w[quick nohands])
+      trainer_process.execute(game_state)
+    end
+  end
+
+  context 'when combat_trainer_use_remedies is true' do
+    it 'passes override to heal-remedy when hands are allowed' do
+      trainer_process.instance_variable_set(:@combat_trainer_use_remedies, true)
+      trainer_process.instance_variable_set(:@combat_trainer_herbs_allowhands, true)
+
+      expect(DRC).to receive(:wait_for_script_to_complete).with('heal-remedy', ['quick', 'override'])
+      trainer_process.execute(game_state)
+    end
+
+    it 'passes both override and nohands when enemies are present and hands are not allowed' do
+      trainer_process.instance_variable_set(:@combat_trainer_use_remedies, true)
+      trainer_process.instance_variable_set(:@combat_trainer_herbs_allowhands, false)
+      allow(game_state).to receive(:npcs).and_return(['rock troll'])
+
+      expect(DRC).to receive(:wait_for_script_to_complete).with('heal-remedy', ['quick', 'override', 'nohands'])
+      trainer_process.execute(game_state)
+    end
+  end
+end

@@ -1,44 +1,207 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#sell-pouches
 
-  Sells a gem pouch at the hometown gem shop.
+  Sells gem pouches at the hometown gem shop, one at a time, until
+  sale_pouches_container has none left to sell or Trading is above
+  sell_pouches_trading_limit (default 30). Each pouch is appraised first, opening
+  it if it's closed, so the sale can be reported with the bonus over its
+  appraised value. Runs sell-loot afterwards, including when there was nothing
+  to sell.
 
-  Takes a pouch from sale_pouches_container, walks to the gem shop, sells it and
-  runs sell-loot afterwards.
+  Empty pouches, and pouches whose appraisal can't be read, are left in
+  sale_pouches_container and skipped. The walk to the gem shop happens only once
+  there's a pouch to sell. A sold pouch's empty goes to worn_trashcan if set,
+  otherwise a bin in the room, or is dropped if there isn't one. If the shop
+  doesn't buy a pouch, it goes back into sale_pouches_container and selling stops.
 =end
 
 class PouchSeller
+  CLOSED_POUCH = /You.ll need to open the .* to examine its contents/
+
   def initialize
     settings = get_settings
-    pouch_container = settings.sale_pouches_container
+    @pouch_container = settings.sale_pouches_container
+    @trading_limit = (settings.sell_pouches_trading_limit || 30).to_i
+    @worn_trashcan = settings.worn_trashcan
+    @worn_trashcan_verb = settings.worn_trashcan_verb
     hometown = settings.hometown
 
-    exit unless have_pouch?(pouch_container)
-
-    gemshop = get_data('town')[hometown]['gemshop']['id']
-    unless gemshop
+    @gemshop = get_data('town')[hometown]['gemshop']['id']
+    unless @gemshop
       echo('NO GEMSHOP DATA FOUND?')
-      fput('stow pouch')
       exit
     end
 
-    sell_pouch(gemshop)
-  end
-
-  def have_pouch?(container)
-    return false unless container
-
-    DRC.bput("get pouch from my #{container}", 'You get a', 'What were you') == 'You get a'
-  end
-
-  def sell_pouch(shop_id)
-    return unless shop_id
-
-    DRCT.walk_to(shop_id)
-    DRC.wait_for_script_to_complete('buff', [Script.current.name])
-    fput('sell pouch')
-    fput('put pouch in bucket')
+    sell_pouches unless nothing_to_sell?
     DRC.wait_for_script_to_complete('sell-loot')
+  end
+
+  # Checked before taking anything out, so a run with nothing to sell does nothing.
+  def nothing_to_sell?
+    return true if trading_capped?
+
+    unless @pouch_container
+      DRC.message('***STATUS*** sale_pouches_container is not set -- nothing to sell.')
+      return true
+    end
+    return false if DRCI.inside?('pouch', @pouch_container)
+
+    DRC.message("***STATUS*** No pouches in your #{@pouch_container} -- nothing to sell.")
+    true
+  end
+
+  def trading_capped?
+    return false unless DRSkill.getxp('Trading') > @trading_limit
+
+    DRC.message("***STATUS*** Trading mindstate is above #{@trading_limit} -- stopping pouch sales.")
+    true
+  end
+
+  # A skipped pouch goes back to the front of the container (PUT goes to the
+  # front), so after k skips the first k pouches are the skipped ones and the
+  # next unchecked pouch is the (k+1)th. Each pass sells a pouch or skips one,
+  # and skips stop at the last ordinal, so the loop always ends.
+  def sell_pouches
+    skipped = 0
+    loop do
+      break if trading_capped?
+
+      if skipped >= $ORDINALS.size
+        DRC.message("***STATUS*** Skipped #{skipped} pouches in your #{@pouch_container} -- stopping.")
+        break
+      end
+      break unless have_pouch?($ORDINALS[skipped])
+
+      appraised = appraise_pouch
+      unless appraised.is_a?(Integer)
+        break unless skip_pouch?(appraised == :empty ? 'Pouch is empty' : "Couldn't appraise the pouch")
+
+        skipped += 1
+        next
+      end
+
+      walk_to_gemshop
+      sold, currency = sell_pouch_for_price
+      unless sold
+        return_unsold_pouch
+        break
+      end
+
+      report_sale(appraised, sold, currency)
+      break unless discard_pouch?
+    end
+  end
+
+  def have_pouch?(ordinal)
+    DRC.bput("get #{ordinal} pouch from my #{@pouch_container}", 'You get a', 'What were you') == 'You get a'
+  end
+
+  def walk_to_gemshop
+    return if @at_gemshop
+
+    DRCT.walk_to(@gemshop)
+    DRC.wait_for_script_to_complete('buff', [Script.current.name])
+    @at_gemshop = true
+  end
+
+  # Returns the value in copper, :empty, or nil when it can't be read.
+  def appraise_pouch
+    result = appraisal_reply
+    if result =~ CLOSED_POUCH
+      unless DRCI.open_container?('my pouch')
+        DRC.message("***STATUS*** Couldn't open the pouch to appraise it.")
+        return nil
+      end
+      result = appraisal_reply
+    end
+
+    case result
+    when /worth a total of about ([\d,]+)/
+      Regexp.last_match(1).delete(',').to_i
+    when /doesn.t appear to be anything in/
+      :empty
+    else
+      DRC.message("***STATUS*** Could not read the appraisal: #{result.to_s.empty? ? 'no reply' : result}")
+      nil
+    end
+  end
+
+  def appraisal_reply
+    result = DRC.bput('appraise my pouch quick',
+                      /worth a total of about [\d,]+/,
+                      /doesn.t appear to be anything in/,
+                      CLOSED_POUCH,
+                      'You can.t appraise',
+                      'Appraise what')
+    waitrt?
+    result
+  end
+
+  def skip_pouch?(reason)
+    if DRCI.put_away_item?('pouch', @pouch_container)
+      DRC.message("***STATUS*** #{reason} -- leaving it in your #{@pouch_container}.")
+      return true
+    end
+
+    DRC.message("***STATUS*** #{reason}, and it won't go back in your #{@pouch_container} -- it's still in your hand. Stopping.")
+    false
+  end
+
+  # Returns [copper, currency], or [nil, nil] for anything but a sale (a refusal,
+  # or no reply), which may leave gems in the pouch.
+  def sell_pouch_for_price
+    result = DRC.bput('sell pouch', /hands you [\d,]+(?: \w+)?/, /not a market for that/i, /not interested/i, 'What were you')
+    return [nil, nil] unless result =~ /hands you ([\d,]+)(?: (\w+))?/
+
+    [Regexp.last_match(1).delete(',').to_i, Regexp.last_match(2)]
+  end
+
+  # PUT goes to the front of a container, so the next run fetches this same pouch first.
+  def return_unsold_pouch
+    unless pouch_in_hand?
+      DRC.message("***STATUS*** Nothing was sold, and there's no pouch in your hand to put back -- check where it went. Stopping.")
+      return
+    end
+
+    if DRCI.put_away_item?('pouch', @pouch_container)
+      DRC.message("***STATUS*** The gem shop didn't buy the pouch, so it's back in your #{@pouch_container}. Stopping. " \
+                  "It will be tried first again next time -- sell it by hand or move it out of your #{@pouch_container}.")
+    else
+      DRC.message("***STATUS*** The gem shop didn't buy the pouch and it won't go back in your #{@pouch_container} -- it's still in your hand with its gems. Stopping.")
+    end
+  end
+
+  # dispose_trash fetches with a bare GET when nothing is held, which could pick
+  # up the next full pouch, so only throw away a pouch seen in hand.
+  def discard_pouch?
+    unless pouch_in_hand?
+      DRC.message("***STATUS*** The empty pouch isn't in your hand -- not throwing anything away. Stopping.")
+      return false
+    end
+    return true if DRCI.dispose_trash('pouch', @worn_trashcan, @worn_trashcan_verb)
+
+    DRC.message("***STATUS*** Couldn't throw away the empty pouch -- check your hands. Stopping.")
+    false
+  end
+
+  # The hand update can trail the clerk's text.
+  def pouch_in_hand?
+    3.times do |attempt|
+      return true if DRCI.in_hands?('pouch')
+
+      pause 0.5 if attempt < 2
+    end
+    false
+  end
+
+  def report_sale(appraised, sold, currency)
+    message = "***STATUS*** Pouch appraised at #{coins(appraised, currency)}, sold for #{coins(sold, currency)}"
+    message += " (#{((sold.to_f - appraised) / appraised * 100).round(2)}% bonus)" if appraised > 0
+    DRC.message(message)
+  end
+
+  def coins(copper, currency)
+    [DRCM.minimize_coins(copper).join(', '), currency].compact.join(' ')
   end
 end
 

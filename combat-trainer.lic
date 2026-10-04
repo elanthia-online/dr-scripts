@@ -3790,6 +3790,9 @@ class TrainerProcess
     @combat_trainer_herbs_allowhands = settings.combat_trainer_herbs_allowhands
     echo("  @combat_trainer_herbs_allowhands: #{@combat_trainer_herbs_allowhands}") if $debug_mode_ct
 
+    @combat_trainer_use_remedies = settings.combat_trainer_use_remedies
+    echo("  @combat_trainer_use_remedies: #{@combat_trainer_use_remedies}") if $debug_mode_ct
+
     @telescope_storage = settings.telescope_storage
     echo("  @telescope_storage: #{@telescope_storage}") if $debug_mode_ct
 
@@ -3943,12 +3946,14 @@ class TrainerProcess
     when /^Smite$/i
       smite(game_state)
     when /^Herbs$/i
+      remedy_args = ['quick']
+      remedy_args << 'override' if @combat_trainer_use_remedies
       if game_state.npcs.empty? || @combat_trainer_herbs_allowhands
         game_state.sheath_whirlwind_offhand
-        DRC.wait_for_script_to_complete('heal-remedy', ['quick'])
+        DRC.wait_for_script_to_complete('heal-remedy', remedy_args)
         game_state.wield_whirlwind_offhand
       else
-        DRC.wait_for_script_to_complete('heal-remedy', %w[quick nohands])
+        DRC.wait_for_script_to_complete('heal-remedy', remedy_args + ['nohands'])
       end
     when /^Tessera$/i
       invest_in_tessera(game_state)

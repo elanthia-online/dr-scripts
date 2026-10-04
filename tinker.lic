@@ -53,14 +53,16 @@ class Tinker
     workorders_materials = @settings.workorders_materials || {}
     @mechanism = args.mechanism || workorders_materials['mechanism_ingot_type'] || 'bronze'
     @chapter = args.chapter ? args.chapter.to_i : 8
+    @instruction = args.instructions
     @noun = args.noun
     @info = get_data('crafting')['shaping'][@hometown]
     args.number = (args.number || 1).to_i
     @training_spells = @settings.crafting_training_spells
-    args.recipe_name.sub!("lighten", "crossbow lightening")
-    args.recipe_name.sub!("laminate", "crossbow lamination")
-    args.recipe_name.sub!("cable", "crossbow cable-backing")
+    # The instructions, resume and mechanisms forms have no recipe name.
     @recipe_name = args.recipe_name
+                       &.sub("lighten", "crossbow lightening")
+                       &.sub("laminate", "crossbow lamination")
+                       &.sub("cable", "crossbow cable-backing")
     @mechanisms_per_item = compute_mechanisms_per_item
 
     DRC.wait_for_script_to_complete('buff', ['tinker'])
@@ -112,6 +114,11 @@ class Tinker
       if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
         DRC.bput('study my instructions', 'Roundtime', 'Study them again')
       end
+      DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
+      swap_tool('drawknife')
+      DRCC.get_crafting_item("#{@material} lumber", @bag, @bag_items, @belt)
+      check_hand('lumber') unless DRCI.in_left_hand?('lumber')
+      return 'scrape my lumber with my drawknife'
     else
       if @settings.master_crafting_book
         DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, "tinkering")
