@@ -23,15 +23,18 @@ class MoonieFill
   POOL_STATE_PATTERN = /\b(#{UNDERSTANDING_LEVELS.join('|')}) understanding\b/.freeze
 
   # CENTER replies and what each one means for the loop. "Your search for X"
-  # ends "turns up fruitless" when X is below the horizon and "is foiled by the
-  # daylight" for a constellation by day.
+  # ends "turns up fruitless" when a planet is below the horizon and "is foiled
+  # by the daylight" for a constellation by day. "You would probably need a
+  # periscope" is about one constellation, not the sky: the bodies centered
+  # just before and after it are fine.
   CENTER_RESPONSES = {
     /You put your eye/                                    => :centered,
     /Your search for|turns up fruitless|is foiled by the/ => :not_visible,
+    /need a periscope/                                    => :not_visible,
     /What did you want/                                   => :not_visible,
     /open it to make any use of it/                       => :closed,
     /Center what/                                         => :no_telescope,
-    /can't see the sky|need a periscope/                  => :no_sky,
+    /can't see the sky/                                   => :no_sky,
     /The pain is too much|Your vision is too fuzzy/       => :injured,
     /You must have both hands free/                       => :hands_full
   }.freeze
@@ -40,8 +43,10 @@ class MoonieFill
   # don't cover.
   PEER_CLOSED = /open it to make any use of it/.freeze
   PEER_COOLDOWN = /You have not pondered|You are unable to make use of this latest observation/.freeze
-  PEER_SATURATED = /Too many futures cloud your mind/.freeze
-  PEER_POOL_FULL = /You believe you've learned all that you can/.freeze
+  # The body has nothing to add: every pool it feeds is full. "Too many futures"
+  # comes on its own; "learned all that you can about <pool>" usually comes with
+  # a success for the body's other pool, and success is checked first.
+  PEER_POOL_FULL = /You believe you've learned all that you can|Too many futures cloud your mind/.freeze
 
   # The game's observation timer runs 2-4 minutes after a successful observation.
   PONDERED_FLAG = 'mooniefill-pondered'
@@ -118,16 +123,15 @@ class MoonieFill
             Lich::Messaging.msg('bold', "MoonieFill: #{pool} still isn't full after #{observations} observations. Moving on.")
             return :not_full
           end
-          # Otherwise observe the same body again once the timer has run.
+          # Otherwise observe the same body again once the timer has run. The
+          # retry limit is per attempt at this body, so start it over.
+          retries = 0
         when :pool_full
+          # Usually this pool is the full one. If not, the body's data lists a
+          # pool the game doesn't credit, so another body may still fill it.
           return :full if pool_full?(pool)
 
           break
-        when :saturated
-          return :full if pool_full?(pool)
-
-          Lich::Messaging.msg('bold', "MoonieFill: Too many futures cloud your mind, so #{pool} can't take more right now. Moving on.")
-          return :not_full
         when :retry
           retries += 1
           break if retries > MAX_RETRIES_PER_BODY
@@ -199,7 +203,7 @@ class MoonieFill
   end
 
   # Centers the telescope on one body and peers at it.
-  # Returns :success, :pool_full, :saturated, :retry, :skip or :stop.
+  # Returns :success, :pool_full, :retry, :skip or :stop.
   def observe_body(name)
     wait_for_ponder
 
@@ -255,7 +259,6 @@ class MoonieFill
     return :closed if text.match?(PEER_CLOSED)
     return :success if @success_messages.any? { |message| text.include?(message) }
     return :cooldown if text.match?(PEER_COOLDOWN)
-    return :saturated if text.match?(PEER_SATURATED)
     return :pool_full if text.match?(PEER_POOL_FULL)
 
     :skip

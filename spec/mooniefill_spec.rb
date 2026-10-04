@@ -339,6 +339,16 @@ RSpec.describe MoonieFill do
         expect(centers).to eq(['center my telescope on Ram', 'center my telescope on Heart'])
       end
 
+      it 'moves to the next body, rather than stopping the run, when a periscope would be needed' do
+        pool_states['survival'] = %w[weak complete]
+        center_replies['Ram'] = 'You would probably need a periscope to do that.'
+
+        expect(mooniefill.fill_pool('Survival')).to eq(:full)
+
+        expect(centers).to eq(['center my telescope on Ram', 'center my telescope on Heart'])
+        expect(messages).not_to include("MoonieFill: You can't see the sky from here. Stopping.")
+      end
+
       it 'moves to the next body on a CENTER reply it does not recognise' do
         pool_states['survival'] = %w[weak complete]
         center_replies['Ram'] = 'Something new and unexpected.'
@@ -392,19 +402,29 @@ RSpec.describe MoonieFill do
     context 'when too many futures cloud your mind' do
       let(:clouded) { ['Too many futures cloud your mind - you learn nothing.', 'Roundtime: 3 sec.'] }
 
-      it 'gives up on the pool instead of trying every other body' do
-        pool_states['survival'] = %w[weak]
-        peer_results.push(clouded)
+      # The game says this when every pool the body feeds is full, so another
+      # body can still fill this pool if the data credits the wrong pool.
+      it 'moves to the next body if the pool still is not full' do
+        pool_states['survival'] = %w[weak weak complete]
+        peer_results.push(clouded, learned)
 
-        expect(mooniefill.fill_pool('Survival')).to eq(:not_full)
+        expect(mooniefill.fill_pool('Survival')).to eq(:full)
 
-        expect(centers).to eq(['center my telescope on Ram'])
-        expect(messages).to include("MoonieFill: Too many futures cloud your mind, so Survival can't take more right now. Moving on.")
+        expect(centers).to eq(['center my telescope on Ram', 'center my telescope on Heart'])
+      end
+
+      it 'does not wait for the observation timer, since nothing was learned' do
+        pool_states['survival'] = %w[weak weak complete]
+        peer_results.push(clouded, learned)
+
+        mooniefill.fill_pool('Survival')
+
+        expect(sent).not_to include(:pause)
       end
 
       it 'does not restart the other pools' do
-        pool_states['survival'] = %w[weak]
-        peer_results.push(clouded)
+        pool_states['survival'] = %w[weak weak complete]
+        peer_results.push(clouded, learned)
 
         mooniefill.fill_pool('Survival')
 
@@ -450,6 +470,16 @@ RSpec.describe MoonieFill do
         mooniefill.fill_pool('Survival')
 
         expect(sent.count(:pause)).to eq(MoonieFill::PONDER_WAIT_SECONDS)
+      end
+
+      it 'does not let cooldowns between successes use up the best body' do
+        cooldown = ['You have not pondered your last observation sufficiently.', 'Roundtime: 1 sec.']
+        pool_states['survival'] = %w[weak weak weak weak complete]
+        peer_results.push(learned, cooldown, learned, cooldown, learned, cooldown, learned)
+
+        expect(mooniefill.fill_pool('Survival')).to eq(:full)
+
+        expect(centers.uniq).to eq(['center my telescope on Ram'])
       end
     end
 
@@ -526,12 +556,6 @@ RSpec.describe MoonieFill do
 
         expect(centers).to eq(['center my telescope on Ram'])
         expect(messages).to include("MoonieFill: You can't see the sky from here. Stopping.")
-      end
-
-      it 'stops at once when a periscope would be needed' do
-        center_replies['Ram'] = 'You would probably need a periscope to do that.'
-
-        expect(mooniefill.fill_pool('Survival')).to eq(:stop)
       end
 
       it 'stops when CENTER says your eyes are injured' do
@@ -658,7 +682,7 @@ RSpec.describe MoonieFill do
       "While the sighting wasn't quite what you hoped, you learned." => :success,
       'You have not pondered your last observation sufficiently.'    => :cooldown,
       'You are unable to make use of this latest observation.'       => :cooldown,
-      'Too many futures cloud your mind - you learn nothing.'        => :saturated,
+      'Too many futures cloud your mind - you learn nothing.'        => :pool_full,
       "You believe you've learned all that you can about lore."      => :pool_full,
       "You'll need to open it to make any use of it."                => :closed,
       'Your vision is too fuzzy.'                                    => :injured,
