@@ -37,9 +37,8 @@ RSpec.describe Tinker do
 
   describe 'the instructions form' do
     it 'studies the instructions, then starts on the lumber' do
-      tinker = start(instructions: 'instructions', material: 'maple', noun: 'crossbow')
+      start(instructions: 'instructions', material: 'maple', noun: 'crossbow')
 
-      expect(tinker.instance_variable_get(:@instruction)).to be_truthy
       expect(DRCC).to have_received(:get_crafting_item).with('crossbow instructions', 'backpack', [], nil)
       expect(DRCC).to have_received(:get_crafting_item).with('maple lumber', 'backpack', [], nil)
       expect(@command).to eq('scrape my lumber with my drawknife')
@@ -50,6 +49,51 @@ RSpec.describe Tinker do
 
       expect(DRCC).not_to have_received(:find_recipe2)
       expect(@command).not_to include('clamp')
+    end
+  end
+
+  # The stubs above say every tool is already in hand. This models the hands
+  # themselves: a get fills the first free hand (and fails if both are full),
+  # a stow empties the hand holding that item, and SWAP exchanges the hands.
+  describe 'the instructions form, starting from different hands' do
+    def model_hands(right: nil, left: nil)
+      hands = { right: right, left: left }
+      holding = ->(side, item) { !hands[side].nil? && hands[side].include?(item.to_s) }
+      allow(DRC).to receive(:right_hand) { hands[:right] }
+      allow(DRC).to receive(:left_hand) { hands[:left] }
+      allow(DRCI).to receive(:in_hands?) { |item| holding.call(:right, item) || holding.call(:left, item) }
+      allow(DRCI).to receive(:in_left_hand?) { |item| holding.call(:left, item) }
+      allow(DRCI).to receive(:in_right_hand?) { |item| holding.call(:right, item) }
+      allow(DRCC).to receive(:get_crafting_item) do |item, *|
+        side = %i[right left].find { |s| hands[s].nil? }
+        hands[side] = item if side
+      end
+      allow(DRCC).to receive(:stow_crafting_item) do |item, *|
+        side = %i[right left].find { |s| item && holding.call(s, item) }
+        hands[side] = nil if side
+        true
+      end
+      allow(DRC).to receive(:bput) do |command, *|
+        hands[:right], hands[:left] = hands[:left], hands[:right] if command == 'swap'
+        'Roundtime'
+      end
+      hands
+    end
+
+    {
+      'empty hands'                      => {},
+      'the drawknife in your right hand' => { right: 'drawknife' },
+      'the drawknife in your left hand'  => { left: 'drawknife' }
+    }.each do |label, start_hands|
+      it "ends with the drawknife and lumber in hand, starting with #{label}" do
+        hands = model_hands(**start_hands)
+
+        expect { start(instructions: 'instructions', material: 'maple', noun: 'crossbow') }.not_to raise_error
+
+        expect(hands.values).to contain_exactly('drawknife', 'maple lumber')
+        expect(hands[:left]).to eq('maple lumber')
+        expect(@command).to eq('scrape my lumber with my drawknife')
+      end
     end
   end
 
