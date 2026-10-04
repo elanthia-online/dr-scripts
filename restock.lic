@@ -186,7 +186,7 @@ class Restock
   # @return [void]
   def handle_encumbrance(item)
     if reget(3, 'Seeing that you are too encumbered')
-      bput("get #{item['name']} from counter", "You get a")
+      DRC.bput("get #{item['name']} from counter", "You get a")
     end
   end
 
