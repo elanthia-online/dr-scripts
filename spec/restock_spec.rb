@@ -47,7 +47,8 @@ RSpec.describe Restock do
         crossing_item = make_item('hometown' => 'Crossing', 'name' => 'arrow')
         shard_item = make_item('hometown' => 'Shard', 'name' => 'bolt')
         instance = build_instance(
-          settings: OpenStruct.new(hometown: 'Riverhaven')
+          settings: OpenStruct.new(hometown: 'Riverhaven'),
+          hometown: 'Riverhaven'
         )
 
         allow(instance).to receive(:parse_restockable_items).and_return([crossing_item, shard_item])
@@ -94,6 +95,30 @@ RSpec.describe Restock do
         expect(call_log.length).to eq(1)
         expect(call_log.first[:town]).to eq('Crossing')
         expect(call_log.first[:count]).to eq(1)
+      end
+    end
+
+    context 'with fang_cove_override_town set' do
+      it 'gets and banks the coins in the override town, where it buys' do
+        $test_settings = OpenStruct.new(
+          hometown: 'Fang Cove', fang_cove_override_town: 'Crossing',
+          restock: { 'arrow' => { 'quantity' => 30 } },
+          sell_loot_money_on_hand: '3 silver', storage_containers: []
+        )
+        $test_data.consumables = { 'Crossing' => { 'arrow' => make_item('room' => 8263) } }
+        instance = Restock.allocate
+        allow(instance).to receive(:count_nonstackable_item).and_return(0)
+        allow(instance).to receive(:purchase_item)
+        allow(instance).to receive(:handle_encumbrance)
+        allow(instance).to receive(:stow_item)
+        allow(DRCM).to receive(:ensure_copper_on_hand)
+        allow(DRCM).to receive(:deposit_coins)
+
+        instance.send(:initialize)
+
+        expect(instance).to have_received(:purchase_item).with(hash_including('room' => 8263)).exactly(3).times
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(anything, $test_settings, 'Crossing')
+        expect(DRCM).to have_received(:deposit_coins).with(anything, $test_settings, 'Crossing')
       end
     end
   end
