@@ -48,12 +48,22 @@ class Waggle
     end
 
     if args.strict
-      until (settings.waggle_sets[setname].keys - DRSpells.active_spells.keys).empty?
+      until (spells_to_wait_on(settings.waggle_sets[setname]) - DRSpells.active_spells.keys).empty?
         DRCA.do_buffs(settings, setname)
       end
     else
       DRCA.do_buffs(settings, setname)
     end
+  end
+
+  # DRCA.do_buffs skips night: spells by day and day: spells at night, so
+  # strict mode must not wait on them.
+  def spells_to_wait_on(spells)
+    return spells.keys if DRStats.barbarian? || DRStats.thief?
+
+    spells.select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
+          .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
+          .keys
   end
 end
 
