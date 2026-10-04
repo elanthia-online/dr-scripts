@@ -1,93 +1,313 @@
+# frozen_string_literal: true
+
 =begin
   Fills all five Moon Mage prediction pools.
 
-  Checks each pool with PREDICT STATE and observes constellations belonging to
-  that pool until it reports complete understanding.
+  For each pool that PREDICT STATE doesn't report as full, it observes the
+  heavens, then works through the bodies that feed that pool, are within your
+  circle and are in the sky, observing them through your telescope until
+  PREDICT STATE reports complete understanding. Bodies come from
+  data/base-constellations.yaml, the same data astrology.lic uses.
+
+  Needs a telescope (telescope_name, telescope_storage) and a view of the sky.
+  Runs ;buff astrology at the start and after every successful observation.
 =end
 
 class MoonieFill
+  # Filled in this order. The names match the pool keys in base-constellations.yaml.
+  POOLS = %w[Survival Magic Lore Defense Offense].freeze
+
+  # PREDICT STATE wording, weakest first. A word's index is the pool's level.
+  UNDERSTANDING_LEVELS = %w[no feeble weak fledgling modest decent significant potent insightful powerful complete].freeze
+  FULL_LEVEL = UNDERSTANDING_LEVELS.size - 1
+  POOL_STATE_PATTERN = /\b(#{UNDERSTANDING_LEVELS.join('|')}) understanding\b/.freeze
+
+  # CENTER replies and what each one means for the loop. "Your search for X"
+  # ends "turns up fruitless" when X is below the horizon and "is foiled by the
+  # daylight" for a constellation by day.
+  CENTER_RESPONSES = {
+    /You put your eye/                                    => :centered,
+    /Your search for|turns up fruitless|is foiled by the/ => :not_visible,
+    /What did you want/                                   => :not_visible,
+    /open it to make any use of it/                       => :closed,
+    /Center what/                                         => :no_telescope,
+    /can't see the sky|need a periscope/                  => :no_sky,
+    /The pain is too much|Your vision is too fuzzy/       => :injured,
+    /You must have both hands free/                       => :hands_full
+  }.freeze
+
+  # PEER replies that the success and injured lists in base-constellations.yaml
+  # don't cover.
+  PEER_CLOSED = /open it to make any use of it/.freeze
+  PEER_COOLDOWN = /You have not pondered|You are unable to make use of this latest observation/.freeze
+  PEER_SATURATED = /Too many futures cloud your mind/.freeze
+  PEER_POOL_FULL = /You believe you've learned all that you can/.freeze
+
+  # The game's observation timer runs 2-4 minutes after a successful observation.
+  PONDERED_FLAG = 'mooniefill-pondered'
+  PONDERED_MESSAGE = 'You feel you have sufficiently pondered your latest observation'
+  PONDER_WAIT_SECONDS = 300
+
+  # Safety nets so a pool whose state can't be read still ends.
+  MAX_OBSERVATIONS_PER_POOL = 20
+  MAX_RETRIES_PER_BODY = 2
+
   def initialize
-    @magic = ['Dawgolesh', 'Durgaulda', 'Ismenia', 'Yavash', 'Wolf', 'Cobra', 'Ox', 'Donkey', 'Coyote', 'Dove', 'Phoenix', 'Cow', 'Shrike', 'Jackal', 'Amlothi', 'Wren', 'Nightingale', 'Owl', 'Adder', 'Shrew', 'Toad']
-    @lore = ['Cobra', 'Donkey', 'Wren', 'Ismenia', 'Xibar', 'Raven', 'Dolphin', 'Albatross', 'Heron', 'Welkin', 'Phoenix', 'Shardstar', 'Weasel', 'King Snake', 'Hare', 'Brigantine', 'Scales', 'Amlothi', 'Verena']
-    @survival = ['Sun', 'Dolphin', 'Brigantine', 'Ox', 'Heart', 'Lion', 'Unicorn', 'Boar', 'Panther', 'Wolverine', 'Shark', 'Goshawk', 'Raccoon', 'Triquetra', 'Szeldia', 'Heron', 'Cow', 'Shrike', 'Ram', 'Vulture', 'Archer']
-    @offense = ['Szeldia', 'Er\'qutra', 'Boar', 'Panther', 'Wolverine', 'Shark', 'Triquetra', 'Weasel', 'Scales', 'Coyote', 'Owl', 'Shrew', 'Cat', 'Mongoose', 'Merewalda', 'Archer', 'Adder', 'Scorpion', 'Centaur', 'Viper', 'Spider']
-    @defense = ['Merewalda', 'Dawgolesh', 'Mongoose', 'Scorpion', 'Centaur', 'Lion', 'Goshawk', 'Raccoon', 'Morleena', 'Albatross', 'Welkin', 'Shardstar', 'King Snake', 'Hare', 'Dove', 'Nightingale', 'Katamba', 'Magpie', 'Vulture', 'Jackal', 'Giant']
-    @pools = ['Survival', 'Magic', 'Lore', 'Defense', 'Offense']
-    @settings = get_settings
-    do_the_things
-  end
-
-  def fill_pools
-    @pools.each do |pool|
-      case DRC.bput("predict state #{pool}", /no understanding/, /feeble understanding/,
-                    /weak understanding/, /fledgling understanding/, /modest understanding/,
-                    /decent understanding/, /significant understanding/, /potent understanding/,
-                    /insightful understanding/, /powerful understanding/, /complete understanding/)
-      when /complete understanding/
-        DRC.message("#{pool} is full!")
-      else
-        observe(pool)
-      end
-    end
-  end
-
-  def observe(pool)
-    if pool == 'Survival'
-      constellations = @survival
-    elsif pool == 'Magic'
-      constellations = @magic
-    elsif pool == 'Lore'
-      constellations = @lore
-    elsif pool == 'Offense'
-      constellations = @offense
-    elsif pool == 'Defense'
-      constellations = @defense
-    else
-      DRC.message("Wut?")
-    end
-
-    unless DRCMM.get_telescope?(@settings.telescope_name, @settings.telescope_storage)
-      DRC.message("Could not get telescope. Exiting.")
+    unless DRStats.moon_mage?
+      Lich::Messaging.msg('bold', 'MoonieFill: This script is only for Moon Mages. Exiting.')
       exit
     end
-    constellations.each do |constellation|
-      DRC.bput("center my #{@settings.telescope_name} on #{constellation}", /foiled by the daylight/, /What did you want/, /You put your eye/)
-      case DRC.bput('peer my telescope', /You learned something useful/, /You peer aimlessly/, /You are unable to make/, /Although you were nearly/, /Too many futures cloud your mind/)
-      when /You learned something useful/, /Although you were nearly/
-        waitfor 'You feel you have sufficiently pondered'
-        check_pool(pool)
-      when /Too many futures cloud your mind/
-        fill_pools
+
+    @settings = get_settings
+    @telescope_name = @settings.telescope_name
+    @telescope_storage = @settings.telescope_storage
+    constellations_data = get_data('constellations')
+    @constellations = constellations_data.constellations
+    @success_messages = constellations_data.observe_success_messages
+    @injured_messages = constellations_data.observe_injured_messages
+    @telescope_out = false
+    @awaiting_ponder = false
+
+    # Circle filtering needs a current circle; a fresh login can still read 0.
+    DRC.bput('info', 'Circle:') if DRStats.circle.zero?
+  end
+
+  def run
+    unless DRC.can_see_sky?
+      Lich::Messaging.msg('bold', 'MoonieFill: You need to be somewhere you can see the sky. Exiting.')
+      return
+    end
+
+    Flags.add(PONDERED_FLAG, PONDERED_MESSAGE)
+    DRC.wait_for_script_to_complete('buff', ['astrology'])
+    begin
+      POOLS.each do |pool|
+        break if fill_pool(pool) == :stop
+      end
+    ensure
+      put_away_telescope
+      Flags.delete(PONDERED_FLAG)
+    end
+  end
+
+  # Observes for one pool until it's full or nothing left can help.
+  # Returns :full, :not_full, or :stop when the whole run should end.
+  def fill_pool(pool)
+    return :full if pool_full?(pool)
+
+    bodies = candidate_bodies(pool)
+    return :stop unless bodies
+
+    if bodies.empty?
+      Lich::Messaging.msg('bold', "MoonieFill: Nothing in the sky within your circle feeds #{pool} right now. Try again later.")
+      return :not_full
+    end
+    return :stop unless take_out_telescope
+
+    observations = 0
+    bodies.each do |body|
+      retries = 0
+      loop do
+        case observe_body(body['name'])
+        when :success
+          DRC.wait_for_script_to_complete('buff', ['astrology'])
+          return :full if pool_full?(pool)
+
+          observations += 1
+          if observations >= MAX_OBSERVATIONS_PER_POOL
+            Lich::Messaging.msg('bold', "MoonieFill: #{pool} still isn't full after #{observations} observations. Moving on.")
+            return :not_full
+          end
+          # Otherwise observe the same body again once the timer has run.
+        when :pool_full
+          return :full if pool_full?(pool)
+
+          break
+        when :saturated
+          return :full if pool_full?(pool)
+
+          Lich::Messaging.msg('bold', "MoonieFill: Too many futures cloud your mind, so #{pool} can't take more right now. Moving on.")
+          return :not_full
+        when :retry
+          retries += 1
+          break if retries > MAX_RETRIES_PER_BODY
+        when :stop
+          return :stop
+        else
+          break
+        end
       end
     end
-    unless DRCMM.store_telescope?(@settings.telescope_name, @settings.telescope_storage)
-      DRC.message("Could not put away telescope. Don't lose it...")
-    end
+
+    Lich::Messaging.msg('bold', "MoonieFill: Ran out of bodies to observe before #{pool} filled. Try again later or at another time of day.")
+    :not_full
   end
 
-  def check_pool(pool)
-    DRC.wait_for_script_to_complete('buff', ['astrology'])
-    case DRC.bput("predict state #{pool}", /no understanding/, /feeble understanding/,
-                  /weak understanding/, /fledgling understanding/, /modest understanding/,
-                  /decent understanding/, /significant understanding/, /potent understanding/,
-                  /insightful understanding/, /powerful understanding/, /complete understanding/)
-    when /complete understanding/
-      DRC.message("#{pool} is full!")
-      return
+  # Reads the pool's level from PREDICT STATE and reports it.
+  def pool_full?(pool)
+    level = pool_level(pool)
+    if level == FULL_LEVEL
+      Lich::Messaging.msg('plain', "MoonieFill: #{pool} is full!")
+      return true
+    end
+
+    state = level ? "#{UNDERSTANDING_LEVELS[level]} understanding (#{level}/#{FULL_LEVEL})" : "couldn't read PREDICT STATE"
+    Lich::Messaging.msg('plain', "MoonieFill: #{pool}: #{state}.")
+    false
+  end
+
+  # Returns 0 (no understanding) to 10 (complete), or nil if the reply wasn't recognised.
+  def pool_level(pool)
+    result = DRC.bput("predict state #{pool.downcase}", POOL_STATE_PATTERN)
+    UNDERSTANDING_LEVELS.index(result.to_s[POOL_STATE_PATTERN, 1])
+  end
+
+  # Bodies worth observing for the pool, best first. Returns nil if indoors.
+  def candidate_bodies(pool)
+    visible = visible_bodies
+    return nil unless visible
+
+    # A visible constellation means it's night, so the telescope-only
+    # constellations are up too. Telescope-only planets are tried regardless.
+    night = visible.any? { |body| body['constellation'] }
+    faint = @constellations.select do |body|
+      body['telescope'] && body['circle'] <= DRStats.circle && (night || !body['constellation'])
+    end
+
+    (visible + faint).uniq { |body| body['name'] }
+                     .select { |body| body['pools'][pool] }
+                     .sort_by { |body| [-body['pools'][pool], -body['circle']] }
+  end
+
+  # Observes the heavens and returns the bodies above the horizon within circle
+  # range, or nil if indoors. Mirrors Astrology#visible_bodies.
+  def visible_bodies
+    if DRCMM.observe('heavens') == "That's a bit hard to do while inside"
+      Lich::Messaging.msg('bold', 'MoonieFill: You need to be outdoors to observe the sky. Exiting.')
+      return nil
+    end
+
+    bodies = []
+    while (line = get?)
+      break if line =~ /^Roundtime/i
+      next if line =~ /below the horizon/
+
+      body = @constellations.find { |data| /\b#{Regexp.escape(data['name'].split.last)}\b/i =~ line }
+      bodies << body if body
+    end
+    bodies.select { |body| body['circle'] <= DRStats.circle }
+  end
+
+  # Centers the telescope on one body and peers at it.
+  # Returns :success, :pool_full, :saturated, :retry, :skip or :stop.
+  def observe_body(name)
+    wait_for_ponder
+
+    case center_on(name)
+    when :centered
+      peer
+    when :closed
+      open_telescope ? :retry : :stop
+    when :no_telescope
+      @telescope_out = false
+      take_out_telescope ? :retry : :stop
+    when :no_sky
+      Lich::Messaging.msg('bold', "MoonieFill: You can't see the sky from here. Stopping.")
+      :stop
+    when :injured
+      Lich::Messaging.msg('bold', 'MoonieFill: Your eyes are too hurt to observe. Get healed, then run it again.')
+      :stop
+    when :hands_full
+      Lich::Messaging.msg('bold', 'MoonieFill: The game wants both hands free to center the telescope. Stopping.')
+      :stop
     else
-      observe(pool)
+      :skip
     end
   end
 
-  def do_the_things
-    DRC.wait_for_script_to_complete('buff', ['astrology'])
-    fill_pools
+  def center_on(name)
+    result = DRC.bput("center my #{@telescope_name} on #{name}", *CENTER_RESPONSES.keys).to_s
+    CENTER_RESPONSES.find { |pattern, _| pattern.match?(result) }&.last || :skip
+  end
+
+  def peer
+    Flags.reset(PONDERED_FLAG)
+    outcome = peer_outcome(Array(DRCMM.peer_telescope).join("\n"))
+    @awaiting_ponder = true if %i[success cooldown].include?(outcome)
+
+    case outcome
+    when :closed
+      open_telescope ? :retry : :stop
+    when :injured
+      Lich::Messaging.msg('bold', 'MoonieFill: Your eyes are too hurt to observe. Get healed, then run it again.')
+      :stop
+    when :cooldown
+      :retry
+    else
+      outcome
+    end
+  end
+
+  # Success is checked before the "full" messages: a body that feeds two pools
+  # can report one pool full and still add to the other.
+  def peer_outcome(text)
+    return :injured if @injured_messages.any? { |message| text.include?(message) }
+    return :closed if text.match?(PEER_CLOSED)
+    return :success if @success_messages.any? { |message| text.include?(message) }
+    return :cooldown if text.match?(PEER_COOLDOWN)
+    return :saturated if text.match?(PEER_SATURATED)
+    return :pool_full if text.match?(PEER_POOL_FULL)
+
+    :skip
+  end
+
+  # After a successful observation the next one has to wait for the game's timer.
+  def wait_for_ponder
+    return unless @awaiting_ponder
+
+    @awaiting_ponder = false
+    return if Flags[PONDERED_FLAG]
+
+    Lich::Messaging.msg('plain', 'MoonieFill: Waiting for the last observation to settle (2-4 minutes).')
+    PONDER_WAIT_SECONDS.times do
+      break if Flags[PONDERED_FLAG]
+
+      pause 1
+    end
+  end
+
+  def open_telescope
+    result = DRC.bput("open my #{@telescope_name}", 'extend your telescope', 'already open', 'What were you referring to')
+    return true if result =~ /extend your telescope|already open/
+
+    Lich::Messaging.msg('bold', 'MoonieFill: Could not open your telescope. Stopping.')
+    false
+  end
+
+  def take_out_telescope
+    return true if @telescope_out
+
+    unless DRCMM.get_telescope?(@telescope_name, @telescope_storage)
+      Lich::Messaging.msg('bold', 'MoonieFill: Could not get telescope. Exiting.')
+      return false
+    end
+    @telescope_out = true
+  end
+
+  def put_away_telescope
+    return unless @telescope_out
+
+    @telescope_out = false
+    return if DRCMM.store_telescope?(@telescope_name, @telescope_storage)
+
+    Lich::Messaging.msg('bold', "MoonieFill: Could not put away telescope. Don't lose it...")
   end
 end
 
 before_dying do
+  Flags.delete(MoonieFill::PONDERED_FLAG)
   settings = get_settings
   DRCMM.store_telescope?(settings.telescope_name, settings.telescope_storage)
 end
 
-MoonieFill.new
+MoonieFill.new.run
