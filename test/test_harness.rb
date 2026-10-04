@@ -1184,6 +1184,7 @@ module Harness
       def release_invisibility; end
       def beep; end
       def hide?(*_args); false; end
+      def can_see_sky?(*_args); false; end
       def forage?(*_args); false; end
       def collect(*_args); end
       def retreat(*_args); end
