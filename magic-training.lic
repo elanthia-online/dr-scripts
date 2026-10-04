@@ -78,8 +78,8 @@ class MagicTraining
     magic_skills = training_spells.keys
     skills_to_train = magic_skills
                       .select { |skill| training_skills.include?(skill) } # filter to skills you want to train
-                      .select { |skill| DRCMM.update_astral_data(training_spells[skill]) } # filter to spells you can cast now
                       .reject { |skill| DRSkill.getxp(skill) > exp_threshold } # filter out skills you don't need to train
+                      .select { |skill| DRCMM.update_astral_data(training_spells[skill], settings) } # filter to spells you can cast now; last, as planet lookup uses the telescope
                       .sort_by do |skill|
       [
         DRSkill.getxp(skill),   # choose first by skills with lowest learning rate
