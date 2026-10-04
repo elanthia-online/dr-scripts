@@ -154,7 +154,7 @@ RSpec.describe CarveLockpicks do
         })
       end
 
-      it 'ignores the night-only spell during the day, since buff would not cast it' do
+      it 'ignores the night-only spell during the day, when it should not be cast' do
         UserVars.sun = { 'day' => true, 'night' => false }
         DRSpells._set_active_spells('Ease Burden' => 10, 'Sun Spell' => 10)
 
@@ -162,7 +162,9 @@ RSpec.describe CarveLockpicks do
         3.times { carver.check_status }
       end
 
-      it 'ignores the day-only spell at night, since buff would not cast it' do
+      # buff itself still casts day spells at night (do_buffs' chained select! skips its day filter),
+      # but carve-lockpicks shouldn't launch buff just for one
+      it 'ignores the day-only spell at night, when it should not be cast' do
         UserVars.sun = { 'day' => false, 'night' => true }
         DRSpells._set_active_spells('Ease Burden' => 10, 'Shadows' => 10)
 

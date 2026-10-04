@@ -171,8 +171,8 @@ class CarveLockpicks
       spell_list.reject! { |spell| spell =~ /delay|khri|puncture|slice|impact|fire|cold|electric/i }
       spell_list.all? { |name| DRSpells.active_spells["Khri #{name}"] }
     when Hash
-      # Ignore night/day spells out of season, which buff won't cast, then use DRCA.cast_spells' skip rule,
-      # so buff only runs when it would cast something
+      # Leave out night/day spells that shouldn't be cast now (what DRCA.do_buffs' filters intend), then use
+      # DRCA.cast_spells' skip rule, so buff only runs when something should be cast
       in_season = buffs.select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
                        .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
       in_season.all? { |name, data| DRSpells.active_spells[name] && (data['recast'].nil? || DRSpells.active_spells[name].to_i > data['recast']) }
