@@ -16,6 +16,9 @@ class SanowretCrystal
     @adjective = settings.sanowret_adjective
     @no_use_scripts = settings.sanowret_no_use_scripts
     @no_use_rooms = settings.sanowret_no_use_rooms
+    # Titles of rooms that refused the crystal this run, matched exactly. Never fed to
+    # a regex: a bracketed title like [[Crossing, Market]] becomes a character class.
+    @refused_room_titles = []
     @force_exhale = args.exhale || settings.sanowret_force_exhale
     @ephemeron = settings.ephemeron
     exit unless DRSkill.getrank('Arcana') < 1750
@@ -35,11 +38,13 @@ class SanowretCrystal
     end
     return unless response =~ /This is not a good place for that\./
 
-    DRC.message("Could not use crystal in room #{DRRoom.title}.")
-    DRC.message('Consider adding this room to your sanowret_no_use_rooms settings.')
+    title = DRRoom.title
+    DRC.message("Could not use crystal in room #{title}.")
+    # Suggest the title without its brackets, which would make a regex character class in the yaml
+    DRC.message("Consider adding '#{title.to_s.delete_prefix('[[').delete_suffix(']]')}' to your sanowret_no_use_rooms settings.")
     # Go ahead and remember to ignore this room while the script is running
     # This convenience won't persist between script runs though, go update your yaml
-    @no_use_rooms.push(DRRoom.title) unless @no_use_rooms.include?(DRRoom.title)
+    @refused_room_titles.push(title) unless @refused_room_titles.include?(title)
   end
 
   def check_crystal
@@ -47,6 +52,7 @@ class SanowretCrystal
     return if DRSkill.getxp('Arcana') >= 25
     return if hiding? || invisible?
     return if @no_use_scripts.any? { |name| Script.running?(name) }
+    return if @refused_room_titles.include?(DRRoom.title)
     return if @no_use_rooms.any? { |name| /#{name}/ =~ DRRoom.title || name.to_s == Room.current.id.to_s }
 
     if @worn_crystal
