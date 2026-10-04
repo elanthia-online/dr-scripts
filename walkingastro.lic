@@ -32,6 +32,7 @@ class WalkingAstro
     @divination_tool = @settings.divination_tool
     @divination_bones_storage = @settings.divination_bones_storage
     @telescope_storage = @settings.telescope_storage
+    @telescope_name = @settings.telescope_name
     @no_use_scripts = @settings.walkingastro_no_use_scripts
     @use_tools = @settings.walkingastro['use_tools']
     @use_partial_pools = @settings.walkingastro['use_partial_pools']
@@ -54,47 +55,53 @@ class WalkingAstro
     end
 
     DRC.wait_for_script_to_complete('buff', ['walkingastro'])
-    get_telescope
+    finished = get_telescope
 
     # Resume scripts
     DRC.safe_unpause_list(scripts_to_unpause)
+    finished
   end
 
+  # Returns false only when there was no free hand for the telescope, so that
+  # main_loop tries again as soon as both hands are empty.
   def get_telescope
     if Flags['offense-full'] && Flags['defense-full'] && Flags['magic-full'] && Flags['survival-full'] && Flags['lore-full']
       DRC.message("walkingastro: all pools full, skipping directly to prediction checks") if $debug_mode_walkingastro
       check_predict
-      return
+      return true
     end
-    case DRCMM.get_telescope(@telescope_storage)
-    when 'You get a', 'You remove', 'You untie'
+
+    if DRCMM.get_telescope?(@telescope_name, @telescope_storage)
       determine_time
-    when 'You need a free hand to pick that up.'
-      quick_retry
-    when 'What were you referring to'
-      determine_time if righthand.include?('telescope')
-      if lefthand.include?('telescope')
-        DRCMM.store_telescope(@telescope_storage)
-        quick_retry
-      end
-    when 'You are already holding that.'
-      determine_time
+      # should_observe? needs empty hands, so never leave the telescope out.
+      store_telescope
+      return true
     end
+
+    # A timed-out or unrecognised reply can fail the get with the telescope
+    # already in hand.
+    store_telescope
+    if lefthand && righthand
+      DRC.message("walkingastro: No free hand to get your #{@telescope_name}. Trying again once your hands are empty.")
+      return false
+    end
+
+    DRC.message("walkingastro: Couldn't get your #{@telescope_name}. Check telescope_name and telescope_storage in your settings.")
+    true
   end
 
-  def quick_retry
-    pause 20
-    get_telescope
+  def store_telescope
+    return if DRCMM.store_telescope?(@telescope_name, @telescope_storage)
+
+    DRC.message("walkingastro: Couldn't put your #{@telescope_name} away. Observing waits until your hands are empty.")
   end
 
   def determine_time
     @pool = nil
     case DRC.bput('time', 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk', 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise')
     when 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk'
-      constellation = %w[champions elide issendar kirmhara].sample
       @pool = 'survival' if @use_partial_pools == true
-      center(constellation)
-      # center('elanthian sun') # replace constellation and center lines above with this once wild magic event is over
+      center('elanthian sun')
     when 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise'
       constellation = 'heart' if DRStats.circle >= 1
       constellation = %w[heart wolf].sample if DRStats.circle >= 2
@@ -105,7 +112,6 @@ class WalkingAstro
       constellation = %w[wolf raven spider ram magpie].sample if DRStats.circle >= 40
       constellation = %w[wolf raven spider ram giant].sample if DRStats.circle >= 41
       constellation = %w[toad raven spider ram magpie].sample if DRStats.circle >= 44
-      constellation = %w[champions elide issendar kirmhara].sample # line to be deleted when wild magic event ends
       if @use_partial_pools == true
         case constellation
         when 'cat', 'spider'
@@ -114,7 +120,7 @@ class WalkingAstro
           @pool = 'defense'
         when 'wolf', 'toad'
           @pool = 'magic'
-        when 'heart', 'ram', 'champions', 'elide', 'issendar', 'kirmhara' # last four to be deleted when wild magic event ends
+        when 'heart', 'ram'
           @pool = 'survival'
         when 'raven'
           @pool = 'lore'
@@ -124,33 +130,20 @@ class WalkingAstro
     end
   end
 
+  # center_telescope doesn't return the game's reply, so peer either way. Peering
+  # at a sky you can't see finds nothing to predict from, and observe puts the
+  # telescope away.
   def center(target)
-    case DRCMM.center_telescope(target)
-    when "That's a bit tough to do when you can't see the sky", 'Your search for', "The pain is too much", "Your vision is too fuzzy"
-      DRCMM.store_telescope(@telescope_storage)
-    else
-      observe
-    end
+    DRCMM.center_telescope(target)
+    observe
   end
 
   def observe
+    # peer_telescope returns every line of the observation as an Array.
     result = DRCMM.peer_telescope
-    if Gem::Version.new(LICH_VERSION) <= Gem::Version.new('5.11.0')
-      case result
-      when "You believe you've learned all that you can about"
-        full_pool = true if Flags["#{@pool}-full"]
-      when 'Too many futures cloud your mind - you learn nothing.'
-        full_pool = true
-      when "You learned something useful", "you still learned more"
-        partial_pool = true
-      else
-        failed = true
-      end
-    else
-      full_pool = result.any? { |line| line.match?(Regexp.union(@full_messages)) }
-      partial_pool = result.any? { |line| line.match?(Regexp.union(@partial_messages)) }
-      failed = result.any? { |line| line.match?(Regexp.union(@failed_messages)) }
-    end
+    full_pool = result.any? { |line| line.match?(Regexp.union(@full_messages)) }
+    partial_pool = result.any? { |line| line.match?(Regexp.union(@partial_messages)) }
+    failed = result.any? { |line| line.match?(Regexp.union(@failed_messages)) }
     DRC.message("result: #{result}") if $debug_mode_walkingastro
     DRC.message("full_pool: #{full_pool}") if $debug_mode_walkingastro
     DRC.message("partial_pool: #{partial_pool}") if $debug_mode_walkingastro
@@ -159,21 +152,21 @@ class WalkingAstro
     when full_pool
       DRC.message('walkingastro: Matched on a full pool.') if $debug_mode_walkingastro
       waitrt?
-      DRCMM.store_telescope(@telescope_storage)
+      store_telescope
       check_predict
     when partial_pool
       DRC.message('walkingastro: Matched on partial pool but not on full pool. Only predicting if use_partial_pools is set to true') if $debug_mode_walkingastro
       waitrt?
-      DRCMM.store_telescope(@telescope_storage)
+      store_telescope
       check_predict if @use_partial_pools == true
     when failed
       DRC.message('walkingastro: Failed observation. Not predicting.') if $debug_mode_walkingastro
       waitrt?
-      DRCMM.store_telescope(@telescope_storage)
+      store_telescope
     else
       DRC.message('walkingastro: Something went wrong. Not predicting.') if $debug_mode_walkingastro
       waitrt?
-      DRCMM.store_telescope(@telescope_storage)
+      store_telescope
     end
   end
 
@@ -197,15 +190,18 @@ class WalkingAstro
     DRCMM.align(@pool)
     waitrt?
     keep_away
-    if !@divination_bones_storage.empty? && @use_tools == true
+    if !@divination_bones_storage.nil? && !@divination_bones_storage.empty? && @use_tools == true
       DRCMM.roll_bones(@divination_bones_storage)
-    elsif !@divination_tool.empty? && @use_tools == true
+    elsif !@divination_tool.nil? && !@divination_tool.empty? && @use_tools == true
       DRCMM.use_div_tool(@divination_tool)
       unless @settings.walkingastro['analyze_divination_tool'] != true
-        DRCMM.get_div_tool(@divination_tool)
-        keep_away
-        DRC.bput("analyze my #{@divination_tool['name']}", 'Roundtime')
-        DRCMM.store_div_tool(@divination_tool)
+        if DRCMM.get_div_tool?(@divination_tool)
+          keep_away
+          DRC.bput("analyze my #{@divination_tool['name']}", 'Roundtime')
+          DRC.message("walkingastro: Couldn't put your #{@divination_tool['name']} away.") unless DRCMM.store_div_tool?(@divination_tool)
+        else
+          DRC.message("walkingastro: Couldn't get your #{@divination_tool['name']} to analyze it.")
+        end
       end
     else
       DRCMM.predict('future')
@@ -279,11 +275,12 @@ class WalkingAstro
 
   def main_loop
     last_observe = Time.now
-    do_prediction
+    # No free hand for the telescope: keep the flag so it tries again as soon
+    # as should_observe? sees empty hands, instead of waiting for the timer.
+    Flags['observation-ready'] = true unless do_prediction
     loop do
       if Flags['observation-ready']
-        if should_observe?
-          do_prediction
+        if should_observe? && do_prediction
           Flags.reset("observation-ready")
           last_observe = Time.now
         end
@@ -295,10 +292,11 @@ class WalkingAstro
 end
 
 before_dying do
-  telescope_storage = get_settings.telescope_storage
-  divination_tool = get_settings.divination_tool
-  DRCMM.store_telescope(telescope_storage) if DRC.left_hand.include?('telescope') || DRC.right_hand.include?('telescope')
-  DRCMM.store_div_tool(divination_tool) if DRC.left_hand.include?(divination_tool['name']) || DRC.right_hand.include?(divination_tool['name'])
+  settings = get_settings
+  telescope_name = settings.telescope_name
+  divination_tool = settings.divination_tool
+  DRCMM.store_telescope?(telescope_name, settings.telescope_storage) if DRCI.in_hands?(telescope_name)
+  DRCMM.store_div_tool?(divination_tool) if divination_tool && divination_tool['name'] && DRCI.in_hands?(divination_tool['name'])
 end
 
 WalkingAstro.new

@@ -997,6 +997,10 @@ module Harness
     hand.empty? ? $right_hand : hand.find { |instance| $right_hand =~ /#{instance}/i }
   end
 
+  # lich-5 global_defs.rb aliases these to checkleft/checkright.
+  alias lefthand checkleft
+  alias righthand checkright
+
   def waitrt?; end
 
   def waitcastrt?; end
@@ -1355,6 +1359,7 @@ module Harness
       def moon_used_to_summon_weapon(*_args); end
       def get_telescope?(*_args); true; end
       def store_telescope?(*_args); true; end
+      def get_div_tool?(*_args); true; end
       def store_div_tool?(*_args); true; end
       def observe(*_args); end
       def predict(*_args); end
