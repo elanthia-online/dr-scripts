@@ -122,7 +122,7 @@ class CarveLockpicks
       next if DRCI.put_away_item?("lockpick ring", container)
 
       # Either the buy failed or the bag is full; buying more would only pile paid-for rings in your hands
-      DRC.message("Couldn't put a lockpick ring in your #{container}, stopping. Check your hands for one you've paid for.")
+      DRC.message("Couldn't put a lockpick ring in your #{container}, stopping. If the purchase went through, the ring is still in your hands.")
       exit
     end
   end
@@ -159,17 +159,23 @@ class CarveLockpicks
     DRC.bput("sit", 'You sit', 'You are already sitting', 'You rise', 'While swimming?') unless sitting?
   end
 
-  # A Thief's carve set is a list of khris (as DRCA.start_khris takes); a spell set is a Hash of spell name to data
+  # A Thief's or Barbarian's carve set is a list of khris or abilities; a spell set is a Hash of spell name to data
   def carve_buffs_active?
     buffs = @settings.waggle_sets['carve']
     case buffs
     when Array
+      # Barbarian abilities are checked by name, as DRCA.start_barb_abilities does
+      return buffs.all? { |name| DRSpells.active_spells[name] } if DRStats.barbarian?
+
       spell_list = buffs.join(' ').split(' ').map(&:capitalize)
       spell_list.reject! { |spell| spell =~ /delay|khri|puncture|slice|impact|fire|cold|electric/i }
       spell_list.all? { |name| DRSpells.active_spells["Khri #{name}"] }
     when Hash
-      # Same skip rule DRCA.cast_spells uses, so buff only runs when it would cast something
-      buffs.all? { |name, data| DRSpells.active_spells[name] && (data['recast'].nil? || DRSpells.active_spells[name].to_i > data['recast']) }
+      # Ignore night/day spells out of season, which buff won't cast, then use DRCA.cast_spells' skip rule,
+      # so buff only runs when it would cast something
+      in_season = buffs.select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
+                       .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
+      in_season.all? { |name, data| DRSpells.active_spells[name] && (data['recast'].nil? || DRSpells.active_spells[name].to_i > data['recast']) }
     else
       true
     end

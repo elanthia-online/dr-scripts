@@ -143,9 +143,67 @@ RSpec.describe CarveLockpicks do
       end
     end
 
+    context 'with night-only and day-only spells in the set' do
+      let(:carver) do
+        build_carver(waggle_sets: {
+          'carve' => {
+            'Ease Burden' => { 'abbrev' => 'ease' },
+            'Shadows'     => { 'abbrev' => 'shadows', 'night' => true },
+            'Sun Spell'   => { 'abbrev' => 'sun', 'day' => true }
+          }
+        })
+      end
+
+      it 'ignores the night-only spell during the day, since buff would not cast it' do
+        UserVars.sun = { 'day' => true, 'night' => false }
+        DRSpells._set_active_spells('Ease Burden' => 10, 'Sun Spell' => 10)
+
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        3.times { carver.check_status }
+      end
+
+      it 'ignores the day-only spell at night, since buff would not cast it' do
+        UserVars.sun = { 'day' => false, 'night' => true }
+        DRSpells._set_active_spells('Ease Burden' => 10, 'Shadows' => 10)
+
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        carver.check_status
+      end
+
+      it 'runs buff when the in-season spell has dropped' do
+        UserVars.sun = { 'day' => false, 'night' => true }
+        DRSpells._set_active_spells('Ease Burden' => 10)
+
+        expect(DRC).to receive(:wait_for_script_to_complete).with('buff', ['carve'])
+        carver.check_status
+      end
+    end
+
+    context "with a Barbarian's ability list (Array)" do
+      let(:carver) { build_carver(waggle_sets: { 'carve' => %w[Bear Focus] }) }
+
+      before(:each) { DRStats.guild = 'Barbarian' }
+
+      it 'skips buff when every ability is active, checked by its own name rather than as a khri' do
+        DRSpells._set_active_spells('Bear' => 10, 'Focus' => 10)
+
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        3.times { carver.check_status }
+      end
+
+      it 'runs buff when an ability has dropped' do
+        DRSpells._set_active_spells('Bear' => 10)
+
+        expect(DRC).to receive(:wait_for_script_to_complete).with('buff', ['carve'])
+        carver.check_status
+      end
+    end
+
     context 'with no carve set' do
       let(:carver) { build_carver(waggle_sets: {}) }
 
+      # Pins the else branch. Under Lich the old code also skipped buff here: the NilClass patch
+      # turned nil.join(' ').split(' ') into [], which the harness doesn't load.
       it 'does not buff' do
         expect(DRC).not_to receive(:wait_for_script_to_complete)
         carver.check_status
