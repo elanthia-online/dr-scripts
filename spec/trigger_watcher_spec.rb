@@ -15,11 +15,25 @@ TriggerWatcherMethods = load_lic_methods(
 
 RSpec.describe 'trigger-watcher.lic' do
   describe '=pause' do
-    # Mirrors the main loop's handling of a `=pause` response line.
+    # A copy of the three statements in the main loop's `elsif string =~ /^=pause\b/i`
+    # branch. The main loop is top-level code that load_lic_methods can't extract,
+    # so the 'still matches the main loop' example below fails if the two drift apart.
     def run_pause_response(response)
       exec_pause = response.gsub('=pause', '').strip
       exec_pause = TriggerWatcherMethods.parse_enclosing_curly_braces(exec_pause)
       TriggerWatcherMethods.execute_pause(exec_pause)
+    end
+
+    it 'still matches the main loop =pause branch that run_pause_response copies' do
+      main_loop_branch = Regexp.new(
+        [
+          "exec_pause = string.gsub('=pause', '').strip",
+          'exec_pause = parse_enclosing_curly_braces(exec_pause)',
+          'execute_pause(exec_pause)'
+        ].map { |statement| Regexp.escape(statement) }.join('\s+')
+      )
+
+      expect(File.read(lic_path('trigger-watcher.lic'))).to match(main_loop_branch)
     end
 
     before do
@@ -36,32 +50,32 @@ RSpec.describe 'trigger-watcher.lic' do
       it 'pauses for every digit of a two-digit number, not just the first' do
         run_pause_response('=pause {10}')
 
-        expect(TriggerWatcherMethods).to have_received(:pause).with(10)
+        expect(TriggerWatcherMethods).to have_received(:pause).with(10.0)
       end
 
       it 'pauses for 30 seconds when asked for 30' do
         run_pause_response('=pause {30}')
 
-        expect(TriggerWatcherMethods).to have_received(:pause).with(30)
+        expect(TriggerWatcherMethods).to have_received(:pause).with(30.0)
       end
 
       it 'still pauses for a single-digit number' do
         run_pause_response('=pause {5}')
 
-        expect(TriggerWatcherMethods).to have_received(:pause).with(5)
+        expect(TriggerWatcherMethods).to have_received(:pause).with(5.0)
       end
 
       it 'ignores spaces inside the braces' do
         run_pause_response('=pause { 10 }')
 
-        expect(TriggerWatcherMethods).to have_received(:pause).with(10)
+        expect(TriggerWatcherMethods).to have_received(:pause).with(10.0)
       end
 
       it 'tells the player the same number of seconds it pauses for' do
         run_pause_response('=pause {10}')
 
         expect(DRC).to have_received(:message).with('  Pausing 10 seconds.')
-        expect(TriggerWatcherMethods).to have_received(:pause).with(10)
+        expect(TriggerWatcherMethods).to have_received(:pause).with(10.0)
       end
 
       it 'echoes the full number in debug mode' do
