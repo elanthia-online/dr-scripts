@@ -9,6 +9,8 @@ script.want_downstream = false
 script.want_downstream_xml = true
 hide_me
 
+# Remove the hook here, not only in the main loop's ensure: when the script is
+# killed, Lich checks for leftover hooks before the killed thread's ensure runs.
 before_dying do
   DownstreamHook.remove('sorter')
 end

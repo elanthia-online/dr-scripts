@@ -11,6 +11,51 @@ require 'spec_helper'
 
 SorterHelpers = load_lic_methods('sorter.lic', 'categorize_item', 'filter_inventory_line')
 
+RSpec.describe 'sorter.lic before_dying teardown' do
+  # Evaluates the real column-0 `before_dying do ... end` block from sorter.lic
+  # with before_dying stubbed to capture it, so the spec runs the shipped
+  # teardown rather than a copy of it.
+  let(:teardown) do
+    path = lic_path('sorter.lic')
+    lines = File.readlines(path)
+    start_idx = lines.index { |l| l =~ /^before_dying\s+do\s*$/ }
+    raise "Could not find top-level 'before_dying do' in sorter.lic" unless start_idx
+
+    end_idx = start_idx + 1 + lines[(start_idx + 1)..].index { |l| l =~ /^end\s*$/ }
+    captured = nil
+    context = Object.new
+    context.define_singleton_method(:before_dying) { |&block| captured = block }
+    context.instance_eval(lines[start_idx..end_idx].join, path, start_idx + 1)
+    captured
+  end
+
+  after { DownstreamHook.remove('sorter') }
+
+  it 'registers a before_dying block' do
+    expect(teardown).to be_a(Proc)
+  end
+
+  it 'removes the sorter downstream hook when the script dies' do
+    DownstreamHook.add('sorter', proc { |line| line })
+    expect(DownstreamHook.list).to include('sorter')
+
+    teardown.call
+
+    expect(DownstreamHook.list).not_to include('sorter')
+  end
+
+  it 'leaves other scripts\' downstream hooks registered' do
+    DownstreamHook.add('sorter', proc { |line| line })
+    DownstreamHook.add('other-script', proc { |line| line })
+
+    teardown.call
+
+    expect(DownstreamHook.list).to include('other-script')
+  ensure
+    DownstreamHook.remove('other-script')
+  end
+end
+
 RSpec.describe 'sorter.lic helpers' do
   let(:item_data) do
     {
