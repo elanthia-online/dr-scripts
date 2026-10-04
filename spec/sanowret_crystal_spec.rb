@@ -44,9 +44,10 @@ RSpec.describe SanowretCrystal do
     DRSkill._set_xp('Arcana', 0)
   end
 
+  # id: nil puts us in an unmapped room, where Room.current is nil.
   def in_room(title, id: 1)
     DRRoom.title = title
-    allow(Room).to receive(:current).and_return(instance_double(Map, id: id))
+    allow(Room).to receive(:current).and_return(id && instance_double(Map, id: id))
   end
 
   # ===========================================================================
@@ -98,13 +99,28 @@ RSpec.describe SanowretCrystal do
       expect(crystal.instance_variable_get(:@refused_room_titles)).to eq(['[[Crossing, Market]]'])
     end
 
-    it 'suggests the title without its brackets, so pasting it into the yaml is safe' do
+    it 'suggests the room id, which matches exactly even when the title has regex metacharacters' do
       allow(DRC).to receive(:message)
-      in_room('[[Crossing, Market]]')
+      in_room('[[Who Clothes There?, Sales]]', id: 4321)
       crystal.use_crystal
 
-      expect(DRC).to have_received(:message).with('Could not use crystal in room [[Crossing, Market]].')
+      expect(DRC).to have_received(:message).with('Could not use crystal in room [[Who Clothes There?, Sales]].')
+      expect(DRC).to have_received(:message).with('Consider adding room id 4321 to your sanowret_no_use_rooms settings.')
+    end
+
+    it 'suggests the title without its brackets in an unmapped room' do
+      allow(DRC).to receive(:message)
+      in_room('[[Crossing, Market]]', id: nil)
+      crystal.use_crystal
+
       expect(DRC).to have_received(:message).with("Consider adding 'Crossing, Market' to your sanowret_no_use_rooms settings.")
+    end
+
+    it 'remembers an unmapped room by its title' do
+      in_room('[[Crossing, Market]]', id: nil)
+      crystal.use_crystal
+
+      expect(crystal.instance_variable_get(:@refused_room_titles)).to eq(['[[Crossing, Market]]'])
     end
   end
 

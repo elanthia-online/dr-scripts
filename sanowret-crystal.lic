@@ -39,9 +39,15 @@ class SanowretCrystal
     return unless response =~ /This is not a good place for that\./
 
     title = DRRoom.title
+    room_id = Room.current&.id
     DRC.message("Could not use crystal in room #{title}.")
-    # Suggest the title without its brackets, which would make a regex character class in the yaml
-    DRC.message("Consider adding '#{title.to_s.delete_prefix('[[').delete_suffix(']]')}' to your sanowret_no_use_rooms settings.")
+    # Prefer the room id, which matches exactly; a title is read as a regex from the yaml,
+    # so suggest it without the brackets that would make a character class
+    if room_id
+      DRC.message("Consider adding room id #{room_id} to your sanowret_no_use_rooms settings.")
+    else
+      DRC.message("Consider adding '#{title.to_s.delete_prefix('[[').delete_suffix(']]')}' to your sanowret_no_use_rooms settings.")
+    end
     # Go ahead and remember to ignore this room while the script is running
     # This convenience won't persist between script runs though, go update your yaml
     @refused_room_titles.push(title) unless @refused_room_titles.include?(title)
