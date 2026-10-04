@@ -90,6 +90,7 @@ class Shape
       if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
         DRC.bput('study my instructions', 'Roundtime', 'Study them again')
       end
+      DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
       swap_tool('drawknife')
       DRCC.get_crafting_item("#{@material} lumber", @bag, @bag_items, @belt)
       check_hand('lumber') unless DRCI.in_left_hand?('lumber')

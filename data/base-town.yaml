@@ -36,6 +36,9 @@ Crossing:
   gemshop:
     id: 4652
     name: appraiser
+  premium_gemshop:
+    id: 12223
+    name: Jasmine
   pawnshop:
     id: 8261
     name: Cormyn

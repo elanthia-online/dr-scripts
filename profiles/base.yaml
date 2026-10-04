@@ -1535,6 +1535,43 @@ sell_loot_ignored_metals_and_stones:
 # For thieves to sell their component pouch of harvested traps.
 # If set to true, you likely also want to set harvest_traps and component_container.
 sell_loot_traps: false
+# To sell runestones from designated container(s) to the hometown pawnshop.
+sell_loot_runestones: false
+# The container that has the runestones to sell (e.g. a loot sack or haversack).
+# CAUTION: Do NOT set this to your runestone_storage container. If this container matches
+# runestone_storage, sell-loot will automatically skip runestone sales to protect casting runestones.
+sell_loot_runestones_container:
+# Number of each runestone mineral to keep per container before selling excess (default 0 sells all non-ignored).
+# Note: Keep count applies individually to each configured container.
+sell_loot_runestones_keep_count: 0
+# Specify the runestones (by mineral material) NOT TO SELL.
+# Mineral materials map to specific spell templates.
+sell_loot_ignored_runestones:
+  # - asketine # Compost
+  # - avaes # Clear Vision
+  # - axinite # Mental Blast / Glythtide's Gift
+  # - azurite # Shadows
+  # - calavarite # Arc Light
+  # - celestite # Geyser
+  # - elbaite # Instinct / Bless
+  # - electrum # Eagle's Cry
+  # - erythrite # Rejuvenation
+  # - hafaltu # Ethereal Shield
+  # - iheaneu'a # Psychic Shield
+  # - ilmenite # Clear Vision
+  # - imnera # Zephyr
+  # - indakar # Protection from Evil
+  # - lemicule # Heroic Strength
+  # - malachite # Air Bubble
+  # - quartz # Refresh
+  # - rhodonite # Fire Shards
+  # - scheelite # Fire Ball
+  # - selenite # Athleticism
+  # - sraeth # Minor Physical Protection / Visage
+  # - sunstone # Compost
+  # - topaz # Protection from Evil
+  # - xibaryl # Hypnotize / Calm
+  # - zengalmi # Gar Zeng
 sell_loot_money_on_hand: 3 silver
 sell_loot_skip_bank: false
 sell_loot_skip_exchange: false
@@ -1557,6 +1594,8 @@ sell_loot_trader_nouns:
 sell_loot_minimum_markup: 0
 sell_pouches_for_trading: false
 sale_pouches_container: backpack
+# sell-pouches keeps selling pouches until Trading is above this mindstate (0-34).
+sell_pouches_trading_limit: 30
 
 # Misc settings
 storage_containers:
@@ -1625,6 +1664,10 @@ herbs_override_herbstock: false
 
 # Setting to override combat-trainer skipping herbs that require a hand to use while in combat
 combat_trainer_herbs_allowhands: false
+
+# When herbs: true, have combat-trainer's Herbs ability use remedies (remedies.yaml) instead of raw herbs.
+# No effect when herbs: false.
+combat_trainer_use_remedies: false
 
 # Skip harnessing before infusing or not
 osrel_no_harness: false
