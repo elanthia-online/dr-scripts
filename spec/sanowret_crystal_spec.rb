@@ -116,6 +116,18 @@ RSpec.describe SanowretCrystal do
       expect(DRC).to have_received(:message).with("Consider adding 'Crossing, Market' to your sanowret_no_use_rooms settings.")
     end
 
+    # $clean_lich_char is only set when another spec defines it, so match around it.
+    { 'a mapped room' => 4321, 'an unmapped room' => nil }.each do |label, id|
+      it "asks for the room to be posted in the lich discord for base.yaml in #{label}" do
+        allow(DRC).to receive(:message)
+        in_room('[[Crossing, Market]]', id: id)
+        crystal.use_crystal
+
+        expect(DRC).to have_received(:message)
+          .with(/\APlease also post this room in the lich discord \(listed in .?links\) so it can be added to base\.yaml for everyone\.\z/)
+      end
+    end
+
     it 'remembers an unmapped room by its title' do
       in_room('[[Crossing, Market]]', id: nil)
       crystal.use_crystal

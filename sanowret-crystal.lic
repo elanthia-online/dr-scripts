@@ -48,6 +48,7 @@ class SanowretCrystal
     else
       DRC.message("Consider adding '#{title.to_s.delete_prefix('[[').delete_suffix(']]')}' to your sanowret_no_use_rooms settings.")
     end
+    DRC.message("Please also post this room in the lich discord (listed in #{$clean_lich_char}links) so it can be added to base.yaml for everyone.")
     # Go ahead and remember to ignore this room while the script is running
     # This convenience won't persist between script runs though, go update your yaml
     @refused_room_titles.push(title) unless @refused_room_titles.include?(title)
