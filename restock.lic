@@ -107,7 +107,7 @@ class Restock
     # Remove those custom location items from the primary restock items list
     items -= custom_loc_items
     # Call the restock_items method on restock items that don't have custom location set
-    restock_items(items, @settings.hometown)
+    restock_items(items, @hometown)
 
     # Restock items that have a custom location set
     custom_loc_items.group_by { |v| v['hometown'] }
