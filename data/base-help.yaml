@@ -590,6 +590,7 @@ fang_cove_override_town:
     - favor
     - levelup
     - pick
+    - restock
 
 exp_timers:
   description: Map of skill timers / cooldowns.
