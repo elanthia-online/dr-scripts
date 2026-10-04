@@ -7,14 +7,17 @@ require_relative 'spec_helper'
 load_lic_class('magic-training.lic', 'MagicTraining')
 
 RSpec.describe MagicTraining do
-  # A planet spell (it has stats) and an ordinary one, as base-spells enriches them.
+  # Spells as base-spells enriches them: a planet spell (it has stats), a moon
+  # spell, and an ordinary one. In Lich only the moon lookup returns nil on
+  # failure (no moon up); a failed planet lookup still returns a truthy value.
   let(:spheres) { { 'abbrev' => 'IOTS', 'skill' => 'Augmentation', 'ritual' => true, 'stats' => %w[Discipline Agility Wisdom] } }
+  let(:moonbeam) { { 'abbrev' => 'FM', 'skill' => 'Utility', 'mana' => 1, 'moon' => true } }
   let(:shield) { { 'abbrev' => 'MAF', 'skill' => 'Warding', 'mana' => 5 } }
   let(:settings) do
     OpenStruct.new(
       magic_training_room: 1234,
       magic_exp_training_max_threshold: 32,
-      training_spells: { 'Augmentation' => spheres, 'Warding' => shield },
+      training_spells: { 'Augmentation' => spheres, 'Utility' => moonbeam, 'Warding' => shield },
       telescope_name: 'telescope',
       telescope_storage: { 'container' => 'backpack' }
     )
@@ -33,47 +36,55 @@ RSpec.describe MagicTraining do
   end
 
   describe '#train_magics?' do
-    # A planet spell's lookup reads telescope_name and telescope_storage from settings.
     it 'passes settings to the astral lookup' do
-      expect(DRCMM).to receive(:update_astral_data).with(spheres, settings).and_return(spheres)
+      expect(DRCMM).to receive(:update_astral_data).with(moonbeam, settings).and_return(moonbeam)
       expect(DRCMM).to receive(:update_astral_data).with(shield, settings).and_return(shield)
 
-      expect(magic_training.train_magics?(%w[Augmentation Warding])).to be(true)
+      expect(magic_training.train_magics?(%w[Utility Warding])).to be(true)
     end
 
-    it 'casts a spell whose astral lookup succeeds' do
+    # DRCA.cast_spell finds the planet itself before casting, so a lookup here
+    # would only sweep the telescope a second time.
+    it 'leaves the planet lookup to the cast and casts a planet spell' do
       allow(DRCMM).to receive(:update_astral_data) { |data, _settings| data }
 
-      magic_training.train_magics?(%w[Augmentation])
+      expect(magic_training.train_magics?(%w[Augmentation])).to be(true)
 
+      expect(DRCMM).not_to have_received(:update_astral_data).with(spheres, anything)
       expect(DRCA).to have_received(:cast_spells).with({ spell_name: spheres }, settings, anything)
     end
 
-    it 'skips a spell whose astral lookup fails, and still casts the others' do
-      allow(DRCMM).to receive(:update_astral_data) { |data, _settings| data == spheres ? nil : data }
+    it 'casts a moon spell while a moon is up' do
+      allow(DRCMM).to receive(:update_astral_data) { |data, _settings| data }
 
-      expect(magic_training.train_magics?(%w[Augmentation Warding])).to be(true)
+      magic_training.train_magics?(%w[Utility])
+
+      expect(DRCA).to have_received(:cast_spells).with({ spell_name: moonbeam }, settings, anything)
+    end
+
+    it 'skips a moon spell while no moon is up, and still casts the others' do
+      allow(DRCMM).to receive(:update_astral_data) { |data, _settings| data == moonbeam ? nil : data }
+
+      expect(magic_training.train_magics?(%w[Utility Warding])).to be(true)
 
       expect(DRCA).to have_received(:cast_spells).once
       expect(DRCA).to have_received(:cast_spells).with({ spell_name: shield }, settings, anything)
     end
 
-    it 'reports nothing left to train when the only spell cannot be cast now' do
+    it 'reports nothing left to train when the only spell is a moon spell and no moon is up' do
       allow(DRCMM).to receive(:update_astral_data).and_return(nil)
 
-      expect(magic_training.train_magics?(%w[Augmentation])).to be(false)
+      expect(magic_training.train_magics?(%w[Utility])).to be(false)
       expect(DRCA).not_to have_received(:cast_spells)
     end
 
-    # The planet lookup gets the telescope and centers it on every planet, so a
-    # skill that is already trained up must not trigger it.
     it 'does no astral lookup for a skill already over the learning threshold' do
-      DRSkill._set_xp('Augmentation', 33)
+      DRSkill._set_xp('Utility', 33)
       allow(DRCMM).to receive(:update_astral_data) { |data, _settings| data }
 
-      magic_training.train_magics?(%w[Augmentation Warding])
+      magic_training.train_magics?(%w[Utility Warding])
 
-      expect(DRCMM).not_to have_received(:update_astral_data).with(spheres, anything)
+      expect(DRCMM).not_to have_received(:update_astral_data).with(moonbeam, anything)
       expect(DRCMM).to have_received(:update_astral_data).with(shield, settings)
       expect(DRCA).to have_received(:cast_spells).once
     end
@@ -83,7 +94,7 @@ RSpec.describe MagicTraining do
 
       magic_training.train_magics?(%w[Warding])
 
-      expect(DRCMM).not_to have_received(:update_astral_data).with(spheres, anything)
+      expect(DRCMM).not_to have_received(:update_astral_data).with(moonbeam, anything)
     end
   end
 end
