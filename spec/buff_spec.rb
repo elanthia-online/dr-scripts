@@ -62,9 +62,16 @@ RSpec.describe Waggle do
 
     it 'keeps casting until every in-season spell is up' do
       UserVars.sun = night
-      DRSpells._set_active_spells({ 'Day Ward' => 10 })
+      # The first cast of Night Ward fizzles; the second sticks.
+      allow(DRCA).to receive(:do_buffs) do |_settings, setname|
+        do_buffs_calls << setname
+        raise 'strict mode is looping forever' if do_buffs_calls.size > 5
+
+        cast = do_buffs_calls.size == 1 ? ['Bless'] : ['Bless', 'Night Ward']
+        DRSpells._set_active_spells(DRSpells.active_spells.merge(cast.to_h { |name| [name, 10] }))
+      end
       run_strict
-      expect(do_buffs_calls.size).to eq(1)
+      expect(do_buffs_calls.size).to eq(2)
     end
   end
 
@@ -110,12 +117,47 @@ RSpec.describe Waggle do
       expect(waggle_set.keys).to eq(['Bless', 'Night Ward', 'Day Ward'])
     end
 
-    it 'waits on every entry for barbarians and thieves, whom do_buffs does not filter' do
-      UserVars.sun = day
+    it 'waits on every barbarian ability in the list' do
       DRStats.guild = 'Barbarian'
-      expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Bless', 'Night Ward', 'Day Ward'])
+      expect(waggle.spells_to_wait_on(['Famine', 'Avalanche'])).to eq(['Famine', 'Avalanche'])
+    end
+
+    it 'waits on each khri by its active-spell name, ignoring Khri and Delay prefixes' do
       DRStats.guild = 'Thief'
-      expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Bless', 'Night Ward', 'Day Ward'])
+      sets = ['delay Strike Elusion', 'Khri Sight', 'khri delay hasten focus', 'safe']
+      expect(waggle.spells_to_wait_on(sets))
+        .to eq(['Khri Strike', 'Khri Elusion', 'Khri Sight', 'Khri Hasten', 'Khri Focus', 'Khri Safe'])
+    end
+
+    it 'skips a blank thief entry' do
+      DRStats.guild = 'Thief'
+      expect(waggle.spells_to_wait_on(['', 'Sight'])).to eq(['Khri Sight'])
+    end
+  end
+
+  describe 'strict mode for list-based guilds' do
+    def run_strict_with(set, now_active)
+      allow(DRCA).to receive(:do_buffs) do |_settings, setname|
+        do_buffs_calls << setname
+        raise 'strict mode is looping forever' if do_buffs_calls.size > 5
+
+        DRSpells._set_active_spells(now_active)
+      end
+      $parsed_args = { 'strict' => true, 'spells' => 'default' }
+      $test_settings = OpenStruct.new(waggle_sets: { 'default' => set })
+      Waggle.new
+    end
+
+    it 'stops once every barbarian ability is up' do
+      DRStats.guild = 'Barbarian'
+      run_strict_with(['Famine', 'Avalanche'], { 'Famine' => 10, 'Avalanche' => 10 })
+      expect(do_buffs_calls.size).to eq(1)
+    end
+
+    it 'stops once every khri is up' do
+      DRStats.guild = 'Thief'
+      run_strict_with(['delay Strike Elusion'], { 'Khri Strike' => 10, 'Khri Elusion' => 10 })
+      expect(do_buffs_calls.size).to eq(1)
     end
   end
 end
