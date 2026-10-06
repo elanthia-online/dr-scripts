@@ -213,6 +213,7 @@ RSpec.describe Athletics do
     let(:athletics) do
       described_class.allocate.tap do |a|
         a.instance_variable_set(:@song_list, song_list)
+        a.instance_variable_set(:@settings, OpenStruct.new(worn_instrument: 'zills'))
         a.instance_variable_set(:@climbs_without_progress, 0)
       end
     end
@@ -243,18 +244,31 @@ RSpec.describe Athletics do
         expect(UserVars.climbing_song_seed).to eq('lament')
       end
 
-      it 'keeps a song adjusted within the same rank band' do
+      it 'keeps a song adjusted within the same rank band and instrument' do
         Harness::DRSkill._set_rank('Athletics', 300)
         UserVars.climbing_song_seed = 'tarantella'
+        UserVars.climbing_song_instrument = 'zills'
         UserVars.climbing_song = 'gavotte halt'
         athletics.seed_climbing_song(climbing_song_ranks)
 
         expect(UserVars.climbing_song).to eq('gavotte halt')
       end
 
+      it 're-picks when the worn instrument changes' do
+        Harness::DRSkill._set_rank('Athletics', 300)
+        UserVars.climbing_song_seed = 'tarantella'
+        UserVars.climbing_song_instrument = 'bells'
+        UserVars.climbing_song = 'gavotte halt'
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song).to eq('tarantella')
+        expect(UserVars.climbing_song_instrument).to eq('zills')
+      end
+
       it 're-picks when Athletics rank moves into a new band' do
         Harness::DRSkill._set_rank('Athletics', 351)
         UserVars.climbing_song_seed = 'tarantella'
+        UserVars.climbing_song_instrument = 'zills'
         UserVars.climbing_song = 'gavotte halt'
         athletics.seed_climbing_song(climbing_song_ranks)
 
@@ -272,6 +286,7 @@ RSpec.describe Athletics do
 
       it 're-picks a stored song that is not on the song ladder' do
         UserVars.climbing_song_seed = 'lament'
+        UserVars.climbing_song_instrument = 'zills'
         UserVars.climbing_song = 'lament halt '
         athletics.seed_climbing_song(climbing_song_ranks)
 

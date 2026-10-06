@@ -209,15 +209,19 @@ class Athletics
   end
 
   # Picks the climbing song from Athletics rank when none is stored, the stored
-  # song is unknown, or rank has moved into a different band since the last
-  # pick. Within a band, songs adjusted by too-hard/too-easy climbs are kept.
+  # song is unknown, rank has moved into a different band, or the worn
+  # instrument (whose difficulty adds to the song's) has changed since the last
+  # pick. Otherwise songs adjusted by too-hard/too-easy climbs are kept.
   def seed_climbing_song(climbing_song_ranks)
     rank_song = climbing_song_for_rank(climbing_song_ranks)
-    return if UserVars.climbing_song_seed == rank_song && @song_list.key?(UserVars.climbing_song)
+    return if UserVars.climbing_song_seed == rank_song &&
+              UserVars.climbing_song_instrument == @settings.worn_instrument &&
+              @song_list.key?(UserVars.climbing_song)
 
     echo "Picking climbing song '#{rank_song}' from Athletics rank #{DRSkill.getrank('Athletics')}"
     UserVars.climbing_song = rank_song
     UserVars.climbing_song_seed = rank_song
+    UserVars.climbing_song_instrument = @settings.worn_instrument
     # Rope difficulty messages, not performance difficulty, adjust the song from here
     UserVars.climbing_song_offset = true
   end
