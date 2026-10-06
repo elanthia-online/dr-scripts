@@ -112,6 +112,13 @@
   even logged as unmapped. MOON_HIDDEN_PHASE_LINE_PATTERN now captures all nine
   and each maps to new.
 
+  v4.5.5 also corrects v4.5.3 on "nowhere to be seen". It is not a below-horizon
+  read: in 64/64 cases the model had the moon up, and a Moon Mage observing the
+  same moon at the same moment got "lurking somewhere behind the clouds". It is
+  the non-Moon-Mage's read for a dim moon behind cloud, and it stays unmapped
+  because it spans several phases. That the dark-moon readings are Moon-Mage-only
+  is untested, not confirmed: the non-Moon-Mage never observed a new moon.
+
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
   - Moons: Single responsibility for moon position calculations
@@ -1014,12 +1021,22 @@ module Moons
   # MOON_HIDDEN_PHASE_LINE_PATTERN). The risen wordings lack "moon <M>", so
   # MOON_PHASE_LINE_PATTERN cannot see them -- MOON_HIDDEN_PHASE_LINE_PATTERN
   # captures them instead (v4.5.4, the other eight v4.5.5); they all map to new
-  # here. Non-Moon-Mage characters get only "nowhere to
-  # be seen", which is below-horizon and spans every phase, so it is deliberately
-  # NOT mapped. The new entries are therefore Moon-Mage-only in practice; they
-  # need no gating because no other guild emits them. Determined from a Moon Mage
-  # (Quilsilgas) vs a non-Moon-Mage (Ytterby): the dark-moon clauses appear only
-  # in the Moon Mage's logs.
+  # here. They need no guild gating: a dark-moon reading means new whoever emits
+  # it. Only a Moon Mage (Quilsilgas) has been logged observing a new moon; the
+  # non-Moon-Mage (Ytterby) observes only on rise broadcasts, which a new moon
+  # never sends, so what other guilds see for one is untested.
+  #
+  # Clouded reads differ by guild, which is the only difference between the two
+  # characters (Moon Mages have a skill nobody else has). In 105/105 paired
+  # observes of the same moon at the same moment, the Moon Mage got "Clouds
+  # obscure the sky where <M> should appear." and the non-Moon-Mage got "Dense
+  # clouds completely obscure your search." A dim moon (crescent or quarter)
+  # behind cloud then reads "You are able to sense <M> lurking somewhere behind the
+  # clouds." for the Moon Mage and "<M> is nowhere to be seen." for the other
+  # (64/64 pairs, all with the model showing the moon up). A bright one (gibbous
+  # or full) reads "... glow ... betrays the presence of <M>." for both. All of
+  # these span several phases, so none is mapped. Visible phase wording is the
+  # same for both guilds (257/257 pairs).
   #
   # Entries are in cycle order; find returns the first match, fragments disjoint.
   OBSERVED_PHASE_MAP = [
