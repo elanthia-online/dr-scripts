@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -200,6 +201,158 @@ RSpec.describe Athletics do
         athletics.riverhaven_athletics
 
         expect(DRCT).not_to have_received(:walk_to).with(12821)
+      end
+    end
+  end
+
+  # Uses the real song ladder and rank table so the specs track data changes.
+  describe 'climbing rope song' do
+    let(:perform_data) { YAML.load_file(File.expand_path('../data/base-perform.yaml', __dir__)) }
+    let(:song_list) { perform_data['perform_options'] }
+    let(:climbing_song_ranks) { perform_data['climbing_song_ranks'] }
+    let(:athletics) do
+      described_class.allocate.tap do |a|
+        a.instance_variable_set(:@song_list, song_list)
+        a.instance_variable_set(:@climbs_without_progress, 0)
+      end
+    end
+
+    before { Harness::DRSkill._reset }
+
+    describe '#seed_climbing_song' do
+      {
+        0 => 'lament', 100 => 'lament', 101 => 'psalm', 250 => 'psalm', 251 => 'tarantella',
+        350 => 'tarantella', 351 => 'rondo', 450 => 'rondo', 451 => 'concerto masterful', 1750 => 'concerto masterful'
+      }.each do |rank, song|
+        it "picks '#{song}' at Athletics rank #{rank}" do
+          Harness::DRSkill._set_rank('Athletics', rank)
+          athletics.seed_climbing_song(climbing_song_ranks)
+
+          expect(UserVars.climbing_song).to eq(song)
+        end
+      end
+
+      it 'only picks songs that are on the song ladder' do
+        expect(climbing_song_ranks.values).to all(satisfy { |song| song_list.key?(song) })
+      end
+
+      it 'switches to rope difficulty adjustments when it picks a song' do
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song_offset).to be true
+        expect(UserVars.climbing_song_seed).to eq('lament')
+      end
+
+      it 'keeps a song adjusted within the same rank band' do
+        Harness::DRSkill._set_rank('Athletics', 300)
+        UserVars.climbing_song_seed = 'tarantella'
+        UserVars.climbing_song = 'gavotte halt'
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song).to eq('gavotte halt')
+      end
+
+      it 're-picks when Athletics rank moves into a new band' do
+        Harness::DRSkill._set_rank('Athletics', 351)
+        UserVars.climbing_song_seed = 'tarantella'
+        UserVars.climbing_song = 'gavotte halt'
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song).to eq('rondo')
+        expect(UserVars.climbing_song_seed).to eq('rondo')
+      end
+
+      it 're-picks a song stored before rank picking was tracked' do
+        Harness::DRSkill._set_rank('Athletics', 500)
+        UserVars.climbing_song = 'lament'
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song).to eq('concerto masterful')
+      end
+
+      it 're-picks a stored song that is not on the song ladder' do
+        UserVars.climbing_song_seed = 'lament'
+        UserVars.climbing_song = 'lament halt '
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song).to eq('lament')
+      end
+
+      it 're-picks after performance checksong clears the stored song' do
+        UserVars.climbing_song_seed = nil
+        UserVars.climbing_song = nil
+        athletics.seed_climbing_song(climbing_song_ranks)
+
+        expect(UserVars.climbing_song).to eq('lament')
+      end
+    end
+
+    describe '#climbing_stalled?' do
+      it 'alerts on the third climb in a row that teaches nothing' do
+        UserVars.climbing_song = 'rondo'
+        results = Array.new(3) { athletics.climbing_stalled?(0) }
+
+        expect(results).to eq([false, false, true])
+        expect(DRC).to have_received(:message).with(/no Athletics in 3 climbs while playing 'rondo'.*;performance checksong/).once
+      end
+
+      it 'starts counting again after a climb that teaches' do
+        2.times { athletics.climbing_stalled?(0) }
+        Harness::DRSkill._set_xp('Athletics', 1)
+        athletics.climbing_stalled?(0)
+        results = Array.new(2) { athletics.climbing_stalled?(1) }
+
+        expect(results).to eq([false, false])
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    describe '#train_with_rope' do
+      let(:athletics) do
+        described_class.allocate.tap do |a|
+          a.instance_variable_set(:@settings, OpenStruct.new(climbing_rope_adjective: 'climbing', worn_instrument: 'zills', safe_room: 1))
+          a.instance_variable_set(:@end_exp, 29)
+        end
+      end
+      let(:climb_commands) { [] }
+
+      before do
+        $test_data[:perform] = OpenStruct.new(perform_data)
+        allow(DRCI).to receive(:exists?).and_return(true)
+        allow(DRC).to receive(:play_song?).and_return(true)
+        allow(DRC).to receive(:bput) do |command, *_matches|
+          next "You're certain you can" unless command.start_with?('climb practice')
+
+          climb_commands << command
+          raise 'kept climbing past the stall limit' if climb_commands.size > 10
+
+          Flags['climbing-finished'] = true
+          learn_on_climb.call
+          'Directing your attention toward your rope'
+        end
+      end
+
+      context 'when climbs teach no Athletics' do
+        let(:learn_on_climb) { -> {} }
+
+        it 'stops after three climbs and alerts' do
+          athletics.train_with_rope(true)
+
+          expect(climb_commands.size).to eq(3)
+          expect(DRC).to have_received(:message).with(/no Athletics in 3 climbs/)
+          expect(DRC).to have_received(:bput).with('stop climb', any_args)
+        end
+      end
+
+      context 'when climbs teach Athletics' do
+        let(:learn_on_climb) { -> { Harness::DRSkill._set_xp('Athletics', DRSkill.getxp('Athletics') + 10) } }
+
+        it 'trains to the goal without alerting' do
+          athletics.train_with_rope(true)
+
+          expect(climb_commands.size).to eq(3)
+          expect(DRC).not_to have_received(:message)
+        end
       end
     end
   end
