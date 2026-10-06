@@ -493,6 +493,21 @@ RSpec.describe 'moonwatch.lic' do
         end
       end
 
+      # Synthetic, not logged: the per-moon split rests on one observer's logs,
+      # so the pattern deliberately accepts either form for any moon. This pins
+      # that, so pairing each form with its moon later fails here.
+      it 'captures either dark-moon form for any moon' do
+        [
+          "Katamba's presence is on the very edge of your sensing.",
+          "Xibar's presence is on the very edge of your sensing.",
+          'Yavash is hidden from you, but its energy is quite strong.'
+        ].each do |line|
+          m = MOON_HIDDEN_PHASE_LINE_PATTERN.match(line)
+          expect(m).not_to be_nil, "expected to match: #{line}"
+          expect(Moons.observed_phase_name(m[:phase_desc].strip)).to eq('new')
+        end
+      end
+
       it 'extracts the moon name via the named capture' do
         m = MOON_HIDDEN_PHASE_LINE_PATTERN.match('Xibar is hidden from you, but its energy is quite strong.')
         expect(m[:moon].downcase).to eq('xibar')
