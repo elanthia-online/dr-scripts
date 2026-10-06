@@ -401,6 +401,13 @@ RSpec.describe 'moonwatch.lic' do
         expect(Moons.observed_phase_name('turns up fruitless')).to eq('new') # Moon Mage, dark moon below horizon
         expect(Moons.observed_phase_name('is hidden from you, but its energy is quite strong')).to eq('new') # Moon Mage, dark moon risen
         expect(Moons.observed_phase_name('presence is on the very edge of your sensing')).to eq('new') # Moon Mage, dark Yavash risen
+        expect(Moons.observed_phase_name('is not visible, though you can feel its presence')).to eq('new') # Moon Mage, dark Katamba risen
+        expect(Moons.observed_phase_name('The energy emanating from Xibar is quite strong indeed, although you cannot see it in the skies above')).to eq('new')
+        expect(Moons.observed_phase_name('You feel the presence of a moderately near Katamba')).to eq('new')
+        expect(Moons.observed_phase_name('A starless patch of sky above betrays the presence of Xibar above you, hidden from view as a new moon')).to eq('new')
+        expect(Moons.observed_phase_name("You sense Yavash's very weak presence in the sky")).to eq('new')
+        expect(Moons.observed_phase_name('You cannot see Yavash, but sense its weak presence above')).to eq('new')
+        expect(Moons.observed_phase_name('You feel strong pulses of energy from Katamba, hiding as a new moon above')).to eq('new')
         expect(Moons.observed_phase_name('is a growing crescent of light')).to eq('waxing crescent')
         expect(Moons.observed_phase_name('looks down from above')).to eq('first quarter')
         expect(Moons.observed_phase_name('has nearly turned its full face upon Elanthia')).to eq('waxing gibbous')
@@ -472,35 +479,62 @@ RSpec.describe 'moonwatch.lic' do
       it 'does not match the bare-name Yavash "edge of your sensing" reading' do
         expect(MOON_PHASE_LINE_PATTERN.match("Yavash's presence is on the very edge of your sensing.")).to be_nil
       end
+
+      # "hidden from view as a new moon" / "hiding as a new moon above" say "new
+      # moon" but never "moon <M>", so they must not leak into this pattern either.
+      it 'does not match the other bare-name dark-moon readings' do
+        [
+          'A starless patch of sky above betrays the presence of Xibar above you, hidden from view as a new moon.',
+          'You feel strong pulses of energy from Katamba, hiding as a new moon above.',
+          'You feel the presence of a moderately near Katamba.'
+        ].each do |line|
+          expect(MOON_PHASE_LINE_PATTERN.match(line)).to be_nil, "should not match: #{line}"
+        end
+      end
     end
 
     # A Moon Mage observing a RISEN dark (new) moon gets a bare-name reading, no
-    # "moon <M>", so the main phase pattern misses it. Katamba and Xibar read "<M>
-    # is hidden from you, but its energy is quite strong."; Yavash instead reads
-    # "Yavash's presence is on the very edge of your sensing." (logged verbatim,
-    # 101/101 at model-new). This dedicated pattern captures both, and both map
-    # to 'new'. Below the horizon the same moon reads "fruitless" instead.
+    # "moon <M>", so the main phase pattern misses it. DR has nine wordings for
+    # it; every line below is logged verbatim from a Moon Mage (Quilsilgas) and
+    # every logged read of each was at model-new. This dedicated pattern captures
+    # all nine, and all map to 'new'. Below the horizon the same moon reads
+    # "fruitless" instead.
     describe 'MOON_HIDDEN_PHASE_LINE_PATTERN' do
-      it 'captures the up-and-new reading for each moon and maps it to new' do
-        [
-          'Katamba is hidden from you, but its energy is quite strong.',
-          'Xibar is hidden from you, but its energy is quite strong.',
-          "Yavash's presence is on the very edge of your sensing."
-        ].each do |line|
+      [
+        ['Katamba is hidden from you, but its energy is quite strong.', 'katamba'],
+        ['Xibar is hidden from you, but its energy is quite strong.', 'xibar'],
+        ["Yavash's presence is on the very edge of your sensing.", 'yavash'],
+        ['Katamba is not visible, though you can feel its presence.', 'katamba'],
+        ['The energy emanating from Xibar is quite strong indeed, although you cannot see it in the skies above.', 'xibar'],
+        ['You feel the presence of a moderately near Katamba.', 'katamba'],
+        ['A starless patch of sky above betrays the presence of Xibar above you, hidden from view as a new moon.', 'xibar'],
+        ["You sense Yavash's very weak presence in the sky.", 'yavash'],
+        ['You cannot see Yavash, but sense its weak presence above.', 'yavash'],
+        ['You feel strong pulses of energy from Katamba, hiding as a new moon above.', 'katamba']
+      ].each do |line, moon|
+        it "captures #{moon} from \"#{line}\" and maps it to new" do
           m = MOON_HIDDEN_PHASE_LINE_PATTERN.match(line)
-          expect(m).not_to be_nil, "expected to match: #{line}"
+          expect(m).not_to be_nil
+          expect(m[:moon].downcase).to eq(moon)
           expect(Moons.observed_phase_name(m[:phase_desc].strip)).to eq('new')
         end
       end
 
       # Synthetic, not logged: the per-moon split rests on one observer's logs,
-      # so the pattern deliberately accepts either form for any moon. This pins
+      # so the pattern deliberately accepts every form for any moon. This pins
       # that, so pairing each form with its moon later fails here.
-      it 'captures either dark-moon form for any moon' do
+      it 'captures every dark-moon form for any moon' do
         [
           "Katamba's presence is on the very edge of your sensing.",
           "Xibar's presence is on the very edge of your sensing.",
-          'Yavash is hidden from you, but its energy is quite strong.'
+          'Yavash is hidden from you, but its energy is quite strong.',
+          'Xibar is not visible, though you can feel its presence.',
+          'The energy emanating from Yavash is quite strong indeed, although you cannot see it in the skies above.',
+          'You feel the presence of a moderately near Xibar.',
+          'A starless patch of sky above betrays the presence of Katamba above you, hidden from view as a new moon.',
+          "You sense Katamba's very weak presence in the sky.",
+          'You cannot see Xibar, but sense its weak presence above.',
+          'You feel strong pulses of energy from Yavash, hiding as a new moon above.'
         ].each do |line|
           m = MOON_HIDDEN_PHASE_LINE_PATTERN.match(line)
           expect(m).not_to be_nil, "expected to match: #{line}"
@@ -519,6 +553,15 @@ RSpec.describe 'moonwatch.lic' do
         expect(m[:phase_desc]).to eq('presence is on the very edge of your sensing')
       end
 
+      it 'captures the whole sentence as phase_desc when the moon name does not lead' do
+        m = MOON_HIDDEN_PHASE_LINE_PATTERN.match('You feel the presence of a moderately near Katamba.')
+        expect(m[:phase_desc]).to eq('You feel the presence of a moderately near Katamba')
+      end
+
+      # The clouded reads below are logged verbatim and span several phases
+      # (lurking: new through quarters; glow: gibbous through full), so they are
+      # not phase readings. The eclipse line names the moon first like a dark-moon
+      # reading does, and must not be mistaken for one.
       it 'ignores the below-horizon and weather non-readings' do
         [
           'Your search for the blue moon Xibar turns up fruitless.',
@@ -528,7 +571,13 @@ RSpec.describe 'moonwatch.lic' do
           'Yavash is unobscured by clouds.',
           'Two-thirds of Yavash is blocked by cloud cover above.',
           'Over half of Yavash is obscured by clouds.',
-          'An eerie black glow behind the clouds betrays the presence of Katamba.'
+          'An eerie black glow behind the clouds betrays the presence of Katamba.',
+          'A deep red glow from behind the clouds betrays the presence of Yavash.',
+          'You are able to sense Xibar lurking somewhere behind the clouds.',
+          'Clouds obscure the sky where Katamba should appear.',
+          'Dense clouds completely obscure your search.',
+          'Katamba is fully obscured by Xibar.',
+          'You struggle to make your observation through the clouds.'
         ].each do |line|
           expect(MOON_HIDDEN_PHASE_LINE_PATTERN.match(line)).to be_nil, "should not match: #{line}"
         end
