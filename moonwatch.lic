@@ -104,7 +104,7 @@
   v4.5.5 corrects the v4.5.4 claim that above-horizon new is mapped for every
   moon. "Hidden ... energy" is only one of nine risen-new wordings. Yavash never
   reads it; it reads "Yavash's presence is on the very edge of your sensing."
-  (101/101 at model-new, spread across the new bucket). A sweep of every Moon Mage
+  (102/102 at model-new, spread across the new bucket). A sweep of every Moon Mage
   observe in Sep-Oct 2026 found seven more, e.g. "You feel the presence of a
   moderately near Katamba." and "A starless patch of sky above betrays the
   presence of Xibar above you, hidden from view as a new moon." (170 reads, all
@@ -197,7 +197,7 @@ MOON_PHASE_LINE_PATTERN = /\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.
 #   - "<M> is hidden from you, but its energy is quite strong." (Katamba, Xibar;
 #     45/45). The energy adjective varies, so this one keys on the stable "is
 #     hidden from you, but its energy" fragment.
-#   - "<M>'s presence is on the very edge of your sensing." (Yavash; 101/101)
+#   - "<M>'s presence is on the very edge of your sensing." (Yavash; 102/102)
 #   - "<M> is not visible, though you can feel its presence." (Katamba; 9/9)
 #   - "The energy emanating from <M> is quite strong indeed, although you cannot
 #     see it in the skies above." (Xibar; 47/47)
