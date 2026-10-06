@@ -53,7 +53,10 @@ class CarveLockpicks
 
     purchase_rings(args.pockets.to_i, args.masters_ordinal, args.grands_ordinal) if args.buy_rings
 
-    if args.ratio_last
+    if (args.ratio_last || args.ratio_all) && UserVars.grands_ratio.empty?
+      DRC.message("No carving runs recorded yet")
+      exit
+    elsif args.ratio_last
       DRC.message("Most recent percentage of Grandmaster's to Master's picks: #{UserVars.grands_ratio.to_a.last.last}")
       exit
     elsif args.ratio_all
@@ -84,6 +87,8 @@ class CarveLockpicks
   end
 
   def calc_ratio
+    return if UserVars.grands_ratio.empty?
+
     total = 0
     UserVars.grands_ratio.values.each { |v| total += v }
     total = total / UserVars.grands_ratio.size
@@ -106,16 +111,20 @@ class CarveLockpicks
     sleep 1
     verify_funds("lockpick ring", mord, gord)
 
-    grings.times do
-      DRCT.buy_item(Room.current.id, "#{gord} lockpick ring")
-      DRCI.put_away_item?("lockpick ring", @lockpick_carve_settings['grand_container'])
-    end
-
-    mrings.times do
-      DRCT.buy_item(Room.current.id, "#{mord} lockpick ring")
-      DRCI.put_away_item?("lockpick ring", @lockpick_carve_settings['master_container'])
-    end
+    buy_rings(@grings, gord, @lockpick_carve_settings['grand_container'])
+    buy_rings(@mrings, mord, @lockpick_carve_settings['master_container'])
     exit
+  end
+
+  def buy_rings(count, ordinal, container)
+    count.times do
+      DRCT.buy_item(Room.current.id, "#{ordinal} lockpick ring")
+      next if DRCI.put_away_item?("lockpick ring", container)
+
+      # Either the buy failed or the bag is full; buying more would only pile paid-for rings in your hands
+      DRC.message("Couldn't put a lockpick ring in your #{container}, stopping. If the purchase went through, the ring is still in your hands.")
+      exit
+    end
   end
 
   def verify_funds(item, *ords)
@@ -146,10 +155,30 @@ class CarveLockpicks
   end
 
   def check_status
-    spell_list = @settings.waggle_sets['carve'].join(' ').split(' ').map(&:capitalize)
-    spell_list.reject! { |spell| spell =~ /delay|khri|puncture|slice|impact|fire|cold|electric/i }
-    DRC.wait_for_script_to_complete('buff', ['carve']) unless spell_list.all? { |name| DRSpells.active_spells["Khri #{name}"] }
+    DRC.wait_for_script_to_complete('buff', ['carve']) unless carve_buffs_active?
     DRC.bput("sit", 'You sit', 'You are already sitting', 'You rise', 'While swimming?') unless sitting?
+  end
+
+  # A Thief's or Barbarian's carve set is a list of khris or abilities; a spell set is a Hash of spell name to data
+  def carve_buffs_active?
+    buffs = @settings.waggle_sets['carve']
+    case buffs
+    when Array
+      # Barbarian abilities are checked by name, as DRCA.start_barb_abilities does
+      return buffs.all? { |name| DRSpells.active_spells[name] } if DRStats.barbarian?
+
+      spell_list = buffs.join(' ').split(' ').map(&:capitalize)
+      spell_list.reject! { |spell| spell =~ /delay|khri|puncture|slice|impact|fire|cold|electric/i }
+      spell_list.all? { |name| DRSpells.active_spells["Khri #{name}"] }
+    when Hash
+      # Leave out night/day spells that shouldn't be cast now (what DRCA.do_buffs' filters intend), then use
+      # DRCA.cast_spells' skip rule, so buff only runs when something should be cast
+      in_season = buffs.select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
+                       .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
+      in_season.all? { |name, data| DRSpells.active_spells[name] && (data['recast'].nil? || DRSpells.active_spells[name].to_i > data['recast']) }
+    else
+      true
+    end
   end
 
   def get_keyblank
@@ -253,7 +282,6 @@ class CarveLockpicks
         @master_batch = false
         @masters_ring_ready = 25
       end
-      stow_lockpick(@lockpick_carve_settings["#{type}_container"])
       exit unless @lockpick_carve_settings['carve_past_ring_capacity']
       DRCC.get_crafting_item("carving knife", @bag, @bag_items, @belt)
       return

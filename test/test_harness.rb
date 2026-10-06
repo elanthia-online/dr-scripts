@@ -997,6 +997,10 @@ module Harness
     hand.empty? ? $right_hand : hand.find { |instance| $right_hand =~ /#{instance}/i }
   end
 
+  # lich-5 global_defs.rb aliases these to checkleft/checkright.
+  alias lefthand checkleft
+  alias righthand checkright
+
   def waitrt?; end
 
   def waitcastrt?; end
@@ -1167,6 +1171,10 @@ module Harness
       def left_hand_noun; Harness._noun($left_hand); end
       def right_hand_noun; Harness._noun($right_hand); end
       def get_noun(long_name); Harness._noun(long_name); end
+      # Simplified: the real DRC.remove_flavor_text (lich-5 common.rb) also applies
+      # CustomSubstitutions patterns and does not strip. Don't write specs that depend
+      # on either difference.
+      def remove_flavor_text(item); item.to_s.sub(FLAVOR_TEXT_PATTERN, '').strip; end
 
       # Mirrors the real DRC.list_to_array: split a game item sentence on the
       # comma/and separators, keeping the article that begins each item (so
@@ -1356,6 +1364,7 @@ module Harness
       def moon_used_to_summon_weapon(*_args); end
       def get_telescope?(*_args); true; end
       def store_telescope?(*_args); true; end
+      def get_div_tool?(*_args); true; end
       def store_div_tool?(*_args); true; end
       def observe(*_args); end
       def predict(*_args); end
@@ -1365,6 +1374,7 @@ module Harness
       def use_div_tool(*_args); end
       def center_telescope(*_args); end
       def peer_telescope(*_args); []; end
+      def update_astral_data(data, *_args); data; end
     end
   end
 
