@@ -83,7 +83,7 @@ def execute_logf(data)
 
   echo "parsed_data is: #{parsed_data}" if $debug_mode_tw
 
-  open("#{filename}.txt", 'a') do |f|
+  File.open("#{filename}.txt", 'a') do |f|
     f.puts "#{Time.now.strftime("%Y-%m-%d %I:%M%P")} #{parsed_data}"
   end
   DRC.message("  Logged to file name: #{filename}")
@@ -122,11 +122,18 @@ def execute_logw(data)
   DRC.log_window(parsed_data.join(' '), window_name, true, true, false)
 end
 
-# When trigger command =pause has been used. Pauses the specified amount of time.
+# When trigger command =pause has been used. Pauses the specified number of seconds.
+# data is the text inside the braces, e.g. "10" for =pause {10}. Decimals like 2.5 are allowed.
 def execute_pause(data)
-  echo "Pausing #{data[0]} seconds" if $debug_mode_tw
-  DRC.message("  Pausing #{data} seconds.")
-  pause data[0].to_i
+  seconds = data.to_s.strip
+  unless seconds =~ /\A\d+(\.\d+)?\z/
+    DRC.message("  =pause needs a number of seconds, like =pause {10}. Got '#{seconds}', so not pausing.")
+    return
+  end
+
+  echo "Pausing #{seconds} seconds" if $debug_mode_tw
+  DRC.message("  Pausing #{seconds} seconds.")
+  pause seconds.to_f
 end
 
 # When trigger command =if starts the response line. Also parses =elsif and =else.
