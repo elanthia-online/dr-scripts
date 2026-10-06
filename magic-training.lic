@@ -76,10 +76,13 @@ class MagicTraining
     training_spells = settings.training_spells.empty? ? settings.magic_training : settings.training_spells
 
     magic_skills = training_spells.keys
+    # A planet spell (one with stats) skips the astral check: DRCA.cast_spell finds
+    # the planet itself right before casting, and checking here too would sweep the
+    # telescope across every planet twice a round.
     skills_to_train = magic_skills
                       .select { |skill| training_skills.include?(skill) } # filter to skills you want to train
-                      .select { |skill| DRCMM.update_astral_data(training_spells[skill]) } # filter to spells you can cast now
                       .reject { |skill| DRSkill.getxp(skill) > exp_threshold } # filter out skills you don't need to train
+                      .select { |skill| training_spells[skill]['stats'] || DRCMM.update_astral_data(training_spells[skill], settings) } # filter to spells you can cast now
                       .sort_by do |skill|
       [
         DRSkill.getxp(skill),   # choose first by skills with lowest learning rate
