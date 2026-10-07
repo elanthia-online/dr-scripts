@@ -48,11 +48,36 @@ class Waggle
     end
 
     if args.strict
-      until (settings.waggle_sets[setname].keys - DRSpells.active_spells.keys).empty?
+      until (spells_to_wait_on(settings.waggle_sets[setname]) - DRSpells.active_spells.keys).empty?
         DRCA.do_buffs(settings, setname)
       end
     else
       DRCA.do_buffs(settings, setname)
+    end
+  end
+
+  # The active-spell names strict mode waits on, matching what DRCA.do_buffs
+  # tries to start. Barbarian and thief sets are lists, not spell hashes.
+  def spells_to_wait_on(spells)
+    return spells if DRStats.barbarian?
+    return khris_to_wait_on(spells) if DRStats.thief?
+
+    # do_buffs skips night: spells by day and day: spells at night, so don't
+    # wait on them.
+    spells.select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
+          .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
+          .keys
+  end
+
+  # Thief entries look like 'delay Hasten Focus' or 'Khri Sight'. Parse them
+  # the way DRCA.activate_khri? does: drop a leading Khri, then a leading
+  # Delay, and expect "Khri <name>" in the active spells for each name left.
+  def khris_to_wait_on(khri_sets)
+    khri_sets.flat_map do |khri_set|
+      khris = khri_set.split.map(&:capitalize)
+      khris = khris.drop(1) if khris.first&.casecmp?('khri')
+      khris = khris.drop(1) if khris.first&.casecmp?('delay')
+      khris.map { |khri| "Khri #{khri}" }
     end
   end
 end

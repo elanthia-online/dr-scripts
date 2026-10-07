@@ -10,7 +10,6 @@ class Play
     unless UserVars.song
       DRC.wait_for_script_to_complete('performance', ['checksong'])
     end
-    @song = UserVars.song
     unless DRCI.exists?(settings.instrument) || DRCI.exists?(settings.worn_instrument)
       DRC.message("No instrument found. Exiting.")
       exit
@@ -19,8 +18,9 @@ class Play
     main_loop
   end
 
+  # Read each time so song changes made by performance or crossing-training apply
   def play_song
-    fput("play #{@song}")
+    fput("play #{UserVars.song}")
   end
 
   def can_play?

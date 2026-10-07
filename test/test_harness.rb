@@ -1189,6 +1189,8 @@ module Harness
       def message(*_args); end
       def wait_for_script_to_complete(*_args); end
       def fix_standing; end
+      def play_song?(*_args); true; end
+      def stop_playing; end
       def release_invisibility; end
       def beep; end
       def hide?(*_args); false; end

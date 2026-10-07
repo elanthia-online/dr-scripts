@@ -2147,7 +2147,8 @@ grave_junk:
 # override athletics autodetermination, see data/base-athletics.lic for a list of options.
 climbing_target:
 swimming_target:
-# You may need to manually ;vars set climbing_song to a different song for optimal learning
+# The climbing rope song is picked from Athletics rank (climbing_song_ranks in data/base-perform.yaml)
+# and adjusted when a climb is too hard or too easy. ;performance checksong re-picks it.
 have_climbing_rope: false
 climbing_rope_adjective: climbing
 # Used to hold items while training athletics, increases difficulty of climbing

@@ -64,3 +64,12 @@ perform_options:
   concerto halt: concerto
   concerto: concerto masterful
   concerto masterful: concerto masterful
+
+# Starting song for climbing-rope practice by minimum Athletics rank; the row
+# with the highest rank at or below the character's Athletics rank is used.
+climbing_song_ranks:
+  0: lament
+  101: psalm
+  251: tarantella
+  351: rondo
+  451: concerto masterful

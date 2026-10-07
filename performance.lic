@@ -9,7 +9,7 @@ class Performance
     arg_definitions = [
       [
         { name: 'noclean', regex: /noclean/i, optional: true, description: 'Skip cleaning your instrument' },
-        { name: 'checksong', regex: /checksong/i, optional: true, description: 'Only check what song to play for best learning then exit.' },
+        { name: 'checksong', regex: /checksong/i, optional: true, description: 'Only check what song to play for best learning then exit. Also re-picks the climbing rope song from Athletics rank.' },
         { name: 'mindstate_goal', regex: /(\d+)/, optional: true, description: 'Train until mindstate >= mindstate_goal' }
       ]
     ]
@@ -21,6 +21,7 @@ class Performance
     @mindstate_goal = (args.mindstate_goal || @settings.performance_mindstate_goal).to_i
     skip_clean = args.noclean
     check_song_only = args.checksong
+    reset_climbing_song if check_song_only
 
     worn_instrument = @settings.worn_instrument
     @instrument = @settings.instrument
@@ -102,6 +103,12 @@ class Performance
       DRCI.get_item?(@hand_armor)
       DRCI.wear_item?(@hand_armor)
     end
+  end
+
+  # athletics re-picks the climbing song from Athletics rank on its next rope session
+  def reset_climbing_song
+    UserVars.climbing_song = nil
+    UserVars.climbing_song_seed = nil
   end
 
   def done_training?
