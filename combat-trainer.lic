@@ -2206,8 +2206,31 @@ class SpellProcess
     pause 1
   end
 
+  # Only guards the XML parse window immediately after the prep is sent, where
+  # XMLData.prepared_spell can already name the spell before <castTime> has been
+  # seen -- which would leave checkcastrt at 0 and look "ready" before any prep has
+  # happened. A real prep publishes a nonzero castrt within milliseconds, so this
+  # never delays a genuine cast.
+  READY_TO_CAST_GRACE = 2.0
+
   def ready_to_cast?(game_state)
-    Flags['ct-spellcast'] || (@prep_time && Time.now - game_state.cast_timer >= @prep_time)
+    return true if Flags['ct-spellcast']
+    return true if @prep_time && game_state.cast_timer && Time.now - game_state.cast_timer >= @prep_time
+
+    # Backstop: 'ct-spellcast' is a ONE-SHOT flag and the game announces readiness
+    # exactly once, so a missed announcement used to mean the spell was never cast
+    # at all -- it sat prepared until it decayed while the character kept making
+    # weapon attacks. There is no other fallback for most spells: @prep_time comes
+    # from the spell data, and in base-spells.yaml only cantrips define it.
+    #
+    # DRCA.spell_prepared? asks the game instead: XMLData.prepared_spell is set AND
+    # checkcastrt has run out. Both are continuously-updated live state rather than
+    # a latch, so they cannot be missed. Casting a beat early is already handled --
+    # DRCA.cast? retries on /^This pattern may only be cast with full preparation/.
+    return false unless game_state.cast_timer
+    return false unless Time.now - game_state.cast_timer >= READY_TO_CAST_GRACE
+
+    DRCA.spell_prepared?
   end
 
   def check_current(game_state)
