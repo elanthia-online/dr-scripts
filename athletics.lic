@@ -3,6 +3,9 @@
 =end
 
 class Athletics
+  # Finished rope climbs in a row that may teach no Athletics before alerting
+  CLIMBS_WITHOUT_PROGRESS_LIMIT = 3
+
   def initialize
     @settings = get_settings
     @athletics_options = get_data('athletics').athletics_options
@@ -122,11 +125,13 @@ class Athletics
     return unless DRCI.exists?("#{@settings.climbing_rope_adjective} rope")
     return unless DRCI.exists?(@settings.worn_instrument)
 
-    UserVars.climbing_song ||= pick_climbing_song
-    echo "UserVars.climbing_song: #{UserVars.climbing_song}" if UserVars.athletics_debug
-
-    @song_list = get_data('perform').perform_options
+    perform_data = get_data('perform')
+    @song_list = perform_data.perform_options
     echo "@song_list: #{@song_list}" if UserVars.athletics_debug
+
+    seed_climbing_song(perform_data.climbing_song_ranks)
+    echo "UserVars.climbing_song: #{UserVars.climbing_song}" if UserVars.athletics_debug
+    @climbs_without_progress = 0
 
     Flags.add('climbing-finished', 'You finish practicing your climbing', 'The rope\'s will quickly fades away', 'Your focus diverts away from the rope')
     Flags.add('climbing-too-hard', 'This climb is too difficult')
@@ -147,6 +152,8 @@ class Athletics
       DRC.stop_playing
       break unless DRC.play_song?(@settings, @song_list, true, true, true)
 
+      xp_before_climb = DRSkill.getxp('Athletics')
+      stalled = false
       case DRC.bput("climb practice #{@settings.climbing_rope_adjective} rope", 'You begin to practice ', 'you mime a convincing climb while pulling the rope hand over hand', 'Directing your attention toward your rope', 'Allows you to climb various things like a tree', 'But you aren\'t holding', 'You should stop practicing')
       when /you mime/
         break unless check_rope?
@@ -154,7 +161,10 @@ class Athletics
       when /Directing your/, /You should stop practicing/
         loop do
           pause 1
-          break if Flags['climbing-finished']
+          if Flags['climbing-finished']
+            stalled = climbing_stalled?(xp_before_climb)
+            break
+          end
 
           if Flags['climbing-too-hard']
             Flags.reset('climbing-too-hard')
@@ -179,6 +189,7 @@ class Athletics
       when /But you aren't holding/
         DRC.bput("get #{@settings.climbing_rope_adjective} rope", 'You are already holding that', 'You get', 'What were you')
       end
+      break if stalled
     end
     DRC.bput('stop climb', 'You stop practicing your climbing skills.', "You weren't practicing your climbing skills anyway.")
     DRC.stop_playing
@@ -197,20 +208,45 @@ class Athletics
     end
   end
 
-  def pick_climbing_song
-    # start at a high difficulty guess and work downwards
-    case DRSkill.getrank('Athletics')
-    when 0..100
-      'lament'
-    when 100..250
-      'psalm'
-    when 250..350
-      'tarantella'
-    when 350..450
-      'rondo'
-    when 450..1750
-      'concerto masterful'
+  # Picks the climbing song from Athletics rank when none is stored, the stored
+  # song is unknown, rank has moved into a different band, or the worn
+  # instrument (whose difficulty adds to the song's) has changed since the last
+  # pick. Otherwise songs adjusted by too-hard/too-easy climbs are kept.
+  def seed_climbing_song(climbing_song_ranks)
+    rank_song = climbing_song_for_rank(climbing_song_ranks)
+    return if UserVars.climbing_song_seed == rank_song &&
+              UserVars.climbing_song_instrument == @settings.worn_instrument &&
+              @song_list.key?(UserVars.climbing_song)
+
+    echo "Picking climbing song '#{rank_song}' from Athletics rank #{DRSkill.getrank('Athletics')}"
+    UserVars.climbing_song = rank_song
+    UserVars.climbing_song_seed = rank_song
+    UserVars.climbing_song_instrument = @settings.worn_instrument
+    # Rope difficulty messages, not performance difficulty, adjust the song from here
+    UserVars.climbing_song_offset = true
+  end
+
+  # Starts at a high difficulty guess; too-hard climbs work it downwards
+  def climbing_song_for_rank(climbing_song_ranks)
+    rank = DRSkill.getrank('Athletics').to_i
+    climbing_song_ranks.select { |min_rank, _song| rank >= min_rank }.max_by(&:first).last
+  end
+
+  # Counts consecutive finished climbs that taught no Athletics. Too-hard and
+  # too-easy climbs aren't counted because they already adjust the song.
+  def climbing_stalled?(xp_before_climb)
+    if DRSkill.getxp('Athletics') > xp_before_climb
+      @climbs_without_progress = 0
+      return false
     end
+
+    @climbs_without_progress += 1
+    return false if @climbs_without_progress < CLIMBS_WITHOUT_PROGRESS_LIMIT
+
+    DRC.message("Rope climbing taught no Athletics in #{CLIMBS_WITHOUT_PROGRESS_LIMIT} climbs while playing '#{UserVars.climbing_song}'. " \
+                "Run ;performance checksong to re-pick your climbing song from your Athletics rank, " \
+                "or set one with ;vars set climbing_song=<song>.")
+    true
   end
 
   def crossing_athletics
