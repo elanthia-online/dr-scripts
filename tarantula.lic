@@ -35,10 +35,18 @@ class Tarantula
 
   def check_last
     DRC.message("*** Checking last skillset used ***") if @debug
-    DRC.bput("study #{@tarantula_noun}", /knowledge of (.*) techniques/, /currently set to consume .* experience\./) =~ /knowledge of (.*) techniques/
+    result = DRC.bput("study #{@tarantula_noun}", /knowledge of (.*) techniques/, /currently set to consume .* experience\./, /^Study what\?/)
+    tarantula_missing if result =~ /^Study what\?/
+    result =~ /knowledge of (.*) techniques/
     @last = Regexp.last_match(1)
     @last = @last.sub(/s$/, '')
     UserVars.tarantula_last_skillset = @last
+  end
+
+  def tarantula_missing
+    DRC.message("#{@tarantula_noun} not found, exiting")
+    DRC.safe_unpause_list(@scripts_to_unpause)
+    exit
   end
 
   def in_combat?
@@ -81,7 +89,9 @@ class Tarantula
     if skill =~ /(Lunar|Holy|Elemental|Life|Arcane|Inner) (Magic|Fire)/i
       skill = 'Magic'
     end
-    case DRC.bput("turn my #{@tarantula_noun} to #{skill}", /your changes snap into place/, /^\[You need to vary which skillset/, /^You should stop practicing your Athletics/, /^You don't seem to be able to move to do that/, /^You need to concentrate on your climbing, not that/)
+    case DRC.bput("turn my #{@tarantula_noun} to #{skill}", /your changes snap into place/, /^\[You need to vary which skillset/, /^You should stop practicing your Athletics/, /^You don't seem to be able to move to do that/, /^You need to concentrate on your climbing, not that/, /^Turn what\?/)
+    when /^Turn what\?/
+      tarantula_missing
     when /your changes snap into place/
       DRC.message("*** Tarantula will now consume #{name} knowledge ***") if @debug
       return true
@@ -119,7 +129,9 @@ class Tarantula
     end
     field = DRSkill.getxp(skill)
 
-    case DRC.bput("rub my #{@tarantula_noun}", /The .* comes alive in your hand/, /(\d+) roisae?n to generate enough venom/, /But you currently aren.t learning any/, /^\[You need to vary which skillset/, /You should stop practicing your Athletics/)
+    case DRC.bput("rub my #{@tarantula_noun}", /The .* comes alive in your hand/, /(\d+) roisae?n to generate enough venom/, /But you currently aren.t learning any/, /^\[You need to vary which skillset/, /You should stop practicing your Athletics/, /^Rub what\?/)
+    when /^Rub what\?/
+      tarantula_missing
     when /The .* comes alive in your hand/
       DRC.log_window("Tarantula successfully sacrificed #{field}/34 of #{skill} at #{Time.now.strftime("%T on %m/%d/%Y")}", "atmospherics")
       UserVars.tarantula_last_use = Time.now
