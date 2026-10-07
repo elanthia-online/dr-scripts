@@ -3,7 +3,7 @@
 =begin
   Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-moonwatch.lic
 
-  Moonwatch v4.5.4 - Bresenham Moons + Empirical Sun Table + Lunar Phase
+  Moonwatch v4.5.5 - Bresenham Moons + Empirical Sun Table + Lunar Phase
   ======================================================================
 
   This script provides real-time tracking of DragonRealms moons (Katamba, Xibar, Yavash)
@@ -101,6 +101,24 @@
   reading flipped from "fruitless" to "hidden ... energy strong" exactly at the
   model-predicted new-moon rise tick.
 
+  v4.5.5 corrects the v4.5.4 claim that above-horizon new is mapped for every
+  moon. "Hidden ... energy" is only one of nine risen-new wordings. Yavash never
+  reads it; it reads "Yavash's presence is on the very edge of your sensing."
+  (102/102 at model-new, spread across the new bucket). A sweep of every Moon Mage
+  observe in Sep-Oct 2026 found seven more, e.g. "You feel the presence of a
+  moderately near Katamba." and "A starless patch of sky above betrays the
+  presence of Xibar above you, hidden from view as a new moon." (170 reads, all
+  at model-new). None of them says "moon <M>", so all were silently dropped, not
+  even logged as unmapped. MOON_HIDDEN_PHASE_LINE_PATTERN now captures all nine
+  and each maps to new.
+
+  v4.5.5 also corrects v4.5.3 on "nowhere to be seen". It is not a below-horizon
+  read: in 64/64 cases the model had the moon up, and a Moon Mage observing the
+  same moon at the same moment got "lurking somewhere behind the clouds". It is
+  the non-Moon-Mage's read for a dim moon behind cloud, and it stays unmapped
+  because it spans several phases. That the dark-moon readings are Moon-Mage-only
+  is untested, not confirmed: the non-Moon-Mage never observed a new moon.
+
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
   - Moons: Single responsibility for moon position calculations
@@ -141,7 +159,7 @@
 no_pause_all
 no_kill_all
 
-$MOONWATCH_VERSION = '4.5.4'
+$MOONWATCH_VERSION = '4.5.5'
 
 # =============================================================================
 # CONSTANTS: Game Event Patterns
@@ -179,17 +197,37 @@ MOON_SCAN_PATTERN = /^You scan the skies/i.freeze
 # @example "Waxing still, half of the black moon Katamba looks down from above."
 MOON_PHASE_LINE_PATTERN = /\bmoon (?<moon>Katamba|Xibar|Yavash)\b(?<phase_desc>.*)\.\s*$/i.freeze
 
-# The one dark-moon reading MOON_PHASE_LINE_PATTERN cannot catch. When a new
-# (dark) moon is UP, a Moon Mage's `observe` reads "<M> is hidden from you, but
-# its energy is quite strong." -- the bare moon name, no "moon <M>" clause -- so
-# the pattern above never captures it (see the OBSERVED_PHASE_MAP notes). This
-# captures that single wording; its clause maps to new (45/45 in validation, the
-# 0 outliers making it a cleaner new signal than "fruitless"). The energy
-# adjective varies, so the capture keys on the stable "is hidden from you, but
-# its energy" fragment. A dark moon below the horizon reads "fruitless" instead;
-# that one already says "moon <M>", so MOON_PHASE_LINE_PATTERN handles it.
+# The dark-moon readings MOON_PHASE_LINE_PATTERN cannot catch. When a new (dark)
+# moon is UP, a Moon Mage's `observe` names it by bare name, with no "moon <M>"
+# clause, so the pattern above never captures it (see the OBSERVED_PHASE_MAP
+# notes). DR has several wordings for it, and every logged one maps to new:
+#   - "<M> is hidden from you, but its energy is quite strong." (Katamba, Xibar;
+#     45/45). The energy adjective varies, so this one keys on the stable "is
+#     hidden from you, but its energy" fragment.
+#   - "<M>'s presence is on the very edge of your sensing." (Yavash; 102/102)
+#   - "<M> is not visible, though you can feel its presence." (Katamba; 9/9)
+#   - "The energy emanating from <M> is quite strong indeed, although you cannot
+#     see it in the skies above." (Xibar; 47/47)
+#   - "You feel the presence of a moderately near <M>." (Katamba; 39/39)
+#   - "A starless patch of sky above betrays the presence of <M> above you,
+#     hidden from view as a new moon." (Xibar; 38/38)
+#   - "You sense <M>'s very weak presence in the sky." (Yavash; 18/18)
+#   - "You cannot see <M>, but sense its weak presence above." (Yavash; 10/10)
+#   - "You feel strong pulses of energy from <M>, hiding as a new moon above."
+#     (Katamba; 9/9)
+# All counts are one Moon Mage (Quilsilgas) checked against the model phase. Each
+# wording came from the moon(s) shown, but the moon is matched loosely in every
+# branch so a wording still maps if another moon (or observer) emits it. When the
+# moon name leads, phase_desc is the rest of the sentence, as it is after "moon
+# <M>" above; otherwise phase_desc is the whole sentence. A dark moon below the
+# horizon reads "fruitless" instead; that one already says "moon <M>", so
+# MOON_PHASE_LINE_PATTERN handles it. Clouded reads ("... lurking somewhere behind
+# the clouds.", "... glow ... betrays the presence of <M>.") span several phases
+# and are deliberately not matched.
 # @example "Xibar is hidden from you, but its energy is quite strong."
-MOON_HIDDEN_PHASE_LINE_PATTERN = /^(?<moon>Katamba|Xibar|Yavash) (?<phase_desc>is hidden from you, but its energy.*)\.\s*$/i.freeze
+# @example "Yavash's presence is on the very edge of your sensing."
+# @example "You feel the presence of a moderately near Katamba."
+MOON_HIDDEN_PHASE_LINE_PATTERN = /^(?:(?<moon>Katamba|Xibar|Yavash) (?<phase_desc>is hidden from you, but its energy.*)|(?<moon>Katamba|Xibar|Yavash)'s (?<phase_desc>presence is on the very edge of your sensing)|(?<moon>Katamba|Xibar|Yavash) (?<phase_desc>is not visible, though you can feel its presence)|(?<phase_desc>The energy emanating from (?<moon>Katamba|Xibar|Yavash) is quite strong indeed, although you cannot see it in the skies above)|(?<phase_desc>You feel the presence of a moderately near (?<moon>Katamba|Xibar|Yavash))|(?<phase_desc>A starless patch of sky above betrays the presence of (?<moon>Katamba|Xibar|Yavash) above you, hidden from view as a new moon)|(?<phase_desc>You sense (?<moon>Katamba|Xibar|Yavash)'s very weak presence in the sky)|(?<phase_desc>You cannot see (?<moon>Katamba|Xibar|Yavash), but sense its weak presence above)|(?<phase_desc>You feel strong pulses of energy from (?<moon>Katamba|Xibar|Yavash), hiding as a new moon above))\.\s*$/i.freeze
 
 # Sun rise event patterns - multiple variations exist in-game
 # These cover dawn/sunrise messages across different weather conditions and locations
@@ -976,21 +1014,42 @@ module Moons
   # It IS observable, but only by a Moon Mage: their `observe` senses the dark
   # moon's mana and returns one of two clauses depending on the moon's arc.
   # Below the horizon it reads "...moon <M> turns up fruitless." (40/42 = new; the
-  # 2 outliers are new->waxing-crescent boundary reads); once risen it reads
-  # "...<M> is hidden from you, but its energy is quite strong." (45/45 = new).
-  # The "hidden ... energy" clause lacks "moon <M>", so MOON_PHASE_LINE_PATTERN
-  # cannot see it -- MOON_HIDDEN_PHASE_LINE_PATTERN captures it instead (v4.5.4);
-  # both clauses map to new here. Non-Moon-Mage characters get only "nowhere to
-  # be seen", which is below-horizon and spans every phase, so it is deliberately
-  # NOT mapped. Both new entries are therefore Moon-Mage-only in practice; they
-  # need no gating because no other guild emits them. Determined from a Moon Mage
-  # (Quilsilgas) vs a non-Moon-Mage (Ytterby): the dark-moon clauses appear only
-  # in the Moon Mage's logs.
+  # 2 outliers are new->waxing-crescent boundary reads); once risen it reads one
+  # of nine bare-name wordings, e.g. "<M> is hidden from you, but its energy is
+  # quite strong." or "<M>'s presence is on the very edge of your sensing." (every
+  # logged read = new; the full list and counts are at
+  # MOON_HIDDEN_PHASE_LINE_PATTERN). The risen wordings lack "moon <M>", so
+  # MOON_PHASE_LINE_PATTERN cannot see them -- MOON_HIDDEN_PHASE_LINE_PATTERN
+  # captures them instead (v4.5.4, the other eight v4.5.5); they all map to new
+  # here. They need no guild gating: a dark-moon reading means new whoever emits
+  # it. Only a Moon Mage (Quilsilgas) has been logged observing a new moon; the
+  # non-Moon-Mage (Ytterby) observes only on rise broadcasts, which a new moon
+  # never sends, so what other guilds see for one is untested.
+  #
+  # Clouded reads differ by guild, which is the only difference between the two
+  # characters (Moon Mages have a skill nobody else has). In 105/105 paired
+  # observes of the same moon at the same moment, the Moon Mage got "Clouds
+  # obscure the sky where <M> should appear." and the non-Moon-Mage got "Dense
+  # clouds completely obscure your search." A dim moon (crescent or quarter)
+  # behind cloud then reads "You are able to sense <M> lurking somewhere behind the
+  # clouds." for the Moon Mage and "<M> is nowhere to be seen." for the other
+  # (64/64 pairs, all with the model showing the moon up). A bright one (gibbous
+  # or full) reads "... glow ... betrays the presence of <M>." for both. All of
+  # these span several phases, so none is mapped. Visible phase wording is the
+  # same for both guilds (257/257 pairs).
   #
   # Entries are in cycle order; find returns the first match, fragments disjoint.
   OBSERVED_PHASE_MAP = [
     [/turns up fruitless/i, 'new'],               # Moon Mage, dark moon below horizon
-    [/hidden from you, but its energy/i, 'new'],  # Moon Mage, dark moon risen
+    [/hidden from you, but its energy/i, 'new'],  # Moon Mage, dark moon risen (Katamba/Xibar)
+    [/very edge of your sensing/i, 'new'],        # Moon Mage, dark moon risen (Yavash)
+    [/is not visible, though you can feel its presence/i, 'new'],  # Moon Mage, dark moon risen (Katamba)
+    [/although you cannot see it in the skies above/i, 'new'],     # Moon Mage, dark moon risen (Xibar)
+    [/presence of a moderately near/i, 'new'],                     # Moon Mage, dark moon risen (Katamba)
+    [/hidden from view as a new moon/i, 'new'],                    # Moon Mage, dark moon risen (Xibar)
+    [/very weak presence in the sky/i, 'new'],                     # Moon Mage, dark moon risen (Yavash)
+    [/but sense its weak presence above/i, 'new'],                 # Moon Mage, dark moon risen (Yavash)
+    [/hiding as a new moon above/i, 'new'],                        # Moon Mage, dark moon risen (Katamba)
     [/growing crescent/i, 'waxing crescent'],
     [/looks down from above/i, 'first quarter'],
     [/nearly turned its full face/i, 'waxing gibbous'],
@@ -2664,7 +2723,8 @@ loop do
 
   when MOON_HIDDEN_PHASE_LINE_PATTERN
     # The up-and-new (dark) moon reads by bare name ("<M> is hidden from you, but
-    # its energy ..."), which MOON_PHASE_LINE_PATTERN cannot catch. Capture it here,
+    # its energy ...", "You feel the presence of a moderately near <M>.", and
+    # seven more), which MOON_PHASE_LINE_PATTERN cannot catch. Capture it here,
     # scoped by the same scan line, and feed it through the normal phase logger so
     # the new phase is validated above-horizon too (below-horizon new reads
     # "fruitless", handled by the branch above).
