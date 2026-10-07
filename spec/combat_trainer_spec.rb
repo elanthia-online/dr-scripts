@@ -4555,6 +4555,89 @@ RSpec.describe SpellProcess do
       expect(gs.necro_casting?).to be false         # so loot/rituals/pets are NOT suppressed
     end
   end
+
+  describe '#ready_to_cast?' do
+    # 'ct-spellcast' is a ONE-SHOT flag and the game announces readiness exactly
+    # once. Before the castrt backstop, a missed announcement meant the spell was
+    # never cast at all: it sat prepared until it decayed while the character kept
+    # swinging a weapon. @prep_time is no help -- it comes from the spell data, and
+    # in base-spells.yaml only cantrips define it, so for ordinary spells it is nil
+    # and that whole clause is dead.
+    def build_caster(prep_time: nil, prepared_seconds_ago: 10.0)
+      instance = build_spell_process(prep_time: prep_time, abbrev: 'FB')
+      game_state = build_game_state(casting: true, cast_timer: Time.now - prepared_seconds_ago)
+      [instance, game_state]
+    end
+
+    before do
+      Flags['ct-spellcast'] = false
+      allow(DRCA).to receive(:spell_prepared?).and_return(false)
+    end
+
+    it 'casts when the readiness message was seen' do
+      instance, game_state = build_caster
+      Flags['ct-spellcast'] = true
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_truthy
+    end
+
+    it 'casts when an explicit prep_time has elapsed' do
+      instance, game_state = build_caster(prep_time: 5, prepared_seconds_ago: 6.0)
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_truthy
+    end
+
+    it 'waits while an explicit prep_time has not elapsed' do
+      instance, game_state = build_caster(prep_time: 30, prepared_seconds_ago: 2.5)
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_falsey
+    end
+
+    # THE REGRESSION TEST. No flag, no prep_time -- exactly a Fire Ball whose
+    # "You feel fully prepared to cast your spell." was missed. Without the
+    # backstop this is false forever and the spell is never cast.
+    it 'casts on the castrt backstop when the readiness message was missed' do
+      instance, game_state = build_caster
+      allow(DRCA).to receive(:spell_prepared?).and_return(true)
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_truthy
+    end
+
+    # Guards the XML parse window: right after the prep is sent, prepared_spell can
+    # already name the spell while <castTime> has not been parsed, leaving
+    # checkcastrt at 0 and looking "ready" before any prep has happened.
+    it 'does not fire the backstop inside the grace period' do
+      instance, game_state = build_caster(prepared_seconds_ago: 0.1)
+      allow(DRCA).to receive(:spell_prepared?).and_return(true)
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_falsey
+    end
+
+    it 'keeps waiting when the game says the spell is still preparing' do
+      instance, game_state = build_caster
+      allow(DRCA).to receive(:spell_prepared?).and_return(false)
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_falsey
+    end
+
+    # reset_casting_state clears cast_timer, and check_timer can run between a
+    # reset and the next prep. Must not raise on nil arithmetic.
+    it 'does not blow up when there is no cast timer yet' do
+      instance = build_spell_process(prep_time: 5, abbrev: 'FB')
+      game_state = build_game_state(casting: true, cast_timer: nil)
+      allow(DRCA).to receive(:spell_prepared?).and_return(true)
+
+      expect { instance.send(:ready_to_cast?, game_state) }.not_to raise_error
+      expect(instance.send(:ready_to_cast?, game_state)).to be_falsey
+    end
+
+    it 'still prefers the readiness message over the backstop grace' do
+      instance, game_state = build_caster(prepared_seconds_ago: 0.1)
+      Flags['ct-spellcast'] = true
+
+      expect(instance.send(:ready_to_cast?, game_state)).to be_truthy
+    end
+  end
 end
 
 # ###################################################################

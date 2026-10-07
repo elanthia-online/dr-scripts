@@ -1338,6 +1338,11 @@ module Harness
       def perc_aura(*_args); end
       def perc_mana(*_args); end
       def release_cyclics(*_args); end
+      # Real implementation (lich-5 common-arcana.rb:431) is
+      # `spell_preparing? && checkcastrt <= 0`. Defaults to false so every existing
+      # spec keeps the pre-backstop behaviour; override per-example.
+      def spell_prepared?(*_args); false; end
+      def spell_preparing?(*_args); false; end
       def stow_cambrinth(*_args); end
       def update_avtalia(*_args); end
     end
