@@ -1,0 +1,1366 @@
+=begin
+  Documentation: https://elanthipedia.play.net/Lich_script_repository#touch
+
+  Empath healing window -- a GTK take on the Genie "Crutch" plugin.
+
+    ;touch            open the window
+    ;touch <player>   open the window and TOUCH <player>
+    ;touch self       open the window and PERCEIVE HEALTH SELF
+    ;touch debug      also log the raw game XML of each TOUCH to touch-debug.log
+                      in the Lich log folder (for reporting parsing problems)
+
+  While the window is open, ;touch <player> adds a tab to it instead of
+  starting a second copy, and any TOUCH or PERCEIVE HEALTH SELF you type
+  yourself is picked up as well.
+
+  Each tab shows the patient's fresh/scar, external/internal wounds on four
+  body figures, colored green (minor) through red (useless).
+
+    Left-click a wound      take it -- all of it, or the amount picked under
+                            Take > Left-Click Takes (Self tab: cast HW / HS)
+    Right-click a wound     Take Part / Half / Most / All
+    Vitality bar, P, D      take vitality / poison / disease (Self: VH/FP/CD)
+    Right-click a tab       link and take-all options
+    Double-click a tab      close it, or every other tab
+    Break (right-click)     LINK ALL CANCEL
+
+  Optional settings, for fine-tuning only (the script has its own defaults):
+    touch_link_patterns   extra link messages that open a tab, using {name}
+    touch_self_spells     per-spell mana / prep_time, e.g.
+                            touch_self_spells:
+                              hw:
+                                mana: 10
+=end
+
+no_pause_all
+no_kill_all
+
+arg_definitions = [
+  [
+    { name: 'target', regex: /^[A-Za-z][\w'-]*$/, optional: true, description: 'Player to TOUCH, SELF to perceive your own health, or DEBUG to log raw TOUCH output' }
+  ]
+]
+
+args = parse_args(arg_definitions)
+
+# Reads TOUCH / PERCEIVE HEALTH SELF output one plain-text line at a time and
+# turns it into events for the patient the output is about. It never touches
+# the game or the window, so it can be fed from anywhere.
+class TouchParser
+  SELF = 'Self'.freeze
+
+  WOUND_TYPES = %i[fresh_external scar_external fresh_internal scar_internal].freeze
+
+  BODY_PARTS = {
+    'HEAD'       => :head,
+    'RIGHT EYE'  => :right_eye,
+    'LEFT EYE'   => :left_eye,
+    'NECK'       => :neck,
+    'CHEST'      => :chest,
+    'ABDOMEN'    => :abdomen,
+    'BACK'       => :back,
+    'RIGHT ARM'  => :right_arm,
+    'LEFT ARM'   => :left_arm,
+    'RIGHT HAND' => :right_hand,
+    'LEFT HAND'  => :left_hand,
+    'RIGHT LEG'  => :right_leg,
+    'LEFT LEG'   => :left_leg,
+    'SKIN'       => :skin,
+    'TAIL'       => :tail
+  }.freeze
+
+  # https://elanthipedia.play.net/Damage#Wound_Severity_Levels
+  SEVERITIES = {
+    'insignificant'               => 1,
+    'insignificant to negligible' => 1,
+    'negligible'                  => 2,
+    'minor'                       => 3,
+    'more than minor'             => 4,
+    'harmful'                     => 5,
+    'very harmful'                => 6,
+    'damaging'                    => 7,
+    'very damaging'               => 8,
+    'severe'                      => 9,
+    'very severe'                 => 10,
+    'devastating'                 => 11,
+    'very devastating'            => 12,
+    'useless'                     => 13
+  }.freeze
+
+  DEFAULT_LINK_PATTERN = 'You sense a successful empathic link has been forged between you and {name}.'.freeze
+
+  # The severity is the last thing on the line, optionally followed by "(n/13)".
+  # Longest names first so "very harmful" is never read as "harmful".
+  SEVERITY_PATTERN = Regexp.union(SEVERITIES.keys.sort_by { |key| -key.length })
+  WOUND_LINE = %r{^(?<freshness>Fresh|Scars) (?<location>External|Internal):.*?(?<severity>#{SEVERITY_PATTERN})\s*(?:\((?<level>\d+)/13\))?\.?$}
+  PART_LINE = /^Wounds to the (?<part>[A-Za-z ]+):/
+  INJURIES_SELF = /^Your injuries include/
+  INJURIES_OTHER = /^(?<name>[\w'-]+)'s injuries include/
+  EMPTINESS = /^You close your eyes, centering your thoughts on your own life essence, but feel only an aching emptiness/
+  VITALITY_REMAINING = /\(\S+ ha(?:s|ve) (?<percent>\d+)% vitality remaining\.?\)/
+  VITALITY_LOSS = /^(?:\S+ is|You are) .*\((?<percent>\d+)%\)\.$/
+  DEAD = /^(?:He|She|They) (?:is|are) dead/
+  POISON = /poison(?:ed)?[.!]?$|\bpoisoned\b|^[\w'-]+ (?:has|have) an? .* poison|having trouble breathing/
+  DISEASE = /infected|open oozing sores|dormant infection|gangrene|\bdisease\b/
+
+  attr_reader :patient
+
+  def self.pattern_to_regex(pattern)
+    prefix, suffix = pattern.to_s.split('{name}', 2)
+    return nil if suffix.nil?
+
+    /^#{Regexp.escape(prefix.strip)}\s*(?<name>[\w'-]+)#{Regexp.escape(suffix.rstrip)}/
+  end
+
+  def initialize(extra_link_patterns = [])
+    # touch_link_patterns is optional: nil (an older base.yaml) or junk entries
+    # just leave the standard link message.
+    patterns = [DEFAULT_LINK_PATTERN] + Array(extra_link_patterns).grep(String)
+    @link_regexes = patterns.uniq.filter_map { |pattern| self.class.pattern_to_regex(pattern) }
+    @patient = nil
+    @parsing = false
+    @part = nil
+    @poison_count = 0
+  end
+
+  def parsing?
+    @parsing
+  end
+
+  # @param line [String] one line of game text with the XML already stripped
+  # @return [Array<Array>] events, each [kind, patient_name, *details]
+  def feed(line)
+    line = line.to_s.strip
+    return [] if line.empty?
+
+    if (name = link_target(line))
+      return begin_patient(name)
+    elsif INJURIES_SELF.match?(line)
+      return begin_patient(SELF)
+    elsif EMPTINESS.match?(line)
+      events = begin_patient(SELF)
+      @parsing = false
+      return events
+    elsif (match = INJURIES_OTHER.match(line)) && match[:name] == @patient
+      @parsing = true
+      return []
+    end
+    return [] unless @parsing
+    return finish if line.start_with?('Roundtime')
+
+    parse_detail(line)
+  end
+
+  # The game prompt ends a block of TOUCH / PERCEIVE output.
+  def finish
+    @parsing = false
+    @part = nil
+    []
+  end
+
+  private
+
+  def link_target(line)
+    @link_regexes.each do |regex|
+      match = regex.match(line)
+      return match[:name] if match
+    end
+    nil
+  end
+
+  def begin_patient(name)
+    @patient = name
+    @parsing = true
+    @part = nil
+    @poison_count = 0
+    [[:patient, name], [:reset, name]]
+  end
+
+  def parse_detail(line)
+    if (match = PART_LINE.match(line))
+      @part = BODY_PARTS[match[:part].strip.upcase]
+      []
+    elsif (match = WOUND_LINE.match(line))
+      wound_event(match)
+    elsif (match = VITALITY_REMAINING.match(line))
+      [[:vitality, @patient, match[:percent].to_i.clamp(0, 100)]]
+    elsif (match = VITALITY_LOSS.match(line))
+      [[:vitality, @patient, (100 - match[:percent].to_i).clamp(0, 100)]]
+    elsif DEAD.match?(line)
+      [[:dead, @patient]]
+    else
+      condition_events(line)
+    end
+  end
+
+  def wound_event(match)
+    return [] unless @part
+
+    freshness = match[:freshness] == 'Fresh' ? 'fresh' : 'scar'
+    type = :"#{freshness}_#{match[:location].downcase}"
+    level = match[:level] ? match[:level].to_i : SEVERITIES[match[:severity]]
+    [[:wound, @patient, type, @part, level.clamp(1, 13)]]
+  end
+
+  def condition_events(line)
+    events = []
+    if POISON.match?(line)
+      @poison_count += 1
+      events << [:poison, @patient, @poison_count]
+    end
+    events << [:disease, @patient] if DISEASE.match?(line)
+    events
+  end
+end
+
+# What we last perceived about one patient.
+class TouchPatient
+  attr_reader :name, :wounds, :vitality, :poison, :disease, :dead
+
+  def initialize(name)
+    @name = name
+    reset
+  end
+
+  def reset
+    @wounds = TouchParser::WOUND_TYPES.to_h { |type| [type, {}] }
+    @vitality = 100
+    @poison = 0
+    @disease = false
+    @dead = false
+  end
+
+  def apply(event)
+    case event.first
+    when :reset then reset
+    when :wound then @wounds[event[2]][event[3]] = event[4]
+    when :vitality then @vitality = event[2]
+    when :poison then @poison = event[2]
+    when :disease then @disease = true
+    when :dead then @dead = true
+    end
+  end
+
+  def level(type, part)
+    @wounds.dig(type, part)
+  end
+
+  # @return [Array<Array>] [type, part, level], worst first, ties in perceive order
+  def wound_list
+    @wounds.flat_map { |type, parts| parts.map { |part, level| [type, part, level] } }
+           .each_with_index
+           .sort_by { |(_type, _part, level), index| [-level, index] }
+           .map(&:first)
+  end
+
+  # An independent copy for the GTK thread to draw from.
+  def snapshot
+    {
+      wounds: @wounds.transform_values(&:dup),
+      vitality: @vitality,
+      poison: @poison,
+      disease: @disease,
+      dead: @dead
+    }
+  end
+end
+
+# Builds the game actions for each healing request. Every method returns a list
+# of [:command, text] and [:spell, abbrev, target] actions; nothing is sent here.
+class TouchCommands
+  SELF = TouchParser::SELF
+
+  def self.part_name(part)
+    part.to_s.tr('_', ' ')
+  end
+
+  def self.internal?(type)
+    type.to_s.end_with?('internal')
+  end
+
+  def self.scar?(type)
+    type.to_s.start_with?('scar')
+  end
+
+  def self.scar_of(type)
+    internal?(type) ? :scar_internal : :scar_external
+  end
+
+  def self.touch(patient)
+    return [[:command, 'perceive health self']] if patient == SELF
+
+    [[:command, "touch #{patient}"]]
+  end
+
+  # @param method [String, nil] 'part', 'half' or 'most'; nil or 'all' takes it all
+  def self.take_wound(patient, type, part, method = nil, quick: false)
+    return [[:spell, scar?(type) ? 'hs' : 'hw', part_name(part)]] if patient == SELF
+
+    words = ['take', patient, part_name(part)]
+    words << 'internal' if internal?(type)
+    words << 'scar' if scar?(type)
+    words << method if method && method != 'all'
+    words << 'quick' if quick
+    [[:command, words.join(' ')]]
+  end
+
+  # Taking a whole wound: half of anything worse than very damaging when Half
+  # On Major is set, otherwise all of it.
+  def self.take_full(patient, type, part, level, options)
+    method = 'half' if options[:half_on_major] && level > 7
+    take_wound(patient, type, part, method, quick: options[:quick])
+  end
+
+  # A left-click takes the amount picked under Take > Left-Click Takes. All,
+  # the default, is a whole take, so it follows Half On Major.
+  def self.click_wound(patient, type, part, level, options)
+    amount = options[:click_amount].to_s
+    return take_full(patient, type, part, level, options) unless %w[part half most].include?(amount)
+
+    take_wound(patient, type, part, amount, quick: options[:quick])
+  end
+
+  def self.take_condition(patient, condition, options)
+    if patient == SELF
+      spell = { 'vitality' => 'vh', 'poison' => 'fp', 'disease' => 'cd' }.fetch(condition)
+      return [[:spell, spell, nil]]
+    end
+
+    quick = ' quick' if options[:quick]
+    return [[:command, "take #{patient} vitality#{quick}"]] if condition == 'vitality'
+
+    [[:command, "take #{patient}#{quick} #{condition}"]]
+  end
+
+  # Every wound the options allow, worst first, then the scars those leave
+  # behind, then a fresh TOUCH so the tab redraws. Uses the game's own
+  # TAKE ALL when no option needs wound-by-wound control.
+  def self.take_all(patient, wounds, options)
+    if patient != SELF && bulk_take?(options)
+      return touch(patient) + [[:command, "take #{patient}#{' quick' if options[:quick]} all"]]
+    end
+
+    taken = wounds.reject { |type, _part, level| skip?(patient, type, level, options) }
+    actions = taken.flat_map { |type, part, level| take_full(patient, type, part, level, options) }
+    if options[:include_scars] && patient != SELF
+      taken.reject { |type, _part, _level| scar?(type) }.each do |type, part, level|
+        actions.concat(take_full(patient, scar_of(type), part, level, options))
+      end
+    end
+    actions.concat(touch(patient)) unless patient == SELF
+    actions.uniq
+  end
+
+  # Only the wounds below harmful. On Self, as with Take All, internal wounds
+  # are left out, and a part is cast on once even with several wounds there.
+  def self.take_minor(patient, wounds, options)
+    minor = wounds.select do |type, _part, level|
+      level < 5 && !filtered?(type, options) && !(patient == SELF && internal?(type))
+    end
+    actions = patient == SELF ? [] : touch(patient)
+    (actions + minor.flat_map { |type, part, _level| take_wound(patient, type, part, quick: options[:quick]) }).uniq
+  end
+
+  def self.link(patient, kind)
+    links = { 'persistent' => %w[persistent], 'hodierna' => %w[persistent hodierna], 'unity' => %w[unity] }.fetch(kind)
+    touch(patient) + links.map { |link| [:command, "link #{patient} #{link}"] }
+  end
+
+  # @param method [String, nil] 'part', 'half', 'most', or nil for everything
+  def self.link_take(patient, method, options)
+    words = ['take', patient]
+    words << method if method
+    words << 'quick' if options[:quick]
+    touch(patient) + [[:command, (words << 'all').join(' ')]]
+  end
+
+  def self.break_link(patient)
+    return [] if patient.nil? || patient == SELF
+
+    [[:command, "break #{patient}"]]
+  end
+
+  def self.bulk_take?(options)
+    !options[:leave_bleeders] && !options[:half_on_major] && options[:include_internal] && options[:include_scars]
+  end
+
+  def self.filtered?(type, options)
+    (!options[:include_internal] && internal?(type)) || (!options[:include_scars] && scar?(type))
+  end
+
+  # Healing yourself works area by area with HW / HS, which only reach
+  # external wounds, and leaving bleeders means skipping fresh wounds past
+  # harmful.
+  def self.skip?(patient, type, level, options)
+    return true if patient == SELF && internal?(type)
+    return true if filtered?(type, options)
+
+    options[:leave_bleeders] && level > 5 && !scar?(type)
+  end
+end
+
+# The GTK window. Every method here runs on the GTK thread (via Gtk.queue);
+# requests go back to the script as intents on the queue passed in, and the
+# script answers with show_patient / update_patient.
+class TouchWindow
+  # Tabs and figures are drawn on Genie Crutch's own grids and scaled to fit:
+  # a tab is at least 165x322, a body figure 63x134.
+  TAB_WIDTH = 165.0
+  # Genie's 322, plus room under the bottom captions so they are never clipped.
+  TAB_HEIGHT = 326.0
+  FIGURE_WIDTH = 63.0
+
+  # [x, y, width, height, shape, caption] on the figure grid, in drawing order.
+  FIGURE_PARTS = {
+    head: [12, 2, 34, 34, :round, nil],
+    right_eye: [16, 11, 12, 12, :round, nil],
+    left_eye: [30, 11, 12, 12, :round, nil],
+    neck: [22, 35, 14, 9, :square, nil],
+    chest: [13, 43, 32, 23, :square, nil],
+    back: [13, 65, 32, 16, :square, 'back'],
+    abdomen: [13, 80, 32, 16, :square, nil],
+    right_arm: [2, 43, 12, 35, :square, nil],
+    left_arm: [44, 43, 12, 35, :square, nil],
+    right_hand: [2, 77, 12, 12, :round, nil],
+    left_hand: [44, 77, 12, 12, :round, nil],
+    right_leg: [13, 95, 13, 37, :square, nil],
+    left_leg: [32, 95, 13, 37, :square, nil],
+    tail: [6, 93, 8, 20, :square, nil],
+    skin: [47, 91, 15, 17, :round, 'S']
+  }.freeze
+
+  # [column, y, caption] of each figure on the tab grid.
+  FIGURES = {
+    fresh_external: [:left, 25, 'Fresh External'],
+    scar_external: [:right, 25, 'Scar External'],
+    fresh_internal: [:left, 175, 'Fresh Internal'],
+    scar_internal: [:right, 175, 'Scar Internal']
+  }.freeze
+
+  # Wound level 0 (none) through 11+, green to red.
+  LEVEL_COLORS = [
+    [0, 0, 0], [0, 94, 32], [46, 121, 26], [98, 151, 20], [152, 182, 13], [206, 213, 6],
+    [255, 242, 0], [255, 204, 0], [255, 153, 0], [255, 102, 0], [255, 51, 0], [255, 0, 0]
+  ].map { |rgb| rgb.map { |channel| channel / 255.0 } }.freeze
+  HOVER_COLOR = [127 / 255.0, 1.0, 212 / 255.0].freeze
+  ALERT_COLOR = [1.0, 0.0, 0.0].freeze
+
+  SPELLS = [
+    ['Heal', 'heal'], ['Regenerate', 'regen'], ['Refresh', 'refresh'], ['Blood Staunching', 'bs'],
+    ['Fountain of Creation', 'foc'], ['Vitality Healing', 'vh'], ['Flush Poisons', 'fp'], ['Cure Disease', 'cd']
+  ].freeze
+
+  DEFAULT_WIDTH = 260
+  DEFAULT_HEIGHT = 440
+
+  # Window position, size, pin and the Take menu toggles, for the script to
+  # save on exit. Replaced (never mutated) so another thread can read it.
+  attr_reader :state
+
+  def initialize(intents, state)
+    @intents = intents
+    @state = state
+    @options = state['options'].transform_keys(&:to_sym)
+    @views = {}
+    @destroyed = false
+    build_window
+  end
+
+  def show_patient(name, snapshot)
+    add_view(name) unless @views[name]
+    update_patient(name, snapshot)
+    @notebook.page = @notebook.page_num(@views[name][:area])
+  end
+
+  def update_patient(name, snapshot)
+    view = @views[name]
+    return unless view
+
+    view[:snapshot] = snapshot
+    view[:area].queue_draw
+  end
+
+  def present
+    @window.present unless @destroyed
+  end
+
+  def destroy
+    @window.destroy unless @destroyed
+  end
+
+  private
+
+  def build_window
+    @window = Gtk::Window.new('Touch')
+    @window.set_default_size(@state['width'] || DEFAULT_WIDTH, @state['height'] || DEFAULT_HEIGHT)
+    # A saved spot on a monitor that is gone (or from a minimized window) is
+    # skipped, leaving the window where the system places new windows.
+    @window.move(@state['x'], @state['y']) if on_screen?(@state['x'], @state['y'])
+    @window.keep_above = @state['pinned'] ? true : false
+    @window.signal_connect('configure-event') do
+      remember_geometry
+      false
+    end
+    @window.signal_connect('delete-event') do
+      @intents << [:quit]
+      false
+    end
+    @window.signal_connect('destroy') { @destroyed = true }
+
+    @notebook = Gtk::Notebook.new
+    @notebook.scrollable = true
+    # The title names the patient on the tab being shown.
+    @notebook.signal_connect('switch-page') do |_notebook, page, _index|
+      name = @views.find { |_name, view| view[:area] == page }&.first
+      @window.title = name ? "Touch - #{name}" : 'Touch'
+    end
+    @hint = Gtk::Label.new('TOUCH someone, or PERCEIVE HEALTH SELF.')
+    @hint.line_wrap = true
+
+    box = Gtk::Box.new(:vertical, 2)
+    box.pack_start(build_toolbar, expand: false, fill: false, padding: 0)
+    box.pack_start(@hint, expand: false, fill: false, padding: 8)
+    box.pack_start(@notebook, expand: true, fill: true, padding: 0)
+    @window.add(box)
+    @window.show_all
+    @notebook.hide
+  end
+
+  # A minimized window reports a position far off-screen (about -32000 on
+  # Windows), which would reopen it where it cannot be seen; only positions
+  # on a monitor are remembered.
+  def remember_geometry
+    x, y = @window.position
+    width, height = @window.size
+    return unless on_screen?(x, y)
+
+    @state = @state.merge('x' => x, 'y' => y, 'width' => width, 'height' => height)
+  end
+
+  # Whether the window's top-left corner (its title bar) is on a monitor that
+  # is connected now.
+  def on_screen?(x, y)
+    return false unless x.is_a?(Integer) && y.is_a?(Integer)
+
+    display = Gdk::Display.default
+    (0...display.n_monitors).any? do |index|
+      area = display.get_monitor(index).geometry
+      (x + 40).between?(area.x, area.x + area.width) && (y + 10).between?(area.y, area.y + area.height)
+    end
+  end
+
+  def build_toolbar
+    bar = Gtk::Box.new(:horizontal, 2)
+
+    touch = Gtk::Button.new(label: 'Touch')
+    touch.signal_connect('clicked') { on_touch }
+
+    breaker = Gtk::Button.new(label: 'Break')
+    breaker.tooltip_text = 'Break the link. Right-click: LINK ALL CANCEL'
+    breaker.signal_connect('clicked') { @intents << [:break, selected_patient] }
+    breaker.signal_connect('button-press-event') do |_widget, event|
+      next false unless event.button == 3
+
+      @intents << [:break_all]
+      true
+    end
+
+    take = menu_button('Take', build_take_menu)
+
+    all = Gtk::Button.new(label: 'All')
+    all.tooltip_text = 'Take everything the Take menu options allow'
+    all.signal_connect('clicked') { send_for_selected(:take_all) }
+
+    more = menu_button('More', build_more_menu)
+
+    compact = Gtk::CssProvider.new
+    compact.load(data: 'button { padding: 2px 7px; }')
+    [touch, breaker, take, all, more, build_pin_button].each do |button|
+      button.style_context.add_provider(compact, Gtk::StyleProvider::PRIORITY_APPLICATION)
+      bar.pack_start(button, expand: false, fill: false, padding: 0)
+    end
+    bar
+  end
+
+  # A toolbar button that drops a menu down on the first click. Gtk::MenuButton
+  # can't be used: on Windows, while the game client has focus, its first click
+  # only toggles the button on, and a second click is needed for the menu.
+  # Opening the menu from the press itself, with that event, avoids it.
+  def menu_button(label, menu)
+    button = Gtk::Button.new(label: label)
+    button.signal_connect('button-press-event') do |_widget, event|
+      next false unless event.button == 1
+
+      menu.popup_at_widget(button, :south_west, :north_west, event)
+      true
+    end
+    # Enter or Space on a focused button.
+    button.signal_connect('clicked') { menu.popup_at_widget(button, :south_west, :north_west, Gtk.current_event) }
+    button
+  end
+
+  # Keeps the window above the game client, which would otherwise cover it.
+  def build_pin_button
+    pin = Gtk::ToggleButton.new(label: 'Pin')
+    pin.tooltip_text = 'Keep this window in front of every other window'
+    pin.active = @state['pinned'] ? true : false
+    pin.signal_connect('toggled') do
+      @window.keep_above = pin.active?
+      @state = @state.merge('pinned' => pin.active?)
+    end
+    pin
+  end
+
+  def build_take_menu
+    menu = Gtk::Menu.new
+    add_item(menu, 'Take Minor') { send_for_selected(:take_minor) }
+    add_item(menu, 'Take All') { send_for_selected(:take_all) }
+    menu.append(Gtk::SeparatorMenuItem.new)
+    add_option(menu, 'Including Internal', :include_internal)
+    add_option(menu, 'Including Scars', :include_scars)
+    menu.append(Gtk::SeparatorMenuItem.new)
+    add_option(menu, 'Quick', :quick)
+    add_option(menu, 'Half On Major', :half_on_major)
+    add_option(menu, 'Leave Bleeders', :leave_bleeders)
+    menu.append(Gtk::SeparatorMenuItem.new)
+    add_click_amounts(menu)
+    menu.show_all
+    menu
+  end
+
+  def build_more_menu
+    menu = Gtk::Menu.new
+    add_item(menu, 'Touch Someone...') { ask_whom_to_touch }
+    add_item(menu, 'Perceive Health Self') { @intents << [:touch, TouchParser::SELF] }
+    menu.append(Gtk::SeparatorMenuItem.new)
+
+    spells = Gtk::Menu.new
+    SPELLS.each { |label, abbrev| add_item(spells, label) { @intents << [:cast, nil, abbrev] } }
+    spells_item = Gtk::MenuItem.new(label: 'Cast On Self')
+    spells_item.submenu = spells
+    menu.append(spells_item)
+    menu.append(Gtk::SeparatorMenuItem.new)
+
+    add_item(menu, 'Reset Size') { @window.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT) }
+    menu.show_all
+    menu
+  end
+
+  def add_item(menu, label, &block)
+    item = Gtk::MenuItem.new(label: label)
+    item.signal_connect('activate') { block.call }
+    menu.append(item)
+    item
+  end
+
+  # Take > Left-Click Takes: how much a left-click on a wound takes.
+  def add_click_amounts(menu)
+    amounts = Gtk::Menu.new
+    previous = nil
+    [%w[Part part], %w[Half half], %w[Most most], %w[All all]].each do |label, amount|
+      item = Gtk::RadioMenuItem.new(previous, label)
+      item.active = @options[:click_amount] == amount
+      item.signal_connect('toggled') do
+        next unless item.active?
+
+        @options[:click_amount] = amount
+        @state = @state.merge('options' => @options.transform_keys(&:to_s))
+      end
+      amounts.append(item)
+      previous = item
+    end
+    parent = Gtk::MenuItem.new(label: 'Left-Click Takes')
+    parent.submenu = amounts
+    menu.append(parent)
+  end
+
+  def add_option(menu, label, key)
+    item = Gtk::CheckMenuItem.new(label: label)
+    item.active = @options[key] ? true : false
+    item.signal_connect('toggled') do
+      @options[key] = item.active?
+      @state = @state.merge('options' => @options.transform_keys(&:to_s))
+    end
+    menu.append(item)
+  end
+
+  def on_touch
+    patient = selected_patient
+    patient ? @intents << [:touch, patient] : ask_whom_to_touch
+  end
+
+  def ask_whom_to_touch
+    dialog = Gtk::Dialog.new(title: 'Touch', parent: @window, flags: %i[modal destroy_with_parent],
+                             buttons: [['_OK', :ok], ['_Cancel', :cancel]])
+    dialog.default_response = :ok
+    entry = Gtk::Entry.new
+    entry.activates_default = true
+    dialog.content_area.pack_start(Gtk::Label.new('Who?'), expand: false, fill: false, padding: 4)
+    dialog.content_area.pack_start(entry, expand: false, fill: false, padding: 4)
+    dialog.signal_connect('response') do |_widget, response|
+      name = entry.text.strip
+      @intents << [:touch, name] if response == Gtk::ResponseType::OK && name.match?(/\A[A-Za-z][\w'-]*\z/)
+      dialog.destroy
+    end
+    dialog.show_all
+  end
+
+  def selected_patient
+    return nil if @notebook.n_pages.zero?
+
+    area = @notebook.get_nth_page(@notebook.page)
+    @views.find { |_name, view| view[:area] == area }&.first
+  end
+
+  def send_for_selected(kind)
+    patient = selected_patient
+    @intents << [kind, patient, @options.dup] if patient
+  end
+
+  def add_view(name)
+    area = Gtk::DrawingArea.new
+    area.set_size_request(120, 230)
+    area.add_events(%i[button_press_mask pointer_motion_mask leave_notify_mask])
+    @views[name] = { area: area, snapshot: nil, hover: nil }
+
+    area.signal_connect('draw') do |widget, cr|
+      draw_tab(name, widget, cr)
+      true
+    end
+    area.signal_connect('motion-notify-event') do |widget, event|
+      layout = tab_layout(widget)
+      set_hover(name, hit_test(name, layout, *to_tab_grid(layout, event)))
+      false
+    end
+    area.signal_connect('leave-notify-event') do
+      set_hover(name, nil)
+      false
+    end
+    area.signal_connect('button-press-event') do |widget, event|
+      on_tab_click(name, widget, event)
+      true
+    end
+
+    label = Gtk::EventBox.new
+    label.visible_window = false
+    label.add(Gtk::Label.new(name))
+    label.signal_connect('button-press-event') { |_widget, event| on_tab_label_click(name, event) }
+    label.show_all
+
+    @notebook.append_page(area, label)
+    area.show
+    @hint.hide
+    @notebook.show
+  end
+
+  def close_view(name)
+    view = @views.delete(name)
+    return unless view
+
+    @notebook.remove_page(@notebook.page_num(view[:area]))
+    @intents << [:closed, name]
+    return unless @views.empty?
+
+    @notebook.hide
+    @hint.show
+    @window.title = 'Touch'
+  end
+
+  def set_hover(name, target)
+    view = @views[name]
+    return if view.nil? || view[:hover] == target
+
+    view[:hover] = target
+    view[:area].queue_draw
+  end
+
+  # Where everything sits on the tab grid at the widget's current size. One
+  # scale for both axes keeps the figures in proportion; any width beyond the
+  # 165-unit grid widens the vitality bar and spreads the two figure columns
+  # out, so it is used rather than left as empty margins. At exactly 165 wide
+  # this is Genie Crutch's own layout.
+  #
+  # @return [Hash] :scale (pixels per grid unit), the :vitality, :close,
+  #   :poison and :disease boxes, and :figures (type => [x, y, caption])
+  def tab_layout(widget)
+    scale = [widget.allocated_width / TAB_WIDTH, widget.allocated_height / TAB_HEIGHT].min
+    width = widget.allocated_width / scale
+    columns = { left: width / 4.0 - FIGURE_WIDTH / 2.0, right: width * 3 / 4.0 - FIGURE_WIDTH / 2.0 }
+    {
+      scale: scale,
+      vitality: [5, 5, width - 30, 17],
+      close: [width - 21, 5, 17, 17],
+      poison: [width / 2.0 - 8, 27, 16, 17],
+      disease: [width / 2.0 - 8, 50, 16, 17],
+      figures: FIGURES.transform_values { |column, y, caption| [columns[column], y, caption] }
+    }
+  end
+
+  def to_tab_grid(layout, event)
+    [event.x / layout[:scale], event.y / layout[:scale]]
+  end
+
+  def on_tab_click(name, widget, event)
+    return unless event.event_type == Gdk::EventType::BUTTON_PRESS
+
+    layout = tab_layout(widget)
+    target = hit_test(name, layout, *to_tab_grid(layout, event))
+    return unless target
+
+    if event.button == 3
+      popup_wound_menu(name, target, event) if target.first == :part && name != TouchParser::SELF
+      return
+    end
+    return unless event.button == 1
+
+    case target.first
+    when :close then close_view(name)
+    when :part then @intents << [:take_wound, name, target[1], target[2], 'auto', @options.dup]
+    else @intents << [:take_condition, name, target.first.to_s, @options.dup]
+    end
+  end
+
+  # Shows a right-click menu. It is kept in @popup while open: a menu held
+  # only by a local variable can be garbage collected out from under GTK.
+  def popup(menu, event)
+    @popup = menu
+    menu.show_all
+    menu.popup_at_pointer(event)
+  end
+
+  def popup_wound_menu(name, target, event)
+    _kind, type, part = target
+    menu = Gtk::Menu.new
+    [['Take Part', 'part'], ['Take Half', 'half'], ['Take Most', 'most'], ['Take All', 'all']].each do |label, method|
+      add_item(menu, label) { @intents << [:take_wound, name, type, part, method, @options.dup] }
+    end
+    popup(menu, event)
+  end
+
+  def on_tab_label_click(name, event)
+    if event.button == 3 && event.event_type == Gdk::EventType::BUTTON_PRESS && name != TouchParser::SELF
+      popup_link_menu(name, event)
+      true
+    elsif event.button == 1 && event.event_type == Gdk::EventType::DOUBLE_BUTTON_PRESS
+      popup_close_menu(name, event)
+      true
+    else
+      false
+    end
+  end
+
+  def popup_link_menu(name, event)
+    menu = Gtk::Menu.new
+    add_item(menu, 'Link Persistent') { @intents << [:link, name, 'persistent'] }
+    add_item(menu, 'Link Hodierna') { @intents << [:link, name, 'hodierna'] }
+    add_item(menu, 'Link Unity') { @intents << [:link, name, 'unity'] }
+    menu.append(Gtk::SeparatorMenuItem.new)
+    [['Take All', nil], ['Take Part', 'part'], ['Take Half', 'half'], ['Take Most', 'most']].each do |label, method|
+      add_item(menu, label) { @intents << [:link_take, name, method, @options.dup] }
+    end
+    popup(menu, event)
+  end
+
+  def popup_close_menu(name, event)
+    menu = Gtk::Menu.new
+    add_item(menu, 'Close Tab') { close_view(name) }
+    add_item(menu, 'Close Other Tabs') { (@views.keys - [name]).each { |other| close_view(other) } }
+    popup(menu, event)
+  end
+
+  # @return [Array, nil] [:close], [:vitality], [:poison], [:disease] or [:part, type, part]
+  def hit_test(name, layout, x, y)
+    %i[close vitality poison disease].each do |box|
+      return [box] if inside_box?(layout[box], x, y)
+    end
+
+    wounds = @views.dig(name, :snapshot, :wounds) || {}
+    layout[:figures].each do |type, (figure_x, figure_y, _caption)|
+      part = part_at(wounds[type] || {}, x - figure_x, y - figure_y)
+      return [:part, type, part] if part
+    end
+    nil
+  end
+
+  def part_at(levels, x, y)
+    FIGURE_PARTS.reverse_each do |part, (part_x, part_y, width, height, shape, _caption)|
+      next if part == :tail && !levels[:tail]
+      next unless inside_shape?(shape, part_x, part_y, width, height, x, y)
+
+      # Eyes sit on top of the head and are always their own target, even
+      # while an unhurt eye is drawn in the head's color.
+      return part
+    end
+    nil
+  end
+
+  def inside_box?(box, x, y)
+    inside_shape?(:square, *box, x, y)
+  end
+
+  def inside_shape?(shape, left, top, width, height, x, y)
+    return x.between?(left, left + width) && y.between?(top, top + height) if shape == :square
+
+    radius_x = width / 2.0
+    radius_y = height / 2.0
+    dx = (x - left - radius_x) / radius_x
+    dy = (y - top - radius_y) / radius_y
+    dx * dx + dy * dy <= 1.0
+  end
+
+  def draw_tab(name, widget, cr)
+    view = @views[name]
+    snapshot = view[:snapshot]
+    return unless snapshot
+
+    text_color = widget.style_context.get_color(:normal)
+    layout = tab_layout(widget)
+    cr.scale(layout[:scale], layout[:scale])
+    cr.line_width = 0.75
+
+    draw_vitality(cr, layout[:vitality], snapshot)
+    draw_close(cr, layout[:close], text_color)
+    draw_marker(cr, layout[:poison], 'P', snapshot[:poison].positive?)
+    draw_marker(cr, layout[:disease], 'D', snapshot[:disease])
+    if snapshot[:poison] > 1
+      cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
+      poison_x, poison_y, poison_width, = layout[:poison]
+      draw_text(cr, snapshot[:poison].to_s, poison_x + poison_width + 1, poison_y + 2, 10, 13, 10, bold: true)
+    end
+
+    layout[:figures].each do |type, (figure_x, figure_y, caption)|
+      cr.save
+      cr.translate(figure_x, figure_y)
+      draw_figure(cr, snapshot[:wounds][type], view[:hover], type, text_color)
+      cr.restore
+      cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
+      draw_text(cr, caption, figure_x - 9, figure_y + 135, 82, 12, 10)
+    end
+  end
+
+  def draw_vitality(cr, box, snapshot)
+    x, y, width, height = box
+    percent = snapshot[:vitality]
+    cr.set_source_rgb(0, 0, 0)
+    cr.rectangle(x, y, width, height)
+    cr.fill
+    cr.set_source_rgb(*vitality_color(percent))
+    cr.rectangle(x, y, width * percent / 100.0, height)
+    cr.fill
+    cr.set_source_rgb(0.5, 0.5, 0.5)
+    cr.rectangle(x, y, width, height)
+    cr.stroke
+    # The label spans the colored and the black part of the bar, so it is
+    # outlined rather than picking one text color.
+    label = snapshot[:dead] ? "DEAD #{percent}%" : "Vitality #{percent}%"
+    cr.set_source_rgb(1, 1, 1)
+    draw_text(cr, label, x, y, width, height, 11, outline: true, bold: true)
+  end
+
+  def vitality_color(percent)
+    return LEVEL_COLORS[1] if percent >= 100
+
+    LEVEL_COLORS[(11 - (percent - 1).div(10)).clamp(2, 11)]
+  end
+
+  def draw_close(cr, box, text_color)
+    x, y, width, height = box
+    cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
+    cr.rectangle(x, y, width, height)
+    cr.stroke
+    cr.move_to(x + 4, y + 4)
+    cr.line_to(x + width - 4, y + height - 4)
+    cr.move_to(x + width - 4, y + 4)
+    cr.line_to(x + 4, y + height - 4)
+    cr.stroke
+  end
+
+  def draw_marker(cr, box, letter, active)
+    x, y, width, height = box
+    fill = active ? ALERT_COLOR : LEVEL_COLORS[0]
+    shape_path(cr, :round, x, y, width, height)
+    cr.set_source_rgb(*fill)
+    cr.fill_preserve
+    cr.set_source_rgb(1, 1, 1)
+    cr.stroke
+    cr.set_source_rgb(*text_color_on(fill))
+    draw_text(cr, letter, x, y, width, height, 10, bold: true)
+  end
+
+  def draw_figure(cr, levels, hover, type, text_color)
+    FIGURE_PARTS.each do |part, (x, y, width, height, shape, caption)|
+      next if part == :tail && !levels[:tail]
+
+      fill = part_color(levels, hover, type, part)
+      shape_path(cr, shape, x, y, width, height)
+      cr.set_source_rgb(*fill)
+      cr.fill_preserve
+      cr.set_source_rgb(1, 1, 1)
+      cr.stroke
+      next unless caption
+
+      cr.set_source_rgb(*text_color_on(fill))
+      draw_text(cr, caption, x, y, width, height, height * 0.6, bold: true)
+    end
+    cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
+    draw_text(cr, 'R', 0, 26, 8, 12, 9.5, bold: true)
+    draw_text(cr, 'L', 55, 26, 8, 12, 9.5, bold: true)
+  end
+
+  def part_color(levels, hover, type, part)
+    eye = %i[left_eye right_eye].include?(part)
+    hovered = hover && hover[1] == type && (hover[2] == part || (eye && hover[2] == :head && !levels[part]))
+    return HOVER_COLOR if hovered
+
+    level = levels[part] || (eye ? levels[:head] : nil) || 0
+    LEVEL_COLORS[level.clamp(0, 11)]
+  end
+
+  def shape_path(cr, shape, x, y, width, height)
+    # show_text leaves a current point behind, and arc would draw a line from it.
+    cr.new_path
+    if shape == :square
+      cr.rectangle(x, y, width, height)
+      return
+    end
+
+    cr.save
+    cr.translate(x + width / 2.0, y + height / 2.0)
+    cr.scale(width / 2.0, height / 2.0)
+    cr.arc(0, 0, 1, 0, 2 * Math::PI)
+    cr.restore
+  end
+
+  # Draws text centered in the box, with the current source color.
+  #
+  # Vertical centering uses the height of a capital letter rather than each
+  # string's own ink, so every label sits on a level baseline whether or not
+  # it has descenders. With outline, the text gets a black edge that keeps it
+  # readable over any color.
+  def draw_text(cr, text, x, y, width, height, size, outline: false, bold: false)
+    cr.select_font_face('Sans', Cairo::FONT_SLANT_NORMAL, bold ? Cairo::FONT_WEIGHT_BOLD : Cairo::FONT_WEIGHT_NORMAL)
+    cr.set_font_size(size)
+    extents = cr.text_extents(text)
+    cap_height = cr.text_extents('H').height
+    cr.move_to(x + (width - extents.width) / 2.0 - extents.x_bearing, y + (height + cap_height) / 2.0)
+    return cr.show_text(text) unless outline
+
+    cr.text_path(text)
+    cr.save
+    cr.set_source_rgb(0, 0, 0)
+    cr.line_width = size * 0.25
+    cr.line_join = Cairo::LINE_JOIN_ROUND
+    cr.stroke_preserve
+    cr.restore
+    cr.fill
+  end
+
+  # Black or white, whichever reads better on the fill color.
+  def text_color_on(rgb)
+    red, green, blue = rgb
+    (0.299 * red) + (0.587 * green) + (0.114 * blue) > 0.55 ? [0, 0, 0] : [1, 1, 1]
+  end
+end
+
+class Touch
+  HOOK_NAME = 'touch-window'.freeze
+  STATE_KEY = 'touch_window'.freeze
+  DEFAULT_OPTIONS = {
+    'include_internal' => true,
+    'include_scars'    => true,
+    'quick'            => false,
+    'half_on_major'    => false,
+    'leave_bleeders'   => false,
+    'click_amount'     => 'all'
+  }.freeze
+  # Built-in casting values. touch_self_spells only needs the spells and values
+  # being changed, e.g. { 'hw' => { 'mana' => 10 } }; the rest come from here.
+  DEFAULT_SPELL = { 'mana' => 5, 'prep_time' => 5 }.freeze
+  NAME = /\A[A-Za-z][\w'-]*\z/
+  PROMPT = %r{<prompt[^>]*>.*?</prompt>|<prompt[^>]*/>}
+  # strip_xml buffer key, kept apart from Lich's own 'main' buffer.
+  STRIP_TYPE = 'touch'.freeze
+  DEBUG_TRIGGER = /empathic link|injuries include|Wounds to the/
+  # Raw lines logged after each trigger in debug mode.
+  DEBUG_LINES = 60
+
+  # Keeps only the usable parts of touch_self_spells, so a missing, partial or
+  # mistyped setting falls back to DEFAULT_SPELL instead of breaking a cast.
+  #
+  # @param custom [Object] the raw setting; nil when base.yaml predates it
+  # @return [Hash{String => Hash}] abbreviation => the valid 'mana' / 'prep_time' overrides
+  def self.spell_settings(custom)
+    return {} unless custom.is_a?(Hash)
+
+    custom.each_with_object({}) do |(abbrev, values), spells|
+      next unless values.is_a?(Hash)
+
+      values = values.transform_keys(&:to_s)
+      tuned = {}
+      tuned['mana'] = values['mana'] if values['mana'].is_a?(Integer) && values['mana'].positive?
+      tuned['prep_time'] = values['prep_time'] if values['prep_time'].is_a?(Numeric) && !values['prep_time'].negative?
+      spells[abbrev.to_s.downcase] = tuned
+    end
+  end
+
+  def initialize(target)
+    # The guild is nil until Lich has read INFO, so only a known non-empath is stopped.
+    if DRStats.guild && !DRStats.empath?
+      Lich::Messaging.msg('bold', "touch: only empaths can TOUCH to perceive wounds (Lich has you as #{DRStats.guild}).")
+      exit
+    end
+    unless defined?(Gtk)
+      Lich::Messaging.msg('bold', 'touch: this Lich has no GTK, so the window cannot open.')
+      exit
+    end
+
+    settings = get_settings
+    @spells = self.class.spell_settings(settings.touch_self_spells)
+    @parser = TouchParser.new(settings.touch_link_patterns)
+    @patients = {}
+    @lines = Thread::Queue.new
+    @intents = Thread::Queue.new
+    @pending = []
+    @window = nil
+    @debug = false
+
+    before_dying { shutdown }
+    install_hooks
+    open_window
+    @intents << [:touch, normalize(target)] if target
+    run
+  end
+
+  private
+
+  def install_hooks
+    DownstreamHook.add(HOOK_NAME, proc { |server_string|
+      @lines << server_string if server_string
+      server_string
+    })
+    # A second ;touch would otherwise be refused as "already running".
+    command = /\A(?:<c>)?#{$lich_char_regex || ';'}touch(?:\s+(?<target>[A-Za-z][\w'-]*))?\s*\z/i
+    UpstreamHook.add(HOOK_NAME, proc { |client_string|
+      match = command.match(client_string.to_s)
+      next client_string unless match
+
+      @intents << (match[:target] ? [:touch, normalize(match[:target])] : [:present])
+      nil
+    })
+  end
+
+  def open_window
+    ready = Thread::Queue.new
+    state = load_state
+    gave_up = false
+    Gtk.queue do
+      window = TouchWindow.new(@intents, state)
+      # Too late: the script has already quit, so nothing would drive it.
+      gave_up ? window.destroy : ready << window
+    rescue StandardError => e
+      ready << e
+    end
+    window = ready.pop(timeout: 15)
+    if window.nil?
+      gave_up = true
+      # It may have arrived between the timeout and the flag being set.
+      late = ready.empty? ? nil : ready.pop
+      Gtk.queue { late.destroy } if late.is_a?(TouchWindow)
+    end
+    return @window = window if window.is_a?(TouchWindow)
+
+    Lich::Messaging.msg('bold', "touch: could not open the window: #{window || 'GTK did not answer'}")
+    exit
+  end
+
+  def normalize(name)
+    return :debug if name.to_s.casecmp?('debug')
+
+    name.to_s.casecmp?('self') ? TouchParser::SELF : name.to_s.capitalize
+  end
+
+  def run
+    loop do
+      clear
+      drain_lines
+      break unless drain_intents
+
+      action = @pending.shift
+      action ? perform(action) : pause(0.1)
+    end
+  end
+
+  # Game text arrives raw from the downstream hook, so the healing commands
+  # this script sends with fput cannot swallow the lines the parser needs.
+  def drain_lines
+    changed = {}
+    until @lines.empty?
+      chunk = @lines.pop
+      chunk.each_line do |raw|
+        capture(raw) if @debug
+        # A prompt ends the output before it, wherever it sits on the line.
+        raw.split(PROMPT, -1).each_with_index do |piece, index|
+          @parser.finish if index.positive?
+          plain_lines(piece).each { |text| apply(@parser.feed(text), changed) }
+        end
+      end
+    end
+    publish(changed)
+  end
+
+  # Strips the XML the same way Lich does for every script's own game text, so
+  # the parser sees what the player sees. The buffer key is touch's own, and a
+  # stream split across lines comes back joined, possibly as several lines.
+  #
+  # @return [Array<String>] the non-blank lines of plain text in the piece
+  def plain_lines(piece)
+    text = strip_xml(piece, type: STRIP_TYPE)
+    return [] unless text
+
+    text.split(/\r?\n/).map(&:strip).reject(&:empty?)
+  end
+
+  # ;touch debug -- writes the raw XML around each TOUCH / PERCEIVE to a log
+  # file, so unexpected game markup can be seen exactly as Lich received it.
+  def capture(raw)
+    @capture_left = DEBUG_LINES if DEBUG_TRIGGER.match?(raw)
+    return unless @capture_left.to_i.positive?
+
+    @capture_left -= 1
+    File.open(@debug_log, 'a') { |file| file.puts(raw.inspect) }
+  rescue StandardError => e
+    @debug = false
+    Lich::Messaging.msg('bold', "touch: debug log stopped: #{e.message}")
+  end
+
+  def start_debug
+    @debug_log = File.join(defined?(LOG_DIR) ? LOG_DIR : Dir.pwd, 'touch-debug.log')
+    @debug = true
+    Lich::Messaging.msg('bold', "touch: logging raw TOUCH output to #{@debug_log}")
+  end
+
+  def apply(events, changed)
+    events.each do |event|
+      kind, name = event
+      patient = (@patients[name] ||= TouchPatient.new(name))
+      patient.apply(event)
+      changed[name] ||= false
+      changed[name] = true if kind == :patient
+    end
+  end
+
+  # @param changed [Hash{String => Boolean}] patient name => whether to bring its tab forward
+  def publish(changed)
+    window = @window
+    changed.each do |name, bring_forward|
+      snapshot = @patients[name].snapshot
+      Gtk.queue do
+        bring_forward ? window.show_patient(name, snapshot) : window.update_patient(name, snapshot)
+      end
+    end
+  end
+
+  # @return [Boolean] false once the window has been closed
+  def drain_intents
+    until @intents.empty?
+      intent = @intents.pop
+      return false if intent.first == :quit
+
+      handle(intent)
+    end
+    true
+  end
+
+  def handle(intent)
+    kind, patient, *details = intent
+    case kind
+    when :touch
+      if patient == :debug
+        start_debug
+      elsif patient == TouchParser::SELF || NAME.match?(patient.to_s)
+        queue(TouchCommands.touch(patient))
+      end
+    when :break
+      @pending.clear
+      queue(TouchCommands.break_link(patient))
+    when :break_all
+      @pending.clear
+      queue([[:command, 'link all cancel']])
+    when :take_wound then queue(take_wound(patient, *details))
+    when :take_condition then queue(TouchCommands.take_condition(patient, *details))
+    when :take_all then queue(TouchCommands.take_all(patient, wounds_of(patient), details.first))
+    when :take_minor then queue(TouchCommands.take_minor(patient, wounds_of(patient), details.first))
+    when :link then queue(TouchCommands.link(patient, details.first))
+    when :link_take then queue(TouchCommands.link_take(patient, *details))
+    when :cast then queue([[:spell, details.first, nil]])
+    when :present
+      window = @window
+      Gtk.queue { window.present }
+    when :closed then @patients.delete(patient)
+    end
+  end
+
+  def take_wound(patient, type, part, method, options)
+    return TouchCommands.take_wound(patient, type, part, method, quick: options[:quick]) unless method == 'auto'
+
+    level = @patients[patient]&.level(type, part)
+    unless level
+      # Say why the click sent nothing, rather than leave it looking broken.
+      where = TouchCommands.part_name(part)
+      Lich::Messaging.msg('plain', "touch: #{patient} has no #{type.to_s.tr('_', ' ')} wound on the #{where} to take.")
+      return []
+    end
+
+    TouchCommands.click_wound(patient, type, part, level, options)
+  end
+
+  def wounds_of(patient)
+    @patients[patient]&.wound_list || []
+  end
+
+  def queue(actions)
+    @pending.concat(actions)
+  end
+
+  def perform(action)
+    kind, *details = action
+    case kind
+    when :command
+      waitrt?
+      fput(details.first)
+    when :spell
+      cast_on_self(*details)
+    end
+  end
+
+  def cast_on_self(abbrev, target)
+    spell = DEFAULT_SPELL.merge(@spells.fetch(abbrev, {}))
+    waitrt?
+    return unless DRCA.prepare?(abbrev, spell['mana'])
+
+    pause spell['prep_time']
+    DRCA.cast?(target ? "cast #{target}" : 'cast')
+  end
+
+  def load_state
+    saved = Vars[STATE_KEY]
+    saved = {} unless saved.is_a?(Hash)
+    options = DEFAULT_OPTIONS.merge(saved['options'].is_a?(Hash) ? saved['options'] : {})
+    saved.merge('options' => options)
+  end
+
+  def shutdown
+    return if @shut_down
+
+    @shut_down = true
+    DownstreamHook.remove(HOOK_NAME)
+    UpstreamHook.remove(HOOK_NAME)
+    window = @window
+    return unless window
+
+    Vars[STATE_KEY] = window.state
+    Gtk.queue { window.destroy }
+  end
+end
+
+Touch.new(args.target)

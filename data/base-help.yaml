@@ -1229,6 +1229,22 @@ tinkering_tools:
     clerk-tools: Get and store these tools with the clerk.
     tinker: Matches the tool the recipe calls for against this list.
 
+touch_link_patterns:
+  description: Extra game lines, besides the standard empathic link message, that open a patient tab in the touch window. Copy the line you see when touching a patient and put {name} where the patient's name appears.
+  example:
+    - You sense a successful empathic link has been forged between you and {name}.
+  referenced_by:
+    - touch
+
+touch_self_spells:
+  description: Optional overrides for the mana and prep seconds of each spell the touch window casts on you, keyed by spell abbreviation (hw, hs, vh, fp, cd, heal, regen, refresh, bs, foc). Anything left out, or not a valid number, uses the default of 5 mana and 5 seconds.
+  example:
+    hw:
+      mana: 10
+      prep_time: 4
+  referenced_by:
+    - touch
+
 training_box_list:
   description: Array of daily use training boxes for use with locksmithing
   example:
