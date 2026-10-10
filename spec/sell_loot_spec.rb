@@ -289,6 +289,27 @@ RSpec.describe SellLoot do
         instance = build_instance(settings: trader_settings('pack', nil))
         expect(instance.validate_settings).to be true
       end
+
+      it 'passes with a list of trader rooms' do
+        settings = trader_settings('pack', 'sack')
+        settings.sell_loot_trader_room = [5000, '6000']
+        expect(build_instance(settings: settings).validate_settings).to be true
+      end
+
+      it 'fails when any trader room is not a room number' do
+        settings = trader_settings('pack', 'sack')
+        settings.sell_loot_trader_room = [5000, 'kiosk row']
+        messages = []
+        allow(DRC).to receive(:message) { |m| messages << m }
+        expect(build_instance(settings: settings).validate_settings).to be false
+        expect(messages.join).to include('list of room numbers')
+      end
+
+      it 'fails when the trader room list is empty' do
+        settings = trader_settings('pack', 'sack')
+        settings.sell_loot_trader_room = []
+        expect(build_instance(settings: settings).validate_settings).to be false
+      end
     end
 
     it 'allows a shared container when trader selling is off' do
@@ -1482,6 +1503,168 @@ RSpec.describe SellLoot do
                 .find(&:itself).to_s
       end
       commands
+    end
+
+    describe '#trader_rooms_from' do
+      def rooms(setting)
+        build_instance.trader_rooms_from(setting)
+      end
+
+      it 'takes one room id, as a number or a string' do
+        expect(rooms(5000)).to eq([5000])
+        expect(rooms('5000')).to eq([5000])
+      end
+
+      it 'takes a list, keeping its order' do
+        expect(rooms([6000, 5000, '7000'])).to eq([6000, 5000, 7000])
+      end
+
+      it 'takes a comma- or space-separated string' do
+        expect(rooms('6000, 5000 7000')).to eq([6000, 5000, 7000])
+      end
+
+      it 'drops a repeated room' do
+        expect(rooms([5000, 6000, 5000])).to eq([5000, 6000])
+      end
+
+      it 'is empty when unset, empty, or holding anything that is not a room id' do
+        expect(rooms(nil)).to eq([])
+        expect(rooms([])).to eq([])
+        expect(rooms('')).to eq([])
+        expect(rooms([5000, 'kiosk row'])).to eq([])
+        expect(rooms(0)).to eq([])
+      end
+    end
+
+    describe '#sell_at_trader_room' do
+      let(:walked) { [] }
+      let(:stored_calls) { [] }
+
+      # +kiosks+ maps each room to the kiosks ranked_trader_objects finds there.
+      def trader_run(rooms:, kiosks:, stored: 0, worn: false, bundle: false, reachable: rooms)
+        instance = build_instance(
+          settings: make_settings(sell_loot_bundle: bundle),
+          sell_loot_trader: true, trader_rooms: rooms,
+          found_stored_pouches: stored, sell_worn_at_kiosk: worn, found_bundle: bundle
+        )
+        allow(DRCT).to receive(:walk_to) do |room|
+          walked << room
+          reachable.include?(room)
+        end
+        allow(DRC).to receive(:release_invisibility)
+        allow(instance).to receive(:ranked_trader_objects) { kiosks.fetch(walked.last, []).dup }
+        instance
+      end
+
+      # A sale that drains every kiosk in the room leaves +targets+ empty, as
+      # sell_held_item does when the kiosks refuse for funds.
+      def drain(targets)
+        targets.clear
+      end
+
+      it 'sells in the first room that has a kiosk at or above the minimum, and stops there' do
+        instance = trader_run(rooms: [5000, 6000, 7000], kiosks: { 6000 => ['kiosk'], 7000 => ['kiosk'] }, stored: 4)
+        allow(instance).to receive(:sell_stored_pouches) { |_targets, limit| stored_calls << [walked.last, limit] }
+
+        instance.sell_at_trader_room
+
+        expect(walked).to eq([5000, 6000])
+        expect(stored_calls).to eq([[6000, 4]])
+        expect(messages).to include('***STATUS*** No kiosk to sell to in trader room 5000.')
+      end
+
+      it 'moves on to the next room when the kiosks run dry with pouches left' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] }, stored: 5)
+        allow(instance).to receive(:sell_stored_pouches) do |targets, limit|
+          stored_calls << [walked.last, limit]
+          drain(targets) if walked.last == 5000
+        end
+        allow(instance).to receive(:stored_pouch_count).and_return(3)
+
+        instance.sell_at_trader_room
+
+        expect(walked).to eq([5000, 6000])
+        expect(stored_calls).to eq([[5000, 5], [6000, 3]])
+        expect(messages).to include('***STATUS*** The kiosks in room 5000 are out of reserves.')
+      end
+
+      it 'stays put when the kiosks run dry but nothing is left to sell' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] }, stored: 2)
+        allow(instance).to receive(:sell_stored_pouches) { |targets, _limit| drain(targets) }
+        allow(instance).to receive(:stored_pouch_count).and_return(0)
+
+        instance.sell_at_trader_room
+
+        expect(walked).to eq([5000])
+      end
+
+      it 'stays put when kiosks are left standing, since they refused what is left for itself' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] },
+                              worn: true, bundle: true)
+        allow(instance).to receive(:sell_worn_pouch).and_return(false)
+        allow(instance).to receive(:sell_bundle_to_trader).and_return(false)
+
+        expect(instance.sell_at_trader_room).to eq(pouch: false, bundle: false)
+        expect(walked).to eq([5000])
+      end
+
+      it 'offers the working pouch and bundle again in the next room after the first runs dry' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] },
+                              worn: true, bundle: true)
+        worn_rooms = []
+        bundle_rooms = []
+        allow(instance).to receive(:sell_worn_pouch) do |targets|
+          worn_rooms << walked.last
+          next true unless walked.last == 5000
+
+          drain(targets)
+          false
+        end
+        allow(instance).to receive(:sell_bundle_to_trader) do |_targets|
+          bundle_rooms << walked.last
+          true
+        end
+
+        expect(instance.sell_at_trader_room).to eq(pouch: true, bundle: true)
+        expect(worn_rooms).to eq([5000, 6000])
+        expect(bundle_rooms).to eq([6000]) # not offered to room 5000's drained kiosks
+      end
+
+      it 'does not offer the working pouch to kiosks the stored pouches already drained' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] },
+                              stored: 3, worn: true)
+        allow(instance).to receive(:sell_stored_pouches) { |targets, _limit| drain(targets) if walked.last == 5000 }
+        allow(instance).to receive(:stored_pouch_count).and_return(1)
+        worn_rooms = []
+        allow(instance).to receive(:sell_worn_pouch) do |_targets|
+          worn_rooms << walked.last
+          true
+        end
+
+        expect(instance.sell_at_trader_room).to eq(pouch: true, bundle: false)
+        expect(worn_rooms).to eq([6000])
+      end
+
+      it 'skips a room it cannot reach' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] }, stored: 1,
+                              reachable: [6000])
+        allow(instance).to receive(:sell_stored_pouches) { |_targets, limit| stored_calls << [walked.last, limit] }
+
+        instance.sell_at_trader_room
+
+        expect(stored_calls).to eq([[6000, 1]])
+        expect(messages).to include('***STATUS*** Could not reach trader room 5000.')
+      end
+
+      it 'falls back to the shops when no room has a kiosk to sell to' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: {}, worn: true, bundle: true)
+        expect(instance).not_to receive(:sell_worn_pouch)
+        expect(instance).not_to receive(:sell_bundle_to_trader)
+
+        expect(instance.sell_at_trader_room).to eq(pouch: false, bundle: false)
+        expect(walked).to eq([5000, 6000])
+        expect(messages.last).to eq('***STATUS*** No kiosk to sell to in any trader room -- falling back to the shops.')
+      end
     end
 
     describe '#confirm_sale' do
