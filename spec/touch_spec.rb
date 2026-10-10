@@ -330,9 +330,10 @@ describe 'touch.lic' do
     end
 
     describe '.take_wound' do
-      it 'names internal scars' do
+      # The order TAKE prints when typed alone: area, amount, QUICK, INTERNAL, SCAR.
+      it "names internal scars, in the game's order" do
         expect(TouchCommands.take_wound('Navesi', :scar_internal, :left_arm, 'half', quick: true))
-          .to eq([[:command, 'take Navesi left arm internal scar half quick']])
+          .to eq([[:command, 'take Navesi left arm half quick internal scar']])
       end
 
       it 'takes all of it for "all"' do
@@ -365,7 +366,7 @@ describe 'touch.lic' do
         %w[part half most].each do |amount|
           actions = TouchCommands.click_wound('Navesi', :scar_internal, :neck, 3, defaults.merge(click_amount: amount, quick: true))
 
-          expect(commands(actions)).to eq(["take Navesi neck internal scar #{amount} quick"])
+          expect(commands(actions)).to eq(["take Navesi neck #{amount} quick internal scar"])
         end
       end
 
@@ -422,9 +423,9 @@ describe 'touch.lic' do
       end
 
       # Mahtra's review: the tab must redraw after the TAKE, not only before it.
-      it "uses the game's TAKE ALL between a touch for the link and one to redraw" do
+      it 'takes everything between a touch for the link and one to redraw' do
         expect(commands(TouchCommands.take_all('Navesi', wounds, defaults)))
-          .to eq(['touch Navesi', 'take Navesi all', 'touch Navesi'])
+          .to eq(['touch Navesi', 'take Navesi everything', 'touch Navesi'])
       end
 
       it 'leaves bleeders past harmful, then takes the scars of what it took' do
@@ -448,7 +449,7 @@ describe 'touch.lic' do
         repeated = [[:fresh_external, :chest, 3], [:scar_external, :chest, 3]]
         actions = TouchCommands.take_all('Navesi', repeated, defaults.merge(quick: true, half_on_major: true))
 
-        expect(commands(actions)).to eq(['take Navesi chest quick', 'take Navesi chest scar quick', 'touch Navesi'])
+        expect(commands(actions)).to eq(['take Navesi chest quick', 'take Navesi chest quick scar', 'touch Navesi'])
       end
 
       it 'takes whole wounds whatever Left-Click Takes is set to' do
@@ -493,7 +494,7 @@ describe 'touch.lic' do
     describe '.link_take' do
       it 'takes part of everything, touching before and after' do
         expect(commands(TouchCommands.link_take('Navesi', 'part', defaults.merge(quick: true))))
-          .to eq(['touch Navesi', 'take Navesi part quick all', 'touch Navesi'])
+          .to eq(['touch Navesi', 'take Navesi everything part quick', 'touch Navesi'])
       end
     end
 

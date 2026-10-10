@@ -358,11 +358,13 @@ class TouchCommands
       return [[:spell, scar?(type) ? 'hs' : 'hw', "#{part_name(part)} #{layer}"]]
     end
 
+    # In the game's own order: TAKE <patient> <area> [PART|HALF|MOST] [QUICK]
+    # [INTERNAL] [SCAR] (from typing TAKE with no arguments).
     words = ['take', patient, part_name(part)]
-    words << 'internal' if internal?(type)
-    words << 'scar' if scar?(type)
     words << method if method && method != 'all'
     words << 'quick' if quick
+    words << 'internal' if internal?(type)
+    words << 'scar' if scar?(type)
     [[:command, words.join(' ')]]
   end
 
@@ -396,11 +398,11 @@ class TouchCommands
 
   # Every wound the options allow, worst first, then the scars those leave
   # behind, then a fresh TOUCH so the tab redraws. Uses the game's own
-  # TAKE ALL when no option needs wound-by-wound control; that path also
+  # TAKE EVERYTHING when no option needs wound-by-wound control; that path also
   # touches first, as Genie Crutch did, so the link is fresh for the TAKE.
   def self.take_all(patient, wounds, options)
     if patient != SELF && bulk_take?(options)
-      return touch(patient) + [[:command, "take #{patient}#{' quick' if options[:quick]} all"]] + touch(patient)
+      return touch(patient) + [[:command, "take #{patient} everything#{' quick' if options[:quick]}"]] + touch(patient)
     end
 
     taken = wounds.reject { |type, _part, level| skip?(type, level, options) }
@@ -429,12 +431,14 @@ class TouchCommands
     touch(patient) + links.map { |link| [:command, "link #{patient} #{link}"] }
   end
 
-  # @param method [String, nil] 'part', 'half', 'most', or nil for everything
+  # TAKE <patient> EVERYTHING [PART|HALF|MOST] [QUICK]: every wound and scar.
+  #
+  # @param method [String, nil] 'part', 'half', 'most', or nil for all of it
   def self.link_take(patient, method, options)
-    words = ['take', patient]
+    words = ['take', patient, 'everything']
     words << method if method
     words << 'quick' if options[:quick]
-    touch(patient) + [[:command, (words << 'all').join(' ')]] + touch(patient)
+    touch(patient) + [[:command, words.join(' ')]] + touch(patient)
   end
 
   def self.break_link(patient)
