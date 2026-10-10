@@ -1282,6 +1282,17 @@ hunting_zones:
   - 51764
   - 51765
   - 51766
+  # https://elanthipedia.play.net/Mist_nyad                             550-700
+  # https://elanthipedia.play.net/Mist_dryad                            550-700
+  # From FF 113, creature level 95 +/- 3
+  mist_dryads_nyads:
+  - 52491
+  - 52492
+  - 52493
+  - 52494
+  - 52495
+  - 52496
+  - 52497
   # https://elanthipedia.play.net/Xala%27shar_magus                     750-1000
   # https://elanthipedia.play.net/Xala%27shar_thrall                    750-1000
   xalas_1:
