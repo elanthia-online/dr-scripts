@@ -270,6 +270,61 @@ end
 class TouchCommands
   SELF = TouchParser::SELF
 
+  SPELL_NAMES = {
+    'hw' => 'Heal Wounds', 'hs' => 'Heal Scars', 'vh' => 'Vitality Healing', 'fp' => 'Flush Poisons',
+    'cd' => 'Cure Disease', 'heal' => 'Heal', 'regen' => 'Regenerate', 'refresh' => 'Refresh',
+    'bs' => 'Blood Staunching', 'foc' => 'Fountain of Creation'
+  }.freeze
+
+  # What an action does, in words: the command itself, or e.g.
+  # "cast Heal Wounds at left leg external". Tooltips and the status line use
+  # this, so they always say exactly what is sent.
+  def self.describe(action)
+    kind, first, target = action
+    return first if kind == :command
+
+    "cast #{SPELL_NAMES.fetch(first, first)}#{" at #{target}" if target}"
+  end
+
+  # The task a request starts, for the status strip: who, then what, short
+  # enough for the window's default width, e.g. "Pazzlen: Take all" or
+  # "Self: Heal left leg (fresh int)". Details are the request's own (wound
+  # type and part, condition, link kind, amount, or spell).
+  def self.task_label(kind, patient, details = [])
+    me = patient == SELF
+    what = case kind
+           when :touch then me ? 'Perceive health' : 'Touch'
+           when :break then 'Break link'
+           when :break_all then return 'Cancel all links'
+           when :take_wound
+             type, part = details
+             "#{me ? 'Heal' : 'Take'} #{part_name(part)} (#{type.to_s.sub('ernal', '').tr('_', ' ')})"
+           when :take_condition
+             condition = details.first
+             me ? { 'vitality' => 'Heal vitality', 'poison' => 'Flush poison', 'disease' => 'Cure disease' }[condition] : "Take #{condition}"
+           when :take_all then me ? 'Heal all' : 'Take all'
+           when :take_minor then me ? 'Heal minor' : 'Take minor'
+           when :link then "Link #{details.first}"
+           when :link_take then details.first ? "Take #{details.first} of all" : 'Take all'
+           when :cast then return "Self: Cast #{SPELL_NAMES.fetch(details.first, details.first)}"
+           end
+    what && "#{patient}: #{what}"
+  end
+
+  # The status strip's text for a step: "Self: Heal all 2/9" while it runs,
+  # "Pazzlen: Take vitality - done" once its task has been sent, and
+  # "Self: Heal all - stopped at 3/9" after Break or Stop. "done" means
+  # sent, not that the game agreed.
+  def self.status_text(step, state)
+    label = step[:label] || TouchCommands.describe(step[:action])
+    progress = "#{step[:step]}/#{step[:steps]}" if step[:steps] > 1
+    case state
+    when :running then [label, progress].compact.join(' ')
+    when :done then "#{label} - done"
+    else "#{label} - stopped#{" at #{progress}" if progress}"
+    end
+  end
+
   def self.part_name(part)
     part.to_s.tr('_', ' ')
   end
@@ -292,9 +347,16 @@ class TouchCommands
     [[:command, "touch #{patient}"]]
   end
 
+  # On Self, Heal Wounds / Heal Scars are cast at the area, naming the layer
+  # that was clicked (CAST <area> INTERNAL or EXTERNAL). A plain CAST <area>
+  # would spend its healing on external wounds first.
+  #
   # @param method [String, nil] 'part', 'half' or 'most'; nil or 'all' takes it all
   def self.take_wound(patient, type, part, method = nil, quick: false)
-    return [[:spell, scar?(type) ? 'hs' : 'hw', part_name(part)]] if patient == SELF
+    if patient == SELF
+      layer = internal?(type) ? 'internal' : 'external'
+      return [[:spell, scar?(type) ? 'hs' : 'hw', "#{part_name(part)} #{layer}"]]
+    end
 
     words = ['take', patient, part_name(part)]
     words << 'internal' if internal?(type)
@@ -304,8 +366,8 @@ class TouchCommands
     [[:command, words.join(' ')]]
   end
 
-  # Taking a whole wound: half of anything worse than very damaging when Half
-  # On Major is set, otherwise all of it.
+  # Taking a whole wound: half of anything very damaging (8/13) or worse when
+  # Half On Major is set, as Genie Crutch did, otherwise all of it.
   def self.take_full(patient, type, part, level, options)
     method = 'half' if options[:half_on_major] && level > 7
     take_wound(patient, type, part, method, quick: options[:quick])
@@ -334,13 +396,14 @@ class TouchCommands
 
   # Every wound the options allow, worst first, then the scars those leave
   # behind, then a fresh TOUCH so the tab redraws. Uses the game's own
-  # TAKE ALL when no option needs wound-by-wound control.
+  # TAKE ALL when no option needs wound-by-wound control; that path also
+  # touches first, as Genie Crutch did, so the link is fresh for the TAKE.
   def self.take_all(patient, wounds, options)
     if patient != SELF && bulk_take?(options)
-      return touch(patient) + [[:command, "take #{patient}#{' quick' if options[:quick]} all"]]
+      return touch(patient) + [[:command, "take #{patient}#{' quick' if options[:quick]} all"]] + touch(patient)
     end
 
-    taken = wounds.reject { |type, _part, level| skip?(patient, type, level, options) }
+    taken = wounds.reject { |type, _part, level| skip?(type, level, options) }
     actions = taken.flat_map { |type, part, level| take_full(patient, type, part, level, options) }
     if options[:include_scars] && patient != SELF
       taken.reject { |type, _part, _level| scar?(type) }.each do |type, part, level|
@@ -351,14 +414,14 @@ class TouchCommands
     actions.uniq
   end
 
-  # Only the wounds below harmful. On Self, as with Take All, internal wounds
-  # are left out, and a part is cast on once even with several wounds there.
+  # Only the wounds below harmful. A patient is touched before (a fresh link)
+  # and after (so the tab redraws).
   def self.take_minor(patient, wounds, options)
-    minor = wounds.select do |type, _part, level|
-      level < 5 && !filtered?(type, options) && !(patient == SELF && internal?(type))
-    end
-    actions = patient == SELF ? [] : touch(patient)
-    (actions + minor.flat_map { |type, part, _level| take_wound(patient, type, part, quick: options[:quick]) }).uniq
+    minor = wounds.select { |type, _part, level| level < 5 && !filtered?(type, options) }
+    takes = minor.flat_map { |type, part, _level| take_wound(patient, type, part, quick: options[:quick]) }.uniq
+    return takes if patient == SELF
+
+    touch(patient) + takes + touch(patient)
   end
 
   def self.link(patient, kind)
@@ -371,7 +434,7 @@ class TouchCommands
     words = ['take', patient]
     words << method if method
     words << 'quick' if options[:quick]
-    touch(patient) + [[:command, (words << 'all').join(' ')]]
+    touch(patient) + [[:command, (words << 'all').join(' ')]] + touch(patient)
   end
 
   def self.break_link(patient)
@@ -388,11 +451,8 @@ class TouchCommands
     (!options[:include_internal] && internal?(type)) || (!options[:include_scars] && scar?(type))
   end
 
-  # Healing yourself works area by area with HW / HS, which only reach
-  # external wounds, and leaving bleeders means skipping fresh wounds past
-  # harmful.
-  def self.skip?(patient, type, level, options)
-    return true if patient == SELF && internal?(type)
+  # Leaving bleeders means skipping fresh wounds past harmful.
+  def self.skip?(type, level, options)
     return true if filtered?(type, options)
 
     options[:leave_bleeders] && level > 5 && !scar?(type)
@@ -443,15 +503,27 @@ class TouchWindow
     [255, 242, 0], [255, 204, 0], [255, 153, 0], [255, 102, 0], [255, 51, 0], [255, 0, 0]
   ].map { |rgb| rgb.map { |channel| channel / 255.0 } }.freeze
   HOVER_COLOR = [127 / 255.0, 1.0, 212 / 255.0].freeze
+  # A darker shade of the hover color, shown for a moment on click.
+  PRESSED_COLOR = [32 / 255.0, 178 / 255.0, 150 / 255.0].freeze
+  # Wound level => severity name, for tooltips (1 is plain "insignificant").
+  SEVERITY_NAMES = TouchParser::SEVERITIES.each_with_object({}) { |(severity, level), names| names[level] ||= severity }.freeze
+  # Unhinted so glyphs sit exactly where they are centered, and grayscale
+  # antialiased: subpixel color fringes make small labels on colored fills
+  # look shifted.
+  TEXT_OPTIONS = Cairo::FontOptions.new.tap do |options|
+    options.hint_style = Cairo::HINT_STYLE_NONE
+    options.hint_metrics = Cairo::HINT_METRICS_OFF
+    options.antialias = Cairo::ANTIALIAS_GRAY
+  end
   ALERT_COLOR = [1.0, 0.0, 0.0].freeze
 
-  SPELLS = [
-    ['Heal', 'heal'], ['Regenerate', 'regen'], ['Refresh', 'refresh'], ['Blood Staunching', 'bs'],
-    ['Fountain of Creation', 'foc'], ['Vitality Healing', 'vh'], ['Flush Poisons', 'fp'], ['Cure Disease', 'cd']
-  ].freeze
+  # More > Cast On Self, in menu order.
+  SPELLS = %w[heal regen refresh bs foc vh fp cd].map { |abbrev| [TouchCommands::SPELL_NAMES[abbrev], abbrev] }.freeze
 
   DEFAULT_WIDTH = 260
   DEFAULT_HEIGHT = 440
+  # The status strip when nothing is queued or being cast.
+  READY = 'Ready'.freeze
 
   # Window position, size, pin and the Take menu toggles, for the script to
   # save on exit. Replaced (never mutated) so another thread can read it.
@@ -478,6 +550,27 @@ class TouchWindow
 
     view[:snapshot] = snapshot
     view[:area].queue_draw
+  end
+
+  # Updates the status strip: a spinner and a Stop link while running; the
+  # text dimmed once done or stopped, where it stays as the last thing Touch
+  # did.
+  #
+  # @param detail [String] the exact command or cast, for the tooltip
+  # @param state [Symbol] :running, :done or :stopped
+  def show_activity(text, detail, state)
+    running = state == :running
+    @status.text = text
+    @status.tooltip_text = running ? "#{text}\nNow: #{detail}" : text
+    if running
+      @status.style_context.remove_class('dim-label')
+      @spinner.start
+    else
+      @status.style_context.add_class('dim-label')
+      @spinner.stop
+    end
+    @spinner.visible = running
+    @stop.visible = running
   end
 
   def present
@@ -514,16 +607,57 @@ class TouchWindow
       name = @views.find { |_name, view| view[:area] == page }&.first
       @window.title = name ? "Touch - #{name}" : 'Touch'
     end
-    @hint = Gtk::Label.new('TOUCH someone, or PERCEIVE HEALTH SELF.')
+    # Shown, centered, while there are no tabs.
+    @hint = Gtk::Label.new
+    @hint.markup = "<span size='large' weight='bold'>No patients yet</span>\n\n" \
+                   "TOUCH someone, or click Touch.\nPERCEIVE HEALTH SELF opens your own tab."
+    @hint.justify = :center
     @hint.line_wrap = true
+    @hint.style_context.add_class('dim-label')
 
     box = Gtk::Box.new(:vertical, 2)
     box.pack_start(build_toolbar, expand: false, fill: false, padding: 0)
-    box.pack_start(@hint, expand: false, fill: false, padding: 8)
+    box.pack_start(@hint, expand: true, fill: true, padding: 12)
     box.pack_start(@notebook, expand: true, fill: true, padding: 0)
+    box.pack_end(build_status_strip, expand: false, fill: false, padding: 0)
     @window.add(box)
     @window.show_all
     @notebook.hide
+    @spinner.hide
+    @stop.hide
+  end
+
+  # A one-line strip under the tabs saying what Touch is doing, with a Stop
+  # link while something runs. Its height never changes (the text is cut
+  # short rather than wrapped), so the tabs above keep their size.
+  def build_status_strip
+    small = Gtk::CssProvider.new
+    small.load(data: 'label { font-size: 8.5pt; } button { padding: 0 6px; min-height: 0; font-size: 8.5pt; }')
+
+    @spinner = Gtk::Spinner.new
+    @status = Gtk::Label.new(READY)
+    @status.xalign = 0
+    @status.single_line_mode = true
+    @status.ellipsize = :end
+    @status.style_context.add_class('dim-label')
+    @stop = Gtk::Button.new(label: 'Stop')
+    @stop.relief = :none
+    @stop.tooltip_text = 'Stop what is queued or being cast (keeps the link)'
+    @stop.signal_connect('clicked') { @intents << [:stop] }
+    [@status, @stop].each { |widget| widget.style_context.add_provider(small, Gtk::StyleProvider::PRIORITY_APPLICATION) }
+
+    row = Gtk::Box.new(:horizontal, 6)
+    row.margin_start = 6
+    row.margin_end = 4
+    row.height_request = 24
+    row.pack_start(@spinner, expand: false, fill: false, padding: 0)
+    row.pack_start(@status, expand: true, fill: true, padding: 0)
+    row.pack_end(@stop, expand: false, fill: false, padding: 0)
+
+    strip = Gtk::Box.new(:vertical, 0)
+    strip.pack_start(Gtk::Separator.new(:horizontal), expand: false, fill: false, padding: 0)
+    strip.pack_start(row, expand: false, fill: false, padding: 0)
+    strip
   end
 
   # A minimized window reports a position far off-screen (about -32000 on
@@ -553,10 +687,12 @@ class TouchWindow
     bar = Gtk::Box.new(:horizontal, 2)
 
     touch = Gtk::Button.new(label: 'Touch')
+    touch.tooltip_text = 'Touch the patient on this tab again, or pick someone to touch'
     touch.signal_connect('clicked') { on_touch }
 
     breaker = Gtk::Button.new(label: 'Break')
-    breaker.tooltip_text = 'Break the link. Right-click: LINK ALL CANCEL'
+    breaker.tooltip_text = "Stop: cancel what is queued or being cast, and break the link to this patient.\n" \
+                           'Right-click: stop and LINK ALL CANCEL'
     breaker.signal_connect('clicked') { @intents << [:break, selected_patient] }
     breaker.signal_connect('button-press-event') do |_widget, event|
       next false unless event.button == 3
@@ -566,12 +702,14 @@ class TouchWindow
     end
 
     take = menu_button('Take', build_take_menu)
+    take.tooltip_text = 'Take Minor / Take All, and what they include'
 
     all = Gtk::Button.new(label: 'All')
     all.tooltip_text = 'Take everything the Take menu options allow'
     all.signal_connect('clicked') { send_for_selected(:take_all) }
 
     more = menu_button('More', build_more_menu)
+    more.tooltip_text = 'Touch someone, perceive yourself, cast on yourself, reset the size'
 
     compact = Gtk::CssProvider.new
     compact.load(data: 'button { padding: 2px 7px; }')
@@ -721,10 +859,19 @@ class TouchWindow
     area = Gtk::DrawingArea.new
     area.set_size_request(120, 230)
     area.add_events(%i[button_press_mask pointer_motion_mask leave_notify_mask])
-    @views[name] = { area: area, snapshot: nil, hover: nil }
+    @views[name] = { area: area, snapshot: nil, hover: nil, pressed: nil }
 
     area.signal_connect('draw') do |widget, cr|
       draw_tab(name, widget, cr)
+      true
+    end
+    area.has_tooltip = true
+    area.signal_connect('query-tooltip') do |widget, x, y, _keyboard, tooltip|
+      layout = tab_layout(widget)
+      text = tooltip_for(name, hit_test(name, layout, x / layout[:scale], y / layout[:scale]))
+      next false unless text
+
+      tooltip.text = text
       true
     end
     area.signal_connect('motion-notify-event') do |widget, event|
@@ -766,12 +913,64 @@ class TouchWindow
     @window.title = 'Touch'
   end
 
+  # Highlights whatever is under the pointer and shows a hand cursor over
+  # anything clickable.
   def set_hover(name, target)
     view = @views[name]
     return if view.nil? || view[:hover] == target
 
     view[:hover] = target
+    @hand_cursor ||= Gdk::Cursor.new(:hand2)
+    view[:area].window&.cursor = target ? @hand_cursor : nil
     view[:area].queue_draw
+  end
+
+  # Briefly draws the clicked target pressed, so a click visibly registers.
+  def flash(name, target)
+    view = @views[name]
+    return unless view
+
+    view[:pressed] = target
+    view[:area].queue_draw
+    GLib::Timeout.add(150) do
+      view[:pressed] = nil
+      view[:area].queue_draw if @views[name].equal?(view)
+      false
+    end
+  end
+
+  # Hover text: what the target is and what a click does.
+  # The click lines are built from the very actions a click queues, so they
+  # always match what is sent.
+  def tooltip_for(name, target)
+    return nil unless target
+
+    snapshot = @views.dig(name, :snapshot) || {}
+    case target.first
+    when :close then 'Close this tab'
+    when :vitality then click_hint(TouchCommands.take_condition(name, 'vitality', @options))
+    when :poison
+      state = snapshot[:poison].to_i.positive? ? "Poisoned (#{snapshot[:poison]})" : 'No poison perceived'
+      "#{state}\n#{click_hint(TouchCommands.take_condition(name, 'poison', @options))}"
+    when :disease
+      state = snapshot[:disease] ? 'Diseased' : 'No disease perceived'
+      "#{state}\n#{click_hint(TouchCommands.take_condition(name, 'disease', @options))}"
+    when :part then wound_tooltip(name, snapshot, target[1], target[2])
+    end
+  end
+
+  def wound_tooltip(name, snapshot, type, part)
+    level = snapshot.dig(:wounds, type, part)
+    heading = "#{type.to_s.split('_').map(&:capitalize).join(' ')} #{TouchCommands.part_name(part)}"
+    return "#{heading}: no wound" unless level
+
+    hint = click_hint(TouchCommands.click_wound(name, type, part, level, @options))
+    hint += "\nRight-click: take part, half or most" unless name == TouchParser::SELF
+    "#{heading}: #{SEVERITY_NAMES[level]} (#{level}/13)\n#{hint}"
+  end
+
+  def click_hint(actions)
+    "Click: #{actions.map { |action| TouchCommands.describe(action) }.join(', then ')}"
   end
 
   # Where everything sits on the tab grid at the widget's current size. One
@@ -808,11 +1007,15 @@ class TouchWindow
     return unless target
 
     if event.button == 3
-      popup_wound_menu(name, target, event) if target.first == :part && name != TouchParser::SELF
+      return unless target.first == :part && name != TouchParser::SELF
+
+      flash(name, target)
+      popup_wound_menu(name, target, event)
       return
     end
     return unless event.button == 1
 
+    flash(name, target) unless target.first == :close
     case target.first
     when :close then close_view(name)
     when :part then @intents << [:take_wound, name, target[1], target[2], 'auto', @options.dup]
@@ -918,10 +1121,10 @@ class TouchWindow
     cr.scale(layout[:scale], layout[:scale])
     cr.line_width = 0.75
 
-    draw_vitality(cr, layout[:vitality], snapshot)
-    draw_close(cr, layout[:close], text_color)
-    draw_marker(cr, layout[:poison], 'P', snapshot[:poison].positive?)
-    draw_marker(cr, layout[:disease], 'D', snapshot[:disease])
+    draw_vitality(cr, layout[:vitality], snapshot, highlight(view, :vitality))
+    draw_close(cr, layout[:close], text_color, highlight(view, :close))
+    draw_marker(cr, layout[:poison], 'P', snapshot[:poison].positive?, highlight(view, :poison))
+    draw_marker(cr, layout[:disease], 'D', snapshot[:disease], highlight(view, :disease))
     if snapshot[:poison] > 1
       cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
       poison_x, poison_y, poison_width, = layout[:poison]
@@ -931,14 +1134,32 @@ class TouchWindow
     layout[:figures].each do |type, (figure_x, figure_y, caption)|
       cr.save
       cr.translate(figure_x, figure_y)
-      draw_figure(cr, snapshot[:wounds][type], view[:hover], type, text_color)
+      draw_figure(cr, snapshot[:wounds][type], view, type, text_color)
       cr.restore
       cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
       draw_text(cr, caption, figure_x - 9, figure_y + 135, 82, 12, 10)
     end
   end
 
-  def draw_vitality(cr, box, snapshot)
+  # :pressed or :hover when the target of that kind (:vitality, :close,
+  # :poison, :disease) is pressed or under the pointer, otherwise nil.
+  def highlight(view, kind)
+    return :pressed if view[:pressed]&.first == kind
+
+    :hover if view[:hover]&.first == kind
+  end
+
+  # Strokes the current path as an edge: the idle color normally, a thicker
+  # hover or pressed color when highlighted.
+  def stroke_edge(cr, state, idle_color)
+    cr.save
+    cr.set_source_rgb(*{ pressed: PRESSED_COLOR, hover: HOVER_COLOR }.fetch(state, idle_color))
+    cr.line_width = 1.6 if state
+    cr.stroke
+    cr.restore
+  end
+
+  def draw_vitality(cr, box, snapshot, state)
     x, y, width, height = box
     percent = snapshot[:vitality]
     cr.set_source_rgb(0, 0, 0)
@@ -947,9 +1168,8 @@ class TouchWindow
     cr.set_source_rgb(*vitality_color(percent))
     cr.rectangle(x, y, width * percent / 100.0, height)
     cr.fill
-    cr.set_source_rgb(0.5, 0.5, 0.5)
     cr.rectangle(x, y, width, height)
-    cr.stroke
+    stroke_edge(cr, state, [0.5, 0.5, 0.5])
     # The label spans the colored and the black part of the bar, so it is
     # outlined rather than picking one text color.
     label = snapshot[:dead] ? "DEAD #{percent}%" : "Vitality #{percent}%"
@@ -963,8 +1183,13 @@ class TouchWindow
     LEVEL_COLORS[(11 - (percent - 1).div(10)).clamp(2, 11)]
   end
 
-  def draw_close(cr, box, text_color)
+  def draw_close(cr, box, text_color, state)
     x, y, width, height = box
+    if state
+      cr.set_source_rgba(*HOVER_COLOR, 0.45)
+      cr.rectangle(x, y, width, height)
+      cr.fill
+    end
     cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
     cr.rectangle(x, y, width, height)
     cr.stroke
@@ -975,23 +1200,22 @@ class TouchWindow
     cr.stroke
   end
 
-  def draw_marker(cr, box, letter, active)
+  def draw_marker(cr, box, letter, active, state)
     x, y, width, height = box
     fill = active ? ALERT_COLOR : LEVEL_COLORS[0]
     shape_path(cr, :round, x, y, width, height)
     cr.set_source_rgb(*fill)
     cr.fill_preserve
-    cr.set_source_rgb(1, 1, 1)
-    cr.stroke
+    stroke_edge(cr, state, [1, 1, 1])
     cr.set_source_rgb(*text_color_on(fill))
     draw_text(cr, letter, x, y, width, height, 10, bold: true)
   end
 
-  def draw_figure(cr, levels, hover, type, text_color)
+  def draw_figure(cr, levels, view, type, text_color)
     FIGURE_PARTS.each do |part, (x, y, width, height, shape, caption)|
       next if part == :tail && !levels[:tail]
 
-      fill = part_color(levels, hover, type, part)
+      fill = part_color(levels, view, type, part)
       shape_path(cr, shape, x, y, width, height)
       cr.set_source_rgb(*fill)
       cr.fill_preserve
@@ -1007,13 +1231,21 @@ class TouchWindow
     draw_text(cr, 'L', 55, 26, 8, 12, 9.5, bold: true)
   end
 
-  def part_color(levels, hover, type, part)
-    eye = %i[left_eye right_eye].include?(part)
-    hovered = hover && hover[1] == type && (hover[2] == part || (eye && hover[2] == :head && !levels[part]))
-    return HOVER_COLOR if hovered
+  def part_color(levels, view, type, part)
+    return PRESSED_COLOR if targets_part?(view[:pressed], levels, type, part)
+    return HOVER_COLOR if targets_part?(view[:hover], levels, type, part)
 
-    level = levels[part] || (eye ? levels[:head] : nil) || 0
+    level = levels[part] || (%i[left_eye right_eye].include?(part) ? levels[:head] : nil) || 0
     LEVEL_COLORS[level.clamp(0, 11)]
+  end
+
+  # Whether a hover or pressed target lights this part. An unhurt eye is drawn
+  # in the head's color, so it lights with the head too.
+  def targets_part?(target, levels, type, part)
+    return false unless target&.first == :part && target[1] == type
+    return true if target[2] == part
+
+    %i[left_eye right_eye].include?(part) && target[2] == :head && !levels[part]
   end
 
   def shape_path(cr, shape, x, y, width, height)
@@ -1031,18 +1263,21 @@ class TouchWindow
     cr.restore
   end
 
-  # Draws text centered in the box, with the current source color.
-  #
-  # Vertical centering uses the height of a capital letter rather than each
-  # string's own ink, so every label sits on a level baseline whether or not
-  # it has descenders. With outline, the text gets a black edge that keeps it
-  # readable over any color.
+  # Draws text centered in the box, with the current source color. With
+  # outline, the text gets a black edge that keeps it readable over any color.
   def draw_text(cr, text, x, y, width, height, size, outline: false, bold: false)
     cr.select_font_face('Sans', Cairo::FONT_SLANT_NORMAL, bold ? Cairo::FONT_WEIGHT_BOLD : Cairo::FONT_WEIGHT_NORMAL)
     cr.set_font_size(size)
+    cr.font_options = TEXT_OPTIONS
     extents = cr.text_extents(text)
-    cap_height = cr.text_extents('H').height
-    cr.move_to(x + (width - extents.width) / 2.0 - extents.x_bearing, y + (height + cap_height) / 2.0)
+    # Centers the text's ink above the baseline, so descenders such as the y
+    # in "Vitality" hang below instead of pushing the label up. Cairo pads the
+    # ink box below the baseline even for an H; that padding is measured and
+    # treated as the bottom.
+    capital = cr.text_extents('H')
+    bottom = capital.height + capital.y_bearing
+    cr.move_to(x + (width - extents.width) / 2.0 - extents.x_bearing,
+               y + (height - extents.y_bearing - bottom) / 2.0)
     return cr.show_text(text) unless outline
 
     cr.text_path(text)
@@ -1152,20 +1387,21 @@ class Touch
   def open_window
     ready = Thread::Queue.new
     state = load_state
+    # Handing the window over and giving up each happen under this lock, so a
+    # window finished just as the wait times out is used rather than leaked.
+    handover = Mutex.new
     gave_up = false
     Gtk.queue do
       window = TouchWindow.new(@intents, state)
       # Too late: the script has already quit, so nothing would drive it.
-      gave_up ? window.destroy : ready << window
+      handover.synchronize { gave_up ? window.destroy : ready << window }
     rescue StandardError => e
       ready << e
     end
     window = ready.pop(timeout: 15)
-    if window.nil?
+    window ||= handover.synchronize do
       gave_up = true
-      # It may have arrived between the timeout and the flag being set.
-      late = ready.empty? ? nil : ready.pop
-      Gtk.queue { late.destroy } if late.is_a?(TouchWindow)
+      ready.empty? ? nil : ready.pop
     end
     return @window = window if window.is_a?(TouchWindow)
 
@@ -1185,9 +1421,48 @@ class Touch
       drain_lines
       break unless drain_intents
 
-      action = @pending.shift
-      action ? perform(action) : pause(0.1)
+      step = @pending.shift
+      if step
+        @interrupted = false
+        @current = step
+        show_status(step, :running)
+        @busy = true
+        perform(step[:action])
+        @busy = false
+        break if @quitting
+
+        # The task's last step went out; the next task, if any, shows itself.
+        show_status(step, :done) if step[:step] == step[:steps] && !@interrupted
+      else
+        pause(0.1)
+      end
     end
+  end
+
+  # Shows a step on the window's status strip.
+  #
+  # @param state [Symbol] :running, :done or :stopped
+  def show_status(step, state)
+    text = TouchCommands.status_text(step, state)
+    detail = TouchCommands.describe(step[:action])
+    window = @window
+    Gtk.queue { window.show_activity(text, detail, state) }
+  end
+
+  # Waits while still reading the game and the window, so Break (or closing
+  # the window) can cut a spell's preparation short.
+  #
+  # @return [Boolean] false if the wait was interrupted
+  def wait_unless_stopped(seconds)
+    deadline = Time.now + seconds
+    while Time.now < deadline
+      drain_lines
+      @quitting = true unless drain_intents
+      return false if @interrupted || @quitting
+
+      pause 0.1
+    end
+    true
   end
 
   # Game text arrives raw from the downstream hook, so the healing commands
@@ -1273,26 +1548,28 @@ class Touch
 
   def handle(intent)
     kind, patient, *details = intent
+    label = TouchCommands.task_label(kind, patient, details)
     case kind
     when :touch
       if patient == :debug
         start_debug
       elsif patient == TouchParser::SELF || NAME.match?(patient.to_s)
-        queue(TouchCommands.touch(patient))
+        queue(TouchCommands.touch(patient), label)
       end
+    when :stop then stop
     when :break
-      @pending.clear
-      queue(TouchCommands.break_link(patient))
+      stop
+      queue(TouchCommands.break_link(patient), label)
     when :break_all
-      @pending.clear
-      queue([[:command, 'link all cancel']])
-    when :take_wound then queue(take_wound(patient, *details))
-    when :take_condition then queue(TouchCommands.take_condition(patient, *details))
-    when :take_all then queue(TouchCommands.take_all(patient, wounds_of(patient), details.first))
-    when :take_minor then queue(TouchCommands.take_minor(patient, wounds_of(patient), details.first))
-    when :link then queue(TouchCommands.link(patient, details.first))
-    when :link_take then queue(TouchCommands.link_take(patient, *details))
-    when :cast then queue([[:spell, details.first, nil]])
+      stop
+      queue([[:command, 'link all cancel']], label)
+    when :take_wound then queue(take_wound(patient, *details), label)
+    when :take_condition then queue(TouchCommands.take_condition(patient, *details), label)
+    when :take_all then queue(TouchCommands.take_all(patient, wounds_of(patient), details.first), label)
+    when :take_minor then queue(TouchCommands.take_minor(patient, wounds_of(patient), details.first), label)
+    when :link then queue(TouchCommands.link(patient, details.first), label)
+    when :link_take then queue(TouchCommands.link_take(patient, *details), label)
+    when :cast then queue([[:spell, details.first, nil]], label)
     when :present
       window = @window
       Gtk.queue { window.present }
@@ -1318,8 +1595,12 @@ class Touch
     @patients[patient]&.wound_list || []
   end
 
-  def queue(actions)
-    @pending.concat(actions)
+  # Each step remembers the task it belongs to and where it falls in it, for
+  # the status strip ("Healing yourself (2/9): ...").
+  def queue(actions, label = nil)
+    actions.each_with_index do |action, index|
+      @pending << { action: action, label: label, step: index + 1, steps: actions.size }
+    end
   end
 
   def perform(action)
@@ -1333,12 +1614,22 @@ class Touch
     end
   end
 
+  # Break: drops everything queued and interrupts a spell being prepared.
+  def stop
+    stopped = @busy ? @current : @pending.first
+    show_status(stopped, :stopped) if stopped
+    @pending.clear
+    @interrupted = true
+  end
+
   def cast_on_self(abbrev, target)
     spell = DEFAULT_SPELL.merge(@spells.fetch(abbrev, {}))
     waitrt?
     return unless DRCA.prepare?(abbrev, spell['mana'])
 
-    pause spell['prep_time']
+    # Stopped mid-preparation: let the spell go rather than leave it held.
+    return fput('release spell') unless wait_unless_stopped(spell['prep_time'])
+
     DRCA.cast?(target ? "cast #{target}" : 'cast')
   end
 
