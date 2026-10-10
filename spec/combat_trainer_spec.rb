@@ -4555,6 +4555,105 @@ RSpec.describe SpellProcess do
       expect(gs.necro_casting?).to be false         # so loot/rituals/pets are NOT suppressed
     end
   end
+
+  # =========================================================================
+  # Weapon buff release (check_ignite / check_rutilors_edge)
+  #
+  # These run once per combat loop. The release must be sent once per weapon,
+  # not once per loop, because neither of its outcomes reliably clears
+  # DRSpells.active_spells:
+  #   - a successful release only clears it when the game next pushes a
+  #     percWindow stream (active_spells is a snapshot, not live state)
+  #   - a failed release ("Release what") never clears it at all, which is what
+  #     happens when the buff is attached to a weapon that is already gone
+  # So active_spells cannot be used as the "have I already done this" record.
+  # =========================================================================
+  describe '#release_weapon_buff' do
+    def build_releaser(**overrides)
+      build_spell_process(**{ last_seen_weapon_buff_name: nil, released_weapon_buff_names: {} }.merge(overrides))
+    end
+
+    it 'sends the release once for a weapon that still shows the buff active' do
+      DRSpells._set_active_spells({ 'Ignite' => 100 })
+      allow(DRC).to receive(:bput).and_return('The warm feeling in your hand goes away')
+
+      instance = build_releaser
+      instance.send(:check_ignite, build_game_state(weapon_name: 'fiery broadsword'))
+
+      expect(DRC).to have_received(:bput).with('release ignite', any_args).once
+    end
+
+    it 'does not resend the release when active_spells has not caught up yet' do
+      # Release succeeded, but the percWindow snapshot still lists Ignite.
+      DRSpells._set_active_spells({ 'Ignite' => 100 })
+      allow(DRC).to receive(:bput).and_return('The warm feeling in your hand goes away')
+
+      instance = build_releaser
+      game_state = build_game_state(weapon_name: 'fiery broadsword')
+      3.times { instance.send(:check_ignite, game_state) }
+
+      expect(DRC).to have_received(:bput).with('release ignite', any_args).once
+    end
+
+    it 'does not resend the release after it failed with "Release what"' do
+      # The buff is on the character but its weapon is gone, so the release can
+      # never succeed and active_spells can never clear. Retrying is pointless.
+      DRSpells._set_active_spells({ 'Ignite' => 100 })
+      allow(DRC).to receive(:bput).and_return('Release what')
+
+      instance = build_releaser
+      game_state = build_game_state(weapon_name: 'fiery broadsword')
+      3.times { instance.send(:check_ignite, game_state) }
+
+      expect(DRC).to have_received(:bput).with('release ignite', any_args).once
+    end
+
+    it 'releases again after switching to a differently named weapon' do
+      DRSpells._set_active_spells({ 'Ignite' => 100 })
+      allow(DRC).to receive(:bput).and_return('The warm feeling in your hand goes away')
+
+      instance = build_releaser
+      instance.send(:check_ignite, build_game_state(weapon_name: 'fiery broadsword'))
+      instance.send(:check_ignite, build_game_state(weapon_name: 'dagasse'))
+
+      expect(DRC).to have_received(:bput).with('release ignite', any_args).twice
+    end
+
+    it 'does not release when the buff is not in active_spells' do
+      DRSpells._set_active_spells({})
+      allow(DRC).to receive(:bput)
+
+      instance = build_releaser
+      instance.send(:check_ignite, build_game_state(weapon_name: 'fiery broadsword'))
+
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it 'does not release when the buff was already cast on this weapon' do
+      DRSpells._set_active_spells({ 'Ignite' => 100 })
+      allow(DRC).to receive(:bput)
+
+      instance = build_releaser(last_seen_weapon_buff_name: 'fiery broadsword')
+      instance.send(:check_ignite, build_game_state(weapon_name: 'fiery broadsword'))
+
+      expect(DRC).not_to have_received(:bput)
+    end
+
+    it "latches Ignite and Rutilor's Edge independently" do
+      DRSpells._set_active_spells({ 'Ignite' => 100, "Rutilor's Edge" => 100 })
+      allow(DRC).to receive(:bput)
+
+      instance = build_releaser
+      game_state = build_game_state(weapon_name: 'fiery broadsword')
+      2.times do
+        instance.send(:check_ignite, game_state)
+        instance.send(:check_rutilors_edge, game_state)
+      end
+
+      expect(DRC).to have_received(:bput).with('release ignite', any_args).once
+      expect(DRC).to have_received(:bput).with('release rue', any_args).once
+    end
+  end
 end
 
 # ###################################################################
