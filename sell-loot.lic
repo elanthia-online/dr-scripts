@@ -60,7 +60,7 @@ class SellLoot
     # How many spare gem pouches to keep stocked (default 5).
     @spare_gem_pouch_target = (@settings.spare_gem_pouch_target || 5).to_i
     @sell_loot_trader = @settings.sell_loot_trader
-    @trader_room = @settings.sell_loot_trader_room.to_i
+    @trader_rooms = trader_rooms_from(@settings.sell_loot_trader_room)
     @trader_nouns = trader_nouns_from(@settings.sell_loot_trader_nouns)
     # Owners set markup from -10% to +80%; the default 0 skips any below base price.
     @minimum_markup = (@settings.sell_loot_minimum_markup || 0).to_i
@@ -221,9 +221,9 @@ class SellLoot
     end
 
     if @settings.sell_loot_trader
-      unless @settings.sell_loot_trader_room.to_i.positive?
-        DRC.message("***ERROR: sell_loot_trader is enabled but sell_loot_trader_room is " \
-                    "missing or not a room number (got #{@settings.sell_loot_trader_room.inspect})***")
+      if trader_rooms_from(@settings.sell_loot_trader_room).empty?
+        DRC.message("***ERROR: sell_loot_trader is enabled but sell_loot_trader_room is missing, or not a " \
+                    "room number or list of room numbers (got #{@settings.sell_loot_trader_room.inspect})***")
         valid = false
       end
 
@@ -694,7 +694,11 @@ class SellLoot
 
   GIVE_BAD_SYNTAX = /What is it you're trying to give|What were you referring to|not something you can/i
 
-  # @return [Hash] { pouch: Boolean, bundle: Boolean } -- true means sold here
+  # Trader rooms are tried in the order listed. A room with no kiosk at or above
+  # the minimum markup is skipped; one whose kiosks run dry with something still
+  # unsold hands over to the next. Whatever is left goes to the shops.
+  #
+  # @return [Hash] { pouch: Boolean, bundle: Boolean } -- true means sold at a kiosk
   def sell_at_trader_room
     sold = { pouch: false, bundle: false }
     return sold unless trader_room_enabled?
@@ -705,25 +709,47 @@ class SellLoot
 
     return sold unless stored_pouches.positive? || sell_worn || sell_bundle_here
 
-    unless DRCT.walk_to(@trader_room)
-      DRC.message("***STATUS*** Could not reach trader room #{@trader_room} -- falling back to the shops.")
-      return sold
+    found_kiosk = false
+    @trader_rooms.each do |room|
+      targets = trader_targets_at(room)
+      next if targets.empty?
+
+      found_kiosk = true
+      sell_stored_pouches(targets, stored_pouches) if stored_pouches.positive?
+      sold[:pouch] = sell_worn_pouch(targets) if sell_worn && !sold[:pouch] && targets.any?
+      sold[:bundle] = sell_bundle_to_trader(targets) if sell_bundle_here && !sold[:bundle] && targets.any?
+
+      # Kiosks still standing refused what is left for itself; another room
+      # would say the same.
+      break if targets.any?
+
+      stored_pouches = stored_pouches.positive? ? stored_pouch_count : 0
+      break unless stored_pouches.positive? || (sell_worn && !sold[:pouch]) || (sell_bundle_here && !sold[:bundle])
+
+      DRC.message("***STATUS*** The kiosks in room #{room} are out of reserves.")
+    end
+
+    DRC.message('***STATUS*** No kiosk to sell to in any trader room -- falling back to the shops.') unless found_kiosk
+    sold
+  end
+
+  # Walks to +room+ and ranks its kiosks.
+  #
+  # @return [Array<String>] the kiosks there worth selling to, richest first
+  def trader_targets_at(room)
+    unless DRCT.walk_to(room)
+      DRC.message("***STATUS*** Could not reach trader room #{room}.")
+      return []
     end
 
     DRC.release_invisibility
     targets = ranked_trader_objects
     if targets.empty?
-      DRC.message('***STATUS*** No kiosk in the trader room -- falling back to the shops.')
-      return sold
+      DRC.message("***STATUS*** No kiosk to sell to in trader room #{room}.")
+    else
+      DRC.message("***STATUS*** #{targets.size} kiosk(s) here; trying #{targets.join(', then ')}.")
     end
-
-    DRC.message("***STATUS*** #{targets.size} kiosk(s) here; trying #{targets.join(', then ')}.")
-
-    sell_stored_pouches(targets, stored_pouches) if stored_pouches.positive?
-    sold[:pouch] = sell_worn_pouch(targets) if sell_worn
-    sold[:bundle] = sell_bundle_to_trader(targets) if sell_bundle_here
-
-    sold
+    targets
   end
 
   # Commands take "red pouch" ("gem" breaks the parser), but counting matches
@@ -752,6 +778,17 @@ class SellLoot
     nouns.empty? ? DEFAULT_TRADER_NOUNS : nouns.uniq
   end
 
+  # One room id or a list of them (a YAML list, or "1234, 5678"), in the order
+  # to try. Any entry that is not a room id makes the whole setting invalid.
+  #
+  # @return [Array<Integer>] room ids, or [] when unset or invalid
+  def trader_rooms_from(setting)
+    entries = Array(setting).flat_map { |room| room.to_s.split(/[,\s]+/) }.reject(&:empty?)
+    return [] if entries.empty? || entries.any? { |room| room !~ /\A\d+\z/ || room.to_i.zero? }
+
+    entries.map(&:to_i).uniq
+  end
+
   def meets_minimum_markup?(markup)
     return false if markup.nil?
 
@@ -759,7 +796,7 @@ class SellLoot
   end
 
   def trader_room_enabled?
-    @sell_loot_trader && @trader_room.to_i.positive?
+    @sell_loot_trader && @trader_rooms.to_a.any?
   end
 
   # Not gated on sell_loot_pouch: tie-users set that false, yet they are the
@@ -1178,7 +1215,7 @@ class SellLoot
       return true
     end
 
-    DRC.message('***STATUS*** Nothing here would buy the bundle -- taking it to the tannery instead.')
+    DRC.message('***STATUS*** Nothing here would buy the bundle.')
     DRCI.put_away_item?('bundle') unless DRCI.wear_item?('bundle')
     false
   end
