@@ -90,6 +90,41 @@ describe 'touch.lic' do
       expect(parser.feed('Navesi has a dormant infection.')).to eq([[:disease, 'Navesi']])
     end
 
+    it 'counts lines about the patient by pronoun or possessive' do
+      parser.feed(link_line)
+
+      expect(parser.feed('His body is covered in open oozing sores.')).to eq([[:disease, 'Navesi']])
+      expect(parser.feed("Navesi's wounds are infected.")).to eq([[:disease, 'Navesi']])
+      expect(parser.feed('He feels somewhat tired and seems to be having trouble breathing.')).to eq([[:poison, 'Navesi', 1]])
+    end
+
+    # Mahtra's review: chat or thoughts arriving mid-TOUCH set P and D.
+    it 'ignores chat and thoughts that arrive inside a TOUCH' do
+      parser.feed(link_line)
+
+      expect(parser.feed('[General]-Jim: "anyone have a disease cure? im poisoned"')).to eq([])
+      expect(parser.feed('Jim says, "I think I am poisoned."')).to eq([])
+      expect(parser.feed('Your mind hears Jim thinking, "gangrene again?"')).to eq([])
+    end
+
+    # Real PERCEIVE HEALTH SELF lines, from lich-5's common_healing_spec.
+    it 'reads poison and disease on the Self tab' do
+      parser.feed('Your injuries include...')
+
+      expect(parser.feed('You have a mildly poisoned right leg.')).to eq([[:poison, 'Self', 1]])
+      expect(parser.feed('You feel somewhat tired and seem to be having trouble breathing.')).to eq([[:poison, 'Self', 2]])
+      expect(parser.feed('Your wounds are infected.')).to eq([[:disease, 'Self']])
+      expect(parser.feed('You have a dormant infection.')).to eq([[:disease, 'Self']])
+      expect(parser.feed('Your body is covered in open oozing sores.')).to eq([[:disease, 'Self']])
+    end
+
+    it 'ignores quoted chat on the Self tab even when it starts with You or Your' do
+      parser.feed('Your injuries include...')
+
+      expect(parser.feed('Your mind hears Jim thinking, "im poisoned"')).to eq([])
+      expect(parser.feed('You hear Jim say, "that disease again?"')).to eq([])
+    end
+
     it 'flags a dead patient' do
       parser.feed(link_line)
 
@@ -202,7 +237,7 @@ describe 'touch.lic' do
     it 'keeps only the values given, for the defaults to fill in the rest' do
       spells = Touch.spell_settings('hw' => { 'mana' => 10 })
 
-      expect(Touch::DEFAULT_SPELL.merge(spells['hw'])).to eq('mana' => 10, 'prep_time' => 5)
+      expect(Touch::DEFAULT_SPELL.merge(spells['hw'])).to eq('mana' => 10)
     end
 
     it 'drops values that are not usable numbers' do
@@ -557,6 +592,16 @@ describe 'touch.lic' do
     end
   end
 
+  # Regression (Mahtra's re-review): a Cairo constant built while the script
+  # loaded crashed a Lich started without GTK before it could print its own
+  # "no GTK" message. The spec suite has no GTK or Cairo, like that Lich.
+  describe 'TouchWindow without GTK' do
+    it 'loads without touching Cairo or GTK' do
+      expect(defined?(Cairo)).to be_nil
+      expect { load_lic_class('touch.lic', 'TouchWindow') }.not_to raise_error
+    end
+  end
+
   # Regression: All on the Self tab queued one cast per wound, and Break could
   # not stop it, because it only cleared the queue between actions while each
   # cast sat in a fixed preparation wait.
@@ -567,6 +612,7 @@ describe 'touch.lic' do
       instance = Touch.allocate
       instance.instance_variable_set(:@intents, Thread::Queue.new)
       instance.instance_variable_set(:@pending, [])
+      instance.instance_variable_set(:@immediate, [])
       instance.instance_variable_set(:@spells, {})
       instance.instance_variable_set(:@patients, {})
       %i[show_status drain_lines pause waitrt? fput].each { |name| allow(instance).to receive(name) }
@@ -595,12 +641,79 @@ describe 'touch.lic' do
       expect(touch.instance_variable_get(:@quitting)).to be true
     end
 
-    it 'casts at the named layer once preparation finishes' do
+    it 'casts at the named layer after prep_time when one is set' do
       touch.instance_variable_set(:@spells, { 'hw' => { 'prep_time' => 0 } })
 
       touch.send(:cast_on_self, 'hw', 'chest external')
 
       expect(DRCA).to have_received(:cast?).with('cast chest external')
+    end
+
+    # In-game report: self casts went out before "You feel fully prepared to
+    # cast your spell." With no prep_time the cast waits on the game's own
+    # preparation timer, as DRCA does.
+    it 'waits for the game to finish the preparation before casting' do
+      timer = [3.0, 2.0, 1.0, 0.0]
+      allow(touch).to receive(:checkcastrt) { timer.shift || 0.0 }
+      allow(DRCA).to receive(:cast?) do
+        expect(timer).to be_empty
+        true
+      end
+
+      touch.send(:cast_on_self, 'hw', 'chest external')
+
+      expect(DRCA).to have_received(:cast?).with('cast chest external')
+    end
+
+    it 'releases the spell when Break comes while waiting to be fully prepared' do
+      allow(touch).to receive(:checkcastrt) do
+        touch.instance_variable_get(:@intents) << [:stop]
+        2.0
+      end
+
+      touch.send(:cast_on_self, 'hw', 'chest external')
+
+      expect(touch).to have_received(:fput).with('release spell')
+      expect(DRCA).not_to have_received(:cast?)
+    end
+
+    # In-game report: a TOUCH to check on the patient waited until a spell
+    # being prepared was cast. Touches and breaks now skip the queue.
+    it 'sends a touch at once while a spell is being prepared, then still casts' do
+      sent = []
+      allow(touch).to receive(:fput) { |command| sent << command }
+      allow(DRCA).to receive(:cast?) { |command| sent << command }
+      timer = [3.0, 2.0, 0.0]
+      allow(touch).to receive(:checkcastrt) do
+        touch.instance_variable_get(:@intents) << [:touch, 'Pazzlen'] if timer.size == 3
+        timer.shift || 0.0
+      end
+
+      touch.send(:cast_on_self, 'regen', nil)
+
+      expect(sent).to eq(['touch Pazzlen', 'cast'])
+    end
+
+    it 'sends a break at once, then releases the spell being prepared' do
+      sent = []
+      allow(touch).to receive(:fput) { |command| sent << command }
+      allow(touch).to receive(:checkcastrt) do
+        touch.instance_variable_get(:@intents) << [:break, 'Pazzlen']
+        2.0
+      end
+
+      touch.send(:cast_on_self, 'regen', nil)
+
+      expect(sent).to eq(['break Pazzlen', 'release spell'])
+      expect(DRCA).not_to have_received(:cast?)
+    end
+
+    it 'keeps a touch out of the queue behind queued takes' do
+      touch.send(:queue, [[:command, 'take Pazzlen chest']], 'Pazzlen: Take chest')
+      touch.send(:handle, [:touch, 'Pazzlen'])
+
+      expect(touch.instance_variable_get(:@pending).map { |step| step[:action] }).to eq([[:command, 'take Pazzlen chest']])
+      expect(touch.instance_variable_get(:@immediate).map { |step| step[:action] }).to eq([[:command, 'touch Pazzlen']])
     end
   end
 end

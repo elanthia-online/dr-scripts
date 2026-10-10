@@ -26,7 +26,8 @@
 
   Optional settings, for fine-tuning only (the script has its own defaults):
     touch_link_patterns   extra link messages that open a tab, using {name}
-    touch_self_spells     per-spell mana / prep_time, e.g.
+    touch_self_spells     per-spell mana (default 5); spells are cast once
+                          fully prepared, or after prep_time seconds if set:
                             touch_self_spells:
                               hw:
                                 mana: 10
@@ -102,6 +103,8 @@ class TouchParser
   DEAD = /^(?:He|She|They) (?:is|are) dead/
   POISON = /poison(?:ed)?[.!]?$|\bpoisoned\b|^[\w'-]+ (?:has|have) an? .* poison|having trouble breathing/
   DISEASE = /infected|open oozing sores|dormant infection|gangrene|\bdisease\b/
+  # How TOUCH output may refer to the patient after naming them.
+  PRONOUNS = %w[He She They His Her Their].freeze
 
   attr_reader :patient
 
@@ -203,6 +206,11 @@ class TouchParser
   end
 
   def condition_events(line)
+    # Only lines about the patient count, as DRCH's poison and disease checks
+    # anchor on the subject. Chat or thoughts that land inside a TOUCH burst
+    # ([General]-Jim: "im poisoned") start with someone else, so they don't.
+    return [] unless about_patient?(line)
+
     events = []
     if POISON.match?(line)
       @poison_count += 1
@@ -210,6 +218,18 @@ class TouchParser
     end
     events << [:disease, @patient] if DISEASE.match?(line)
     events
+  end
+
+  # Whether a line is about the patient: it starts with their name (or
+  # name's), a pronoun, or for PERCEIVE HEALTH SELF, You or Your. Quoted
+  # speech never is: the game's own lines carry no quotation marks, while
+  # chat, thoughts and speech always do.
+  def about_patient?(line)
+    return false if line.include?('"')
+
+    subjects = @patient == SELF ? %w[You Your] : [@patient, "#{@patient}'s", *PRONOUNS]
+    first_word = line[/\A[\w'-]+/]
+    subjects.include?(first_word)
   end
 end
 
@@ -511,14 +531,6 @@ class TouchWindow
   PRESSED_COLOR = [32 / 255.0, 178 / 255.0, 150 / 255.0].freeze
   # Wound level => severity name, for tooltips (1 is plain "insignificant").
   SEVERITY_NAMES = TouchParser::SEVERITIES.each_with_object({}) { |(severity, level), names| names[level] ||= severity }.freeze
-  # Unhinted so glyphs sit exactly where they are centered, and grayscale
-  # antialiased: subpixel color fringes make small labels on colored fills
-  # look shifted.
-  TEXT_OPTIONS = Cairo::FontOptions.new.tap do |options|
-    options.hint_style = Cairo::HINT_STYLE_NONE
-    options.hint_metrics = Cairo::HINT_METRICS_OFF
-    options.antialias = Cairo::ANTIALIAS_GRAY
-  end
   ALERT_COLOR = [1.0, 0.0, 0.0].freeze
 
   # More > Cast On Self, in menu order.
@@ -532,6 +544,20 @@ class TouchWindow
   # Window position, size, pin and the Take menu toggles, for the script to
   # save on exit. Replaced (never mutated) so another thread can read it.
   attr_reader :state
+
+  # Text drawing options: lightly hinted, which sharpens glyph edges without
+  # moving where they are centered (no hinted metrics), and grayscale
+  # antialiased, since subpixel color fringes make small labels on colored
+  # fills look shifted. Built on first use, not when the script loads: Cairo
+  # is only there when Lich has GTK, and without it the script must still
+  # reach its own "no GTK" message.
+  def self.text_options
+    @text_options ||= Cairo::FontOptions.new.tap do |options|
+      options.hint_style = Cairo::HINT_STYLE_SLIGHT
+      options.hint_metrics = Cairo::HINT_METRICS_OFF
+      options.antialias = Cairo::ANTIALIAS_GRAY
+    end
+  end
 
   def initialize(intents, state)
     @intents = intents
@@ -567,10 +593,10 @@ class TouchWindow
     @status.text = text
     @status.tooltip_text = running ? "#{text}\nNow: #{detail}" : text
     if running
-      @status.style_context.remove_class('dim-label')
+      @status.style_context.remove_class('secondary')
       @spinner.start
     else
-      @status.style_context.add_class('dim-label')
+      @status.style_context.add_class('secondary')
       @spinner.stop
     end
     @spinner.visible = running
@@ -635,15 +661,22 @@ class TouchWindow
   # link while something runs. Its height never changes (the text is cut
   # short rather than wrapped), so the tabs above keep their size.
   def build_status_strip
+    # Running text in the normal text color; finished, stopped and "Ready" a
+    # softer shade that still reads easily. The same in and out of focus:
+    # GTK would otherwise fade both further when the window loses focus.
     small = Gtk::CssProvider.new
-    small.load(data: 'label { font-size: 8.5pt; } button { padding: 0 6px; min-height: 0; font-size: 8.5pt; }')
+    small.load(data: <<~CSS)
+      label, label:backdrop { font-size: 9pt; color: @theme_fg_color; }
+      label.secondary, label.secondary:backdrop { color: alpha(@theme_fg_color, 0.75); }
+      button { padding: 0 6px; min-height: 0; font-size: 9pt; }
+    CSS
 
     @spinner = Gtk::Spinner.new
     @status = Gtk::Label.new(READY)
     @status.xalign = 0
     @status.single_line_mode = true
     @status.ellipsize = :end
-    @status.style_context.add_class('dim-label')
+    @status.style_context.add_class('secondary')
     @stop = Gtk::Button.new(label: 'Stop')
     @stop.relief = :none
     @stop.tooltip_text = 'Stop what is queued or being cast (keeps the link)'
@@ -1120,7 +1153,10 @@ class TouchWindow
     snapshot = view[:snapshot]
     return unless snapshot
 
-    text_color = widget.style_context.get_color(:normal)
+    # The theme's own text color: the widget's current color fades to light
+    # grey whenever the window loses focus, which made the captions hard to read.
+    found, text_color = widget.style_context.lookup_color('theme_fg_color')
+    text_color = widget.style_context.get_color(:normal) unless found
     layout = tab_layout(widget)
     cr.scale(layout[:scale], layout[:scale])
     cr.line_width = 0.75
@@ -1141,7 +1177,7 @@ class TouchWindow
       draw_figure(cr, snapshot[:wounds][type], view, type, text_color)
       cr.restore
       cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
-      draw_text(cr, caption, figure_x - 9, figure_y + 135, 82, 12, 10)
+      draw_text(cr, caption, figure_x - 9, figure_y + 135, 82, 12, 10.5, bold: true)
     end
   end
 
@@ -1272,7 +1308,7 @@ class TouchWindow
   def draw_text(cr, text, x, y, width, height, size, outline: false, bold: false)
     cr.select_font_face('Sans', Cairo::FONT_SLANT_NORMAL, bold ? Cairo::FONT_WEIGHT_BOLD : Cairo::FONT_WEIGHT_NORMAL)
     cr.set_font_size(size)
-    cr.font_options = TEXT_OPTIONS
+    cr.font_options = self.class.text_options
     extents = cr.text_extents(text)
     # Centers the text's ink above the baseline, so descenders such as the y
     # in "Vitality" hang below instead of pushing the label up. Cairo pads the
@@ -1314,7 +1350,10 @@ class Touch
   }.freeze
   # Built-in casting values. touch_self_spells only needs the spells and values
   # being changed, e.g. { 'hw' => { 'mana' => 10 } }; the rest come from here.
-  DEFAULT_SPELL = { 'mana' => 5, 'prep_time' => 5 }.freeze
+  # With no prep_time a spell is cast once the game says it is fully prepared.
+  DEFAULT_SPELL = { 'mana' => 5 }.freeze
+  # The longest to wait for full preparation before casting anyway.
+  MAX_PREP_WAIT = 30
   NAME = /\A[A-Za-z][\w'-]*\z/
   PROMPT = %r{<prompt[^>]*>.*?</prompt>|<prompt[^>]*/>}
   # strip_xml buffer key, kept apart from Lich's own 'main' buffer.
@@ -1360,6 +1399,7 @@ class Touch
     @lines = Thread::Queue.new
     @intents = Thread::Queue.new
     @pending = []
+    @immediate = []
     @window = nil
     @debug = false
 
@@ -1425,6 +1465,7 @@ class Touch
       drain_lines
       break unless drain_intents
 
+      send_immediate
       step = @pending.shift
       if step
         @interrupted = false
@@ -1453,8 +1494,9 @@ class Touch
     Gtk.queue { window.show_activity(text, detail, state) }
   end
 
-  # Waits while still reading the game and the window, so Break (or closing
-  # the window) can cut a spell's preparation short.
+  # Waits up to +seconds+, or until the block returns true, while still
+  # reading the game and the window, so Break (or closing the window) can cut
+  # a spell's preparation short.
   #
   # @return [Boolean] false if the wait was interrupted
   def wait_unless_stopped(seconds)
@@ -1462,7 +1504,9 @@ class Touch
     while Time.now < deadline
       drain_lines
       @quitting = true unless drain_intents
+      send_immediate unless @quitting
       return false if @interrupted || @quitting
+      return true if block_given? && yield
 
       pause 0.1
     end
@@ -1558,15 +1602,15 @@ class Touch
       if patient == :debug
         start_debug
       elsif patient == TouchParser::SELF || NAME.match?(patient.to_s)
-        queue(TouchCommands.touch(patient), label)
+        queue(TouchCommands.touch(patient), label, @immediate)
       end
     when :stop then stop
     when :break
       stop
-      queue(TouchCommands.break_link(patient), label)
+      queue(TouchCommands.break_link(patient), label, @immediate)
     when :break_all
       stop
-      queue([[:command, 'link all cancel']], label)
+      queue([[:command, 'link all cancel']], label, @immediate)
     when :take_wound then queue(take_wound(patient, *details), label)
     when :take_condition then queue(TouchCommands.take_condition(patient, *details), label)
     when :take_all then queue(TouchCommands.take_all(patient, wounds_of(patient), details.first), label)
@@ -1600,11 +1644,29 @@ class Touch
   end
 
   # Each step remembers the task it belongs to and where it falls in it, for
-  # the status strip ("Healing yourself (2/9): ...").
-  def queue(actions, label = nil)
+  # the status strip ("Self: Heal all 2/9").
+  #
+  # @param into [Array] @pending, or @immediate for touches and breaks
+  def queue(actions, label = nil, into = @pending)
     actions.each_with_index do |action, index|
-      @pending << { action: action, label: label, step: index + 1, steps: actions.size }
+      into << { action: action, label: label, step: index + 1, steps: actions.size }
     end
+  end
+
+  # Touches and breaks skip the queue. They go out at once, even while a spell
+  # is being prepared or a take is running: a touch only refreshes what a tab
+  # shows, and a break shouldn't wait behind the very thing it is stopping.
+  # The status strip then goes back to the task in hand.
+  def send_immediate
+    return if @immediate.empty?
+
+    until @immediate.empty?
+      step = @immediate.shift
+      show_status(step, :running)
+      perform(step[:action])
+      show_status(step, :done)
+    end
+    show_status(@current, :running) if @busy && !@interrupted
   end
 
   def perform(action)
@@ -1632,9 +1694,29 @@ class Touch
     return unless DRCA.prepare?(abbrev, spell['mana'])
 
     # Stopped mid-preparation: let the spell go rather than leave it held.
-    return fput('release spell') unless wait_unless_stopped(spell['prep_time'])
+    return fput('release spell') unless wait_until_prepared(spell['prep_time'])
 
     DRCA.cast?(target ? "cast #{target}" : 'cast')
+  end
+
+  # Waits for a just-prepared spell to be ready to cast: a fixed number of
+  # seconds when the spell has a prep_time, otherwise until the game's own
+  # preparation timer runs out (it ends as "You feel fully prepared to cast
+  # your spell." arrives), as DRCA does with waitcastrt?. The timer reaches
+  # Lich with the prepare message; until it has been seen, a second is
+  # allowed for it to land.
+  #
+  # @return [Boolean] false if Break or closing the window interrupted it
+  def wait_until_prepared(prep_time)
+    return wait_unless_stopped(prep_time) if prep_time
+
+    started = Time.now
+    timer_seen = false
+    wait_unless_stopped(MAX_PREP_WAIT) do
+      remaining = checkcastrt
+      timer_seen ||= remaining.positive?
+      (timer_seen || Time.now - started >= 1) && remaining <= 0
+    end
   end
 
   def load_state

@@ -1237,7 +1237,7 @@ touch_link_patterns:
     - touch
 
 touch_self_spells:
-  description: Optional overrides for the mana and prep seconds of each spell the touch window casts on you, keyed by spell abbreviation (hw, hs, vh, fp, cd, heal, regen, refresh, bs, foc). Anything left out, or not a valid number, uses the default of 5 mana and 5 seconds.
+  description: Optional overrides for each spell the touch window casts on you, keyed by spell abbreviation (hw, hs, vh, fp, cd, heal, regen, refresh, bs, foc). mana defaults to 5. Without prep_time the spell is cast once the game says it is fully prepared; with prep_time it is cast after that many seconds. Values that are not valid numbers are ignored.
   example:
     hw:
       mana: 10

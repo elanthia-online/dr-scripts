@@ -286,8 +286,9 @@ noheal_empathylink:
 #     - You sense a successful empathic link has been forged between you and {name}.
 touch_link_patterns: []
 # touch: overrides for the spells the touch window casts on you (Self tab clicks and
-# More > Cast On Self). Every spell defaults to 5 mana and 5 seconds of prep; list only
-# what you want to change, by abbreviation (hw hs vh fp cd heal regen refresh bs foc):
+# More > Cast On Self). Every spell is prepared at 5 mana and cast once the game says it
+# is fully prepared; prep_time casts after that many seconds instead. List only what
+# you want to change, by abbreviation (hw hs vh fp cd heal regen refresh bs foc):
 #   touch_self_spells:
 #     hw:
 #       mana: 10
