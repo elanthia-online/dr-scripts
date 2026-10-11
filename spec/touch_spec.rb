@@ -602,6 +602,40 @@ describe 'touch.lic' do
     end
   end
 
+  # #7660 review: Touch with no tab open shows a hint instead of the removed
+  # "who?" dialog. The suite has no GTK, so the window's widgets are stand-ins.
+  describe 'TouchWindow#on_touch with no tab open' do
+    before(:all) { load_lic_class('touch.lic', 'TouchWindow') }
+
+    let(:intents) { Thread::Queue.new }
+    let(:window) do
+      instance = TouchWindow.allocate
+      instance.instance_variable_set(:@intents, intents)
+      instance.instance_variable_set(:@views, {})
+      instance.instance_variable_set(:@notebook, double('notebook', n_pages: 0))
+      %i[@status @spinner @stop].each { |name| instance.instance_variable_set(name, double(name.to_s).as_null_object) }
+      instance
+    end
+
+    it 'names both ways to add a patient on the status strip' do
+      allow(window).to receive(:show_activity).and_call_original
+
+      window.send(:on_touch)
+
+      expect(window).to have_received(:show_activity).with('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
+      expect(intents).to be_empty
+    end
+
+    it 'leaves the strip, its spinner and Stop alone while a step is running' do
+      window.show_activity('Self: Cast Heal', 'cast Heal', :running)
+      allow(window).to receive(:show_activity)
+
+      window.send(:on_touch)
+
+      expect(window).not_to have_received(:show_activity)
+    end
+  end
+
   # Regression: All on the Self tab queued one cast per wound, and Break could
   # not stop it, because it only cleared the queue between actions while each
   # cast sat in a fixed preparation wait.

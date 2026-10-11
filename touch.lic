@@ -589,6 +589,7 @@ class TouchWindow
   # @param detail [String] the exact command or cast, for the tooltip
   # @param state [Symbol] :running, :done or :stopped
   def show_activity(text, detail, state)
+    @activity = state
     running = state == :running
     @status.text = text
     @status.tooltip_text = running ? "#{text}\nNow: #{detail}" : text
@@ -640,7 +641,7 @@ class TouchWindow
     # Shown, centered, while there are no tabs.
     @hint = Gtk::Label.new
     @hint.markup = "<span size='large' weight='bold'>No patients yet</span>\n\n" \
-                   "TOUCH someone, or click Touch.\nPERCEIVE HEALTH SELF opens your own tab."
+                   "TOUCH someone, or ;touch &lt;name&gt;.\nPERCEIVE HEALTH SELF opens your own tab."
     @hint.justify = :center
     @hint.line_wrap = true
     @hint.style_context.add_class('dim-label')
@@ -724,7 +725,7 @@ class TouchWindow
     bar = Gtk::Box.new(:horizontal, 2)
 
     touch = Gtk::Button.new(label: 'Touch')
-    touch.tooltip_text = 'Touch the patient on this tab again. To add a patient, TOUCH them in game.'
+    touch.tooltip_text = 'Touch the patient on this tab again. To add a patient: TOUCH <name> or ;touch <name>.'
     touch.signal_connect('clicked') { on_touch }
 
     breaker = Gtk::Button.new(label: 'Break')
@@ -859,13 +860,15 @@ class TouchWindow
   end
 
   # Retouches the patient on the open tab. With no tab open it says how to add
-  # one rather than asking: a modal "who?" dialog froze the script in game
-  # (modal GTK dialogs opened from a Lich script can hang its GTK loop).
+  # one, on the status strip, rather than asking who: the "who?" dialog it
+  # used to open left the window unresponsive in game. While a step is
+  # running the strip is left alone, so its spinner and Stop link stay.
   def on_touch
     patient = selected_patient
     return @intents << [:touch, patient] if patient
+    return if @activity == :running
 
-    show_activity('TOUCH someone in game to add a tab', 'TOUCH <name>, or ;touch <name>, adds a patient tab', :done)
+    show_activity('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
   end
 
   def selected_patient
