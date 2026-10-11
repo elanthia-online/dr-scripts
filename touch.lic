@@ -589,6 +589,7 @@ class TouchWindow
   # @param detail [String] the exact command or cast, for the tooltip
   # @param state [Symbol] :running, :done or :stopped
   def show_activity(text, detail, state)
+    @activity = state
     running = state == :running
     @status.text = text
     @status.tooltip_text = running ? "#{text}\nNow: #{detail}" : text
@@ -640,7 +641,7 @@ class TouchWindow
     # Shown, centered, while there are no tabs.
     @hint = Gtk::Label.new
     @hint.markup = "<span size='large' weight='bold'>No patients yet</span>\n\n" \
-                   "TOUCH someone, or click Touch.\nPERCEIVE HEALTH SELF opens your own tab."
+                   "TOUCH someone, or ;touch &lt;name&gt;.\nPERCEIVE HEALTH SELF opens your own tab."
     @hint.justify = :center
     @hint.line_wrap = true
     @hint.style_context.add_class('dim-label')
@@ -724,7 +725,7 @@ class TouchWindow
     bar = Gtk::Box.new(:horizontal, 2)
 
     touch = Gtk::Button.new(label: 'Touch')
-    touch.tooltip_text = 'Touch the patient on this tab again, or pick someone to touch'
+    touch.tooltip_text = 'Touch the patient on this tab again. To add a patient: TOUCH <name> or ;touch <name>.'
     touch.signal_connect('clicked') { on_touch }
 
     breaker = Gtk::Button.new(label: 'Break')
@@ -746,7 +747,7 @@ class TouchWindow
     all.signal_connect('clicked') { send_for_selected(:take_all) }
 
     more = menu_button('More', build_more_menu)
-    more.tooltip_text = 'Touch someone, perceive yourself, cast on yourself, reset the size'
+    more.tooltip_text = 'Perceive yourself, cast on yourself, reset the size'
 
     compact = Gtk::CssProvider.new
     compact.load(data: 'button { padding: 2px 7px; }')
@@ -805,7 +806,6 @@ class TouchWindow
 
   def build_more_menu
     menu = Gtk::Menu.new
-    add_item(menu, 'Touch Someone...') { ask_whom_to_touch }
     add_item(menu, 'Perceive Health Self') { @intents << [:touch, TouchParser::SELF] }
     menu.append(Gtk::SeparatorMenuItem.new)
 
@@ -859,25 +859,16 @@ class TouchWindow
     menu.append(item)
   end
 
+  # Retouches the patient on the open tab. With no tab open it says how to add
+  # one, on the status strip, rather than asking who: the "who?" dialog it
+  # used to open left the window unresponsive in game. While a step is
+  # running the strip is left alone, so its spinner and Stop link stay.
   def on_touch
     patient = selected_patient
-    patient ? @intents << [:touch, patient] : ask_whom_to_touch
-  end
+    return @intents << [:touch, patient] if patient
+    return if @activity == :running
 
-  def ask_whom_to_touch
-    dialog = Gtk::Dialog.new(title: 'Touch', parent: @window, flags: %i[modal destroy_with_parent],
-                             buttons: [['_OK', :ok], ['_Cancel', :cancel]])
-    dialog.default_response = :ok
-    entry = Gtk::Entry.new
-    entry.activates_default = true
-    dialog.content_area.pack_start(Gtk::Label.new('Who?'), expand: false, fill: false, padding: 4)
-    dialog.content_area.pack_start(entry, expand: false, fill: false, padding: 4)
-    dialog.signal_connect('response') do |_widget, response|
-      name = entry.text.strip
-      @intents << [:touch, name] if response == Gtk::ResponseType::OK && name.match?(/\A[A-Za-z][\w'-]*\z/)
-      dialog.destroy
-    end
-    dialog.show_all
+    show_activity('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
   end
 
   def selected_patient
