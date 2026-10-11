@@ -1540,10 +1540,13 @@ RSpec.describe SellLoot do
       let(:walked) { [] }
       let(:stored_calls) { [] }
 
+      # Each sell pass puts away what it fetched, so nothing is in hand between rooms.
+      before { $right_hand = nil }
+
       # +kiosks+ maps each room to the kiosks ranked_trader_objects finds there.
       def trader_run(rooms:, kiosks:, stored: 0, worn: false, bundle: false, reachable: rooms)
         instance = build_instance(
-          settings: make_settings(sell_loot_bundle: bundle),
+          settings: make_settings(sell_loot_bundle: bundle), full_pouch_container: 'pack',
           sell_loot_trader: true, trader_rooms: rooms,
           found_stored_pouches: stored, sell_worn_at_kiosk: worn, found_bundle: bundle
         )
@@ -1585,7 +1588,17 @@ RSpec.describe SellLoot do
 
         expect(walked).to eq([5000, 6000])
         expect(stored_calls).to eq([[5000, 5], [6000, 3]])
-        expect(messages).to include('***STATUS*** The kiosks in room 5000 are out of reserves.')
+        expect(messages).to include('***STATUS*** The kiosks in room 5000 are out of reserves -- trying room 6000.')
+      end
+
+      it 'says it is falling back to the shops when the last room runs dry' do
+        instance = trader_run(rooms: [5000], kiosks: { 5000 => ['kiosk'] }, stored: 3)
+        allow(instance).to receive(:sell_stored_pouches) { |targets, _limit| drain(targets) }
+        allow(instance).to receive(:stored_pouch_count).and_return(2)
+
+        instance.sell_at_trader_room
+
+        expect(messages.last).to eq('***STATUS*** The kiosks in room 5000 are out of reserves -- falling back to the shops.')
       end
 
       it 'stays put when the kiosks run dry but nothing is left to sell' do
@@ -1645,6 +1658,20 @@ RSpec.describe SellLoot do
         expect(worn_rooms).to eq([6000])
       end
 
+      it 'stays put when a bundle that would not go back is still in hand' do
+        instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] }, bundle: true)
+        allow(instance).to receive(:sell_bundle_to_trader) do |targets|
+          drain(targets)
+          $right_hand = 'bundle'
+          false
+        end
+
+        instance.sell_at_trader_room
+
+        expect(walked).to eq([5000])
+        expect(messages).to include(a_string_including('Still holding what could not be put away'))
+      end
+
       it 'skips a room it cannot reach' do
         instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] }, stored: 1,
                               reachable: [6000])
@@ -1664,6 +1691,56 @@ RSpec.describe SellLoot do
         expect(instance.sell_at_trader_room).to eq(pouch: false, bundle: false)
         expect(walked).to eq([5000, 6000])
         expect(messages.last).to eq('***STATUS*** No kiosk to sell to in any trader room -- falling back to the shops.')
+      end
+
+      context 'through the real stored-pouch pass' do
+        let(:fetched) { [] }
+
+        # A fetch puts the pouch in hand; a put-away (when it works) or a
+        # discard empties it.
+        def model_hands(put_back:)
+          allow(DRCI).to receive(:get_item?) do |item, _container|
+            fetched << item
+            $right_hand = 'soft gem pouch'
+            true
+          end
+          allow(DRCI).to receive(:put_away_item?) do |_item, _container|
+            $right_hand = nil if put_back
+            put_back
+          end
+          allow(DRCI).to receive(:dispose_trash) do |*|
+            $right_hand = nil
+            true
+          end
+        end
+
+        def two_rooms
+          instance = trader_run(rooms: [5000, 6000], kiosks: { 5000 => ['kiosk'], 6000 => ['kiosk'] }, stored: 1)
+          allow(instance).to receive(:stored_pouch_count).and_return(1)
+          instance
+        end
+
+        it "hands over to the next room when the first room's kiosk runs dry" do
+          commands = kiosk_room(%i[dry empty])
+          model_hands(put_back: true)
+
+          two_rooms.sell_at_trader_room
+
+          expect(walked).to eq([5000, 6000])
+          expect(fetched).to eq(['first soft pouch', 'first soft pouch'])
+          expect(commands.grep(/^give /).size).to eq(3) # refused for funds, then quoted and confirmed
+        end
+
+        it 'stops instead of fetching another pouch when the put-back fails' do
+          kiosk_room(%i[dry])
+          model_hands(put_back: false)
+
+          two_rooms.sell_at_trader_room
+
+          expect(walked).to eq([5000])
+          expect(fetched).to eq(['first soft pouch'])
+          expect(messages).to include(a_string_including('Still holding what could not be put away'))
+        end
       end
     end
 
