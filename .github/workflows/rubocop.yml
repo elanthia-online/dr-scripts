@@ -4,12 +4,22 @@ on:
     branches: 
       - 'main'
     paths:
-      - "*.lic"
-      - "*.rb"
+      - "**.lic"
+      - "**.rb"
+      - "bin/**"
+      - "Gemfile"
+      - ".rubocop.yml"
+      - ".rubocop/**"
+      - ".github/workflows/rubocop.yml"
   pull_request:
     paths:
-      - "*.lic"
-      - "*.rb"
+      - "**.lic"
+      - "**.rb"
+      - "bin/**"
+      - "Gemfile"
+      - ".rubocop.yml"
+      - ".rubocop/**"
+      - ".github/workflows/rubocop.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,21 +36,11 @@ jobs:
     name: Run Rubocop on Ruby ${{ matrix.ruby }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Get changed files
-        id: changed-files
-        uses: step-security/changed-files@2e07db73e5ccdb319b9a6c7766bd46d39d304bad # v47.0.5
-        with:
-          files: |
-            *.lic
-            *.rb
       - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+      # Lint the whole repo, not just changed files: with rubocop pinned in the
+      # Gemfile, main stays clean and a PR only fails on offenses it introduces.
       - name: Rubocop
-        run: |
-          for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
-            bundle exec rubocop ${file}
-          done
+        run: bundle exec rubocop

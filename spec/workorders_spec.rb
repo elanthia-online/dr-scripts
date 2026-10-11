@@ -352,19 +352,19 @@ RSpec.describe WorkOrders do
   describe '#logbook_remaining' do
     it 'returns 0 when work order appears complete' do
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::READ_LOGBOOK_PATTERNS)
-                                 .and_return('This work order appears to be complete.')
+                                   .and_return('This work order appears to be complete.')
       expect(workorders.send(:logbook_remaining, 'forging')).to eq(0)
     end
 
     it 'returns remaining count from logbook text' do
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::READ_LOGBOOK_PATTERNS)
-                                 .and_return('You must bundle and deliver 1 more of the ordered item.')
+                                   .and_return('You must bundle and deliver 1 more of the ordered item.')
       expect(workorders.send(:logbook_remaining, 'forging')).to eq(1)
     end
 
     it 'returns nil when response is unreadable' do
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::READ_LOGBOOK_PATTERNS)
-                                 .and_return('I could not find what you were referring to.')
+                                   .and_return('I could not find what you were referring to.')
       expect(workorders.send(:logbook_remaining, 'forging')).to be_nil
     end
   end
@@ -388,7 +388,7 @@ RSpec.describe WorkOrders do
       expect(DRCI).to receive(:get_item?).with('forging logbook').and_return(true)
       # bput returns only the matched substring for the first matching pattern
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::RESUME_LOGBOOK_PATTERNS)
-                                 .and_return('This logbook is tracking a work order requiring you to craft a curved metal shovel from any')
+                                   .and_return('This logbook is tracking a work order requiring you to craft a curved metal shovel from any')
       expect(workorders).to receive(:logbook_remaining).with('forging').and_return(2)
       expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Continuing work order for 2 a curved metal shovel')
 
@@ -399,7 +399,7 @@ RSpec.describe WorkOrders do
       recipes = [{ 'name' => 'a knitted napkin', 'noun' => 'napkin', 'type' => 'tailoring', 'chapter' => 5 }]
       expect(DRCI).to receive(:get_item?).with('outfitting logbook').and_return(true)
       expect(DRC).to receive(:bput).with('read my outfitting logbook', *described_class::RESUME_LOGBOOK_PATTERNS)
-                                 .and_return('This logbook is tracking a work order requiring you to craft a knitted napkin from any')
+                                   .and_return('This logbook is tracking a work order requiring you to craft a knitted napkin from any')
       expect(workorders).to receive(:logbook_remaining).with('outfitting').and_return(1)
       expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Continuing work order for 1 a knitted napkin')
 
@@ -409,7 +409,7 @@ RSpec.describe WorkOrders do
     it 'returns quantity 0 when logbook order appears complete' do
       expect(DRCI).to receive(:get_item?).with('forging logbook').and_return(true)
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::RESUME_LOGBOOK_PATTERNS)
-                                 .and_return('This work order appears to be complete.')
+                                   .and_return('This work order appears to be complete.')
       expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Logbook order complete - turning in')
 
       expect(workorders.send(:resume_work_order, 'forging', recipes)).to eq([nil, 0])
@@ -418,7 +418,7 @@ RSpec.describe WorkOrders do
     it 'exits when logbook has no in-progress work order' do
       expect(DRCI).to receive(:get_item?).with('forging logbook').and_return(true)
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::RESUME_LOGBOOK_PATTERNS)
-                                 .and_return('This logbook is not currently tracking a work order.')
+                                   .and_return('This logbook is not currently tracking a work order.')
       expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: No in-progress work order in forging logbook')
       expect(workorders).to receive(:exit).and_raise(SystemExit)
 
@@ -428,7 +428,7 @@ RSpec.describe WorkOrders do
     it 'exits when logbook item does not match a recipe' do
       expect(DRCI).to receive(:get_item?).with('forging logbook').and_return(true)
       expect(DRC).to receive(:bput).with('read my forging logbook', *described_class::RESUME_LOGBOOK_PATTERNS)
-                                 .and_return('This logbook is tracking a work order requiring you to craft a metal unknown widget from any')
+                                   .and_return('This logbook is tracking a work order requiring you to craft a metal unknown widget from any')
       expect(Lich::Messaging).to receive(:msg).with('bold', "WorkOrders: Could not match logbook item 'a metal unknown widget' to a recipe")
       expect(workorders).to receive(:exit).and_raise(SystemExit)
 

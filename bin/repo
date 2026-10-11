@@ -289,7 +289,7 @@ files = unless Opts.files.nil?
         else
           Repo.get_changes.select do |info|
             # info.last.include?("dependency.lic")
-	    info.last.to_s =~ /(?:dependency|noop).lic/
+            info.last.to_s =~ /(?:dependency|noop).lic/
           end
         end
 

@@ -34,15 +34,17 @@ mind when a symbol appears "undefined" here.
 
 ## Rubocop (CRITICAL)
 
-**Run `rubocop -A` locally before committing.** The rubocop floor is set by
+**Run `bundle exec rubocop -A` locally before committing.** RuboCop is pinned
+to an exact version in the `Gemfile`; use that version (via `bundle exec`), as a
+different local RuboCop can disagree with CI. The rubocop floor is set by
 `TargetRubyVersion: 4.0` in `.rubocop.yml` (not `.ruby-version`), with
 `NewCops: disable` and a custom `ascii_only_source` cop; `LineLength` and most
 `Metrics` are off. CI (`.github/workflows/rubocop.yml`) runs **check-only**
-`bundle exec rubocop` under Ruby 4.0 against only the **changed top-level**
-`*.lic`/`*.rb` files of a PR — it does not lint the whole repo or nested files
-(e.g. `spec/*.rb`). Run locally under any interpreter at/above the floor (e.g.
-`RBENV_VERSION=4.0.1 rubocop -A` under rbenv). Assume CI runs the linter; do not
-re-flag pure formatting/style rubocop would catch.
+`bundle exec rubocop` under Ruby 4.0 against the **whole repo** (nested files
+such as `spec/*.rb` included), so `main` stays clean and a PR only fails on
+offenses it introduces. Bumping the pinned version is its own PR that fixes
+whatever the new release flags. Assume CI runs the linter; do not re-flag pure
+formatting/style rubocop would catch.
 
 ## Spec suite integrity (hard rule)
 

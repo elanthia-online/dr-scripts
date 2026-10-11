@@ -840,7 +840,7 @@ class MazeRoom
   $CARDINALS = { 'n' => 's', 's' => 'n', 'ne' => 'sw', 'sw' => 'ne', 'nw' => 'se', 'se' => 'nw', 'e' => 'w', 'w' => 'e' }
   $ADJUSTMENTS = { 'n' => [0, 1], 's' => [0, -1], 'ne' => [1, 1], 'sw' => [-1, -1], 'nw' => [-1, 1], 'se' => [1, -1], 'e' => [1, 0], 'w' => [-1, 0] }
 
-  attr_accessor :desc, :exits, :checked, :parent, :coords, :return
+  attr_accessor :desc, :exits, :checked, :parent, :coords
 
   Flags.add('maze-reset', 'You can\'t go there', 'You can\'t swim in that direction.')
 

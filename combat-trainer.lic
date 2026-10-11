@@ -1238,7 +1238,7 @@ class LootProcess
     arrange_verb = @arrange_all ? "arrange all ##{corpse.id}" : "arrange ##{corpse.id}"
     arrange_message = "#{arrange_verb} for #{type}"
     while arranges < @arrange_count
-      arranges += 1 # rubocop:disable Lint/UselessAssignment
+      arranges += 1
       case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'already been skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
       when 'You complete arranging', 'That has already been arranged', 'You make a serious mistake in the arranging process', 'Arrange what'
         break

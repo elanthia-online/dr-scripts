@@ -1790,7 +1790,7 @@ Phrixos assumes a rigid stance, concentrating on something.
 class RezzBot
   include DRC
 
-  def initialize(args:[])
+  def initialize(**)
     %w(common spellmonitor).each do |script_name|
       exit unless Script.exists? script_name
       unless Script.running?(script_name)
@@ -1799,8 +1799,6 @@ class RezzBot
       end
     end
   end
-
-  private
 end
 
 RezzBot.new(args: variable.drop(1))

@@ -1822,8 +1822,8 @@ class Droughtmans
 
     candidates = segment.reverse + [words.last]
     candidates.compact.map { |w| w.downcase.gsub(/[,.]/, '') }
-                      .reject { |w| w.empty? || NOUN_STOPWORDS.include?(w) }
-                      .uniq
+              .reject { |w| w.empty? || NOUN_STOPWORDS.include?(w) }
+              .uniq
   end
 
   # @return [void]

@@ -12,16 +12,16 @@ module Syntax
 
   def self.pending_files(range:)
     self.diff(range: range)
-      .split(" ")
-      .select {|file| 
-        file.start_with?("scripts/") && LICH_EXT.include?(File.extname(file)) && File.exists?(file)
-      }
+        .split(" ")
+        .select { |file|
+          file.start_with?("scripts/") && LICH_EXT.include?(File.extname(file)) && File.exist?(file)
+        }
   end
 
   def self.verify_file(file)
     left_col = file.rjust(30)
     puts "#{left_col}"
-    ok = %x{ruby -c #{File.join(Dir.pwd, file)}} 
+    ok = %x{ruby -c #{File.join(Dir.pwd, file)}}
     exit(1) unless ok.eql?(SYNTAX_OK)
     puts ok.rjust(60)
   end
@@ -29,5 +29,4 @@ end
 
 puts "verifying commit range %s" % ARGV.first
 Syntax.pending_files(range: ARGV.first.strip)
-      .each {|f| Syntax.verify_file(f) }
-
+      .each { |f| Syntax.verify_file(f) }

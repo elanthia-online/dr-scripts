@@ -12,7 +12,7 @@ end
 versions.keys.each do |file|
   v = {}
   todo = [versions[file]].flatten
-  while curr = todo.pop
+  while (curr = todo.pop)
     raise "Cycle in #{file}" if curr == file
     v[curr] = true
     todo = (todo + versions[curr]).uniq - v.keys if versions[curr]

@@ -482,7 +482,7 @@ class Trade
     return Room.current.id if outpost_from_name(@emergency_delivery_town) == Room.current.id
 
     rooms = @trading_towns.to_h.values.select { |data| data['trader_outpost'] }
-                                      .map { |data| data['trader_outpost']['id'] }
+                          .map { |data| data['trader_outpost']['id'] }
     target_list = rooms.collect(&:to_i)
     _previous, shortest_distances = Map.dijkstra(outpost_from_name(@emergency_delivery_town))
     target_list.delete_if { |room_num| shortest_distances[room_num].nil? && room_num == Room.current.id }
@@ -1910,7 +1910,7 @@ class Trade
       @crafted_item = 'a cloth artisan\'s belt'
     end
     recipes = @recipe_data.crafting_recipes.select { |recipe| recipe['type'] =~ /tailoring/i }
-                                           .reject { |recipe| recipe['chapter'] == 7 }
+                          .reject { |recipe| recipe['chapter'] == 7 }
     echo @crafted_item
     recipe = DRCC.recipe_lookup(recipes, @crafted_item)
 

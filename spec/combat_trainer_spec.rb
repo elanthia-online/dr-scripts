@@ -4552,7 +4552,7 @@ RSpec.describe SpellProcess do
 
       expect(DRCA).not_to have_received(:prepare?) # central guard skipped it
       expect(gs.casting_cfb).to be false           # ...and cleared the flag check_cfb set
-      expect(gs.necro_casting?).to be false         # so loot/rituals/pets are NOT suppressed
+      expect(gs.necro_casting?).to be false # so loot/rituals/pets are NOT suppressed
     end
   end
 end
@@ -5528,9 +5528,9 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
 
     it 'appraises the next live target when the first id is already recorded' do
       allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([
-        OpenStruct.new(id: 444, noun: 'troll', name: 'a troll'),
-        OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre')
-      ])
+                                                                            OpenStruct.new(id: 444, noun: 'troll', name: 'a troll'),
+                                                                            OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre')
+                                                                          ])
       allow(DRC).to receive(:bput).and_return('Perhaps that')
 
       build_appraiser(no_app: [444]).send(:appraise, appraise_state, 'value')
