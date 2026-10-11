@@ -278,6 +278,24 @@ combat_analyze_retry_count: 3
 has_hodierna: false
 # List of people to never heal when in combat and using script empathylink.
 noheal_empathylink:
+# touch: the message the game shows when a TOUCH links you to a patient can vary. The
+# standard empathic link message is always recognized; if yours differs, copy the line
+# you see when touching a patient and swap the patient's name for {name}, which matches
+# whoever you touch:
+#   touch_link_patterns:
+#     - You sense a successful empathic link has been forged between you and {name}.
+touch_link_patterns: []
+# touch: overrides for the spells the touch window casts on you (Self tab clicks and
+# More > Cast On Self). Every spell is prepared at 5 mana and cast once the game says it
+# is fully prepared; prep_time casts after that many seconds instead. List only what
+# you want to change, by abbreviation (hw hs vh fp cd heal regen refresh bs foc):
+#   touch_self_spells:
+#     hw:
+#       mana: 10
+#     regen:
+#       mana: 15
+#       prep_time: 3
+touch_self_spells: {}
 # if you are permashocked, this setting will it apply it to all hunts, no longer needing construct
 permashocked: false
 # how many mobs should be in combat with you before you start empath-manipulation.
