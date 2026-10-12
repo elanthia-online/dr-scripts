@@ -5527,10 +5527,11 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
     end
 
     it 'appraises the next live target when the first id is already recorded' do
-      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([
-                                                                            OpenStruct.new(id: 444, noun: 'troll', name: 'a troll'),
-                                                                            OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre')
-                                                                          ])
+      targets = [
+        OpenStruct.new(id: 444, noun: 'troll', name: 'a troll'),
+        OpenStruct.new(id: 555, noun: 'ogre', name: 'an ogre')
+      ]
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return(targets)
       allow(DRC).to receive(:bput).and_return('Perhaps that')
 
       build_appraiser(no_app: [444]).send(:appraise, appraise_state, 'value')
