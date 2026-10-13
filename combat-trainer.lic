@@ -1897,6 +1897,9 @@ class SpellProcess
 
     @spell_timers = {}
     @wounds = {}
+    # Weapon buff name => the weapon we have already sent a release for.
+    # See release_weapon_buff. Must be a Hash here, not left nil.
+    @released_weapon_buff_names = {}
 
     @tk_ammo = settings.tk_ammo
     @tk_spell = @offensive_spells.find { |spell| spell['abbrev'] =~ /tkt|tks/i }
@@ -2182,28 +2185,50 @@ class SpellProcess
     DRCA.cast?("cast #{DRC.right_hand || DRC.left_hand}")
   end
 
+  # Release a weapon buff from the character so it can be recast on the current
+  # weapon. Called once per combat loop from @spell_checks, so it must not resend
+  # the release when the previous one did not change observable state.
+  #
+  # Two separate ways the old `return unless DRSpells.active_spells[name]` guard
+  # fails to stop a resend:
+  #
+  # 1. The release succeeds but DRSpells.active_spells still lists the spell.
+  #    active_spells is a snapshot, not live state -- XMLData only replaces it
+  #    when the game pushes a percWindow stream, so it lags a release by however
+  #    long the window takes to refresh. The `pause 1` below is a guess at that.
+  # 2. The release fails with "Release what" -- e.g. the buff is attached to a
+  #    weapon that is gone (broken/unsummoned), so the spell is still on the
+  #    character but there is nothing to release. active_spells will never clear,
+  #    so this guard can never become false.
+  #
+  # In both cases the old code resent the release on every combat loop until
+  # check_buffs independently decided the buff was missing and cast_spell set
+  # @last_seen_weapon_buff_name. Latching on the attempt instead of on the
+  # resulting state covers both: one release per spell per weapon. The latch is
+  # keyed by spell name (at most one entry per entry in $weapon_buffs) and holds
+  # the weapon it was released for, so switching weapons re-arms it naturally.
+  def release_weapon_buff(name, command, success_message, game_state)
+    return if @last_seen_weapon_buff_name == game_state.weapon_name
+    return if @released_weapon_buff_names[name] == game_state.weapon_name
+    return unless DRSpells.active_spells[name]
+
+    @released_weapon_buff_names[name] = game_state.weapon_name
+    # Release the spell on the character
+    DRC.bput(command, success_message, 'Release what')
+    # Wait for the spell on the weapon to be released (it can take a second or two to pulse)
+    pause 1
+  end
+
   def check_ignite(game_state)
     # Ignite must be released before it can be recast
     # Rutilor's Edge and Resonance do not have this problem
-    return if @last_seen_weapon_buff_name == game_state.weapon_name
-    return unless DRSpells.active_spells['Ignite']
-
-    # Release the spell on the character
-    DRC.bput('release ignite', 'The warm feeling in your hand goes away', 'Release what')
-    # Wait for the spell on the weapon to be released (it can take a second or two to pulse)
-    pause 1
+    release_weapon_buff('Ignite', 'release ignite', 'The warm feeling in your hand goes away', game_state)
   end
 
   def check_rutilors_edge(game_state)
     # Rutilor's Edge does not need to be released before it can be recast
     # But releasing allows the buff logic to detect it should be recast
-    return if @last_seen_weapon_buff_name == game_state.weapon_name
-    return unless DRSpells.active_spells['Rutilor\'s Edge']
-
-    # Release the spell on the character
-    DRC.bput('release rue', 'You sense the Rutilor\'s Edge spell fade away', 'Release what')
-    # Wait for the spell on the weapon to be released (it can take a second or two to pulse)
-    pause 1
+    release_weapon_buff("Rutilor's Edge", 'release rue', 'You sense the Rutilor\'s Edge spell fade away', game_state)
   end
 
   def ready_to_cast?(game_state)
