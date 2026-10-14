@@ -731,6 +731,13 @@ module Harness
     args
   end
 
+  # Mirrors Lich's global variable (Script.current.vars): [0] is the raw
+  # argument string, [1..] the arguments as typed, before parse_args downcases
+  # them. Specs set $script_vars.
+  def variable
+    $script_vars || []
+  end
+
   def get_settings(dummy = nil)
     $settings_called_with = dummy
     $test_settings
