@@ -206,6 +206,7 @@ class Craft
     rank = DRSkill.getrank('Enchanting')
     enchanting_room = @settings.enchanting_room
     quantity = 1
+    tally = 0
 
     if rank <= 25 # Tier 1  Extremely Easy
       # Buy an abolition sigil and bone totem for Radiant Trinket
