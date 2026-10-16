@@ -197,8 +197,10 @@ RSpec.describe 'sorter.lic stream shapes' do
     }
   end
 
-  # Runs the real parse + DRC.list_to_array + article strip + categorize
-  # chain sorter's main loop uses, returning [container, [[item, category], ...]].
+  # Runs the real parse_inventory_line, DRC.list_to_array and categorize_item,
+  # with the main loop's one-line article strip restated in between, returning
+  # [container, [[item, category], ...]]. The main-loop group further down runs
+  # the real loop end to end.
   def sort_line(line, settings = {})
     container, contents = SorterHelpers.parse_inventory_line(line, settings)
     return nil unless container
@@ -298,6 +300,19 @@ RSpec.describe 'sorter.lic stream shapes' do
   describe '.parse_inventory_line' do
     it 'tolerates nil settings' do
       expect(SorterHelpers.parse_inventory_line('In the oak chest you see a bone stack.', nil)).to eq(['In the oak chest', 'you see a bone stack.'])
+      # A wearing line falls through to the settings lookups, so this one
+      # really reads the (nil) settings rather than returning first.
+      expect(SorterHelpers.parse_inventory_line('She is wearing a gem pouch and some coiled rope.', nil)).to be_nil
+    end
+
+    it 'leaves look-items and wearing lines alone unless their setting is on' do
+      [
+        'You take a moment to look for all the items in the area and see a <a exist="9007" noun="stack">bone stack</a>.',
+        'You are wearing a gem pouch and <a exist="9008" noun="rope">some coiled rope</a>.',
+        'She is wearing a gem pouch and <a exist="9008" noun="rope">some coiled rope</a>.'
+      ].each do |line|
+        expect(SorterHelpers.parse_inventory_line(line, {})).to be_nil
+      end
     end
 
     it 'skips lines that mention both In the and On the' do
@@ -329,5 +344,53 @@ RSpec.describe 'sorter.lic stream shapes' do
       rich = 'You rummage through a <a exist="9009" noun="sack">canvas sack</a> but there is nothing in there.'
       expect(SorterHelpers.filter_inventory_line(rich, settings)).to eq(rich)
     end
+
+    it 'passes unsorted linked wearing lines through with their links intact' do
+      mine = 'You are wearing a gem pouch and <a exist="9008" noun="rope">some coiled rope</a>.'
+      theirs = 'She is wearing a gem pouch and <a exist="9008" noun="rope">some coiled rope</a>.'
+      expect(SorterHelpers.filter_inventory_line(mine, settings)).to eq(mine)
+      expect(SorterHelpers.filter_inventory_line(theirs, settings)).to eq(theirs)
+    end
+  end
+end
+
+# Runs the whole real sorter.lic (setup, hook registration and main loop) on
+# one line and returns what it printed, so the main loop's own article strip,
+# counting and output are covered too, not just the extracted helpers.
+RSpec.describe 'sorter.lic main loop on both stream shapes' do
+  def run_sorter(line)
+    lines = [line]
+    context = Object.new
+    context.define_singleton_method(:get) { lines.shift }
+    context.define_singleton_method(:script) { OpenStruct.new }
+    context.define_singleton_method(:hide_me) { nil }
+    context.define_singleton_method(:monsterbold_start) { '' }
+    context.define_singleton_method(:monsterbold_end) { '' }
+    path = lic_path('sorter.lic')
+    context.instance_eval(File.read(path), path, 1)
+    $respond_messages.join
+  end
+
+  before do
+    $test_settings.sorter = { 'width' => 0 }
+    $test_data.sorting = { 'gem_nouns' => %w[sapphire], 'misc_nouns' => %w[rope mortar stack] }
+    $test_data.items = {}
+  end
+
+  after { DownstreamHook.remove('sorter') }
+
+  it 'prints the same sorted list for a linked rummage line and its plain twin' do
+    legacy = 'You rummage through a canvas sack and see a stone mortar, a bone stack, a bone stack and some coiled rope.'
+    rich = 'You rummage through a <a exist="9002" noun="sack">canvas sack</a> and see a stone mortar, a bone stack, a bone stack and <a exist="9004" noun="rope">some coiled rope</a>.'
+    expected = "You rummage through a canvas sack:\nmisc (4): stone mortar, coiled rope, bone stack (2).\n"
+
+    expect(run_sorter(legacy)).to eq(expected)
+    $respond_messages.clear
+    expect(run_sorter(rich)).to eq(expected)
+  end
+
+  it 'merges a linked item with its plain twins in the count' do
+    rich = 'In the <a exist="9001" noun="chest">oak chest</a> you see a large blue sapphire and a <a exist="9003" noun="sapphire">large blue sapphire</a>.'
+    expect(run_sorter(rich)).to eq("In the oak chest:\ngem (2): large blue sapphire (2).\n")
   end
 end
