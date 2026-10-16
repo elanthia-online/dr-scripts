@@ -6,10 +6,10 @@ require 'spec_helper'
 #
 # sorter.lic runs as a background inventory formatting script that intercepts
 # game inventory output via DownstreamHook. It is class-less, so its pure helper
-# methods (categorize_item and filter_inventory_line) are extracted with
-# load_lic_methods.
+# methods (categorize_item, filter_inventory_line, strip_links and
+# parse_inventory_line) are extracted with load_lic_methods.
 
-SorterHelpers = load_lic_methods('sorter.lic', 'categorize_item', 'filter_inventory_line')
+SorterHelpers = load_lic_methods('sorter.lic', 'categorize_item', 'filter_inventory_line', 'strip_links', 'parse_inventory_line')
 
 RSpec.describe 'sorter.lic before_dying teardown' do
   # Evaluates the real column-0 `before_dying do ... end` block from sorter.lic
@@ -179,6 +179,155 @@ RSpec.describe 'sorter.lic helpers' do
           expect(SorterHelpers.filter_inventory_line(wear_female_line, settings.merge('sort_look_others' => true))).to be_nil
         end
       end
+    end
+  end
+end
+
+# DragonRealms sends container lists in two shapes. The legacy stream sends
+# plain text. The rich (Saga) stream wraps the container name, and often the
+# last item of the list, in an object link; the article of that item can sit
+# inside the link. Lich may or may not have stripped those links before sorter
+# sees the line. Every pair below is the same game output in both shapes
+# (synthetic names and ids), and sorter must treat the two identically.
+RSpec.describe 'sorter.lic stream shapes' do
+  let(:item_data) do
+    {
+      'gem_nouns'  => %w[sapphire amethyst],
+      'misc_nouns' => %w[rope mortar stack skates]
+    }
+  end
+
+  # Runs the real parse + DRC.list_to_array + article strip + categorize
+  # chain sorter's main loop uses, returning [container, [[item, category], ...]].
+  def sort_line(line, settings = {})
+    container, contents = SorterHelpers.parse_inventory_line(line, settings)
+    return nil unless container
+
+    list = contents[/(?:and|you) see (.*)\./, 1]
+    items = DRC.list_to_array(list).map { |item| item.sub(/^\s*?\b(?:a|an|some|and|the)\b\s/, '') }
+    [container, items.map { |item| [item, SorterHelpers.categorize_item(item, item_data)] }]
+  end
+
+  shared_examples 'a stream-agnostic line' do |legacy, rich, expected, settings = {}|
+    it 'sorts the legacy (plain) shape as expected' do
+      expect(sort_line(legacy, settings)).to eq(expected)
+    end
+
+    it 'sorts the rich (linked) shape exactly like the legacy shape' do
+      expect(sort_line(rich, settings)).to eq(expected)
+    end
+  end
+
+  describe 'an In the ... you see line with a linked container' do
+    include_examples 'a stream-agnostic line',
+                     'In the oak chest you see a large blue sapphire and some silver coins.',
+                     'In the <a exist="9001" noun="chest">oak chest</a> you see a large blue sapphire and some silver coins.',
+                     ['In the oak chest', [['large blue sapphire', 'gem'], ['silver coins', 'other']]]
+  end
+
+  describe 'a rummage line whose last item is linked' do
+    include_examples 'a stream-agnostic line',
+                     'You rummage through a canvas sack and see a stone mortar and a bone stack.',
+                     'You rummage through a <a exist="9002" noun="sack">canvas sack</a> and see a stone mortar and a <a exist="9003" noun="stack">bone stack</a>.',
+                     ['You rummage through a canvas sack', [['stone mortar', 'misc'], ['bone stack', 'misc']]]
+  end
+
+  describe 'a rummage line whose linked last item carries its article inside the link' do
+    include_examples 'a stream-agnostic line',
+                     'You rummage through a canvas sack and see a stone mortar and some coiled rope.',
+                     'You rummage through a canvas sack and see a stone mortar and <a exist="9004" noun="rope">some coiled rope</a>.',
+                     ['You rummage through a canvas sack', [['stone mortar', 'misc'], ['coiled rope', 'misc']]]
+  end
+
+  describe 'a linked item whose text ends in flavor after the noun' do
+    include_examples 'a stream-agnostic line',
+                     'You rummage through a canvas sack and see a stone mortar and some leather skates with brown laces.',
+                     'You rummage through a canvas sack and see a stone mortar and <a exist="9005" noun="skates">some leather skates with brown laces</a>.',
+                     ['You rummage through a canvas sack', [['stone mortar', 'misc'], ['leather skates with brown laces', 'misc']]]
+  end
+
+  describe 'a rummage search line' do
+    include_examples 'a stream-agnostic line',
+                     'You rummage through a canvas sack looking for something similar to "pouch" and see a gem pouch and a gem pouch.',
+                     'You rummage through a canvas sack looking for something similar to "pouch" and see a gem pouch and a <a exist="9006" noun="pouch">gem pouch</a>.',
+                     ['You rummage through a canvas sack looking for something similar to "pouch"', [['gem pouch', 'other'], ['gem pouch', 'other']]]
+  end
+
+  describe 'a look-items line when sort_look_items_command is set' do
+    include_examples 'a stream-agnostic line',
+                     'You take a moment to look for all the items in the area and see a small amethyst and a bone stack.',
+                     'You take a moment to look for all the items in the area and see a small amethyst and a <a exist="9007" noun="stack">bone stack</a>.',
+                     ['You take a moment to look for all the items in the area', [['small amethyst', 'gem'], ['bone stack', 'misc']]],
+                     { 'sort_look_items_command' => true }
+  end
+
+  describe 'a wearing line when sort_inv_command is set' do
+    include_examples 'a stream-agnostic line',
+                     'You are wearing a gem pouch and some coiled rope.',
+                     'You are wearing a gem pouch and <a exist="9008" noun="rope">some coiled rope</a>.',
+                     ['Inventory', [['gem pouch', 'other'], ['coiled rope', 'misc']]],
+                     { 'sort_inv_command' => true }
+  end
+
+  describe 'a line sorter leaves alone' do
+    include_examples 'a stream-agnostic line',
+                     'You rummage through a canvas sack but there is nothing in there.',
+                     'You rummage through a <a exist="9009" noun="sack">canvas sack</a> but there is nothing in there.',
+                     nil
+  end
+
+  describe '.strip_links' do
+    it 'removes link open and close tags but keeps their text' do
+      expect(SorterHelpers.strip_links('a <a exist="-12" noun="stack">bone stack</a>.')).to eq('a bone stack.')
+    end
+
+    it 'leaves bold markup, which categorize_item uses to spot NPCs' do
+      line = 'a <pushBold/><pushBold/><a exist="-34" noun="goblin">goblin</a><popBold/><popBold/>'
+      expect(SorterHelpers.strip_links(line)).to eq('a <pushBold/><pushBold/>goblin<popBold/><popBold/>')
+    end
+
+    it 'returns a plain line unchanged and does not mutate the argument' do
+      line = 'In the oak chest you see a bone stack.'
+      expect(SorterHelpers.strip_links(line)).to eq(line)
+      linked = +'a <a exist="1" noun="stack">bone stack</a>'
+      SorterHelpers.strip_links(linked)
+      expect(linked).to eq('a <a exist="1" noun="stack">bone stack</a>')
+    end
+  end
+
+  describe '.parse_inventory_line' do
+    it 'tolerates nil settings' do
+      expect(SorterHelpers.parse_inventory_line('In the oak chest you see a bone stack.', nil)).to eq(['In the oak chest', 'you see a bone stack.'])
+    end
+
+    it 'skips lines that mention both In the and On the' do
+      expect(SorterHelpers.parse_inventory_line('In the oak chest you see a note On the table.', {})).to be_nil
+    end
+  end
+
+  describe '.filter_inventory_line on the rich shape' do
+    let(:settings) { { 'mute_old_inventory' => true } }
+
+    it 'mutes a linked container line just like the plain one' do
+      rich = 'In the <a exist="9001" noun="chest">oak chest</a> you see a large blue sapphire and some silver coins.'
+      expect(SorterHelpers.filter_inventory_line(rich, settings)).to be_nil
+    end
+
+    it 'mutes a rummage line whose linked last item carries its article, just like the plain one' do
+      legacy = 'You rummage through a canvas sack and see a stone mortar and some coiled rope.'
+      rich = 'You rummage through a <a exist="9002" noun="sack">canvas sack</a> and see a stone mortar and <a exist="9004" noun="rope">some coiled rope</a>.'
+      expect(SorterHelpers.filter_inventory_line(legacy, settings)).to be_nil
+      expect(SorterHelpers.filter_inventory_line(rich, settings)).to be_nil
+    end
+
+    it 'passes an unsorted linked line through with its links intact' do
+      rich = 'You take a moment to look for all the items in the area and see a <a exist="9010" noun="stack">bone stack</a>.'
+      expect(SorterHelpers.filter_inventory_line(rich, settings)).to eq(rich)
+    end
+
+    it 'passes an empty linked rummage line through' do
+      rich = 'You rummage through a <a exist="9009" noun="sack">canvas sack</a> but there is nothing in there.'
+      expect(SorterHelpers.filter_inventory_line(rich, settings)).to eq(rich)
     end
   end
 end
