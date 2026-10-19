@@ -1622,8 +1622,8 @@ class Bescort
       exit
     end
 
-    @equipment_manager.empty_hands
     if @flying_mount
+      @equipment_manager.empty_hands
       case @flying_mount
       when /broom|dirigible|carpet|rug/i
         use_flying_mount(@flying_mount, 'mount', 'skim')
@@ -1660,7 +1660,8 @@ class Bescort
       exit
     end
 
-    # Changed only after the checks above, so their exits leave the gear alone.
+    # Hands and gear change only after the checks above, so their exits leave them alone.
+    @equipment_manager.empty_hands
     have_changed_gear = wear_swimming_gear?
     loop do
       waitrt?

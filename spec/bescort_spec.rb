@@ -171,6 +171,21 @@ RSpec.describe Bescort do
       end
     end
 
+    it 'empties hands at the start room before wearing the swimming set' do
+      calls = []
+      allow(equipment_manager).to receive(:empty_hands) { calls << 'empty hands' }
+      allow(Room).to receive(:current) do
+        calls << 'start room check'
+        OpenStruct.new(id: 19_373)
+      end
+      allow(equipment_manager).to receive(:wear_equipment_set?) do |set_name|
+        calls << "wear #{set_name}"
+        true
+      end
+      bescort.send(:segoltha, 'north')
+      expect(calls.first(3)).to eq(['start room check', 'empty hands', 'wear swimming'])
+    end
+
     it 'puts the standard set back on after the swim loop, not before' do
       calls = []
       allow(equipment_manager).to receive(:wear_equipment_set?) do |set_name|
@@ -190,8 +205,9 @@ RSpec.describe Bescort do
     context 'when not at the start room' do
       before { allow(Room).to receive(:current).and_return(OpenStruct.new(id: 1)) }
 
-      it 'exits without changing gear, so there is nothing to put back' do
+      it 'exits without emptying hands or changing gear, so there is nothing to put back' do
         expect(bescort).to receive(:echo).with(/Must start bescort in room 19373/)
+        expect(equipment_manager).not_to receive(:empty_hands)
         expect(equipment_manager).not_to receive(:wear_equipment_set?)
         expect { bescort.send(:segoltha, 'north') }.to raise_error(SystemExit)
       end
