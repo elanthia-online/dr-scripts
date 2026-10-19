@@ -1101,8 +1101,11 @@ class Trade
 
     @caravan_being_led = false
     be_outside_caravan
+    # Wait for a known room before looking for the caravan. The message asks
+    # you to move one room away and back, and the first known room is the one
+    # you moved to, so track_caravan's wait covers your return to the caravan.
+    wait_for_known_room(grace: 2)
     track_caravan
-    wait_for_known_room
     return if in_room?(room_id)
 
     forbid_certain_transport
@@ -1115,6 +1118,13 @@ class Trade
       if current_room_id.nil?
         # Stepped into a room Lich can't place: wait for it, then re-plan.
         wait_for_known_room(grace: 2)
+        # If you moved away to get the room placed, the following caravan's
+        # arrival may have set its flag. Left set, the next step wouldn't wait
+        # for the caravan. Clear it, wait until the caravan is confirmed here,
+        # then clear it again for the next step.
+        Flags.reset('caravan-arrived')
+        pause 0.2 until Flags['caravan-arrived'] || caravan_check?(false)
+        Flags.reset('caravan-arrived')
         path = compute_path(room_id)
         next
       end

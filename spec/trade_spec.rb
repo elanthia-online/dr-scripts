@@ -155,7 +155,8 @@ RSpec.describe Trade do
       describe 'starting in an unknown room' do
         include_examples 'for both forms of unknown room', proc {
           it 'waits for Lich to place the room, then leads the caravan to the destination' do
-            allow(trade).to receive(:pause) { location[:id] = 10 }
+            # Moving on and back (the 1 s wait after the message) puts you in 10.
+            allow(trade).to receive(:pause) { |secs| location[:id] = 10 if secs == 1 }
             trade.take_caravan_to(12)
             expect(messages).to include(unknown_room_message)
             expect(steps).to eq(%w[north east])
@@ -169,6 +170,14 @@ RSpec.describe Trade do
               [10, dest]
             end
             trade.take_caravan_to(12)
+          end
+
+          it 'does not ask you to move when the room resolves on its own a moment later' do
+            polls = 0
+            allow(trade).to receive(:pause) { location[:id] = 10 if (polls += 1) == 3 }
+            trade.take_caravan_to(12)
+            expect(messages).not_to include(unknown_room_message)
+            expect(steps).to eq(%w[north east])
           end
 
           it 'returns without walking when the now-known room is the destination' do
@@ -235,6 +244,140 @@ RSpec.describe Trade do
         expect(trade).not_to receive(:command_caravan?)
         trade.take_caravan_to(12)
         expect(steps).to be_empty
+      end
+    end
+
+    # The real track_caravan, wait_for_caravan, caravan_check?, recall_caravan?,
+    # command_caravan?, compute_path and get_next_dir, so the order of the waits
+    # is what's tested. Only the game is simulated: rooms in an east-west line,
+    # a clock that moves on with each pause, a caravan that follows a room at a
+    # time, a second behind, once told to (setting the arrival flag when it
+    # reaches you), and a
+    # player who obeys "Manually move one room away and return".
+    describe '#take_caravan_to when you move one room away and back' do
+      let(:world) do
+        { player: 10, caravan: 10, unknown: [], following: false, clock: Time.at(1_000_000),
+          away_dir: 'west', away_since: nil, away_room: nil, back: false, apart: 0, follow_told_from: [], steps: [] }
+      end
+
+      def leave(dir)
+        world[:unknown].delete(world[:player]) # coming back in lets Lich place the room
+        world[:player] += dir == 'east' ? 1 : -1
+      end
+
+      # One pause: the player reacts to the message, then the caravan moves.
+      def tick(secs)
+        world[:clock] += secs
+        if messages.any? { |m| m =~ /doesn't know what room/ } && world[:away_since].nil?
+          leave(world[:away_dir])
+          world[:away_room] = world[:player]
+          world[:away_since] = world[:clock]
+        elsif !world[:back] && world[:away_since] && world[:clock] - world[:away_since] >= 5
+          # Five seconds later, step back unless the script has moved on.
+          leave(world[:away_dir] == 'west' ? 'east' : 'west') if world[:player] == world[:away_room]
+          world[:back] = true
+        end
+        world[:apart] = 0 if world[:caravan] == world[:player]
+        return unless world[:following] && world[:caravan] != world[:player]
+
+        # The caravan takes a second to follow you into the next room.
+        world[:apart] += secs
+        return if world[:apart] < 1
+
+        world[:apart] = 0
+        world[:caravan] += world[:player] <=> world[:caravan]
+        Flags['caravan-arrived'] = true if world[:caravan] == world[:player]
+      end
+
+      before do
+        allow(Time).to receive(:now) { world[:clock] }
+        allow(trade).to receive(:pause) do |secs = 1|
+          raise 'take_caravan_to is spinning' if world[:clock] - Time.at(1_000_000) > 600
+
+          tick(secs.to_f)
+        end
+        allow(Room).to receive(:current) do
+          next nil if world[:unknown].include?(world[:player])
+
+          here = world[:player]
+          double('room', id: here, title: ['[Road]'], wayto: { (here + 1).to_s => 'east', (here - 1).to_s => 'west' })
+        end
+        allow(Map).to receive(:dijkstra) do |from, _to|
+          [(8..14).to_h { |id| [id, id == from ? nil : id - (id <=> from)] }, {}]
+        end
+        allow(DRRoom).to receive(:room_objs) { world[:caravan] == world[:player] ? ['an ox-drawn caravan'] : [] }
+        allow(DRC).to receive(:bput) do |command, *_replies|
+          case command
+          when 'recall caravan'
+            if world[:caravan] == world[:player]
+              'You seem to recall that you left your ox-drawn caravan right behind you.'
+            else
+              'You recall that your ox-drawn caravan is to the west.'
+            end
+          when /to follow/
+            world[:follow_told_from] << world[:player]
+            world[:following] = true
+            'You grab hold of your ox-drawn caravan harness and make it follow.'
+          else
+            'You grab hold of your ox-drawn caravan harness and make it wait.'
+          end
+        end
+        allow(trade).to receive(:move) do |dir|
+          world[:steps] << [world[:player], dir, world[:caravan] == world[:player]]
+          leave(dir)
+          tick(0.5)
+        end
+        %i[be_outside_caravan forbid_certain_transport walk_training training_cleanup].each do |name|
+          allow(trade).to receive(name)
+        end
+        allow(trade).to receive(:handle_special_room?).and_return(false)
+        allow(Trade).to receive(:restore_certain_transport)
+        trade.instance_variable_set(:@caravan_room_descriptions, {})
+        Flags.add('caravan-arrived', /^Your .*, following you/)
+      end
+
+      def caravan_left_behind
+        world[:steps].reject(&:last).map { |from, dir, _| "#{from} #{dir}" }
+      end
+
+      %w[west east].each do |away|
+        context "when Lich doesn't know the start room and you step #{away} and back" do
+          before do
+            world[:unknown] << 10
+            world[:away_dir] = away
+          end
+
+          it 'tells the caravan to follow only once you are back in its room' do
+            trade.take_caravan_to(13)
+            expect(world[:follow_told_from]).to eq([10])
+          end
+
+          it 'leads the caravan all the way, never stepping without it' do
+            trade.take_caravan_to(13)
+            expect(world.values_at(:player, :caravan)).to eq([13, 13])
+            expect(caravan_left_behind).to be_empty
+          end
+        end
+
+        context "when a step lands in a room Lich can't place and you step #{away} from there" do
+          before do
+            world[:unknown] << 11
+            world[:away_dir] = away
+          end
+
+          it 'waits for the caravan to catch up before the next step' do
+            trade.take_caravan_to(13)
+            expect(caravan_left_behind).to be_empty
+            expect(world.values_at(:player, :caravan)).to eq([13, 13])
+          end
+        end
+      end
+
+      it 'walks a known route with the caravan in tow (unchanged)' do
+        trade.take_caravan_to(13)
+        expect(world[:steps].map { |from, dir, with| [from, dir, with] })
+          .to eq([[10, 'east', true], [11, 'east', true], [12, 'east', true]])
+        expect(messages).to be_empty
       end
     end
 
