@@ -175,9 +175,8 @@ RSpec.describe 'bug-grabber.lic' do
     end
   end
 
-  # lich-5 releases without elanthia-online/lich-5#1749 return false after a
-  # one-step walk out of a room they couldn't identify, although the step
-  # reached the target room.
+  # Some lich-5 releases return false after a one-step walk out of a room they
+  # couldn't identify, although the step reached the target room.
   context 'when walk_to reports false but the character is in the room' do
     before do
       allow(DRCT).to receive(:walk_to) do |room|

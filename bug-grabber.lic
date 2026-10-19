@@ -3,6 +3,7 @@
 
   Walks the circuit until a bug is in the room, picks it up, and places it on the
   shrine in room 10506. Wings are dropped. Waits and re-walks when nothing spawns.
+  Stops with a message when a walk fails.
 =end
 
 rooms = [10_506, 10_507, 10_676, 10_508, 10_509, 10_665, 10_670, 10_673, 10_482, 10_497, 10_515, 10_675, 10_510, 10_539, 10_668, 10_669, 10_590, 10_520,
@@ -15,9 +16,9 @@ end
 # Walks to a room on the circuit or to the shrine. When the walk fails, stops
 # the script instead of searching the wrong rooms or trying to put the bug on a
 # shrine that isn't there. A false from walk_to while standing in the room
-# still counts as arrived: lich-5 releases without
-# elanthia-online/lich-5#1749 return false after a one-step walk out of a room
-# they couldn't identify, even though the step reached the target.
+# still counts as arrived: some lich-5 releases return false after a one-step
+# walk out of a room they couldn't identify, even though the step reached the
+# target.
 def walk_to_or_stop(room, held = nil)
   return if DRCT.walk_to(room)
   return if Room.current&.id == room
