@@ -268,4 +268,105 @@ RSpec.describe TaskForage do
       expect(instance).to have_received(:get_task_item).once
     end
   end
+
+  describe '#fast_find' do
+    let(:route) { { 10 => %w[n n], 11 => %w[e e e] } }
+    let(:sent) { [] }
+
+    # Each move sends its direction and, when it goes through, a new room
+    # (XMLData.room_count goes up), the way Lich's move does.
+    def stub_moves(instance, outcomes)
+      allow(instance).to receive(:move) do |direction|
+        sent << direction
+        XMLData.room_count += 1 if outcomes.shift
+      end
+    end
+
+    def build_finder(giver_after:)
+      instance = build_instance
+      allow(DRCT).to receive(:walk_to)
+      checks = Array.new(giver_after, false) + [true]
+      allow(instance).to receive(:check_giver) { checks.shift || false }
+      instance
+    end
+
+    context 'when the map cannot resolve any of the rooms' do
+      before { allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil)) }
+
+      it 'keeps walking the route after moves that went through' do
+        instance = build_finder(giver_after: 4)
+        stub_moves(instance, [true, true, true, true])
+        expect(instance.fast_find(route)).to be(true)
+        expect(sent).to eq(%w[n n e e])
+      end
+
+      it 'still gives up after three moves that did not go through' do
+        instance = build_finder(giver_after: 99)
+        stub_moves(instance, [false, true, false, false, true])
+        expect(instance.fast_find(route)).to be(false)
+        expect(sent).to eq(%w[n n e e])
+      end
+    end
+
+    context 'when the map resolves every room to the same id' do
+      before { allow(Room).to receive(:current).and_return(OpenStruct.new(id: 10)) }
+
+      it 'counts a move as made because a new room arrived, not because the id changed' do
+        instance = build_finder(giver_after: 4)
+        stub_moves(instance, [true, true, true, true])
+        expect(instance.fast_find(route)).to be(true)
+        expect(sent).to eq(%w[n n e e])
+      end
+    end
+
+    it 'gives up after three failed moves in rooms the map knows' do
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 10))
+      instance = build_finder(giver_after: 99)
+      stub_moves(instance, [false, false, false])
+      expect(instance.fast_find(route)).to be(false)
+      expect(sent).to eq(%w[n n e])
+    end
+
+    it 'returns false when the whole route is walked without finding the giver' do
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil))
+      instance = build_finder(giver_after: 99)
+      stub_moves(instance, [true] * 5)
+      expect(instance.fast_find(route)).to be(false)
+      expect(sent).to eq(%w[n n e e e])
+    end
+  end
+
+  describe '#collect_pile' do
+    let(:events) { [] }
+    let(:instance) { build_instance(item: 'stick') }
+
+    before do
+      Flags.add('cluttered', 'The room is too cluttered to find anything here')
+      allow(DRC).to receive(:kick_pile?) { |item| events << [:kick, item] }
+      allow(instance).to receive(:cluttered_gathering_room) { events << :move_on }
+    end
+
+    it 'stays to use the pile when the only clutter was seen before this collect' do
+      Flags['cluttered'] = 'tries to forage for something, but can\'t find it with all the clutter here'
+      allow(DRC).to receive(:collect) { |item, practice| events << [:collect, item, practice] }
+      instance.collect_pile
+      expect(events).to eq([[:collect, 'stick', false]])
+    end
+
+    it 'kicks the pile it may have made before moving on from a cluttered room' do
+      replies = [true, false]
+      allow(DRC).to receive(:collect) do |item, practice|
+        events << [:collect, item, practice]
+        Flags['cluttered'] = 'The room is too cluttered to find anything here' if replies.shift
+      end
+      instance.collect_pile
+      expect(events).to eq([[:collect, 'stick', false], [:kick, 'stick'], :move_on, [:collect, 'stick', false]])
+    end
+
+    it 'does not kick anything when the room was not cluttered' do
+      allow(DRC).to receive(:collect) { |item, practice| events << [:collect, item, practice] }
+      instance.collect_pile
+      expect(events).to eq([[:collect, 'stick', false]])
+    end
+  end
 end

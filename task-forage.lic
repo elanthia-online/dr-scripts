@@ -383,9 +383,11 @@ class TaskForage
       rooms[room].each do |movement|
         return true if check_giver
 
-        old_room = Room.current.id
+        # XMLData.room_count goes up whenever the game sends a new room, so this
+        # still tells a real move from a failed one where Room.current.id is nil.
+        room_count = XMLData.room_count
         move(movement)
-        if old_room == Room.current.id
+        if XMLData.room_count == room_count
           failures += 1
           echo "Failure to move - #{failures}" if @debug
         end
@@ -784,9 +786,15 @@ class TaskForage
   # Pile up the foragables in the current room, moving on if the room is cluttered
   def collect_pile
     echo 'collect_pile' if @debug
+    # Only clutter seen during this collect counts. A flag left over from the trip
+    # here would walk away from a pile that was just collected.
+    Flags.reset('cluttered')
     DRC.collect(@item, false)
     return unless Flags['cluttered']
 
+    # DRC.collect kicks the clutter and collects again, which can leave a pile here.
+    # Kick it before moving on rather than leave it behind.
+    DRC.kick_pile?(@item.to_s)
     cluttered_gathering_room
     DRC.collect(@item, false)
   end

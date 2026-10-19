@@ -643,6 +643,7 @@ module Harness
     @@_game = nil
     @@_server_time = nil
     @@_name = nil
+    @@_room_count = 0
 
     def self._reset
       @@_room_title = nil
@@ -650,6 +651,17 @@ module Harness
       @@_game = nil
       @@_server_time = nil
       @@_name = nil
+      @@_room_count = 0
+    end
+
+    # Goes up by one each time the game sends a room, whether or not the map
+    # knows it. Defaults to 0.
+    def self.room_count
+      @@_room_count
+    end
+
+    def self.room_count=(val)
+      @@_room_count = val
     end
 
     def self.room_title
@@ -1204,6 +1216,7 @@ module Harness
       def can_see_sky?(*_args); false; end
       def forage?(*_args); false; end
       def collect(*_args); end
+      def kick_pile?(*_args); false; end
       def retreat(*_args); end
       def rummage(*_args); end
       def log_window(*_args); end
