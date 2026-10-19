@@ -180,4 +180,192 @@ RSpec.describe SanowretCrystal do
       expect(crystal).to have_received(:use_crystal)
     end
   end
+
+  # ===========================================================================
+  # A room where the crystal can't be tapped at all ("Not here, ...")
+  # ===========================================================================
+  describe 'when the tap is refused in this room' do
+    let(:tap_refusal) { 'Not here, ' }
+    let(:pauses) { [] }
+
+    # A crystal in a container, so check_crystal taps it first.
+    let(:tapper) do
+      crystal.tap { |c| c.instance_variable_set(:@worn_crystal, false) }
+    end
+
+    before do
+      allow(DRC).to receive(:message)
+      allow(DRC).to receive(:bput).and_return(tap_refusal)
+    end
+
+    # Stubs the one-second pause in the wait loop. Each pause runs the next step
+    # (a room change, say) and a runaway wait raises instead of hanging the suite.
+    def on_pause(tapper, steps = {})
+      allow(tapper).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'still waiting after 1000 pauses' if pauses.size > 1000
+
+        steps[pauses.size]&.call
+      end
+    end
+
+    def in_unmapped_room(title, description = 'A dusty room.')
+      in_room(title, id: nil)
+      DRRoom.description = description
+    end
+
+    it 'stops waiting when the character moves from one unmapped room to another' do
+      in_unmapped_room('[[Ruins, Hall]]')
+      on_pause(tapper, 3 => -> { in_unmapped_room('[[Ruins, Courtyard]]', 'Weeds grow here.') })
+
+      tapper.check_crystal
+
+      expect(pauses.size).to eq(3)
+    end
+
+    it 'treats an unmapped room with the same title but a different description as a new room' do
+      in_unmapped_room('[[Ruins, Corridor]]', 'The corridor bends east.')
+      on_pause(tapper, 2 => -> { in_unmapped_room('[[Ruins, Corridor]]', 'The corridor ends at a wall.') })
+
+      tapper.check_crystal
+
+      expect(pauses.size).to eq(2)
+    end
+
+    it 'stops waiting when the character moves from a mapped room to another mapped room' do
+      in_room('[[Crossing, Market]]', id: 10)
+      on_pause(tapper, 2 => -> { in_room('[[Crossing, Market]]', id: 11) })
+
+      tapper.check_crystal
+
+      expect(pauses.size).to eq(2)
+    end
+
+    it 'stops waiting when the character moves from a mapped room into an unmapped one' do
+      in_room('[[Crossing, Market]]', id: 10)
+      on_pause(tapper, 1 => -> { in_unmapped_room('[[Ruins, Hall]]') })
+
+      tapper.check_crystal
+
+      expect(pauses.size).to eq(1)
+    end
+
+    it 'stops waiting when the character moves from an unmapped room into a mapped one' do
+      in_unmapped_room('[[Ruins, Hall]]')
+      on_pause(tapper, 4 => -> { in_room('[[Crossing, Market]]', id: 10) })
+
+      tapper.check_crystal
+
+      expect(pauses.size).to eq(4)
+    end
+
+    it 'gives up after 300 one-second pauses when the character stays in a mapped room' do
+      in_room('[[Crossing, Market]]', id: 10)
+      on_pause(tapper)
+
+      tapper.check_crystal
+
+      expect(pauses).to eq([1] * 300)
+    end
+
+    it 'gives up after 300 one-second pauses when the character stays in an unmapped room' do
+      in_unmapped_room('[[Ruins, Hall]]')
+      on_pause(tapper)
+
+      tapper.check_crystal
+
+      expect(pauses).to eq([1] * 300)
+    end
+
+    it 'says how long it will wait' do
+      in_room('[[Crossing, Market]]', id: 10)
+      on_pause(tapper)
+
+      tapper.check_crystal
+
+      expect(DRC).to have_received(:message)
+        .with('Pausing test-script script until you move to another room, for up to 5 minutes.')
+    end
+
+    it 'waits the same way after a wave of Corruption magic' do
+      allow(DRC).to receive(:bput).and_return('a wave of Corruption magic')
+      in_unmapped_room('[[Ruins, Hall]]')
+      on_pause(tapper, 2 => -> { in_unmapped_room('[[Ruins, Courtyard]]', 'Weeds grow here.') })
+
+      tapper.check_crystal
+
+      expect(pauses.size).to eq(2)
+    end
+
+    it 'does not use or stow the crystal' do
+      in_room('[[Crossing, Market]]', id: 10)
+      on_pause(tapper, 1 => -> { in_room('[[Crossing, Bank]]', id: 11) })
+
+      tapper.check_crystal
+
+      expect(DRC).to have_received(:bput).once
+    end
+
+    # crossing-training runs `sanowret-crystal run` and waits for it to finish
+    # before it moves on, so a single run that waited for a room change would
+    # never end.
+    context 'in a single run' do
+      before { tapper.instance_variable_set(:@run_once, true) }
+
+      it 'returns without waiting' do
+        in_room('[[Crossing, Market]]', id: 10)
+        on_pause(tapper)
+
+        tapper.check_crystal
+
+        expect(pauses).to be_empty
+        expect(DRC).to have_received(:message).with('Cannot use the sanowret crystal in this room.')
+      end
+
+      it 'returns without waiting in an unmapped room' do
+        in_unmapped_room('[[Ruins, Hall]]')
+        on_pause(tapper)
+
+        tapper.check_crystal
+
+        expect(pauses).to be_empty
+      end
+    end
+
+    describe 'setting up a single run' do
+      let(:settings) do
+        OpenStruct.new(sanowret_adjective: 'sanowret', sanowret_no_use_scripts: [], sanowret_no_use_rooms: [],
+                       sanowret_force_exhale: false, ephemeron: nil)
+      end
+
+      before do
+        allow_any_instance_of(described_class).to receive(:get_settings).and_return(settings)
+        allow_any_instance_of(described_class).to receive(:pause) do |_instance, seconds|
+          pauses << seconds
+          raise 'still waiting after 1000 pauses' if pauses.size > 1000
+        end
+        DRSkill._set_rank('Arcana', 100)
+        in_room('[[Crossing, Market]]', id: 10)
+      end
+
+      it 'does not wait for a room change when started with run' do
+        allow_any_instance_of(described_class).to receive(:parse_args).and_return(OpenStruct.new(run: 'run'))
+
+        described_class.new
+
+        expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).once
+        expect(pauses).to be_empty
+        expect(DRC).to have_received(:message).with('Cannot use the sanowret crystal in this room.')
+      end
+
+      it 'still waits for a room change when started without run' do
+        allow_any_instance_of(described_class).to receive(:parse_args).and_return(OpenStruct.new)
+        allow_any_instance_of(described_class).to receive(:passive) { |instance| instance.check_crystal }
+
+        described_class.new
+
+        expect(pauses).to eq([1] * 300)
+      end
+    end
+  end
 end
