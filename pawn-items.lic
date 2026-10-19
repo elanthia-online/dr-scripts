@@ -75,10 +75,11 @@ class PawnItems
       # We need to look again to see what we can now see.
       # Keep doing this until exhaust source.
       if item =~ /lot of other stuff/
-        # Every item listed before this one has left the container (sold,
-        # lowered to the ground, or the script exited), so the next LOOK shows
-        # new items. With nothing listed before it, another LOOK would show
-        # the same list and this would recurse forever.
+        # Each item listed before this one has normally left the container
+        # (sold, lowered to the ground, or the script exited), so the next
+        # LOOK shows new items. With nothing listed before it, nothing has
+        # been taken out, so another LOOK would show the same list and this
+        # would recurse forever.
         if index.zero?
           DRC.message("LOOK in your #{source} shows no items to sell, only 'a lot of other stuff'. Stopping.")
           break

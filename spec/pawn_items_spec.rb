@@ -253,6 +253,19 @@ RSpec.describe PawnItems do
       end
     end
 
+    context 'when a noun is given' do
+      it 'drops the "lot of other stuff" entry and looks only once' do
+        looks_return(['steel nodachi', 'hefty battle axe', 'curved nodachi', 'lot of other stuff'])
+
+        script.sell_items(4321, 'backpack', 'nodachi')
+
+        expect(DRC).to have_received(:bput).with('sort nodachi in my backpack', any_args)
+        expect(sold).to eq([[4321, 'nodachi'], [4321, 'nodachi']])
+        expect(DRCI).to have_received(:get_item_list).once
+        expect(messages.grep(/lot of other stuff/)).to be_empty
+      end
+    end
+
     context 'when LOOK shows everything' do
       it 'looks once and sells each item' do
         looks_return(['steel nodachi', 'thick book'])
