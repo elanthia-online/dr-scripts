@@ -11,7 +11,9 @@ RSpec.describe CrossingTraining do
   # moonwatch's moon data is available at all (false when moonwatch can't be
   # found, stops, or never publishes); DRCMM.set_moon_data picks a visible moon
   # for data['cast'], falls back to ambient light for Cage of Light, and
-  # returns nil when no moon is usable.
+  # returns nil when no moon is usable. The real set_moon_data also calls
+  # check_moonwatch internally (through visible_moons); it is stubbed here, so
+  # check_moonwatch counts below cover only cast_spell's own direct call.
   let(:outdoor_room) { 1234 }
   let(:settings) do
     OpenStruct.new(
@@ -89,7 +91,7 @@ RSpec.describe CrossingTraining do
         expect(DRCMM).to have_received(:set_moon_data).once
       end
 
-      it 'checks moonwatch once' do
+      it 'calls check_moonwatch directly once' do
         trainer.cast_spell(moon_spell, 'Augmentation')
 
         expect(DRCMM).to have_received(:check_moonwatch).once
