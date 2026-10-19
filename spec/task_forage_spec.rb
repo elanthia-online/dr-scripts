@@ -284,7 +284,7 @@ RSpec.describe TaskForage do
 
     def build_finder(giver_after:)
       instance = build_instance
-      allow(DRCT).to receive(:walk_to)
+      allow(DRCT).to receive(:walk_to).and_return(true)
       checks = Array.new(giver_after, false) + [true]
       allow(instance).to receive(:check_giver) { checks.shift || false }
       instance
@@ -333,6 +333,16 @@ RSpec.describe TaskForage do
       stub_moves(instance, [true] * 5)
       expect(instance.fast_find(route)).to be(false)
       expect(sent).to eq(%w[n n e e e])
+    end
+
+    it 'falls back without walking the route when it cannot reach the first room' do
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil))
+      instance = build_finder(giver_after: 99)
+      allow(DRCT).to receive(:walk_to).and_return(false)
+      stub_moves(instance, [true] * 5)
+      expect(instance.fast_find(route)).to be(false)
+      expect(sent).to be_empty
+      expect(DRCT).to have_received(:walk_to).with(10)
     end
   end
 

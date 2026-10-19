@@ -377,7 +377,10 @@ class TaskForage
     target_rooms = rooms.keys
     start_index = target_rooms.index(Room.current.id) || 0 # If our current room is in the search area, just start there
     target_rooms = target_rooms.rotate(start_index)
-    DRCT.walk_to(target_rooms.first)
+    # The route's directions only make sense from its first room. If that room
+    # can't be reached, let the caller fall back to find.
+    return false unless DRCT.walk_to(target_rooms.first)
+
     failures = 0
     target_rooms.each do |room|
       rooms[room].each do |movement|
@@ -792,10 +795,11 @@ class TaskForage
     DRC.collect(@item, false)
     return unless Flags['cluttered']
 
-    # DRC.collect has already kicked the clutter and collected again. A practice retry
-    # leaves nothing behind, but a real one leaves a pile. There's no telling which
-    # one ran, and staying after a practice retry would find nothing to pick up, so
-    # the room is dropped either way. Kick any pile first rather than leave it behind.
+    # If there was a pile to kick, DRC.collect has kicked it and collected again.
+    # A practice retry leaves nothing behind, but a real one leaves a pile. There's
+    # no telling which one ran, and staying after a practice retry would find
+    # nothing to pick up, so the room is dropped either way. Kick any pile first
+    # rather than leave it behind.
     DRC.kick_pile?(@item.to_s)
     cluttered_gathering_room
     DRC.collect(@item, false)
