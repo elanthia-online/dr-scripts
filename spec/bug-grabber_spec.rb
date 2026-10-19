@@ -19,7 +19,17 @@ RSpec.describe 'bug-grabber.lic' do
   let(:stop_run) { Class.new(StandardError) }
 
   let(:shrine_room) { 10_506 }
-  let(:circuit_size) { 30 }
+  let(:circuit_size) { 18 }
+
+  # Lowest Depths corridors that, in the current public DR mapdb, have no uid
+  # and the same title, description and exits as a lower-numbered room, mapped
+  # to the room Lich takes them for. Standing in the key room, Room.current is
+  # the value room, so walk_to to the key room can never return true.
+  let(:look_alikes) do
+    { 10_676 => 10_508, 10_665 => 10_509, 10_670 => 10_510, 10_673 => 10_507, 10_675 => 10_520,
+      10_668 => 10_557, 10_669 => 10_493, 10_666 => 10_557, 10_667 => 10_576, 14_466 => 10_576,
+      10_671 => 10_576, 13_231 => 10_620, 10_678 => 10_497 }
+  end
   let(:walks) { [] }
   let(:commands) { [] }
 
@@ -94,7 +104,7 @@ RSpec.describe 'bug-grabber.lic' do
   context 'when a room on the circuit cannot be reached' do
     before { fail_walk(at: 3) }
 
-    it_behaves_like 'stops at the failed walk', [10_506, 10_507, 10_676], 10_676
+    it_behaves_like 'stops at the failed walk', [10_506, 10_507, 10_508], 10_508
 
     it 'sends nothing to the game' do
       expect { run_script }.to raise_error(SystemExit)
@@ -174,16 +184,38 @@ RSpec.describe 'bug-grabber.lic' do
       expect(DRC).not_to have_received(:message)
     end
 
-    # In the current mapdb 10667 can't be reached from any other circuit room
-    # (14466 has taken its place north-east of 10617), and 10672 is now a booth
-    # with no mapped way back to the circuit. Either would stop every run.
-    it 'walks 14466 and neither 10667 nor 10672' do
+    # In the current mapdb 10667 can't be reached from any other circuit room,
+    # and 10672 is now a booth with no mapped way back to the circuit. The
+    # look-alike corridors can be reached, but walk_to never reports arriving
+    # in one. Any of them would stop every run.
+    it 'walks neither 10672 nor any look-alike corridor' do
       succeed_walks(stop_at: 100)
       allow(script).to receive(:pause).and_raise(stop_run)
 
       expect { run_script }.to raise_error(stop_run)
-      expect(walks).to include(14_466)
-      expect(walks).not_to include(10_667, 10_672)
+      expect(walks).not_to include(10_672, *look_alikes.keys)
+    end
+  end
+
+  # walk_to returns room_num == Room.current.id, so it is only as good as
+  # Lich's idea of where the character is.
+  context 'when Room.current is the room Lich takes each room for' do
+    before do
+      allow(DRCT).to receive(:walk_to) do |room|
+        raise 'walked a whole circuit and more' if walks.size >= circuit_size
+
+        walks << room
+        here = look_alikes.fetch(room, room)
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: here))
+        here == room
+      end
+      allow(script).to receive(:pause).and_raise(stop_run)
+    end
+
+    it 'walks the whole circuit without stopping' do
+      expect { run_script }.to raise_error(stop_run)
+      expect(walks.size).to eq(circuit_size)
+      expect(DRC).not_to have_received(:message)
     end
   end
 
