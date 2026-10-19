@@ -17,10 +17,14 @@ rooms = [10_506, 10_507, 10_508, 10_509, 10_482, 10_497, 10_515, 10_510, 10_539,
          10_572, 10_677]
 
 # The noun of the first bug among the room's objects, for `get the <noun>`, or
-# nil when none of them is a bug.
+# nil when none of them is a bug. The bug word has to be the object's noun, its
+# last word, plural or not: DR matches `get the bug` against the start of an
+# item's noun, so a bugle, mothballs, a moth antenna or the dropped dragonfly
+# wing must not count. A plural noun is named by its singular start, which DR
+# still matches.
 def room_bug
   DRRoom.room_objs.each do |obj|
-    noun = obj[/\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i, 1]
+    noun = obj[/\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)(?:e?s)?\z/i, 1]
     return noun if noun
   end
   nil

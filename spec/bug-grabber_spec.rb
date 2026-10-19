@@ -270,6 +270,8 @@ RSpec.describe 'bug-grabber.lic' do
       held = { 'dragonfly' => 'dragonfly wing', 'moth' => 'moth', 'beetle' => 'beetle' }
       allow(script).to receive(:fput) do |command|
         commands << command
+        # The dropped wing stays in the room.
+        DRRoom.room_objs = (@in_room << 'dragonfly wing').dup if command == 'drop wing'
         next unless (noun = command[/\Aget the (\w+)\z/, 1])
 
         $right_hand = held.fetch(noun)
@@ -304,6 +306,90 @@ RSpec.describe 'bug-grabber.lic' do
 
       expect { run_script }.to raise_error(stop_run)
       expect(get_commands).to be_empty
+    end
+
+    # A bug word that is only the start of the object's noun, or that comes
+    # before its noun, is not a bug: DR matches a command noun against the
+    # start of the item's noun, so `get the bug` would take the bugle.
+    # 'void-black moth antenna' is how moth antennae show up in real room
+    # lists.
+    ['battered brass bugle', 'some mothballs', 'void-black moth antenna', 'unctuous moth zombie'].each do |obj|
+      it "does not take '#{obj}' for a bug" do
+        succeed_walks(stop_at: 100, scenery: [obj])
+        allow(script).to receive(:pause).and_raise(stop_run)
+
+        expect { run_script }.to raise_error(stop_run)
+        expect(get_commands).to be_empty
+      end
+
+      it "names the bug, not '#{obj}', when both are in the room" do
+        put_bug_in(10_507, bug: 'a black beetle')
+        succeed_walks(stop_at: 4, scenery: [obj])
+
+        expect { run_script }.to raise_error(stop_run)
+        expect(get_commands).to eq(['get the beetle'])
+      end
+    end
+
+    it 'still finds a bug whose noun is plural, and names it by its singular start' do
+      put_bug_in(10_507, bug: 'some chirping crickets', held: 'crickets')
+      succeed_walks(stop_at: 4)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(get_commands).to eq(['get the cricket'])
+    end
+  end
+
+  # The dropped wing stays in the room, under the name it had in hand. Its
+  # noun is wing, so it is not a bug, and `get the dragonfly` can't take it.
+  context 'when a wing is dropped in a room with another bug' do
+    def get_commands
+      commands.grep(/\Aget/)
+    end
+
+    # `get the <noun>` takes the first object whose last word starts with the
+    # noun, as DR does, and holds it under `held`'s name for it. `drop wing`
+    # leaves what was held in the room, first or last in the list.
+    def model_room(wing_first:)
+      @in_room = ['a green dragonfly', 'a black beetle']
+      held = { 'a green dragonfly' => 'dragonfly wing', 'a black beetle' => 'beetle' }
+      allow(script).to receive(:fput) do |command|
+        commands << command
+        if (noun = command[/\Aget the (\w+)\z/, 1])
+          taken = @in_room.find { |obj| obj.split.last.downcase.start_with?(noun.downcase) }
+          if taken
+            @in_room.delete(taken)
+            $right_hand = held.fetch(taken)
+          end
+        elsif command == 'drop wing'
+          wing = $right_hand
+          $right_hand = nil
+          wing_first ? @in_room.unshift(wing) : @in_room.push(wing)
+        elsif command.start_with?('stow')
+          $right_hand = nil
+        end
+        DRRoom.room_objs = @in_room.dup if walks.last == 10_507
+      end
+      # Walks 4 to 6 are the next circuit, which must find nothing left to
+      # pick up but the wing.
+      allow(DRCT).to receive(:walk_to) do |room|
+        raise stop_run if walks.size >= 6
+
+        walks << room
+        DRRoom.room_objs = room == 10_507 ? @in_room.dup : []
+        true
+      end
+    end
+
+    [true, false].each do |wing_first|
+      it "picks up the other bug and leaves the wing (wing listed #{wing_first ? 'first' : 'last'})" do
+        model_room(wing_first: wing_first)
+
+        expect { run_script }.to raise_error(stop_run)
+        expect(get_commands).to eq(['get the dragonfly', 'get the beetle'])
+        expect(commands).to include('drop wing', 'put beetle on shrine')
+        expect(commands).not_to include('put  on shrine')
+      end
     end
   end
 
