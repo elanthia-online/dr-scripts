@@ -2,11 +2,30 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smash-pumpkins
 =end
 
+before_dying do
+  Flags.delete('pumpkin-leeches')
+end
+
+# Walks to a room the script needs. When the walk fails, stops the script
+# instead of grabbing the vat, breaking pumpkins or stowing loot in the wrong
+# room, and instead of repeating walks that go nowhere.
+# A false from walk_to while standing in the room still counts as arrived:
+# lich-5 releases without elanthia-online/lich-5#1749 return false after a
+# one-step walk out of a room they couldn't identify, even though the step
+# reached the target.
+def walk_to_pumpkin_room(room)
+  return if DRCT.walk_to(room)
+  return if Room.current&.id == room
+
+  DRC.message("smash-pumpkins: could not reach room #{room}. Stopping.")
+  exit
+end
+
 Flags.add('pumpkin-leeches', 'only to rain down around you afterwards')
 
 junk_list = get_settings.pumpkin_junk.map { |x| /\b#{x}/i }
 
-DRCT.walk_to(10_570)
+walk_to_pumpkin_room(10_570)
 loop do
   break if checkbleeding
   break if DRStats.health < 50
@@ -15,21 +34,21 @@ loop do
     DRC.fix_standing
     case DRC.bput('grab vat', 'roundtime', 'You are too injured', 'Perhaps that would work better', 'when you have enough coins')
     when 'You are too injured'
-      DRCT.walk_to(10_341)
+      walk_to_pumpkin_room(10_341)
       exit
     when 'when you have enough coins'
-      DRCT.walk_to(10_358)
+      walk_to_pumpkin_room(10_358)
       case DRC.bput('withdraw 3 platinum', 'we are not lending money at this time', 'The clerk counts out')
       when 'we are not lending money at this time'
         exit
       end
-      DRCT.walk_to(10_570)
+      walk_to_pumpkin_room(10_570)
     end
     pause 1
     waitrt?
   end
 
-  DRCT.walk_to(10_569)
+  walk_to_pumpkin_room(10_569)
 
   case DRC.bput('break my pumpkin', 'wipe off pumpkin residue', 'Break what', 'need a free hand', 'You should hold')
   when 'need a free hand', 'Break what'
@@ -37,7 +56,7 @@ loop do
   end
   pause
 
-  DRCT.walk_to(10_570)
+  walk_to_pumpkin_room(10_570)
   while (thing = DRC.left_hand || DRC.right_hand)
     case thing
     when *junk_list
@@ -59,8 +78,4 @@ loop do
   DRC.wait_for_script_to_complete('tendme')
 end
 
-DRCT.walk_to(10_341)
-
-before_dying do
-  Flags.delete('pumpkin-leeches')
-end
+walk_to_pumpkin_room(10_341)

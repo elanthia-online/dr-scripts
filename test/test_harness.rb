@@ -962,6 +962,11 @@ module Harness
     $invisible || false
   end
 
+  # lich-5 global_defs.rb reads the bleeding indicator; mirrors bleeding?.
+  def checkbleeding
+    $bleeding || false
+  end
+
   def health=(health)
     $health = health
   end
