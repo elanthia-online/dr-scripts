@@ -2791,6 +2791,19 @@ class SpellProcess
       return
     end
 
+    # A moon spell is cast at a moon taken from moonwatch's data. check_moonwatch
+    # returns false when that data is unavailable (older lich-5 returns nil, which
+    # is not a failure); UserVars.moons is then empty or out of date, so no moon
+    # can be picked from it. Skip the spell before any prep side-effects
+    # (release_cyclics, drop_moon_weapon?). Cage of Light can still be cast at the
+    # ambient light, as when no moon is up.
+    moon_data_unavailable = data['moon'] && DRCMM.check_moonwatch == false
+    if moon_data_unavailable && data['name'].downcase != 'cage of light'
+      echo "Moon data is unavailable, not casting #{data['abbrev']}" if $debug_mode_ct
+      reset_casting_state(game_state)
+      return
+    end
+
     data = DRCA.check_discern(data, @settings, spell_is_sorcery?(data)) if data['use_auto_mana']
     game_state.cast_timer = Time.now
     @prep_time = data['prep_time']
@@ -2825,8 +2838,7 @@ class SpellProcess
     end
 
     if data['moon']
-      DRCMM.check_moonwatch
-      moon = UserVars.moons['visible'].first
+      moon = moon_data_unavailable ? nil : UserVars.moons['visible'].first
       if data['name'].downcase == 'moonblade'
         game_state.casting_moonblade = true
         last_moon = DRCMM.moon_used_to_summon_weapon

@@ -1371,6 +1371,8 @@ module Harness
       def hold_moon_weapon?(*_args); false; end
       def wear_moon_weapon?(*_args); false; end
       def moon_used_to_summon_weapon(*_args); end
+      def drop_moon_weapon?(*_args); false; end
+      def check_moonwatch(*_args); true; end
       def get_telescope?(*_args); true; end
       def store_telescope?(*_args); true; end
       def get_div_tool?(*_args); true; end
