@@ -1282,6 +1282,8 @@ module Harness
   module DRCT
     class << self
       def walk_to(*_args); true; end
+      def tag_to_id(*_args); end
+      def get_hometown_target_id(*_args); end
       def sort_destinations(ids); ids; end
       def buy_item(*_args); end
       def order_item(*_args); end

@@ -21,20 +21,8 @@ class PawnItems
     settings = get_settings
     @return_list = []
 
-    # Identify which pawnshop to go to.
-    if DRCT.tag_to_id('pawnshop') == Room.current.id
-      # If you're already in the nearest pawnshop, sell there.
-      pawnshop_room_id = Room.current.id
-    else
-      # Otherwise, go to the one in your preferred town.
-      hometown = DRC.get_town_name(args.town || settings.sell_loot_town || settings.hometown)
-      pawnshop_room_id = DRCT.get_hometown_target_id(hometown, 'pawnshop')
-    end
-
-    if pawnshop_room_id.nil?
-      DRC.message("Pawning not supported in #{hometown}.")
-      exit
-    end
+    pawnshop_room_id = find_pawnshop_room_id(args.town || settings.sell_loot_town || settings.hometown)
+    exit unless pawnshop_room_id
 
     # You can't sell to a merchant if you're invisible,
     # and invisibility sometimes impedes getting/stowing items.
@@ -51,6 +39,26 @@ class PawnItems
       DRCI.get_item?(item)
       DRCI.put_away_item?(item, args.source)
     end
+  end
+
+  # The pawnshop to sell in: the room you're standing in when it's the nearest
+  # pawnshop, otherwise the pawnshop in +town+. Returns nil, after telling the
+  # user why, when the current room is unknown or +town+ has no pawnshop.
+  def find_pawnshop_room_id(town)
+    nearest_id = DRCT.tag_to_id('pawnshop')
+    # Room.current is nil until Lich has worked out which room you're in. Both
+    # ids are then nil, and nil == nil would pass for "already in the pawnshop".
+    current_id = Room.current&.id
+    if current_id.nil?
+      DRC.message("Lich doesn't know which room you're in, so it can't find a pawnshop. Run this again once Lich recognises the room.")
+      return nil
+    end
+    return current_id if nearest_id == current_id
+
+    hometown = DRC.get_town_name(town)
+    pawnshop_room_id = DRCT.get_hometown_target_id(hometown, 'pawnshop')
+    DRC.message("Pawning not supported in #{hometown}.") if pawnshop_room_id.nil?
+    pawnshop_room_id
   end
 
   def sell_items(pawnshop_room_id, source, noun)
