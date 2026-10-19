@@ -80,8 +80,13 @@ class Athletics
 
   # Walks to a room a training routine needs. When the walk fails, stops the
   # routine instead of training in the wrong room or repeating the failed walk.
+  # A false from walk_to while standing in the room still counts as arrived:
+  # older Lich versions return false after a one-step walk out of a room they
+  # couldn't identify, even though the step reached the target.
+  # Nothing is remembered between runs, so the next run tries the walk again.
   def walk_to_training_room(room)
     return if DRCT.walk_to(room)
+    return if Room.current&.id == room.to_i
 
     DRC.message("Athletics: could not reach room #{room}. Stopping athletics training.")
     throw WALK_FAILED

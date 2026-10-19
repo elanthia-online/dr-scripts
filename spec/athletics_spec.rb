@@ -626,6 +626,91 @@ RSpec.describe Athletics do
       end
     end
 
+    context 'when walk_to reports false but the character is in the room' do
+      before do
+        $test_settings.swimming_target = 'arthe_dale'
+        # Older Lich versions return false after a one-step walk out of a room
+        # they couldn't identify, although the step reached the target room.
+        allow(DRCT).to receive(:walk_to) do |room|
+          raise 'walked 50 times without finishing' if walks.size >= 50
+
+          walks << room
+          allow(Room).to receive(:current).and_return(OpenStruct.new(id: room))
+          Harness::DRSkill._set_xp('Athletics', 34) if room == 19_066
+          false
+        end
+      end
+
+      it 'counts the walk as arrived and keeps training' do
+        Athletics.new
+
+        expect(walks).to eq([19_069, 19_071, 19_067, 19_066])
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    context 'when walk_to reports false and the character is in another room' do
+      it 'stops at the failed walk' do
+        $test_settings.swimming_target = 'arthe_dale'
+        fail_walk(at: 1)
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 19_071))
+
+        Athletics.new
+
+        expect(walks).to eq([19_069])
+        expect(DRC).to have_received(:message).with(stopped_message)
+      end
+    end
+
+    context 'when the current room is unknown and walk_to reports false' do
+      it 'stops at the failed walk' do
+        $test_settings.swimming_target = 'arthe_dale'
+        fail_walk(at: 1)
+        allow(Room).to receive(:current).and_return(nil)
+
+        expect { Athletics.new }.not_to raise_error
+        expect(walks).to eq([19_069])
+        expect(DRC).to have_received(:message).with(stopped_message)
+      end
+    end
+
+    context 'when a room id comes from settings as a string' do
+      it 'compares it with the current room as a number' do
+        $test_settings.climbing_target = 'silverwater_ladder'
+        $test_data[:athletics].practice_options['silverwater_ladder']['id'] = '6119'
+        allow(DRCT).to receive(:walk_to) do |room|
+          raise "walked to #{room} again" unless walks.empty?
+
+          walks << room
+          false
+        end
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 6119))
+        Harness::DRSkill._set_xp('Athletics', 34)
+
+        Athletics.new
+
+        expect(walks).to eq(['6119'])
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    context 'when athletics is started again after a run stopped' do
+      it 'tries the walk again and stops again, keeping nothing between runs' do
+        $test_settings.swimming_target = 'arthe_dale'
+        allow(DRCT).to receive(:walk_to) do |room|
+          raise "walked to #{room} again within one run" if walks.size >= 2
+
+          walks << room
+          false
+        end
+
+        2.times { Athletics.new }
+
+        expect(walks).to eq([19_069, 19_069])
+        expect(DRC).to have_received(:message).with(stopped_message).twice
+      end
+    end
+
     describe '#swim_zaldeni' do
       let(:athletics) do
         described_class.allocate.tap { |a| a.instance_variable_set(:@end_exp, 29) }
