@@ -273,6 +273,7 @@ RSpec.describe Outdoorsmanship do
   describe 'shared DRSkill double' do
     it 'reset_data clears learning set through DRSkill._set_xp' do
       Harness::DRSkill._set_xp('Outdoorsmanship', 20)
+      expect(DRSkill.getxp('Outdoorsmanship')).to eq(20)
 
       reset_data
 
