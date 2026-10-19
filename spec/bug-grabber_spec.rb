@@ -331,12 +331,41 @@ RSpec.describe 'bug-grabber.lic' do
       end
     end
 
-    it 'still finds a bug whose noun is plural, and names it by its singular start' do
-      put_bug_in(10_507, bug: 'some chirping crickets', held: 'crickets')
-      succeed_walks(stop_at: 4)
+    # The get names only the noun, so a bugle listed ahead of a real bug does
+    # not change what is sent. Which of the two DR takes then is not known; in
+    # a week of real logs no room listed a bug next to such an object.
+    it "still sends 'get the bug' when a bugle is listed ahead of the bug" do
+      put_bug_in(10_507, bug: 'a stink bug', held: 'bug')
+      succeed_walks(stop_at: 4, scenery: ['battered brass bugle'])
 
       expect { run_script }.to raise_error(stop_run)
-      expect(get_commands).to eq(['get the cricket'])
+      expect(get_commands).to eq(['get the bug'])
+    end
+
+    # A plural noun is named as the room lists it, so the get matches the
+    # item's noun in full. -fly turns into -flies, not -flys.
+    { 'some chirping crickets' => 'crickets', 'some praying mantises' => 'mantises',
+      'some glowing fireflies' => 'fireflies', 'some green dragonflies' => 'dragonflies',
+      'a green dragonfly' => 'dragonfly', 'some black bugs' => 'bugs' }.each do |obj, noun|
+      it "finds '#{obj}' and names it '#{noun}'" do
+        put_bug_in(10_507, bug: obj, held: noun)
+        succeed_walks(stop_at: 4)
+
+        expect { run_script }.to raise_error(stop_run)
+        expect(get_commands).to eq(["get the #{noun}"])
+      end
+    end
+
+    # The plural ending is only allowed on the bug word itself: no other word
+    # that merely ends in a bug word's letters counts.
+    ['a dusty firefl', 'a pair of dragonflys', 'some ladybugsy'].each do |obj|
+      it "does not take '#{obj}' for a bug" do
+        succeed_walks(stop_at: 100, scenery: [obj])
+        allow(script).to receive(:pause).and_raise(stop_run)
+
+        expect { run_script }.to raise_error(stop_run)
+        expect(get_commands).to be_empty
+      end
     end
   end
 
