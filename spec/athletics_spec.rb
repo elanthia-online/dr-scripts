@@ -629,8 +629,9 @@ RSpec.describe Athletics do
     context 'when walk_to reports false but the character is in the room' do
       before do
         $test_settings.swimming_target = 'arthe_dale'
-        # Older Lich versions return false after a one-step walk out of a room
-        # they couldn't identify, although the step reached the target room.
+        # lich-5 releases without elanthia-online/lich-5#1749 return false after
+        # a one-step walk out of a room they couldn't identify, although the
+        # step reached the target room.
         allow(DRCT).to receive(:walk_to) do |room|
           raise 'walked 50 times without finishing' if walks.size >= 50
 
@@ -674,7 +675,7 @@ RSpec.describe Athletics do
       end
     end
 
-    context 'when a room id comes from settings as a string' do
+    context 'when a room id comes from a data file as a string' do
       it 'compares it with the current room as a number' do
         $test_settings.climbing_target = 'silverwater_ladder'
         $test_data[:athletics].practice_options['silverwater_ladder']['id'] = '6119'
