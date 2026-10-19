@@ -4,7 +4,7 @@ require_relative 'spec_helper'
 
 # bug-grabber.lic has no class: all of its work is one top-level `loop do`.
 # These examples run the whole real script, evaluated into a fresh module per
-# example so its top-level defs (bug?, walk_to_or_stop) never land on Object
+# example so its top-level defs (room_bug, walk_to_or_stop) never land on Object
 # and nothing carries over from one example to the next.
 #
 # The loop never ends on its own, so every example ends it: a clean stop is the
@@ -69,13 +69,14 @@ RSpec.describe 'bug-grabber.lic' do
     end
   end
 
-  # Every walk succeeds. Raises StopRun on walk number `stop_at`.
-  def succeed_walks(stop_at:)
+  # Every walk succeeds. Raises StopRun on walk number `stop_at`. `scenery`
+  # is in every room, listed ahead of the bug.
+  def succeed_walks(stop_at:, scenery: [])
     allow(DRCT).to receive(:walk_to) do |room|
       raise stop_run if walks.size + 1 >= stop_at
 
       walks << room
-      DRRoom.room_objs = room == @bug_room ? [@bug] : []
+      DRRoom.room_objs = scenery + (room == @bug_room ? [@bug] : [])
       true
     end
   end
@@ -237,6 +238,72 @@ RSpec.describe 'bug-grabber.lic' do
       expect { run_script }.to raise_error(stop_run)
       expect(walks.size).to eq(circuit_size)
       expect(DRC).not_to have_received(:message)
+    end
+  end
+
+  # The noun in `get the <noun>` has to come from the room object that was
+  # found, not from Regexp.last_match: the match happens inside a method, so
+  # the loop's own last match is nil, or the wing match from an earlier pickup.
+  context 'when picking a bug up' do
+    def get_commands
+      commands.grep(/\Aget/)
+    end
+
+    it 'names the bug it found' do
+      put_bug_in(10_507, bug: 'a black beetle')
+      succeed_walks(stop_at: 4)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(get_commands).to eq(['get the beetle'])
+    end
+
+    it 'names the bug, not the first thing in the room' do
+      put_bug_in(10_507, bug: 'a red-spotted locust')
+      succeed_walks(stop_at: 4, scenery: ['a wooden bench', 'a scrap of parchment'])
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(get_commands).to eq(['get the locust'])
+    end
+
+    it 'names each bug when there are several, including after a wing was dropped' do
+      @in_room = ['a green dragonfly', 'a large brown moth', 'a black beetle']
+      held = { 'dragonfly' => 'dragonfly wing', 'moth' => 'moth', 'beetle' => 'beetle' }
+      allow(script).to receive(:fput) do |command|
+        commands << command
+        next unless (noun = command[/\Aget the (\w+)\z/, 1])
+
+        $right_hand = held.fetch(noun)
+        @in_room.reject! { |obj| obj.end_with?(noun) }
+        DRRoom.room_objs = @in_room.dup
+      end
+      # Only the bug room has anything in it; the shrine is empty.
+      allow(DRCT).to receive(:walk_to) do |room|
+        raise stop_run if walks.size >= 4
+
+        walks << room
+        DRRoom.room_objs = room == 10_507 ? @in_room.dup : []
+        true
+      end
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(get_commands).to eq(['get the dragonfly', 'get the moth'])
+      expect(commands).to include('drop wing', 'put moth on shrine')
+    end
+
+    it 'takes the bug noun even when it is written in capitals' do
+      put_bug_in(10_507, bug: 'a glowing FIREFLY')
+      succeed_walks(stop_at: 4)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(get_commands).to eq(['get the FIREFLY'])
+    end
+
+    it 'sends no get when nothing in the room is a bug' do
+      succeed_walks(stop_at: 100, scenery: ['a wooden bench', 'a dead goblin'])
+      allow(script).to receive(:pause).and_raise(stop_run)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(get_commands).to be_empty
     end
   end
 

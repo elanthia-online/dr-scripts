@@ -16,8 +16,14 @@
 rooms = [10_506, 10_507, 10_508, 10_509, 10_482, 10_497, 10_515, 10_510, 10_539, 10_590, 10_520, 10_640, 10_557, 10_576, 10_617, 10_620,
          10_572, 10_677]
 
-def bug?(obj_name)
-  /\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i =~ obj_name
+# The noun of the first bug among the room's objects, for `get the <noun>`, or
+# nil when none of them is a bug.
+def room_bug
+  DRRoom.room_objs.each do |obj|
+    noun = obj[/\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i, 1]
+    return noun if noun
+  end
+  nil
 end
 
 # Walks to a room on the circuit or to the shrine. When the walk fails, stops
@@ -38,16 +44,15 @@ end
 loop do
   rooms.each do |room|
     walk_to_or_stop(room)
-    break if DRRoom.room_objs.any? { |x| bug?(x) }
+    break if room_bug
   end
-  unless DRRoom.room_objs.any? { |x| bug?(x) }
+  unless room_bug
     pause 15
     echo 'waiting on more bugs'
     next
   end
 
-  while DRRoom.room_objs.any? { |x| bug?(x) }
-    bug = Regexp.last_match(1)
+  while (bug = room_bug)
     fput('stand') until checkstanding
     fput("get the #{bug}")
     pause 1
