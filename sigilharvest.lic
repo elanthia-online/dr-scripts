@@ -3,7 +3,11 @@
 =end
 
 class SigilHarvest
-  VERSION = '2.0.0'
+  VERSION = '2.0.1'
+  # Failed walks in a row before the harvest stops. Walks that keep failing
+  # (a lost character, or a current room the map can't identify) end the run
+  # instead of moving on to the next room again and again.
+  MAX_CONSECUTIVE_WALK_FAILURES = 3
   # === Experiment History (v1.2.0 -> v1.5.27) ===
   # Retrospective simulation: 100% decision agreement (15/15). Net: v1.2.0 2.9% -> v1.5.27 3.0%.
   #
@@ -96,6 +100,8 @@ class SigilHarvest
     @start_time = Time.now
     @time_limit = (@args.minutes || 30).to_i
     @rooms_visited = 0
+    @unreachable_rooms = []
+    @consecutive_walk_failures = 0
 
     log_startup_banner
 
@@ -118,7 +124,7 @@ class SigilHarvest
     startroom = Room.current.id
     get_scrolls
     find_sigils(@args.city.capitalize, @args.sigil.downcase)
-    DRCT.walk_to(startroom)
+    return_to_start(startroom)
 
     if @enemy_rooms.length > 0
       DRC.message("Enemies were encountered in the following rooms: #{@enemy_rooms}")
@@ -130,17 +136,29 @@ class SigilHarvest
 
   def find_sigils(city, sigil)
     loop do
-      sigil = @sigil_list.sample if @args.sigil.downcase == 'random'
+      if @args.sigil.downcase == 'random'
+        sigil = @sigil_list.select { |name| harvestable_rooms(city, name).any? }.sample
+      end
 
-      roomlist = @data.SigilInfo.dig(city, sigil, @season)
+      roomlist = sigil ? harvestable_rooms(city, sigil) : []
+      if roomlist.empty?
+        DRC.message("SigilHarvest: no #{@args.sigil.downcase} sigil rooms left to search near #{city}. Stopping the harvest.")
+        break
+      end
       DRC.message("Harvesting #{sigil} sigils from #{roomlist.length} known rooms in the vicinity of #{@args.city.capitalize}.") if @debug
 
       roomlist.each do |room|
-        next if @danger_rooms.include?(room)
         break if time_expired?
+        # Some room lists name a room twice; don't walk again to a room that
+        # already failed in this pass.
+        next if @unreachable_rooms.include?(room)
 
         DRCA.do_buffs(@settings, 'outdoors')
-        DRCT.walk_to(room)
+        unless walk_to_sigil_room(room)
+          break if walks_keep_failing?
+
+          next
+        end
 
         @rooms_visited += 1
         @num_iterations = 0
@@ -149,8 +167,49 @@ class SigilHarvest
         harvest_sigil(sigil)
       end
 
-      break if time_expired?
+      break if time_expired? || walks_keep_failing?
     end
+  end
+
+  # Known rooms for this sigil, city and season, minus the danger rooms and the
+  # rooms that could not be reached earlier in this session.
+  def harvestable_rooms(city, sigil)
+    Array(@data.SigilInfo.dig(city, sigil, @season)).reject do |room|
+      Array(@danger_rooms).include?(room) || @unreachable_rooms.include?(room)
+    end
+  end
+
+  # Walks to a sigil room and returns whether the character is there. A room
+  # that can't be reached is skipped for the rest of the session, so it is never
+  # retried straight away; the caller stops after too many failures in a row.
+  # A false from walk_to while standing in the room still counts as arrived:
+  # lich-5 releases without elanthia-online/lich-5#1749 return false after a
+  # one-step walk out of a room they couldn't identify, even when that step
+  # reached the target.
+  def walk_to_sigil_room(room)
+    if DRCT.walk_to(room) || Room.current&.id == room.to_i
+      @consecutive_walk_failures = 0
+      return true
+    end
+
+    @unreachable_rooms << room
+    @consecutive_walk_failures += 1
+    if walks_keep_failing?
+      DRC.message("SigilHarvest: could not reach room #{room}. #{@consecutive_walk_failures} walks in a row failed. Stopping the harvest.")
+    else
+      DRC.message("SigilHarvest: could not reach room #{room}. Skipping it for the rest of this session.")
+    end
+    false
+  end
+
+  def walks_keep_failing?
+    @consecutive_walk_failures >= MAX_CONSECUTIVE_WALK_FAILURES
+  end
+
+  def return_to_start(startroom)
+    return if DRCT.walk_to(startroom)
+
+    DRC.message("SigilHarvest: could not walk back to the starting room #{startroom}.")
   end
 
   def harvest_sigil(sigil)
@@ -663,6 +722,7 @@ class SigilHarvest
     DRC.message("  Time limit:       #{@time_limit} minutes")
     DRC.message("  Run time:         #{elapsed_minutes} minutes")
     DRC.message("  Rooms visited:    #{@rooms_visited}")
+    DRC.message("  Unreachable:      #{@unreachable_rooms.join(', ')}") unless Array(@unreachable_rooms).empty?
     DRC.message("  ---")
     DRC.message("  Sigils total:     #{total}")
     DRC.message("  Scribed:          #{scribed}")
