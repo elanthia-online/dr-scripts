@@ -19,7 +19,7 @@ RSpec.describe 'bug-grabber.lic' do
   let(:stop_run) { Class.new(StandardError) }
 
   let(:shrine_room) { 10_506 }
-  let(:circuit_size) { 31 }
+  let(:circuit_size) { 30 }
   let(:walks) { [] }
   let(:commands) { [] }
 
@@ -172,6 +172,18 @@ RSpec.describe 'bug-grabber.lic' do
       expect(walks.size).to eq(circuit_size)
       expect(walks.uniq.size).to eq(circuit_size)
       expect(DRC).not_to have_received(:message)
+    end
+
+    # In the current mapdb 10667 can't be reached from any other circuit room
+    # (14466 has taken its place north-east of 10617), and 10672 is now a booth
+    # with no mapped way back to the circuit. Either would stop every run.
+    it 'walks 14466 and neither 10667 nor 10672' do
+      succeed_walks(stop_at: 100)
+      allow(script).to receive(:pause).and_raise(stop_run)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(walks).to include(14_466)
+      expect(walks).not_to include(10_667, 10_672)
     end
   end
 
