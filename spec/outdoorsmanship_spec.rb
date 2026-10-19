@@ -15,7 +15,6 @@ load_lic_class('outdoorsmanship.lic', 'Outdoorsmanship')
 RSpec.describe Outdoorsmanship do
   before(:each) do
     reset_data
-    Harness::DRSkill._reset_xp
 
     allow(DRC).to receive(:collect)
     allow(DRC).to receive(:forage?)
@@ -268,10 +267,11 @@ RSpec.describe Outdoorsmanship do
     end
   end
 
-  # The whole suite shares one DRSkill double. Learning set here must not reach
-  # the next example, in this file or any other.
+  # The whole suite shares one DRSkill double, and the global reset_data hook
+  # runs before every example. Learning set through it must be cleared by
+  # reset_data so it cannot reach the next example, in this file or any other.
   describe 'shared DRSkill double' do
-    it 'clears learning set in one example before the next one runs' do
+    it 'reset_data clears learning set through DRSkill._set_xp' do
       Harness::DRSkill._set_xp('Outdoorsmanship', 20)
 
       reset_data
