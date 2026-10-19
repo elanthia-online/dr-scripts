@@ -448,7 +448,8 @@ class Bescort
   #
   # wear_equipment_set? takes off every worn item that is not in the
   # swimming set before it wears the set, and returns false when any
-  # swimming item could not be found, worn or put away. A false return can
+  # swimming item could not be found or worn (and, with lich-5 #1757, when
+  # a held set item could not be put away). A false return can
   # therefore still mean standard gear came off. The only case where nothing
   # changed is a swimming set that is not configured.
   #
