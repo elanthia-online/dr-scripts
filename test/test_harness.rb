@@ -871,6 +871,12 @@ module Harness
     $standing || false
   end
 
+  # Lich's indicator form of standing? (lib/global_defs.rb); both read the same
+  # IconSTANDING state, so this follows $standing too.
+  def checkstanding
+    standing?
+  end
+
   def hiding?
     hidden?
   end

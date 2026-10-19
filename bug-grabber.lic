@@ -12,9 +12,24 @@ def bug?(obj_name)
   /\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i =~ obj_name
 end
 
+# Walks to a room on the circuit or to the shrine. When the walk fails, stops
+# the script instead of searching the wrong rooms or trying to put the bug on a
+# shrine that isn't there. A false from walk_to while standing in the room
+# still counts as arrived: lich-5 releases without
+# elanthia-online/lich-5#1749 return false after a one-step walk out of a room
+# they couldn't identify, even though the step reached the target.
+def walk_to_or_stop(room, held = nil)
+  return if DRCT.walk_to(room)
+  return if Room.current&.id == room
+
+  DRC.message("bug-grabber: could not reach room #{room}. Stopping.")
+  DRC.message("bug-grabber: the #{held} is still in your hands.") if held
+  exit
+end
+
 loop do
   rooms.each do |room|
-    DRCT.walk_to(room)
+    walk_to_or_stop(room)
     break if DRRoom.room_objs.any? { |x| bug?(x) }
   end
   unless DRRoom.room_objs.any? { |x| bug?(x) }
@@ -34,7 +49,7 @@ loop do
     when /\bwing/i
       fput('drop wing')
     else
-      DRCT.walk_to(10_506)
+      walk_to_or_stop(10_506, thing)
       fput("put #{thing} on shrine")
       pause
       waitrt?
