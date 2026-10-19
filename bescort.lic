@@ -414,11 +414,61 @@ class Bescort
     end
   end
 
+  # Seconds sun_up? waits for moonwatch to publish whether the sun is up.
+  SUN_DATA_TIMEOUT = 5
+
+  # Seconds between sun_up?'s checks of moonwatch's data.
+  SUN_DATA_POLL_INTERVAL = 0.1
+
+  # Whether the sun is up, from the data moonwatch publishes in UserVars.sun.
+  #
+  # Starts moonwatch through DRCMM.check_moonwatch if needed. A false from
+  # check_moonwatch means moonwatch could not provide its data, so the answer
+  # is unknown. Otherwise this waits a bounded time for UserVars.sun to hold
+  # a true or false 'day' that is not marked as left over from a moonwatch
+  # that has stopped ('running' false): a freshly started moonwatch writes
+  # the sun data shortly after the moon data check_moonwatch may wait for.
+  #
+  # @return [Boolean, nil] true by day, false by night, nil when unknown
+  def sun_up?
+    return nil if DRCMM.check_moonwatch == false
+
+    (SUN_DATA_TIMEOUT / SUN_DATA_POLL_INTERVAL).ceil.times do
+      sun = UserVars.sun
+      return sun['day'] if sun.is_a?(Hash) && sun['running'] != false && [true, false].include?(sun['day'])
+
+      pause SUN_DATA_POLL_INTERVAL
+    end
+    nil
+  end
+
+  # Puts on the swimming gear set before a swim, unless a flying mount is
+  # used instead, and returns whether the standard set has to be put back on
+  # afterwards.
+  #
+  # wear_equipment_set? takes off every worn item that is not in the
+  # swimming set before it wears the set, and returns false when any
+  # swimming item could not be found, worn or put away. A false return can
+  # therefore still mean standard gear came off. The only case where nothing
+  # changed is a swimming set that is not configured.
+  #
+  # @return [Boolean] true when the standard set must be worn again
+  def wear_swimming_gear?
+    return false if @flying_mount
+
+    @equipment_manager.wear_equipment_set?('swimming')
+    gear_sets = @settings.gear_sets
+    gear_sets.is_a?(Hash) && !gear_sets['swimming'].nil?
+  end
+
   def coffin
-    # Check time of day
-    DRCMM.check_moonwatch
-    time = UserVars.sun['day']
-    time ? look_at = 'sunlight' : look_at = 'starlight'
+    # The image to look for is in sunlight by day and in starlight by night.
+    sun_up = sun_up?
+    if sun_up.nil?
+      DRC.message('bescort: moonwatch has not said whether the sun is up, so the coffin puzzle cannot tell whether to look at sunlight or starlight. Make sure moonwatch is running, then try again.')
+      exit
+    end
+    look_at = sun_up ? 'sunlight' : 'starlight'
 
     # Hash of images along with the light and dark symbols
     image_hash = {
@@ -449,10 +499,15 @@ class Bescort
 
       # Find our primary image
       image = DRC.bput("look #{look_at}", 'I could not find what', *image_hash.keys)
+      images = image_hash[image.downcase.to_sym]
+      # Without an image the wheels below would be turned forever looking for nothing.
+      unless images
+        DRC.message("bescort: found no image when looking at the #{look_at}, so the coffin puzzle cannot be solved. Stopping.")
+        exit
+      end
 
       # Set our light and dark images based on primary image
-      light = image_hash[image.to_sym][0]
-      dark = image_hash[image.to_sym][1]
+      light, dark = images
 
       dseen = false
       lseen = false
@@ -524,7 +579,7 @@ class Bescort
     move('go stream bank')
     # Once in the stream then you're in a safe room, get mount or remove gear.
     @equipment_manager.empty_hands
-    have_changed_gear = @flying_mount ? false : @equipment_manager.wear_equipment_set?('swimming')
+    have_changed_gear = wear_swimming_gear?
     if @flying_mount
       use_flying_mount(@flying_mount, 'mount')
       move(moveset.first) # mount travels all three rooms at once
@@ -1552,8 +1607,6 @@ class Bescort
   end
 
   def segoltha(mode)
-    @equipment_manager.empty_hands
-    have_changed_gear = @flying_mount ? false : @equipment_manager.wear_equipment_set?('swimming')
     move_count = 0
     if mode =~ /^n/i
       dir_of_travel = 'north'
@@ -1569,6 +1622,7 @@ class Bescort
       exit
     end
 
+    @equipment_manager.empty_hands
     if @flying_mount
       case @flying_mount
       when /broom|dirigible|carpet|rug/i
@@ -1606,6 +1660,8 @@ class Bescort
       exit
     end
 
+    # Changed only after the checks above, so their exits leave the gear alone.
+    have_changed_gear = wear_swimming_gear?
     loop do
       waitrt?
       if XMLData.room_exits.length == 2 || XMLData.room_exits.length == 1

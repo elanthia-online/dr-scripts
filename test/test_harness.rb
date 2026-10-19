@@ -1368,6 +1368,7 @@ module Harness
     class << self
       def any_celestial_object?(*_args); false; end
       def bright_celestial_object?(*_args); false; end
+      def check_moonwatch(*_args); true; end
       def hold_moon_weapon?(*_args); false; end
       def wear_moon_weapon?(*_args); false; end
       def moon_used_to_summon_weapon(*_args); end
