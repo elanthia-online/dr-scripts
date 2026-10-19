@@ -253,6 +253,28 @@ RSpec.describe PawnItems do
       end
     end
 
+    context 'when a pass takes nothing out of the container' do
+      # Each GET reports success but the item stays in the container (a held
+      # item with the same noun can satisfy the GET check) and LOWER fails, so
+      # the next LOOK shows exactly the same listing.
+      before do
+        looks_return(['steel nodachi', 'lot of other stuff'])
+        allow(DRCT).to receive(:sell_item).and_return(false)
+      end
+
+      it 'stops after the second identical LOOK and says why instead of looking forever' do
+        expect { script.sell_items(4321, 'backpack', nil) }.not_to raise_error
+        expect(DRCI).to have_received(:get_item_list).twice
+        expect(messages).to include(a_string_matching(/shows the same items as the last LOOK/))
+      end
+
+      it 'tries each listed item only once' do
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(DRCI).to have_received(:get_item?).with('nodachi', 'backpack').once
+      end
+    end
+
     context 'when a noun is given' do
       it 'drops the "lot of other stuff" entry and looks only once' do
         looks_return(['steel nodachi', 'hefty battle axe', 'curved nodachi', 'lot of other stuff'])

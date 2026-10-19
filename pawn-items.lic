@@ -61,15 +61,24 @@ class PawnItems
     pawnshop_room_id
   end
 
-  def sell_items(pawnshop_room_id, source, noun)
+  # +previous_listing+ is the LOOK listing from the pass before, when this call
+  # is a re-look after a cut-short listing.
+  def sell_items(pawnshop_room_id, source, noun, previous_listing = nil)
     # If container is very full then LOOK may not list all of them.
     # If you're moving a specific item, then sort those to the top
     # to increase chances we find and sell all of them in one go.
     DRC.bput("sort #{noun} in my #{source}", "are now at the top", "What were you referring to", "Please rephrase that command", "You may only sort items in your inventory") if noun
-    DRCI.get_item_list(source, 'look')
-        .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
-        .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
-        .each_with_index do |item, index|
+    listing = DRCI.get_item_list(source, 'look')
+    # Nothing left the container on the last pass, so looking again would show
+    # the same listing and recurse forever.
+    if previous_listing && listing == previous_listing
+      DRC.message("LOOK in your #{source} shows the same items as the last LOOK, so none of them could be taken out. Stopping.")
+      return
+    end
+    listing
+      .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
+      .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
+      .each_with_index do |item, index|
       # This indicates there is more items than LOOK can show
       # and we've reached the end of what we last saw.
       # We need to look again to see what we can now see.
@@ -78,13 +87,14 @@ class PawnItems
         # Each item listed before this one has normally left the container
         # (sold, lowered to the ground, or the script exited), so the next
         # LOOK shows new items. With nothing listed before it, nothing has
-        # been taken out, so another LOOK would show the same list and this
-        # would recurse forever.
+        # been taken out, so another LOOK would show the same list. Stop now
+        # rather than spend a LOOK on it; the same-listing check at the top
+        # catches any other pass that took nothing out.
         if index.zero?
           DRC.message("LOOK in your #{source} shows no items to sell, only 'a lot of other stuff'. Stopping.")
           break
         end
-        sell_items(pawnshop_room_id, source, noun)
+        sell_items(pawnshop_room_id, source, noun, listing)
         break
       end
       # Attempt to get the item from the source container.
