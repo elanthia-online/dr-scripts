@@ -142,7 +142,8 @@ class SigilHarvest
 
       roomlist = sigil ? harvestable_rooms(city, sigil) : []
       if roomlist.empty?
-        DRC.message("SigilHarvest: no #{@args.sigil.downcase} sigil rooms left to search near #{city}. Stopping the harvest.")
+        wanted = @args.sigil.downcase == 'random' ? 'sigil' : "#{@args.sigil.downcase} sigil"
+        DRC.message("SigilHarvest: no #{wanted} rooms left to search near #{city}. Stopping the harvest.")
         break
       end
       DRC.message("Harvesting #{sigil} sigils from #{roomlist.length} known rooms in the vicinity of #{@args.city.capitalize}.") if @debug
@@ -206,7 +207,12 @@ class SigilHarvest
     @consecutive_walk_failures >= MAX_CONSECUTIVE_WALK_FAILURES
   end
 
+  # startroom is nil when the run started in a room the map couldn't identify.
   def return_to_start(startroom)
+    if startroom.nil?
+      DRC.message('SigilHarvest: the starting room was not known, so not walking back.')
+      return
+    end
     return if DRCT.walk_to(startroom)
 
     DRC.message("SigilHarvest: could not walk back to the starting room #{startroom}.")

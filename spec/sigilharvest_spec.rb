@@ -1452,7 +1452,7 @@ RSpec.describe SigilHarvest do
         harvester.send(:find_sigils, 'Crossing', 'random')
 
         expect(walks).to eq([40])
-        expect(messages.last).to eq('SigilHarvest: no random sigil rooms left to search near Crossing. Stopping the harvest.')
+        expect(messages.last).to eq('SigilHarvest: no sigil rooms left to search near Crossing. Stopping the harvest.')
       end
     end
 
@@ -1492,6 +1492,13 @@ RSpec.describe SigilHarvest do
         harvester.send(:return_to_start, 10)
 
         expect(messages).to eq(['SigilHarvest: could not walk back to the starting room 10.'])
+      end
+
+      it 'does not try to walk back when the starting room was not known' do
+        harvester.send(:return_to_start, nil)
+
+        expect(walks).to be_empty
+        expect(messages).to eq(['SigilHarvest: the starting room was not known, so not walking back.'])
       end
     end
 
