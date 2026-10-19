@@ -4545,13 +4545,33 @@ RSpec.describe SpellProcess do
         expect(instance.instance_variable_get(:@custom_cast)).to eq('cast ambient')
       end
 
-      it 'still casts a ritual moon buff, which is not cast at a moon' do
-        instance = buff_process({ 'Focus Moonbeam' => moon_spell('Focus Moonbeam', 'fm', 'recast' => 1, 'ritual' => true) })
+      # A moon ritual is cast at a moon too: cast_ritual sets its cast through
+      # DRCMM.update_astral_data, which picks the moon from the same data.
+      it 'filters a ritual moon buff and casts the buff after it' do
+        instance = buff_process({
+          'Focus Moonbeam' => moon_spell('Focus Moonbeam', 'fm', 'recast' => 1, 'ritual' => true),
+          'Shadows'        => plain_spell('Shadows', 'shadows', 'recast' => 1)
+        })
+        allow(instance).to receive(:cast_ritual)
+
+        instance.send(:check_buffs, pass_state)
+
+        expect(instance).not_to have_received(:cast_ritual)
+        expect(@prepared).to eq(['shadows'])
+      end
+
+      it 'casts a ritual moon buff when moon data is ready' do
+        allow(DRCMM).to receive(:check_moonwatch).and_return(true)
+        instance = buff_process({
+          'Focus Moonbeam' => moon_spell('Focus Moonbeam', 'fm', 'recast' => 1, 'ritual' => true),
+          'Shadows'        => plain_spell('Shadows', 'shadows', 'recast' => 1)
+        })
         allow(instance).to receive(:cast_ritual)
 
         instance.send(:check_buffs, pass_state)
 
         expect(instance).to have_received(:cast_ritual).with(hash_including('abbrev' => 'fm'), anything)
+        expect(@prepared).to be_empty
       end
 
       it 'does nothing, without error, when the only due buff is a moon buff it cannot cast' do

@@ -2509,8 +2509,9 @@ class SpellProcess
               !DRSpells.active_spells[name] || DRSpells.active_spells[name].to_i <= data['recast']
             end
       # Checked only for a due buff, so moon data is not asked for a moon buff
-      # that is still on its timer. A ritual is not cast at a moon.
-      due && (data['ritual'] || !moon_spell_uncastable?(data))
+      # that is still on its timer. A moon ritual is filtered too: cast_ritual
+      # picks its moon from the same data, through DRCMM.update_astral_data.
+      due && !moon_spell_uncastable?(data)
     end
     # No buff is due for recasting (all healthy or still on timer): nothing to do.
     return unless data
