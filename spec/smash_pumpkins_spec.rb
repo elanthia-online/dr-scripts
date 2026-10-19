@@ -120,6 +120,7 @@ RSpec.describe 'smash-pumpkins.lic' do
     it 'leaves the pumpkin-leeches flag to the before_dying cleanup' do
       expect { run_script }.to raise_error(SystemExit)
       expect(teardown.size).to eq(1)
+      expect(Flags.flags).to have_key('pumpkin-leeches')
       teardown.each(&:call)
       expect(Flags.flags).not_to have_key('pumpkin-leeches')
     end
