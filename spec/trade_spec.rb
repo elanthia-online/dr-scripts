@@ -440,6 +440,20 @@ RSpec.describe Trade do
         trade.return_to_caravan
       end
 
+      # A fresh @last_seen_caravan ([]) means the caravan hasn't been seen in
+      # your room since the script started. That is not an unknown room, so
+      # return_to_caravan keeps its old no-op: nothing to walk back to.
+      [[:known, 10], [:unknown, nil]].each do |label, id|
+        it "does nothing when the caravan has never been seen (#{label} room, unchanged)" do
+          location[:id] = id
+          trade.instance_variable_set(:@last_seen_caravan, [])
+          allow(trade).to receive(:caravan_check?).and_return(false)
+          expect(DRCT).not_to receive(:walk_to)
+          expect { trade.return_to_caravan }.not_to raise_error
+          expect(messages).to be_empty
+        end
+      end
+
       it 'walks back from another known room (unchanged)' do
         location[:id] = 11
         trade.instance_variable_set(:@last_seen_caravan, [10, Time.now])

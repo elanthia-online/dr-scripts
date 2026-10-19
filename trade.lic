@@ -1033,6 +1033,8 @@ class Trade
   end
 
   def return_to_caravan
+    # Not seen in your room since the script started: nowhere to walk back to.
+    return if @last_seen_caravan.empty?
     return if in_room?(@last_seen_caravan[0])
 
     if @last_seen_caravan[0].nil?
@@ -1085,7 +1087,7 @@ class Trade
 
   def take_caravan_to(room_id) # primary method for leading your caravan to a destination step-by-step.
     if room_id.nil?
-      DRC.message('No destination room was found for the caravan, so the script is stopping here. Check the messages above for the reason.')
+      DRC.message('No destination room was found for the caravan, so the script is stopping here.')
       exit
     end
 
