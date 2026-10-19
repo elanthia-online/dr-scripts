@@ -1062,7 +1062,15 @@ class Trade
     !current.nil? && current == room_id
   end
 
-  def wait_for_known_room
+  # Waits until Lich knows the current room. With +grace+ (seconds), polls
+  # quietly that long first, so a room that resolves on its own a moment
+  # later doesn't print the manual-move instruction.
+  def wait_for_known_room(grace: 0)
+    (grace / 0.25).ceil.times do
+      return unless current_room_id.nil?
+
+      pause 0.25
+    end
     return unless current_room_id.nil?
 
     DRC.message("The script doesn't know what room it's in!  Manually move one room away and return, then everything should resume automatically!")
@@ -1106,7 +1114,7 @@ class Trade
     until in_room?(room_id)
       if current_room_id.nil?
         # Stepped into a room Lich can't place: wait for it, then re-plan.
-        wait_for_known_room
+        wait_for_known_room(grace: 2)
         path = compute_path(room_id)
         next
       end

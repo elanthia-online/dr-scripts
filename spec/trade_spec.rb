@@ -183,12 +183,31 @@ RSpec.describe Trade do
         include_examples 'for both forms of unknown room', proc {
           it 'waits for the room, re-plans from there and finishes the walk' do
             # The north exit from 10 lands somewhere Lich can't place; moving
-            # on and back (the pause) puts you in 11.
+            # on and back (the 1 s wait after the message) puts you in 11.
             exits[10] = ['north', nil]
-            allow(trade).to receive(:pause) { location[:id] = 11 if location[:id].nil? }
+            allow(trade).to receive(:pause) { |secs| location[:id] = 11 if secs == 1 }
             location[:id] = 10
             trade.take_caravan_to(12)
             expect(messages).to include(unknown_room_message)
+            expect(steps).to eq(%w[north east])
+            expect(trade).to have_received(:compute_path).twice
+          end
+
+          it 'polls quietly for 2 seconds before asking you to move' do
+            exits[10] = ['north', nil]
+            allow(trade).to receive(:pause) { |secs| location[:id] = 11 if secs == 1 }
+            location[:id] = 10
+            trade.take_caravan_to(12)
+            expect(trade).to have_received(:pause).with(0.25).exactly(8).times
+          end
+
+          it 'does not ask you to move when the room resolves on its own a moment later' do
+            exits[10] = ['north', nil]
+            polls = 0
+            allow(trade).to receive(:pause) { location[:id] = 11 if location[:id].nil? && (polls += 1) == 3 }
+            location[:id] = 10
+            trade.take_caravan_to(12)
+            expect(messages).not_to include(unknown_room_message)
             expect(steps).to eq(%w[north east])
             expect(trade).to have_received(:compute_path).twice
           end
