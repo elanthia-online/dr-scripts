@@ -4412,6 +4412,245 @@ RSpec.describe SpellProcess do
   end
 
   # ===========================================================================
+  # Moon spells and selection while moonwatch's moon data is unavailable.
+  #
+  # prepare_spell skips a moon spell when check_moonwatch returns false. The
+  # check_* selects must filter it out too, as they do disabled spells: nothing
+  # marks a skipped spell as done (no recast_every timer, never active, the
+  # skill's rate does not move), so otherwise the same spell is chosen again
+  # every pass and the buffs and spells after it are never cast. These run the
+  # real selection and prepare_spell over several passes.
+  # ===========================================================================
+  describe 'moon spell selection while moon data is unavailable' do
+    def pass_state(**stubs)
+      gs = GameState.allocate
+      gs.casting = false
+      gs.cast_timer = nil
+      stubs.each { |name, value| allow(gs).to receive(name).and_return(value) }
+      gs
+    end
+
+    def moon_spell(name, abbrev, **extra)
+      { 'abbrev' => abbrev, 'name' => name, 'mana' => 5, 'moon' => true, 'cambrinth' => [] }.merge(extra)
+    end
+
+    def plain_spell(name, abbrev, **extra)
+      { 'abbrev' => abbrev, 'name' => name, 'mana' => 5, 'cambrinth' => [] }.merge(extra)
+    end
+
+    def training_process(spells)
+      build_spell_process(
+        training_spells: spells,
+        training_spells_max_threshold: nil,
+        release_cyclic_on_low_mana: nil,
+        training_spell_mana_threshold: 0,
+        magic_exp_training_max_threshold: 100,
+        training_spells_wait: 0,
+        training_cast_timer: Time.now - 1,
+        training_cyclic_timer: Time.now - 1,
+        training_spells_combat_sorcery: nil
+      )
+    end
+
+    def offensive_process(spells)
+      build_spell_process(offensive_spells: spells, offensive_spell_cycle: [], offensive_spell_mana_threshold: 0)
+    end
+
+    before(:each) do
+      @prepared = []
+      allow(DRCA).to receive(:prepare?) do |abbrev, *_rest|
+        @prepared << abbrev
+        'You feel fully prepared to cast your spell.'
+      end
+      allow(DRCA).to receive(:release_cyclics)
+      allow(DRCMM).to receive(:drop_moon_weapon?).and_return(false)
+      allow(DRCMM).to receive(:hold_moon_weapon?).and_return(false)
+      allow(DRC).to receive(:bput).and_return('You glance up at the sky.')
+      allow(DRCMM).to receive(:check_moonwatch).and_return(false)
+      DRStats.mana = 100
+      DRSpells._set_active_spells({})
+      # Saved data from an earlier session: it still lists a moon as up.
+      UserVars.moons = {
+        'katamba' => { 'timer' => 30 }, 'yavash' => { 'timer' => 30 }, 'xibar' => { 'timer' => 30 },
+        'visible' => ['katamba']
+      }
+    end
+
+    describe '#check_buffs' do
+      def buff_process(buffs, spell_timers: {})
+        build_spell_process(buff_spells: buffs, buff_spell_mana_threshold: 0, buff_force_cambrinth: false,
+                            spell_timers: spell_timers)
+      end
+
+      # The shape of the Moonblade sample profiles: Moonblade on a long
+      # recast_every timer, listed before the other buffs.
+      let(:buffs) do
+        {
+          'Moonblade' => moon_spell('Moonblade', 'moonblade', 'recast_every' => 1400),
+          'Shadows'   => plain_spell('Shadows', 'shadows', 'recast' => 1)
+        }
+      end
+
+      it 'still casts a buff listed after a moon buff it cannot cast, over several passes' do
+        instance = buff_process(buffs)
+        gs = pass_state
+
+        3.times do
+          gs.casting = false
+          instance.send(:check_buffs, gs)
+          DRSpells._set_active_spells(@prepared.include?('shadows') ? { 'Shadows' => 10 } : {})
+        end
+
+        expect(@prepared).to eq(['shadows'])
+        expect(DRCMM).not_to have_received(:drop_moon_weapon?)
+      end
+
+      it 'does not ask for moon data for a moon buff that is still on its timer' do
+        instance = buff_process(buffs, spell_timers: { 'moonblade' => Time.now })
+
+        instance.send(:check_buffs, pass_state)
+
+        expect(DRCMM).not_to have_received(:check_moonwatch)
+        expect(@prepared).to eq(['shadows'])
+      end
+
+      it 'casts the moon buff first when moon data is ready' do
+        allow(DRCMM).to receive(:check_moonwatch).and_return(true)
+        instance = buff_process(buffs)
+
+        instance.send(:check_buffs, pass_state)
+
+        expect(@prepared).to eq(['moonblade'])
+        expect(instance.instance_variable_get(:@custom_cast)).to eq('cast katamba')
+      end
+
+      it 'treats nil from check_moonwatch (older lich-5) as ready' do
+        allow(DRCMM).to receive(:check_moonwatch).and_return(nil)
+        instance = buff_process(buffs)
+
+        instance.send(:check_buffs, pass_state)
+
+        expect(@prepared).to eq(['moonblade'])
+      end
+
+      it 'still chooses Cage of Light, cast at the ambient light' do
+        instance = buff_process({
+          'Cage of Light' => moon_spell('Cage of Light', 'col', 'recast' => 1),
+          'Shadows'       => plain_spell('Shadows', 'shadows', 'recast' => 1)
+        })
+
+        instance.send(:check_buffs, pass_state)
+
+        expect(@prepared).to eq(['col'])
+        expect(instance.instance_variable_get(:@custom_cast)).to eq('cast ambient')
+      end
+
+      it 'still casts a ritual moon buff, which is not cast at a moon' do
+        instance = buff_process({ 'Focus Moonbeam' => moon_spell('Focus Moonbeam', 'fm', 'recast' => 1, 'ritual' => true) })
+        allow(instance).to receive(:cast_ritual)
+
+        instance.send(:check_buffs, pass_state)
+
+        expect(instance).to have_received(:cast_ritual).with(hash_including('abbrev' => 'fm'), anything)
+      end
+
+      it 'does nothing, without error, when the only due buff is a moon buff it cannot cast' do
+        instance = buff_process({ 'Moonblade' => buffs['Moonblade'] })
+        gs = pass_state
+
+        expect { instance.send(:check_buffs, gs) }.not_to raise_error
+
+        expect(@prepared).to be_empty
+        expect(gs.casting).to be false
+      end
+    end
+
+    describe '#check_training' do
+      it 'trains the next skill instead of choosing the moon spell again' do
+        # Utility comes before Augmentation, and sort_by_rate_then_rank keeps
+        # that order here, so the moon spell is the first choice.
+        instance = training_process(
+          'Utility'      => moon_spell('Focus Moonbeam', 'fm'),
+          'Augmentation' => plain_spell('Shadows', 'shadows')
+        )
+        gs = pass_state(is_offense_allowed?: true, npcs: [])
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+
+        instance.send(:check_training, gs)
+
+        expect(@prepared).to eq(['shadows'])
+      end
+    end
+
+    describe '#check_offensive' do
+      it 'casts the next ready spell instead of choosing the moon spell again' do
+        instance = offensive_process([
+                                       moon_spell('Whole Displacement', 'wd', 'skill' => 'Utility'),
+                                       plain_spell('Fire Spirit', 'fire', 'skill' => 'Targeted Magic')
+                                     ])
+        gs = pass_state(npcs: ['a kobold'], is_offense_allowed?: true, dancing?: false)
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+
+        instance.send(:check_offensive, gs)
+
+        expect(@prepared).to eq(['fire'])
+      end
+    end
+
+    describe '#execute' do
+      # Two moon training spells and a moon offensive spell are all considered
+      # in one pass; none can be cast.
+      def execute_process
+        instance = training_process(
+          'Utility'      => moon_spell('Focus Moonbeam', 'fm'),
+          'Augmentation' => moon_spell('Mask of the Moons', 'mom')
+        )
+        instance.instance_variable_set(:@offensive_spells, [moon_spell('Whole Displacement', 'wd', 'skill' => 'Utility')])
+        instance.instance_variable_set(:@offensive_spell_cycle, [])
+        instance.instance_variable_set(:@offensive_spell_mana_threshold, 0)
+        instance.instance_variable_set(:@spell_checks, [])
+        instance.instance_variable_set(:@prioritize_offensive_spells, false)
+        allow(instance).to receive(:check_timer)
+        allow(instance).to receive(:check_osrel)
+        allow(instance).to receive(:check_current)
+        instance
+      end
+
+      def execute_state
+        gs = pass_state(stowing?: false, dismiss_pet?: false, finish_spell_casting?: false, mob_died: false,
+                        is_offense_allowed?: true, dancing?: false, npcs: ['a kobold'])
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+        gs
+      end
+
+      it 'asks check_moonwatch once per pass, and again on the next pass' do
+        instance = execute_process
+        gs = execute_state
+
+        instance.execute(gs)
+        expect(DRCMM).to have_received(:check_moonwatch).once
+        expect(@prepared).to be_empty
+
+        instance.execute(gs)
+        expect(DRCMM).to have_received(:check_moonwatch).twice
+      end
+
+      it 'casts the moon spell on the next pass once moon data becomes ready' do
+        allow(DRCMM).to receive(:check_moonwatch).and_return(false, true)
+        instance = execute_process
+        gs = execute_state
+
+        instance.execute(gs)
+        expect(@prepared).to be_empty
+
+        instance.execute(gs)
+        expect(@prepared).to eq(['fm'])
+        expect(instance.instance_variable_get(:@custom_cast)).to eq('cast katamba')
+      end
+    end
+  end
+
+  # ===========================================================================
   # target_enemy -> live-creature migration. An offensive spell's configured
   # target_enemy stays a NOUN in config (ids are not stable across hunts), but at
   # runtime we resolve that noun to a LIVE + HOSTILE Lich::DragonRealms::Creature

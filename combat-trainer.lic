@@ -1948,6 +1948,8 @@ class SpellProcess
   end
 
   def execute(game_state)
+    # check_moonwatch's answer is kept for one pass only (see moon_data_unavailable?).
+    @moon_data_unavailable = nil
     return true if game_state.stowing?
     return false if game_state.dismiss_pet?
 
@@ -2382,6 +2384,7 @@ class SpellProcess
       next false if data['any_celestial_object'] && !DRCMM.any_celestial_object?
       next false if data['no_bright_celestial_object'] && DRCMM.bright_celestial_object?
       next false if data['no_celestial_object'] && DRCMM.any_celestial_object?
+      next false if moon_spell_uncastable?(data)
       next false if data['must_be_true'] && !ct_safe_eval(data['must_be_true'], binding)
 
       true
@@ -2441,6 +2444,30 @@ class SpellProcess
     !!(abbrev && @disabled_spells&.include?(abbrev.downcase))
   end
 
+  # Whether moonwatch's moon data is unavailable: DRCMM.check_moonwatch returned
+  # false. Older lich-5 releases return nil, which is not a failure. The answer
+  # is asked at most once per execute pass (execute clears it), so the selection
+  # filters and prepare_spell agree and check_moonwatch, which may wait for
+  # moonwatch, is not asked once per candidate. It is asked only when a moon
+  # spell is considered, and again on the next pass, so casting resumes as soon
+  # as moonwatch publishes.
+  def moon_data_unavailable?
+    @moon_data_unavailable = DRCMM.check_moonwatch == false if @moon_data_unavailable.nil?
+    @moon_data_unavailable
+  end
+
+  # A moon spell is cast at a moon taken from moonwatch's data, so it cannot be
+  # cast while that data is unavailable. Cage of Light is the exception: it is
+  # cast at the ambient light, as when no moon is up. The check_* selects filter
+  # on this, as they do on spell_disabled?, so a skipped moon spell is not chosen
+  # again every pass ahead of the spells after it.
+  def moon_spell_uncastable?(data)
+    return false unless data['moon']
+    return false if data['name'].to_s.downcase == 'cage of light'
+
+    moon_data_unavailable?
+  end
+
   def disable_spell(data)
     abbrev = data['abbrev']
     return unless abbrev
@@ -2472,15 +2499,18 @@ class SpellProcess
     end
 
     name, data = recastable_buffs.find do |name, data|
-      if data['pet_type']
-        check_spell_timer?(data) && game_state.npcs.include?(data['pet_type'])
-      elsif data['recast_every']
-        check_spell_timer?(data)
-      elsif data['expire']
-        true
-      else
-        !DRSpells.active_spells[name] || DRSpells.active_spells[name].to_i <= data['recast']
-      end
+      due = if data['pet_type']
+              check_spell_timer?(data) && game_state.npcs.include?(data['pet_type'])
+            elsif data['recast_every']
+              check_spell_timer?(data)
+            elsif data['expire']
+              true
+            else
+              !DRSpells.active_spells[name] || DRSpells.active_spells[name].to_i <= data['recast']
+            end
+      # Checked only for a due buff, so moon data is not asked for a moon buff
+      # that is still on its timer. A ritual is not cast at a moon.
+      due && (data['ritual'] || !moon_spell_uncastable?(data))
     end
     # No buff is due for recasting (all healthy or still on timer): nothing to do.
     return unless data
@@ -2718,6 +2748,7 @@ class SpellProcess
       next false if spell['any_celestial_object'] && !DRCMM.any_celestial_object?
       next false if spell['no_bright_celestial_object'] && DRCMM.bright_celestial_object?
       next false if spell['no_celestial_object'] && DRCMM.any_celestial_object?
+      next false if moon_spell_uncastable?(spell)
       next false if spell['must_be_true'] && !ct_safe_eval(spell['must_be_true'], binding)
 
       true
@@ -2791,14 +2822,11 @@ class SpellProcess
       return
     end
 
-    # A moon spell is cast at a moon taken from moonwatch's data. check_moonwatch
-    # returns false when that data is unavailable (older lich-5 returns nil, which
-    # is not a failure); UserVars.moons is then empty or out of date, so no moon
-    # can be picked from it. Skip the spell before any prep side-effects
-    # (release_cyclics, drop_moon_weapon?). Cage of Light can still be cast at the
-    # ambient light, as when no moon is up.
-    moon_data_unavailable = data['moon'] && DRCMM.check_moonwatch == false
-    if moon_data_unavailable && data['name'].downcase != 'cage of light'
+    # Backstop for callers that do not filter on moon_spell_uncastable?. When
+    # moonwatch's moon data is unavailable, UserVars.moons is empty or out of
+    # date, so no moon can be picked from it. Skip the spell before any prep
+    # side-effects (release_cyclics, drop_moon_weapon?).
+    if moon_spell_uncastable?(data)
       echo "Moon data is unavailable, not casting #{data['abbrev']}" if $debug_mode_ct
       reset_casting_state(game_state)
       return
@@ -2838,7 +2866,7 @@ class SpellProcess
     end
 
     if data['moon']
-      moon = moon_data_unavailable ? nil : UserVars.moons['visible'].first
+      moon = moon_data_unavailable? ? nil : UserVars.moons['visible'].first
       if data['name'].downcase == 'moonblade'
         game_state.casting_moonblade = true
         last_moon = DRCMM.moon_used_to_summon_weapon
