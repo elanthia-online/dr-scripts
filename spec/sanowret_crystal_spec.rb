@@ -297,6 +297,32 @@ RSpec.describe SanowretCrystal do
       expect(pauses.size).to eq(2)
     end
 
+    # A refusal that never lifts would otherwise cost a tap every pass (every ~14 s
+    # under crossing-training), so point at the setting check_crystal honours.
+    # Conditional, since a refusal might only be temporary.
+    { 'a mapped room' => [10, 'room id 10'], 'an unmapped room' => [nil, "'Ruins, Hall'"] }.each do |label, (id, entry)|
+      it "suggests sanowret_no_use_rooms by #{id ? 'room id' : 'bracket-stripped title'} in #{label}" do
+        in_room('[[Ruins, Hall]]', id: id)
+        on_pause(tapper)
+
+        tapper.check_crystal
+
+        expect(DRC).to have_received(:message)
+          .with("If this room always refuses the crystal, add #{entry} to your sanowret_no_use_rooms settings.")
+      end
+    end
+
+    it 'skips the room on the next pass once the suggested room id is in sanowret_no_use_rooms' do
+      in_room('[[Crossing, Market]]', id: 10)
+      on_pause(tapper)
+      tapper.check_crystal
+      tapper.instance_variable_set(:@no_use_rooms, [10])
+
+      tapper.check_crystal
+
+      expect(DRC).to have_received(:bput).once
+    end
+
     it 'does not use or stow the crystal' do
       in_room('[[Crossing, Market]]', id: 10)
       on_pause(tapper, 1 => -> { in_room('[[Crossing, Bank]]', id: 11) })
@@ -320,6 +346,16 @@ RSpec.describe SanowretCrystal do
 
         expect(pauses).to be_empty
         expect(DRC).to have_received(:message).with('Cannot use the sanowret crystal in this room.')
+      end
+
+      it 'suggests sanowret_no_use_rooms so a refusing room stops costing a tap every run' do
+        in_room('[[Crossing, Market]]', id: 10)
+        on_pause(tapper)
+
+        tapper.check_crystal
+
+        expect(DRC).to have_received(:message)
+          .with('If this room always refuses the crystal, add room id 10 to your sanowret_no_use_rooms settings.')
       end
 
       it 'returns without waiting in an unmapped room' do
