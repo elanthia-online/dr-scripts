@@ -69,13 +69,21 @@ class PawnItems
     DRCI.get_item_list(source, 'look')
         .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
         .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
-        .each do |item|
+        .each_with_index do |item, index|
       # This indicates there is more items than LOOK can show
       # and we've reached the end of what we last saw.
       # We need to look again to see what we can now see.
       # Keep doing this until exhaust source.
       if item =~ /lot of other stuff/
-        sell_items(source, noun)
+        # Every item listed before this one has left the container (sold,
+        # lowered to the ground, or the script exited), so the next LOOK shows
+        # new items. With nothing listed before it, another LOOK would show
+        # the same list and this would recurse forever.
+        if index.zero?
+          DRC.message("LOOK in your #{source} shows no items to sell, only 'a lot of other stuff'. Stopping.")
+          break
+        end
+        sell_items(pawnshop_room_id, source, noun)
         break
       end
       # Attempt to get the item from the source container.

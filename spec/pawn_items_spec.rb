@@ -160,4 +160,118 @@ RSpec.describe PawnItems do
       expect(messages).to include('Pawning not supported in Crossing.')
     end
   end
+
+  describe '#sell_items' do
+    # DRCI.get_item_list(source, 'look') returns LOOK IN's listing with the
+    # articles stripped. When a container holds more than LOOK can show, the
+    # game ends the listing with "and a lot of other stuff.", which arrives
+    # here as a final 'lot of other stuff' entry.
+    let(:sold) { [] }
+    let(:script) do
+      PawnItems.allocate.tap { |s| s.instance_variable_set(:@return_list, []) }
+    end
+
+    before do
+      allow(DRC).to receive(:bput).and_return('You lower')
+      allow(DRCI).to receive(:get_item?).and_return(true)
+      allow(DRCT).to receive(:sell_item) { |room_id, item| sold << [room_id, item] }
+    end
+
+    def looks_return(*pages)
+      allow(DRCI).to receive(:get_item_list).with('backpack', 'look').and_return(*pages)
+    end
+
+    context 'when LOOK cuts the listing short' do
+      it 'looks again and sells what the next LOOK shows, at the same pawnshop' do
+        looks_return(['steel nodachi', 'hefty battle axe', 'lot of other stuff'], ['thick book'])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(sold).to eq([[4321, 'nodachi'], [4321, 'axe'], [4321, 'book']])
+        expect(DRCI).to have_received(:get_item_list).twice
+      end
+
+      it 'keeps looking through several cut-short listings until the container is empty' do
+        looks_return(['steel nodachi', 'lot of other stuff'],
+                     ['hefty battle axe', 'lot of other stuff'],
+                     ['thick book'],
+                     [])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(sold.map(&:last)).to eq(%w[nodachi axe book])
+        expect(DRCI).to have_received(:get_item_list).exactly(3).times
+      end
+
+      it 'never tries to get or sell the "lot of other stuff" entry itself' do
+        looks_return(['steel nodachi', 'lot of other stuff'], [])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(DRCI).not_to have_received(:get_item?).with(/other stuff/, anything)
+        expect(sold.map(&:last)).to eq(['nodachi'])
+      end
+
+      it 'remembers items the merchant refuses on every pass so they can be put back' do
+        looks_return(['steel nodachi', 'lot of other stuff'], ['thick book'])
+        allow(DRCT).to receive(:sell_item).and_return(false)
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(script.instance_variable_get(:@return_list)).to eq(%w[nodachi book])
+        expect(DRC).to have_received(:bput).with('lower ground', 'You lower').twice
+      end
+
+      it 'still stops when an item on a later pass cannot be taken out' do
+        looks_return(['steel nodachi', 'lot of other stuff'], ['thick book'])
+        allow(DRCI).to receive(:get_item?).with('book', 'backpack').and_return(false)
+
+        expect { script.sell_items(4321, 'backpack', nil) }.to raise_error(SystemExit)
+        expect(messages).to include('Unable to get book from backpack.')
+        expect(sold.map(&:last)).to eq(['nodachi'])
+      end
+    end
+
+    context 'when LOOK lists nothing but "lot of other stuff"' do
+      # Nothing was taken out, so another LOOK would show the same listing.
+      it 'stops after one LOOK and says why instead of looking forever' do
+        looks_return(['lot of other stuff'])
+
+        expect { script.sell_items(4321, 'backpack', nil) }.not_to raise_error
+        expect(DRCI).to have_received(:get_item_list).once
+        expect(DRCI).not_to have_received(:get_item?)
+        expect(messages).to include(a_string_matching(/shows no items to sell, only 'a lot of other stuff'/))
+      end
+
+      it 'stops when a later LOOK shows only "lot of other stuff"' do
+        looks_return(['steel nodachi', 'lot of other stuff'], ['lot of other stuff'])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(sold.map(&:last)).to eq(['nodachi'])
+        expect(DRCI).to have_received(:get_item_list).twice
+      end
+    end
+
+    context 'when LOOK shows everything' do
+      it 'looks once and sells each item' do
+        looks_return(['steel nodachi', 'thick book'])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(sold).to eq([[4321, 'nodachi'], [4321, 'book']])
+        expect(DRCI).to have_received(:get_item_list).once
+        expect(messages.grep(/lot of other stuff/)).to be_empty
+      end
+
+      it 'does nothing for an empty container' do
+        looks_return([])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(sold).to be_empty
+        expect(messages).to be_empty
+      end
+    end
+  end
 end
