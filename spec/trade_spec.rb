@@ -260,7 +260,8 @@ RSpec.describe Trade do
       let(:echoes) { [] }
       let(:world) do
         { player: 10, caravan: 10, unknown: [], following: false, clock: Time.at(1_000_000),
-          away_dir: 'west', away_since: nil, coming_back: false, back_after: 5, apart: 0, follow_told_from: [], steps: [] }
+          away_dir: 'west', away_since: nil, coming_back: false, back_after: 5, apart: 0, follow_told_from: [], steps: [],
+          caravan_barred: [], gone_back: false }
       end
 
       def leave(dir)
@@ -279,6 +280,10 @@ RSpec.describe Trade do
         elsif world[:coming_back] && world[:clock] - world[:away_since] >= world[:back_after]
           leave(world[:away_dir] == 'west' ? 'east' : 'west')
           world[:coming_back] = false
+        elsif !world[:gone_back] && messages.any? { |m| m =~ /caravan hasn't caught up/ }
+          # Told the caravan can't reach you: walk back to it.
+          leave(world[:caravan] > world[:player] ? 'east' : 'west')
+          world[:gone_back] = true
         end
         world[:apart] = 0 if world[:caravan] == world[:player]
         return unless world[:following] && world[:caravan] != world[:player]
@@ -288,7 +293,10 @@ RSpec.describe Trade do
         return if world[:apart] < 1
 
         world[:apart] = 0
-        world[:caravan] += world[:player] <=> world[:caravan]
+        next_room = world[:caravan] + (world[:player] <=> world[:caravan])
+        return if world[:caravan_barred].include?(next_room) # a room the caravan can't enter
+
+        world[:caravan] = next_room
         Flags['caravan-arrived'] = true if world[:caravan] == world[:player]
       end
 
@@ -402,6 +410,11 @@ RSpec.describe Trade do
             expect(instructions).not_to include(a_string_matching(/return|come straight back/))
           end
 
+          it "tells you to move somewhere the caravan can follow" do
+            trade.take_caravan_to(13)
+            expect(messages.grep(/doesn't know what room/)).to all(include('somewhere your caravan can follow'))
+          end
+
           it 'carries on from the room you moved to without you stepping back' do
             trade.take_caravan_to(13)
             # The script's steps only: 10 east into 11 (unknown), then on from
@@ -409,6 +422,33 @@ RSpec.describe Trade do
             expected = away == 'west' ? [[10, 'east'], [10, 'east'], [11, 'east'], [12, 'east']] : [[10, 'east'], [12, 'east']]
             expect(world[:steps].map { |from, dir, _| [from, dir] }).to eq(expected)
           end
+        end
+      end
+
+      # Rooms are in a line, so only a room off the route (west of 11, with the
+      # destination east) can be one the caravan can't enter.
+      context "when a step lands in a room Lich can't place and you step west into a room the caravan can't enter" do
+        before do
+          world[:unknown] << 11
+          world[:away_dir] = 'west'
+          world[:caravan_barred] << 10
+        end
+
+        it "tells you to go back to the caravan if it can't follow you, then carries on with it" do
+          trade.take_caravan_to(13)
+          expect(messages).to include(a_string_matching(/caravan hasn't caught up/))
+          expect(world.values_at(:player, :caravan)).to eq([13, 13])
+          expect(caravan_left_behind).to be_empty
+        end
+
+        it 'waits about 15 seconds for the caravan before telling you to go back' do
+          told_at = nil
+          allow(DRC).to receive(:message) do |text|
+            messages << text
+            told_at ||= world[:clock] if text.include?("caravan hasn't caught up")
+          end
+          trade.take_caravan_to(13)
+          expect(told_at - world[:away_since]).to be_between(15, 17)
         end
       end
 

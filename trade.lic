@@ -1099,6 +1099,27 @@ class Trade
     end
   end
 
+  # Waits for the following caravan to be confirmed in your room after you
+  # moved to get the room placed. If you moved away, the caravan's arrival may
+  # already have set its flag. Left set, the next step wouldn't wait for the
+  # caravan, so it is cleared first, and again for the next step. If you moved
+  # somewhere the caravan can't follow it never arrives, so after 15 seconds
+  # (then every minute) you're told to go back to it.
+  def wait_for_caravan_to_catch_up
+    Flags.reset('caravan-arrived')
+    waited = Time.now
+    limit = 15
+    until Flags['caravan-arrived'] || caravan_check?(false)
+      pause 0.2
+      next if Time.now - waited < limit
+
+      DRC.message("Your caravan hasn't caught up. Go back to it, and the script will carry on from there.")
+      waited = Time.now
+      limit = 60
+    end
+    Flags.reset('caravan-arrived')
+  end
+
   def wipe_bescort_skills
     wipe_skill('Outdoorsmanship', @lead_training_skills) if @caravan_training_skills['Outdoorsmanship']
     wipe_skill('Perception', @lead_training_skills) if @caravan_training_skills['Perception']
@@ -1140,14 +1161,8 @@ class Trade
         # Stepped into a room Lich can't place: wait for it, then re-plan from
         # wherever you are. The caravan is following, so if you have to move
         # it comes after you; you don't step back.
-        wait_for_known_room(grace: 2, instruction: 'Manually move one room away and stay there. Your caravan will follow you, and the script will carry on from that room once it catches up.')
-        # If you moved away to get the room placed, the following caravan's
-        # arrival may have set its flag. Left set, the next step wouldn't wait
-        # for the caravan. Clear it, wait until the caravan is confirmed here,
-        # then clear it again for the next step.
-        Flags.reset('caravan-arrived')
-        pause 0.2 until Flags['caravan-arrived'] || caravan_check?(false)
-        Flags.reset('caravan-arrived')
+        wait_for_known_room(grace: 2, instruction: 'Manually move one room away, somewhere your caravan can follow, and stay there. Your caravan will follow you, and the script will carry on from that room once it catches up.')
+        wait_for_caravan_to_catch_up
         path = compute_path(room_id)
         next
       end
