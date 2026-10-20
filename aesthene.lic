@@ -255,8 +255,8 @@ class AestheneSolver
   # when scoring a guess while known answers remain.
   HEDGE_WEIGHT = 0.02
 
-  # Largest candidate set scored exhaustively; bigger sets are sampled so a
-  # guess is still picked in a second or two.
+  # Most candidates, and separately most unlisted dictionary words, scored
+  # against each guess. Bigger sets are sampled evenly to bound the work.
   SCORING_LIMIT = 600
 
   # Dictionary words offered as guesses even though they cannot be the answer,
@@ -307,6 +307,10 @@ class AestheneSolver
   # weight of candidates left. Ties go to a guess that could itself be the
   # answer.
   #
+  # The second row is the slow one: it scores about 3,000 guesses against
+  # several hundred candidates, which takes a second or more. Later rows have
+  # few candidates left and are near-instant.
+  #
   # @param rows_left [Integer] rows still free on the lock
   # @return [String, nil] the guess, or nil when nothing fits
   def next_guess(rows_left)
@@ -346,24 +350,27 @@ class AestheneSolver
   # Wordle feedback for a guess against an answer, as a base-3 integer
   # (0 absent, 1 present, 2 hit per tile). Used only to score guesses.
   #
-  # @param guess [String]
-  # @param answer [String]
+  # @param guess [String] five letters A-Z
+  # @param answer [String] five letters A-Z
   # @return [Integer] 0..242; {ALL_HIT} when the guess is the answer
   def self.feedback_code(guess, answer)
     marks = Array.new(5, 0)
-    spare = Hash.new(0)
+    # Unmatched answer letters, counted by A..Z. Compares bytes, not
+    # one-letter strings: this runs millions of times per guess.
+    spare = Array.new(26, 0)
     5.times do |i|
-      if guess[i] == answer[i]
+      if guess.getbyte(i) == answer.getbyte(i)
         marks[i] = 2
       else
-        spare[answer[i]] += 1
+        spare[answer.getbyte(i) - 65] += 1
       end
     end
     5.times do |i|
-      next if marks[i] == 2 || spare[guess[i]].zero?
+      letter = guess.getbyte(i) - 65
+      next if marks[i] == 2 || spare[letter].zero?
 
       marks[i] = 1
-      spare[guess[i]] -= 1
+      spare[letter] -= 1
     end
     marks.reduce(0) { |code, mark| (code * 3) + mark }
   end
