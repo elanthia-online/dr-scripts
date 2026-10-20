@@ -711,18 +711,5 @@ RSpec.describe Athletics do
         expect(DRC).to have_received(:message).with(stopped_message).twice
       end
     end
-
-    describe '#swim_zaldeni' do
-      let(:athletics) do
-        described_class.allocate.tap { |a| a.instance_variable_set(:@end_exp, 29) }
-      end
-
-      it 'stops at a failed walk instead of repeating the circuit' do
-        fail_walk(at: 2)
-
-        expect { athletics.swim_zaldeni }.to throw_symbol(Athletics::WALK_FAILED)
-        expect(walks).to eq([11_481, 11_482])
-      end
-    end
   end
 end

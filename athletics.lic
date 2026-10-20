@@ -375,14 +375,6 @@ class Athletics
     end
   end
 
-  def swim_zaldeni
-    until done_training?
-      walk_to_training_room(11_481)
-      walk_to_training_room(11_482)
-      walk_to_training_room(11_483)
-    end
-  end
-
   def swim_liirewsag
     # Intermittent errors in the map will cause go2 to get stuck.  The manual moves are a workaround for that
     walk_to_training_room(4155)
