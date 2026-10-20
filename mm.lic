@@ -41,7 +41,12 @@ class MoonMagery
 
   def rift(person)
     person = person.capitalize
-    DRCMM.check_moonwatch
+    # false means moonwatch's data is unavailable and UserVars.moons may hold
+    # stale timers. Older Lich versions return nil, so only false stops here.
+    if DRCMM.check_moonwatch == false
+      echo 'Moon data is unavailable, so Rift cannot be cast'
+      return
+    end
     unless UserVars.moons.any? { |moon_name, moon_data| UserVars.moons['visible'].include?(moon_name) && moon_data['timer'] >= 0 }
       echo 'No moons available to cast Rift'
       return

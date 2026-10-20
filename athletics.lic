@@ -5,6 +5,8 @@
 class Athletics
   # Finished rope climbs in a row that may teach no Athletics before alerting
   CLIMBS_WITHOUT_PROGRESS_LIMIT = 3
+  # Thrown when a training routine can't reach one of its rooms
+  WALK_FAILED = :athletics_walk_failed
 
   def initialize
     @settings = get_settings
@@ -41,6 +43,14 @@ class Athletics
     @end_exp = 32 if args.max
     buff_args = args.force_buff ? ['athletics', 'force'] : ['athletics']
     DRC.wait_for_script_to_complete('buff', buff_args) unless @skip_magic
+    catch(WALK_FAILED) { train(args, have_climbing_rope, athletics_location) }
+
+    stow_athletics_items
+  end
+
+  # Runs the training routine picked by the arguments and settings. A routine
+  # stops early, through WALK_FAILED, when it can't reach one of its rooms.
+  def train(args, have_climbing_rope, athletics_location)
     if args.wyvern || (@settings.climbing_target == 'wyvern')
       climb_wyvern
     elsif args.undergondola || (@settings.climbing_target == 'undergondola')
@@ -66,8 +76,21 @@ class Athletics
     elsif athletics_location == 'Ratha'
       ratha_athletics
     end
+  end
 
-    stow_athletics_items
+  # Walks to a room a training routine needs. When the walk fails, stops the
+  # routine instead of training in the wrong room or repeating the failed walk.
+  # A false from walk_to while standing in the room still counts as arrived:
+  # lich-5 releases without elanthia-online/lich-5#1749 return false after a
+  # one-step walk out of a room they couldn't identify, even though the step
+  # reached the target.
+  # Nothing is remembered between runs, so the next run tries the walk again.
+  def walk_to_training_room(room)
+    return if DRCT.walk_to(room)
+    return if Room.current&.id == room.to_i
+
+    DRC.message("Athletics: could not reach room #{room}. Stopping athletics training.")
+    throw WALK_FAILED
   end
 
   def outdoorsmanship_waiting(number)
@@ -101,7 +124,7 @@ class Athletics
   def swim_loop(rooms)
     return unless rooms
 
-    rooms.each { |x| DRCT.walk_to(x) } until done_training?
+    rooms.each { |x| walk_to_training_room(x) } until done_training?
   end
 
   def done_training?
@@ -275,38 +298,38 @@ class Athletics
   def riverhaven_athletics
     until done_training?
       if DRSkill.getmodrank('Athletics') <= 300
-        DRCT.walk_to(12821)
+        walk_to_training_room(12821)
         move('climb stair')
         move('climb stair')
-        DRCT.walk_to(13755)
-        DRCT.walk_to(14723)
-        DRCT.walk_to(451)
-        DRCT.walk_to(13805)
-        DRCT.walk_to(13810)
-        DRCT.walk_to(394)
+        walk_to_training_room(13755)
+        walk_to_training_room(14723)
+        walk_to_training_room(451)
+        walk_to_training_room(13805)
+        walk_to_training_room(13810)
+        walk_to_training_room(394)
         move('climb ladder')
         move('climb ladder')
         if DRSkill.getmodrank('Athletics') >= 10
-          DRCT.walk_to(51158)
-          DRCT.walk_to(491)
+          walk_to_training_room(51158)
+          walk_to_training_room(491)
           move('climb tree')
           move('climb trunk')
-          DRCT.walk_to(7839)
+          walk_to_training_room(7839)
         end
-        DRCT.walk_to(7842)
-        DRCT.walk_to(7822)
-        DRCT.walk_to(577)
-        DRCT.walk_to(602)
+        walk_to_training_room(7842)
+        walk_to_training_room(7822)
+        walk_to_training_room(577)
+        walk_to_training_room(602)
         move('climb bank')
         move('climb bank')
         break if done_training?
-        DRCT.walk_to(306)
-        DRCT.walk_to(309)
+        walk_to_training_room(306)
+        walk_to_training_room(309)
         break if done_training?
 
         if DRSkill.getmodrank('Athletics') >= 140
-          DRCT.walk_to(11440)
-          DRCT.walk_to(7640)
+          walk_to_training_room(11440)
+          walk_to_training_room(7640)
         end
       else
         crossing_athletics
@@ -352,17 +375,9 @@ class Athletics
     end
   end
 
-  def swim_zaldeni
-    until done_training?
-      DRCT.walk_to(11_481)
-      DRCT.walk_to(11_482)
-      DRCT.walk_to(11_483)
-    end
-  end
-
   def swim_liirewsag
     # Intermittent errors in the map will cause go2 to get stuck.  The manual moves are a workaround for that
-    DRCT.walk_to(4155)
+    walk_to_training_room(4155)
     move('nw')
     until done_training?
       move('climb bank')
@@ -370,7 +385,7 @@ class Athletics
         move('south')
         waitrt?
       end
-      DRCT.walk_to(4155)
+      walk_to_training_room(4155)
       move('nw')
     end
     move('climb bank')
@@ -380,7 +395,7 @@ class Athletics
   def climb_practice(room, target, to_hide = false)
     return unless target
 
-    DRCT.walk_to(room)
+    walk_to_training_room(room)
     until done_training?
       DRC.retreat
       if to_hide
@@ -412,7 +427,7 @@ class Athletics
 
   def climb?(room, targets)
     targets.each do |target|
-      DRCT.walk_to(room)
+      walk_to_training_room(room)
       return true if DRRoom.npcs.length >= 3
 
       DRC.bput("climb #{target}", '.*')
@@ -428,13 +443,13 @@ class Athletics
       override_location_and_practice('undergondola_branch')
     else
       DRC.message("Warning: Using the undergondola arg with more than 850 athletics is not best use and you may consider the wyvern option instead.") if DRSkill.getmodrank('Athletics') > 850
-      DRCT.walk_to(9607)
-      DRCT.walk_to(9515)
+      walk_to_training_room(9607)
+      walk_to_training_room(9515)
       until done_training?
-        DRCT.walk_to(2245)
-        DRCT.walk_to(9607)
-        DRCT.walk_to(11_126)
-        DRCT.walk_to(9515)
+        walk_to_training_room(2245)
+        walk_to_training_room(9607)
+        walk_to_training_room(11_126)
+        walk_to_training_room(9515)
         break if done_training?
 
         outdoorsmanship_waiting(4)
@@ -444,10 +459,10 @@ class Athletics
 
   def climb_cliffs
     until done_training?
-      DRCT.walk_to(9525)
-      DRCT.walk_to(9609)
-      DRCT.walk_to(9607)
-      DRCT.walk_to(2900)
+      walk_to_training_room(9525)
+      walk_to_training_room(9609)
+      walk_to_training_room(9607)
+      walk_to_training_room(2900)
       break if done_training?
 
       outdoorsmanship_waiting(4)
@@ -455,16 +470,16 @@ class Athletics
   end
 
   def climb_wyvern
-    DRCT.walk_to(19_464)
+    walk_to_training_room(19_464)
     until done_training?
-      DRCT.walk_to(2245) if DRSkill.getmodrank('Athletics') > 540
-      DRCT.walk_to(9607)
-      DRCT.walk_to(11_126)
-      DRCT.walk_to(19_464)
-      DRCT.walk_to(13_558)
-      DRCT.walk_to(14_010)
-      DRCT.walk_to(13_117)
-      DRCT.walk_to(6443)
+      walk_to_training_room(2245) if DRSkill.getmodrank('Athletics') > 540
+      walk_to_training_room(9607)
+      walk_to_training_room(11_126)
+      walk_to_training_room(19_464)
+      walk_to_training_room(13_558)
+      walk_to_training_room(14_010)
+      walk_to_training_room(13_117)
+      walk_to_training_room(6443)
       break if done_training?
 
       outdoorsmanship_waiting(3)
@@ -472,10 +487,10 @@ class Athletics
   end
 
   def climb_xalas
-    DRCT.walk_to(6154)
+    walk_to_training_room(6154)
     until done_training?
-      DRCT.walk_to(12_838)
-      DRCT.walk_to(6154)
+      walk_to_training_room(12_838)
+      walk_to_training_room(6154)
       break if done_training?
 
       outdoorsmanship_waiting(4)

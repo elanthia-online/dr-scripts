@@ -58,6 +58,7 @@ class GameFilter
       %r{</prompt>$},
       /preset id='roomDesc'/,
       /style id="roomName"/,
+      /<room>/, # Saga-identity room block (replaces roomName/roomDesc)
       /<spell exist='spell'>/,
       %r{<spell>None</spell>},
       /&lt; .*/,
@@ -138,7 +139,7 @@ class GameFilter
     room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
                 .split(', ')
                 .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '') }
-                .map { |obj| obj.strip.scan(/\w+$/).first }
+                .filter_map { |obj| obj.strip.scan(/\w+$/).first }
   end
 
   attr_reader :last_player_line
@@ -147,7 +148,9 @@ class GameFilter
     return unless line =~ %r{\'room players\'>Also here: (.*)\.</component>}
 
     @last_player_line = line
-    @room_players += find_pcs(Regexp.last_match(1).dup)
+    # The Saga-identity stream links each name (<a exist=.. noun=..>Name</a>);
+    # parse the text inside the links.
+    @room_players += find_pcs(Regexp.last_match(1).gsub(%r{</?a\b[^>]*>}, ''))
     @room_players.uniq!
   end
 

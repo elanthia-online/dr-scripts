@@ -123,10 +123,7 @@ class Trade
       pause 1 while Script.running?('bescort')
     end
 
-    if Room.current.id.nil?
-      DRC.message("The script doesn't know what room it's in!  Manually move one room away and return, then everything should resume automatically!")
-      pause 1 while Room.current.id.nil?
-    end
+    wait_for_known_room
 
     setup_town_data
     validate_requirements(args)
@@ -263,6 +260,8 @@ class Trade
   def close_out # makes sure your caravan is at an outpost, then returns it.  Future stable_handling?
     return close_out_stable if @use_stable
 
+    # From an unknown room find_closest_id can't rank the outposts by distance.
+    wait_for_known_room_at_caravan
     take_caravan_to(find_closest_id('trader_outpost'))
     turn_in_items
     empty_storage_box
@@ -283,6 +282,9 @@ class Trade
   def close_out_stable
     turn_in_items
     DRC.message('Heading out to find a stable for the night')
+    # The nearest stable can only be worked out from a known room. From an
+    # unknown one, tag_to_id returns nil.
+    wait_for_known_room_at_caravan
     take_caravan_to(DRCT.tag_to_id('caravan_stable'))
     store_item_in_box('balsa lumber') if @caravan_training_skills.include?('Engineering') && DRCI.exists?('balsa lumber')
     store_item_in_box(@outfitting_material_type) if @caravan_training_skills.include?('Outfitting') && DRCI.exists?(@outfitting_material_type)
@@ -670,7 +672,7 @@ class Trade
       end
     end
     wait_for_caravan(1)
-    save_caravan_position(Room.current.id)
+    save_caravan_position(current_room_id)
   end
 
   def be_inside_caravan # call whenever you need to be inside the caravan
@@ -704,7 +706,7 @@ class Trade
   end
 
   def recall_caravan? # gets information about your caravan. Also returns true if it's in the room with you.
-    return true if @last_seen_caravan[0] == Room.current.id && Time.now - @last_seen_caravan[1] < 3
+    return true if in_room?(@last_seen_caravan[0]) && Time.now - @last_seen_caravan[1] < 3
 
     recall_messages = [
       /^You seem to recall that you left your (?<description>.*) (?<name>.*) right behind you/,
@@ -723,7 +725,7 @@ class Trade
       /You seem to recall that you left your (?<description>.*) (?<name>.*) right behind you/ =~ response
       @caravan.noun ||= name
       @caravan.adjective ||= description.split.first
-      @last_seen_caravan = [Room.current.id, Time.now]
+      @last_seen_caravan = [current_room_id, Time.now]
       true
     when /You (?:seem to )?recall that your (?<description>.*) (?<name>.*)/
       /You recall that your (?<description>.*) (?<name>.*)/ =~ response
@@ -1031,9 +1033,91 @@ class Trade
   end
 
   def return_to_caravan
-    return if Room.current.id == @last_seen_caravan[0]
+    # Not seen in your room since the script started: nowhere to walk back to.
+    return if @last_seen_caravan.empty?
+    return if in_room?(@last_seen_caravan[0])
+
+    if @last_seen_caravan[0].nil?
+      # The caravan was last seen in a room Lich didn't know, so there is
+      # nowhere to walk back to. Carry on only if it is right here.
+      return if caravan_check?
+
+      DRC.message("Lost track of the caravan: it was last seen in a room Lich didn't know, and it isn't here. Find your caravan and restart the script.")
+      exit
+    end
 
     DRCT.walk_to(@last_seen_caravan[0])
+  end
+
+  # The id of the room you're in, or nil when Lich hasn't worked it out.
+  # Room.current is nil then, and Lich's NilClass patch makes nil.id nil too.
+  def current_room_id
+    Room.current&.id
+  end
+
+  # True only when you're known to be in +room_id+. An unknown room is never
+  # "here", even when +room_id+ is nil as well.
+  def in_room?(room_id)
+    current = current_room_id
+    !current.nil? && current == room_id
+  end
+
+  # Waits until Lich knows the current room. With +grace+ (seconds), polls
+  # quietly that long first, so a room that resolves on its own a moment
+  # later doesn't print the manual-move instruction. +instruction+ tells you
+  # what to do once you've moved. Returns true if it had to ask you to move.
+  def wait_for_known_room(grace: 0, instruction: 'Manually move one room away and return, then everything should resume automatically!')
+    (grace / 0.25).ceil.times do
+      return false unless current_room_id.nil?
+
+      pause 0.25
+    end
+    return false unless current_room_id.nil?
+
+    DRC.message("The script doesn't know what room it's in!  #{instruction}")
+    pause 1 while current_room_id.nil?
+    true
+  end
+
+  # Waits for a known room while the caravan is parked (told to wait). The
+  # first known room is the one you moved to, so it then waits for you to come
+  # back to the caravan. Without that, track_caravan would run in the room you
+  # moved to, warn that the caravan isn't there, and after two minutes carry
+  # on without it.
+  def wait_for_known_room_at_caravan
+    return unless wait_for_known_room(grace: 2, instruction: 'Manually move one room away and come straight back to your caravan, then everything should resume automatically!')
+    # caravan_present? can only ever match a caravan we know the look of.
+    return unless @caravan.adjective && @caravan.noun
+
+    reminded = Time.now
+    until caravan_present?
+      pause 0.5
+      next if Time.now - reminded < 60
+
+      DRC.message('Still waiting for you to come back to your caravan.')
+      reminded = Time.now
+    end
+  end
+
+  # Waits for the following caravan to be confirmed in your room after you
+  # moved to get the room placed. If you moved away, the caravan's arrival may
+  # already have set its flag. Left set, the next step wouldn't wait for the
+  # caravan, so it is cleared first, and again for the next step. If you moved
+  # somewhere the caravan can't follow it never arrives, so after 15 seconds
+  # (then every minute) you're told to go back to it.
+  def wait_for_caravan_to_catch_up
+    Flags.reset('caravan-arrived')
+    waited = Time.now
+    limit = 15
+    until Flags['caravan-arrived'] || caravan_check?(false)
+      pause 0.2
+      next if Time.now - waited < limit
+
+      DRC.message("Your caravan hasn't caught up. Go back to it, and the script will carry on from there.")
+      waited = Time.now
+      limit = 60
+    end
+    Flags.reset('caravan-arrived')
   end
 
   def wipe_bescort_skills
@@ -1053,10 +1137,18 @@ class Trade
   end
 
   def take_caravan_to(room_id) # primary method for leading your caravan to a destination step-by-step.
+    if room_id.nil?
+      DRC.message('No destination room was found for the caravan, so the script is stopping here.')
+      exit
+    end
+
     @caravan_being_led = false
     be_outside_caravan
+    # Wait for a known room, and for you to be back with the caravan, before
+    # looking for it.
+    wait_for_known_room_at_caravan
     track_caravan
-    return if Room.current.id == room_id
+    return if in_room?(room_id)
 
     forbid_certain_transport
     echo "destination is #{room_id}" if debugging?
@@ -1064,7 +1156,17 @@ class Trade
     path = compute_path(room_id)
     echo "path: #{path}" if debugging?
     pause 0.2 until Flags['caravan-arrived'] || caravan_check?(false)
-    until Room.current.id == room_id
+    until in_room?(room_id)
+      if current_room_id.nil?
+        # Stepped into a room Lich can't place: wait for it, then re-plan from
+        # wherever you are. The caravan is following, so if you have to move
+        # it comes after you; you don't step back.
+        wait_for_known_room(grace: 2, instruction: 'Manually move one room away, somewhere your caravan can follow, and stay there. Your caravan will follow you, and the script will carry on from that room once it catches up.')
+        wait_for_caravan_to_catch_up
+        path = compute_path(room_id)
+        next
+      end
+
       dir = get_next_dir(path)
       path = compute_path(room_id) if dir.nil?
       if handle_special_room?(dir)
@@ -1078,7 +1180,7 @@ class Trade
       end
       echo 'Caravan arrival detected' if debugging?
     end
-    save_caravan_position(Room.current.id)
+    save_caravan_position(current_room_id)
     command_caravan?('wait')
     training_cleanup
     Trade.restore_certain_transport
@@ -1087,7 +1189,7 @@ class Trade
   def wait_for_caravan(wait_time = 6) # The wait time is how long to wait until doing noisy RECALL CARAVANs.  A grace period for the caravan to arrive quietly.
     time_waiting = Time.now
     return if @caravan_being_led && !Script.running?('bescort') && caravan_present?
-    return if @last_seen_caravan[0] == Room.current.id && (Time.now - @last_seen_caravan[1]) < 10
+    return if in_room?(@last_seen_caravan[0]) && (Time.now - @last_seen_caravan[1]) < 10
 
     until Flags['caravan-arrived']
       pause 0.2
@@ -2148,7 +2250,7 @@ class Trade
     count_materials('balsa lumber') if @caravan_training_skills.include?('Engineering')
     return if time_to_room(Room.current.id, find_closest_id('trader_outpost')) > 5.0
 
-    save_caravan_position(Room.current.id)
+    save_caravan_position(current_room_id)
     command_caravan?('wait')
     turn_in_items
     deposit_coins(@caravan_coins_on_hand)

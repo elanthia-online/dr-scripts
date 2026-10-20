@@ -3,6 +3,10 @@
 =end
 
 class SanowretCrystal
+  # Longest wait, in one-second pauses, for the character to leave a room where the
+  # crystal can't be tapped. After that the passive loop simply tries again.
+  ROOM_CHANGE_WAIT_PAUSES = 300
+
   def initialize
     arg_definitions = [
       [
@@ -19,13 +23,17 @@ class SanowretCrystal
     # Titles of rooms that refused the crystal this run, matched exactly. Never fed to
     # a regex: a bracketed title like [[Crossing, Market]] becomes a character class.
     @refused_room_titles = []
+    # sanowret_no_use_rooms entries already suggested this run, so a character who stays
+    # in a refusing room isn't told the same thing on every pass of the passive loop.
+    @suggested_no_use_entries = []
     @force_exhale = args.exhale || settings.sanowret_force_exhale
     @ephemeron = settings.ephemeron
+    @run_once = !args.run.nil?
     exit unless DRSkill.getrank('Arcana') < 1750
     UserVars.ephemera_last_use = Time.now() - 7200 if UserVars.ephemera_last_use.nil? && @ephemeron
-    check_ephemera if args.run
-    check_crystal if args.run
-    passive unless args.run
+    check_ephemera if @run_once
+    check_crystal if @run_once
+    passive unless @run_once
   end
 
   def use_crystal
@@ -39,15 +47,8 @@ class SanowretCrystal
     return unless response =~ /This is not a good place for that\./
 
     title = DRRoom.title
-    room_id = Room.current&.id
     DRC.message("Could not use crystal in room #{title}.")
-    # Prefer the room id, which matches exactly; a title is read as a regex from the yaml,
-    # so suggest it without the brackets that would make a character class
-    if room_id
-      DRC.message("Consider adding room id #{room_id} to your sanowret_no_use_rooms settings.")
-    else
-      DRC.message("Consider adding '#{title.to_s.delete_prefix('[[').delete_suffix(']]')}' to your sanowret_no_use_rooms settings.")
-    end
+    DRC.message("Consider adding #{no_use_room_entry} to your sanowret_no_use_rooms settings.")
     DRC.message("Please also post this room in the lich discord (listed in #{$clean_lich_char}links) so it can be added to base.yaml for everyone.")
     # Go ahead and remember to ignore this room while the script is running
     # This convenience won't persist between script runs though, go update your yaml
@@ -60,7 +61,7 @@ class SanowretCrystal
     return if hiding? || invisible?
     return if @no_use_scripts.any? { |name| Script.running?(name) }
     return if @refused_room_titles.include?(DRRoom.title)
-    return if @no_use_rooms.any? { |name| /#{name}/ =~ DRRoom.title || name.to_s == Room.current.id.to_s }
+    return if @no_use_rooms.any? { |name| /#{name}/ =~ DRRoom.title || name.to_s == Room.current&.id.to_s }
 
     if @worn_crystal
       use_crystal
@@ -79,14 +80,54 @@ class SanowretCrystal
         use_crystal
         DRC.bput("stow my #{@adjective} crystal", 'You put', 'Stow what')
       when /Not here, /, /a wave of Corruption magic/
-        DRC.message("Pausing #{Script.current.name} script until you move to another room.")
-        non_sano_room_id = Room.current.id
-        pause 1 until Room.current.id != non_sano_room_id
+        wait_for_room_change
       else
         DRC.message('Sanowret crystal not found, exiting!')
         exit
       end
     end
+  end
+
+  # The crystal can't be tapped in this room. A single run returns at once: its caller
+  # (crossing-training, for one) is what moves the character, so waiting here would
+  # wait forever. The passive loop pauses until the room changes, for at most
+  # ROOM_CHANGE_WAIT_PAUSES seconds.
+  def wait_for_room_change
+    # The refusal may be temporary, so this is only a suggestion. Without the entry, a
+    # room that always refuses costs a tap on every run (every ~14 s under crossing-training).
+    entry = no_use_room_entry
+    unless @suggested_no_use_entries.include?(entry)
+      DRC.message("If this room always refuses the crystal, add #{entry} to your sanowret_no_use_rooms settings.")
+      @suggested_no_use_entries.push(entry)
+    end
+    if @run_once
+      DRC.message('Cannot use the sanowret crystal in this room.')
+      return
+    end
+
+    DRC.message("Pausing #{Script.current.name} script until you move to another room, for up to #{ROOM_CHANGE_WAIT_PAUSES / 60} minutes.")
+    start_room = room_key
+    ROOM_CHANGE_WAIT_PAUSES.times do
+      break if room_key != start_room
+
+      pause 1
+    end
+  end
+
+  # The sanowret_no_use_rooms entry to suggest for the current room. Prefers the room id,
+  # which matches exactly; a title is read as a regex from the yaml, so it is suggested
+  # without the brackets that would make a character class.
+  def no_use_room_entry
+    room_id = Room.current&.id
+    room_id ? "room id #{room_id}" : "'#{DRRoom.title.to_s.delete_prefix('[[').delete_suffix(']]')}'"
+  end
+
+  # Identifies the current room. Uses the map id when Lich knows the room. When it
+  # doesn't, Room.current is nil and every unknown room would share the same nil id,
+  # so the room's title and description are used instead.
+  def room_key
+    id = Room.current&.id
+    id ? [:id, id] : [:text, DRRoom.title, DRRoom.description]
   end
 
   def check_ephemera
