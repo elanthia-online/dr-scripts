@@ -17,7 +17,7 @@ class Aesthene
         { name: 'check', regex: /^check/i, description: 'Check current lock' }
       ],
       [
-        { name: 'full', regex: /^full/i, description: 'Redeem slip, whisper first 4 guesses, try to solve.'}
+        { name: 'full', regex: /^full/i, description: 'Redeem slip, whisper first 4 guesses, try to solve.' }
       ]
     ]
 
@@ -65,7 +65,7 @@ class Aesthene
 
   def find_empty_room
     rooms = ['nw', 'nw', 'ne', 'ne', 'se', 'se', 'sw', 'sw', 's']
-    rooms.each{ |d| break if DRRoom.pcs.count == 0; move(d) }
+    rooms.each { |d| break if DRRoom.pcs.count == 0; move(d) }
     if Room.current.id == 16959
       message("NO EMPTY ROOMS FOUND!")
       exit
@@ -105,11 +105,11 @@ class Aesthene
         x, y = check_letter(temp)
         if x && y
           good_letters.push(letter)
-          word[i-1] = letter
-          @dr_word_list.reject! { |word| word[i-1] != letter }
+          word[i - 1] = letter
+          @dr_word_list.reject! { |word| word[i - 1] != letter }
         elsif x && !y
           good_letters.push(letter)
-          @dr_word_list.reject! { |word| !word.include?(letter) || word[i-1] == letter }
+          @dr_word_list.reject! { |word| !word.include?(letter) || word[i - 1] == letter }
         else
           bad_letters.push(letter)
           @dr_word_list.reject! { |word| word.include?(letter) }
