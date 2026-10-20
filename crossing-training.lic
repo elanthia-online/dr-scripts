@@ -532,16 +532,24 @@ class CrossingTraining
     end
 
     if data['moon']
+      # check_moonwatch returns false when moonwatch's moon data is
+      # unavailable (moonwatch missing, stopped or not publishing).
+      # set_moon_data then finds no moon, and going outside to perceive the
+      # moons can't change that. Older Lich versions return nil here, which
+      # says nothing either way, so only an explicit false counts.
+      moon_data_unavailable = DRCMM.check_moonwatch == false
       # Look for a moon that will be up for the next few minutes
-      DRCMM.check_moonwatch
-      unless DRCMM.set_moon_data(data)
+      moon_data = DRCMM.set_moon_data(data)
+      unless moon_data
+        return if moon_data_unavailable
+
         weather = DRC.bput('weather', 'inside', 'You glance up at the sky.')
         DRCT.walk_to @settings.outdoor_room if weather =~ /inside/
         fput('perceive moons')
         # Look for a moon that will be up for the next few minutes
-        return unless DRCMM.set_moon_data(data)
+        return unless (moon_data = DRCMM.set_moon_data(data))
       end
-      data = DRCMM.set_moon_data(data)
+      data = moon_data
     end
 
     DRCA.release_cyclics if data['cyclic']

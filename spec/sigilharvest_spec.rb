@@ -1211,4 +1211,316 @@ RSpec.describe SigilHarvest do
       end
     end
   end
+
+  # ===========================================================================
+  # Walking between sigil rooms (find_sigils, walk_to_sigil_room, return_to_start)
+  # ===========================================================================
+  # These run the real find_sigils and harvest_sigil. DRCT.walk_to is stubbed
+  # with a map of rooms that can't be reached; a successful walk moves the
+  # character, so Room.current follows it. Every PERC SIGIL records the room the
+  # character stood in, and the "room was recently searched" reply ends the
+  # search in that room. time_expired? only ends the run where a test asks for
+  # it; a run that keeps going past the budget fails the test instead of hanging.
+  describe 'walking between sigil rooms' do
+    let(:unreachable) { [] }
+    let(:walks) { [] }
+    let(:percs) { [] }
+    let(:messages) { [] }
+    # Calls to time_expired? before the session time runs out; nil never expires.
+    let(:expire_after) { nil }
+    let(:sigil_info) do
+      {
+        'Crossing' => {
+          'unity'   => { 'summer' => [10, 20, 30] },
+          'paradox' => { 'summer' => [40] }
+        }
+      }
+    end
+
+    before(:each) do
+      harvester.instance_variable_set(:@args, OpenStruct.new(city: 'crossing', sigil: 'unity', precision: '90'))
+      harvester.instance_variable_set(:@data, OpenStruct.new(SigilInfo: sigil_info))
+      harvester.instance_variable_set(:@season, 'summer')
+      harvester.instance_variable_set(:@sigil_list, %w[unity paradox])
+      harvester.instance_variable_set(:@danger_rooms, [])
+      harvester.instance_variable_set(:@settings, OpenStruct.new)
+      harvester.instance_variable_set(:@rooms_visited, 0)
+      harvester.instance_variable_set(:@unreachable_rooms, [])
+      harvester.instance_variable_set(:@consecutive_walk_failures, 0)
+      harvester.instance_variable_set(:@sigil_count, 0)
+      harvester.instance_variable_set(:@sigil_results, [])
+      harvester.instance_variable_set(:@enemy_rooms, [])
+      harvester.instance_variable_set(:@here, 1)
+
+      allow(Room).to receive(:current) do
+        here = harvester.instance_variable_get(:@here)
+        here && OpenStruct.new(id: here)
+      end
+      allow(DRCT).to receive(:walk_to) do |room|
+        walks << room
+        raise 'walked 50 times; the harvest is not stopping' if walks.size > 50
+
+        next false if unreachable.include?(room)
+
+        harvester.instance_variable_set(:@here, room)
+        true
+      end
+      allow(DRCA).to receive(:do_buffs)
+      allow(DRC).to receive(:message) { |msg| messages << msg }
+      allow(DRC).to receive(:bput) do |command, *_patterns|
+        percs << Room.current&.id if command == 'perc sigil'
+        'Having recently been searched'
+      end
+
+      checks = 0
+      allow(harvester).to receive(:time_expired?) do
+        checks += 1
+        raise 'checked the time 200 times; the harvest is spinning' if checks > 200
+
+        !expire_after.nil? && checks > expire_after
+      end
+    end
+
+    def walk_failures
+      messages.grep(/could not reach room/)
+    end
+
+    context 'when every walk succeeds' do
+      # 3 rooms per pass and one more check after the pass: the 5th check expires
+      let(:expire_after) { 4 }
+
+      it 'walks to each room in order and searches it, as before' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to eq([10, 20, 30])
+        expect(percs).to eq([10, 20, 30])
+        expect(harvester.instance_variable_get(:@rooms_visited)).to eq(3)
+        expect(messages.grep(/SigilHarvest:/)).to be_empty
+      end
+
+      it 'still skips danger rooms without walking to them' do
+        harvester.instance_variable_set(:@danger_rooms, [20])
+
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).not_to include(20)
+        expect(percs).not_to include(20)
+      end
+    end
+
+    context 'when one room cannot be reached' do
+      let(:unreachable) { [20] }
+      # Pass 1 checks 3 rooms + 1, pass 2 checks the 2 remaining rooms, then expires
+      let(:expire_after) { 6 }
+
+      it 'does not search while standing in the wrong room' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        # On main the character stays in room 10 and searches it a second time
+        expect(percs.first(2)).to eq([10, 30])
+      end
+
+      it 'says so once and moves on to the next room' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walk_failures).to eq(['SigilHarvest: could not reach room 20. Skipping it for the rest of this session.'])
+        expect(walks.first(3)).to eq([10, 20, 30])
+      end
+
+      it 'never walks to it again in later passes' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to eq([10, 20, 30, 10, 30])
+        expect(percs).to eq([10, 30, 10, 30])
+      end
+
+      it 'does not count it as a visited room' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(harvester.instance_variable_get(:@rooms_visited)).to eq(4)
+      end
+    end
+
+    context 'when a room list names the failed room twice' do
+      let(:sigil_info) { { 'Crossing' => { 'unity' => { 'summer' => [20, 10, 20, 30] } } } }
+      let(:unreachable) { [20] }
+      let(:expire_after) { 5 }
+
+      it 'does not walk to it again later in the same pass' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks.first(3)).to eq([20, 10, 30])
+        expect(walks.count(20)).to eq(1)
+      end
+    end
+
+    context 'when every walk fails' do
+      let(:unreachable) { [10, 20, 30, 40, 50] }
+      let(:sigil_info) { { 'Crossing' => { 'unity' => { 'summer' => [10, 20, 30, 40, 50] } } } }
+
+      it 'stops after three failed walks in a row, with plenty of time left' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to eq([10, 20, 30])
+        expect(percs).to be_empty
+      end
+
+      it 'says why it stopped' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walk_failures.last).to eq('SigilHarvest: could not reach room 30. 3 walks in a row failed. Stopping the harvest.')
+        expect(walk_failures.size).to eq(3)
+      end
+
+      it 'stops the same way from a room the map cannot identify' do
+        harvester.instance_variable_set(:@here, nil)
+
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to eq([10, 20, 30])
+        expect(percs).to be_empty
+      end
+    end
+
+    context 'when failed walks are not in a row' do
+      let(:sigil_info) { { 'Crossing' => { 'unity' => { 'summer' => [10, 11, 20, 21, 30, 31] } } } }
+      let(:unreachable) { [10, 20, 30] }
+      # Pass 1 checks 6 rooms + 1, pass 2 checks the 3 reachable rooms, then expires
+      let(:expire_after) { 10 }
+
+      it 'keeps harvesting the rooms it can reach' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to eq([10, 11, 20, 21, 30, 31, 11, 21, 31])
+        expect(percs).to eq([11, 21, 31, 11, 21, 31])
+        expect(messages.grep(/Stopping/)).to be_empty
+      end
+    end
+
+    context 'when no reachable rooms are left' do
+      let(:sigil_info) { { 'Crossing' => { 'unity' => { 'summer' => [10, 20] } } } }
+      let(:unreachable) { [10, 20] }
+
+      it 'stops instead of starting another pass, with plenty of time left' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to eq([10, 20])
+        expect(messages.last).to eq('SigilHarvest: no unity sigil rooms left to search near Crossing. Stopping the harvest.')
+      end
+    end
+
+    context 'when every room is a danger room' do
+      it 'stops at once instead of spinning until the time runs out' do
+        harvester.instance_variable_set(:@danger_rooms, [10, 20, 30])
+
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(walks).to be_empty
+        expect(messages.grep(/SigilHarvest:/)).to eq(['SigilHarvest: no unity sigil rooms left to search near Crossing. Stopping the harvest.'])
+      end
+    end
+
+    context 'when the sigil has no known rooms for the city and season' do
+      it 'stops with a message instead of raising' do
+        harvester.instance_variable_set(:@args, OpenStruct.new(city: 'crossing', sigil: 'unty', precision: '90'))
+
+        harvester.send(:find_sigils, 'Crossing', 'unty')
+
+        expect(walks).to be_empty
+        expect(messages.grep(/SigilHarvest:/)).to eq(['SigilHarvest: no unty sigil rooms left to search near Crossing. Stopping the harvest.'])
+      end
+    end
+
+    context 'with a random sigil' do
+      before do
+        harvester.instance_variable_set(:@args, OpenStruct.new(city: 'crossing', sigil: 'random', precision: '90'))
+      end
+
+      it 'only picks sigils that still have rooms to search' do
+        harvester.instance_variable_set(:@danger_rooms, [10, 20, 30])
+        allow(harvester).to receive(:time_expired?) { walks.size >= 3 }
+
+        harvester.send(:find_sigils, 'Crossing', 'random')
+
+        expect(walks).to eq([40, 40, 40])
+      end
+
+      it 'stops when no sigil has a reachable room left' do
+        harvester.instance_variable_set(:@danger_rooms, [10, 20, 30])
+        unreachable << 40
+
+        harvester.send(:find_sigils, 'Crossing', 'random')
+
+        expect(walks).to eq([40])
+        expect(messages.last).to eq('SigilHarvest: no sigil rooms left to search near Crossing. Stopping the harvest.')
+      end
+    end
+
+    context 'when walk_to returns false while standing in the target room' do
+      # lich-5 releases without elanthia-online/lich-5#1749 can return false
+      # after a one-step walk that did reach the target.
+      let(:expire_after) { 4 }
+
+      before do
+        allow(DRCT).to receive(:walk_to) do |room|
+          walks << room
+          harvester.instance_variable_set(:@here, room)
+          false
+        end
+      end
+
+      it 'counts as arrived and searches the room' do
+        harvester.send(:find_sigils, 'Crossing', 'unity')
+
+        expect(percs).to eq([10, 20, 30])
+        expect(walk_failures).to be_empty
+        expect(harvester.instance_variable_get(:@consecutive_walk_failures)).to eq(0)
+      end
+    end
+
+    describe '#return_to_start' do
+      it 'says nothing when the walk back succeeds' do
+        harvester.send(:return_to_start, 10)
+
+        expect(walks).to eq([10])
+        expect(messages).to be_empty
+      end
+
+      it 'says so when the walk back fails' do
+        unreachable << 10
+
+        harvester.send(:return_to_start, 10)
+
+        expect(messages).to eq(['SigilHarvest: could not walk back to the starting room 10.'])
+      end
+
+      it 'does not try to walk back when the starting room was not known' do
+        harvester.send(:return_to_start, nil)
+
+        expect(walks).to be_empty
+        expect(messages).to eq(['SigilHarvest: the starting room was not known, so not walking back.'])
+      end
+    end
+
+    describe '#log_exit_summary' do
+      before do
+        harvester.instance_variable_set(:@time_limit, 30)
+        harvester.instance_variable_set(:@start_time, Time.now)
+      end
+
+      it 'lists the rooms that could not be reached' do
+        harvester.instance_variable_set(:@unreachable_rooms, [20, 30])
+
+        harvester.send(:log_exit_summary)
+
+        expect(messages).to include('  Unreachable:      20, 30')
+      end
+
+      it 'leaves the line out when every room was reached' do
+        harvester.send(:log_exit_summary)
+
+        expect(messages.grep(/Unreachable/)).to be_empty
+      end
+    end
+  end
 end

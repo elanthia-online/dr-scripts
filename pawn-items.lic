@@ -21,20 +21,8 @@ class PawnItems
     settings = get_settings
     @return_list = []
 
-    # Identify which pawnshop to go to.
-    if DRCT.tag_to_id('pawnshop') == Room.current.id
-      # If you're already in the nearest pawnshop, sell there.
-      pawnshop_room_id = Room.current.id
-    else
-      # Otherwise, go to the one in your preferred town.
-      hometown = DRC.get_town_name(args.town || settings.sell_loot_town || settings.hometown)
-      pawnshop_room_id = DRCT.get_hometown_target_id(hometown, 'pawnshop')
-    end
-
-    if pawnshop_room_id.nil?
-      DRC.message("Pawning not supported in #{hometown}.")
-      exit
-    end
+    pawnshop_room_id = find_pawnshop_room_id(args.town || settings.sell_loot_town || settings.hometown)
+    exit unless pawnshop_room_id
 
     # You can't sell to a merchant if you're invisible,
     # and invisibility sometimes impedes getting/stowing items.
@@ -53,29 +41,75 @@ class PawnItems
     end
   end
 
-  def sell_items(pawnshop_room_id, source, noun)
+  # The pawnshop to sell in: the room you're standing in when it's the nearest
+  # pawnshop, otherwise the pawnshop in +town+. Returns nil, after telling the
+  # user why, when the current room is unknown or +town+ has no pawnshop.
+  def find_pawnshop_room_id(town)
+    nearest_id = DRCT.tag_to_id('pawnshop')
+    # Room.current is nil until Lich has worked out which room you're in. Both
+    # ids are then nil, and nil == nil would pass for "already in the pawnshop".
+    current_id = Room.current&.id
+    if current_id.nil?
+      DRC.message("Lich doesn't know which room you're in, so it can't find a pawnshop. Run this again once Lich recognises the room.")
+      return nil
+    end
+    return current_id if nearest_id == current_id
+
+    hometown = DRC.get_town_name(town)
+    pawnshop_room_id = DRCT.get_hometown_target_id(hometown, 'pawnshop')
+    DRC.message("Pawning not supported in #{hometown}.") if pawnshop_room_id.nil?
+    pawnshop_room_id
+  end
+
+  # +previous_listing+ is the LOOK listing from the pass before, when this call
+  # is a re-look after a cut-short pass that sold nothing and lowered nothing.
+  def sell_items(pawnshop_room_id, source, noun, previous_listing = nil)
     # If container is very full then LOOK may not list all of them.
     # If you're moving a specific item, then sort those to the top
     # to increase chances we find and sell all of them in one go.
     DRC.bput("sort #{noun} in my #{source}", "are now at the top", "What were you referring to", "Please rephrase that command", "You may only sort items in your inventory") if noun
-    DRCI.get_item_list(source, 'look')
-        .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
-        .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
-        .each do |item|
+    listing = DRCI.get_item_list(source, 'look')
+    # The last pass sold nothing and lowered nothing, and LOOK shows the same
+    # listing, so nothing left the container and looking again would recurse
+    # forever. A repeated listing alone isn't enough: a container holding more
+    # copies of one item than LOOK can show lists the same page after a pass
+    # that sold every copy it listed.
+    if previous_listing && listing == previous_listing
+      DRC.message("LOOK in your #{source} shows the same items as the last LOOK, so none of them could be taken out. Stopping.")
+      return
+    end
+    made_progress = false
+    listing
+      .map { |full_name| full_name =~ /lot of other stuff/ ? full_name : full_name.split(' ').last }
+      .select { |item| noun ? /\b#{noun}\b/ =~ item : true }
+      .each_with_index do |item, index|
       # This indicates there is more items than LOOK can show
       # and we've reached the end of what we last saw.
       # We need to look again to see what we can now see.
       # Keep doing this until exhaust source.
       if item =~ /lot of other stuff/
-        sell_items(source, noun)
+        # Each item listed before this one has normally left the container
+        # (sold, lowered to the ground, or the script exited), so the next
+        # LOOK shows new items. With nothing listed before it, nothing has
+        # been taken out, so another LOOK would show the same list. Stop now
+        # rather than spend a LOOK on it; the same-listing check at the top
+        # catches any other pass that took nothing out.
+        if index.zero?
+          DRC.message("LOOK in your #{source} shows no items to sell, only 'a lot of other stuff'. Stopping.")
+          break
+        end
+        sell_items(pawnshop_room_id, source, noun, made_progress ? nil : listing)
         break
       end
       # Attempt to get the item from the source container.
       if DRCI.get_item?(item, source)
-        unless DRCT.sell_item(pawnshop_room_id, item)
+        if DRCT.sell_item(pawnshop_room_id, item)
+          made_progress = true
+        else
           # Failed. Message user and return item to source container.
           DRC.message("Unable to sell #{item}. The merchant may not accept these items.")
-          DRC.bput("lower ground", 'You lower')
+          # bput returns '' when nothing matched.
+          made_progress = true unless DRC.bput("lower ground", 'You lower').empty?
           @return_list << item
         end
       else

@@ -10,17 +10,11 @@ DRC.define_singleton_method(:retreat) { |*_args| } unless DRC.respond_to?(:retre
 
 DRCI.define_singleton_method(:dispose_trash) { |*_args| } unless DRCI.respond_to?(:dispose_trash)
 
-Harness::DRSkill.define_singleton_method(:_xp_store) { @_xp_store ||= {} }
-Harness::DRSkill.define_singleton_method(:_set_xp) { |skillname, val| _xp_store[skillname] = val }
-Harness::DRSkill.define_singleton_method(:_reset_xp) { @_xp_store = {} }
-Harness::DRSkill.define_singleton_method(:getxp) { |skillname| _xp_store[skillname] || 0 }
-
 load_lic_class('outdoorsmanship.lic', 'Outdoorsmanship')
 
 RSpec.describe Outdoorsmanship do
   before(:each) do
     reset_data
-    Harness::DRSkill._reset_xp
 
     allow(DRC).to receive(:collect)
     allow(DRC).to receive(:forage?)
@@ -270,6 +264,20 @@ RSpec.describe Outdoorsmanship do
 
     it 'defines FORAGE_RANK_THRESHOLD as 20' do
       expect(Outdoorsmanship::FORAGE_RANK_THRESHOLD).to eq(20)
+    end
+  end
+
+  # The whole suite shares one DRSkill double, and the global reset_data hook
+  # runs before every example. Learning set through it must be cleared by
+  # reset_data so it cannot reach the next example, in this file or any other.
+  describe 'shared DRSkill double' do
+    it 'reset_data clears learning set through DRSkill._set_xp' do
+      Harness::DRSkill._set_xp('Outdoorsmanship', 20)
+      expect(DRSkill.getxp('Outdoorsmanship')).to eq(20)
+
+      reset_data
+
+      expect(DRSkill.getxp('Outdoorsmanship')).to eq(0)
     end
   end
 end
