@@ -232,6 +232,39 @@ RSpec.describe Bescort do
         expect(equipment_manager).not_to receive(:wear_equipment_set?)
         bescort.send(:segoltha, 'north')
       end
+
+      {
+        'broom'           => 'skim',
+        'dirigible'       => 'skim',
+        'magic carpet'    => 'skim',
+        'Rug'             => 'skim',
+        'cloud'           => 'hover',
+        'phoenix feather' => 'fly',
+        'spire'           => 'storm'
+      }.each do |mount, speed|
+        context "of type #{mount}" do
+          let(:flying_mount) { mount }
+
+          it "mounts at #{speed} speed" do
+            allow(equipment_manager).to receive(:empty_hands)
+            expect(bescort).to receive(:use_flying_mount).with(mount, 'mount', speed).ordered
+            expect(bescort).to receive(:use_flying_mount).with(mount, 'dismount').ordered
+            bescort.send(:segoltha, 'south')
+          end
+        end
+      end
+    end
+
+    context 'with a flying mount of an unknown type' do
+      let(:flying_mount) { 'pogo stick' }
+
+      it 'exits without emptying hands, mounting or changing gear' do
+        expect(DRC).to receive(:message).with('pogo stick is not a valid type of flying mount.')
+        expect(equipment_manager).not_to receive(:empty_hands)
+        expect(bescort).not_to receive(:use_flying_mount)
+        expect(equipment_manager).not_to receive(:wear_equipment_set?)
+        expect { bescort.send(:segoltha, 'north') }.to raise_error(SystemExit)
+      end
     end
   end
 

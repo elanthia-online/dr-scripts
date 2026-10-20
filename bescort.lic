@@ -1624,20 +1624,19 @@ class Bescort
     end
 
     if @flying_mount
-      @equipment_manager.empty_hands
-      case @flying_mount
-      when /broom|dirigible|carpet|rug/i
-        use_flying_mount(@flying_mount, 'mount', 'skim')
-      when /cloud/i
-        use_flying_mount(@flying_mount, 'mount', 'hover')
-      when /phoenix feather/i
-        use_flying_mount(@flying_mount, 'mount', 'fly')
-      when /spire/i
-        use_flying_mount(@flying_mount, 'mount', 'storm')
-      else
+      speed = case @flying_mount
+              when /broom|dirigible|carpet|rug/i then 'skim'
+              when /cloud/i then 'hover'
+              when /phoenix feather/i then 'fly'
+              when /spire/i then 'storm'
+              end
+      unless speed
         DRC.message("#{@flying_mount} is not a valid type of flying mount.")
         exit
       end
+      # Hands are emptied only once the mount type is known, so the exit above leaves them alone.
+      @equipment_manager.empty_hands
+      use_flying_mount(@flying_mount, 'mount', speed)
       if dir_of_travel == 'south'
         move 'go bank'
         move 'west'
