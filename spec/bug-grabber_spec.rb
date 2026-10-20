@@ -342,11 +342,15 @@ RSpec.describe 'bug-grabber.lic' do
       expect(get_commands).to eq(['get the bug'])
     end
 
-    # A plural noun is named as the room lists it, so the get matches the
-    # item's noun in full. -fly turns into -flies, not -flys.
-    { 'some chirping crickets' => 'crickets', 'some praying mantises' => 'mantises',
-      'some glowing fireflies' => 'fireflies', 'some green dragonflies' => 'dragonflies',
-      'a green dragonfly' => 'dragonfly', 'some black bugs' => 'bugs' }.each do |obj, noun|
+    # Every bug word on the list is found, and a plural noun is named as the
+    # room lists it, so the get matches the item's noun in full. -fly turns
+    # into -flies, not -flys.
+    { 'a brown locust' => 'locust', 'a stink bug' => 'bug', 'a black beetle' => 'beetle',
+      'a chirping cricket' => 'cricket', 'an angry hornet' => 'hornet', 'a dusty moth' => 'moth',
+      'a jade scarab' => 'scarab', 'a praying mantis' => 'mantis', 'a glowing firefly' => 'firefly',
+      'a green dragonfly' => 'dragonfly', 'some chirping crickets' => 'crickets',
+      'some praying mantises' => 'mantises', 'some glowing fireflies' => 'fireflies',
+      'some green dragonflies' => 'dragonflies', 'some black bugs' => 'bugs' }.each do |obj, noun|
       it "finds '#{obj}' and names it '#{noun}'" do
         put_bug_in(10_507, bug: obj, held: noun)
         succeed_walks(stop_at: 4)
@@ -356,9 +360,10 @@ RSpec.describe 'bug-grabber.lic' do
       end
     end
 
-    # The plural ending is only allowed on the bug word itself: no other word
-    # that merely ends in a bug word's letters counts.
-    ['a dusty firefl', 'a pair of dragonflys', 'some ladybugsy'].each do |obj|
+    # The bug word has to be the whole noun: a noun that merely ends in a bug
+    # word's letters (ladybugs, humbug) or that runs on past the bug word or
+    # its plural ending (firefl, dragonflys, ladybugsy) is not a bug.
+    ['a dusty firefl', 'a pair of dragonflys', 'some ladybugsy', 'some ladybugs', 'sticky humbug'].each do |obj|
       it "does not take '#{obj}' for a bug" do
         succeed_walks(stop_at: 100, scenery: [obj])
         allow(script).to receive(:pause).and_raise(stop_run)
