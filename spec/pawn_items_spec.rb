@@ -260,6 +260,8 @@ RSpec.describe PawnItems do
       before do
         looks_return(['steel nodachi', 'lot of other stuff'])
         allow(DRCT).to receive(:sell_item).and_return(false)
+        # bput returns '' when nothing matched before the timeout.
+        allow(DRC).to receive(:bput).with('lower ground', 'You lower').and_return('')
       end
 
       it 'stops after the second identical LOOK and says why instead of looking forever' do
@@ -272,6 +274,48 @@ RSpec.describe PawnItems do
         script.sell_items(4321, 'backpack', nil)
 
         expect(DRCI).to have_received(:get_item?).with('nodachi', 'backpack').once
+      end
+    end
+
+    context 'when the container holds more copies of one item than LOOK can show' do
+      # LOOK lists each copy separately, so after a pass that sold every pin it
+      # listed, the next LOOK shows the same page again.
+      it 'keeps selling through identical listings until every copy is sold' do
+        looks_return(['bone pin', 'bone pin', 'lot of other stuff'],
+                     ['bone pin', 'bone pin', 'lot of other stuff'],
+                     ['bone pin'])
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(sold).to eq([[4321, 'pin']] * 5)
+        expect(DRCI).to have_received(:get_item_list).exactly(3).times
+        expect(messages.grep(/same items as the last LOOK/)).to be_empty
+      end
+
+      it 'keeps going when the merchant refuses them but each one is lowered to the ground' do
+        looks_return(['bone pin', 'lot of other stuff'], ['bone pin', 'lot of other stuff'], ['bone pin'])
+        allow(DRCT).to receive(:sell_item).and_return(false)
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(script.instance_variable_get(:@return_list)).to eq(%w[pin pin pin])
+        expect(DRCI).to have_received(:get_item_list).exactly(3).times
+        expect(messages.grep(/same items as the last LOOK/)).to be_empty
+      end
+
+      it 'stops once a pass after a selling pass takes nothing out' do
+        looks_return(['bone pin', 'lot of other stuff'],
+                     ['bone pin', 'lot of other stuff'],
+                     ['bone pin', 'lot of other stuff'])
+        # The first pin sells; from then on the merchant refuses and LOWER fails.
+        allow(DRCT).to receive(:sell_item).and_return(true, false)
+        allow(DRC).to receive(:bput).with('lower ground', 'You lower').and_return('')
+
+        script.sell_items(4321, 'backpack', nil)
+
+        expect(DRCI).to have_received(:get_item_list).exactly(3).times
+        expect(DRCT).to have_received(:sell_item).twice
+        expect(messages).to include(a_string_matching(/shows the same items as the last LOOK/))
       end
     end
 
