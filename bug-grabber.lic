@@ -16,8 +16,9 @@
 rooms = [10_506, 10_507, 10_508, 10_509, 10_482, 10_497, 10_515, 10_510, 10_539, 10_590, 10_520, 10_640, 10_557, 10_576, 10_617, 10_620,
          10_572, 10_677]
 
+# Returns the insect noun in a room object's name, or nil when it isn't one.
 def bug?(obj_name)
-  /\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i =~ obj_name
+  obj_name[/\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i, 1]
 end
 
 # Walks to a room on the circuit or to the shrine. When the walk fails, stops
@@ -46,8 +47,7 @@ loop do
     next
   end
 
-  while DRRoom.room_objs.any? { |x| bug?(x) }
-    bug = Regexp.last_match(1)
+  while (bug = DRRoom.room_objs.filter_map { |x| bug?(x) }.first)
     fput('stand') until checkstanding
     fput("get the #{bug}")
     pause 1

@@ -40,18 +40,22 @@ RSpec.describe 'bug-grabber.lic' do
     script.module_eval(source, path, 1)
   end
 
-  # A bug sits in `bug_room` until it is picked up. `get` puts it in the right
-  # hand and clears the room; every other command is only recorded (the hand
-  # is left as it was, so no game reply is assumed).
-  def put_bug_in(bug_room, bug: 'a black beetle', held: 'beetle')
+  # A bug sits in `bug_room` until it is picked up. Only `get the <noun>`,
+  # where <noun> is the last word of the bug's name, puts it in the right hand
+  # and clears the room; every other command, including a `get` with any other
+  # noun, is only recorded (the hand is left as it was, so no game reply is
+  # assumed). `others` are objects in the same room that aren't insects; they
+  # are listed before the bug and stay put.
+  def put_bug_in(bug_room, bug: 'a black beetle', held: 'beetle', others: [])
     @bug_room = bug_room
     @bug = bug
+    @others = others
     allow(script).to receive(:fput) do |command|
       commands << command
-      if command.start_with?('get')
+      if command == "get the #{bug.split.last}"
         $right_hand = held
         @bug_room = nil
-        DRRoom.room_objs = []
+        DRRoom.room_objs = @others
       end
     end
   end
@@ -64,7 +68,7 @@ RSpec.describe 'bug-grabber.lic' do
 
       walks << room
       arrived = walks.size < at
-      DRRoom.room_objs = arrived && room == @bug_room ? [@bug] : []
+      DRRoom.room_objs = arrived && room == @bug_room ? [*@others, @bug] : []
       arrived
     end
   end
@@ -75,7 +79,7 @@ RSpec.describe 'bug-grabber.lic' do
       raise stop_run if walks.size + 1 >= stop_at
 
       walks << room
-      DRRoom.room_objs = room == @bug_room ? [@bug] : []
+      DRRoom.room_objs = room == @bug_room ? [*@others, @bug] : []
       true
     end
   end
@@ -136,8 +140,7 @@ RSpec.describe 'bug-grabber.lic' do
 
     it 'picks the bug up but does not try to put it on the shrine or stow it' do
       expect { run_script }.to raise_error(SystemExit)
-      expect(commands.size).to eq(1)
-      expect(commands.first).to start_with('get')
+      expect(commands).to eq(['get the beetle'])
     end
 
     it 'says the bug is still in hand' do
@@ -154,7 +157,7 @@ RSpec.describe 'bug-grabber.lic' do
 
     it 'drops the wing without walking to the shrine, then stops at the next failed walk' do
       expect { run_script }.to raise_error(SystemExit)
-      expect(commands.last).to eq('drop wing')
+      expect(commands).to eq(['get the dragonfly', 'drop wing'])
       expect(walks).to eq([10_506, 10_507, 10_506])
       expect(DRC).to have_received(:message).with('bug-grabber: could not reach room 10506. Stopping.')
       expect(DRC).not_to have_received(:message).with(/still in your hands/)
@@ -170,8 +173,16 @@ RSpec.describe 'bug-grabber.lic' do
       # circuit and ends the run.
       expect { run_script }.to raise_error(stop_run)
       expect(walks).to eq([10_506, 10_507, shrine_room])
-      expect(commands.drop(1)).to eq(['put beetle on shrine', 'stow beetle'])
+      expect(commands).to eq(['get the beetle', 'put beetle on shrine', 'stow beetle'])
       expect(DRC).not_to have_received(:message)
+    end
+
+    it 'picks up the bug by its noun when other objects are listed before it' do
+      put_bug_in(10_507, bug: 'a glowing firefly', held: 'firefly', others: ['a leather pouch', 'some moss'])
+      succeed_walks(stop_at: 4)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(commands).to eq(['get the firefly', 'put firefly on shrine', 'stow firefly'])
     end
 
     it 'walks the whole circuit and waits when nothing has spawned' do
