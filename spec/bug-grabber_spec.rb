@@ -332,8 +332,9 @@ RSpec.describe 'bug-grabber.lic' do
     end
 
     # The get names only the noun, so a bugle listed ahead of a real bug does
-    # not change what is sent. Which of the two DR takes then is not known; in
-    # a week of real logs no room listed a bug next to such an object.
+    # not change what is sent. Which of the two DR takes then is not known: no
+    # bug object appeared in a week of real logs, so there is no log evidence
+    # for this case.
     it "still sends 'get the bug' when a bugle is listed ahead of the bug" do
       put_bug_in(10_507, bug: 'a stink bug', held: 'bug')
       succeed_walks(stop_at: 4, scenery: ['battered brass bugle'])
