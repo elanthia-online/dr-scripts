@@ -6,9 +6,20 @@ before_dying do
   Flags.delete('pumpkin-leeches')
 end
 
+# Breaking a pumpkin can rain leeches down on the character, which sets the
+# pumpkin-leeches flag. Tends them off.
+def tend_leeches
+  Flags.reset('pumpkin-leeches')
+  pause 4
+  DRC.wait_for_script_to_complete('tendme')
+  pause 20
+  DRC.wait_for_script_to_complete('tendme')
+end
+
 # Walks to a room the script needs. When the walk fails, stops the script
 # instead of grabbing the vat, breaking pumpkins or stowing loot in the wrong
-# room, and instead of repeating walks that go nowhere.
+# room, and instead of repeating walks that go nowhere. Tends any leeches from
+# the last pumpkin before stopping.
 # A false from walk_to while standing in the room still counts as arrived:
 # lich-5 releases without elanthia-online/lich-5#1749 return false after a
 # one-step walk out of a room they couldn't identify, even though the step
@@ -18,6 +29,7 @@ def walk_to_pumpkin_room(room)
   return if Room.current&.id == room
 
   DRC.message("smash-pumpkins: could not reach room #{room}. Stopping.")
+  tend_leeches if Flags['pumpkin-leeches']
   exit
 end
 
@@ -64,18 +76,13 @@ loop do
     else
       case DRC.bput("stow #{thing}", 'You put', 'to fit in the')
       when 'to fit in the'
+        tend_leeches if Flags['pumpkin-leeches']
         exit
       end
     end
     pause
   end
-  next unless Flags['pumpkin-leeches']
-
-  Flags.reset('pumpkin-leeches')
-  pause 4
-  DRC.wait_for_script_to_complete('tendme')
-  pause 20
-  DRC.wait_for_script_to_complete('tendme')
+  tend_leeches if Flags['pumpkin-leeches']
 end
 
 walk_to_pumpkin_room(10_341)

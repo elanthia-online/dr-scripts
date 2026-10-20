@@ -18,7 +18,8 @@ RSpec.describe 'smash-pumpkins.lic' do
   bank_room = 10_358
   exit_room = 10_341
 
-  # Every walk and game command, in order: [:walk, room] or [:bput, command].
+  # Every walk, game command and script run, in order: [:walk, room],
+  # [:bput, command] or [:script, name].
   let(:events) { [] }
 
   def walks
@@ -29,17 +30,28 @@ RSpec.describe 'smash-pumpkins.lic' do
     events.select { |kind, _| kind == :bput }.map(&:last)
   end
 
+  def tend_leeches_events
+    [[:script, 'tendme'], [:script, 'tendme']]
+  end
+
   # Replies for 'grab vat', one per grab, then 'roundtime' for the rest.
   let(:grab_replies) { [] }
   # Full grab-break-stow cycles before the character starts bleeding, which
   # ends the loop and sends the script to its exit room.
   let(:cycles) { 1 }
   let(:teardown) { [] }
+  # Whether breaking a pumpkin rains leeches down, setting the pumpkin-leeches flag.
+  let(:leeches) { false }
+  # What breaking a pumpkin leaves in hand. 'rind' is junk and goes in the bucket;
+  # anything else is stowed, with `stow_reply` as the game's reply.
+  let(:loot) { 'rind' }
+  let(:stow_reply) { 'You put' }
 
   before do
     $test_settings = OpenStruct.new(pumpkin_junk: ['rind'])
     Harness::DRStats.health = 100
     allow(DRC).to receive(:message)
+    allow(DRC).to receive(:wait_for_script_to_complete) { |name| events << [:script, name] }
 
     grabs = 0
     finished = 0
@@ -57,12 +69,13 @@ RSpec.describe 'smash-pumpkins.lic' do
       when 'withdraw 3 platinum'
         'The clerk counts out'
       when 'break my pumpkin'
-        $right_hand = 'rind'
+        $right_hand = loot
+        Flags['pumpkin-leeches'] = true if leeches
         'wipe off pumpkin residue'
-      when 'put rind in bucket'
-        $right_hand = nil
+      when 'put rind in bucket', "stow #{loot}"
+        $right_hand = nil unless stow_reply == 'to fit in the'
         $bleeding = true if (finished += 1) >= cycles
-        'You drop'
+        command.start_with?('stow') ? stow_reply : 'You drop'
       else
         raise "unexpected command #{command.inspect}"
       end
@@ -145,6 +158,22 @@ RSpec.describe 'smash-pumpkins.lic' do
     it_behaves_like 'stops at the failed walk',
                     [[:walk, vat_room], [:bput, 'grab vat'], [:walk, break_room],
                      [:bput, 'break my pumpkin'], [:walk, vat_room]]
+  end
+
+  context 'when the walk back to the vat with the loot fails and leeches rained down' do
+    let(:leeches) { true }
+
+    before { fail_walk(at: 3) }
+
+    it 'tends the leeches before stopping' do
+      expect { run_script }.to raise_error(SystemExit)
+      expect(events).to eq(
+        [[:walk, vat_room], [:bput, 'grab vat'], [:walk, break_room],
+         [:bput, 'break my pumpkin'], [:walk, vat_room]] + tend_leeches_events
+      )
+      expect(DRC).to have_received(:message).with(stopped_message(vat_room))
+      expect(Flags['pumpkin-leeches']).to be(false)
+    end
   end
 
   context 'when the walk back to the vat fails on the second cycle' do
@@ -231,11 +260,55 @@ RSpec.describe 'smash-pumpkins.lic' do
       )
     end
 
+    context 'when leeches rain down' do
+      let(:leeches) { true }
+
+      it 'tends them after stowing the loot, as before' do
+        expect { run_script }.not_to raise_error
+        expect(events).to eq(
+          [[:walk, vat_room], [:bput, 'grab vat'], [:walk, break_room],
+           [:bput, 'break my pumpkin'], [:walk, vat_room], [:bput, 'put rind in bucket']] +
+          tend_leeches_events + [[:walk, exit_room]]
+        )
+      end
+    end
+
     it 'walks out and exits when too injured, as before' do
       grab_replies << 'You are too injured'
       expect { run_script }.to raise_error(SystemExit)
       expect(events).to eq([[:walk, vat_room], [:bput, 'grab vat'], [:walk, exit_room]])
       expect(DRC).not_to have_received(:message)
+    end
+  end
+
+  context 'when the loot does not fit and leeches rained down' do
+    let(:leeches) { true }
+    let(:loot) { 'pumpkin seed' }
+    let(:stow_reply) { 'to fit in the' }
+
+    before { succeed_walks }
+
+    it 'tends the leeches before stopping' do
+      expect { run_script }.to raise_error(SystemExit)
+      expect(events).to eq(
+        [[:walk, vat_room], [:bput, 'grab vat'], [:walk, break_room],
+         [:bput, 'break my pumpkin'], [:walk, vat_room], [:bput, 'stow pumpkin seed']] +
+        tend_leeches_events
+      )
+      expect(Flags['pumpkin-leeches']).to be(false)
+    end
+  end
+
+  context 'when the loot does not fit and no leeches rained down' do
+    let(:loot) { 'pumpkin seed' }
+    let(:stow_reply) { 'to fit in the' }
+
+    before { succeed_walks }
+
+    it 'stops without tending' do
+      expect { run_script }.to raise_error(SystemExit)
+      expect(events.last).to eq([:bput, 'stow pumpkin seed'])
+      expect(DRC).not_to have_received(:wait_for_script_to_complete)
     end
   end
 
