@@ -1450,7 +1450,7 @@ RSpec.describe Sew do
       end
 
       it 'recognizes exotic cloth types' do
-        ['electroweave', 'steelsilk', 'arzumodine', 'bourde', 'dergatine', 'dragonar', 'faeweave', 'farandine', 'imperial weave'].each do |mat|
+        ['electroweave', 'steelsilk', 'arzumodine', 'bourde', 'dergatine', 'dragonar', 'faeweave', 'farandine', 'imperial', 'imperial weave'].each do |mat|
           sew.instance_variable_set(:@mat_type, mat)
           sew.instance_variable_set(:@recipe_name, 'small rucksack')
 
@@ -1460,13 +1460,19 @@ RSpec.describe Sew do
         end
       end
 
-      it 'falls through to leather for bare imperial' do
+      # "imperial" is the adjective the game matches for imperial weave cloth:
+      # TAP MY IMPERIAL CLOTH -> "You tap some heavy Imperial weave cloth".
+      it 'gets bare imperial as cloth, not leather' do
         sew.instance_variable_set(:@mat_type, 'imperial')
         sew.instance_variable_set(:@recipe_name, 'small rucksack')
 
+        expect(DRCC).to receive(:get_crafting_item).with('imperial cloth', 'duffel bag', [], nil)
+        expect(DRCC).not_to receive(:get_crafting_item).with('imperial leather', anything, anything, anything)
+
         result = sew.send(:prep)
 
-        expect(result).to eq('cut my imperial leather with my scissors')
+        expect(result).to eq('cut my imperial cloth with my scissors')
+        expect(sew.instance_variable_get(:@home_command)).to eq('push my rucksack with my needles')
       end
 
       it 'falls through to leather for non-cloth materials' do
@@ -1650,9 +1656,8 @@ RSpec.describe Sew do
   end
 
   describe 'CLOTH' do
-    it 'includes imperial weave and excludes bare imperial' do
-      expect(Sew::CLOTH).to include('imperial weave')
-      expect(Sew::CLOTH).not_to include('imperial')
+    it 'includes both bare imperial and imperial weave' do
+      expect(Sew::CLOTH).to include('imperial', 'imperial weave')
     end
 
     it 'is frozen' do
