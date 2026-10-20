@@ -449,6 +449,8 @@ class Aesthene
   SOLVE_GRACE = 3
   # Most candidates listed in a status message.
   LIST_LIMIT = 40
+  # Whispers in a row that may add no row before the script gives up.
+  STALL_LIMIT = 2
 
   REDEEM_CONFIRM_PATTERN = /Once you redeem this, you'll have 1 instance access/
   REDEEMED_PATTERN = /You have just redeemed 1 instance of access/
@@ -550,20 +552,29 @@ class Aesthene
     end
   end
 
-  # Guesses until the lock is solved, it runs out of rows, or nothing fits.
+  # Guesses until the lock is solved, it runs out of rows, nothing fits, or
+  # the lock stops taking guesses.
+  #
+  # A whisper that adds no row is sent again once, since a reply such as
+  # "...wait" drops it. The same state always picks the same guess, so
+  # without a limit a lock that never takes it would be whispered forever.
   #
   # @param reading [AestheneGrid::Reading] the lock's current state
   # @return [void]
   def solve(reading)
+    stalled = 0
     loop do
       @solver.observe(reading.rows)
       return report_solved(reading.rows.last&.guess || reading.whispered) if reading.solved?
       return report_failure('the lock has no rows left.') if reading.rows_left.zero?
+      return report_failure("#{STALL_LIMIT} whispers in a row added no row to the lock.") if stalled >= STALL_LIMIT
 
       guess = @solver.next_guess(reading.rows_left)
       return report_failure('no word in the lists fits the feedback.') unless guess
 
+      rows_left = reading.rows_left
       reading = whisper(guess)
+      stalled = reading.rows_left < rows_left ? 0 : stalled + 1
     end
   end
 

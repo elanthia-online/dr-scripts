@@ -109,6 +109,7 @@ class AestheneFakeLock
     @redeem_confirmed = false
     @touch_confirmed = false
     @drop_row_once = false
+    @whispers_to_ignore = 0
   end
 
   # Makes the next whisper reply leave out one grid row, as if it were missed.
@@ -116,10 +117,21 @@ class AestheneFakeLock
     @drop_row_once = true
   end
 
+  # Makes the next whispers get a reply that adds no row, as if the lock
+  # did not take them.
+  #
+  # @param count [Integer] whispers to ignore; Float::INFINITY for all
+  def ignore_whispers(count)
+    @whispers_to_ignore = count
+  end
+
   # @param command [String]
   # @return [Array<String>] the game's reply
   def reply(command)
     @commands << command
+    # A script stuck re-sending the same whisper would otherwise hang the suite.
+    raise 'the script kept whispering' if @commands.grep(/\Awhisper /).size > 20
+
     case command
     when 'redeem my slip' then redeem
     when 'ask timekeeper about access' then ask_access
@@ -171,6 +183,10 @@ class AestheneFakeLock
 
   def whisper(guess)
     return ["You whisper quietly to the lock.  It doesn't respond.", '[You are not currently tasked with solving the puzzle.  TOUCH the lock to begin.]'] unless @rows
+    if @whispers_to_ignore.positive?
+      @whispers_to_ignore -= 1
+      return ["You whisper quietly to the lock.  It doesn't respond."]
+    end
 
     @rows += [guess]
     lines = ["You quietly whisper '#{guess.downcase}' to the lock.  Eldritch lights surround the tiles as they settle into place."]
@@ -966,6 +982,34 @@ RSpec.describe 'aesthene.lic' do
         expect(DRC).to have_received(:message).with(/the lock has no rows left/)
       end
 
+      it 'stops when two whispers in a row add no row' do
+        stuck = reading_from(['[1 of the 6 rows are locked into place.]'])
+        calls = 0
+        allow(instance).to receive(:whisper) do
+          raise 'solve kept whispering' if (calls += 1) > 5
+
+          stuck
+        end
+        instance.solve(stuck)
+        expect(instance).to have_received(:whisper).twice
+        expect(DRC).to have_received(:message).with(/2 whispers in a row added no row to the lock/)
+      end
+
+      it 'keeps going after a single whisper that adds no row' do
+        rows = []
+        calls = 0
+        allow(instance).to receive(:whisper) do |guess|
+          # The first whisper is lost; the rest land as on a real lock.
+          rows += [row_for(guess, 'POACH')] unless (calls += 1) == 1
+          reading = AestheneGrid::Reading.new
+          reading.instance_variable_set(:@rows, rows)
+          reading.instance_variable_set(:@locked, rows.size)
+          reading
+        end
+        instance.solve(AestheneGrid::Reading.new)
+        expect(DRC).to have_received(:message).with('aesthene: solved! The word was POACH.')
+      end
+
       it 'finishes a resumed lock from its current grid' do
         play_lock('POACH')
         resumed = reading_from(AESTHENE_POACH_PROBE_ROWS.first(3) + ['[3 of the 6 rows are locked into place.]'])
@@ -1096,6 +1140,24 @@ RSpec.describe 'aesthene.lic' do
       run_script(lock, :solve)
       expect(lock.commands[3]).to eq('look lock')
       expect(messages).to include('aesthene: solved! The word was HYDRA.')
+    end
+
+    it 'whispers the same guess again when the lock does not take it once, and still solves' do
+      lock = AestheneFakeLock.new('POACH', passes: 1)
+      lock.ignore_whispers(1)
+      run_script(lock, :solve)
+      expect(whispers(lock).first(2).uniq.size).to eq(1)
+      expect(messages).to include('aesthene: solved! The word was POACH.')
+    end
+
+    it 'stops after two whispers in a row that add no row, and lists what is still possible' do
+      lock = AestheneFakeLock.new('POACH', passes: 1)
+      lock.ignore_whispers(Float::INFINITY)
+      run_script(lock, :solve)
+      expect(whispers(lock).size).to eq(2)
+      expect(whispers(lock).uniq.size).to eq(1)
+      expect(messages.grep(/couldn't solve the lock: 2 whispers in a row added no row to the lock\./)).not_to be_empty
+      expect(messages.grep(/possible known answers: CLOAK, CORAL/)).not_to be_empty
     end
 
     it 'stops with a message when there is no pass to attune with' do
