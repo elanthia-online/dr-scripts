@@ -10,8 +10,6 @@ load_lic_class('athletics.lic', 'Athletics')
 RSpec.describe Athletics do
   before(:each) do
     reset_data
-    Harness::DRSkill._reset_xp
-    Harness::DRSkill._reset_modrank
 
     allow(DRC).to receive(:wait_for_script_to_complete)
     allow(DRC).to receive(:bput)

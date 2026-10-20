@@ -6738,11 +6738,9 @@ RSpec.describe LootProcess do
 
     it 'targets the selected corpse id for a non-butcher ritual and its preserve' do
       # Mindstates full, so the configured ritual is skipped and only the
-      # zombie-raising arise (with its preserve) runs. Stubbed per-example
-      # rather than seeded with DRSkill._set_xp: outdoorsmanship_spec swaps
-      # the harness xp store for one reset_data does not clear, so a seeded
-      # value leaks into later examples in a full-suite run.
-      allow(DRSkill).to receive(:getxp).and_return(34)
+      # zombie-raising arise (with its preserve) runs.
+      DRSkill._set_xp('First Aid', 34)
+      DRSkill._set_xp('Thanatology', 34)
 
       build_necro_loot(ritual_type: 'dissect', dissect_and_butcher: false, make_zombie: true)
         .check_rituals?(necro_game_state)
