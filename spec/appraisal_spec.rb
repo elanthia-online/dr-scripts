@@ -359,4 +359,39 @@ describe Appraisal do
       end
     end
   end
+
+  # An unrecognised start reply times out, and the retry then answers "You are
+  # already focusing", so a regression shows up as a second APPRAISE FOCUS.
+  describe '#focus_concept' do
+    it 'recognises a concept focus starting, which does not begin "You carefully"' do
+      stub_bput_by_command(
+        'appraise focus' => [
+          'You search inward to examine your most recent battle, focusing beyond any individual details.  ' \
+          'Instead you concentrate your efforts toward honing your knowledge of defending based on that abstract.',
+          'You are already focusing your appraisal on a subject.'
+        ]
+      )
+
+      appraisal.focus_concept('defense')
+
+      expect(DRC).to have_received(:bput).with('appraise focus defense', any_args).once
+    end
+  end
+
+  describe '#focus' do
+    it 'recognises an item focus starting and stows the item' do
+      stub_bput_by_command(
+        'appraise focus my' => [
+          'You carefully examine your deobar coffer, focusing beyond any individual details.',
+          'You are already focusing your appraisal on a subject.'
+        ],
+        'stow my'           => 'You put your coffer in your backpack.'
+      )
+
+      appraisal.focus('coffer')
+
+      expect(DRC).to have_received(:bput).with('appraise focus my coffer', any_args).once
+      expect(DRC).to have_received(:bput).with('stow my coffer', any_args)
+    end
+  end
 end

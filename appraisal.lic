@@ -274,8 +274,8 @@ class Appraisal
 
   def focus_concept(item)
     waitrt?
-    case DRC.bput("appraise focus #{item}", 'You carefully', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem', 'You will lose your progress')
-    when 'You carefully', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem'
+    case DRC.bput("appraise focus #{item}", 'You carefully', 'focusing beyond any individual details', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem', 'You will lose your progress')
+    when 'You carefully', 'focusing beyond any individual details', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem'
       return
     else
       focus_concept(item)
@@ -285,8 +285,8 @@ class Appraisal
   def focus(item)
     waitrt?
 
-    case DRC.bput("appraise focus my #{item}", 'You carefully', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem', 'You will lose your progress')
-    when 'You carefully', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem'
+    case DRC.bput("appraise focus my #{item}", 'You carefully', 'focusing beyond any individual details', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem', 'You will lose your progress')
+    when 'You carefully', 'focusing beyond any individual details', 'You are already', 'You currently feel', 'You can\'t seem', 'You cant seem'
       DRC.bput("stow my #{item}", "You put .*#{item}", 'You easily strap', "You don't seem to be able to move", 'You secure', 'is too small to hold that', 'You hang')
     else
       focus(item)
