@@ -9,7 +9,7 @@ class Sew
     'silk', 'wool', 'burlap', 'cotton', 'felt', 'linen',
     'electroweave', 'steelsilk', 'arzumodine', 'bourde',
     'dergatine', 'dragonar', 'faeweave', 'farandine',
-    'imperial weave', 'jaspe', 'khaddar', 'ruazin',
+    'imperial', 'imperial weave', 'jaspe', 'khaddar', 'ruazin',
     'titanese', 'zenganne'
   ].freeze
 

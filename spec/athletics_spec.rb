@@ -10,13 +10,11 @@ load_lic_class('athletics.lic', 'Athletics')
 RSpec.describe Athletics do
   before(:each) do
     reset_data
-    Harness::DRSkill._reset_xp
-    Harness::DRSkill._reset_modrank
 
     allow(DRC).to receive(:wait_for_script_to_complete)
     allow(DRC).to receive(:bput)
     allow(DRC).to receive(:message)
-    allow(DRCT).to receive(:walk_to)
+    allow(DRCT).to receive(:walk_to).and_return(true)
   end
 
   describe '#outdoorsmanship_waiting' do
@@ -63,6 +61,19 @@ RSpec.describe Athletics do
 
       it 'walks to a random room before starting outdoorsmanship' do
         expect(DRCT).to receive(:walk_to).with(satisfy { |id| [5678, 9012].include?(id) })
+        athletics.outdoorsmanship_waiting(4)
+      end
+    end
+
+    context 'when the outdoorsmanship room cannot be reached' do
+      before do
+        athletics.instance_variable_set(:@skip_magic, nil)
+        athletics.instance_variable_set(:@outdoorsmanship_rooms, [5678])
+        allow(DRCT).to receive(:walk_to).and_return(false)
+      end
+
+      it 'still trains outdoorsmanship where it stands' do
+        expect(DRC).to receive(:wait_for_script_to_complete).with('outdoorsmanship', [4, "room=#{Room.current.id}", 'rock', ''])
         athletics.outdoorsmanship_waiting(4)
       end
     end
@@ -359,6 +370,20 @@ RSpec.describe Athletics do
         end
       end
 
+      context 'when the safe room cannot be reached' do
+        let(:learn_on_climb) { -> { Harness::DRSkill._set_xp('Athletics', DRSkill.getxp('Athletics') + 10) } }
+
+        before { allow(DRCT).to receive(:walk_to).and_return(false) }
+
+        it 'trains with the rope where it stands, as before' do
+          athletics.train_with_rope(false)
+
+          expect(DRCT).to have_received(:walk_to).with(1)
+          expect(climb_commands.size).to eq(3)
+          expect(DRC).not_to have_received(:message)
+        end
+      end
+
       context 'when climbs teach Athletics' do
         let(:learn_on_climb) { -> { Harness::DRSkill._set_xp('Athletics', DRSkill.getxp('Athletics') + 10) } }
 
@@ -368,6 +393,320 @@ RSpec.describe Athletics do
           expect(climb_commands.size).to eq(3)
           expect(DRC).not_to have_received(:message)
         end
+      end
+    end
+  end
+
+  # ===========================================================================
+  # Training walks
+  #
+  # Each routine repeats walks until Athletics is trained. When a walk fails
+  # (DRCT.walk_to returns false, e.g. the room can't be reached or the current
+  # room can't be resolved), the script must stop instead of repeating walks
+  # that go nowhere. These run the real script entry point (Athletics.new) with
+  # the real room data, and Athletics XP that never rises unless a spec says so.
+  # ===========================================================================
+  describe 'training walks' do
+    let(:walks) { [] }
+    let(:stopped_message) { "Athletics: could not reach room #{walks.last}. Stopping athletics training." }
+
+    before do
+      $test_settings = OpenStruct.new(
+        held_athletics_items: ['gloves'],
+        athletics_outdoorsmanship_rooms: [],
+        performance_pause: 0,
+        hometown: 'Crossing'
+      )
+      $test_data[:athletics] = OpenStruct.new(YAML.load_file(File.expand_path('../data/base-athletics.yaml', __dir__)))
+      $parsed_args = OpenStruct.new(skip_magic: true)
+
+      # A routine left training in the wrong room can wait forever for a climb
+      # that never started. Fail the example instead of hanging the suite.
+      pauses = 0
+      allow_any_instance_of(Athletics).to receive(:pause) do
+        raise 'paused 100 times without finishing' if (pauses += 1) > 100
+      end
+    end
+
+    # Walk number `at` fails; every walk before it succeeds. Any walk after the
+    # failed one raises, so code that keeps looping fails the example instead
+    # of hanging the suite.
+    def fail_walk(at:)
+      allow(DRCT).to receive(:walk_to) do |room|
+        raise "walked to #{room} after the walk to #{walks.last} failed" if walks.size >= at
+
+        walks << room
+        walks.size < at
+      end
+    end
+
+    # Every walk succeeds; Athletics is trained once the walk to `room` is done.
+    def train_after_walk_to(room)
+      allow(DRCT).to receive(:walk_to) do |target|
+        raise 'walked 50 times without finishing' if walks.size >= 50
+
+        walks << target
+        Harness::DRSkill._set_xp('Athletics', 34) if target == room
+        true
+      end
+    end
+
+    shared_examples 'stops at the failed walk' do |expected_walks|
+      it "walks #{expected_walks.join(', ')} and stops" do
+        expect { Athletics.new }.not_to raise_error
+        expect(walks).to eq(expected_walks)
+      end
+
+      it 'says which room it could not reach' do
+        Athletics.new
+        expect(DRC).to have_received(:message).with(stopped_message)
+      end
+
+      it 'stows the held athletics items after stopping' do
+        commands = []
+        allow(DRC).to receive(:bput) { |command, *_matches| commands << command }
+        Athletics.new
+        expect(commands.last).to eq('stow my gloves')
+      end
+    end
+
+    context 'when swimming and the second room cannot be reached' do
+      before do
+        $test_settings.swimming_target = 'arthe_dale'
+        fail_walk(at: 2)
+      end
+
+      it_behaves_like 'stops at the failed walk', [19_069, 19_071]
+    end
+
+    context 'when swimming at low rank in Crossing and the first room cannot be reached' do
+      before do
+        Harness::DRSkill._set_modrank('Athletics', 20)
+        fail_walk(at: 1)
+      end
+
+      it_behaves_like 'stops at the failed walk', [19_069]
+    end
+
+    context 'when climbing the cliffs and the first room cannot be reached' do
+      before do
+        $test_settings.climbing_target = 'cliffs'
+        fail_walk(at: 1)
+      end
+
+      it_behaves_like 'stops at the failed walk', [9525]
+    end
+
+    context 'when climbing the wyvern cliffs and a room partway round cannot be reached' do
+      before do
+        $parsed_args.wyvern = true
+        fail_walk(at: 3)
+      end
+
+      it_behaves_like 'stops at the failed walk', [19_464, 9607, 11_126]
+    end
+
+    context 'when climbing undergondola above 540 and a room in the loop cannot be reached' do
+      before do
+        $parsed_args.undergondola = true
+        Harness::DRSkill._set_modrank('Athletics', 600)
+        fail_walk(at: 4)
+      end
+
+      it_behaves_like 'stops at the failed walk', [9607, 9515, 2245, 9607]
+    end
+
+    context 'when climbing xalas and a room on the second lap cannot be reached' do
+      before do
+        $parsed_args.xalas = true
+        fail_walk(at: 4)
+      end
+
+      it_behaves_like 'stops at the failed walk', [6154, 12_838, 6154, 12_838]
+
+      it 'trained outdoorsmanship once, between the laps' do
+        Athletics.new
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('outdoorsmanship', any_args).once
+      end
+    end
+
+    context 'when climbing in Riverhaven and a room on the route cannot be reached' do
+      before do
+        $test_settings.hometown = 'Riverhaven'
+        Harness::DRSkill._set_modrank('Athletics', 5)
+        fail_walk(at: 3)
+      end
+
+      it_behaves_like 'stops at the failed walk', [12_821, 13_755, 14_723]
+    end
+
+    context 'when climbing in Crossing and the first obstacle room cannot be reached' do
+      before do
+        Harness::DRSkill._set_modrank('Athletics', 100)
+        fail_walk(at: 1)
+      end
+
+      it_behaves_like 'stops at the failed walk', [835]
+
+      it 'does not try the climb in the wrong room' do
+        Athletics.new
+        expect(DRC).not_to have_received(:bput).with('climb embrasure', any_args)
+      end
+    end
+
+    context 'when climbing in Shard and the first obstacle room cannot be reached' do
+      before do
+        $test_settings.hometown = 'Shard'
+        Harness::DRSkill._set_modrank('Athletics', 100)
+        fail_walk(at: 1)
+      end
+
+      it_behaves_like 'stops at the failed walk', [2544]
+    end
+
+    # Shard repeats climb_cliffs inside its own loop, so the stop has to end
+    # both loops, not just climb_cliffs.
+    context 'when Shard climbs the cliffs and the first room cannot be reached' do
+      before do
+        $test_settings.hometown = 'Shard'
+        Harness::DRSkill._set_modrank('Athletics', 300)
+        fail_walk(at: 1)
+      end
+
+      it_behaves_like 'stops at the failed walk', [9525]
+    end
+
+    context 'when swimming in Hibarnhvidar and the return to the bank cannot be reached' do
+      before do
+        $test_settings.hometown = 'Hibarnhvidar'
+        fail_walk(at: 2)
+      end
+
+      it_behaves_like 'stops at the failed walk', [4155, 4155]
+    end
+
+    # Ratha repeats climb_practice inside its own loop.
+    context 'when climbing in Ratha and the practice room cannot be reached' do
+      before do
+        $test_settings.hometown = 'Ratha'
+        fail_walk(at: 1)
+      end
+
+      it_behaves_like 'stops at the failed walk', [5287]
+
+      it 'does not hide or practice in the wrong room' do
+        allow(DRC).to receive(:hide?).and_return(true)
+        Athletics.new
+        expect(DRC).not_to have_received(:hide?)
+        expect(DRC).not_to have_received(:bput).with('climb practice rock gorge', any_args)
+      end
+    end
+
+    context 'when every walk succeeds' do
+      it 'swims each room once and finishes, without a stop message' do
+        $test_settings.swimming_target = 'arthe_dale'
+        train_after_walk_to(19_066)
+
+        Athletics.new
+
+        expect(walks).to eq([19_069, 19_071, 19_067, 19_066])
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'climbs the cliffs route once and finishes, without a stop message' do
+        $test_settings.climbing_target = 'cliffs'
+        train_after_walk_to(2900)
+
+        Athletics.new
+
+        expect(walks).to eq([9525, 9609, 9607, 2900])
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    context 'when walk_to reports false but the character is in the room' do
+      before do
+        $test_settings.swimming_target = 'arthe_dale'
+        # lich-5 releases without elanthia-online/lich-5#1749 return false after
+        # a one-step walk out of a room they couldn't identify, although the
+        # step reached the target room.
+        allow(DRCT).to receive(:walk_to) do |room|
+          raise 'walked 50 times without finishing' if walks.size >= 50
+
+          walks << room
+          allow(Room).to receive(:current).and_return(OpenStruct.new(id: room))
+          Harness::DRSkill._set_xp('Athletics', 34) if room == 19_066
+          false
+        end
+      end
+
+      it 'counts the walk as arrived and keeps training' do
+        Athletics.new
+
+        expect(walks).to eq([19_069, 19_071, 19_067, 19_066])
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    context 'when walk_to reports false and the character is in another room' do
+      it 'stops at the failed walk' do
+        $test_settings.swimming_target = 'arthe_dale'
+        fail_walk(at: 1)
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 19_071))
+
+        Athletics.new
+
+        expect(walks).to eq([19_069])
+        expect(DRC).to have_received(:message).with(stopped_message)
+      end
+    end
+
+    context 'when the current room is unknown and walk_to reports false' do
+      it 'stops at the failed walk' do
+        $test_settings.swimming_target = 'arthe_dale'
+        fail_walk(at: 1)
+        allow(Room).to receive(:current).and_return(nil)
+
+        expect { Athletics.new }.not_to raise_error
+        expect(walks).to eq([19_069])
+        expect(DRC).to have_received(:message).with(stopped_message)
+      end
+    end
+
+    context 'when a room id comes from a data file as a string' do
+      it 'compares it with the current room as a number' do
+        $test_settings.climbing_target = 'silverwater_ladder'
+        $test_data[:athletics].practice_options['silverwater_ladder']['id'] = '6119'
+        allow(DRCT).to receive(:walk_to) do |room|
+          raise "walked to #{room} again" unless walks.empty?
+
+          walks << room
+          false
+        end
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 6119))
+        Harness::DRSkill._set_xp('Athletics', 34)
+
+        Athletics.new
+
+        expect(walks).to eq(['6119'])
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    context 'when athletics is started again after a run stopped' do
+      it 'tries the walk again and stops again, keeping nothing between runs' do
+        $test_settings.swimming_target = 'arthe_dale'
+        allow(DRCT).to receive(:walk_to) do |room|
+          raise "walked to #{room} again within one run" if walks.size >= 2
+
+          walks << room
+          false
+        end
+
+        2.times { Athletics.new }
+
+        expect(walks).to eq([19_069, 19_069])
+        expect(DRC).to have_received(:message).with(stopped_message).twice
       end
     end
   end

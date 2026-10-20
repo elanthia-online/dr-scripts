@@ -3026,6 +3026,15 @@ hunting_zones:
   - 9549
   - 9550
   - 9551
+  rotvein_thornkin:
+  # https://elanthipedia.play.net/Rot-vein_thornkin                     650-900 
+  - 52498
+  - 52499
+  - 52500
+  - 52501
+  - 52502
+  - 52503
+  - 52504
   # https://elanthipedia.play.net/Bony_wind_wretch                      700-1000?
   # https://elanthipedia.play.net/Ragged_wind_hag                       700-1000?
   wretch_and_hag:

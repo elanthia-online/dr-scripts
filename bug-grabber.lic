@@ -3,38 +3,74 @@
 
   Walks the circuit until a bug is in the room, picks it up, and places it on the
   shrine in room 10506. Wings are dropped. Waits and re-walks when nothing spawns.
+  Stops with a message when a walk fails.
 =end
 
-rooms = [10_506, 10_507, 10_676, 10_508, 10_509, 10_665, 10_670, 10_673, 10_482, 10_497, 10_515, 10_675, 10_510, 10_539, 10_668, 10_669, 10_590, 10_520,
-         10_666, 10_640, 10_557, 10_576, 10_617, 10_667, 10_620, 10_572, 10_671, 10_672, 10_677, 13_231, 10_678]
+# Every room must be reachable from every other in the current mapdb, and
+# Lich must be able to tell it apart from every other room, since a failed walk
+# stops the script. walk_to only reports arrival when Room.current is the
+# target, and Lich takes a room the map has no uid for to be the first room in
+# the map with the same title, description and exits. Many Lowest Depths corridors
+# look exactly alike, so the circuit leaves out each one that shares its look
+# with a lower-numbered room; walks still pass through them.
+rooms = [10_506, 10_507, 10_508, 10_509, 10_482, 10_497, 10_515, 10_510, 10_539, 10_590, 10_520, 10_640, 10_557, 10_576, 10_617, 10_620,
+         10_572, 10_677]
 
-def bug?(obj_name)
-  /\b(locust|bug|beetle|cricket|hornet|moth|scarab|firefly|dragonfly|mantis)/i =~ obj_name
+# The first bug among the room's objects, as `<adjective> <noun>` for
+# `get the <adjective> <noun>`, or nil when none of them is a bug. The bug word
+# has to be the object's noun, its last word, singular or plural (crickets,
+# mantises, fireflies): DR matches `get the bug` against the start of an item's
+# noun, so a bugle, mothballs, a moth antenna or the dropped dragonfly wing
+# must not count. The word before the noun goes into the get as well, so
+# `get the stink bug` can't take a battered brass bugle listed ahead of the
+# bug. Both words are returned as the room lists them; an object listed under
+# its noun alone, or after an article, is named by its noun alone.
+def room_bug
+  DRRoom.room_objs.each do |obj|
+    match = obj.match(/(?:(\S+)\s+)?\b((?:locust|bug|beetle|cricket|hornet|moth|scarab|mantis)(?:e?s)?|(?:fire|dragon)fl(?:y|ies))\z/i)
+    next unless match
+
+    adjective = match[1] unless match[1].to_s.match?(/\A(?:a|an|some|the)\z/i)
+    return [adjective, match[2]].compact.join(' ')
+  end
+  nil
 end
 
-loop do
-  rooms.each do |room|
-    DRCT.walk_to(room)
-    break if DRRoom.room_objs.any? { |x| bug?(x) }
-  end
-  unless DRRoom.room_objs.any? { |x| bug?(x) }
-    pause 15
-    echo 'waiting on more bugs'
-    next
-  end
+# Walks to a room on the circuit or to the shrine. When the walk fails, stops
+# the script instead of searching the wrong rooms or trying to put the bug on a
+# shrine that isn't there. A false from walk_to while standing in the room
+# still counts as arrived: some lich-5 releases return false after a one-step
+# walk out of a room they couldn't identify, even though the step reached the
+# target.
+def walk_to_or_stop(room, held = nil)
+  return if DRCT.walk_to(room)
+  return if Room.current&.id == room
 
-  while DRRoom.room_objs.any? { |x| bug?(x) }
-    bug = Regexp.last_match(1)
+  DRC.message("bug-grabber: could not reach room #{room}. Stopping.")
+  DRC.message("bug-grabber: the #{held} is still in your hands.") if held
+  exit
+end
+
+# Picks up each bug in the room in turn, drops a wing and takes anything else
+# to the shrine. Returns false, leaving the object where it is, when a get
+# leaves both hands empty (the object can't be picked up, or someone else got
+# it first), so the circuit moves on instead of carrying nothing to the shrine
+# and coming straight back for it.
+def collect_bugs
+  while (bug = room_bug)
     fput('stand') until checkstanding
     fput("get the #{bug}")
     pause 1
     waitrt?
     thing = checkright || checkleft
     case thing
+    when nil
+      DRC.message("bug-grabber: could not pick up the #{bug}. Moving on.")
+      return false
     when /\bwing/i
       fput('drop wing')
     else
-      DRCT.walk_to(10_506)
+      walk_to_or_stop(10_506, thing)
       fput("put #{thing} on shrine")
       pause
       waitrt?
@@ -43,5 +79,19 @@ loop do
     end
     waitrt?
   end
+  true
+end
+
+# Walks the circuit until a room's bugs are collected, then starts over. A
+# circuit that collects nothing waits before the next one.
+loop do
+  collected = rooms.any? do |room|
+    walk_to_or_stop(room)
+    room_bug && collect_bugs
+  end
   waitrt?
+  next if collected
+
+  pause 15
+  echo 'waiting on more bugs'
 end

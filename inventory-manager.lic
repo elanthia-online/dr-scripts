@@ -14,6 +14,11 @@ class InventoryManager
     '#39'  => "'"
   }.freeze
 
+  # Ceiling, in seconds, on one /regex/ search match. A row is a short line, so
+  # a sane pattern finishes in microseconds; this only stops a runaway one such
+  # as /(a+)+\1$/, which Ruby cannot memoize because of the backreference.
+  SEARCH_REGEX_TIMEOUT = 0.5
+
   def initialize
     @active_character = Char.name.to_sym
     @item_db_path = "data/inventory.yaml"
@@ -43,7 +48,7 @@ class InventoryManager
       ],
       [
         { name: 'search', regex: /search/i, description: 'Start a search across all characters for specified item.' },
-        { name: 'item', regex: /\w+/i, optional: false, description: 'Item to find.' },
+        { name: 'item', regex: /\S+/, optional: false, description: 'Item to find. Quote it if it has spaces. Wrap it in slashes for a case-insensitive regex with no flags, i.e., /gem|pouch/. A regex sees the whole saved line, which ends in a tag such as (character), so $ anchors to the tag, not the item.' },
         { name: 'nest', regex: /nest|-n/i, optional: true, description: 'Print the nesting container data', default: false }
       ],
       [
@@ -708,25 +713,68 @@ class InventoryManager
     @item_data.keys.find { |key| key.to_s.downcase == wanted } || name.to_s.capitalize.to_sym
   end
 
+  # A term wrapped in slashes, such as /gem|pouch/, is a case-insensitive regex.
+  # Anything else is a plain substring match. A pattern that does not compile
+  # becomes a substring match on the text between the slashes, and one that
+  # runs past SEARCH_REGEX_TIMEOUT matches nothing for the rest of the search.
+  # Either way the block, if given, is told why. Returns a predicate over a line.
+  def self.search_matcher(query, &on_error)
+    term = query.to_s.strip
+    if (body = term[%r{\A/(.+)/\z}m, 1])
+      begin
+        pattern = Regexp.new(body, Regexp::IGNORECASE, timeout: SEARCH_REGEX_TIMEOUT)
+        timed_out = false
+        matcher = lambda do |text|
+          next false if timed_out
+
+          pattern.match?(text.to_s)
+        rescue Regexp::TimeoutError => e
+          timed_out = true
+          on_error&.call(e)
+          false
+        end
+        return matcher
+      rescue RegexpError => e
+        on_error&.call(e)
+        term = body
+      end
+    end
+    needle = term.downcase
+    ->(text) { text.to_s.downcase.include?(needle) }
+  end
+
   def search_for_item(item, nested)
-    needle = item.downcase
+    # parse_args downcases every argument, which would turn \D or \S in a regex
+    # into \d or \s, so search with the term as it was typed.
+    term = Array(variable).drop(1).find { |arg| arg.downcase == item } || item
+    matcher = self.class.search_matcher(term) do |error|
+      if error.is_a?(Regexp::TimeoutError)
+        DRC.message("inventory-manager: #{term} took too long to match and was stopped, so these results are incomplete.")
+      else
+        DRC.message("inventory-manager: #{term} is not a valid regex (#{error.message}), searching for the text between the slashes instead.")
+      end
+    end
+    found = false
     @item_data.each do |k, v|
       next if k == @version_string
 
       matches = []
       v.each do |data|
         data = strip_nesting(data) unless nested
-        matches << data if data.downcase.include?(needle)
+        matches << data if matcher.call(data)
       end
       # Only report characters that actually have a match, otherwise a large
       # multi-character database spams a "Checking/Found 0 matches" block per
       # character on every search.
       next if matches.empty?
 
+      found = true
       DRC.message("Checking #{k}:")
       matches.each_with_index { |data, index| DRC.message("Match #{index + 1}): #{data}") }
       DRC.message("Found #{matches.length} match#{(matches.length > 1 ? 'es' : '')} on #{k}\n")
     end
+    # One line rather than one per character, so an empty result is not silence.
+    DRC.message("No matches for #{term}.") unless found
   end
 
   def strip_nesting(item)
@@ -1045,7 +1093,7 @@ class InventoryManagerGui
       scroller.add(view)
 
       search_entry = Gtk::SearchEntry.new
-      search_entry.placeholder_text = 'Search items and containers'
+      search_entry.placeholder_text = 'Search items and containers (/regex/ works too)'
 
       character_combo = Gtk::ComboBoxText.new
       character_combo.append_text(ALL_CHARACTERS)
@@ -1459,6 +1507,11 @@ class InventoryManagerGui
   def refill(store, status, query:, character:, nest:)
     store.clear
     needle = query.to_s.strip.downcase
+    # Live search sees every keystroke, so a half-typed /pattern( just falls
+    # back to substring matching until it compiles. Only a runaway pattern is
+    # worth telling the user about.
+    timed_out = false
+    matcher = InventoryManager.search_matcher(query) { |error| timed_out = true if error.is_a?(Regexp::TimeoutError) }
     shown = 0
     shown_characters = 0
 
@@ -1475,7 +1528,7 @@ class InventoryManagerGui
         visible = if needle.empty?
                     source_rows
                   else
-                    source_rows.select { |row| row.name.to_s.downcase.include?(needle) || row.container.to_s.downcase.include?(needle) }
+                    source_rows.select { |row| matcher.call(row.name) || matcher.call(row.container) }
                   end
         next if visible.empty?
 
@@ -1517,7 +1570,8 @@ class InventoryManagerGui
     status.text = if needle.empty?
                     "#{shown} items across #{shown_characters} character#{'s' unless shown_characters == 1}"
                   else
-                    "#{shown} match#{shown == 1 ? '' : 'es'} for \"#{query.to_s.strip}\""
+                    "#{shown} match#{shown == 1 ? '' : 'es'} for \"#{query.to_s.strip}\"" \
+                      "#{' (pattern took too long, results incomplete)' if timed_out}"
                   end
   end
 

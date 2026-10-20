@@ -643,6 +643,7 @@ module Harness
     @@_game = nil
     @@_server_time = nil
     @@_name = nil
+    @@_room_count = 0
 
     def self._reset
       @@_room_title = nil
@@ -650,6 +651,17 @@ module Harness
       @@_game = nil
       @@_server_time = nil
       @@_name = nil
+      @@_room_count = 0
+    end
+
+    # Goes up by one each time the game sends a room, whether or not the map
+    # knows it. Defaults to 0.
+    def self.room_count
+      @@_room_count
+    end
+
+    def self.room_count=(val)
+      @@_room_count = val
     end
 
     def self.room_title
@@ -729,6 +741,13 @@ module Harness
     args = OpenStruct.new($parsed_args.dup || {})
     args.flex = 'test'
     args
+  end
+
+  # Mirrors Lich's global variable (Script.current.vars): [0] is the raw
+  # argument string, [1..] the arguments as typed, before parse_args downcases
+  # them. Specs set $script_vars.
+  def variable
+    $script_vars || []
   end
 
   def get_settings(dummy = nil)
@@ -864,6 +883,12 @@ module Harness
     $standing || false
   end
 
+  # Lich's indicator form of standing? (lib/global_defs.rb); both read the same
+  # IconSTANDING state, so this follows $standing too.
+  def checkstanding
+    standing?
+  end
+
   def hiding?
     hidden?
   end
@@ -953,6 +978,11 @@ module Harness
 
   def checkinvisible
     $invisible || false
+  end
+
+  # lich-5 global_defs.rb reads the bleeding indicator; mirrors bleeding?.
+  def checkbleeding
+    $bleeding || false
   end
 
   def health=(health)
@@ -1197,6 +1227,7 @@ module Harness
       def can_see_sky?(*_args); false; end
       def forage?(*_args); false; end
       def collect(*_args); end
+      def kick_pile?(*_args); false; end
       def retreat(*_args); end
       def rummage(*_args); end
       def log_window(*_args); end
@@ -1275,6 +1306,9 @@ module Harness
   module DRCT
     class << self
       def walk_to(*_args); true; end
+      def tag_to_id(*_args); end
+      def get_hometown_target_id(*_args); end
+      def sell_item(*_args); end
       def sort_destinations(ids); ids; end
       def buy_item(*_args); end
       def order_item(*_args); end
@@ -1361,9 +1395,11 @@ module Harness
     class << self
       def any_celestial_object?(*_args); false; end
       def bright_celestial_object?(*_args); false; end
+      def check_moonwatch(*_args); true; end
       def hold_moon_weapon?(*_args); false; end
       def wear_moon_weapon?(*_args); false; end
       def moon_used_to_summon_weapon(*_args); end
+      def drop_moon_weapon?(*_args); false; end
       def get_telescope?(*_args); true; end
       def store_telescope?(*_args); true; end
       def get_div_tool?(*_args); true; end
@@ -1377,6 +1413,7 @@ module Harness
       def center_telescope(*_args); end
       def peer_telescope(*_args); []; end
       def update_astral_data(data, *_args); data; end
+      def set_moon_data(data); data; end
     end
   end
 
