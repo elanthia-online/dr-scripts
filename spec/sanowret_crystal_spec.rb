@@ -34,6 +34,7 @@ RSpec.describe SanowretCrystal do
       c.instance_variable_set(:@no_use_scripts, [])
       c.instance_variable_set(:@no_use_rooms, no_use_rooms)
       c.instance_variable_set(:@refused_room_titles, [])
+      c.instance_variable_set(:@suggested_no_use_entries, [])
       c.instance_variable_set(:@force_exhale, false)
       c.instance_variable_set(:@worn_crystal, true)
     end
@@ -309,6 +310,53 @@ RSpec.describe SanowretCrystal do
 
         expect(DRC).to have_received(:message)
           .with("If this room always refuses the crystal, add #{entry} to your sanowret_no_use_rooms settings.")
+      end
+    end
+
+    # The passive loop taps again after each 5-minute wait. Repeating the same
+    # suggestion every time tells the player nothing new.
+    describe 'the sanowret_no_use_rooms suggestion in the passive loop' do
+      let(:hint) { /\AIf this room always refuses the crystal, add / }
+
+      def hints_for(entry)
+        "If this room always refuses the crystal, add #{entry} to your sanowret_no_use_rooms settings."
+      end
+
+      it 'is given once however many times a mapped room refuses' do
+        in_room('[[Crossing, Market]]', id: 10)
+        on_pause(tapper)
+
+        3.times { tapper.check_crystal }
+
+        expect(DRC).to have_received(:bput).exactly(3).times
+        expect(DRC).to have_received(:message).with(hints_for('room id 10')).once
+        expect(DRC).to have_received(:message)
+          .with('Pausing test-script script until you move to another room, for up to 5 minutes.').exactly(3).times
+      end
+
+      it 'is given once in an unmapped room, even when its description changes between passes' do
+        in_unmapped_room('[[Ruins, Hall]]', 'Dust drifts.')
+        on_pause(tapper, 1 => -> { in_unmapped_room('[[Ruins, Hall]]', 'Dust settles.') })
+
+        tapper.check_crystal
+        tapper.check_crystal
+
+        expect(DRC).to have_received(:bput).twice
+        expect(DRC).to have_received(:message).with(hints_for("'Ruins, Hall'")).once
+      end
+
+      it 'is given again for each new refusing room' do
+        in_room('[[Crossing, Market]]', id: 10)
+        on_pause(tapper, 1 => -> { in_room('[[Crossing, Bank]]', id: 11) })
+
+        tapper.check_crystal
+        tapper.check_crystal
+        in_room('[[Crossing, Market]]', id: 10)
+        tapper.check_crystal
+
+        expect(DRC).to have_received(:message).with(hint).twice
+        expect(DRC).to have_received(:message).with(hints_for('room id 10')).once
+        expect(DRC).to have_received(:message).with(hints_for('room id 11')).once
       end
     end
 

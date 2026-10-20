@@ -23,6 +23,9 @@ class SanowretCrystal
     # Titles of rooms that refused the crystal this run, matched exactly. Never fed to
     # a regex: a bracketed title like [[Crossing, Market]] becomes a character class.
     @refused_room_titles = []
+    # sanowret_no_use_rooms entries already suggested this run, so a character who stays
+    # in a refusing room isn't told the same thing on every pass of the passive loop.
+    @suggested_no_use_entries = []
     @force_exhale = args.exhale || settings.sanowret_force_exhale
     @ephemeron = settings.ephemeron
     @run_once = !args.run.nil?
@@ -92,7 +95,11 @@ class SanowretCrystal
   def wait_for_room_change
     # The refusal may be temporary, so this is only a suggestion. Without the entry, a
     # room that always refuses costs a tap on every run (every ~14 s under crossing-training).
-    DRC.message("If this room always refuses the crystal, add #{no_use_room_entry} to your sanowret_no_use_rooms settings.")
+    entry = no_use_room_entry
+    unless @suggested_no_use_entries.include?(entry)
+      DRC.message("If this room always refuses the crystal, add #{entry} to your sanowret_no_use_rooms settings.")
+      @suggested_no_use_entries.push(entry)
+    end
     if @run_once
       DRC.message('Cannot use the sanowret crystal in this room.')
       return
