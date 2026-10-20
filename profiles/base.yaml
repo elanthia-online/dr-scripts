@@ -3075,3 +3075,9 @@ capture_critter_settings:
 # character file can change the container without redefining the whole hash
 # (and its shared junk list).
 # capture_container_override: backpack
+
+# aesthene: extra Aesthene's Close time-lock answers, added to the built-in list in
+# data/base-aesthene.yaml. Five letters each; case does not matter.
+# aesthene_lock_answers:
+#   - cloak
+aesthene_lock_answers: []
