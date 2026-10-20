@@ -473,6 +473,64 @@ RSpec.describe 'bug-grabber.lic' do
     end
   end
 
+  # A get that leaves both hands empty: the object can't be picked up, or
+  # someone else got it first. The script must not walk empty hands to the
+  # shrine (`put  on shrine`, `stow `) and then come straight back for it.
+  context 'when a get takes nothing' do
+    def stuck_in(room, obj)
+      @stuck = [room, obj]
+      allow(script).to receive(:fput) { |command| commands << command }
+    end
+
+    def walk_rooms(stop_at:, bugs: {})
+      allow(DRCT).to receive(:walk_to) do |room|
+        raise stop_run if walks.size + 1 >= stop_at
+
+        walks << room
+        DRRoom.room_objs = [(@stuck.last if room == @stuck.first), bugs[room]].compact
+        true
+      end
+    end
+
+    it 'says so and walks on round the circuit, then waits, without going to the shrine' do
+      stuck_in(10_507, 'a carved beetle')
+      walk_rooms(stop_at: 100)
+      allow(script).to receive(:pause) { |secs| raise stop_run if secs == 15 }
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(commands).to eq(['get the carved beetle'])
+      expect(walks.size).to eq(circuit_size)
+      expect(walks.uniq.size).to eq(circuit_size)
+      expect(DRC).to have_received(:message).with('bug-grabber: could not pick up the carved beetle. Moving on.')
+    end
+
+    it 'collects a bug further round the circuit' do
+      stuck_in(10_507, 'a carved beetle')
+      allow(script).to receive(:fput) do |command|
+        commands << command
+        if command == 'get the stink bug'
+          $right_hand = 'bug'
+          DRRoom.room_objs = []
+        end
+      end
+      walk_rooms(stop_at: 5, bugs: { 10_508 => 'a stink bug' })
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(walks).to eq([10_506, 10_507, 10_508, shrine_room])
+      expect(commands).to eq(['get the carved beetle', 'get the stink bug', 'put bug on shrine', 'stow bug'])
+    end
+
+    it 'tries again on the next circuit' do
+      stuck_in(10_507, 'a carved beetle')
+      walk_rooms(stop_at: circuit_size + 3)
+
+      expect { run_script }.to raise_error(stop_run)
+      expect(walks.last(2)).to eq([10_506, 10_507])
+      expect(commands).to eq(['get the carved beetle'] * 2)
+      expect(commands).not_to include(a_string_starting_with('put'), a_string_starting_with('stow'))
+    end
+  end
+
   context 'when walk_to reports false and the character is in another room' do
     before do
       allow(Room).to receive(:current).and_return(OpenStruct.new(id: 10_507))

@@ -51,17 +51,12 @@ def walk_to_or_stop(room, held = nil)
   exit
 end
 
-loop do
-  rooms.each do |room|
-    walk_to_or_stop(room)
-    break if room_bug
-  end
-  unless room_bug
-    pause 15
-    echo 'waiting on more bugs'
-    next
-  end
-
+# Picks up each bug in the room in turn, drops a wing and takes anything else
+# to the shrine. Returns false, leaving the object where it is, when a get
+# leaves both hands empty (the object can't be picked up, or someone else got
+# it first), so the circuit moves on instead of carrying nothing to the shrine
+# and coming straight back for it.
+def collect_bugs
   while (bug = room_bug)
     fput('stand') until checkstanding
     fput("get the #{bug}")
@@ -69,6 +64,9 @@ loop do
     waitrt?
     thing = checkright || checkleft
     case thing
+    when nil
+      DRC.message("bug-grabber: could not pick up the #{bug}. Moving on.")
+      return false
     when /\bwing/i
       fput('drop wing')
     else
@@ -81,5 +79,19 @@ loop do
     end
     waitrt?
   end
+  true
+end
+
+# Walks the circuit until a room's bugs are collected, then starts over. A
+# circuit that collects nothing waits before the next one.
+loop do
+  collected = rooms.any? do |room|
+    walk_to_or_stop(room)
+    room_bug && collect_bugs
+  end
   waitrt?
+  next if collected
+
+  pause 15
+  echo 'waiting on more bugs'
 end
