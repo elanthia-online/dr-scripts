@@ -113,6 +113,7 @@ RSpec.describe Trade do
         allow(trade).to receive(:forbid_certain_transport)
         allow(trade).to receive(:command_caravan?).and_return(true)
         allow(trade).to receive(:caravan_check?).and_return(true)
+        allow(trade).to receive(:caravan_present?).and_return(true)
         allow(trade).to receive(:save_caravan_position)
         allow(trade).to receive(:training_cleanup)
         allow(trade).to receive(:wait_for_caravan)
@@ -252,12 +253,14 @@ RSpec.describe Trade do
     # is what's tested. Only the game is simulated: rooms in an east-west line,
     # a clock that moves on with each pause, a caravan that follows a room at a
     # time, a second behind, once told to (setting the arrival flag when it
-    # reaches you), and a
-    # player who obeys "Manually move one room away and return".
-    describe '#take_caravan_to when you move one room away and back' do
+    # reaches you), and a player who does exactly what the unknown-room message
+    # says: moves one room away, then comes back back_after seconds later only
+    # if told to.
+    describe '#take_caravan_to when you move one room away' do
+      let(:echoes) { [] }
       let(:world) do
         { player: 10, caravan: 10, unknown: [], following: false, clock: Time.at(1_000_000),
-          away_dir: 'west', away_since: nil, away_room: nil, back: false, apart: 0, follow_told_from: [], steps: [] }
+          away_dir: 'west', away_since: nil, coming_back: false, back_after: 5, apart: 0, follow_told_from: [], steps: [] }
       end
 
       def leave(dir)
@@ -268,14 +271,14 @@ RSpec.describe Trade do
       # One pause: the player reacts to the message, then the caravan moves.
       def tick(secs)
         world[:clock] += secs
-        if messages.any? { |m| m =~ /doesn't know what room/ } && world[:away_since].nil?
+        instruction = messages.find { |m| m =~ /doesn't know what room/ }
+        if instruction && world[:away_since].nil?
           leave(world[:away_dir])
-          world[:away_room] = world[:player]
           world[:away_since] = world[:clock]
-        elsif !world[:back] && world[:away_since] && world[:clock] - world[:away_since] >= 5
-          # Five seconds later, step back unless the script has moved on.
-          leave(world[:away_dir] == 'west' ? 'east' : 'west') if world[:player] == world[:away_room]
-          world[:back] = true
+          world[:coming_back] = instruction.match?(/return|come straight back/)
+        elsif world[:coming_back] && world[:clock] - world[:away_since] >= world[:back_after]
+          leave(world[:away_dir] == 'west' ? 'east' : 'west')
+          world[:coming_back] = false
         end
         world[:apart] = 0 if world[:caravan] == world[:player]
         return unless world[:following] && world[:caravan] != world[:player]
@@ -331,6 +334,7 @@ RSpec.describe Trade do
           allow(trade).to receive(name)
         end
         allow(trade).to receive(:handle_special_room?).and_return(false)
+        allow(trade).to receive(:echo) { |text| echoes << text }
         allow(Trade).to receive(:restore_certain_transport)
         trade.instance_variable_set(:@caravan_room_descriptions, {})
         Flags.add('caravan-arrived', /^Your .*, following you/)
@@ -357,6 +361,25 @@ RSpec.describe Trade do
             expect(world.values_at(:player, :caravan)).to eq([13, 13])
             expect(caravan_left_behind).to be_empty
           end
+
+          it 'asks you to come straight back to the caravan' do
+            trade.take_caravan_to(13)
+            expect(messages).to include(a_string_matching(/come straight back to your caravan/))
+          end
+
+          it 'does not warn that the caravan is missing while you walk back to it' do
+            trade.take_caravan_to(13)
+            expect(echoes).not_to include(a_string_matching(/CARAVAN NOT PRESENT/))
+          end
+
+          it 'keeps waiting for you, with a reminder, however long you take to come back' do
+            world[:back_after] = 200
+            trade.take_caravan_to(13)
+            expect(world[:follow_told_from]).to eq([10])
+            expect(echoes).not_to include(a_string_matching(/CARAVAN NOT PRESENT/))
+            expect(messages).to include('Still waiting for you to come back to your caravan.')
+            expect(caravan_left_behind).to be_empty
+          end
         end
 
         context "when a step lands in a room Lich can't place and you step #{away} from there" do
@@ -369,6 +392,22 @@ RSpec.describe Trade do
             trade.take_caravan_to(13)
             expect(caravan_left_behind).to be_empty
             expect(world.values_at(:player, :caravan)).to eq([13, 13])
+          end
+
+          it 'tells you to stay in the room you moved to, since the caravan follows you there' do
+            trade.take_caravan_to(13)
+            instructions = messages.grep(/doesn't know what room/)
+            expect(instructions).not_to be_empty
+            expect(instructions).to all(include('Your caravan will follow you'))
+            expect(instructions).not_to include(a_string_matching(/return|come straight back/))
+          end
+
+          it 'carries on from the room you moved to without you stepping back' do
+            trade.take_caravan_to(13)
+            # The script's steps only: 10 east into 11 (unknown), then on from
+            # wherever you moved to, with the caravan beside you each time.
+            expected = away == 'west' ? [[10, 'east'], [10, 'east'], [11, 'east'], [12, 'east']] : [[10, 'east'], [12, 'east']]
+            expect(world[:steps].map { |from, dir, _| [from, dir] }).to eq(expected)
           end
         end
       end
@@ -398,6 +437,7 @@ RSpec.describe Trade do
         allow(trade).to receive(:forbid_certain_transport)
         allow(trade).to receive(:command_caravan?).and_return(true)
         allow(trade).to receive(:caravan_check?).and_return(true)
+        allow(trade).to receive(:caravan_present?).and_return(true)
         allow(trade).to receive(:save_caravan_position)
         allow(trade).to receive(:training_cleanup)
         allow(trade).to receive(:wait_for_caravan)
@@ -425,7 +465,7 @@ RSpec.describe Trade do
         end
 
         it 'looks up the stable only once the room is known, then leads the caravan there' do
-          allow(trade).to receive(:pause) { location[:id] = 10 }
+          allow(trade).to receive(:pause) { |secs| location[:id] = 10 if secs == 1 }
           expect { trade.close_out_stable }.to raise_error(SystemExit)
           expect(messages).to include(unknown_room_message)
           expect(trade).to have_received(:take_caravan_to).with(stable_id)
@@ -471,6 +511,7 @@ RSpec.describe Trade do
           { 'trader_outpost' => 20, 'shipment_clerk' => 21 }[entity]
         end
         allow(trade).to receive(:take_caravan_to)
+        allow(trade).to receive(:caravan_present?).and_return(true)
         allow(trade).to receive(:turn_in_items)
         allow(trade).to receive(:empty_storage_box)
         allow(trade).to receive(:should_knit?).and_return(true)
@@ -480,11 +521,28 @@ RSpec.describe Trade do
 
       include_examples 'for both forms of unknown room', proc {
         it 'waits for the room before picking the nearest outpost' do
-          allow(trade).to receive(:pause) { location[:id] = 10 }
+          allow(trade).to receive(:pause) { |secs| location[:id] = 10 if secs == 1 }
           expect { trade.close_out }.to raise_error(SystemExit)
           expect(messages).to include(unknown_room_message)
           expect(outpost_lookups.first).to eq(['trader_outpost', 10])
           expect(trade).to have_received(:take_caravan_to).with(20)
+        end
+
+        it 'waits for you to come back to the caravan before picking the nearest outpost' do
+          # Moving away puts you in 9; you come back to the caravan in 10 a few
+          # seconds later.
+          away_for = 0
+          allow(trade).to receive(:pause) do |secs|
+            if location[:id].nil?
+              location[:id] = 9 if secs == 1
+            elsif location[:id] == 9 && (away_for += secs) >= 5
+              location[:id] = 10
+            end
+          end
+          allow(trade).to receive(:caravan_present?) { location[:id] == 10 }
+          expect { trade.close_out }.to raise_error(SystemExit)
+          expect(messages).to include(a_string_matching(/come straight back to your caravan/))
+          expect(outpost_lookups.first).to eq(['trader_outpost', 10])
         end
       }
 
@@ -493,6 +551,24 @@ RSpec.describe Trade do
         expect(trade).not_to receive(:pause)
         expect { trade.close_out }.to raise_error(SystemExit)
         expect(outpost_lookups.first).to eq(['trader_outpost', 10])
+      end
+    end
+
+    describe '#wait_for_known_room_at_caravan' do
+      it "does not wait for a caravan whose look isn't known, which could never match" do
+        trade.instance_variable_set(:@caravan, OpenStruct.new)
+        allow(trade).to receive(:pause) { |secs| location[:id] = 9 if secs == 1 }
+        expect(trade).not_to receive(:caravan_present?)
+        trade.wait_for_known_room_at_caravan
+        expect(location[:id]).to eq(9)
+      end
+
+      it 'returns straight away from a known room, without looking for the caravan (unchanged)' do
+        location[:id] = 10
+        expect(trade).not_to receive(:pause)
+        expect(trade).not_to receive(:caravan_present?)
+        trade.wait_for_known_room_at_caravan
+        expect(messages).to be_empty
       end
     end
 

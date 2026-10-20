@@ -261,7 +261,7 @@ class Trade
     return close_out_stable if @use_stable
 
     # From an unknown room find_closest_id can't rank the outposts by distance.
-    wait_for_known_room
+    wait_for_known_room_at_caravan
     take_caravan_to(find_closest_id('trader_outpost'))
     turn_in_items
     empty_storage_box
@@ -284,7 +284,7 @@ class Trade
     DRC.message('Heading out to find a stable for the night')
     # The nearest stable can only be worked out from a known room. From an
     # unknown one, tag_to_id returns nil.
-    wait_for_known_room
+    wait_for_known_room_at_caravan
     take_caravan_to(DRCT.tag_to_id('caravan_stable'))
     store_item_in_box('balsa lumber') if @caravan_training_skills.include?('Engineering') && DRCI.exists?('balsa lumber')
     store_item_in_box(@outfitting_material_type) if @caravan_training_skills.include?('Outfitting') && DRCI.exists?(@outfitting_material_type)
@@ -1064,17 +1064,39 @@ class Trade
 
   # Waits until Lich knows the current room. With +grace+ (seconds), polls
   # quietly that long first, so a room that resolves on its own a moment
-  # later doesn't print the manual-move instruction.
-  def wait_for_known_room(grace: 0)
+  # later doesn't print the manual-move instruction. +instruction+ tells you
+  # what to do once you've moved. Returns true if it had to ask you to move.
+  def wait_for_known_room(grace: 0, instruction: 'Manually move one room away and return, then everything should resume automatically!')
     (grace / 0.25).ceil.times do
-      return unless current_room_id.nil?
+      return false unless current_room_id.nil?
 
       pause 0.25
     end
-    return unless current_room_id.nil?
+    return false unless current_room_id.nil?
 
-    DRC.message("The script doesn't know what room it's in!  Manually move one room away and return, then everything should resume automatically!")
+    DRC.message("The script doesn't know what room it's in!  #{instruction}")
     pause 1 while current_room_id.nil?
+    true
+  end
+
+  # Waits for a known room while the caravan is parked (told to wait). The
+  # first known room is the one you moved to, so it then waits for you to come
+  # back to the caravan. Without that, track_caravan would run in the room you
+  # moved to, warn that the caravan isn't there, and after two minutes carry
+  # on without it.
+  def wait_for_known_room_at_caravan
+    return unless wait_for_known_room(grace: 2, instruction: 'Manually move one room away and come straight back to your caravan, then everything should resume automatically!')
+    # caravan_present? can only ever match a caravan we know the look of.
+    return unless @caravan.adjective && @caravan.noun
+
+    reminded = Time.now
+    until caravan_present?
+      pause 0.5
+      next if Time.now - reminded < 60
+
+      DRC.message('Still waiting for you to come back to your caravan.')
+      reminded = Time.now
+    end
   end
 
   def wipe_bescort_skills
@@ -1101,10 +1123,9 @@ class Trade
 
     @caravan_being_led = false
     be_outside_caravan
-    # Wait for a known room before looking for the caravan. The message asks
-    # you to move one room away and back, and the first known room is the one
-    # you moved to, so track_caravan's wait covers your return to the caravan.
-    wait_for_known_room(grace: 2)
+    # Wait for a known room, and for you to be back with the caravan, before
+    # looking for it.
+    wait_for_known_room_at_caravan
     track_caravan
     return if in_room?(room_id)
 
@@ -1116,8 +1137,10 @@ class Trade
     pause 0.2 until Flags['caravan-arrived'] || caravan_check?(false)
     until in_room?(room_id)
       if current_room_id.nil?
-        # Stepped into a room Lich can't place: wait for it, then re-plan.
-        wait_for_known_room(grace: 2)
+        # Stepped into a room Lich can't place: wait for it, then re-plan from
+        # wherever you are. The caravan is following, so if you have to move
+        # it comes after you; you don't step back.
+        wait_for_known_room(grace: 2, instruction: 'Manually move one room away and stay there. Your caravan will follow you, and the script will carry on from that room once it catches up.')
         # If you moved away to get the room placed, the following caravan's
         # arrival may have set its flag. Left set, the next step wouldn't wait
         # for the caravan. Clear it, wait until the caravan is confirmed here,
