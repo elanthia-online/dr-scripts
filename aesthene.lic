@@ -11,8 +11,7 @@ class Aesthene
   include DRCT
 
   def initialize
-    arg_definitions =
-    [
+    arg_definitions = [
       [
         { name: 'check', regex: /^check/i, description: 'Check current lock' }
       ],
