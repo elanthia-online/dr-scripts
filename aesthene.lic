@@ -13,6 +13,9 @@
     ;aesthene check  - read the lock in your room and list the answers that are
                        still possible. Whispers nothing.
 
+  When a lock's answer is missing from the built-in list, the script says so
+  and asks you to post it in the lich discord so it can be added for everyone.
+
   Settings:
     aesthene_lock_answers: words to add to the built-in answer list in
       data/base-aesthene.yaml, for answers the list does not have yet.
@@ -460,7 +463,9 @@ class Aesthene
   # @return [void]
   def initialize
     args = parse_args(arg_definitions)
-    @solver = build_solver(get_data('aesthene'), get_settings)
+    data = get_data('aesthene')
+    @builtin_answers, = AestheneWords.normalize(data&.lock_answers)
+    @solver = build_solver(data, get_settings)
 
     if args.check
       check_lock
@@ -556,7 +561,7 @@ class Aesthene
       return report_failure('the lock has no rows left.') if reading.rows_left.zero?
 
       guess = @solver.next_guess(reading.rows_left)
-      return report_failure('no known or dictionary word fits the feedback.') unless guess
+      return report_failure('no word in the lists fits the feedback.') unless guess
 
       reading = whisper(guess)
     end
@@ -627,13 +632,18 @@ class Aesthene
     reading
   end
 
+  # Announces the answer, and asks for it to be reported when the built-in
+  # list does not have it (it came from the dictionary or from the
+  # character's aesthene_lock_answers).
+  #
   # @param word [String]
   # @return [void]
   def report_solved(word)
     DRC.message("aesthene: solved! The word was #{word}.")
-    return unless @solver.fallback?
+    return if @builtin_answers.include?(word)
 
-    DRC.message("aesthene: #{word} is not in the built-in answer list. Add it to aesthene_lock_answers in your YAML, and consider contributing it to data/base-aesthene.yaml.")
+    DRC.message("aesthene: #{word} is not in the built-in answer list. Please post it #{report_request}")
+    DRC.message("aesthene: until then, add #{word} to aesthene_lock_answers in your YAML.") if @solver.fallback?
   end
 
   # @param reason [String]
@@ -643,14 +653,30 @@ class Aesthene
     report_candidates
   end
 
+  # Lists the candidates. With none left, the answer is in no word list, so
+  # it asks for the answer to be reported once found.
+  #
   # @return [void]
   def report_candidates
     candidates = @solver.candidates
+    if candidates.empty?
+      DRC.message("aesthene: the answer is not in any word list. Finish the lock by hand, then please post the answer #{report_request}")
+      return
+    end
+
     source = @solver.fallback? ? 'dictionary word' : 'known answer'
     source += 's' unless candidates.size == 1
     listed = candidates.first(LIST_LIMIT).join(', ')
     listed += ", ... (#{candidates.size - LIST_LIMIT} more)" if candidates.size > LIST_LIMIT
     DRC.message("aesthene: #{candidates.size} possible #{source}: #{listed}")
+  end
+
+  # Ends the messages asking for a missing answer to be reported, worded like
+  # the other scripts' Discord requests.
+  #
+  # @return [String]
+  def report_request
+    "in the lich discord (listed in #{$clean_lich_char}links) so it can be added to the built-in list for everyone."
   end
 
   # Messages the reason and stops the script.

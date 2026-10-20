@@ -540,6 +540,7 @@ RSpec.describe 'aesthene.lic' do
       stub_const('Aesthene::READ_TIMEOUT', 0.2)
       stub_const('Aesthene::SOLVE_GRACE', 0.05)
       instance.instance_variable_set(:@solver, solver)
+      instance.instance_variable_set(:@builtin_answers, %w[CLOAK CORAL LOACH POACH])
     end
 
     describe '#initialize' do
@@ -576,6 +577,13 @@ RSpec.describe 'aesthene.lic' do
         $parsed_args = OpenStruct.new(check: true)
         instance.send(:initialize)
         expect($data_called_with).to include('aesthene')
+      end
+
+      it 'remembers the built-in answers apart from the character additions' do
+        $parsed_args = OpenStruct.new(check: true)
+        $test_settings = OpenStruct.new(aesthene_lock_answers: %w[cloak])
+        instance.send(:initialize)
+        expect(instance.instance_variable_get(:@builtin_answers)).to eq(%w[POACH])
       end
     end
 
@@ -768,20 +776,62 @@ RSpec.describe 'aesthene.lic' do
         expect(DRC).to have_received(:message).with('aesthene: solved! The word was POACH.')
       end
 
-      it 'asks you to record an answer that only the dictionary had' do
-        instance.instance_variable_set(:@solver, AestheneSolver.new(%w[CLOAK], %w[PANSY]))
-        play_lock('PANSY')
+      it 'does not ask for a report when the built-in list has the answer' do
+        play_lock('POACH')
         instance.solve(AestheneGrid::Reading.new)
-        expect(DRC).to have_received(:message).with(/PANSY is not in the built-in answer list\. Add it to aesthene_lock_answers/)
+        expect(DRC).not_to have_received(:message).with(/lich discord/)
       end
 
-      it 'stops without whispering when nothing fits' do
-        play_lock('QUERY')
-        reading = reading_from([' | *C* | *O* | *R* | *A* | *L* |', '[1 of the 6 rows are locked into place.]'])
-        instance.instance_variable_set(:@solver, AestheneSolver.new(%w[CORAL], []))
-        instance.solve(reading)
-        expect(instance).not_to have_received(:whisper)
-        expect(DRC).to have_received(:message).with(/no known or dictionary word fits/)
+      context 'when only the dictionary had the answer' do
+        before do
+          instance.instance_variable_set(:@builtin_answers, %w[CLOAK])
+          instance.instance_variable_set(:@solver, AestheneSolver.new(%w[CLOAK], %w[PANSY]))
+          play_lock('PANSY')
+          instance.solve(AestheneGrid::Reading.new)
+        end
+
+        it 'asks you to post the word on Discord' do
+          expect(DRC).to have_received(:message).with(/PANSY is not in the built-in answer list\. Please post it in the lich discord \(listed in .*links\) so it can be added to the built-in list for everyone\./)
+        end
+
+        it 'tells you to add it to your YAML meanwhile' do
+          expect(DRC).to have_received(:message).with('aesthene: until then, add PANSY to aesthene_lock_answers in your YAML.')
+        end
+      end
+
+      context 'when the answer came from your aesthene_lock_answers' do
+        before do
+          # PANSY is a known answer only because the character added it.
+          instance.instance_variable_set(:@builtin_answers, %w[CLOAK])
+          instance.instance_variable_set(:@solver, AestheneSolver.new(%w[CLOAK PANSY], []))
+          play_lock('PANSY')
+          instance.solve(AestheneGrid::Reading.new)
+        end
+
+        it 'still asks you to post the word on Discord' do
+          expect(DRC).to have_received(:message).with(/PANSY is not in the built-in answer list\. Please post it in the lich discord/)
+        end
+
+        it 'does not tell you to add a word you already added' do
+          expect(DRC).not_to have_received(:message).with(/until then/)
+        end
+      end
+
+      context 'when no word in any list fits' do
+        before do
+          play_lock('QUERY')
+          instance.instance_variable_set(:@solver, AestheneSolver.new(%w[CORAL], []))
+          instance.solve(reading_from([' | *C* | *O* | *R* | *A* | *L* |', '[1 of the 6 rows are locked into place.]']))
+        end
+
+        it 'stops without whispering' do
+          expect(instance).not_to have_received(:whisper)
+          expect(DRC).to have_received(:message).with(/no word in the lists fits the feedback/)
+        end
+
+        it 'asks you to finish by hand and post the answer on Discord' do
+          expect(DRC).to have_received(:message).with(/the answer is not in any word list\. Finish the lock by hand, then please post the answer in the lich discord/)
+        end
       end
 
       it 'reports failure when the lock has no rows left' do
@@ -819,6 +869,14 @@ RSpec.describe 'aesthene.lic' do
         expect(drain_sent_messages).to eq(['look lock'])
         expect(DRC).to have_received(:message).with('aesthene: 1 possible known answer: THROW')
         expect(DRC).to have_received(:message).with('aesthene: suggested guess: THROW')
+      end
+
+      it 'asks for the answer to be reported when nothing fits the lock' do
+        instance.instance_variable_set(:@solver, AestheneSolver.new(%w[CORAL], []))
+        allow(instance).to receive(:look_at_lock).and_return(reading_from([' | *C* | *O* | *R* | *A* | *L* |', '[1 of the 6 rows are locked into place.]']))
+        instance.check_lock
+        expect(DRC).to have_received(:message).with(/the answer is not in any word list\..*lich discord/)
+        expect(DRC).not_to have_received(:message).with(/suggested guess/)
       end
 
       it 'truncates a long candidate list' do
