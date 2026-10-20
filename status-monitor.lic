@@ -139,7 +139,7 @@ class GameFilter
     room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
                 .split(', ')
                 .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '') }
-                .map { |obj| obj.strip.scan(/\w+$/).first }
+                .filter_map { |obj| obj.strip.scan(/\w+$/).first }
   end
 
   attr_reader :last_player_line
