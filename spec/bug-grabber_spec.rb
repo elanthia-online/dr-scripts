@@ -33,6 +33,21 @@ RSpec.describe 'bug-grabber.lic' do
   let(:walks) { [] }
   let(:commands) { [] }
 
+  # The room object `get the [<adjective>] <noun>` takes, as DR resolves it:
+  # the first object whose noun (last word) starts with the command's noun and,
+  # when an adjective is given, with a word before the noun that starts with
+  # it.
+  def taken_by(command, objs)
+    words = command[/\Aget the (.+)\z/, 1]&.downcase&.split
+    return unless words
+
+    noun = words.pop
+    objs.find do |obj|
+      *adjectives, obj_noun = obj.downcase.split
+      obj_noun.start_with?(noun) && words.all? { |word| adjectives.any? { |adj| adj.start_with?(word) } }
+    end
+  end
+
   def run_script
     lines = source.lines
     prime_lic_coverage(path, lines.size)
@@ -254,7 +269,7 @@ RSpec.describe 'bug-grabber.lic' do
       succeed_walks(stop_at: 4)
 
       expect { run_script }.to raise_error(stop_run)
-      expect(get_commands).to eq(['get the beetle'])
+      expect(get_commands).to eq(['get the black beetle'])
     end
 
     it 'names the bug, not the first thing in the room' do
@@ -262,20 +277,20 @@ RSpec.describe 'bug-grabber.lic' do
       succeed_walks(stop_at: 4, scenery: ['a wooden bench', 'a scrap of parchment'])
 
       expect { run_script }.to raise_error(stop_run)
-      expect(get_commands).to eq(['get the locust'])
+      expect(get_commands).to eq(['get the red-spotted locust'])
     end
 
     it 'names each bug when there are several, including after a wing was dropped' do
       @in_room = ['a green dragonfly', 'a large brown moth', 'a black beetle']
-      held = { 'dragonfly' => 'dragonfly wing', 'moth' => 'moth', 'beetle' => 'beetle' }
+      held = { 'a green dragonfly' => 'dragonfly wing', 'a large brown moth' => 'moth', 'a black beetle' => 'beetle' }
       allow(script).to receive(:fput) do |command|
         commands << command
         # The dropped wing stays in the room.
         DRRoom.room_objs = (@in_room << 'dragonfly wing').dup if command == 'drop wing'
-        next unless (noun = command[/\Aget the (\w+)\z/, 1])
+        next unless (taken = taken_by(command, @in_room))
 
-        $right_hand = held.fetch(noun)
-        @in_room.reject! { |obj| obj.end_with?(noun) }
+        $right_hand = held.fetch(taken)
+        @in_room.delete(taken)
         DRRoom.room_objs = @in_room.dup
       end
       # Only the bug room has anything in it; the shrine is empty.
@@ -288,16 +303,16 @@ RSpec.describe 'bug-grabber.lic' do
       end
 
       expect { run_script }.to raise_error(stop_run)
-      expect(get_commands).to eq(['get the dragonfly', 'get the moth'])
+      expect(get_commands).to eq(['get the green dragonfly', 'get the brown moth'])
       expect(commands).to include('drop wing', 'put moth on shrine')
     end
 
-    it 'takes the bug noun even when it is written in capitals' do
+    it 'takes the bug words even when they are written in capitals' do
       put_bug_in(10_507, bug: 'a glowing FIREFLY')
       succeed_walks(stop_at: 4)
 
       expect { run_script }.to raise_error(stop_run)
-      expect(get_commands).to eq(['get the FIREFLY'])
+      expect(get_commands).to eq(['get the glowing FIREFLY'])
     end
 
     it 'sends no get when nothing in the room is a bug' do
@@ -327,37 +342,66 @@ RSpec.describe 'bug-grabber.lic' do
         succeed_walks(stop_at: 4, scenery: [obj])
 
         expect { run_script }.to raise_error(stop_run)
-        expect(get_commands).to eq(['get the beetle'])
+        expect(get_commands).to eq(['get the black beetle'])
       end
     end
 
-    # The get names only the noun, so a bugle listed ahead of a real bug does
-    # not change what is sent. Which of the two DR takes then is not known: no
-    # bug object appeared in a week of real logs, so there is no log evidence
-    # for this case.
-    it "still sends 'get the bug' when a bugle is listed ahead of the bug" do
-      put_bug_in(10_507, bug: 'a stink bug', held: 'bug')
-      succeed_walks(stop_at: 4, scenery: ['battered brass bugle'])
+    # `get the bug` would take a bugle listed ahead of the bug, since DR
+    # matches the command noun against the start of the item's noun. The word
+    # before the noun tells them apart.
+    it "sends 'get the stink bug', which takes the bug, when a bugle is listed ahead of it" do
+      in_room = ['battered brass bugle', 'a stink bug']
+      allow(script).to receive(:fput) do |command|
+        commands << command
+        next unless (taken = taken_by(command, in_room))
+
+        $right_hand = taken.split.last
+        in_room.delete(taken)
+      end
+      allow(DRCT).to receive(:walk_to) do |room|
+        raise stop_run if walks.size >= 3
+
+        walks << room
+        DRRoom.room_objs = room == 10_507 ? in_room.dup : []
+        true
+      end
 
       expect { run_script }.to raise_error(stop_run)
-      expect(get_commands).to eq(['get the bug'])
+      expect(get_commands).to eq(['get the stink bug'])
+      expect(in_room).to eq(['battered brass bugle'])
+      expect(commands).to include('put bug on shrine')
+    end
+
+    # Lich strips a leading 'a' or 'some' from room objects but not 'an', and
+    # an object can be listed under its noun alone. Neither leaves a word
+    # that can go before the noun.
+    { 'beetle' => 'beetle', 'a moth' => 'moth', 'some crickets' => 'crickets',
+      'an angry hornet' => 'angry hornet' }.each do |obj, named|
+      it "names '#{obj}' as '#{named}'" do
+        put_bug_in(10_507, bug: obj, held: named.split.last)
+        succeed_walks(stop_at: 4)
+
+        expect { run_script }.to raise_error(stop_run)
+        expect(get_commands).to eq(["get the #{named}"])
+      end
     end
 
     # Every bug word on the list is found, and a plural noun is named as the
     # room lists it, so the get matches the item's noun in full. -fly turns
-    # into -flies, not -flys.
+    # into -flies, not -flys. The word before the noun is named with it.
     { 'a brown locust' => 'locust', 'a stink bug' => 'bug', 'a black beetle' => 'beetle',
       'a chirping cricket' => 'cricket', 'an angry hornet' => 'hornet', 'a dusty moth' => 'moth',
       'a jade scarab' => 'scarab', 'a praying mantis' => 'mantis', 'a glowing firefly' => 'firefly',
       'a green dragonfly' => 'dragonfly', 'some chirping crickets' => 'crickets',
       'some praying mantises' => 'mantises', 'some glowing fireflies' => 'fireflies',
       'some green dragonflies' => 'dragonflies', 'some black bugs' => 'bugs' }.each do |obj, noun|
-      it "finds '#{obj}' and names it '#{noun}'" do
+      named = "#{obj.split[-2]} #{noun}"
+      it "finds '#{obj}' and names it '#{named}'" do
         put_bug_in(10_507, bug: obj, held: noun)
         succeed_walks(stop_at: 4)
 
         expect { run_script }.to raise_error(stop_run)
-        expect(get_commands).to eq(["get the #{noun}"])
+        expect(get_commands).to eq(["get the #{named}"])
       end
     end
 
@@ -376,22 +420,23 @@ RSpec.describe 'bug-grabber.lic' do
   end
 
   # The dropped wing stays in the room, under the name it had in hand. Its
-  # noun is wing, so it is not a bug, and `get the dragonfly` can't take it.
+  # noun is wing, so it is not a bug, and `get the green dragonfly` can't take
+  # it.
   context 'when a wing is dropped in a room with another bug' do
     def get_commands
       commands.grep(/\Aget/)
     end
 
-    # `get the <noun>` takes the first object whose last word starts with the
-    # noun, as DR does, and holds it under `held`'s name for it. `drop wing`
-    # leaves what was held in the room, first or last in the list.
+    # `get the <adjective> <noun>` takes the object DR would (taken_by) and
+    # holds it under `held`'s name for it. `drop wing` leaves what was held in
+    # the room, first or last in the list.
     def model_room(wing_first:)
       @in_room = ['a green dragonfly', 'a black beetle']
       held = { 'a green dragonfly' => 'dragonfly wing', 'a black beetle' => 'beetle' }
       allow(script).to receive(:fput) do |command|
         commands << command
-        if (noun = command[/\Aget the (\w+)\z/, 1])
-          taken = @in_room.find { |obj| obj.split.last.downcase.start_with?(noun.downcase) }
+        if command.start_with?('get')
+          taken = taken_by(command, @in_room)
           if taken
             @in_room.delete(taken)
             $right_hand = held.fetch(taken)
@@ -421,7 +466,7 @@ RSpec.describe 'bug-grabber.lic' do
         model_room(wing_first: wing_first)
 
         expect { run_script }.to raise_error(stop_run)
-        expect(get_commands).to eq(['get the dragonfly', 'get the beetle'])
+        expect(get_commands).to eq(['get the green dragonfly', 'get the black beetle'])
         expect(commands).to include('drop wing', 'put beetle on shrine')
         expect(commands).not_to include('put  on shrine')
       end

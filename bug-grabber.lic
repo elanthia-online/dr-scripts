@@ -16,18 +16,22 @@
 rooms = [10_506, 10_507, 10_508, 10_509, 10_482, 10_497, 10_515, 10_510, 10_539, 10_590, 10_520, 10_640, 10_557, 10_576, 10_617, 10_620,
          10_572, 10_677]
 
-# The noun of the first bug among the room's objects, for `get the <noun>`, or
-# nil when none of them is a bug. The bug word has to be the object's noun, its
-# last word, singular or plural (crickets, mantises, fireflies): DR matches
-# `get the bug` against the start of an item's noun, so a bugle, mothballs, a
-# moth antenna or the dropped dragonfly wing must not count. The noun is
-# returned as the room lists it, so the get names exactly that noun. With a
-# bugle listed ahead of a real bug the get is still `get the bug`, and which of
-# the two DR takes then is not known.
+# The first bug among the room's objects, as `<adjective> <noun>` for
+# `get the <adjective> <noun>`, or nil when none of them is a bug. The bug word
+# has to be the object's noun, its last word, singular or plural (crickets,
+# mantises, fireflies): DR matches `get the bug` against the start of an item's
+# noun, so a bugle, mothballs, a moth antenna or the dropped dragonfly wing
+# must not count. The word before the noun goes into the get as well, so
+# `get the stink bug` can't take a battered brass bugle listed ahead of the
+# bug. Both words are returned as the room lists them; an object listed under
+# its noun alone, or after an article, is named by its noun alone.
 def room_bug
   DRRoom.room_objs.each do |obj|
-    noun = obj[/\b((?:locust|bug|beetle|cricket|hornet|moth|scarab|mantis)(?:e?s)?|(?:fire|dragon)fl(?:y|ies))\z/i, 1]
-    return noun if noun
+    match = obj.match(/(?:(\S+)\s+)?\b((?:locust|bug|beetle|cricket|hornet|moth|scarab|mantis)(?:e?s)?|(?:fire|dragon)fl(?:y|ies))\z/i)
+    next unless match
+
+    adjective = match[1] unless match[1].to_s.match?(/\A(?:a|an|some|the)\z/i)
+    return [adjective, match[2]].compact.join(' ')
   end
   nil
 end
