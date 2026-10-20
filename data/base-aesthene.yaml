@@ -14,7 +14,7 @@
 #
 # Entries are five ASCII letters; the script upcases and validates on load,
 # so case does not matter.
-opening: RAISE
+opening: TRALE
 lock_answers:
 - ABBEY
 - AGATE
@@ -1993,7 +1993,6 @@ dictionary:
 - BUSKS
 - BUSOM
 - BUSTS
-- BUSTY
 - BUTAM
 - BUTCH
 - BUTES
@@ -3833,7 +3832,6 @@ dictionary:
 - FEARS
 - FEASE
 - FEATS
-- FECAL
 - FECES
 - FEEDS
 - FEELS
@@ -4683,7 +4681,6 @@ dictionary:
 - GROOK
 - GROOM
 - GROPA
-- GROPE
 - GROPH
 - GROSS
 - GROUN
@@ -5214,7 +5211,6 @@ dictionary:
 - HOREB
 - HOREN
 - HORNS
-- HORNY
 - HORSY
 - HOSED
 - HOSES
@@ -6072,7 +6068,6 @@ dictionary:
 - KINIE
 - KINIK
 - KINKS
-- KINKY
 - KINOE
 - KINSA
 - KINSH
@@ -7807,9 +7802,7 @@ dictionary:
 - NUBBY
 - NUBIZ
 - NUDER
-- NUDES
 - NUDGE
-- NUDIE
 - NUEKE
 - NUELA
 - NUEVE
@@ -8209,7 +8202,6 @@ dictionary:
 - PANNO
 - PANSA
 - PANTS
-- PANTY
 - PAPAL
 - PAPAS
 - PAPAW
@@ -9773,7 +9765,6 @@ dictionary:
 - SEVEN
 - SEWAR
 - SEWED
-- SEXED
 - SEXES
 - SEYEN
 - SFAGA
@@ -9908,7 +9899,6 @@ dictionary:
 - SHORU
 - SHOSU
 - SHOSW
-- SHOTA
 - SHOTE
 - SHOTS
 - SHOTU
@@ -10067,7 +10057,6 @@ dictionary:
 - SKATE
 - SKAWD
 - SKAWT
-- SKEET
 - SKELE
 - SKELS
 - SKELT
@@ -10441,7 +10430,6 @@ dictionary:
 - SPUED
 - SPUME
 - SPUMY
-- SPUNK
 - SPURN
 - SPURS
 - SPURT
@@ -10649,7 +10637,6 @@ dictionary:
 - SUBAI
 - SUBUL
 - SUCAR
-- SUCKS
 - SUCKY
 - SUDAY
 - SUDSY
@@ -11592,7 +11579,6 @@ dictionary:
 - TWIGS
 - TWILA
 - TWINE
-- TWINK
 - TWINS
 - TWINY
 - TWIRL
