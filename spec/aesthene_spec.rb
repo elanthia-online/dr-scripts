@@ -88,6 +88,131 @@ AESTHENE_POACH_PROBE_ROWS = [
   ' | *F* | _H_ | *K* | *L* | *W* |'
 ].freeze
 
+# A stand-in for the Timekeeper and one time lock, answering each command with
+# the lines the game printed in the two reference logs. Unrelated lines are
+# interleaved with every grid, as they were in the logs.
+class AestheneFakeLock
+  NOISE = ['A traveler just arrived.', '[multi]>get my multiplier'].freeze
+
+  # @return [Array<String>] every command the script sent, in order
+  attr_reader :commands
+
+  # @param answer [String] the lock's answer
+  # @param passes [Integer] redeemed passes the character already holds
+  # @param attuned_rows [Array<String>, nil] guesses already on a lock the
+  #   character is attuned to; nil when not attuned
+  def initialize(answer, passes: 0, attuned_rows: nil)
+    @answer = answer
+    @passes = passes
+    @rows = attuned_rows
+    @commands = []
+    @redeem_confirmed = false
+    @touch_confirmed = false
+    @drop_row_once = false
+  end
+
+  # Makes the next whisper reply leave out one grid row, as if it were missed.
+  def drop_a_row_next_whisper
+    @drop_row_once = true
+  end
+
+  # @param command [String]
+  # @return [Array<String>] the game's reply
+  def reply(command)
+    @commands << command
+    case command
+    when 'redeem my slip' then redeem
+    when 'ask timekeeper about access' then ask_access
+    when 'touch lock' then touch
+    when 'look lock' then look
+    when /\Awhisper lock (\w+)\z/ then whisper(Regexp.last_match(1).upcase)
+    else []
+    end
+  end
+
+  private
+
+  def redeem
+    unless @redeem_confirmed
+      @redeem_confirmed = true
+      return ["Once you redeem this, you'll have 1 instance access to the Aesthene's Close.  If you're prepared to immediately begin, repeat the command within 10 seconds."]
+    end
+    @redeem_confirmed = false
+    @passes += 1
+    ['The apprentice Timekeeper takes one of your slips.',
+     "[You have just redeemed 1 instance of access to a task to earn chronocoins from the Timekeepers at Aesthene's Close.  Be sure to ASK TIMEKEEPER ABOUT ACCESS to be moved in!]"]
+  end
+
+  def ask_access
+    ['"Yes, yes, let me show you the way."  The apprentice leads you away.',
+     "[Aesthene's Close, Chronoscape] (**)",
+     'The apprentice Timekeeper shows you to a time lock, and explains "There are thousands of these throughout the area."']
+  end
+
+  def touch
+    return ['You are already connected to the lock.'] if @rows
+    return ['[To interact with the lock, you must redeem a pass for the event.  Passes are available in the SimuCoin store via the website.  Once redeemed, simply TOUCH the lock!]'] if @passes.zero?
+
+    unless @touch_confirmed
+      @touch_confirmed = true
+      return ['You reach towards the lock, but pause to consider.',
+              "[This will consume a pass for Aesthene's Close.  If you're sure you want to do this, TOUCH the lock again within 15 seconds.]"]
+    end
+    @passes -= 1
+    @rows = []
+    ['You reach out and touch the lock, and an alarming pulse of energy surges from it and through you.',
+     '[LOOK at the lock to see your progress.  STUDY the lock for more information.]']
+  end
+
+  def look
+    ['The time lock is divided into several grids.  One such grid rises up before you --  five spaces wide and six spaces tall.'] +
+      grid(@rows || []) + legend
+  end
+
+  def whisper(guess)
+    return ["You whisper quietly to the lock.  It doesn't respond.", '[You are not currently tasked with solving the puzzle.  TOUCH the lock to begin.]'] unless @rows
+
+    @rows += [guess]
+    lines = ["You quietly whisper '#{guess.downcase}' to the lock.  Eldritch lights surround the tiles as they settle into place."]
+    body = grid(@rows)
+    if @drop_row_once
+      @drop_row_once = false
+      body.delete_at(3) # the first filled row
+    end
+    lines += body + legend
+    if guess == @answer
+      lines + ['The letters on a time lock pulsing with multi-colored light pulse with blue light and lock in place.',
+               "[You have received 1 role-playing point for your assistance in locking away unstable temporal magics at Aesthene's Close!  Type RPA HELP to review how to use it.]"]
+    else
+      lines + ['[LOOK at the lock for an update on your progress!]']
+    end
+  end
+
+  def grid(rows)
+    filled = rows.map { |guess| row_line(guess) }
+    empty = Array.new(6 - rows.size, ' | ___ | ___ | ___ | ___ | ___ |')
+    [' +-----+-----+-----+-----+-----+', ' |  1  |  2  |  3  |  4  |  5  |', ' +-----+-----+-----+-----+-----+'] +
+      filled.first(1) + [NOISE[0]] + filled.drop(1) + [NOISE[1]] + empty +
+      [' +-----+-----+-----+-----+-----+', "[#{rows.size} of the 6 rows are locked into place.]"]
+  end
+
+  def row_line(guess)
+    code = AestheneSolver.feedback_code(guess, @answer)
+    marks = Array.new(5) do
+      mark = ['*', '_', '+'][code % 3]
+      code /= 3
+      mark
+    end.reverse
+    ' | ' + guess.chars.zip(marks).map { |letter, mark| "#{mark}#{letter}#{mark}" }.join(' | ') + ' |'
+  end
+
+  def legend
+    ['[+ indicates right letter in the right place.]',
+     '[_ indicates wrong letter for a given place, but letter is in the final word.]',
+     "[* indicates a wrong letter that isn't used in the final word.]"]
+  end
+end
+
 RSpec.describe 'aesthene.lic' do
   # Builds a Row the way the game would mark a guess against an answer.
   def row_for(guess, answer)
@@ -886,6 +1011,105 @@ RSpec.describe 'aesthene.lic' do
         instance.check_lock
         expect(DRC).to have_received(:message).with(/\.\.\. \(5 more\)/)
       end
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # End to end against a simulated lock
+  # -------------------------------------------------------------------
+  describe 'a full run against a simulated lock' do
+    let(:answers) { %w[CLOAK CORAL LOACH POACH THROW HYDRA] }
+    let(:dictionary) { %w[PANSY PATCH QUERY] }
+    let(:messages) { [] }
+
+    # Runs the script's entry point with every game command answered by the lock.
+    #
+    # RSpec does not rescue SystemExit, so an unexpected exit would end the
+    # whole suite and report what had run so far as passing. It is turned into
+    # a failure here unless the example expects the script to stop.
+    def run_script(lock, mode, exits: false)
+      $parsed_args = OpenStruct.new(mode => true)
+      $test_data = OpenStruct.new(aesthene: OpenStruct.new(lock_answers: answers, dictionary: dictionary))
+      $history = []
+      script = Aesthene.allocate
+      allow(script).to receive(:put) { |command| $history.concat(lock.reply(command)) }
+      # Lich's clear empties the script's line buffer.
+      allow(script).to receive(:clear) { $history.clear }
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        lock.reply(command).find { |line| patterns.any? { |pattern| line.match?(pattern) } } || ''
+      end
+      allow(DRC).to receive(:message) { |text| messages << text }
+      begin
+        script.send(:initialize)
+      rescue SystemExit
+        raise if exits
+
+        raise "the script exited early; last message: #{messages.last.inspect}"
+      end
+    end
+
+    def whispers(lock)
+      lock.commands.grep(/\Awhisper lock /)
+    end
+
+    before do
+      stub_const('Aesthene::READ_TIMEOUT', 0.2)
+      stub_const('Aesthene::SOLVE_GRACE', 0.05)
+    end
+
+    it 'redeems, attunes and solves a known answer with ;aesthene full' do
+      lock = AestheneFakeLock.new('POACH')
+      run_script(lock, :full)
+      expect(lock.commands.first(5)).to eq(['redeem my slip', 'redeem my slip', 'ask timekeeper about access', 'touch lock', 'touch lock'])
+      expect(whispers(lock).last).to eq('whisper lock poach')
+      expect(messages).to include('aesthene: solved! The word was POACH.')
+      expect(messages.grep(/lich discord/)).to be_empty
+    end
+
+    it 'solves in at most six whispers for every known answer' do
+      answers.each do |answer|
+        lock = AestheneFakeLock.new(answer, passes: 1)
+        messages.clear
+        run_script(lock, :solve)
+        expect(messages).to include("aesthene: solved! The word was #{answer}."), "#{answer}: #{whispers(lock)}"
+        expect(whispers(lock).size).to be <= 6
+      end
+    end
+
+    it 'solves a dictionary-only answer and asks for it on Discord' do
+      lock = AestheneFakeLock.new('PANSY', passes: 1)
+      run_script(lock, :solve)
+      expect(messages).to include('aesthene: solved! The word was PANSY.')
+      expect(messages.grep(/PANSY is not in the built-in answer list\. Please post it in the lich discord/)).not_to be_empty
+    end
+
+    it 'resumes a lock that is already part-solved' do
+      lock = AestheneFakeLock.new('THROW', attuned_rows: %w[AEIOU TPMRS])
+      run_script(lock, :solve)
+      expect(lock.commands.first(2)).to eq(['touch lock', 'look lock'])
+      expect(messages).to include('aesthene: solved! The word was THROW.')
+    end
+
+    it 'looks at the lock again when a whisper reply misses a row, and still solves' do
+      lock = AestheneFakeLock.new('HYDRA', passes: 1)
+      lock.drop_a_row_next_whisper
+      run_script(lock, :solve)
+      expect(lock.commands[3]).to eq('look lock')
+      expect(messages).to include('aesthene: solved! The word was HYDRA.')
+    end
+
+    it 'stops with a message when there is no pass to attune with' do
+      lock = AestheneFakeLock.new('POACH')
+      expect { run_script(lock, :solve, exits: true) }.to raise_error(SystemExit)
+      expect(messages).to include('aesthene: you need a redeemed pass. Try ;aesthene full.')
+      expect(whispers(lock)).to be_empty
+    end
+
+    it 'checks a lock without whispering' do
+      lock = AestheneFakeLock.new('THROW', attuned_rows: %w[AEIOU TPMRS])
+      run_script(lock, :check)
+      expect(lock.commands).to eq(['look lock'])
+      expect(messages.grep(/possible known answer/)).not_to be_empty
     end
   end
 
