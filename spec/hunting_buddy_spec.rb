@@ -1114,6 +1114,33 @@ RSpec.describe HuntingBuddy do
       expect(buddy.get_skills_below_high_threshold(skills)).to eq(['Parry Ability'])
     end
 
+    it 'leaves "waiting on" out of the status line when no skill is still short' do
+      learning('Small Edged' => 34, 'Parry Ability' => 32)
+      messages = []
+      buddy.instance_variable_set(:@settings, OpenStruct.new(health_threshold: 0, stop_hunting_if_bleeding: false))
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 100))
+      allow(DRC).to receive(:message) { |message| messages << message }
+      allow(DRC).to receive(:verify_script).and_return(true)
+      allow(DRC).to receive(:retreat)
+      allow(DRStats).to receive(:health).and_return(100)
+      allow(Script).to receive(:running?).and_return(false)
+      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = Class.new { def running = !@stopped; def stop = (@stopped = true) }.new }
+      # Skills are done but a raised yiamura keeps the hunt going.
+      allow(buddy).to receive_messages(pause: nil, clear: nil, fput: nil, encumbered?: false, yiamura_all_done?: false)
+      stopper = Object.new
+      stopper.define_singleton_method(:hunt_tick) { |_buddy, counter:| :break if counter.positive? }
+      HuntingBuddy.register_plugin(stopper)
+
+      buddy.hunt([], 30, skills, nil, nil, nil, nil, nil)
+      buddy.hunt([], nil, skills, nil, nil, nil, nil, nil)
+
+      expect(messages).to include('***STATUS*** 30 minutes of hunting remaining', '***STATUS*** 0 minutes of hunting')
+      expect(messages.grep(/waiting on/)).to be_empty
+    ensure
+      HuntingBuddy.instance_variable_set(:@registered_plugins, [])
+      $COMBAT_TRAINER = nil
+    end
+
     it 'waits on nothing once the stop check is satisfied' do
       learning('Small Edged' => 34, 'Parry Ability' => 32)
 

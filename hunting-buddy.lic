@@ -678,15 +678,18 @@ class HuntingBuddy
           @hunt_stop_reason = :encumbrance
           break
         end
+        # Skills still short of the stop_on threshold. Empty when they're all
+        # done but the hunt goes on (e.g. waiting for a raised yiamura).
+        waiting_on = stop_on_high_skills ? get_skills_below_high_threshold(stop_on_high_skills) : []
         if duration
-          if stop_on_high_skills
-            DRC.message("***STATUS*** #{duration - (counter / 60)} minutes of hunting remaining or waiting on #{get_skills_below_high_threshold(stop_on_high_skills).join(', ')}")
+          if waiting_on.any?
+            DRC.message("***STATUS*** #{duration - (counter / 60)} minutes of hunting remaining or waiting on #{waiting_on.join(', ')}")
           else
             DRC.message("***STATUS*** #{duration - (counter / 60)} minutes of hunting remaining")
           end
         else
-          if stop_on_high_skills
-            DRC.message("***STATUS*** #{counter / 60} minutes of hunting, still waiting on #{get_skills_below_high_threshold(stop_on_high_skills).join(', ')}")
+          if waiting_on.any?
+            DRC.message("***STATUS*** #{counter / 60} minutes of hunting, still waiting on #{waiting_on.join(', ')}")
           else
             DRC.message("***STATUS*** #{counter / 60} minutes of hunting")
           end
