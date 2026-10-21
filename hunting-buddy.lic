@@ -208,14 +208,15 @@ class HuntingBuddy
       end
 
       if should_stop_for_high_skills?(stop_on_high_skills)
-        DRC.message("***STATUS*** Skipping hunt because skills reached learning threshold: #{stop_on_high_skills}")
+        DRC.message("***STATUS*** Skipping hunt because skills reached learning threshold: #{stop_on_high_skills.flatten.join(', ')}")
         stop_actions(during_actions)
         execute_actions(after_actions)
         next
       end
 
-      if should_stop_for_low_skills?(stop_on_low_skills)
-        DRC.message("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{get_skills_below_low_threshold(stop_on_low_skills).join(", ")}")
+      low_skills = get_skills_below_low_threshold(stop_on_low_skills || [])
+      if low_skills.any?
+        DRC.message("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{low_skills.join(', ')}")
         stop_actions(during_actions)
         execute_actions(after_actions)
         next
@@ -629,12 +630,13 @@ class HuntingBuddy
         break
       end
       if should_stop_for_high_skills?(stop_on_high_skills) && yiamura_all_done?
-        DRC.message("***STATUS*** Stopping because skills reached learning threshold: #{stop_on_high_skills}")
+        DRC.message("***STATUS*** Stopping because skills reached learning threshold: #{stop_on_high_skills.flatten.join(', ')}")
         @hunt_stop_reason = :high_skills
         break
       end
-      if should_stop_for_low_skills?(stop_on_low_skills) && yiamura_all_done?
-        DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{get_skills_below_low_threshold(stop_on_low_skills).join(", ")}")
+      low_skills = get_skills_below_low_threshold(stop_on_low_skills || [])
+      if low_skills.any? && yiamura_all_done?
+        DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{low_skills.join(', ')}")
         @hunt_stop_reason = :low_skills
         break
       end

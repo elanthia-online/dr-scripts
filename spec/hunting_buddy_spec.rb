@@ -1106,7 +1106,7 @@ RSpec.describe HuntingBuddy do
       allow(DRC).to receive(:retreat)
       allow(DRStats).to receive(:health).and_return(100)
       allow(Script).to receive(:running?).and_return(false)
-      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = OpenStruct.new(running: false) }
+      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = Class.new { def running = !@stopped; def stop = (@stopped = true) }.new }
       allow(buddy).to receive_messages(pause: nil, clear: nil, fput: nil, yiamura_all_done?: true)
 
       buddy.hunt([], nil, nil, [skills], nil, nil, nil, nil)
@@ -1114,6 +1114,39 @@ RSpec.describe HuntingBuddy do
       expect(messages).to include('***STATUS*** Stopping because skills dropped below learning threshold: Locksmithing, Outfitting')
     ensure
       $COMBAT_TRAINER = nil
+    end
+  end
+
+  describe '#main skipping a hunt for its skills' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:messages) { [] }
+
+    def run_main(info)
+      buddy.instance_variable_set(:@settings, OpenStruct.new(sell_loot_skip_bank: true, safe_room: 1, cyclic_no_release: []))
+      buddy.instance_variable_set(:@hunting_info, [{ :zone => 'rats', 'args' => [], 'before' => [], 'after' => [], 'during' => [] }.merge(info)])
+      buddy.instance_variable_set(:@stop_on_low_threshold, 2)
+      buddy.instance_variable_set(:@stop_on_high_threshold, 32)
+      %i[check_bundling_rope check_prehunt_buffs hunt find_hunting_room? execute_actions stop_actions].each { |m| allow(buddy).to receive(m) }
+      allow(buddy).to receive(:encumbered?).and_return(false)
+      allow(DRC).to receive(:message) { |message| messages << message }
+      allow(DRCT).to receive(:walk_to)
+      allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
+      allow(DRSkill).to receive(:getskillset).and_return('Lore')
+      allow(DRSkill).to receive(:getxp) { |skill| { 'Locksmithing' => 1, 'Forging' => 12, 'Evasion' => 34, 'Parry Ability' => 33 }.fetch(skill) }
+      buddy.main
+    end
+
+    it 'names only the stop_on_low skills that dropped' do
+      run_main('stop_on_low' => %w[Locksmithing Forging])
+
+      expect(messages).to include('***STATUS*** Skipping hunt because skills dropped below learning threshold: Locksmithing')
+      expect(buddy).not_to have_received(:hunt)
+    end
+
+    it 'lists the stop_on skills as plain text' do
+      run_main('stop_on' => ['Evasion', 'Parry Ability'])
+
+      expect(messages).to include('***STATUS*** Skipping hunt because skills reached learning threshold: Evasion, Parry Ability')
     end
   end
 
