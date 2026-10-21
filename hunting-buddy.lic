@@ -111,7 +111,8 @@ class HuntingBuddy
     # @return [HuntPlan]
     # @example
     #   HuntPlan.from_info({ zone: 'rats', duration: 30, 'boxes' => true }, settings)
-    #   # => #<struct HuntPlan ... stop_on_boxes=true, hunting_zones=["rats"], waiting_room=851 ...>
+    #   # => #<struct HuntPlan ... stop_on_boxes=true, hunting_zones=["rats"],
+    #   #      waiting_room=(settings.safe_room) ...>
     def self.from_info(info, settings)
       new(
         args: info['args'], # list of args to pass to combat-trainer
@@ -522,8 +523,9 @@ class HuntingBuddy
   # Finds a room to hunt in and moves you there. A find_room plugin can take
   # this over. Otherwise a leading escort zone is entered; else the rooms of
   # every ordinary zone are searched together, in list order, with the first
-  # escort zone as the fallback. Exits the script if none of the zones has
-  # any rooms; an empty list skips the hunt.
+  # escort zone as the fallback. Exits the script if no ordinary zone has any
+  # rooms and there is no escort zone to fall back on; an empty list skips
+  # the hunt.
   #
   # @param zones_to_search [Array<String>] the hunt's :zone: list
   # @param waiting_room [Integer] room to wait in between search attempts
