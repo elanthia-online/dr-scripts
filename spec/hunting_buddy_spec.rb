@@ -1083,6 +1083,40 @@ RSpec.describe HuntingBuddy do
   # Learning-rate thresholds behind stop_on / stop_on_low
   # ===========================================================================
 
+  describe 'low learning-rate threshold' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:skills) { %w[Locksmithing Forging Outfitting] }
+
+    before do
+      buddy.instance_variable_set(:@stop_on_low_threshold, 2)
+      allow(DRSkill).to receive(:getskillset).and_return('Lore')
+      allow(DRSkill).to receive(:getxp) { |skill| { 'Locksmithing' => 1, 'Forging' => 12, 'Outfitting' => 2 }.fetch(skill) }
+    end
+
+    it 'stops when any listed skill is at or below the threshold' do
+      expect(buddy.should_stop_for_low_skills?(skills)).to be true
+    end
+
+    it 'names only the skills that dropped when the hunt loop stops for them' do
+      messages = []
+      buddy.instance_variable_set(:@settings, OpenStruct.new(health_threshold: 0, stop_hunting_if_bleeding: false))
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 100))
+      allow(DRC).to receive(:message) { |message| messages << message }
+      allow(DRC).to receive(:verify_script).and_return(true)
+      allow(DRC).to receive(:retreat)
+      allow(DRStats).to receive(:health).and_return(100)
+      allow(Script).to receive(:running?).and_return(false)
+      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = OpenStruct.new(running: false) }
+      allow(buddy).to receive_messages(pause: nil, clear: nil, fput: nil, yiamura_all_done?: true)
+
+      buddy.hunt([], nil, nil, [skills], nil, nil, nil, nil)
+
+      expect(messages).to include('***STATUS*** Stopping because skills dropped below learning threshold: Locksmithing, Outfitting')
+    ensure
+      $COMBAT_TRAINER = nil
+    end
+  end
+
   describe 'high learning-rate threshold' do
     let(:buddy) { HuntingBuddy.allocate }
     let(:skills) { ['Small Edged', 'Parry Ability'] }
