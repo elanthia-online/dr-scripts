@@ -448,6 +448,27 @@ class DRYamlValidator
       .each { |name| error("Hunting zone not found in hunting_zones, escort_zones, or custom-defined zones. '#{name}'") }
   end
 
+  # hunting-buddy enters an escort zone listed first and never uses the rest of
+  # the :zone: list; otherwise only the first escort zone listed is used, as
+  # the fallback when no room is found.
+  def assert_that_hunting_info_escort_zones_are_reachable(settings)
+    return unless settings.hunting_info
+
+    escort_zones = get_data('hunting').escort_zones || {}
+    custom_zones = settings.custom_hunting_zones || {}
+    settings.hunting_info.each do |info|
+      zones = [info[:zone]].flatten.compact.map(&:to_s)
+      escorts = zones.select { |zone| escort_zones.include?(zone) && !custom_zones[zone] }
+      next if escorts.empty?
+
+      if escorts.first == zones.first && zones.size > 1
+        warn("hunting_info :zone: #{zones.join(', ')}: #{zones.first} is an escort zone listed first, so hunting-buddy always goes there and never uses #{zones.drop(1).join(', ')}.")
+      elsif escorts.size > 1
+        warn("hunting_info :zone: #{zones.join(', ')}: only the first escort zone (#{escorts.first}) is used, as the fallback; #{escorts.drop(1).join(', ')} never will be.")
+      end
+    end
+  end
+
   def assert_that_gear_sets_not_nil(settings)
     return unless settings.gear_sets
 
