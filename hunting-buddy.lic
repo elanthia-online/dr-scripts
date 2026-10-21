@@ -40,8 +40,8 @@ class HuntingBuddy
     # hunt's during scripts, releases cyclics, deletes hunting-buddy's flags
     # and fires the plugins' cleanup hook.
     #
-    # @param buddy [HuntingBuddy, nil] the instance, or nil if hunting-buddy
-    #   died before it finished starting
+    # @param buddy [HuntingBuddy, nil] the instance; if hunting-buddy died
+    #   before it finished starting, nil or an earlier run's instance
     # @return [void]
     def on_death(buddy)
       fput('flag description on') if buddy&.instance_variable_get(:@disable_room_descriptions)
@@ -256,13 +256,14 @@ class HuntingBuddy
     notify_hook(:after_initialize, self)
   end
 
-  # Runs every hunt in order. For each: stop if hunting was stopped or you are
-  # bleeding; skip a boxes hunt you have enough boxes for (no scripts run);
-  # run the before scripts; skip the hunt for moons, encumbrance or skills
-  # (running the after scripts); cast prehunt buffs; find a room unless you
-  # are already in one of the hunt's zones; then run the during scripts
-  # around the hunt and the after scripts. Restocks first and ends in
-  # safe_room wearing the combat gear set.
+  # Runs every hunt in order. For each: stop all hunting if stop_hunting was
+  # called or an earlier hunt (or room search) stopped for bleeding; skip a
+  # boxes hunt you have enough boxes for (no scripts run); run the before
+  # scripts; skip the hunt for moons, encumbrance or skills (running the
+  # after scripts); cast prehunt buffs; find a room (always for the first
+  # hunt, later only when you aren't already in one of the hunt's zones);
+  # then run the during scripts around the hunt and the after scripts.
+  # Restocks first and ends in safe_room wearing the combat gear set.
   #
   # @return [void]
   def main
@@ -313,7 +314,7 @@ class HuntingBuddy
         next
       end
 
-      low_skills = get_skills_below_low_threshold(plan.stop_on_low_skills || [])
+      low_skills = get_skills_below_low_threshold(plan.stop_on_low_skills)
       if low_skills.any?
         skip_hunt("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{low_skills.join(', ')}", plan.during_actions, plan.after_actions)
         next
@@ -346,7 +347,11 @@ class HuntingBuddy
       while DRC.bput('stow feet', /You pick up/, /Stow what/) =~ /You pick up/
       end
 
-      DRC.wait_for_script_to_complete('bescort', @exit) if @exit
+      if @exit
+        DRC.wait_for_script_to_complete('bescort', @exit)
+        # Out of the escort zone now; a next hunt that stays put mustn't exit again.
+        @exit = nil
+      end
       DRCA.release_cyclics(@settings.cyclic_no_release)
 
       # Execute scripts to run after the hunt
@@ -403,7 +408,7 @@ class HuntingBuddy
   #   "buff prehunt"
   # @return [void]
   def execute_actions(actions)
-    (actions || []).each do |action|
+    (actions.nil? ? [] : actions).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
       script_name, script_args = parse_action(action)
       DRC.wait_for_script_to_complete(script_name, script_args)
@@ -416,7 +421,7 @@ class HuntingBuddy
   # @param actions [Array<String>, nil] the hunt's during scripts
   # @return [void]
   def execute_nonblocking_actions(actions)
-    (actions || []).each do |action|
+    (actions.nil? ? [] : actions).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
       script_name, script_args = parse_action(action)
       # Remember it before starting it, so a kill landing in between still
@@ -431,7 +436,7 @@ class HuntingBuddy
   # @param actions [Array<String>, nil] actions; only the script name is used
   # @return [void]
   def stop_actions(actions)
-    (actions || []).each do |action|
+    (actions.nil? ? [] : actions).each do |action|
       DRC.message("***STATUS*** STOP #{action}")
       script_name, = parse_action(action)
       stop_script(script_name) if Script.running?(script_name)
@@ -440,8 +445,9 @@ class HuntingBuddy
   end
 
   # Stops the during scripts this hunting-buddy started and has not stopped
-  # yet. Lich does not stop a script's children when it dies, so before_dying
-  # calls this to avoid leaving them running after hunting-buddy is killed.
+  # yet. Scripts started with start_script aren't registered as this script's
+  # children, so Lich leaves them running when hunting-buddy dies; on_death
+  # calls this to stop them.
   #
   # @return [void]
   def stop_running_actions
@@ -487,12 +493,8 @@ class HuntingBuddy
   # @param room_id [Integer] room to look up (defaults to the current room)
   # @return [String, nil] the zone name, or nil if the room is in none
   def current_hunting_zone(room_id = Room.current.id)
-    # custom_hunting_zones (with rooms) win over a base-hunting.yaml zone of
-    # the same name, as they do when searching for a room.
-    custom_zones = (@settings.custom_hunting_zones || {}).select { |_name, rooms| rooms }
-    zone = custom_zones.find { |_name, rooms| rooms.include?(room_id) }
-    zone ||= @hunting_zones.find { |name, rooms| !custom_zones.key?(name) && rooms.include?(room_id) }
-    zone&.first
+    custom_names = (@settings.custom_hunting_zones || {}).keys.map(&:to_s)
+    (custom_names + (@hunting_zones.keys - custom_names)).find { |name| zone_rooms(name)&.include?(room_id) }
   end
 
   # Is the room in any of these zones?
@@ -506,12 +508,15 @@ class HuntingBuddy
 
   # The single rule for which rooms a zone name means: the
   # custom_hunting_zones entry if it has rooms, otherwise the
-  # base-hunting.yaml zone.
+  # base-hunting.yaml zone. A zone written as a single room id is a
+  # one-room zone.
   #
   # @param zone [String] zone name
   # @return [Array<Integer>, nil] the zone's rooms, or nil for an unknown zone
   def zone_rooms(zone)
-    (@settings.custom_hunting_zones || {})["#{zone}"] || @hunting_zones["#{zone}"]
+    rooms = (@settings.custom_hunting_zones || {})["#{zone}"] || @hunting_zones["#{zone}"]
+    # A zone written as a single room id is a one-room zone.
+    rooms && Array(rooms)
   end
 
   # Finds a room to hunt in and moves you there. A find_room plugin can take
@@ -565,6 +570,8 @@ class HuntingBuddy
 
     return true if !rooms_to_search.empty? && search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
     return false unless fallback_escort
+    # Hunting was called off during the search (stop request, or too injured).
+    return false if @stop_hunting
 
     enter_escort_zone(fallback_escort)
     true
@@ -635,11 +642,11 @@ class HuntingBuddy
                            UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
                            Flags.add('hunting-buddy-room-check',
                                      # someone else speaks: the speaker (after any leading
-                                     # XML tags) isn't "You", so our own echo of the
+                                     # XML tags or spaces) isn't "You", so our own echo of the
                                      # empty_hunting_room_messages line doesn't count.
                                      # Covers plain lines and the speech preset, e.g.
                                      # <preset id='speech'>Bob politely says</preset>, "..."
-                                     /\A(?>(?:<[^>]*>)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
+                                     /\A(?>(?:<[^>]*>|\s)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
                                      /You hear/,
                                      # someone attacks from the shadows
                                      /Someone snipes a/,
@@ -726,6 +733,9 @@ class HuntingBuddy
   # @param stop_on_low_skills [Array<String>] the hunt's stop_on_low skills
   # @return [Array<String>]
   def get_skills_below_low_threshold(stop_on_low_skills = [])
+    # A blank stop_on_low (nil, or '' from `stop_on_low: ''`) means none.
+    return [] if stop_on_low_skills.nil? || stop_on_low_skills.empty?
+
     stop_on_low_skills.flatten.select do |skill|
       DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
     end
@@ -825,7 +835,8 @@ class HuntingBuddy
   # Runs one hunt: starts combat-trainer and checks once a second for a
   # reason to stop (bleeding, boxes, moons, skills, time, burgle cooldown,
   # familiar drag, encumbrance, manual stop or a plugin's :break), then stops
-  # combat-trainer and retreats. Sets hunt_stop_reason and fires before_hunt,
+  # combat-trainer and retreats. If your health drops below health_threshold
+  # it sends AVOID ALL and EXIT, logging you out. Sets hunt_stop_reason and fires before_hunt,
   # hunt_tick, hunt_status and after_hunt.
   #
   # @param plan [HuntPlan] the hunt to run
@@ -896,7 +907,7 @@ class HuntingBuddy
         @hunt_stop_reason = :high_skills
         break
       end
-      low_skills = get_skills_below_low_threshold(plan.stop_on_low_skills || [])
+      low_skills = get_skills_below_low_threshold(plan.stop_on_low_skills)
       if low_skills.any? && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{low_skills.join(', ')}")
         @hunt_stop_reason = :low_skills
