@@ -1119,6 +1119,17 @@ class DRYamlValidator
     warn("You have a #{waggle} waggle set (prehunt_buff_waggle) without a prehunt_buffing_room, you will buff in place!")
   end
 
+  # hunting-buddy silently skips prehunt buffs when the set named by
+  # prehunt_buff_waggle doesn't exist; flag that when the name was set on
+  # purpose (the default prehunt_buffs set is optional).
+  def assert_that_prehunt_buff_waggle_set_exists(settings)
+    waggle = settings.prehunt_buff_waggle
+    return if waggle.nil? || waggle == 'prehunt_buffs'
+    return if (settings.waggle_sets || {})[waggle]
+
+    warn("prehunt_buff_waggle is #{waggle}, but you have no #{waggle} waggle set, so no prehunt buffs will be cast.")
+  end
+
   def assert_that_use_barrage_attacks_is_deprecated(settings)
     return unless settings.use_barrage_attacks
     return unless DRStats.warrior_mage?

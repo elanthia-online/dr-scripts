@@ -147,9 +147,43 @@ RSpec.describe DRYamlValidator do
       expect($warn_msgs).to be_empty
     end
 
+    it 'does not warn (or raise) when waggle_sets is blank, as base.yaml ships it' do
+      check(waggle_sets: nil)
+      expect($warn_msgs).to be_empty
+    end
+
     it 'does not warn when a room is set, including the deprecated prehunt_buffs room' do
       check(waggle_sets: { 'prehunt_buffs' => {} }, prehunt_buffing_room: 1234)
       check(waggle_sets: { 'prehunt_buffs' => {} }, prehunt_buffs: 1234)
+      expect($warn_msgs).to be_empty
+    end
+  end
+
+  describe '#assert_that_prehunt_buff_waggle_set_exists' do
+    let(:instance) { build }
+
+    def check(overrides)
+      instance.assert_that_prehunt_buff_waggle_set_exists(OpenStruct.new({ waggle_sets: {} }.merge(overrides)))
+    end
+
+    it 'warns when prehunt_buff_waggle names a set that does not exist' do
+      check(prehunt_buff_waggle: 'before_hunt', waggle_sets: { 'other' => {} })
+      expect($warn_msgs.first).to include('prehunt_buff_waggle is before_hunt')
+    end
+
+    it 'warns when waggle_sets is blank too' do
+      check(prehunt_buff_waggle: 'before_hunt', waggle_sets: nil)
+      expect($warn_msgs.size).to eq(1)
+    end
+
+    it 'does not warn when the named set exists' do
+      check(prehunt_buff_waggle: 'before_hunt', waggle_sets: { 'before_hunt' => {} })
+      expect($warn_msgs).to be_empty
+    end
+
+    it 'does not warn for the default prehunt_buffs name, since prehunt buffs are optional' do
+      check(prehunt_buff_waggle: 'prehunt_buffs')
+      check(prehunt_buff_waggle: nil)
       expect($warn_msgs).to be_empty
     end
   end
