@@ -1,24 +1,46 @@
 =begin
-  Documentation: https://elanthipedia.play.net/Lich_script_repository#hunting-buddy
+  Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Hunting-Buddy-Settings
+  Plugins:       https://github.com/elanthia-online/dr-scripts/wiki/Hunting-Buddy-Plugins
+
+  Runs the hunts listed in your hunting_info setting, one after another: picks
+  an empty room in each hunt's zones, runs combat-trainer there until a stop
+  condition is met, and runs the hunt's before/during/after scripts around it.
+
+  ;hunting-buddy           hunts from your setup file (or hunting_file_list)
+  ;hunting-buddy <suffix>  hunts from <character>-<suffix>.yaml instead
 =end
 
+# Runs hunts from hunting_info. The live instance is $HUNTING_BUDDY.
+#
+# Plugin system: plugins are loaded from
+# scripts/custom/hunting-buddy-plugin-*.rb, register with
+# HuntingBuddy.register_plugin(instance), and implement any of the hooks
+# after_initialize, find_room, before_hunt, hunt_tick, hunt_status,
+# after_hunt and cleanup (see the Hunting-Buddy-Plugins wiki page).
 class HuntingBuddy
-  # Plugin system -- plugins register to receive lifecycle hooks.
-  # Plugins are loaded from scripts/custom/hunting-buddy-plugin-*.rb
-  # and register via HuntingBuddy.register_plugin(instance).
-  # Plugins implement hook methods (after_initialize, find_room, etc.)
-  # which are called at key points in the hunting lifecycle.
   @registered_plugins = []
 
   class << self
+    # @return [Array<Object>] registered plugins, in registration order
     attr_reader :registered_plugins
 
+    # Registers a plugin to receive hunting-buddy's lifecycle hooks. Plugin
+    # files call this when they are loaded.
+    #
+    # @param plugin [Object] any object; it receives the hooks it responds to
+    # @return [Array<Object>] the registered plugins
+    # @example
+    #   HuntingBuddy.register_plugin(MyPlugin.new)
     def register_plugin(plugin)
       @registered_plugins << plugin
     end
 
     # Loads every hunting-buddy-plugin-*.rb in dir, in name order. A plugin
-    # that fails to load is reported and skipped; the others still load.
+    # that fails to load (including with a syntax error) is reported and
+    # skipped; the others still load.
+    #
+    # @param dir [String] directory to load plugins from
+    # @return [Array<String>] the plugin files found
     def load_plugins(dir = File.join(SCRIPT_DIR, 'custom'))
       Dir.glob(File.join(dir, 'hunting-buddy-plugin-*.rb')).sort.each do |plugin_file|
         begin
@@ -30,8 +52,26 @@ class HuntingBuddy
     end
   end
 
-  attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
-  attr_accessor :my_room_claim, :need_relocation, :stopped_for_bleeding, :hunt_stop_reason
+  # @return [OpenStruct] character settings
+  attr_reader :settings
+  # @return [OpenStruct] data/base-hunting.yaml
+  attr_reader :hunting_data
+  # @return [Hash{String => Array<Integer>}] base-hunting.yaml hunting zones
+  attr_reader :hunting_zones
+  # @return [Array<Hash>] the hunts to run, from every hunting file
+  attr_reader :hunting_info
+  # @return [Object, nil] free for plugins (e.g. a room-claim plugin); unused
+  #   by hunting-buddy itself
+  attr_accessor :my_room_claim
+  # @return [Object, nil] free for plugins; unused by hunting-buddy itself
+  attr_accessor :need_relocation
+  # @return [Boolean, nil] set when hunting stopped because you were bleeding
+  attr_accessor :stopped_for_bleeding
+  # @return [Symbol, nil] why the last hunt ended: :bleeding, :boxes_full,
+  #   :no_moons, :high_skills, :low_skills, :manual_stop, :duration,
+  #   :burgle_time, :familiar_drag or :encumbrance; nil when a plugin's
+  #   hunt_tick returned :break
+  attr_accessor :hunt_stop_reason
 
   # One hunting_info entry with its key aliases and defaults resolved. The
   # field names (and order) are what hunting-buddy prints in debug mode.
@@ -42,6 +82,16 @@ class HuntingBuddy
     :hunting_zones, :waiting_room, :prefer_buddies, :avoid_buddies,
     keyword_init: true
   ) do
+    # Builds a plan from one hunting_info entry.
+    #
+    # @param info [Hash] the hunting_info entry (:zone and :duration are
+    #   symbol keys, the rest strings)
+    # @param settings [OpenStruct] character settings, for the safe_room and
+    #   hunting_disable_room_descriptions defaults
+    # @return [HuntPlan]
+    # @example
+    #   HuntPlan.from_info({ zone: 'rats', duration: 30, 'boxes' => true }, settings)
+    #   # => #<struct HuntPlan ... stop_on_boxes=true, hunting_zones=["rats"], waiting_room=851 ...>
     def self.from_info(info, settings)
       new(
         args: info['args'], # list of args to pass to combat-trainer
@@ -66,9 +116,15 @@ class HuntingBuddy
 
   private
 
-  # Fire a hook on all registered plugins.
-  # Returns the first non-nil result (for decision hooks like :find_room).
-  # Plugins that don't implement a hook are silently skipped.
+  # Fires a decision hook: calls each plugin that implements it, in
+  # registration order, and returns the first non-nil result. A plugin that
+  # raises is skipped (logged only with $debug_mode_hunting).
+  #
+  # @param hook_name [Symbol] hook to call, e.g. :find_room or :hunt_tick
+  # @param args [Array] positional arguments for the hook
+  # @param kwargs [Hash] keyword arguments for the hook
+  # @return [Object, nil] the first non-nil plugin result, or nil if every
+  #   plugin declined
   def fire_hook(hook_name, *args, **kwargs)
     self.class.registered_plugins.each do |plugin|
       next unless plugin.respond_to?(hook_name)
@@ -82,8 +138,13 @@ class HuntingBuddy
     nil
   end
 
-  # Fire a hook but don't use return values (for notification hooks).
-  # All plugins get called; errors in one don't break others.
+  # Fires a notification hook: calls every plugin that implements it and
+  # ignores the results. A plugin that raises does not stop the others.
+  #
+  # @param hook_name [Symbol] hook to call, e.g. :before_hunt
+  # @param args [Array] positional arguments for the hook
+  # @param kwargs [Hash] keyword arguments for the hook
+  # @return [void]
   def notify_hook(hook_name, *args, **kwargs)
     self.class.registered_plugins.each do |plugin|
       next unless plugin.respond_to?(hook_name)
@@ -97,6 +158,11 @@ class HuntingBuddy
 
   public
 
+  # Reads settings and base data, and collects the hunts to run from the
+  # setup file, or from the files named on the command line or in
+  # hunting_file_list. Fires after_initialize.
+  #
+  # @return [HuntingBuddy]
   def initialize
     arg_definitions = [[]]
     args = parse_args(arg_definitions, true)
@@ -168,6 +234,11 @@ class HuntingBuddy
     notify_hook(:after_initialize, self)
   end
 
+  # Runs every hunt in order: before scripts, the skip checks, the room
+  # search, during scripts around the hunt itself, then after scripts. Ends
+  # in safe_room wearing the combat gear set.
+  #
+  # @return [void]
   def main
     check_bundling_rope
     DRC.wait_for_script_to_complete('restock') unless @settings.sell_loot_skip_bank
@@ -263,12 +334,23 @@ class HuntingBuddy
 
   # Ends a hunt that won't go ahead (or all hunting): says why, stops the
   # hunt's during scripts and runs its after scripts.
+  #
+  # @param message [String] status message to show
+  # @param during_actions [Array<String>, nil] the hunt's during scripts
+  # @param after_actions [Array<String>, nil] the hunt's after scripts
+  # @return [void]
   def skip_hunt(message, during_actions, after_actions)
     DRC.message(message)
     stop_actions(during_actions)
     execute_actions(after_actions)
   end
 
+  # Stops all hunting because you are bleeding: retreats, stops tendme and
+  # the hunt's during scripts, and runs its after scripts.
+  #
+  # @param during_actions [Array<String>, nil] the hunt's during scripts
+  # @param after_actions [Array<String>, nil] the hunt's after scripts
+  # @return [void]
   def stop_for_bleeding(during_actions, after_actions)
     DRC.message("***STATUS*** Stopping all hunting because bleeding")
     DRC.retreat
@@ -277,12 +359,22 @@ class HuntingBuddy
     execute_actions(after_actions)
   end
 
-  # Splits an action like "buff prehunt" into the script name and its args.
+  # Splits an action into the script name and its arguments.
+  #
+  # @param action [String] e.g. "buff prehunt"
+  # @return [Array(String, Array<String>)] script name and arguments
+  # @example
+  #   parse_action('buff prehunt now') # => ["buff", ["prehunt", "now"]]
   def parse_action(action)
     script_args = action.split(' ')
     [script_args.shift, script_args]
   end
 
+  # Runs each action as a script and waits for it to finish.
+  #
+  # @param actions [Array<String>, nil] actions such as "sell-loot" or
+  #   "buff prehunt"
+  # @return [void]
   def execute_actions(actions)
     Array(actions).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
@@ -291,6 +383,11 @@ class HuntingBuddy
     end
   end
 
+  # Starts each action as a background script and remembers it so
+  # stop_running_actions can stop it if hunting-buddy dies.
+  #
+  # @param actions [Array<String>, nil] the hunt's during scripts
+  # @return [void]
   def execute_nonblocking_actions(actions)
     Array(actions).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
@@ -300,6 +397,10 @@ class HuntingBuddy
     end
   end
 
+  # Stops each action's script if it is running.
+  #
+  # @param actions [Array<String>, nil] actions; only the script name is used
+  # @return [void]
   def stop_actions(actions)
     Array(actions).each do |action|
       DRC.message("***STATUS*** STOP #{action}")
@@ -309,16 +410,20 @@ class HuntingBuddy
     end
   end
 
-  # Stops the 'during' scripts this hunting-buddy started and has not stopped
+  # Stops the during scripts this hunting-buddy started and has not stopped
   # yet. Lich does not stop a script's children when it dies, so before_dying
   # calls this to avoid leaving them running after hunting-buddy is killed.
+  #
+  # @return [void]
   def stop_running_actions
     stop_actions((@running_actions || []).dup)
   end
 
   # ------------------------------------------------------------
 
-  # Ensures you have a bundling rope unless you're not skinning.
+  # Gets a bundling rope from the tannery if you skin and have none.
+  #
+  # @return [void]
   def check_bundling_rope
     return unless @settings.skinning['skin']
     return if DRCI.wearing?('bundle')
@@ -332,6 +437,10 @@ class HuntingBuddy
     DRCI.stow_item?('bundling rope')
   end
 
+  # Walks to prehunt_buffing_room and runs ;buff with the prehunt_buff_waggle
+  # set, if that waggle set exists.
+  #
+  # @return [void]
   def check_prehunt_buffs
     return unless @settings.waggle_sets[@prehunt_buff_waggle]
 
@@ -342,8 +451,11 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # Returns the name of the hunting zone (custom_hunting_zones or
-  # base-hunting.yaml) that the room is in, or nil if it is in none.
+  # Names the hunting zone a room is in.
+  #
+  # @param room_id [Integer] room to look up (defaults to the current room)
+  # @return [String, nil] the custom_hunting_zones or base-hunting.yaml zone
+  #   name, or nil if the room is in none
   def current_hunting_zone(room_id = Room.current.id)
     # custom_hunting_zones win over a base-hunting.yaml zone of the same name,
     # as they do when searching for a room.
@@ -353,6 +465,17 @@ class HuntingBuddy
     zone&.first
   end
 
+  # Finds a room to hunt in and moves you there. A find_room plugin can take
+  # this over; otherwise the zones are tried in priority order (see below).
+  # Exits the script if none of the zones has any rooms.
+  #
+  # @param zones_to_search [Array<String>] the hunt's :zone: list
+  # @param waiting_room [Integer] room to wait in between search attempts
+  # @param prefer_buddies [Boolean] look first for a room a hunting buddy is in
+  # @param avoid_buddies [Boolean] treat a room with a hunting buddy as occupied
+  # @return [Boolean, Object] true when a room was found (or an escort zone
+  #   entered), false when the search gave up; a find_room plugin's result
+  #   is returned as-is
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
     UserVars.friends = @settings.hunting_buddies || []
     UserVars.hunting_nemesis = @settings.hunting_nemesis || []
@@ -395,6 +518,10 @@ class HuntingBuddy
 
   # Room ids for one hunting zone: the custom_hunting_zones entry from your
   # setup yaml if there is one, otherwise the base-hunting.yaml zone.
+  #
+  # @param zone [String] zone name
+  # @return [Array<Integer>] the zone's rooms, or [] (with a message) for an
+  #   unknown zone
   def hunting_zone_rooms(zone)
     if @settings.custom_hunting_zones["#{zone}"]
       echo "Overriding base-hunting.yaml's #{zone}" if @hunting_zones["#{zone}"]
@@ -409,6 +536,12 @@ class HuntingBuddy
 
   # Walks the given rooms looking for one to hunt in, using the
   # hunting_buddies/hunting_nemesis rules and the empty-room check.
+  #
+  # @param rooms_to_search [Array<Integer>] candidate rooms, in priority order
+  # @param waiting_room [Integer] room to wait in between search attempts
+  # @param prefer_buddies [Boolean] look first for a room a hunting buddy is in
+  # @param avoid_buddies [Boolean] treat a room with a hunting buddy as occupied
+  # @return [Boolean] whether a room was found
   def search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
     @exit = nil
     echo "Aggregated hunting room list: #{rooms_to_search}" if $debug_mode_hunting
@@ -476,16 +609,23 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # Identify if every skill in the given list has a learning rate
-  # at or above the desired threshold for their skillset.
+  # Have all the stop_on skills reached their learning-rate threshold?
+  #
+  # @param stop_on_high_skills [Array<String>, nil] the hunt's stop_on skills
+  # @return [Boolean, nil] true when every skill is at or above its
+  #   threshold; falsy for an empty or missing list
   def should_stop_for_high_skills?(stop_on_high_skills = [])
     stop_on_high_skills && !stop_on_high_skills.empty? && stop_on_high_skills.flatten.all? do |skill|
       DRSkill.getxp(skill) >= get_skill_exp_high_threshold(skill)
     end
   end
 
-  # Identify if at least one skill in the given list has a learning rate
-  # at or below stop_on_low_threshold (one threshold for every skillset).
+  # Has any stop_on_low skill dropped to stop_on_low_threshold (one threshold
+  # for every skillset)?
+  #
+  # @param stop_on_low_skills [Array<String>, nil] the hunt's stop_on_low skills
+  # @return [Boolean, nil] true when any skill is at or below the threshold;
+  #   falsy for an empty or missing list
   def should_stop_for_low_skills?(stop_on_low_skills = [])
     stop_on_low_skills && !stop_on_low_skills.empty? && stop_on_low_skills.flatten.any? do |skill|
       DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
@@ -494,19 +634,22 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # Identify the skills in the given list
-  # that have not yet met their learning rate thresholds
-  # and so we should continue hunting.
+  # The stop_on skills still below their threshold, which the hunt is
+  # waiting on.
+  #
+  # @param stop_on_high_skills [Array<String>] the hunt's stop_on skills
+  # @return [Array<String>]
   def get_skills_below_high_threshold(stop_on_high_skills = [])
     stop_on_high_skills.flatten.select do |skill|
       DRSkill.getxp(skill) < get_skill_exp_high_threshold(skill)
     end
   end
 
-  # Identify the skills in the given list
-  # that have fallen below their learning rate thresholds
-  # and so we should stop hunting to go work on them.
-  # Usually, these are non-combat skills like locksmithing or crafting.
+  # The stop_on_low skills at or below stop_on_low_threshold, which the hunt
+  # stops to go work on (usually non-combat skills like locksmithing).
+  #
+  # @param stop_on_low_skills [Array<String>] the hunt's stop_on_low skills
+  # @return [Array<String>]
   def get_skills_below_low_threshold(stop_on_low_skills = [])
     stop_on_low_skills.flatten.select do |skill|
       DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
@@ -515,32 +658,50 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # What is the learning rate high threshold at which point we should stop hunting?
+  # The learning-rate threshold at which a stop_on skill counts as done.
+  #
+  # @param skill [String] skill name
+  # @return [Integer, nil] see get_skillset_exp_high_threshold
   def get_skill_exp_high_threshold(skill)
     get_skillset_exp_high_threshold(DRSkill.getskillset(skill))
   end
 
-  # What is the learning rate high threshold at which point we should stop hunting?
-  # stop_on_high_threshold wins when it is set (base.yaml sets it to 32); the
-  # per-skillset *_exp_training_max_threshold settings apply only when it is blank.
+  # The learning-rate threshold at which stop_on skills of a skillset count
+  # as done. stop_on_high_threshold wins when it is set (base.yaml sets it to
+  # 32); the per-skillset *_exp_training_max_threshold settings apply only
+  # when it is blank.
+  #
+  # @param skillset [String] 'Armor', 'Weapon', 'Magic', 'Survival' or 'Lore'
+  # @return [Integer, nil]
   def get_skillset_exp_high_threshold(skillset)
     @stop_on_high_threshold || @skillset_exp_thresholds[skillset]
   end
 
   # ------------------------------------------------------------
 
-  # What is the learning rate low threshold at which point we should stop hunting?
+  # The learning-rate threshold at or below which a stop_on_low skill stops
+  # the hunt.
+  #
+  # @param skill [String] skill name
+  # @return [Integer, nil] stop_on_low_threshold
   def get_skill_exp_low_threshold(skill)
     get_skillset_exp_low_threshold(DRSkill.getskillset(skill))
   end
 
-  # What is the learning rate low threshold at which point we should stop hunting?
-  # stop_on_low_threshold applies to every skillset, so the skillset is unused.
+  # The learning-rate threshold at or below which stop_on_low skills stop the
+  # hunt. stop_on_low_threshold applies to every skillset.
+  #
+  # @param _skillset [String] unused
+  # @return [Integer, nil] stop_on_low_threshold
   def get_skillset_exp_low_threshold(_skillset)
     @stop_on_low_threshold
   end
 
   # ------------------------------------------------------------
+  # Is it OK to end the hunt as far as a raised yiamura goes? False for ten
+  # minutes after you raised one in this room.
+  #
+  # @return [Boolean]
   def yiamura_all_done?
     return true unless UserVars.yiamura
     return true unless UserVars.yiamura['last_raised_room_id'] == Map.current.id
@@ -549,8 +710,11 @@ class HuntingBuddy
   end
   # ------------------------------------------------------------
 
-  # Is your current encumbrance at or higher than the threshold?
-  # Threshold is a number from 0 (None) to 11 (It's amazing you aren't squashed!)
+  # Is your current encumbrance at or above the threshold?
+  #
+  # @param threshold [Integer, nil] 0 (None) to 11 (It's amazing you aren't
+  #   squashed!); values outside that range are clamped
+  # @return [Boolean] false when threshold is nil
   def encumbered?(threshold)
     return false unless threshold
 
@@ -564,21 +728,32 @@ class HuntingBuddy
   # box_hunt_minimum. Called before combat-trainer starts so a hunt with
   # boxes: true is skipped once you have more boxes than that. With
   # box_hunt_minimum blank this is always false, so such hunts are skipped.
+  #
+  # @return [Boolean]
   def need_boxes?
     return false unless @settings.box_hunt_minimum
 
     DRCI.count_all_boxes(@settings) <= @settings.box_hunt_minimum
   end
 
-  # Have you reached the upper bound for box count?
-  # Designed to be called while combat-trainer is running
-  # as a way to know when to stop once you have enough boxes.
+  # Has combat-trainer reached box_loot_limit? Called while it is running, to
+  # end a boxes: true hunt.
+  #
+  # @return [Boolean, nil]
   def over_box_limit?
     $COMBAT_TRAINER.get_process('loot').at_box_limit?
   end
 
   # ------------------------------------------------------------
 
+  # Runs one hunt: starts combat-trainer and checks once a second for a
+  # reason to stop (bleeding, boxes, moons, skills, time, burgle cooldown,
+  # familiar drag, encumbrance, manual stop or a plugin's :break), then stops
+  # combat-trainer and retreats. Sets hunt_stop_reason and fires before_hunt,
+  # hunt_tick, hunt_status and after_hunt.
+  #
+  # @param plan [HuntPlan] the hunt to run
+  # @return [void]
   def hunt(plan)
     $COMBAT_TRAINER = nil
     @hunt_stop_reason = nil
@@ -714,17 +889,32 @@ class HuntingBuddy
     DRC.retreat
   end
 
+  # Ends the current hunt and skips the rest (combat-trainer and coordinator
+  # call this through $HUNTING_BUDDY).
+  #
+  # @return [true]
   def stop_hunting
     @stop_hunting = true
   end
 
+  # Ends the current hunt and moves on to the next one.
+  #
+  # @return [true]
   def next_hunt
     @next_hunt = true
   end
 
-  # Forward method calls to plugins that implement them.
-  # Allows external scripts to call plugin methods via $HUNTING_BUDDY.
-  # Example: $HUNTING_BUDDY.force_relocation!(room_id)
+  # Forwards unknown method calls to the first plugin that implements them,
+  # so external scripts can call plugin methods via $HUNTING_BUDDY.
+  #
+  # @param method_name [Symbol] the method called
+  # @param args [Array] its positional arguments
+  # @param kwargs [Hash] its keyword arguments
+  # @param block [Proc, nil] its block
+  # @return [Object] whatever the plugin method returns
+  # @example
+  #   $HUNTING_BUDDY.force_relocation!(room_id)
+  # @raise [NoMethodError] when no plugin implements the method
   def method_missing(method_name, *args, **kwargs, &block)
     self.class.registered_plugins.each do |plugin|
       if plugin.respond_to?(method_name)
@@ -734,6 +924,9 @@ class HuntingBuddy
     super
   end
 
+  # @param method_name [Symbol]
+  # @param include_private [Boolean]
+  # @return [Boolean] true when a plugin implements the method
   def respond_to_missing?(method_name, include_private = false)
     self.class.registered_plugins.any? { |p| p.respond_to?(method_name) } || super
   end
