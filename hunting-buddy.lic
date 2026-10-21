@@ -228,7 +228,7 @@ class HuntingBuddy
         next
       end
 
-      low_skills = get_skills_below_low_threshold(stop_on_low_skills || [])
+      low_skills = get_skills_below_low_threshold(stop_on_low_skills)
       if low_skills.any?
         DRC.message("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{low_skills.join(', ')}")
         stop_actions(during_actions)
@@ -550,6 +550,9 @@ class HuntingBuddy
   # and so we should stop hunting to go work on them.
   # Usually, these are non-combat skills like locksmithing or crafting.
   def get_skills_below_low_threshold(stop_on_low_skills = [])
+    # A blank stop_on_low (nil, or '' from `stop_on_low: ''`) means none.
+    return [] if stop_on_low_skills.nil? || stop_on_low_skills.empty?
+
     stop_on_low_skills.flatten.select do |skill|
       DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
     end
@@ -681,7 +684,7 @@ class HuntingBuddy
         @hunt_stop_reason = :high_skills
         break
       end
-      low_skills = get_skills_below_low_threshold(stop_on_low_skills || [])
+      low_skills = get_skills_below_low_threshold(stop_on_low_skills)
       if low_skills.any? && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{low_skills.join(', ')}")
         @hunt_stop_reason = :low_skills
