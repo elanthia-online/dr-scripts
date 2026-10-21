@@ -1132,6 +1132,23 @@ RSpec.describe HuntingBuddy do
       expect(escorted).to be_empty
     end
 
+    it 'searches the base zone\'s rooms for a custom entry that lists none' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['rats'] = []
+      search_result(true)
+
+      buddy.find_hunting_room?(%w[rats], 851)
+
+      expect(searched).to eq([[1, 2]])
+    end
+
+    it 'still escorts into an escort zone whose custom entry lists no rooms' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['ship'] = []
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
+      expect(escorted).to eq([['bescort', %w[ship_area board]]])
+    end
+
     it 'exits when no zone in the list has any rooms' do
       search_result(true)
 
@@ -1258,8 +1275,9 @@ RSpec.describe HuntingBuddy do
       expect(searches_for(['brewery'], 3, {})).to eq(1)
     end
 
-    it 'uses the base rooms for a custom entry with no rooms' do
+    it 'uses the base rooms for a custom entry with no rooms (nil or an empty list)' do
       expect(searches_for(['brewery'], 3, { 'brewery' => nil })).to eq(1)
+      expect(searches_for(['brewery'], 3, { 'brewery' => [] })).to eq(1)
     end
 
     it 'stays when two custom zones overlap and the hunt names the second' do
