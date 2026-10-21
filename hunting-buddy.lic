@@ -534,8 +534,10 @@ class HuntingBuddy
   #   entered), false when the search gave up; a find_room plugin's result
   #   is returned as-is
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
-    # Drop blank entries (an empty `- ` in the yaml list loads as nil).
-    UserVars.friends = Array(@settings.hunting_buddies).compact.map(&:to_s)
+    # Game-cased names (the game capitalises them; DRRoom.pcs and
+    # DRRoom.group_members use that form), without blank entries -- an empty
+    # `- ` in the yaml loads as nil, `- ""` as an empty string.
+    UserVars.friends = Array(@settings.hunting_buddies).compact.map { |friend| friend.to_s.strip.capitalize }.reject(&:empty?)
     UserVars.hunting_nemesis = @settings.hunting_nemesis || []
 
     # Forget the previous hunt's escort zone, whoever finds this hunt's room.
@@ -639,9 +641,14 @@ class HuntingBuddy
                            return false if (DRRoom.pcs - DRRoom.group_members).any?
 
                            # No visible friends in the room and no visible people
-                           # The game always capitalises names, so match the capitalised name as a
-                           # whole word ("Will" shouldn't match "will not").
-                           UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", /\b#{Regexp.escape(friend.capitalize)}\b/) }
+                           # A buddy's (capitalised) name as a whole word ("Will" shouldn't match
+                           # "will not"), on a line that isn't from a window about elsewhere --
+                           # ESP thoughts, logons, deaths, OOC, familiar or group -- where the
+                           # stream tag shares the line with its text.
+                           UserVars.friends.each do |friend|
+                             Flags.add("hunting-buddy-room-check-#{friend}",
+                                       /\A(?!.*<pushStream id=["'](?:thoughts|logons|death|ooc|familiar|group)["']).*\b#{Regexp.escape(friend)}\b/)
+                           end
                            Flags.add('hunting-buddy-room-check',
                                      # someone else speaks. Others "say/ask/exclaim" in the
                                      # third person ("Bob politely says, ..."), our own echo of
@@ -665,10 +672,12 @@ class HuntingBuddy
                                pause
                                waitrt?
                                # Someone is hidden here. Take the room only if a buddy has been named
-                               # (found by the SEARCH, or speaking up) -- never with avoid_buddies.
-                               return false if avoid_buddies
+                               # (found by the SEARCH, or speaking up) -- with avoid_buddies, only if
+                               # every buddy named is in your group.
+                               named = UserVars.friends.select { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return false if named.empty?
 
-                               return UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return !avoid_buddies || (named - DRRoom.group_members).empty?
                              end
                              fput("say #{@settings.empty_hunting_room_messages.sample}") unless @settings.empty_hunting_room_messages.empty?
                              room_is_empty = true
