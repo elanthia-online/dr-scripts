@@ -385,9 +385,16 @@ class HuntingBuddy
   # custom_hunting_zones entry if it has rooms, otherwise the base-hunting.yaml
   # zone. The single rule for which rooms a zone name means.
   def zone_rooms(zone)
-    rooms = (@settings.custom_hunting_zones || {})["#{zone}"] || @hunting_zones["#{zone}"]
+    rooms = custom_zone_rooms(zone) || @hunting_zones["#{zone}"]
     # A zone written as a single room id is a one-room zone.
     rooms && Array(rooms)
+  end
+
+  # The custom_hunting_zones entry's rooms, or nil when there is no entry or
+  # it lists no rooms (nil, or an empty list) -- then the base zone applies.
+  def custom_zone_rooms(zone)
+    rooms = Array((@settings.custom_hunting_zones || {})["#{zone}"])
+    rooms unless rooms.empty?
   end
 
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
@@ -436,7 +443,7 @@ class HuntingBuddy
   # The base-hunting.yaml escort zone with this name, unless your
   # custom_hunting_zones defines a zone of the same name (which wins).
   def escort_zone_info(zone)
-    return nil if (@settings.custom_hunting_zones || {})["#{zone}"]
+    return nil if custom_zone_rooms(zone)
 
     @escort_zones[zone]
   end
@@ -452,7 +459,7 @@ class HuntingBuddy
   # Room ids for one hunting zone (see zone_rooms), saying when a custom zone
   # overrides a base one and when a zone is unknown.
   def hunting_zone_rooms(zone)
-    echo "Overriding base-hunting.yaml's #{zone}" if (@settings.custom_hunting_zones || {})["#{zone}"] && @hunting_zones["#{zone}"]
+    echo "Overriding base-hunting.yaml's #{zone}" if custom_zone_rooms(zone) && @hunting_zones["#{zone}"]
     rooms = zone_rooms(zone)
     echo "Unable to find hunting zone: #{zone}" unless rooms
     rooms || []
@@ -516,7 +523,7 @@ class HuntingBuddy
                            when /You're not in any condition to be searching around/i
                              DRC.message("***STATUS*** You're too injured to hunt!")
                              @stop_hunting = true
-                             @stop_hunting_reason = :too_injured
+                             @stop_hunting_cause = :too_injured
                              @stopped_for_bleeding = bleeding?
                              # Ironically, return true so the search for a suitable hunting room
                              # stops and then the hunting buddy loop will detect that you need help
@@ -543,9 +550,7 @@ class HuntingBuddy
   # Identify if at least one skill in the given list has a learning rate
   # at or below stop_on_low_threshold (one threshold for every skillset).
   def should_stop_for_low_skills?(stop_on_low_skills = [])
-    stop_on_low_skills && !stop_on_low_skills.empty? && stop_on_low_skills.flatten.any? do |skill|
-      DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
-    end
+    get_skills_below_low_threshold(stop_on_low_skills).any?
   end
 
   # ------------------------------------------------------------
@@ -650,7 +655,7 @@ class HuntingBuddy
     if @stop_hunting
       # Keep before_hunt/after_hunt paired for plugins even when the hunt
       # is called off before combat-trainer starts.
-      @hunt_stop_reason = @stop_hunting_reason || :manual_stop
+      @hunt_stop_reason = @stop_hunting_cause || :manual_stop
       notify_hook(:after_hunt, self, hunting_room: hunting_room, counter: 0)
       return
     end
