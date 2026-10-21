@@ -347,40 +347,57 @@ class HuntingBuddy
     UserVars.friends = @settings.hunting_buddies || []
     UserVars.hunting_nemesis = @settings.hunting_nemesis || []
 
+    # Forget the previous hunt's escort zone, whoever finds this hunt's room.
+    @exit = nil
+
     # Let plugins handle room finding first
     plugin_result = fire_hook(:find_room, self, zones_to_search, waiting_room)
     return plugin_result unless plugin_result.nil?
 
-    # Zones are tried in :zone: list order, which users treat as a priority
-    # order. Consecutive ordinary zones are pooled into one room search (their
-    # rooms kept in list order); an escort zone is entered only if the ordinary
-    # zones listed before it had no suitable room. Entering an escort zone
-    # always succeeds, so zones listed after one are never reached.
-    rooms_to_search = []
-    zones_to_search.each do |zone|
-      escort_info = @escort_zones[zone]
-      unless escort_info
-        rooms_to_search += hunting_zone_rooms(zone)
-        next
-      end
+    return false if zones_to_search.empty?
 
-      return true if !rooms_to_search.empty? && search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
-
-      rooms_to_search = []
-      DRCT.walk_to(escort_info['base'])
-      DRC.wait_for_script_to_complete('bescort', [escort_info['area'], escort_info['enter']])
-      @exit = [escort_info['area'], 'exit']
+    # Entering an escort zone always succeeds, so a leading escort zone is
+    # simply entered. Otherwise the rooms of every ordinary zone are searched
+    # together, in :zone: list order, and the first escort zone in the list
+    # is the fallback if that search gives up (after hunting_room_max_searches
+    # rounds, each followed by a 20-40 second wait).
+    leading_escort = escort_zone_info(zones_to_search.first)
+    if leading_escort
+      enter_escort_zone(leading_escort)
       return true
     end
 
+    rooms_to_search = zones_to_search.reject { |zone| escort_zone_info(zone) }.flat_map { |zone| hunting_zone_rooms(zone) }
+    fallback_escort = zones_to_search.lazy.filter_map { |zone| escort_zone_info(zone) }.first
+
     # Make sure our aggregated room list isn't empty. If it is, warn and don't go hunting.
-    if rooms_to_search.empty?
+    if rooms_to_search.empty? && !fallback_escort
       DRC.message("Unable to look up any hunting rooms for your yaml-specified hunting :zone: list.")
       DRC.message("Check your yaml syntax and ensure your :zone:'s name matches base-hunting.yaml or your custom zone name.")
       exit
     end
 
-    search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
+    return true if !rooms_to_search.empty? && search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
+    return false unless fallback_escort
+
+    enter_escort_zone(fallback_escort)
+    true
+  end
+
+  # The base-hunting.yaml escort zone with this name, unless your
+  # custom_hunting_zones defines a zone of the same name (which wins).
+  def escort_zone_info(zone)
+    return nil if (@settings.custom_hunting_zones || {})["#{zone}"]
+
+    @escort_zones[zone]
+  end
+
+  # Walks to an escort zone's entrance and takes the escort in; main takes the
+  # escort out again after the hunt.
+  def enter_escort_zone(escort_info)
+    DRCT.walk_to(escort_info['base'])
+    DRC.wait_for_script_to_complete('bescort', [escort_info['area'], escort_info['enter']])
+    @exit = [escort_info['area'], 'exit']
   end
 
   # Room ids for one hunting zone: the custom_hunting_zones entry from your
@@ -400,7 +417,6 @@ class HuntingBuddy
   # Walks the given rooms looking for one to hunt in, using the
   # hunting_buddies/hunting_nemesis rules and the empty-room check.
   def search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
-    @exit = nil
     echo "Aggregated hunting room list: #{rooms_to_search}" if $debug_mode_hunting
 
     DRCT.find_empty_room(rooms_to_search, waiting_room,
