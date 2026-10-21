@@ -600,6 +600,25 @@ training_manager_priority_skills:
 priority_skills_lower_limit: 6
 # define one or multiple hunting zones (see base-hunting in scripts/data) and the behaviors for those hunts.
 # https://github.com/elanthia-online/dr-scripts/wiki/YAML-Basics:-Part-2---Creating-Your-Own-YAML
+# Full reference: https://github.com/elanthia-online/dr-scripts/wiki/Hunting-Buddy-Settings
+# Keys for each hunting_info entry, used by hunting-buddy:
+#   :zone:                    zone name or list of names, in priority order: base-hunting.yaml
+#                             hunting_zones/escort_zones or your custom_hunting_zones
+#   :duration:                minutes to hunt
+#   stop_on:                  end the hunt once ALL of these skills reach stop_on_high_threshold
+#   stop_on_low:              end the hunt once ANY of these skills is at or below stop_on_low_threshold
+#   args:                     arguments passed to combat-trainer
+#   before: / after:          scripts (with arguments) run before / after the hunt
+#   during:                   scripts started in the background for the hunt, stopped when it ends
+#   boxes: (stop_on_boxes:)   skip the hunt unless you have box_hunt_minimum boxes or fewer;
+#                             end it once combat-trainer reaches box_loot_limit
+#   moons: (stop_on_moons:)   skip / end the hunt when no moons are visible
+#   stop_on_encumbrance:      skip / end the hunt at or above this encumbrance (0 None - 11)
+#   stop_on_burgle_cooldown:  end the hunt when your burgle cooldown expires (see stop_to_burgle)
+#   disable_room_descriptions: per-hunt override of hunting_disable_room_descriptions
+#   full_waiting_room:        room to wait in between room searches (default: safe_room)
+#   prefer_buddies:           look first for a room one of your hunting_buddies is in
+#   avoid_buddies:            treat a room with a hunting buddy in it as occupied
 hunting_info:
 # Global toggle to cause hunting buddy to stop a hunt short when the burgle
 # timer hits. Note there is also a per-hunt toggle that goes in hunting_info
@@ -652,8 +671,21 @@ safety_concentration_minimum: 0
 # NOTE: because one value drives all three, raising it (e.g. 90) makes Vanish very eager AND
 # largely cancels the heal-over-time bleed grace (you are usually below it once bleeding).
 safety_escape_health_threshold:
-# Room that you will use to prebuff your character before a hunt, utilizes the prehunt_buffs waggle set.
+# Room that you will use to prebuff your character before a hunt, utilizes the prehunt_buff_waggle waggle set.
+# Before each hunt, if that waggle set exists, hunting-buddy walks here and runs ;buff with it.
 prehunt_buffing_room:
+# Name of the waggle set used for prehunt buffs.
+prehunt_buff_waggle: prehunt_buffs
+# Turn room descriptions off (FLAG DESCRIPTION OFF) while hunting and back on afterwards.
+# A hunt can override this with disable_room_descriptions in its hunting_info entry.
+hunting_disable_room_descriptions: false
+# Your own hunting zones, by name, usable in hunting_info :zone: lists. A name that matches a
+# base-hunting.yaml zone replaces that zone's rooms.
+# custom_hunting_zones:
+#   my_rats:
+#   - 1234
+#   - 1235
+custom_hunting_zones:
 # Minimum perc mana to look for in a hunting room. If hunting_room_strict_mana is true, then it will skip a hunt if it can't find the mana
 hunting_room_min_mana: 0
 hunting_room_strict_mana: false
@@ -823,7 +855,8 @@ loot_subtractions:
 loot_specials:
 # only loot up to this many boxes
 box_loot_limit:
-# if boxes: true is set in a hunt, then the hunt will only hunt until it gets this box minimum
+# A hunt with boxes: true is skipped unless you have this many boxes or fewer.
+# (The hunt itself ends when combat-trainer reaches box_loot_limit.)
 box_hunt_minimum: 1
 
 # Custom name substitutions (Lich >= the release that adds Lich::DragonRealms::CustomSubstitutions)
