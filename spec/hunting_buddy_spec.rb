@@ -846,15 +846,19 @@ RSpec.describe HuntingBuddy do
     # Runs the room predicate hunting-buddy hands to find_empty_room, with
     # `say_echo` as the line the game sends back for our own empty-room say
     # and `heard` as anything else that arrives while we wait.
-    def room_judged_empty?(say_echo:, heard: nil)
+    def room_judged_empty?(say_echo:, heard: nil, avoid_buddies: false, pcs: [], group: [], search_finds: nil, heard_in_search: nil)
       buddy.instance_variable_set(:@settings, settings)
       buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
       buddy.instance_variable_set(:@escort_zones, {})
       buddy.instance_variable_set(:@hunting_buddies_max, 2)
-      DRRoom.pcs = []
-      DRRoom.group_members = []
-      allow(DRC).to receive(:bput).with('search', any_args).and_return('Roundtime: 3 sec.')
-      allow(buddy).to receive(:reget).and_return([])
+      DRRoom.pcs = pcs
+      DRRoom.group_members = group
+      allow(DRC).to receive(:bput).with('search', any_args) do
+        deliver(heard_in_search) if heard_in_search
+        'Roundtime: 3 sec.'
+      end
+      allow(buddy).to receive(:reget).and_return(search_finds ? [search_finds, 'You search around for a moment.'].reverse : [])
+      allow(buddy).to receive(:waitrt?)
       allow(buddy).to receive(:pause)
       allow(buddy).to receive(:fput) do |command|
         next unless command.start_with?('say ')
@@ -864,7 +868,36 @@ RSpec.describe HuntingBuddy do
       end
       allow(DRCT).to receive(:find_empty_room) { |_rooms, _idle, predicate, *_rest| predicate.call(1) }
 
-      buddy.find_hunting_room?(['rats'], 851)
+      buddy.find_hunting_room?(['rats'], 851, false, avoid_buddies)
+    end
+
+    context 'with a hunting buddy (Bob)' do
+      let(:settings) do
+        OpenStruct.new(custom_hunting_zones: {}, hunting_buddies: ['Bob'], hunting_nemesis: [],
+                       empty_hunting_room_messages: ['Is anyone hunting here?'],
+                       hunting_room_min_mana: 0, hunting_room_strict_mana: false, hunting_room_max_searches: 30)
+      end
+      let(:echo) { 'You say, "Is anyone hunting here?"' }
+
+      it 'takes a room where a hidden buddy speaks up, by default' do
+        expect(room_judged_empty?(say_echo: echo, search_finds: 'You notice Bob, who is hiding.', heard_in_search: 'Bob says, "Here!"')).to be_truthy
+      end
+
+      it 'leaves a room where a hidden buddy is found, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, search_finds: 'You notice Bob, who is hiding.', heard_in_search: 'Bob says, "Here!"')).to be false
+      end
+
+      it 'takes a room where a buddy answers, by default' do
+        expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."')).to be true
+      end
+
+      it 'leaves a room where a buddy answers, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."', avoid_buddies: true)).to be false
+      end
+
+      it 'still takes a room whose only other person is a buddy in your group, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'])).to be true
+      end
     end
 
     # Own echoes of the empty-room say: these must not mark the room occupied.

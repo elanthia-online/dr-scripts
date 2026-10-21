@@ -523,9 +523,8 @@ class HuntingBuddy
   # @param zones_to_search [Array<String>] the hunt's :zone: list
   # @param waiting_room [Integer] room to wait in between search attempts
   # @param prefer_buddies [Boolean] look first for a room a hunting buddy is in
-  # @param avoid_buddies [Boolean] don't take a room just because a hunting
-  #   buddy is visible in it (a buddy found hiding or heard speaking still
-  #   lets it take the room)
+  # @param avoid_buddies [Boolean] treat a room with a hunting buddy in it
+  #   (seen, found hiding or heard) as occupied, unless they're in your group
   # @return [Boolean, Object] true when a room was found (or an escort zone
   #   entered), false when the search gave up; a find_room plugin's result
   #   is returned as-is
@@ -611,8 +610,8 @@ class HuntingBuddy
   # @param rooms_to_search [Array<Integer>] candidate rooms, in priority order
   # @param waiting_room [Integer] room to wait in between search attempts
   # @param prefer_buddies [Boolean] look first for a room a hunting buddy is in
-  # @param avoid_buddies [Boolean] don't take a room just because a hunting
-  #   buddy is visible in it
+  # @param avoid_buddies [Boolean] treat a room with a hunting buddy in it
+  #   (seen, found hiding or heard) as occupied, unless they're in your group
   # @return [Boolean] whether a room was found
   def search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
     echo "Aggregated hunting room list: #{rooms_to_search}" if $debug_mode_hunting
@@ -653,16 +652,22 @@ class HuntingBuddy
                              if data.grep(/vague silhouette|You notice \w+, who is|see signs that/).any?
                                pause
                                waitrt?
+                               # Someone is hidden here: only a buddy who spoke up is welcome, and
+                               # not even that with avoid_buddies.
+                               return false if avoid_buddies
+
                                return UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
                              end
                              fput("say #{@settings.empty_hunting_room_messages.sample}") unless @settings.empty_hunting_room_messages.empty?
                              room_is_empty = true
                              20.times do |_|
                                pause 0.5
-                               return true if UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               buddy_spoke = UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return !avoid_buddies if buddy_spoke
                                return false if Flags['hunting-buddy-room-check']
 
-                               room_is_empty = (DRRoom.pcs - DRRoom.group_members - UserVars.friends).empty?
+                               welcome = avoid_buddies ? DRRoom.group_members : DRRoom.group_members + UserVars.friends
+                               room_is_empty = (DRRoom.pcs - welcome).empty?
                              end
                              room_is_empty
                            when /You're not in any condition to be searching around/i

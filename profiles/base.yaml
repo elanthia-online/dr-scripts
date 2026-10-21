@@ -619,8 +619,8 @@ priority_skills_lower_limit: 6
 #   disable_room_descriptions: per-hunt override of hunting_disable_room_descriptions
 #   full_waiting_room:        room to wait in between room searches (default: safe_room)
 #   prefer_buddies:           look first for a room one of your hunting_buddies is in
-#   avoid_buddies:            don't take a room just because a hunting buddy is visible in it
-#                             (a buddy found hiding or heard speaking still lets it take the room)
+#   avoid_buddies:            treat a room with a hunting buddy in it (seen, found hiding or heard)
+#                             as occupied, unless the buddy is in your group
 hunting_info:
 # Global toggle to cause hunting buddy to stop a hunt short when the burgle
 # timer hits. Note there is also a per-hunt toggle that goes in hunting_info
