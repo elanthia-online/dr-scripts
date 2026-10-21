@@ -16,6 +16,18 @@ class HuntingBuddy
     def register_plugin(plugin)
       @registered_plugins << plugin
     end
+
+    # Loads every hunting-buddy-plugin-*.rb in dir, in name order. A plugin
+    # that fails to load is reported and skipped; the others still load.
+    def load_plugins(dir = File.join(SCRIPT_DIR, 'custom'))
+      Dir.glob(File.join(dir, 'hunting-buddy-plugin-*.rb')).sort.each do |plugin_file|
+        begin
+          load plugin_file
+        rescue StandardError, ScriptError => e
+          echo "Failed to load hunting-buddy plugin #{File.basename(plugin_file)}: #{e.message}"
+        end
+      end
+    end
   end
 
   attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
@@ -747,14 +759,7 @@ before_dying do
   $HUNTING_BUDDY&.send(:notify_hook, :cleanup, $HUNTING_BUDDY) rescue nil
 end
 
-# Load plugins from custom directory
-Dir.glob(File.join(SCRIPT_DIR, 'custom', 'hunting-buddy-plugin-*.rb')).sort.each do |plugin_file|
-  begin
-    load plugin_file
-  rescue => e
-    echo "Failed to load hunting-buddy plugin #{File.basename(plugin_file)}: #{e.message}"
-  end
-end
+HuntingBuddy.load_plugins
 
 $HUNTING_BUDDY = HuntingBuddy.new
 $HUNTING_BUDDY.main
