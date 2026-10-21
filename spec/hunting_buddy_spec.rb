@@ -821,6 +821,7 @@ RSpec.describe HuntingBuddy do
       'You say, "Is anyone hunting here?"',
       'You politely say, "Is anyone hunting here?"',
       'You ask, "Is anyone hunting here?"',
+      '  You say, "Is anyone hunting here?"',
       %(<pushStream id="talk"/><preset id='speech'>You politely say</preset>, "Hello."),
       %(<popStream/><preset id='speech'>You politely say</preset>, "Hello."),
       %(<preset id='speech'>You say, "Is anyone hunting here?"</preset>)
@@ -838,12 +839,20 @@ RSpec.describe HuntingBuddy do
       'Bob exclaims, "Mine!"',
       'Bob says to you, "Go away."',
       'Someone says, "boo"',
+      'Youngblood says, "This is my room."',
       %(<pushStream id="talk"/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello."),
       %(<popStream/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
     ].each do |answer|
       it "leaves the room when someone else speaks: #{answer}" do
         expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: answer)).to be false
       end
+    end
+
+    it 'leaves the room on someone else speaking even when our own echo is a Saga preset line' do
+      own = %(<preset id='speech'>You politely say</preset>, "Hello.")
+      other = %(<preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
+
+      expect(room_judged_empty?(say_echo: own, heard: other)).to be false
     end
   end
 end
