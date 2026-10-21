@@ -351,112 +351,117 @@ class HuntingBuddy
     plugin_result = fire_hook(:find_room, self, zones_to_search, waiting_room)
     return plugin_result unless plugin_result.nil?
 
-    # NOTE: The `return` statements inside this block exit find_hunting_room?
-    # on the first iteration, so `any?` never checks beyond the first zone.
-    # This is a pre-existing bug -- only the first zone in the list is ever
-    # searched. Fixing it requires removing the inner `return` keywords and
-    # letting `any?` evaluate the block's truthy/falsy result per iteration.
-    # rubocop:disable Lint/UnreachableLoop
-    return zones_to_search.any? do |zone_to_search|
-      escort_info = @escort_zones[zone_to_search]
-      if escort_info
-        DRCT.walk_to(escort_info['base'])
-        DRC.wait_for_script_to_complete('bescort', [escort_info['area'], escort_info['enter']])
-        @exit = [escort_info['area'], 'exit']
-        return true
-      else
-        @exit = nil
-        rooms_to_search = []
-
-        # After grabbing the list of hunting zones specified in the user's yaml, we'll iterate
-        # through each and aggregate the room numbers from base-hunting.yaml.
-        # NOTE: Be sure to preserve the order we aggregate the room numbers to match the order
-        # of the :zone: list in the yaml. Users expect the :zone: list to be a priority order.
-        # We also allow custom hunting zones specified in Charname-setup.yaml.
-        zones_to_search.each do |zone|
-          if @settings.custom_hunting_zones["#{zone}"]
-            echo "Overriding base-hunting.yaml's #{zone}" if @hunting_zones["#{zone}"]
-            rooms_to_search += @settings.custom_hunting_zones["#{zone}"]
-          else
-            if @hunting_zones["#{zone}"]
-              rooms_to_search += @hunting_zones["#{zone}"]
-            else
-              echo "Unable to find hunting zone: #{zone}"
-            end
-          end
-        end
-
-        echo "Aggregated hunting room list: #{rooms_to_search}" if $debug_mode_hunting
-
-        # Make sure our aggregated room list isn't empty. If it is, warn and don't go hunting.
-        if rooms_to_search.empty?
-          DRC.message("Unable to look up any hunting rooms for your yaml-specified hunting :zone: list.")
-          DRC.message("Check your yaml syntax and ensure your :zone:'s name matches base-hunting.yaml or your custom zone name.")
-          exit
-        end
-
-        return DRCT.find_empty_room(rooms_to_search, waiting_room,
-                                    lambda do |_search_attempt|
-                                      # Skip room if has more people than your max limit
-                                      return false if DRRoom.pcs.size > @hunting_buddies_max
-                                      # Skip if one of your nemesis is in the room
-                                      return false if (DRRoom.pcs & UserVars.hunting_nemesis).any?
-
-                                      unless avoid_buddies
-                                        # Continue if one of your friends is in the room
-                                        return true if (DRRoom.pcs & UserVars.friends).any?
-                                      end
-                                      # Skip if anyone not in your group is in the room
-                                      return false if (DRRoom.pcs - DRRoom.group_members).any?
-
-                                      # No visible friends in the room and no visible people
-                                      UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
-                                      Flags.add('hunting-buddy-room-check',
-                                                # someone speaks (but not our own "You say, " echo
-                                                # of the empty_hunting_room_messages line)
-                                                /(?<!You )\bsays?, /,
-                                                /You hear/,
-                                                # someone attacks from the shadows
-                                                /Someone snipes a/,
-                                                /leaps from hiding and ambushes/,
-                                                # someone is already hunting here
-                                                /[A-Z][a-z]+ begins to advance/,
-                                                /[A-Z][a-z]+ (jabs|slices|draws|chops|sweeps|lunges|thrusts|claws|gouges|elbows|kicks|punches|knees|shoves|lobs|throws|hurls|fires|shoots|feints) (a|an|some|his|her|their)/)
-                                      case DRC.bput('search', 'roundtime', "You're not in any condition to be searching around")
-                                      when /roundtime/i
-                                        data = reget(40).reverse.take_while { |x| x !~ /You search around/ }
-                                        if data.grep(/vague silhouette|You notice \w+, who is|see signs that/).any?
-                                          pause
-                                          waitrt?
-                                          return UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
-                                        end
-                                        fput("say #{@settings.empty_hunting_room_messages.sample}") unless @settings.empty_hunting_room_messages.empty?
-                                        room_is_empty = true
-                                        20.times do |_|
-                                          pause 0.5
-                                          return true if UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
-                                          return false if Flags['hunting-buddy-room-check']
-
-                                          room_is_empty = (DRRoom.pcs - DRRoom.group_members - UserVars.friends).empty?
-                                        end
-                                        room_is_empty
-                                      when /You're not in any condition to be searching around/i
-                                        DRC.message("***STATUS*** You're too injured to hunt!")
-                                        @stop_hunting = true
-                                        @stopped_for_bleeding = bleeding?
-                                        # Ironically, return true so the search for a suitable hunting room
-                                        # stops and then the hunting buddy loop will detect that you need help
-                                        # sooner rather than later.
-                                        true
-                                      end
-                                    end,
-                                    @settings.hunting_room_min_mana,
-                                    @settings.hunting_room_strict_mana,
-                                    @settings.hunting_room_max_searches,
-                                    prefer_buddies)
+    # Zones are tried in :zone: list order, which users treat as a priority
+    # order. Consecutive ordinary zones are pooled into one room search (their
+    # rooms kept in list order); an escort zone is entered only if the ordinary
+    # zones listed before it had no suitable room. Entering an escort zone
+    # always succeeds, so zones listed after one are never reached.
+    rooms_to_search = []
+    zones_to_search.each do |zone|
+      escort_info = @escort_zones[zone]
+      unless escort_info
+        rooms_to_search += hunting_zone_rooms(zone)
+        next
       end
+
+      return true if !rooms_to_search.empty? && search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
+
+      rooms_to_search = []
+      DRCT.walk_to(escort_info['base'])
+      DRC.wait_for_script_to_complete('bescort', [escort_info['area'], escort_info['enter']])
+      @exit = [escort_info['area'], 'exit']
+      return true
     end
-    # rubocop:enable Lint/UnreachableLoop
+
+    # Make sure our aggregated room list isn't empty. If it is, warn and don't go hunting.
+    if rooms_to_search.empty?
+      DRC.message("Unable to look up any hunting rooms for your yaml-specified hunting :zone: list.")
+      DRC.message("Check your yaml syntax and ensure your :zone:'s name matches base-hunting.yaml or your custom zone name.")
+      exit
+    end
+
+    search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
+  end
+
+  # Room ids for one hunting zone: the custom_hunting_zones entry from your
+  # setup yaml if there is one, otherwise the base-hunting.yaml zone.
+  def hunting_zone_rooms(zone)
+    if @settings.custom_hunting_zones["#{zone}"]
+      echo "Overriding base-hunting.yaml's #{zone}" if @hunting_zones["#{zone}"]
+      @settings.custom_hunting_zones["#{zone}"]
+    elsif @hunting_zones["#{zone}"]
+      @hunting_zones["#{zone}"]
+    else
+      echo "Unable to find hunting zone: #{zone}"
+      []
+    end
+  end
+
+  # Walks the given rooms looking for one to hunt in, using the
+  # hunting_buddies/hunting_nemesis rules and the empty-room check.
+  def search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
+    @exit = nil
+    echo "Aggregated hunting room list: #{rooms_to_search}" if $debug_mode_hunting
+
+    DRCT.find_empty_room(rooms_to_search, waiting_room,
+                         lambda do |_search_attempt|
+                           # Skip room if has more people than your max limit
+                           return false if DRRoom.pcs.size > @hunting_buddies_max
+                           # Skip if one of your nemesis is in the room
+                           return false if (DRRoom.pcs & UserVars.hunting_nemesis).any?
+
+                           unless avoid_buddies
+                             # Continue if one of your friends is in the room
+                             return true if (DRRoom.pcs & UserVars.friends).any?
+                           end
+                           # Skip if anyone not in your group is in the room
+                           return false if (DRRoom.pcs - DRRoom.group_members).any?
+
+                           # No visible friends in the room and no visible people
+                           UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
+                           Flags.add('hunting-buddy-room-check',
+                                     # someone speaks (but not our own "You say, " echo
+                                     # of the empty_hunting_room_messages line)
+                                     /(?<!You )\bsays?, /,
+                                     /You hear/,
+                                     # someone attacks from the shadows
+                                     /Someone snipes a/,
+                                     /leaps from hiding and ambushes/,
+                                     # someone is already hunting here
+                                     /[A-Z][a-z]+ begins to advance/,
+                                     /[A-Z][a-z]+ (jabs|slices|draws|chops|sweeps|lunges|thrusts|claws|gouges|elbows|kicks|punches|knees|shoves|lobs|throws|hurls|fires|shoots|feints) (a|an|some|his|her|their)/)
+                           case DRC.bput('search', 'roundtime', "You're not in any condition to be searching around")
+                           when /roundtime/i
+                             data = reget(40).reverse.take_while { |x| x !~ /You search around/ }
+                             if data.grep(/vague silhouette|You notice \w+, who is|see signs that/).any?
+                               pause
+                               waitrt?
+                               return UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                             end
+                             fput("say #{@settings.empty_hunting_room_messages.sample}") unless @settings.empty_hunting_room_messages.empty?
+                             room_is_empty = true
+                             20.times do |_|
+                               pause 0.5
+                               return true if UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return false if Flags['hunting-buddy-room-check']
+
+                               room_is_empty = (DRRoom.pcs - DRRoom.group_members - UserVars.friends).empty?
+                             end
+                             room_is_empty
+                           when /You're not in any condition to be searching around/i
+                             DRC.message("***STATUS*** You're too injured to hunt!")
+                             @stop_hunting = true
+                             @stopped_for_bleeding = bleeding?
+                             # Ironically, return true so the search for a suitable hunting room
+                             # stops and then the hunting buddy loop will detect that you need help
+                             # sooner rather than later.
+                             true
+                           end
+                         end,
+                         @settings.hunting_room_min_mana,
+                         @settings.hunting_room_strict_mana,
+                         @settings.hunting_room_max_searches,
+                         prefer_buddies)
   end
 
   # ------------------------------------------------------------
