@@ -1569,6 +1569,15 @@ RSpec.describe HuntingBuddy do
       expect { run_main(hunt_info('before' => 'prep now')) }.to raise_error(NoMethodError)
     end
 
+    it 'treats only a missing action list as empty: a scalar or false still fails in every runner' do
+      ['prep now', false].each do |bad|
+        expect { buddy.execute_actions(bad) }.to raise_error(NoMethodError)
+        expect { buddy.execute_nonblocking_actions(bad) }.to raise_error(NoMethodError)
+        expect { buddy.stop_actions(bad) }.to raise_error(NoMethodError)
+      end
+      expect { buddy.execute_actions(nil) }.not_to raise_error
+    end
+
     it 'treats a hunt with no before, during or after keys as having none' do
       run_main({ :zone => 'rats', :duration => 30, 'args' => [] })
 
