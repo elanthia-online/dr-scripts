@@ -226,7 +226,7 @@ class HuntingBuddy
       # We need to find a hunting room when we start our first hunt
       # or on subsequent hunts if where we currently are isn't where
       # that next hunt wants to be. These checks help reduce moving
-      # around if it's be fine for us to start the next hunt in same spot.
+      # around if it's fine for us to start the next hunt in the same spot.
       if index == 0 || !hunting_zones.include?(current_hunting_zone)
         next unless find_hunting_room?(hunting_zones, waiting_room, prefer_buddies, avoid_buddies)
       end
@@ -336,8 +336,8 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # Returns the hunting zone that you are currently in.
-  # If you aren't in a known hunting zone then returns nil.
+  # Returns the name of the hunting zone (custom_hunting_zones or
+  # base-hunting.yaml) that the room is in, or nil if it is in none.
   def current_hunting_zone(room_id = Room.current.id)
     # custom_hunting_zones win over a base-hunting.yaml zone of the same name,
     # as they do when searching for a room.
@@ -479,7 +479,7 @@ class HuntingBuddy
   end
 
   # Identify if at least one skill in the given list has a learning rate
-  # at or below the desired threshold for their skillset.
+  # at or below stop_on_low_threshold (one threshold for every skillset).
   def should_stop_for_low_skills?(stop_on_low_skills = [])
     stop_on_low_skills && !stop_on_low_skills.empty? && stop_on_low_skills.flatten.any? do |skill|
       DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
@@ -529,6 +529,7 @@ class HuntingBuddy
   end
 
   # What is the learning rate low threshold at which point we should stop hunting?
+  # stop_on_low_threshold applies to every skillset, so the skillset is unused.
   def get_skillset_exp_low_threshold(_skillset)
     @stop_on_low_threshold
   end
@@ -553,9 +554,10 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # Have you reached your lower bound for box count?
-  # Designed to be called before combat-trainer starts
-  # as a way to avoid hunting if you already have enough boxes.
+  # Do you still need boxes? True while your box count is at or below
+  # box_hunt_minimum. Called before combat-trainer starts so a hunt with
+  # boxes: true is skipped once you have more boxes than that. With
+  # box_hunt_minimum blank this is always false, so such hunts are skipped.
   def need_boxes?
     return false unless @settings.box_hunt_minimum
 
@@ -596,7 +598,7 @@ class HuntingBuddy
     start_script('combat-trainer', args)
 
     # This pause "fixes" a race condition with combat starting and the monitors below trying to kill
-    # it before it can get the 'stop' comand.
+    # it before it can get the 'stop' command.
     # Wait 30 seconds or until combat trainer is all ready to roll
     start = Time.now
     pause until Time.now - start > 30 || $COMBAT_TRAINER.running
@@ -658,13 +660,13 @@ class HuntingBuddy
         break
       end
       if Flags['hunting-buddy-familiar-drag'] && @stop_on_familiar_drag
-        DRC.message("***STATUS*** Stopping because familiar drug while stunned")
+        DRC.message("***STATUS*** Stopping because your familiar dragged you away while stunned")
         Flags.reset('hunting-buddy-familiar-drag')
         @hunt_stop_reason = :familiar_drag
         break
       end
       if Flags['hunting-buddy-familiar-drag'] && !@stop_on_familiar_drag
-        DRC.message("***STATUS*** Heading back to room because familiar drug while stunned")
+        DRC.message("***STATUS*** Heading back to the hunting room because your familiar dragged you away while stunned")
         pause_script('combat-trainer') if Script.running?('combat-trainer')
         DRCT.walk_to(hunting_room)
         fput('flag description off') if @disable_room_descriptions
