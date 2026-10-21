@@ -226,9 +226,10 @@ RSpec.describe DRYamlValidator do
       expect($warn_msgs).to be_empty
     end
 
-    it 'does not warn for the default prehunt_buffs name, since prehunt buffs are optional' do
+    it 'does not warn for the default name, or a blank/false value meaning it, since prehunt buffs are optional' do
       check(prehunt_buff_waggle: 'prehunt_buffs')
       check(prehunt_buff_waggle: nil)
+      check(prehunt_buff_waggle: false)
       expect($warn_msgs).to be_empty
     end
   end

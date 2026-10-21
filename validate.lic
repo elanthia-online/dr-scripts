@@ -1145,7 +1145,8 @@ class DRYamlValidator
   # purpose (the default prehunt_buffs set is optional).
   def assert_that_prehunt_buff_waggle_set_exists(settings)
     waggle = settings.prehunt_buff_waggle
-    return if waggle.nil? || waggle == 'prehunt_buffs'
+    # A blank or false value means the default set, as in hunting-buddy.
+    return if !waggle || waggle == 'prehunt_buffs'
     return if (settings.waggle_sets || {})[waggle]
 
     warn("prehunt_buff_waggle is #{waggle}, but you have no #{waggle} waggle set, so no prehunt buffs will be cast.")
