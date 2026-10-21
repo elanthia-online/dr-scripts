@@ -1078,4 +1078,60 @@ RSpec.describe HuntingBuddy do
       expect(buddy.current_hunting_zone(3)).to eq('goblins')
     end
   end
+
+  # ===========================================================================
+  # main: staying in the room between hunts in the same zone
+  # ===========================================================================
+
+  describe '#main room search between hunts' do
+    let(:buddy) { HuntingBuddy.allocate }
+
+    # Runs two identical hunts while standing in `room` and returns how many
+    # times hunting-buddy searched for a room (1 means it stayed for hunt 2).
+    def searches_for(zones, room, custom, base_zones = { 'rats' => [1, 2], 'brewery' => [3, 4], 'brewery_alias' => [3, 4] })
+      buddy.instance_variable_set(:@hunting_zones, base_zones)
+      buddy.instance_variable_set(:@escort_zones, {})
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: custom, sell_loot_skip_bank: true, safe_room: 1, cyclic_no_release: []))
+      info = { :zone => zones, 'args' => [], 'before' => [], 'after' => [], 'during' => [] }
+      buddy.instance_variable_set(:@hunting_info, [info.dup, info.dup])
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: room))
+      %i[check_bundling_rope check_prehunt_buffs hunt execute_actions execute_nonblocking_actions stop_actions].each { |m| allow(buddy).to receive(m) }
+      allow(buddy).to receive_messages(encumbered?: false, should_stop_for_high_skills?: false, should_stop_for_low_skills?: false)
+      allow(DRC).to receive(:bput).and_return('Stow what?')
+      allow(DRC).to receive(:message)
+      allow(DRC).to receive_messages(right_hand: nil, left_hand: nil)
+      allow(DRCA).to receive(:release_cyclics)
+      allow(DRCT).to receive(:walk_to)
+      allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
+      count = 0
+      allow(buddy).to receive(:find_hunting_room?) { count += 1 }
+      buddy.main
+      count
+    end
+
+    it 'stays in a custom zone room' do
+      expect(searches_for(['my_spot'], 500, { 'my_spot' => [500] })).to eq(1)
+    end
+
+    it 'stays in a base zone room that a differently named custom zone also lists' do
+      expect(searches_for(['brewery'], 3, { 'my_brewery' => [3] })).to eq(1)
+    end
+
+    it 'stays in a room that belongs to two base zones, whichever the hunt names' do
+      expect(searches_for(['brewery_alias'], 3, {})).to eq(1)
+      expect(searches_for(['brewery'], 3, {})).to eq(1)
+    end
+
+    it 'uses the base rooms for a custom entry with no rooms' do
+      expect(searches_for(['brewery'], 3, { 'brewery' => nil })).to eq(1)
+    end
+
+    it 'stays when two custom zones overlap and the hunt names the second' do
+      expect(searches_for(['spot_b'], 500, { 'spot_a' => [500, 501], 'spot_b' => [500] })).to eq(1)
+    end
+
+    it 'searches again when the next hunt is in a zone you are not in' do
+      expect(searches_for(['rats'], 3, {})).to eq(2)
+    end
+  end
 end
