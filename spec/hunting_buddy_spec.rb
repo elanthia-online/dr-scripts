@@ -950,7 +950,7 @@ RSpec.describe HuntingBuddy do
         def after_hunt(_buddy, hunting_room:, counter:) = @calls << [:after_hunt, hunting_room, counter]
       end)
 
-      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+      buddy.hunt(HuntingBuddy::HuntPlan.new(args: [], duration: 30))
 
       expect(calls).to eq([[:before_hunt, 100], [:after_hunt, 100, 0]])
       expect(buddy).not_to have_received(:start_script)
@@ -960,7 +960,7 @@ RSpec.describe HuntingBuddy do
       buddy.hunt_stop_reason = :duration
       buddy.stop_hunting
 
-      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+      buddy.hunt(HuntingBuddy::HuntPlan.new(args: [], duration: 30))
 
       expect(buddy.hunt_stop_reason).to eq(:manual_stop)
     end
@@ -972,7 +972,7 @@ RSpec.describe HuntingBuddy do
       end)
       buddy.hunt_stop_reason = :duration
 
-      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+      buddy.hunt(HuntingBuddy::HuntPlan.new(args: [], duration: 30))
 
       expect(buddy.hunt_stop_reason).to be_nil
     end
@@ -1139,7 +1139,7 @@ RSpec.describe HuntingBuddy do
       allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = OpenStruct.new(running: false) }
       allow(buddy).to receive_messages(pause: nil, clear: nil, fput: nil, yiamura_all_done?: true)
 
-      buddy.hunt([], nil, nil, [skills], nil, nil, nil, nil)
+      buddy.hunt(HuntingBuddy::HuntPlan.new(args: [], stop_on_low_skills: [skills]))
 
       expect(messages).to include('***STATUS*** Stopping because skills dropped below learning threshold: Locksmithing, Outfitting')
     ensure
@@ -1209,7 +1209,7 @@ RSpec.describe HuntingBuddy do
       allow(buddy).to receive(:check_prehunt_buffs)
       allow(buddy).to receive_messages(need_boxes?: true, encumbered?: false, current_hunting_zone: 'rats')
       allow(buddy).to receive(:find_hunting_room?) { |zones, *_| events << [:find_room, zones] && true }
-      allow(buddy).to receive(:hunt) { |args, *_| events << [:hunt, args] }
+      allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] }
       allow(buddy).to receive(:start_script) { |name, _args| events << [:start, name] && running << name }
       allow(buddy).to receive(:stop_script) { |name| events << [:stop, name] && running.delete(name) }
       allow(Script).to receive(:running?) { |name| running.include?(name) }
@@ -1276,7 +1276,7 @@ RSpec.describe HuntingBuddy do
     end
 
     it 'stops all hunting, running after, when stop_hunting was called during an earlier hunt' do
-      allow(buddy).to receive(:hunt) { |args, *_| events << [:hunt, args] && buddy.stop_hunting }
+      allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] && buddy.stop_hunting }
 
       run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']))
 
@@ -1444,6 +1444,45 @@ RSpec.describe HuntingBuddy do
       buddy.check_prehunt_buffs
 
       expect(DRCT).not_to have_received(:walk_to)
+    end
+  end
+
+  describe HuntingBuddy::HuntPlan do
+    let(:settings) { OpenStruct.new(safe_room: 851, hunting_disable_room_descriptions: true) }
+
+    it 'reads the boxes and moons aliases as well as the long names' do
+      expect(described_class.from_info({ 'boxes' => true, 'moons' => true }, settings))
+        .to have_attributes(stop_on_boxes: true, stop_on_no_moons: true)
+      expect(described_class.from_info({ 'stop_on_boxes' => true, 'stop_on_moons' => true }, settings))
+        .to have_attributes(stop_on_boxes: true, stop_on_no_moons: true)
+    end
+
+    it 'turns a single zone into a list and drops a missing one' do
+      expect(described_class.from_info({ zone: 'rats' }, settings).hunting_zones).to eq(['rats'])
+      expect(described_class.from_info({ zone: %w[rats goblins] }, settings).hunting_zones).to eq(%w[rats goblins])
+      expect(described_class.from_info({}, settings).hunting_zones).to eq([])
+    end
+
+    it 'waits in safe_room unless full_waiting_room is given' do
+      expect(described_class.from_info({}, settings).waiting_room).to eq(851)
+      expect(described_class.from_info({ 'full_waiting_room' => 42 }, settings).waiting_room).to eq(42)
+    end
+
+    it 'lets a hunt override hunting_disable_room_descriptions, including with false' do
+      expect(described_class.from_info({}, settings).disable_room_descriptions).to be true
+      expect(described_class.from_info({ 'disable_room_descriptions' => false }, settings).disable_room_descriptions).to be false
+    end
+
+    it 'maps the remaining keys to their fields' do
+      info = { :duration => 30, 'args' => ['x'], 'before' => ['b'], 'after' => ['a'], 'during' => ['d'],
+               'stop_on' => ['Evasion'], 'stop_on_low' => ['Forging'], 'stop_on_encumbrance' => 3,
+               'stop_on_burgle_cooldown' => true, 'prefer_buddies' => true, 'avoid_buddies' => false }
+
+      expect(described_class.from_info(info, settings)).to have_attributes(
+        duration: 30, args: ['x'], before_actions: ['b'], after_actions: ['a'], during_actions: ['d'],
+        stop_on_high_skills: ['Evasion'], stop_on_low_skills: ['Forging'], stop_on_encumbrance: 3,
+        stop_on_burgle_cooldown: true, prefer_buddies: true, avoid_buddies: false
+      )
     end
   end
 end

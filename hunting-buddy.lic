@@ -33,6 +33,37 @@ class HuntingBuddy
   attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
   attr_accessor :my_room_claim, :need_relocation, :stopped_for_bleeding, :hunt_stop_reason
 
+  # One hunting_info entry with its key aliases and defaults resolved. The
+  # field names (and order) are what hunting-buddy prints in debug mode.
+  HuntPlan = Struct.new(
+    :args, :before_actions, :after_actions, :during_actions, :duration,
+    :stop_on_high_skills, :stop_on_low_skills, :stop_on_boxes, :stop_on_no_moons,
+    :stop_on_encumbrance, :stop_on_burgle_cooldown, :disable_room_descriptions,
+    :hunting_zones, :waiting_room, :prefer_buddies, :avoid_buddies,
+    keyword_init: true
+  ) do
+    def self.from_info(info, settings)
+      new(
+        args: info['args'], # list of args to pass to combat-trainer
+        before_actions: info['before'], # list of script names
+        after_actions: info['after'], # list of script names
+        during_actions: info['during'], # list of script names
+        duration: info[:duration], # number of minutes to hunt
+        stop_on_high_skills: info['stop_on'], # list of skill names
+        stop_on_low_skills: info['stop_on_low'], # list of skill names
+        stop_on_boxes: info['boxes'] || info['stop_on_boxes'], # boolean
+        stop_on_no_moons: info['moons'] || info['stop_on_moons'], # boolean
+        stop_on_encumbrance: info['stop_on_encumbrance'], # numeric threshold
+        stop_on_burgle_cooldown: info['stop_on_burgle_cooldown'], # boolean
+        disable_room_descriptions: info.key?('disable_room_descriptions') ? info['disable_room_descriptions'] : settings.hunting_disable_room_descriptions,
+        hunting_zones: [info[:zone]].flatten.compact, # string or list of hunting zones
+        waiting_room: info['full_waiting_room'] || settings.safe_room, # room id
+        prefer_buddies: info['prefer_buddies'], # boolean
+        avoid_buddies: info['avoid_buddies'] # boolean
+      )
+    end
+  end
+
   private
 
   # Fire a hook on all registered plugins.
@@ -142,54 +173,25 @@ class HuntingBuddy
     DRC.wait_for_script_to_complete('restock') unless @settings.sell_loot_skip_bank
 
     @hunting_info.each_with_index do |info, index|
-      args = info['args'] # list of args to pass to combat-trainer
-      before_actions = info['before'] # list of script names
-      after_actions = info['after'] # list of script names
-      during_actions = info['during'] # list of script names
-      duration = info[:duration] # number of minutes to hunt
-      stop_on_high_skills = info['stop_on'] # list of skill names
-      stop_on_low_skills = info['stop_on_low'] # list of skill names
-      stop_on_boxes = info['boxes'] || info['stop_on_boxes'] # boolean
-      stop_on_no_moons = info['moons'] || info['stop_on_moons'] # boolean
-      stop_on_encumbrance = info['stop_on_encumbrance'] # numeric threshold
-      stop_on_burgle_cooldown = info['stop_on_burgle_cooldown'] # boolean
-      @disable_room_descriptions = info.key?('disable_room_descriptions') ? info['disable_room_descriptions'] : @settings.hunting_disable_room_descriptions
-      hunting_zones = [info[:zone]].flatten.compact # string or list of hunting zones
-      waiting_room = info['full_waiting_room'] || @settings.safe_room # room id
-      prefer_buddies = info['prefer_buddies'] # boolean
-      avoid_buddies = info['avoid_buddies'] # boolean
+      plan = HuntPlan.from_info(info, @settings)
+      @disable_room_descriptions = plan.disable_room_descriptions
 
       if $debug_mode_hunting
         echo("Processing hunting info number #{index + 1}")
-        echo("  args: #{args}")
-        echo("  before_actions: #{before_actions}")
-        echo("  after_actions: #{after_actions}")
-        echo("  during_actions: #{during_actions}")
-        echo("  duration: #{duration}")
-        echo("  stop_on_high_skills: #{stop_on_high_skills}")
-        echo("  stop_on_low_skills: #{stop_on_low_skills}")
-        echo("  stop_on_boxes: #{stop_on_boxes}")
-        echo("  stop_on_no_moons: #{stop_on_no_moons}")
-        echo("  stop_on_encumbrance: #{stop_on_encumbrance}")
-        echo("  stop_on_burgle_cooldown: #{stop_on_burgle_cooldown}")
-        echo("  disable_room_descriptions: #{@disable_room_descriptions}")
-        echo("  hunting_zones: #{hunting_zones}")
-        echo("  waiting_room: #{waiting_room}")
-        echo("  prefer_buddies: #{prefer_buddies}")
-        echo("  avoid_buddies: #{avoid_buddies}")
+        plan.each_pair { |name, value| echo("  #{name}: #{value}") }
       end
 
       if @stop_hunting
-        skip_hunt("***STATUS*** Stopping all hunting because manual intervention", during_actions, after_actions)
+        skip_hunt("***STATUS*** Stopping all hunting because manual intervention", plan.during_actions, plan.after_actions)
         break
       end
 
       if @stopped_for_bleeding
-        stop_for_bleeding(during_actions, after_actions)
+        stop_for_bleeding(plan.during_actions, plan.after_actions)
         break
       end
 
-      if stop_on_boxes && !need_boxes?
+      if plan.stop_on_boxes && !need_boxes?
         DRC.message("***STATUS*** Skipping hunt because have enough boxes")
         # This purposefully does not perform any actions as an efficiency
         # to move into the next hunt as quickly as possible.
@@ -197,25 +199,25 @@ class HuntingBuddy
       end
 
       # Execute scripts to run before the hunt
-      execute_actions(before_actions)
+      execute_actions(plan.before_actions)
 
-      if stop_on_no_moons && !DRCMM.moons_visible?
-        skip_hunt("***STATUS*** Skipping hunt because no moons", during_actions, after_actions)
+      if plan.stop_on_no_moons && !DRCMM.moons_visible?
+        skip_hunt("***STATUS*** Skipping hunt because no moons", plan.during_actions, plan.after_actions)
         next
       end
 
-      if encumbered?(stop_on_encumbrance)
-        skip_hunt("***STATUS*** Skipping hunt because encumbrance: #{DRStats.encumbrance}, threshold: #{stop_on_encumbrance}", during_actions, after_actions)
+      if encumbered?(plan.stop_on_encumbrance)
+        skip_hunt("***STATUS*** Skipping hunt because encumbrance: #{DRStats.encumbrance}, threshold: #{plan.stop_on_encumbrance}", plan.during_actions, plan.after_actions)
         next
       end
 
-      if should_stop_for_high_skills?(stop_on_high_skills)
-        skip_hunt("***STATUS*** Skipping hunt because skills reached learning threshold: #{stop_on_high_skills}", during_actions, after_actions)
+      if should_stop_for_high_skills?(plan.stop_on_high_skills)
+        skip_hunt("***STATUS*** Skipping hunt because skills reached learning threshold: #{plan.stop_on_high_skills}", plan.during_actions, plan.after_actions)
         next
       end
 
-      if should_stop_for_low_skills?(stop_on_low_skills)
-        skip_hunt("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{get_skills_below_low_threshold(stop_on_low_skills).join(", ")}", during_actions, after_actions)
+      if should_stop_for_low_skills?(plan.stop_on_low_skills)
+        skip_hunt("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{get_skills_below_low_threshold(plan.stop_on_low_skills).join(", ")}", plan.during_actions, plan.after_actions)
         next
       end
 
@@ -225,31 +227,22 @@ class HuntingBuddy
       # or on subsequent hunts if where we currently are isn't where
       # that next hunt wants to be. These checks help reduce moving
       # around if it's fine for us to start the next hunt in the same spot.
-      if index == 0 || !hunting_zones.include?(current_hunting_zone)
-        next unless find_hunting_room?(hunting_zones, waiting_room, prefer_buddies, avoid_buddies)
+      if index == 0 || !plan.hunting_zones.include?(current_hunting_zone)
+        next unless find_hunting_room?(plan.hunting_zones, plan.waiting_room, plan.prefer_buddies, plan.avoid_buddies)
       end
 
       if @stopped_for_bleeding
-        stop_for_bleeding(during_actions, after_actions)
+        stop_for_bleeding(plan.during_actions, plan.after_actions)
         break
       end
 
       # Execute background scripts to run during the hunt
-      execute_nonblocking_actions(during_actions)
+      execute_nonblocking_actions(plan.during_actions)
 
-      hunt(
-        args,
-        duration,
-        stop_on_high_skills,
-        stop_on_low_skills,
-        stop_on_boxes,
-        stop_on_no_moons,
-        stop_on_encumbrance,
-        stop_on_burgle_cooldown
-      )
+      hunt(plan)
 
       # Stop background scripts that ran during the hunt
-      stop_actions(during_actions)
+      stop_actions(plan.during_actions)
 
       DRCI.stow_hand('left') unless !DRC.right_hand || !DRC.left_hand
       while DRC.bput('stow feet', /You pick up/, /Stow what/) =~ /You pick up/
@@ -259,7 +252,7 @@ class HuntingBuddy
       DRCA.release_cyclics(@settings.cyclic_no_release)
 
       # Execute scripts to run after the hunt
-      execute_actions(after_actions)
+      execute_actions(plan.after_actions)
     end
 
     DRC.message("***STATUS*** Returning to safe room: #{@settings.safe_room}")
@@ -586,7 +579,7 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  def hunt(args, duration, stop_on_high_skills, stop_on_low_skills, stop_on_boxes, stop_on_no_moons, stop_on_encumbrance, stop_on_burgle_cooldown)
+  def hunt(plan)
     $COMBAT_TRAINER = nil
     @hunt_stop_reason = nil
     hunting_room = Room.current.id
@@ -603,12 +596,12 @@ class HuntingBuddy
 
     Flags.add('hunting-buddy-familiar-drag', /^Your .+ grabs ahold of you and drags you .+, out of combat.+$/)
     Flags.add('hunting-buddy-stop-to-burgle', /^A tingling on the back of your neck draws attention to itself by disappearing, making you believe the heat is off from your last break in/)
-    DRC.message("***STATUS*** Beginning hunt '#{args}' for '#{duration}' minutes")
+    DRC.message("***STATUS*** Beginning hunt '#{plan.args}' for '#{plan.duration}' minutes")
 
     fput('flag description off') if @disable_room_descriptions
 
     DRC.verify_script('combat-trainer')
-    start_script('combat-trainer', args)
+    start_script('combat-trainer', plan.args)
 
     # This pause "fixes" a race condition with combat starting and the monitors below trying to kill
     # it before it can get the 'stop' command.
@@ -635,23 +628,23 @@ class HuntingBuddy
         @hunt_stop_reason = :bleeding
         break
       end
-      if stop_on_boxes && over_box_limit?
+      if plan.stop_on_boxes && over_box_limit?
         DRC.message("***STATUS*** Stopping hunt because have enough boxes")
         @hunt_stop_reason = :boxes_full
         break
       end
-      if stop_on_no_moons && !DRCMM.moons_visible?
+      if plan.stop_on_no_moons && !DRCMM.moons_visible?
         DRC.message("***STATUS*** Stopping because no moons")
         @hunt_stop_reason = :no_moons
         break
       end
-      if should_stop_for_high_skills?(stop_on_high_skills) && yiamura_all_done?
-        DRC.message("***STATUS*** Stopping because skills reached learning threshold: #{stop_on_high_skills}")
+      if should_stop_for_high_skills?(plan.stop_on_high_skills) && yiamura_all_done?
+        DRC.message("***STATUS*** Stopping because skills reached learning threshold: #{plan.stop_on_high_skills}")
         @hunt_stop_reason = :high_skills
         break
       end
-      if should_stop_for_low_skills?(stop_on_low_skills) && yiamura_all_done?
-        DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{get_skills_below_low_threshold(stop_on_low_skills).join(", ")}")
+      if should_stop_for_low_skills?(plan.stop_on_low_skills) && yiamura_all_done?
+        DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{get_skills_below_low_threshold(plan.stop_on_low_skills).join(", ")}")
         @hunt_stop_reason = :low_skills
         break
       end
@@ -661,12 +654,12 @@ class HuntingBuddy
         @hunt_stop_reason = :manual_stop
         break
       end
-      if (duration && (counter / 60) >= duration) && yiamura_all_done?
+      if (plan.duration && (counter / 60) >= plan.duration) && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because time")
         @hunt_stop_reason = :duration
         break
       end
-      if Flags['hunting-buddy-stop-to-burgle'] && (@stop_to_burgle || stop_on_burgle_cooldown) && yiamura_all_done?
+      if Flags['hunting-buddy-stop-to-burgle'] && (@stop_to_burgle || plan.stop_on_burgle_cooldown) && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because it's burgle time!")
         Flags.reset('hunting-buddy-stop-to-burgle')
         @hunt_stop_reason = :burgle_time
@@ -687,23 +680,23 @@ class HuntingBuddy
         Flags.reset('hunting-buddy-familiar-drag')
       end
       if (counter % 60).zero?
-        notify_hook(:hunt_status, self, counter: counter, duration: duration)
+        notify_hook(:hunt_status, self, counter: counter, duration: plan.duration)
         # To avoid spamming encumbrance checks, this logic is inside
         # the one minute status update section so it's done only periodically.
-        if encumbered?(stop_on_encumbrance)
-          DRC.message("***STATUS*** Stopping because encumbrance: #{DRStats.encumbrance}, threshold: #{stop_on_encumbrance}")
+        if encumbered?(plan.stop_on_encumbrance)
+          DRC.message("***STATUS*** Stopping because encumbrance: #{DRStats.encumbrance}, threshold: #{plan.stop_on_encumbrance}")
           @hunt_stop_reason = :encumbrance
           break
         end
-        if duration
-          if stop_on_high_skills
-            DRC.message("***STATUS*** #{duration - (counter / 60)} minutes of hunting remaining or waiting on #{get_skills_below_high_threshold(stop_on_high_skills).join(', ')}")
+        if plan.duration
+          if plan.stop_on_high_skills
+            DRC.message("***STATUS*** #{plan.duration - (counter / 60)} minutes of hunting remaining or waiting on #{get_skills_below_high_threshold(plan.stop_on_high_skills).join(', ')}")
           else
-            DRC.message("***STATUS*** #{duration - (counter / 60)} minutes of hunting remaining")
+            DRC.message("***STATUS*** #{plan.duration - (counter / 60)} minutes of hunting remaining")
           end
         else
-          if stop_on_high_skills
-            DRC.message("***STATUS*** #{counter / 60} minutes of hunting, still waiting on #{get_skills_below_high_threshold(stop_on_high_skills).join(', ')}")
+          if plan.stop_on_high_skills
+            DRC.message("***STATUS*** #{counter / 60} minutes of hunting, still waiting on #{get_skills_below_high_threshold(plan.stop_on_high_skills).join(', ')}")
           else
             DRC.message("***STATUS*** #{counter / 60} minutes of hunting")
           end
