@@ -814,20 +814,36 @@ RSpec.describe HuntingBuddy do
       buddy.find_hunting_room?(['rats'], 851)
     end
 
-    it 'does not treat its own plain-text say echo as someone else speaking' do
-      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"')).to be true
+    # Own echoes of the empty-room say: these must not mark the room occupied.
+    # The preset lines are verbatim from a Saga-dialect capture (lich-5
+    # spec/fixtures/streams/dr_saga_containers_speech.xml).
+    [
+      'You say, "Is anyone hunting here?"',
+      'You politely say, "Is anyone hunting here?"',
+      'You ask, "Is anyone hunting here?"',
+      %(<pushStream id="talk"/><preset id='speech'>You politely say</preset>, "Hello."),
+      %(<popStream/><preset id='speech'>You politely say</preset>, "Hello."),
+      %(<preset id='speech'>You say, "Is anyone hunting here?"</preset>)
+    ].each do |echo|
+      it "does not treat its own echo as someone else speaking: #{echo}" do
+        expect(room_judged_empty?(say_echo: echo)).to be true
+      end
     end
 
-    it 'does not treat its own speech-preset say echo as someone else speaking' do
-      expect(room_judged_empty?(say_echo: %(<preset id='speech'>You say, "Is anyone hunting here?"</preset>))).to be true
-    end
-
-    it 'still leaves the room when another player answers' do
-      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: 'Bob says, "I am."')).to be false
-    end
-
-    it 'still leaves the room when another player answers in a speech preset' do
-      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: %(<preset id='speech'>Bob says, "I am."</preset>))).to be false
+    # Someone else talking: the room is taken.
+    [
+      'Bob says, "I am."',
+      'Bob politely says, "I am."',
+      'Bob asks, "Who is there?"',
+      'Bob exclaims, "Mine!"',
+      'Bob says to you, "Go away."',
+      'Someone says, "boo"',
+      %(<pushStream id="talk"/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello."),
+      %(<popStream/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
+    ].each do |answer|
+      it "leaves the room when someone else speaks: #{answer}" do
+        expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: answer)).to be false
+      end
     end
   end
 
