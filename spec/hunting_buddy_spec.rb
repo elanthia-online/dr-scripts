@@ -1180,7 +1180,7 @@ RSpec.describe HuntingBuddy do
 
     # Runs two identical hunts while standing in `room` and returns how many
     # times hunting-buddy searched for a room (1 means it stayed for hunt 2).
-    def searches_for(zones, room, custom, base_zones = { 'rats' => [1, 2], 'brewery' => [3, 4], 'brewery_alias' => [3, 4] })
+    def searches_for(zones, room, custom, base_zones = { 'rats' => [1, 2], 'brewery' => [3, 4], 'brewery_alias' => [3, 4] }, on_search: nil)
       buddy.instance_variable_set(:@hunting_zones, base_zones)
       buddy.instance_variable_set(:@escort_zones, {})
       buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: custom, sell_loot_skip_bank: true, safe_room: 1, cyclic_no_release: []))
@@ -1196,7 +1196,10 @@ RSpec.describe HuntingBuddy do
       allow(DRCT).to receive(:walk_to)
       allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
       count = 0
-      allow(buddy).to receive(:find_hunting_room?) { count += 1 }
+      allow(buddy).to receive(:find_hunting_room?) do
+        on_search&.call
+        count += 1
+      end
       buddy.main
       count
     end
@@ -1220,6 +1223,29 @@ RSpec.describe HuntingBuddy do
 
     it 'stays when two custom zones overlap and the hunt names the second' do
       expect(searches_for(['spot_b'], 500, { 'spot_a' => [500, 501], 'spot_b' => [500] })).to eq(1)
+    end
+
+    it 'uses a custom zone\'s rooms, not the base zone\'s, when it overrides a base zone' do
+      base = { 'goblins' => [3, 4] }
+      expect(searches_for(['goblins'], 3, { 'goblins' => [600] }, base)).to eq(2)
+      expect(searches_for(['goblins'], 600, { 'goblins' => [600] }, base)).to eq(1)
+    end
+
+    it 'stays when the room is in any of the hunt\'s zones, not just the first' do
+      expect(searches_for(%w[rats brewery], 3, {})).to eq(1)
+    end
+
+    it 'treats a custom zone written as a single room id as a one-room zone' do
+      expect(searches_for(['my_spot'], 1234, { 'my_spot' => 1234 })).to eq(1)
+    end
+
+    it 'does not take the escort out again when the next hunt stays put after an escort hunt' do
+      exits = []
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| exits << args if name == 'bescort' }
+      enter_escort = -> { buddy.instance_variable_set(:@exit, %w[manor exit]) }
+
+      expect(searches_for(['my_spot'], 500, { 'my_spot' => [500] }, on_search: enter_escort)).to eq(1)
+      expect(exits).to eq([%w[manor exit]])
     end
 
     it 'searches again when the next hunt is in a zone you are not in' do
