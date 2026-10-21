@@ -1285,6 +1285,10 @@ RSpec.describe HuntingBuddy do
       expect(events.last(4)).to include([:run, 'second-after', []])
     end
 
+    it 'does not run a scalar action string, as before' do
+      expect { run_main(hunt_info('before' => 'prep now')) }.to raise_error(NoMethodError)
+    end
+
     it 'retreats and stops all hunting when the room search finds you bleeding' do
       allow(buddy).to receive(:find_hunting_room?) { buddy.stopped_for_bleeding = true }
 

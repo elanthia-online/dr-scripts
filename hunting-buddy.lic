@@ -291,7 +291,7 @@ class HuntingBuddy
   end
 
   def execute_actions(actions)
-    Array(actions).each do |action|
+    (actions || []).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
       script_name, script_args = parse_action(action)
       DRC.wait_for_script_to_complete(script_name, script_args)
@@ -299,7 +299,7 @@ class HuntingBuddy
   end
 
   def execute_nonblocking_actions(actions)
-    Array(actions).each do |action|
+    (actions || []).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
       script_name, script_args = parse_action(action)
       start_script(script_name, script_args)
@@ -308,7 +308,7 @@ class HuntingBuddy
   end
 
   def stop_actions(actions)
-    Array(actions).each do |action|
+    (actions || []).each do |action|
       DRC.message("***STATUS*** STOP #{action}")
       script_name, = parse_action(action)
       stop_script(script_name) if Script.running?(script_name)
