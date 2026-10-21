@@ -821,6 +821,7 @@ RSpec.describe HuntingBuddy do
       'You say, "Is anyone hunting here?"',
       'You politely say, "Is anyone hunting here?"',
       'You ask, "Is anyone hunting here?"',
+      '  You say, "Is anyone hunting here?"',
       %(<pushStream id="talk"/><preset id='speech'>You politely say</preset>, "Hello."),
       %(<popStream/><preset id='speech'>You politely say</preset>, "Hello."),
       %(<preset id='speech'>You say, "Is anyone hunting here?"</preset>)
@@ -838,12 +839,20 @@ RSpec.describe HuntingBuddy do
       'Bob exclaims, "Mine!"',
       'Bob says to you, "Go away."',
       'Someone says, "boo"',
+      'Youngblood says, "This is my room."',
       %(<pushStream id="talk"/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello."),
       %(<popStream/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
     ].each do |answer|
       it "leaves the room when someone else speaks: #{answer}" do
         expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: answer)).to be false
       end
+    end
+
+    it 'leaves the room on someone else speaking even when our own echo is a Saga preset line' do
+      own = %(<preset id='speech'>You politely say</preset>, "Hello.")
+      other = %(<preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
+
+      expect(room_judged_empty?(say_echo: own, heard: other)).to be false
     end
   end
 
@@ -884,6 +893,17 @@ RSpec.describe HuntingBuddy do
       HuntingBuddy.on_death(buddy)
 
       expect(stopped).to eq(['combat-trainer'])
+    end
+
+    it 'stops a during script that hunting-buddy was killed while starting' do
+      # The kill lands inside start_script, after the script exists but before
+      # start_script returns.
+      allow(buddy).to receive(:start_script) { |name, _args| raise(Interrupt, "killed starting #{name}") }
+
+      expect { buddy.execute_nonblocking_actions(['tendme']) }.to raise_error(Interrupt)
+      HuntingBuddy.on_death(buddy)
+
+      expect(stopped).to include('tendme')
     end
 
     it 'stops combat-trainer and cleans up when hunting-buddy died while starting up' do
@@ -1122,6 +1142,17 @@ RSpec.describe HuntingBuddy do
       expect(buddy.find_hunting_room?(%w[rats], 851)).to be false
     end
 
+    it 'does not fall back to the escort zone when hunting was stopped during the search' do
+      allow(DRCT).to receive(:find_empty_room) do |rooms, *_rest|
+        searched << rooms
+        buddy.stop_hunting
+        false
+      end
+
+      expect(buddy.find_hunting_room?(%w[rats ship], 851)).to be false
+      expect(escorted).to be_empty
+    end
+
     it 'forgets the previous hunt\'s escort zone when a plugin finds the room' do
       plugin = Object.new
       plugin.define_singleton_method(:find_room) { |*_| true }
@@ -1180,7 +1211,7 @@ RSpec.describe HuntingBuddy do
 
     # Runs two identical hunts while standing in `room` and returns how many
     # times hunting-buddy searched for a room (1 means it stayed for hunt 2).
-    def searches_for(zones, room, custom, base_zones = { 'rats' => [1, 2], 'brewery' => [3, 4], 'brewery_alias' => [3, 4] })
+    def searches_for(zones, room, custom, base_zones = { 'rats' => [1, 2], 'brewery' => [3, 4], 'brewery_alias' => [3, 4] }, on_search: nil)
       buddy.instance_variable_set(:@hunting_zones, base_zones)
       buddy.instance_variable_set(:@escort_zones, {})
       buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: custom, sell_loot_skip_bank: true, safe_room: 1, cyclic_no_release: []))
@@ -1196,7 +1227,10 @@ RSpec.describe HuntingBuddy do
       allow(DRCT).to receive(:walk_to)
       allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
       count = 0
-      allow(buddy).to receive(:find_hunting_room?) { count += 1 }
+      allow(buddy).to receive(:find_hunting_room?) do
+        on_search&.call
+        count += 1
+      end
       buddy.main
       count
     end
@@ -1220,6 +1254,29 @@ RSpec.describe HuntingBuddy do
 
     it 'stays when two custom zones overlap and the hunt names the second' do
       expect(searches_for(['spot_b'], 500, { 'spot_a' => [500, 501], 'spot_b' => [500] })).to eq(1)
+    end
+
+    it 'uses a custom zone\'s rooms, not the base zone\'s, when it overrides a base zone' do
+      base = { 'goblins' => [3, 4] }
+      expect(searches_for(['goblins'], 3, { 'goblins' => [600] }, base)).to eq(2)
+      expect(searches_for(['goblins'], 600, { 'goblins' => [600] }, base)).to eq(1)
+    end
+
+    it 'stays when the room is in any of the hunt\'s zones, not just the first' do
+      expect(searches_for(%w[rats brewery], 3, {})).to eq(1)
+    end
+
+    it 'treats a custom zone written as a single room id as a one-room zone' do
+      expect(searches_for(['my_spot'], 1234, { 'my_spot' => 1234 })).to eq(1)
+    end
+
+    it 'does not take the escort out again when the next hunt stays put after an escort hunt' do
+      exits = []
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| exits << args if name == 'bescort' }
+      enter_escort = -> { buddy.instance_variable_set(:@exit, %w[manor exit]) }
+
+      expect(searches_for(['my_spot'], 500, { 'my_spot' => [500] }, on_search: enter_escort)).to eq(1)
+      expect(exits).to eq([%w[manor exit]])
     end
 
     it 'searches again when the next hunt is in a zone you are not in' do
