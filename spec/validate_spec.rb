@@ -67,6 +67,40 @@ RSpec.describe DRYamlValidator do
     end
   end
 
+  describe '#assert_that_hunting_info_escort_zones_are_reachable' do
+    let(:instance) { build }
+
+    before do
+      $test_data[:hunting] = OpenStruct.new(escort_zones: { 'ship' => {}, 'boat' => {} }, hunting_zones: { 'rats' => [1], 'goblins' => [2] })
+    end
+
+    def check(zones, custom = {})
+      instance.assert_that_hunting_info_escort_zones_are_reachable(OpenStruct.new(hunting_info: [{ zone: zones }], custom_hunting_zones: custom))
+    end
+
+    it 'warns when a leading escort zone hides the rest of the list' do
+      check(%w[ship rats])
+      expect($warn_msgs.first).to include('ship is an escort zone listed first').and include('never uses rats')
+    end
+
+    it 'warns when a second escort zone can never be used' do
+      check(%w[rats ship boat])
+      expect($warn_msgs.first).to include('only the first escort zone (ship)').and include('boat never will be')
+    end
+
+    it 'does not warn for one escort zone as the fallback, or on its own' do
+      check(%w[rats goblins ship])
+      check('ship')
+      check(%w[rats goblins])
+      expect($warn_msgs).to be_empty
+    end
+
+    it 'treats a custom zone named like an escort zone as the custom zone' do
+      check(%w[ship rats], { 'ship' => [5] })
+      expect($warn_msgs).to be_empty
+    end
+  end
+
   describe '#assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds' do
     let(:instance) { build }
 
@@ -106,6 +140,17 @@ RSpec.describe DRYamlValidator do
             hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged'] }, { :zone => 'goblins', 'stop_on' => [['Tactics']] }])
       expect($warn_msgs.size).to eq(1)
       expect($warn_msgs.first).to include('lore_exp_training_max_threshold (20)')
+    end
+
+    it 'warns once per skillset even when several stop_on skills share it' do
+      check(weapon_exp_training_max_threshold: 20,
+            hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged', 'Parry Ability'] }, { :zone => 'b', 'stop_on' => ['Small Edged'] }])
+      expect($warn_msgs.size).to eq(1)
+    end
+
+    it 'does not warn about a blank per-skillset threshold' do
+      check(weapon_exp_training_max_threshold: nil)
+      expect($warn_msgs).to be_empty
     end
 
     it 'does not warn when stop_on_high_threshold is blank or false, since the per-skillset values apply' do
