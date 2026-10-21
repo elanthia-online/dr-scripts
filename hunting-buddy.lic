@@ -515,6 +515,8 @@ class HuntingBuddy
   end
 
   # What is the learning rate high threshold at which point we should stop hunting?
+  # stop_on_high_threshold wins when it is set (base.yaml sets it to 32); the
+  # per-skillset *_exp_training_max_threshold settings apply only when it is blank.
   def get_skillset_exp_high_threshold(skillset)
     @stop_on_high_threshold || @skillset_exp_thresholds[skillset]
   end

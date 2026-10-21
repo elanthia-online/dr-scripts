@@ -66,4 +66,53 @@ RSpec.describe DRYamlValidator do
       expect($warn_msgs).to be_empty
     end
   end
+
+  describe '#assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds' do
+    let(:instance) { build }
+
+    def settings(overrides = {})
+      OpenStruct.new({
+        stop_on_high_threshold: 32,
+        armor_exp_training_max_threshold: 32, weapon_exp_training_max_threshold: 32,
+        magic_exp_training_max_threshold: 32, survival_exp_training_max_threshold: 32,
+        lore_exp_training_max_threshold: 32,
+        hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged'] }]
+      }.merge(overrides))
+    end
+
+    it 'does not warn with the base.yaml defaults (every threshold 32)' do
+      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(settings)
+      expect($warn_msgs).to be_empty
+    end
+
+    it 'warns for each per-skillset threshold that stop_on_high_threshold overrides' do
+      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
+        settings(magic_exp_training_max_threshold: 10, lore_exp_training_max_threshold: 20)
+      )
+      expect($warn_msgs.size).to eq(2)
+      expect($warn_msgs.first).to include('stop_on_high_threshold (32) overrides magic_exp_training_max_threshold (10)')
+      expect($warn_msgs.last).to include('lore_exp_training_max_threshold (20)')
+    end
+
+    it 'does not warn when stop_on_high_threshold is blank, since the per-skillset values apply' do
+      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
+        settings(stop_on_high_threshold: nil, magic_exp_training_max_threshold: 10)
+      )
+      expect($warn_msgs).to be_empty
+    end
+
+    it 'does not warn when no hunt uses stop_on' do
+      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
+        settings(magic_exp_training_max_threshold: 10, hunting_info: [{ :zone => 'rats', :duration => 30 }])
+      )
+      expect($warn_msgs).to be_empty
+    end
+
+    it 'does not warn when there is no hunting_info' do
+      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
+        settings(magic_exp_training_max_threshold: 10, hunting_info: nil)
+      )
+      expect($warn_msgs).to be_empty
+    end
+  end
 end

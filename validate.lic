@@ -369,6 +369,22 @@ class DRYamlValidator
             .each { |skill| error("stop_on: weapon skill #{skill} not in weapon_training: setting") }
   end
 
+  # hunting-buddy's stop_on check uses stop_on_high_threshold when it is set and
+  # only falls back to the per-skillset *_exp_training_max_threshold settings
+  # when it is blank, so a per-skillset value that differs from it is ignored
+  # for stop_on.
+  def assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(settings)
+    return if settings.stop_on_high_threshold.nil?
+    return unless settings.hunting_info&.any? { |info| info['stop_on'] }
+
+    %w[armor weapon magic survival lore]
+      .map { |skillset| "#{skillset}_exp_training_max_threshold" }
+      .reject { |name| settings[name].nil? || settings[name] == settings.stop_on_high_threshold }
+      .each do |name|
+        warn("stop_on_high_threshold (#{settings.stop_on_high_threshold}) overrides #{name} (#{settings[name]}) for hunting-buddy's stop_on. Leave stop_on_high_threshold blank to use the per-skillset thresholds.")
+      end
+  end
+
   def assert_that_hunting_info_has_duration_or_stop_on(settings)
     return unless settings.hunting_info
 

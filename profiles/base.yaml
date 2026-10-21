@@ -524,9 +524,13 @@ using_light_crossbow: false
 attack_overrides:
 # use attack overrides for aiming trainable skills
 use_overrides_for_aiming_trainables: false
-# Thresholds in mind-states at which point hunting-buddy considers
-# the 'stop_on' skills to be done training and will end the hunt.
-# You can specify a different threshold per skillset.
+# Per-skillset learning-rate thresholds (mind states).
+# hunting-buddy: a hunt's stop_on skills count as done training once they reach
+# the threshold for their skillset. These are used ONLY when
+# stop_on_high_threshold (below) is blank; when that is set, it applies to every
+# skillset instead (;validate warns if it hides a different value here).
+# magic_exp_training_max_threshold is also read by combat-trainer and
+# magic-training, regardless of stop_on_high_threshold.
 armor_exp_training_max_threshold: 32
 weapon_exp_training_max_threshold: 32
 magic_exp_training_max_threshold: 32
@@ -662,8 +666,12 @@ hunting_room_strict_mana: false
 # This is the number of times to wait then revisit the area to find a room.
 hunting_room_max_searches: 30
 hunting_file_list:
+# hunting-buddy ends (or skips) a hunt when ANY of its stop_on_low skills is at
+# or below this many mind states.
 stop_on_low_threshold: 2
-# sets the mindstates required for hunting-buddy.lic's stop_on skills
+# hunting-buddy ends (or skips) a hunt when ALL of its stop_on skills are at or
+# above this many mind states. Takes precedence over the per-skillset
+# *_exp_training_max_threshold settings; leave blank to use those instead.
 stop_on_high_threshold: 32
 
 
