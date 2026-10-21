@@ -1003,7 +1003,6 @@ RSpec.describe HuntingBuddy do
     end
 
     it 'reports :too_injured when the room search found you too injured to search' do
-      reasons = []
       register(Class.new do
         def initialize(calls) = (@calls = calls)
         def after_hunt(buddy, counter:, **) = @calls << [:after_hunt, counter, buddy.hunt_stop_reason]
@@ -1022,10 +1021,9 @@ RSpec.describe HuntingBuddy do
 
       buddy.find_hunting_room?(['rats'], 851)
       buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
-      reasons << buddy.hunt_stop_reason
 
       expect(calls).to eq([[:after_hunt, 0, :too_injured]])
-      expect(reasons).to eq([:too_injured])
+      expect(buddy.hunt_stop_reason).to eq(:too_injured)
     end
 
     it 'clears the previous hunt\'s reason when a plugin ends the hunt with :break' do
@@ -1130,6 +1128,23 @@ RSpec.describe HuntingBuddy do
       expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
       expect(searched).to eq([[5, 6]])
       expect(escorted).to be_empty
+    end
+
+    it 'searches the base zone\'s rooms for a custom entry that lists none' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['rats'] = []
+      search_result(true)
+
+      buddy.find_hunting_room?(%w[rats], 851)
+
+      expect(searched).to eq([[1, 2]])
+    end
+
+    it 'still escorts into an escort zone whose custom entry lists no rooms' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['ship'] = []
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
+      expect(escorted).to eq([['bescort', %w[ship_area board]]])
     end
 
     it 'exits when no zone in the list has any rooms' do
@@ -1258,8 +1273,9 @@ RSpec.describe HuntingBuddy do
       expect(searches_for(['brewery'], 3, {})).to eq(1)
     end
 
-    it 'uses the base rooms for a custom entry with no rooms' do
+    it 'uses the base rooms for a custom entry with no rooms (nil or an empty list)' do
       expect(searches_for(['brewery'], 3, { 'brewery' => nil })).to eq(1)
+      expect(searches_for(['brewery'], 3, { 'brewery' => [] })).to eq(1)
     end
 
     it 'stays when two custom zones overlap and the hunt names the second' do
