@@ -339,8 +339,12 @@ class HuntingBuddy
   # Returns the hunting zone that you are currently in.
   # If you aren't in a known hunting zone then returns nil.
   def current_hunting_zone(room_id = Room.current.id)
-    # Returns the name of the hunting zone of a given room ID.
-    @hunting_zones.find { |_name, rooms| rooms.include?(room_id) }.first
+    # custom_hunting_zones win over a base-hunting.yaml zone of the same name,
+    # as they do when searching for a room.
+    custom_zones = @settings.custom_hunting_zones || {}
+    zone = custom_zones.find { |_name, rooms| rooms.include?(room_id) }
+    zone ||= @hunting_zones.find { |name, rooms| !custom_zones.key?(name) && rooms.include?(room_id) }
+    zone&.first
   end
 
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)

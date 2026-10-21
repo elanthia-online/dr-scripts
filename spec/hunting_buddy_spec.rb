@@ -1042,4 +1042,40 @@ RSpec.describe HuntingBuddy do
       expect(buddy.find_hunting_room?(%w[rats], 851)).to be false
     end
   end
+
+  # ===========================================================================
+  # current_hunting_zone
+  # ===========================================================================
+
+  describe '#current_hunting_zone' do
+    let(:buddy) { HuntingBuddy.allocate }
+
+    before do
+      buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1, 2], 'goblins' => [3, 4] })
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: { 'my_spot' => [500, 501], 'goblins' => [600] }))
+    end
+
+    it 'names the base-hunting.yaml zone the room belongs to' do
+      expect(buddy.current_hunting_zone(2)).to eq('rats')
+    end
+
+    it 'names the custom_hunting_zones zone the room belongs to' do
+      expect(buddy.current_hunting_zone(501)).to eq('my_spot')
+    end
+
+    it 'uses the custom rooms, not the base rooms, for a zone the custom list overrides' do
+      expect(buddy.current_hunting_zone(600)).to eq('goblins')
+      expect(buddy.current_hunting_zone(3)).to be_nil
+    end
+
+    it 'returns nil for a room in no zone' do
+      expect(buddy.current_hunting_zone(9999)).to be_nil
+    end
+
+    it 'works when custom_hunting_zones is not set' do
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: nil))
+
+      expect(buddy.current_hunting_zone(3)).to eq('goblins')
+    end
+  end
 end
