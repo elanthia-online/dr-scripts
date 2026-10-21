@@ -605,8 +605,9 @@ priority_skills_lower_limit: 6
 #   :zone:                    zone name or list of names, in priority order: base-hunting.yaml
 #                             hunting_zones/escort_zones or your custom_hunting_zones
 #   :duration:                minutes to hunt
-#   stop_on:                  end the hunt once ALL of these skills reach stop_on_high_threshold
-#   stop_on_low:              end the hunt once ANY of these skills is at or below stop_on_low_threshold
+#   stop_on:                  skip / end the hunt once ALL of these skills reach stop_on_high_threshold
+#                             (or their per-skillset threshold when that is blank)
+#   stop_on_low:              skip / end the hunt once ANY of these skills is at or below stop_on_low_threshold
 #   args:                     arguments passed to combat-trainer
 #   before: / after:          scripts (with arguments) run before / after the hunt
 #   during:                   scripts started in the background for the hunt, stopped when it ends
@@ -618,7 +619,8 @@ priority_skills_lower_limit: 6
 #   disable_room_descriptions: per-hunt override of hunting_disable_room_descriptions
 #   full_waiting_room:        room to wait in between room searches (default: safe_room)
 #   prefer_buddies:           look first for a room one of your hunting_buddies is in
-#   avoid_buddies:            treat a room with a hunting buddy in it as occupied
+#   avoid_buddies:            don't take a room just because a hunting buddy is visible in it
+#                             (a buddy found hiding or heard speaking still lets it take the room)
 hunting_info:
 # Global toggle to cause hunting buddy to stop a hunt short when the burgle
 # timer hits. Note there is also a per-hunt toggle that goes in hunting_info
