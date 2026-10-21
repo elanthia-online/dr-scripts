@@ -18,7 +18,9 @@ class HuntingBuddy
     end
 
     # Cleans up when the script exits, normally or killed (before_dying calls
-    # this). buddy is nil if hunting-buddy died before it finished starting.
+    # this with $HUNTING_BUDDY). If hunting-buddy died before it finished
+    # starting, buddy is nil -- or the instance from an earlier run in this
+    # Lich session, since $HUNTING_BUDDY is only replaced once new returns.
     def on_death(buddy)
       fput('flag description on') if buddy&.instance_variable_get(:@disable_room_descriptions)
       stop_script('combat-trainer') if Script.running?('combat-trainer')
@@ -430,11 +432,11 @@ class HuntingBuddy
                                       UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
                                       Flags.add('hunting-buddy-room-check',
                                                 # someone else speaks: the speaker (after any leading
-                                                # XML tags) isn't "You", so our own echo of the
+                                                # XML tags or spaces) isn't "You", so our own echo of the
                                                 # empty_hunting_room_messages line doesn't count.
                                                 # Covers plain lines and the speech preset, e.g.
                                                 # <preset id='speech'>Bob politely says</preset>, "..."
-                                                /\A(?>(?:<[^>]*>)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
+                                                /\A(?>(?:<[^>]*>|\s)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
                                                 /You hear/,
                                                 # someone attacks from the shadows
                                                 /Someone snipes a/,
