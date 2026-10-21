@@ -493,7 +493,7 @@ class HuntingBuddy
   # and so we should continue hunting.
   def get_skills_below_high_threshold(stop_on_high_skills = [])
     stop_on_high_skills.flatten.select do |skill|
-      DRSkill.getxp(skill) <= get_skill_exp_high_threshold(skill)
+      DRSkill.getxp(skill) < get_skill_exp_high_threshold(skill)
     end
   end
 

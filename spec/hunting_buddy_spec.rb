@@ -1078,4 +1078,46 @@ RSpec.describe HuntingBuddy do
       expect(buddy.current_hunting_zone(3)).to eq('goblins')
     end
   end
+
+  # ===========================================================================
+  # Learning-rate thresholds behind stop_on / stop_on_low
+  # ===========================================================================
+
+  describe 'high learning-rate threshold' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:skills) { ['Small Edged', 'Parry Ability'] }
+
+    before do
+      buddy.instance_variable_set(:@stop_on_high_threshold, 32)
+      allow(DRSkill).to receive(:getskillset).and_return('Weapon')
+    end
+
+    def learning(rates)
+      allow(DRSkill).to receive(:getxp) { |skill| rates.fetch(skill) }
+    end
+
+    it 'counts a skill sitting exactly at the threshold as done for the stop check' do
+      learning('Small Edged' => 32, 'Parry Ability' => 32)
+
+      expect(buddy.should_stop_for_high_skills?(skills)).to be true
+    end
+
+    it 'keeps hunting while any listed skill is below the threshold' do
+      learning('Small Edged' => 32, 'Parry Ability' => 10)
+
+      expect(buddy.should_stop_for_high_skills?(skills)).to be false
+    end
+
+    it 'lists only the skills still below the threshold as being waited on' do
+      learning('Small Edged' => 32, 'Parry Ability' => 10)
+
+      expect(buddy.get_skills_below_high_threshold(skills)).to eq(['Parry Ability'])
+    end
+
+    it 'waits on nothing once the stop check is satisfied' do
+      learning('Small Edged' => 34, 'Parry Ability' => 32)
+
+      expect(buddy.get_skills_below_high_threshold(skills)).to be_empty
+    end
+  end
 end
