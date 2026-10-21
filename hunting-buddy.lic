@@ -474,12 +474,14 @@ class HuntingBuddy
                            # No visible friends in the room and no visible people
                            UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
                            Flags.add('hunting-buddy-room-check',
-                                     # someone else speaks: the speaker (after any leading
-                                     # XML tags or spaces) isn't "You", so our own echo of the
-                                     # empty_hunting_room_messages line doesn't count.
-                                     # Covers plain lines and the speech preset, e.g.
-                                     # <preset id='speech'>Bob politely says</preset>, "..."
-                                     /\A(?>(?:<[^>]*>|\s)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
+                                     # someone else speaks. Others "say/ask/exclaim" in the
+                                     # third person ("Bob politely says, ..."), our own echo of
+                                     # the empty_hunting_room_messages line in the first ("You
+                                     # say, ..."), so the verb form alone tells them apart --
+                                     # whatever precedes the speaker (tags, a prompt, spaces).
+                                     # Up to 60 characters or tags may sit between the verb and
+                                     # the `, "` (an adverb's </preset>, "to Bob", "you").
+                                     /\b(?:says|asks|exclaims)\b(?:[^,"]|<[^>]*>){0,60}?, "/,
                                      /You hear/,
                                      # someone attacks from the shadows
                                      /Someone snipes a/,
