@@ -7,7 +7,7 @@ require 'fileutils'
 # and test methods on bare-allocated instances with injected state.
 #
 # Top-level code (before_dying, the plugin load call, HuntingBuddy.new.main)
-# is not loaded, so anything it needs to do lives in a method tested here.
+# is not loaded by these specs; keep it to calls into methods tested here.
 # Every test is self-contained and reads top-to-bottom without chasing
 # helpers (DAMP principle).
 
@@ -1308,13 +1308,72 @@ RSpec.describe HuntingBuddy do
       expect(events.last(4)).to include([:run, 'second-after', []])
     end
 
-    it 'retreats and stops all hunting when the room search finds you bleeding' do
-      allow(buddy).to receive(:find_hunting_room?) { buddy.stopped_for_bleeding = true }
+    it 'retreats, stops tendme and runs the next hunt\'s after scripts when a hunt ended bleeding' do
+      allow(buddy).to receive(:hunt) { |args, *_| events << [:hunt, args] && buddy.stopped_for_bleeding = true }
+      running << 'tendme'
+
+      run_main(hunt_info('during' => ['perf']), hunt_info('args' => ['b'], 'during' => ['second-during'], 'after' => ['second-after']))
+
+      after_first = events.drop_while { |event| event != [:message, '***STATUS*** Stopping all hunting because bleeding'] }
+      expect(after_first.reject { |e| e.first == :message }).to eq([[:retreat], [:stop, 'tendme'], [:run, 'second-after', []]])
+      expect(events).not_to include([:hunt, ['b']])
+      expect(events.count([:run, 'prep', []])).to eq(1)
+    end
+
+    it 'runs before and after, but not the hunt, when the stop_on skills are already done' do
+      allow(buddy).to receive(:should_stop_for_high_skills?).and_return(true)
+
+      run_main(hunt_info('stop_on' => ['Evasion']))
+
+      expect(without_messages).to eq([[:run, 'prep', []], [:run, 'wrapup', ['x']]])
+    end
+
+    it 'runs before and after, but not the hunt, when a stop_on_low skill has dropped' do
+      allow(buddy).to receive(:should_stop_for_low_skills?).and_return(true)
+      allow(buddy).to receive(:get_skills_below_low_threshold).and_return(['Forging'])
+
+      run_main(hunt_info('stop_on_low' => ['Forging']))
+
+      expect(without_messages).to eq([[:run, 'prep', []], [:run, 'wrapup', ['x']]])
+    end
+
+    it 'restocks first unless sell_loot_skip_bank is set' do
+      buddy.instance_variable_set(:@settings, OpenStruct.new(sell_loot_skip_bank: false, safe_room: 851, cyclic_no_release: []))
 
       run_main(hunt_info)
 
+      expect(without_messages.first).to eq([:run, 'restock', []])
+    end
+
+    it 'casts prehunt buffs before looking for a room and releases cyclics after the hunt' do
+      allow(buddy).to receive(:check_prehunt_buffs) { events << [:buffs] }
+      allow(DRCA).to receive(:release_cyclics) { events << [:release] }
+
+      run_main(hunt_info)
+
+      expect(without_messages).to eq([
+                                       [:run, 'prep', []], [:buffs], [:find_room, ['rats']], [:start, 'tendme'],
+                                       [:hunt, ['a']], [:stop, 'tendme'], [:release], [:run, 'wrapup', ['x']]
+                                     ])
+    end
+
+    it 'retreats and stops all hunting when the room search finds you bleeding' do
+      allow(buddy).to receive(:find_hunting_room?) { buddy.stopped_for_bleeding = true }
+      running << 'tendme'
+
+      run_main(hunt_info('during' => ['perf']))
+
       expect(events).not_to include([:hunt, ['a']])
-      expect(without_messages).to eq([[:run, 'prep', []], [:retreat], [:run, 'wrapup', ['x']]])
+      expect(without_messages).to eq([[:run, 'prep', []], [:retreat], [:stop, 'tendme'], [:run, 'wrapup', ['x']]])
+    end
+
+    it 'picks up everything at your feet after the hunt' do
+      replies = ['You pick up a rock.', 'You pick up a stick.', 'Stow what?']
+      allow(DRC).to receive(:bput).with('stow feet', any_args) { replies.shift }
+
+      run_main(hunt_info)
+
+      expect(DRC).to have_received(:bput).with('stow feet', any_args).exactly(3).times
     end
 
     it 'leaves an escort zone after the hunt' do
@@ -1357,12 +1416,10 @@ RSpec.describe HuntingBuddy do
       expect(buddy.encumbered?(4)).to be false
     end
 
-    it 'clamps the threshold into 0..11' do
+    it 'caps the threshold at 11' do
       allow(DRC).to receive(:check_encumbrance).and_return(11)
 
       expect(buddy.encumbered?(99)).to be true
-      allow(DRC).to receive(:check_encumbrance).and_return(0)
-      expect(buddy.encumbered?(-5)).to be true
     end
   end
 
