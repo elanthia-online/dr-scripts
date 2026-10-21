@@ -37,14 +37,15 @@ class HuntingBuddy
 
   # Fire a hook on all registered plugins.
   # Returns the first non-nil result (for decision hooks like :find_room).
-  # Plugins that don't implement a hook are silently skipped.
+  # Plugins that don't implement a hook are silently skipped, and so is a
+  # plugin that raises (including NotImplementedError and other ScriptErrors).
   def fire_hook(hook_name, *args, **kwargs)
     self.class.registered_plugins.each do |plugin|
       next unless plugin.respond_to?(hook_name)
       begin
         result = plugin.send(hook_name, *args, **kwargs)
         return result unless result.nil?
-      rescue => e
+      rescue StandardError, ScriptError => e
         echo "Plugin #{plugin.class.name} error in #{hook_name}: #{e.message}" if $debug_mode_hunting
       end
     end
@@ -58,7 +59,7 @@ class HuntingBuddy
       next unless plugin.respond_to?(hook_name)
       begin
         plugin.send(hook_name, *args, **kwargs)
-      rescue => e
+      rescue StandardError, ScriptError => e
         echo "Plugin #{plugin.class.name} error in #{hook_name}: #{e.message}" if $debug_mode_hunting
       end
     end

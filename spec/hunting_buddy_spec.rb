@@ -665,6 +665,29 @@ RSpec.describe HuntingBuddy do
       end
     end
 
+    context 'when a plugin raises a ScriptError' do
+      it 'isolates a NotImplementedError in a decision hook and asks the next plugin' do
+        abstract = Class.new { def find_room(*) = raise(NotImplementedError, 'todo') }.new
+        answer = Class.new { def find_room(*) = :mine }.new
+        HuntingBuddy.register_plugin(abstract)
+        HuntingBuddy.register_plugin(answer)
+
+        expect(buddy.send(:fire_hook, :find_room, buddy, [], 1)).to eq(:mine)
+      end
+
+      it 'isolates a NotImplementedError in a notification hook and still calls the rest' do
+        seen = []
+        abstract = Class.new { def cleanup(*) = raise(NotImplementedError, 'todo') }.new
+        listener = Object.new
+        listener.define_singleton_method(:cleanup) { |*| seen << :cleanup }
+        HuntingBuddy.register_plugin(abstract)
+        HuntingBuddy.register_plugin(listener)
+
+        expect { buddy.send(:notify_hook, :cleanup, buddy) }.not_to raise_error
+        expect(seen).to eq([:cleanup])
+      end
+    end
+
     context 'with many plugins registered' do
       it 'calls all 10 plugins for a notify_hook' do
         plugins = 10.times.map do |i|
