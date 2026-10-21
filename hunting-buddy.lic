@@ -403,9 +403,12 @@ class HuntingBuddy
                                       # No visible friends in the room and no visible people
                                       UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
                                       Flags.add('hunting-buddy-room-check',
-                                                # someone speaks (but not our own "You say, " echo
-                                                # of the empty_hunting_room_messages line)
-                                                /(?<!You )\bsays?, /,
+                                                # someone else speaks: the speaker (after any leading
+                                                # XML tags) isn't "You", so our own echo of the
+                                                # empty_hunting_room_messages line doesn't count.
+                                                # Covers plain lines and the speech preset, e.g.
+                                                # <preset id='speech'>Bob politely says</preset>, "..."
+                                                /\A(?>(?:<[^>]*>)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
                                                 /You hear/,
                                                 # someone attacks from the shadows
                                                 /Someone snipes a/,
