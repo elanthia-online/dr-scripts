@@ -537,9 +537,7 @@ class HuntingBuddy
   # Identify if at least one skill in the given list has a learning rate
   # at or below the desired threshold for their skillset.
   def should_stop_for_low_skills?(stop_on_low_skills = [])
-    stop_on_low_skills && !stop_on_low_skills.empty? && stop_on_low_skills.flatten.any? do |skill|
-      DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
-    end
+    get_skills_below_low_threshold(stop_on_low_skills).any?
   end
 
   # ------------------------------------------------------------
