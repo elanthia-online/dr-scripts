@@ -935,6 +935,32 @@ RSpec.describe HuntingBuddy do
       expect(buddy.hunt_stop_reason).to eq(:manual_stop)
     end
 
+    it 'reports :too_injured when the room search found you too injured to search' do
+      reasons = []
+      register(Class.new do
+        def initialize(calls) = (@calls = calls)
+        def after_hunt(buddy, counter:, **) = @calls << [:after_hunt, counter, buddy.hunt_stop_reason]
+      end)
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: {}, hunting_buddies: [], hunting_nemesis: [],
+                                                             health_threshold: 0, stop_hunting_if_bleeding: false,
+                                                             hunting_room_min_mana: 0, hunting_room_strict_mana: false, hunting_room_max_searches: 30))
+      buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
+      buddy.instance_variable_set(:@escort_zones, {})
+      buddy.instance_variable_set(:@hunting_buddies_max, 2)
+      DRRoom.pcs = []
+      DRRoom.group_members = []
+      allow(buddy).to receive(:bleeding?).and_return(false)
+      allow(DRC).to receive(:bput).with('search', any_args).and_return("You're not in any condition to be searching around")
+      allow(DRCT).to receive(:find_empty_room) { |_rooms, _idle, predicate, *_rest| predicate.call(1) }
+
+      buddy.find_hunting_room?(['rats'], 851)
+      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+      reasons << buddy.hunt_stop_reason
+
+      expect(calls).to eq([[:after_hunt, 0, :too_injured]])
+      expect(reasons).to eq([:too_injured])
+    end
+
     it 'clears the previous hunt\'s reason when a plugin ends the hunt with :break' do
       register(Class.new do
         def initialize(calls) = (@calls = calls)
