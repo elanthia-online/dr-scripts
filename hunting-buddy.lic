@@ -18,7 +18,9 @@ class HuntingBuddy
     end
 
     # Cleans up when the script exits, normally or killed (before_dying calls
-    # this). buddy is nil if hunting-buddy died before it finished starting.
+    # this with $HUNTING_BUDDY). If hunting-buddy died before it finished
+    # starting, buddy is nil -- or the instance from an earlier run in this
+    # Lich session, since $HUNTING_BUDDY is only replaced once new returns.
     def on_death(buddy)
       fput('flag description on') if buddy&.instance_variable_get(:@disable_room_descriptions)
       stop_script('combat-trainer') if Script.running?('combat-trainer')
@@ -228,7 +230,7 @@ class HuntingBuddy
         next
       end
 
-      low_skills = get_skills_below_low_threshold(stop_on_low_skills || [])
+      low_skills = get_skills_below_low_threshold(stop_on_low_skills)
       if low_skills.any?
         DRC.message("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{low_skills.join(', ')}")
         stop_actions(during_actions)
@@ -276,7 +278,11 @@ class HuntingBuddy
       while DRC.bput('stow feet', /You pick up/, /Stow what/) =~ /You pick up/
       end
 
-      DRC.wait_for_script_to_complete('bescort', @exit) if @exit
+      if @exit
+        DRC.wait_for_script_to_complete('bescort', @exit)
+        # Out of the escort zone now; a next hunt that stays put mustn't exit again.
+        @exit = nil
+      end
       DRCA.release_cyclics(@settings.cyclic_no_release)
 
       # Execute scripts to run after the hunt
@@ -360,12 +366,8 @@ class HuntingBuddy
   # zones; to ask whether you are in a particular hunt's zones, use
   # in_hunting_zone?.
   def current_hunting_zone(room_id = Room.current.id)
-    # custom_hunting_zones (with rooms) win over a base-hunting.yaml zone of
-    # the same name, as they do when searching for a room.
-    custom_zones = (@settings.custom_hunting_zones || {}).select { |_name, rooms| rooms }
-    zone = custom_zones.find { |_name, rooms| rooms.include?(room_id) }
-    zone ||= @hunting_zones.find { |name, rooms| !custom_zones.key?(name) && rooms.include?(room_id) }
-    zone&.first
+    custom_names = (@settings.custom_hunting_zones || {}).keys.map(&:to_s)
+    (custom_names + (@hunting_zones.keys - custom_names)).find { |name| zone_rooms(name)&.include?(room_id) }
   end
 
   # Is the room in any of these zones?
@@ -377,7 +379,9 @@ class HuntingBuddy
   # custom_hunting_zones entry if it has rooms, otherwise the base-hunting.yaml
   # zone. The single rule for which rooms a zone name means.
   def zone_rooms(zone)
-    (@settings.custom_hunting_zones || {})["#{zone}"] || @hunting_zones["#{zone}"]
+    rooms = (@settings.custom_hunting_zones || {})["#{zone}"] || @hunting_zones["#{zone}"]
+    # A zone written as a single room id is a one-room zone.
+    rooms && Array(rooms)
   end
 
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
@@ -416,6 +420,8 @@ class HuntingBuddy
 
     return true if !rooms_to_search.empty? && search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
     return false unless fallback_escort
+    # Hunting was called off during the search (stop request, or too injured).
+    return false if @stop_hunting
 
     enter_escort_zone(fallback_escort)
     true
@@ -469,11 +475,11 @@ class HuntingBuddy
                            UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
                            Flags.add('hunting-buddy-room-check',
                                      # someone else speaks: the speaker (after any leading
-                                     # XML tags) isn't "You", so our own echo of the
+                                     # XML tags or spaces) isn't "You", so our own echo of the
                                      # empty_hunting_room_messages line doesn't count.
                                      # Covers plain lines and the speech preset, e.g.
                                      # <preset id='speech'>Bob politely says</preset>, "..."
-                                     /\A(?>(?:<[^>]*>)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
+                                     /\A(?>(?:<[^>]*>|\s)*)(?!You\b)(?:<[^>]*>|[^"<])*?\b(?:says?|asks?|exclaims?)(?: to [^,"<]+)?(?:<[^>]*>)*, /,
                                      /You hear/,
                                      # someone attacks from the shadows
                                      /Someone snipes a/,
@@ -550,6 +556,9 @@ class HuntingBuddy
   # and so we should stop hunting to go work on them.
   # Usually, these are non-combat skills like locksmithing or crafting.
   def get_skills_below_low_threshold(stop_on_low_skills = [])
+    # A blank stop_on_low (nil, or '' from `stop_on_low: ''`) means none.
+    return [] if stop_on_low_skills.nil? || stop_on_low_skills.empty?
+
     stop_on_low_skills.flatten.select do |skill|
       DRSkill.getxp(skill) <= get_skill_exp_low_threshold(skill)
     end
@@ -683,7 +692,7 @@ class HuntingBuddy
         @hunt_stop_reason = :high_skills
         break
       end
-      low_skills = get_skills_below_low_threshold(stop_on_low_skills || [])
+      low_skills = get_skills_below_low_threshold(stop_on_low_skills)
       if low_skills.any? && yiamura_all_done?
         DRC.message("***STATUS*** Stopping because skills dropped below learning threshold: #{low_skills.join(', ')}")
         @hunt_stop_reason = :low_skills
