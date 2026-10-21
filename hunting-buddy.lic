@@ -396,6 +396,8 @@ class HuntingBuddy
 
     return true if !rooms_to_search.empty? && search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
     return false unless fallback_escort
+    # Hunting was called off during the search (stop request, or too injured).
+    return false if @stop_hunting
 
     enter_escort_zone(fallback_escort)
     true

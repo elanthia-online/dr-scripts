@@ -1122,6 +1122,17 @@ RSpec.describe HuntingBuddy do
       expect(buddy.find_hunting_room?(%w[rats], 851)).to be false
     end
 
+    it 'does not fall back to the escort zone when hunting was stopped during the search' do
+      allow(DRCT).to receive(:find_empty_room) do |rooms, *_rest|
+        searched << rooms
+        buddy.stop_hunting
+        false
+      end
+
+      expect(buddy.find_hunting_room?(%w[rats ship], 851)).to be false
+      expect(escorted).to be_empty
+    end
+
     it 'forgets the previous hunt\'s escort zone when a plugin finds the room' do
       plugin = Object.new
       plugin.define_singleton_method(:find_room) { |*_| true }
