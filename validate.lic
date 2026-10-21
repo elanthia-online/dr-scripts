@@ -372,17 +372,23 @@ class DRYamlValidator
   # hunting-buddy's stop_on check uses stop_on_high_threshold when it is set and
   # only falls back to the per-skillset *_exp_training_max_threshold settings
   # when it is blank, so a per-skillset value that differs from it is ignored
-  # for stop_on.
+  # for stop_on. Only skillsets that some hunt's stop_on skills belong to are
+  # checked: magic_exp_training_max_threshold, for example, is commonly set
+  # for combat-trainer alone.
   def assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(settings)
-    return if settings.stop_on_high_threshold.nil?
-    return unless settings.hunting_info&.any? { |info| info['stop_on'] }
+    return unless settings.stop_on_high_threshold
+    return unless settings.hunting_info
 
-    %w[armor weapon magic survival lore]
-      .map { |skillset| "#{skillset}_exp_training_max_threshold" }
-      .reject { |name| settings[name].nil? || settings[name] == settings.stop_on_high_threshold }
-      .each do |name|
-        warn("stop_on_high_threshold (#{settings.stop_on_high_threshold}) overrides #{name} (#{settings[name]}) for hunting-buddy's stop_on. Leave stop_on_high_threshold blank to use the per-skillset thresholds.")
-      end
+    skillsets = Lich::DragonRealms::DR_SKILLS_DATA[:skillsets]
+    settings.hunting_info
+            .flat_map { |info| Array(info['stop_on']).flatten }
+            .filter_map { |skill| skillsets.find { |_skillset, skills| skills.include?(skill) }&.first }
+            .uniq
+            .map { |skillset| "#{skillset.downcase}_exp_training_max_threshold" }
+            .reject { |name| settings[name].nil? || settings[name] == settings.stop_on_high_threshold }
+            .each do |name|
+              warn("stop_on_high_threshold (#{settings.stop_on_high_threshold}) overrides #{name} (#{settings[name]}) for hunting-buddy's stop_on. Leave stop_on_high_threshold blank to use the per-skillset thresholds.")
+            end
   end
 
   def assert_that_hunting_info_has_duration_or_stop_on(settings)
