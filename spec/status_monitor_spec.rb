@@ -672,6 +672,51 @@ RSpec.describe StatusMonitor::MessageFilter do
     end
   end
 
+  describe 'room players parsing (legacy and Saga-identity streams)' do
+    let(:legacy_players_line) do
+      "<component id='room players'>Also here: Monster Aldric, Brenna who is sitting, " \
+        'Corwin (invisible) and Druid Delphine.</component>'
+    end
+
+    let(:saga_players_line) do
+      "<component id='room players'>Also here: Monster <a exist=\"-10514490\" noun=\"Aldric\">Aldric</a>, " \
+        '<a exist="-10514491" noun="Brenna">Brenna</a> who is sitting, ' \
+        '<a exist="-10514492" noun="Corwin">Corwin</a> (invisible) and ' \
+        'Druid <a exist="-10614301" noun="Delphine">Delphine</a>.</component>'
+    end
+
+    it 'parses names from the legacy players line' do
+      filter.clean(legacy_players_line)
+      expect(filter.instance_variable_get(:@room_players)).to eq(%w[Aldric Brenna Corwin Delphine])
+    end
+
+    it 'parses names from the Saga players line, where each name is a link' do
+      filter.clean(saga_players_line)
+      expect(filter.instance_variable_get(:@room_players)).to eq(%w[Aldric Brenna Corwin Delphine])
+    end
+
+    it 'skips an entry that does not end in a name instead of storing nil' do
+      filter.clean(+"<component id='room players'>Also here: Aldric and <b>?</b>.</component>")
+      expect(filter.instance_variable_get(:@room_players)).to eq(%w[Aldric])
+    end
+
+    it 'drops a line that mentions a player from a Saga players line' do
+      filter.clean(saga_players_line)
+      expect(filter.clean(+'Delphine waves.')).to be_nil
+    end
+
+    it 'keeps processing lines after a players line with an unparseable entry' do
+      filter.clean(+"<component id='room players'>Also here: <b>?</b>.</component>")
+      expect(filter.clean(+'A cold wind blows.')).to eq('A cold wind blows.')
+    end
+
+    it 'treats the Saga room block as non-useful' do
+      line = '<resource picture="0"/><room><name>[Bosque Deriel, Burial Ground] (230007)</name>' \
+             '<description>A quiet place.</description></room>'
+      expect(filter.clean(line)).to be_nil
+    end
+  end
+
   describe 'adversarial scenarios' do
     it 'does not trigger stream state from pushStream substring in normal text' do
       filter.clean(+'Someone says, "check pushStream id="percWindow" this out"')
