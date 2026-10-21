@@ -1437,6 +1437,19 @@ module Harness
     end
 
     module DragonRealms
+      # Copy of lich-5's static skill table (lib/dragonrealms/drinfomon/
+      # drvariables.rb, DR_SKILLS_DATA[:skillsets]) for scripts that map a
+      # skill name to its skillset without the live DRSkill list.
+      DR_SKILLS_DATA = {
+        skillsets: {
+          "Armor"    => ["Shield Usage", "Light Armor", "Chain Armor", "Brigandine", "Plate Armor", "Defending", "Conviction"].freeze,
+          "Lore"     => ["Alchemy", "Appraisal", "Enchanting", "Engineering", "Forging", "Outfitting", "Performance", "Scholarship", "Tactics", "Empathy", "Bardic Lore", "Trading", "Mechanical Lore"].freeze,
+          "Weapon"   => ["Parry Ability", "Small Edged", "Large Edged", "Twohanded Edged", "Small Blunt", "Large Blunt", "Twohanded Blunt", "Slings", "Bow", "Crossbow", "Staves", "Polearms", "Light Thrown", "Heavy Thrown", "Brawling", "Offhand Weapon", "Melee Mastery", "Missile Mastery", "Expertise"].freeze,
+          "Magic"    => ["Primary Magic", "Arcana", "Attunement", "Augmentation", "Debilitation", "Targeted Magic", "Utility", "Warding", "Sorcery", "Astrology", "Summoning", "Theurgy", "Inner Magic", "Inner Fire", "Lunar Magic", "Elemental Magic", "Holy Magic", "Life Magic", "Arcane Magic"].freeze,
+          "Survival" => ["Evasion", "Athletics", "Perception", "Stealth", "Locksmithing", "Thievery", "First Aid", "Outdoorsmanship", "Skinning", "Instinct", "Backstab", "Thanatology"].freeze
+        }.freeze
+      }.freeze unless const_defined?(:DR_SKILLS_DATA)
+
       # Stand-in for lich-5's creature registry (lib/dragonrealms/creature.rb).
       # Real CreatureInstance objects expose id/noun/name plus status flags; a
       # spec only needs to seed the room roster, so any object answering the
