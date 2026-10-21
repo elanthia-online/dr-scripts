@@ -76,42 +76,51 @@ RSpec.describe DRYamlValidator do
         armor_exp_training_max_threshold: 32, weapon_exp_training_max_threshold: 32,
         magic_exp_training_max_threshold: 32, survival_exp_training_max_threshold: 32,
         lore_exp_training_max_threshold: 32,
-        hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged'] }]
+        hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged', 'Arcana'] }]
       }.merge(overrides))
     end
 
+    def check(overrides = {})
+      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(settings(overrides))
+    end
+
     it 'does not warn with the base.yaml defaults (every threshold 32)' do
-      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(settings)
+      check
       expect($warn_msgs).to be_empty
     end
 
-    it 'warns for each per-skillset threshold that stop_on_high_threshold overrides' do
-      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
-        settings(magic_exp_training_max_threshold: 10, lore_exp_training_max_threshold: 20)
-      )
+    it 'warns for each overridden threshold of a skillset a stop_on skill belongs to' do
+      check(magic_exp_training_max_threshold: 10, weapon_exp_training_max_threshold: 20)
       expect($warn_msgs.size).to eq(2)
-      expect($warn_msgs.first).to include('stop_on_high_threshold (32) overrides magic_exp_training_max_threshold (10)')
-      expect($warn_msgs.last).to include('lore_exp_training_max_threshold (20)')
+      expect($warn_msgs.join).to include('stop_on_high_threshold (32) overrides magic_exp_training_max_threshold (10)')
+      expect($warn_msgs.join).to include('weapon_exp_training_max_threshold (20)')
     end
 
-    it 'does not warn when stop_on_high_threshold is blank, since the per-skillset values apply' do
-      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
-        settings(stop_on_high_threshold: nil, magic_exp_training_max_threshold: 10)
-      )
+    it 'does not warn about a skillset no stop_on skill belongs to (e.g. magic set for combat-trainer)' do
+      check(magic_exp_training_max_threshold: 8, hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged', 'Skinning'] }])
       expect($warn_msgs).to be_empty
     end
 
-    it 'does not warn when no hunt uses stop_on' do
-      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
-        settings(magic_exp_training_max_threshold: 10, hunting_info: [{ :zone => 'rats', :duration => 30 }])
-      )
+    it 'checks stop_on skills from every hunt, including nested lists' do
+      check(lore_exp_training_max_threshold: 20,
+            hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged'] }, { :zone => 'goblins', 'stop_on' => [['Tactics']] }])
+      expect($warn_msgs.size).to eq(1)
+      expect($warn_msgs.first).to include('lore_exp_training_max_threshold (20)')
+    end
+
+    it 'does not warn when stop_on_high_threshold is blank or false, since the per-skillset values apply' do
+      check(stop_on_high_threshold: nil, magic_exp_training_max_threshold: 10)
+      check(stop_on_high_threshold: false, magic_exp_training_max_threshold: 10)
+      expect($warn_msgs).to be_empty
+    end
+
+    it 'does not warn when no hunt has stop_on skills' do
+      check(magic_exp_training_max_threshold: 10, hunting_info: [{ :zone => 'rats', :duration => 30 }, { :zone => 'rats', 'stop_on' => [] }])
       expect($warn_msgs).to be_empty
     end
 
     it 'does not warn when there is no hunting_info' do
-      instance.assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(
-        settings(magic_exp_training_max_threshold: 10, hunting_info: nil)
-      )
+      check(magic_exp_training_max_threshold: 10, hunting_info: nil)
       expect($warn_msgs).to be_empty
     end
   end
