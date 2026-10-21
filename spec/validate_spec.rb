@@ -108,6 +108,17 @@ RSpec.describe DRYamlValidator do
       expect($warn_msgs.first).to include('lore_exp_training_max_threshold (20)')
     end
 
+    it 'warns once per skillset even when several stop_on skills share it' do
+      check(weapon_exp_training_max_threshold: 20,
+            hunting_info: [{ :zone => 'rats', 'stop_on' => ['Small Edged', 'Parry Ability'] }, { :zone => 'b', 'stop_on' => ['Small Edged'] }])
+      expect($warn_msgs.size).to eq(1)
+    end
+
+    it 'does not warn about a blank per-skillset threshold' do
+      check(weapon_exp_training_max_threshold: nil)
+      expect($warn_msgs).to be_empty
+    end
+
     it 'does not warn when stop_on_high_threshold is blank or false, since the per-skillset values apply' do
       check(stop_on_high_threshold: nil, magic_exp_training_max_threshold: 10)
       check(stop_on_high_threshold: false, magic_exp_training_max_threshold: 10)
