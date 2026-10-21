@@ -493,7 +493,7 @@ class HuntingBuddy
                            when /You're not in any condition to be searching around/i
                              DRC.message("***STATUS*** You're too injured to hunt!")
                              @stop_hunting = true
-                             @stop_hunting_reason = :too_injured
+                             @stop_hunting_cause = :too_injured
                              @stopped_for_bleeding = bleeding?
                              # Ironically, return true so the search for a suitable hunting room
                              # stops and then the hunting buddy loop will detect that you need help
@@ -618,7 +618,7 @@ class HuntingBuddy
     if @stop_hunting
       # Keep before_hunt/after_hunt paired for plugins even when the hunt
       # is called off before combat-trainer starts.
-      @hunt_stop_reason = @stop_hunting_reason || :manual_stop
+      @hunt_stop_reason = @stop_hunting_cause || :manual_stop
       notify_hook(:after_hunt, self, hunting_room: hunting_room, counter: 0)
       return
     end

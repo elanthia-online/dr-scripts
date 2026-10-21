@@ -1003,7 +1003,6 @@ RSpec.describe HuntingBuddy do
     end
 
     it 'reports :too_injured when the room search found you too injured to search' do
-      reasons = []
       register(Class.new do
         def initialize(calls) = (@calls = calls)
         def after_hunt(buddy, counter:, **) = @calls << [:after_hunt, counter, buddy.hunt_stop_reason]
@@ -1022,10 +1021,9 @@ RSpec.describe HuntingBuddy do
 
       buddy.find_hunting_room?(['rats'], 851)
       buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
-      reasons << buddy.hunt_stop_reason
 
       expect(calls).to eq([[:after_hunt, 0, :too_injured]])
-      expect(reasons).to eq([:too_injured])
+      expect(buddy.hunt_stop_reason).to eq(:too_injured)
     end
 
     it 'clears the previous hunt\'s reason when a plugin ends the hunt with :break' do
