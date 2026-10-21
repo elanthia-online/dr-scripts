@@ -846,7 +846,7 @@ RSpec.describe HuntingBuddy do
     # Runs the room predicate hunting-buddy hands to find_empty_room, with
     # `say_echo` as the line the game sends back for our own empty-room say
     # and `heard` as anything else that arrives while we wait.
-    def room_judged_empty?(say_echo:, heard: nil, avoid_buddies: false, pcs: [], group: [], search_finds: nil, heard_in_search: nil)
+    def room_judged_empty?(say_echo:, heard: nil, avoid_buddies: false, pcs: [], group: [], search_finds: nil, heard_in_search: nil, arrives: nil)
       buddy.instance_variable_set(:@settings, settings)
       buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
       buddy.instance_variable_set(:@escort_zones, {})
@@ -865,6 +865,7 @@ RSpec.describe HuntingBuddy do
 
         deliver(say_echo)
         deliver(heard) if heard
+        DRRoom.pcs = DRRoom.pcs + [arrives] if arrives
       end
       allow(DRCT).to receive(:find_empty_room) { |_rooms, _idle, predicate, *_rest| predicate.call(1) }
 
@@ -893,6 +894,23 @@ RSpec.describe HuntingBuddy do
 
       it 'leaves a room where a buddy answers, with avoid_buddies' do
         expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."', avoid_buddies: true)).to be false
+      end
+
+      it 'leaves a room a buddy walks into silently while it listens, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, arrives: 'Bob')).to be false
+      end
+
+      it 'takes a room a buddy walks into silently while it listens, by default' do
+        expect(room_judged_empty?(say_echo: echo, arrives: 'Bob')).to be true
+      end
+
+      it 'is not put off by a grouped buddy\'s emote, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob nods.')).to be true
+      end
+
+      it 'matches a buddy\'s name only as a whole word' do
+        settings.hunting_buddies = ['Tim']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<prompt time="1792040467">&gt;</prompt>')).to be true
       end
 
       it 'still takes a room whose only other person is a buddy in your group, with avoid_buddies' do
