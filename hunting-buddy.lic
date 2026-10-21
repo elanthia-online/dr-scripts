@@ -16,6 +16,20 @@ class HuntingBuddy
     def register_plugin(plugin)
       @registered_plugins << plugin
     end
+
+    # Cleans up when the script exits, normally or killed (before_dying calls
+    # this). buddy is nil if hunting-buddy died before it finished starting.
+    def on_death(buddy)
+      fput('flag description on') if buddy&.instance_variable_get(:@disable_room_descriptions)
+      stop_script('combat-trainer') if Script.running?('combat-trainer')
+      buddy&.stop_running_actions
+      DRCA.release_cyclics(get_settings.cyclic_no_release)
+      Flags.flags.keys
+           .select { |flag_name| flag_name.start_with?('hunting-buddy-') }
+           .each   { |flag_name| Flags.delete(flag_name) }
+      # Let plugins clean up
+      buddy&.send(:notify_hook, :cleanup, buddy) rescue nil
+    end
   end
 
   attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
@@ -288,8 +302,10 @@ class HuntingBuddy
       DRC.message("***STATUS*** EXECUTE #{action}")
       script_args = action.split(' ')
       script_name = script_args.shift
-      start_script(script_name, script_args)
+      # Remember it before starting it, so a kill landing in between still
+      # stops it.
       (@running_actions ||= []) << script_name
+      start_script(script_name, script_args)
     end
   end
 
@@ -304,8 +320,9 @@ class HuntingBuddy
   end
 
   # Stops the 'during' scripts this hunting-buddy started and has not stopped
-  # yet. Lich does not stop a script's children when it dies, so before_dying
-  # calls this to avoid leaving them running after hunting-buddy is killed.
+  # yet. Scripts started with start_script aren't registered as this script's
+  # children, so Lich leaves them running when hunting-buddy dies; on_death
+  # calls this to stop them.
   def stop_running_actions
     stop_actions((@running_actions || []).dup)
   end
@@ -715,17 +732,7 @@ class HuntingBuddy
 end
 
 before_dying do
-  fput('flag description on') if $HUNTING_BUDDY&.instance_variable_get(:@disable_room_descriptions)
-  ['combat-trainer'].each do |script_name|
-    stop_script(script_name) if Script.running?(script_name)
-  end
-  $HUNTING_BUDDY&.stop_running_actions
-  DRCA.release_cyclics(get_settings.cyclic_no_release)
-  Flags.flags.keys
-       .select { |flag_name| flag_name.start_with?('hunting-buddy-') }
-       .each   { |flag_name| Flags.delete(flag_name) }
-  # Let plugins clean up
-  $HUNTING_BUDDY&.send(:notify_hook, :cleanup, $HUNTING_BUDDY) rescue nil
+  HuntingBuddy.on_death($HUNTING_BUDDY)
 end
 
 # Load plugins from custom directory

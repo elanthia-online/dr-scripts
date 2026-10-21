@@ -835,40 +835,61 @@ RSpec.describe HuntingBuddy do
   # 'during' scripts are stopped when hunting-buddy dies mid-hunt
   # ===========================================================================
 
-  describe '#stop_running_actions' do
+  describe '.on_death' do
     let(:buddy) { HuntingBuddy.allocate }
-    let(:running) { [] }
+    let(:stopped) { [] }
 
     before do
       allow(DRC).to receive(:message)
-      allow(buddy).to receive(:start_script) { |name, _args| running << name }
-      allow(buddy).to receive(:stop_script) { |name| running.delete(name) }
-      allow(Script).to receive(:running?) { |name| running.include?(name) }
+      allow(buddy).to receive(:start_script)
+      allow(buddy).to receive(:stop_script) { |name| stopped << name }
+      allow(HuntingBuddy).to receive(:stop_script) { |name| stopped << name }
+      allow(HuntingBuddy).to receive(:fput)
+      allow(HuntingBuddy).to receive(:get_settings).and_return(OpenStruct.new(cyclic_no_release: []))
+      allow(DRCA).to receive(:release_cyclics)
+      # Report every script as running, so only hunting-buddy's own record of
+      # what it started decides what gets stopped.
+      allow(Script).to receive(:running?).and_return(true)
     end
 
-    it 'stops every during script started for the current hunt' do
+    it 'stops the during scripts of a hunt that is still running' do
       buddy.execute_nonblocking_actions(['tendme', 'performance fast'])
 
-      buddy.stop_running_actions
+      HuntingBuddy.on_death(buddy)
 
-      expect(buddy).to have_received(:stop_script).with('tendme')
-      expect(buddy).to have_received(:stop_script).with('performance')
-      expect(running).to be_empty
+      expect(stopped).to include('tendme', 'performance')
     end
 
-    it 'does nothing for scripts the hunt loop already stopped' do
-      buddy.execute_nonblocking_actions(['tendme'])
-      buddy.stop_actions(['tendme'])
+    it 'does not stop during scripts again after the hunt already stopped them' do
+      buddy.execute_nonblocking_actions(['performance fast'])
+      buddy.stop_actions(['performance fast'])
+      stopped.clear
 
-      buddy.stop_running_actions
+      HuntingBuddy.on_death(buddy)
 
-      expect(buddy).to have_received(:stop_script).with('tendme').once
+      expect(stopped).to eq(['combat-trainer'])
     end
 
-    it 'does nothing when no during scripts were ever started' do
-      buddy.stop_running_actions
+    it 'stops combat-trainer and cleans up when hunting-buddy died while starting up' do
+      Flags.add('hunting-buddy-room-check', /x/)
 
-      expect(buddy).not_to have_received(:stop_script)
+      expect { HuntingBuddy.on_death(nil) }.not_to raise_error
+
+      expect(stopped).to eq(['combat-trainer'])
+      expect(Flags.flags.keys).not_to include('hunting-buddy-room-check')
+    end
+
+    it 'gives plugins their cleanup hook' do
+      plugin = Object.new
+      seen = []
+      plugin.define_singleton_method(:cleanup) { |b| seen << b }
+      HuntingBuddy.register_plugin(plugin)
+
+      HuntingBuddy.on_death(buddy)
+
+      expect(seen).to eq([buddy])
+    ensure
+      HuntingBuddy.instance_variable_set(:@registered_plugins, [])
     end
   end
 end
