@@ -932,6 +932,31 @@ RSpec.describe HuntingBuddy do
         expect { room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."') }.not_to raise_error
       end
 
+      it 'takes a room where a grouped buddy written in lower case speaks, with avoid_buddies' do
+        settings.hunting_buddies = ['bob']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob says, "Here we go."')).to be true
+      end
+
+      it 'takes a room where SEARCH finds a grouped buddy hiding, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, group: ['Bob'],
+                                  search_finds: 'You notice Bob, who is hiding.', heard_in_search: 'You notice Bob, who is hiding.')).to be true
+      end
+
+      it 'does not read a longer name as the buddy (word boundary)' do
+        settings.hunting_buddies = ['Tim']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: 'Timothy nods.')).to be true
+      end
+
+      it 'ignores a buddy named in an ESP thought or a logon, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<pushStream id="thoughts"/>Your mind hears Bob thinking, "hi"<popStream/>')).to be true
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<pushStream id="logons"/> * Bob joins the adventure.<popStream/>')).to be true
+      end
+
+      it 'ignores a blank string entry in hunting_buddies' do
+        settings.hunting_buddies = ['', 'Bob']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: 'A breeze blows in.')).to be true
+      end
+
       it 'matches a buddy\'s name only as a whole word' do
         settings.hunting_buddies = ['Tim']
         expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<prompt time="1792040467">&gt;</prompt>')).to be true
@@ -1145,7 +1170,6 @@ RSpec.describe HuntingBuddy do
     end
 
     it 'reports :too_injured when the room search found you too injured to search' do
-      reasons = []
       register(Class.new do
         def initialize(calls) = (@calls = calls)
         def after_hunt(buddy, counter:, **) = @calls << [:after_hunt, counter, buddy.hunt_stop_reason]
@@ -1164,10 +1188,9 @@ RSpec.describe HuntingBuddy do
 
       buddy.find_hunting_room?(['rats'], 851)
       buddy.hunt(HuntingBuddy::HuntPlan.new(args: [], duration: 30))
-      reasons << buddy.hunt_stop_reason
 
       expect(calls).to eq([[:after_hunt, 0, :too_injured]])
-      expect(reasons).to eq([:too_injured])
+      expect(buddy.hunt_stop_reason).to eq(:too_injured)
     end
 
     it 'clears the previous hunt\'s reason when a plugin ends the hunt with :break' do
@@ -1272,6 +1295,23 @@ RSpec.describe HuntingBuddy do
       expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
       expect(searched).to eq([[5, 6]])
       expect(escorted).to be_empty
+    end
+
+    it 'searches the base zone\'s rooms for a custom entry that lists none' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['rats'] = []
+      search_result(true)
+
+      buddy.find_hunting_room?(%w[rats], 851)
+
+      expect(searched).to eq([[1, 2]])
+    end
+
+    it 'still escorts into an escort zone whose custom entry lists no rooms' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['ship'] = []
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
+      expect(escorted).to eq([['bescort', %w[ship_area board]]])
     end
 
     it 'exits when no zone in the list has any rooms' do
@@ -1400,8 +1440,9 @@ RSpec.describe HuntingBuddy do
       expect(searches_for(['brewery'], 3, {})).to eq(1)
     end
 
-    it 'uses the base rooms for a custom entry with no rooms' do
+    it 'uses the base rooms for a custom entry with no rooms (nil or an empty list)' do
       expect(searches_for(['brewery'], 3, { 'brewery' => nil })).to eq(1)
+      expect(searches_for(['brewery'], 3, { 'brewery' => [] })).to eq(1)
     end
 
     it 'stays when two custom zones overlap and the hunt names the second' do
@@ -1703,7 +1744,7 @@ RSpec.describe HuntingBuddy do
 
       expect(events).not_to include([:hunt, ['b']])
       expect(events).to include([:message, '***STATUS*** Stopping all hunting because manual intervention'])
-      expect(events.last(4)).to include([:run, 'second-after', []])
+      expect(without_messages.last).to eq([:run, 'second-after', []])
     end
 
     it 'retreats, stops tendme and runs the next hunt\'s after scripts when a hunt ended bleeding' do
@@ -1810,6 +1851,50 @@ RSpec.describe HuntingBuddy do
 
       expect(DRCT).to have_received(:walk_to).with(851)
       expect(gear).to have_received(:wear_equipment_set?).with('standard')
+    end
+
+    context 'across several hunts' do
+      # A skip moves on to the next hunt; a stop ends all hunting.
+      before do
+        allow(buddy).to receive_messages(in_hunting_zone?: false, should_stop_for_high_skills?: false,
+                                         get_skills_below_low_threshold: [])
+      end
+
+      {
+        'boxes'       => [{ 'boxes' => true }, ->(b) { allow(b).to receive(:need_boxes?).and_return(false, true) }],
+        'moons'       => [{ 'moons' => true }, ->(_b) { allow(DRCMM).to receive(:moons_visible?).and_return(false, true) }],
+        'encumbrance' => [{ 'stop_on_encumbrance' => 3 }, ->(b) { allow(b).to receive(:encumbered?).and_return(true, false) }],
+        'stop_on'     => [{ 'stop_on' => ['Evasion'] }, ->(b) { allow(b).to receive(:should_stop_for_high_skills?).and_return(true, false) }],
+        'stop_on_low' => [{ 'stop_on_low' => ['Forging'] }, ->(b) { allow(b).to receive(:get_skills_below_low_threshold).and_return(['Forging'], []) }],
+        'no room'     => [{}, ->(b) { calls = 0; allow(b).to receive(:find_hunting_room?) { |z, *_| events << [:find_room, z]; (calls += 1) > 1 } }],
+      }.each do |kind, (override, setup)|
+        it "goes on to the next hunt after a #{kind} skip" do
+          instance_exec(buddy, &setup)
+          run_main(hunt_info(override), hunt_info('args' => ['b']))
+          expect(events).not_to include([:hunt, ['a']])
+          expect(events).to include([:hunt, ['b']])
+        end
+      end
+
+      it 'runs no later hunt\'s after scripts once manual stop has ended hunting' do
+        allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] && buddy.stop_hunting }
+        run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']), hunt_info('args' => ['c'], 'after' => ['third-after']))
+        expect(events).not_to include([:run, 'third-after', []])
+      end
+
+      it 'retreats once and runs no later hunt\'s after scripts once a hunt ended bleeding' do
+        allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] && buddy.stopped_for_bleeding = true }
+        run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']), hunt_info('args' => ['c'], 'after' => ['third-after']))
+        expect(events.count([:retreat])).to eq(1)
+        expect(events).not_to include([:run, 'third-after', []])
+      end
+
+      it 'starts no later hunt once the room search found you bleeding' do
+        allow(buddy).to receive(:find_hunting_room?) { |z, *_| events << [:find_room, z]; buddy.stopped_for_bleeding = true }
+        run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']))
+        expect(events.count { |e| e.first == :find_room }).to eq(1)
+        expect(events).not_to include([:run, 'second-after', []])
+      end
     end
   end
 
@@ -1973,83 +2058,6 @@ RSpec.describe HuntingBuddy do
         stop_on_high_skills: ['Evasion'], stop_on_low_skills: ['Forging'], stop_on_encumbrance: 3,
         stop_on_burgle_cooldown: true, prefer_buddies: true, avoid_buddies: false
       )
-    end
-  end
-
-  # ===========================================================================
-  # main: a skip moves on to the next hunt; a stop ends all hunting
-  # ===========================================================================
-
-  describe '#main sequences across hunts' do
-    let(:buddy) { HuntingBuddy.allocate }
-    let(:events) { [] }
-    let(:running) { [] }
-
-    def hunt_info(overrides = {})
-      { :zone => 'rats', :duration => 30, 'args' => ['a'], 'before' => ['prep'], 'after' => ['wrapup x'], 'during' => ['tendme'] }.merge(overrides)
-    end
-
-    def run_main(*infos)
-      buddy.instance_variable_set(:@hunting_info, infos)
-      buddy.main
-    end
-
-    before do
-      buddy.instance_variable_set(:@settings, OpenStruct.new(sell_loot_skip_bank: true, safe_room: 851, cyclic_no_release: []))
-      allow(buddy).to receive(:check_bundling_rope)
-      allow(buddy).to receive(:check_prehunt_buffs)
-      allow(buddy).to receive_messages(need_boxes?: true, encumbered?: false, in_hunting_zone?: false,
-                                       should_stop_for_high_skills?: false, get_skills_below_low_threshold: [])
-      allow(buddy).to receive(:find_hunting_room?) { |zones, *_| events << [:find_room, zones] && true }
-      allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] }
-      allow(buddy).to receive(:start_script) { |name, _args| events << [:start, name] && running << name }
-      allow(buddy).to receive(:stop_script) { |name| events << [:stop, name] && running.delete(name) }
-      allow(Script).to receive(:running?) { |name| running.include?(name) }
-      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| events << [:run, name, args] }
-      allow(DRC).to receive(:message) { |message| events << [:message, message] }
-      allow(DRC).to receive(:retreat) { events << [:retreat] }
-      allow(DRC).to receive(:bput).with('stow feet', any_args).and_return('Stow what?')
-      allow(DRC).to receive_messages(right_hand: nil, left_hand: nil)
-      allow(DRCA).to receive(:release_cyclics)
-      allow(DRCMM).to receive(:moons_visible?).and_return(true)
-      allow(DRCT).to receive(:walk_to)
-      allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
-    end
-
-    {
-      'boxes'       => [{ 'boxes' => true }, ->(b) { allow(b).to receive(:need_boxes?).and_return(false, true) }],
-      'moons'       => [{ 'moons' => true }, ->(_b) { allow(DRCMM).to receive(:moons_visible?).and_return(false, true) }],
-      'encumbrance' => [{ 'stop_on_encumbrance' => 3 }, ->(b) { allow(b).to receive(:encumbered?).and_return(true, false) }],
-      'stop_on'     => [{ 'stop_on' => ['Evasion'] }, ->(b) { allow(b).to receive(:should_stop_for_high_skills?).and_return(true, false) }],
-      'stop_on_low' => [{ 'stop_on_low' => ['Forging'] }, ->(b) { allow(b).to receive(:get_skills_below_low_threshold).and_return(['Forging'], []) }],
-      'no room'     => [{}, ->(b) { calls = 0; allow(b).to receive(:find_hunting_room?) { |z, *_| events << [:find_room, z]; (calls += 1) > 1 } }],
-    }.each do |kind, (override, setup)|
-      it "goes on to the next hunt after a #{kind} skip" do
-        instance_exec(buddy, &setup)
-        run_main(hunt_info(override), hunt_info('args' => ['b']))
-        expect(events).not_to include([:hunt, ['a']])
-        expect(events).to include([:hunt, ['b']])
-      end
-    end
-
-    it 'runs no later hunt\'s after scripts once manual stop has ended hunting' do
-      allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] && buddy.stop_hunting }
-      run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']), hunt_info('args' => ['c'], 'after' => ['third-after']))
-      expect(events).not_to include([:run, 'third-after', []])
-    end
-
-    it 'retreats once and runs no later hunt\'s after scripts once a hunt ended bleeding' do
-      allow(buddy).to receive(:hunt) { |plan| events << [:hunt, plan.args] && buddy.stopped_for_bleeding = true }
-      run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']), hunt_info('args' => ['c'], 'after' => ['third-after']))
-      expect(events.count([:retreat])).to eq(1)
-      expect(events).not_to include([:run, 'third-after', []])
-    end
-
-    it 'starts no later hunt once the room search found you bleeding' do
-      allow(buddy).to receive(:find_hunting_room?) { |z, *_| events << [:find_room, z]; buddy.stopped_for_bleeding = true }
-      run_main(hunt_info, hunt_info('args' => ['b'], 'after' => ['second-after']))
-      expect(events.count { |e| e.first == :find_room }).to eq(1)
-      expect(events).not_to include([:run, 'second-after', []])
     end
   end
 end
