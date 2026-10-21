@@ -908,6 +908,30 @@ RSpec.describe HuntingBuddy do
         expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob nods.')).to be true
       end
 
+      it 'takes a room where a grouped buddy speaks, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob says, "Here we go."')).to be true
+      end
+
+      it 'still leaves when an ungrouped buddy speaks alongside a grouped one, with avoid_buddies' do
+        settings.hunting_buddies = %w[Bob Ann]
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, group: ['Bob'], heard: 'Ann says, "Mine."')).to be false
+      end
+
+      it 'does not read an ordinary word as a buddy named like it' do
+        settings.hunting_buddies = ['Will']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: 'The wind will not let up.')).to be true
+      end
+
+      it 'matches a buddy written in lower case in the yaml' do
+        settings.hunting_buddies = ['bob']
+        expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."')).to be true
+      end
+
+      it 'ignores a blank entry in hunting_buddies' do
+        settings.hunting_buddies = ['Bob', nil]
+        expect { room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."') }.not_to raise_error
+      end
+
       it 'matches a buddy\'s name only as a whole word' do
         settings.hunting_buddies = ['Tim']
         expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<prompt time="1792040467">&gt;</prompt>')).to be true

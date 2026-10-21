@@ -534,7 +534,8 @@ class HuntingBuddy
   #   entered), false when the search gave up; a find_room plugin's result
   #   is returned as-is
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
-    UserVars.friends = @settings.hunting_buddies || []
+    # Drop blank entries (an empty `- ` in the yaml list loads as nil).
+    UserVars.friends = Array(@settings.hunting_buddies).compact.map(&:to_s)
     UserVars.hunting_nemesis = @settings.hunting_nemesis || []
 
     # Forget the previous hunt's escort zone, whoever finds this hunt's room.
@@ -638,7 +639,9 @@ class HuntingBuddy
                            return false if (DRRoom.pcs - DRRoom.group_members).any?
 
                            # No visible friends in the room and no visible people
-                           UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", /\b#{Regexp.escape(friend)}\b/i) }
+                           # The game always capitalises names, so match the capitalised name as a
+                           # whole word ("Will" shouldn't match "will not").
+                           UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", /\b#{Regexp.escape(friend.capitalize)}\b/) }
                            Flags.add('hunting-buddy-room-check',
                                      # someone else speaks: the speaker (after any leading
                                      # XML tags or spaces) isn't "You", so our own echo of the
@@ -659,8 +662,8 @@ class HuntingBuddy
                              if data.grep(/vague silhouette|You notice \w+, who is|see signs that/).any?
                                pause
                                waitrt?
-                               # Someone is hidden here: only a buddy who spoke up is welcome, and
-                               # not even that with avoid_buddies.
+                               # Someone is hidden here. Take the room only if a buddy has been named
+                               # (found by the SEARCH, or speaking up) -- never with avoid_buddies.
                                return false if avoid_buddies
 
                                return UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
@@ -669,11 +672,10 @@ class HuntingBuddy
                              room_is_empty = true
                              20.times do |_|
                                pause 0.5
-                               # With avoid_buddies a buddy in your group is still welcome, so their
-                               # lines (emotes, group chatter) don't count against the room.
-                               watched = avoid_buddies ? UserVars.friends - DRRoom.group_members : UserVars.friends
-                               buddy_spoke = watched.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
-                               return !avoid_buddies if buddy_spoke
+                               # A buddy was heard: the room is theirs to share by default; with
+                               # avoid_buddies only buddies in your group are welcome.
+                               heard = UserVars.friends.select { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return !avoid_buddies || (heard - DRRoom.group_members).empty? unless heard.empty?
                                return false if Flags['hunting-buddy-room-check']
 
                                welcome = avoid_buddies ? DRRoom.group_members : DRRoom.group_members + UserVars.friends
