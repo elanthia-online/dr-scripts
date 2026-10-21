@@ -943,6 +943,20 @@ RSpec.describe HuntingBuddy do
       HuntingBuddy.register_plugin(plugin_class.new(calls))
     end
 
+    it 'turns room descriptions off for the hunt and back on after, from the plan' do
+      sent = []
+      allow(buddy).to receive(:fput) { |command| sent << command }
+      register(Class.new do
+        def initialize(calls) = (@calls = calls)
+        def hunt_tick(*) = :break
+      end)
+
+      buddy.hunt(HuntingBuddy::HuntPlan.new(args: [], duration: 30, disable_room_descriptions: true))
+
+      expect(sent).to include('flag description off', 'flag description on')
+      expect(buddy.instance_variable_get(:@disable_room_descriptions)).to be true
+    end
+
     it 'fires after_hunt with counter 0 when a before_hunt plugin calls the hunt off' do
       register(Class.new do
         def initialize(calls) = (@calls = calls)

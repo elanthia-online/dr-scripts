@@ -582,6 +582,8 @@ class HuntingBuddy
   def hunt(plan)
     $COMBAT_TRAINER = nil
     @hunt_stop_reason = nil
+    # Kept in an ivar too: before_dying turns room descriptions back on from it.
+    @disable_room_descriptions = plan.disable_room_descriptions
     hunting_room = Room.current.id
 
     notify_hook(:before_hunt, self, hunting_room: hunting_room)
