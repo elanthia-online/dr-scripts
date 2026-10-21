@@ -886,6 +886,17 @@ RSpec.describe HuntingBuddy do
       expect(stopped).to eq(['combat-trainer'])
     end
 
+    it 'stops a during script that hunting-buddy was killed while starting' do
+      # The kill lands inside start_script, after the script exists but before
+      # start_script returns.
+      allow(buddy).to receive(:start_script) { |name, _args| raise(Interrupt, "killed starting #{name}") }
+
+      expect { buddy.execute_nonblocking_actions(['tendme']) }.to raise_error(Interrupt)
+      HuntingBuddy.on_death(buddy)
+
+      expect(stopped).to include('tendme')
+    end
+
     it 'stops combat-trainer and cleans up when hunting-buddy died while starting up' do
       Flags.add('hunting-buddy-room-check', /x/)
 

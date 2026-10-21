@@ -18,7 +18,9 @@ class HuntingBuddy
     end
 
     # Cleans up when the script exits, normally or killed (before_dying calls
-    # this). buddy is nil if hunting-buddy died before it finished starting.
+    # this with $HUNTING_BUDDY). If hunting-buddy died before it finished
+    # starting, buddy is nil -- or the instance from an earlier run in this
+    # Lich session, since $HUNTING_BUDDY is only replaced once new returns.
     def on_death(buddy)
       fput('flag description on') if buddy&.instance_variable_get(:@disable_room_descriptions)
       stop_script('combat-trainer') if Script.running?('combat-trainer')
