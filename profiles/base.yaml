@@ -655,6 +655,7 @@ safety_escape_health_threshold:
 # Room that you will use to prebuff your character before a hunt, utilizes the prehunt_buffs waggle set.
 prehunt_buffing_room:
 # Minimum perc mana to look for in a hunting room. If hunting_room_strict_mana is true, then it will skip a hunt if it can't find the mana
+# (unless the hunt's :zone: list has an escort zone to fall back on; escort zones aren't checked for mana).
 hunting_room_min_mana: 0
 hunting_room_strict_mana: false
 # When unable to find a room to hunt in,
