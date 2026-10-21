@@ -403,8 +403,9 @@ class HuntingBuddy
                                       # No visible friends in the room and no visible people
                                       UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
                                       Flags.add('hunting-buddy-room-check',
-                                                # someone speaks
-                                                /says?, /,
+                                                # someone speaks (but not our own "You say, " echo
+                                                # of the empty_hunting_room_messages line)
+                                                /(?<!You )\bsays?, /,
                                                 /You hear/,
                                                 # someone attacks from the shadows
                                                 /Someone snipes a/,

@@ -758,4 +758,76 @@ RSpec.describe HuntingBuddy do
       end
     end
   end
+
+  # ===========================================================================
+  # Room check: is the candidate hunting room empty?
+  # ===========================================================================
+
+  describe '#find_hunting_room? empty-room check' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:settings) do
+      OpenStruct.new(
+        custom_hunting_zones: {},
+        hunting_buddies: [],
+        hunting_nemesis: [],
+        empty_hunting_room_messages: ['Is anyone hunting here?'],
+        hunting_room_min_mana: 0,
+        hunting_room_strict_mana: false,
+        hunting_room_max_searches: 30
+      )
+    end
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # Runs the room predicate hunting-buddy hands to find_empty_room, with
+    # `say_echo` as the line the game sends back for our own empty-room say
+    # and `heard` as anything else that arrives while we wait.
+    def room_judged_empty?(say_echo:, heard: nil)
+      buddy.instance_variable_set(:@settings, settings)
+      buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
+      buddy.instance_variable_set(:@escort_zones, {})
+      buddy.instance_variable_set(:@hunting_buddies_max, 2)
+      DRRoom.pcs = []
+      DRRoom.group_members = []
+      allow(DRC).to receive(:bput).with('search', any_args).and_return('Roundtime: 3 sec.')
+      allow(buddy).to receive(:reget).and_return([])
+      allow(buddy).to receive(:pause)
+      allow(buddy).to receive(:fput) do |command|
+        next unless command.start_with?('say ')
+
+        deliver(say_echo)
+        deliver(heard) if heard
+      end
+      allow(DRCT).to receive(:find_empty_room) { |_rooms, _idle, predicate, *_rest| predicate.call(1) }
+
+      buddy.find_hunting_room?(['rats'], 851)
+    end
+
+    it 'does not treat its own plain-text say echo as someone else speaking' do
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"')).to be true
+    end
+
+    it 'does not treat its own speech-preset say echo as someone else speaking' do
+      expect(room_judged_empty?(say_echo: %(<preset id='speech'>You say, "Is anyone hunting here?"</preset>))).to be true
+    end
+
+    it 'still leaves the room when another player answers' do
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: 'Bob says, "I am."')).to be false
+    end
+
+    it 'still leaves the room when another player answers in a speech preset' do
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: %(<preset id='speech'>Bob says, "I am."</preset>))).to be false
+    end
+  end
 end
