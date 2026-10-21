@@ -180,18 +180,12 @@ class HuntingBuddy
       end
 
       if @stop_hunting
-        DRC.message("***STATUS*** Stopping all hunting because manual intervention")
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        skip_hunt("***STATUS*** Stopping all hunting because manual intervention", during_actions, after_actions)
         break
       end
 
       if @stopped_for_bleeding
-        DRC.message("***STATUS*** Stopping all hunting because bleeding")
-        DRC.retreat
-        stop_script('tendme') if Script.running?('tendme')
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        stop_for_bleeding(during_actions, after_actions)
         break
       end
 
@@ -206,30 +200,22 @@ class HuntingBuddy
       execute_actions(before_actions)
 
       if stop_on_no_moons && !DRCMM.moons_visible?
-        DRC.message("***STATUS*** Skipping hunt because no moons")
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        skip_hunt("***STATUS*** Skipping hunt because no moons", during_actions, after_actions)
         next
       end
 
       if encumbered?(stop_on_encumbrance)
-        DRC.message("***STATUS*** Skipping hunt because encumbrance: #{DRStats.encumbrance}, threshold: #{stop_on_encumbrance}")
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        skip_hunt("***STATUS*** Skipping hunt because encumbrance: #{DRStats.encumbrance}, threshold: #{stop_on_encumbrance}", during_actions, after_actions)
         next
       end
 
       if should_stop_for_high_skills?(stop_on_high_skills)
-        DRC.message("***STATUS*** Skipping hunt because skills reached learning threshold: #{stop_on_high_skills}")
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        skip_hunt("***STATUS*** Skipping hunt because skills reached learning threshold: #{stop_on_high_skills}", during_actions, after_actions)
         next
       end
 
       if should_stop_for_low_skills?(stop_on_low_skills)
-        DRC.message("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{get_skills_below_low_threshold(stop_on_low_skills).join(", ")}")
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        skip_hunt("***STATUS*** Skipping hunt because skills dropped below learning threshold: #{get_skills_below_low_threshold(stop_on_low_skills).join(", ")}", during_actions, after_actions)
         next
       end
 
@@ -244,11 +230,7 @@ class HuntingBuddy
       end
 
       if @stopped_for_bleeding
-        DRC.message("***STATUS*** Stopping all hunting because bleeding")
-        DRC.retreat
-        stop_script('tendme') if Script.running?('tendme')
-        stop_actions(during_actions)
-        execute_actions(after_actions)
+        stop_for_bleeding(during_actions, after_actions)
         break
       end
 
@@ -286,30 +268,49 @@ class HuntingBuddy
     EquipmentManager.new(@settings).wear_equipment_set?(worngear)
   end
 
+  # Ends a hunt that won't go ahead (or all hunting): says why, stops the
+  # hunt's during scripts and runs its after scripts.
+  def skip_hunt(message, during_actions, after_actions)
+    DRC.message(message)
+    stop_actions(during_actions)
+    execute_actions(after_actions)
+  end
+
+  def stop_for_bleeding(during_actions, after_actions)
+    DRC.message("***STATUS*** Stopping all hunting because bleeding")
+    DRC.retreat
+    stop_script('tendme') if Script.running?('tendme')
+    stop_actions(during_actions)
+    execute_actions(after_actions)
+  end
+
+  # Splits an action like "buff prehunt" into the script name and its args.
+  def parse_action(action)
+    script_args = action.split(' ')
+    [script_args.shift, script_args]
+  end
+
   def execute_actions(actions)
-    actions.each do |action|
+    Array(actions).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
-      script_args = action.split(' ')
-      script_name = script_args.shift
+      script_name, script_args = parse_action(action)
       DRC.wait_for_script_to_complete(script_name, script_args)
     end
   end
 
   def execute_nonblocking_actions(actions)
-    actions.each do |action|
+    Array(actions).each do |action|
       DRC.message("***STATUS*** EXECUTE #{action}")
-      script_args = action.split(' ')
-      script_name = script_args.shift
+      script_name, script_args = parse_action(action)
       start_script(script_name, script_args)
       (@running_actions ||= []) << script_name
     end
   end
 
   def stop_actions(actions)
-    actions.each do |action|
+    Array(actions).each do |action|
       DRC.message("***STATUS*** STOP #{action}")
-      script_args = action.split(' ')
-      script_name = script_args.shift
+      script_name, = parse_action(action)
       stop_script(script_name) if Script.running?(script_name)
       @running_actions&.delete(script_name)
     end

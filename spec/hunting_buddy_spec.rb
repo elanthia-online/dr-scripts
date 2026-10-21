@@ -1291,7 +1291,15 @@ RSpec.describe HuntingBuddy do
       run_main(hunt_info)
 
       expect(events).not_to include([:hunt, ['a']])
+      expect(events.drop_while { |event| event != [:message, '***STATUS*** Stopping all hunting because bleeding'] }.reject { |e| e.first == :message })
+        .to eq([[:retreat], [:run, 'wrapup', ['x']]])
       expect(without_messages).to eq([[:run, 'prep', []], [:retreat], [:run, 'wrapup', ['x']]])
+    end
+
+    it 'treats a hunt with no before, during or after keys as having none' do
+      run_main({ :zone => 'rats', :duration => 30, 'args' => [] })
+
+      expect(without_messages).to eq([[:find_room, ['rats']], [:hunt, []]])
     end
 
     it 'leaves an escort zone after the hunt' do
