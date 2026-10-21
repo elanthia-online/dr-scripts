@@ -830,4 +830,45 @@ RSpec.describe HuntingBuddy do
       expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: %(<preset id='speech'>Bob says, "I am."</preset>))).to be false
     end
   end
+
+  # ===========================================================================
+  # 'during' scripts are stopped when hunting-buddy dies mid-hunt
+  # ===========================================================================
+
+  describe '#stop_running_actions' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:running) { [] }
+
+    before do
+      allow(DRC).to receive(:message)
+      allow(buddy).to receive(:start_script) { |name, _args| running << name }
+      allow(buddy).to receive(:stop_script) { |name| running.delete(name) }
+      allow(Script).to receive(:running?) { |name| running.include?(name) }
+    end
+
+    it 'stops every during script started for the current hunt' do
+      buddy.execute_nonblocking_actions(['tendme', 'performance fast'])
+
+      buddy.stop_running_actions
+
+      expect(buddy).to have_received(:stop_script).with('tendme')
+      expect(buddy).to have_received(:stop_script).with('performance')
+      expect(running).to be_empty
+    end
+
+    it 'does nothing for scripts the hunt loop already stopped' do
+      buddy.execute_nonblocking_actions(['tendme'])
+      buddy.stop_actions(['tendme'])
+
+      buddy.stop_running_actions
+
+      expect(buddy).to have_received(:stop_script).with('tendme').once
+    end
+
+    it 'does nothing when no during scripts were ever started' do
+      buddy.stop_running_actions
+
+      expect(buddy).not_to have_received(:stop_script)
+    end
+  end
 end

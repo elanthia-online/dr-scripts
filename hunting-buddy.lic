@@ -289,6 +289,7 @@ class HuntingBuddy
       script_args = action.split(' ')
       script_name = script_args.shift
       start_script(script_name, script_args)
+      (@running_actions ||= []) << script_name
     end
   end
 
@@ -298,7 +299,15 @@ class HuntingBuddy
       script_args = action.split(' ')
       script_name = script_args.shift
       stop_script(script_name) if Script.running?(script_name)
+      @running_actions&.delete(script_name)
     end
+  end
+
+  # Stops the 'during' scripts this hunting-buddy started and has not stopped
+  # yet. Lich does not stop a script's children when it dies, so before_dying
+  # calls this to avoid leaving them running after hunting-buddy is killed.
+  def stop_running_actions
+    stop_actions((@running_actions || []).dup)
   end
 
   # ------------------------------------------------------------
@@ -710,6 +719,7 @@ before_dying do
   ['combat-trainer'].each do |script_name|
     stop_script(script_name) if Script.running?(script_name)
   end
+  $HUNTING_BUDDY&.stop_running_actions
   DRCA.release_cyclics(get_settings.cyclic_no_release)
   Flags.flags.keys
        .select { |flag_name| flag_name.start_with?('hunting-buddy-') }
