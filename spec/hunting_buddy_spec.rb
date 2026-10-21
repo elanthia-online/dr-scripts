@@ -871,4 +871,80 @@ RSpec.describe HuntingBuddy do
       expect(buddy).not_to have_received(:stop_script)
     end
   end
+
+  # ===========================================================================
+  # hunt: plugin lifecycle hooks and the stop reason
+  # ===========================================================================
+
+  describe '#hunt lifecycle' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:calls) { [] }
+
+    # Stand-in for combat-trainer's $COMBAT_TRAINER: running until stopped.
+    let(:combat_trainer) do
+      Class.new do
+        def running = !@stopped
+        def stop = (@stopped = true)
+      end.new
+    end
+
+    before do
+      buddy.instance_variable_set(:@settings, OpenStruct.new(health_threshold: 0, stop_hunting_if_bleeding: false))
+      buddy.instance_variable_set(:@stop_on_familiar_drag, false)
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 100))
+      allow(DRC).to receive(:message)
+      allow(DRC).to receive(:verify_script).and_return(true)
+      allow(DRC).to receive(:retreat)
+      allow(DRStats).to receive(:health).and_return(100)
+      allow(Script).to receive(:running?).and_return(false)
+      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = combat_trainer }
+      allow(buddy).to receive(:pause)
+      allow(buddy).to receive(:clear)
+      allow(buddy).to receive(:fput)
+      allow(buddy).to receive(:encumbered?).and_return(false)
+    end
+
+    after do
+      HuntingBuddy.instance_variable_set(:@registered_plugins, [])
+      $COMBAT_TRAINER = nil
+    end
+
+    def register(plugin_class)
+      HuntingBuddy.register_plugin(plugin_class.new(calls))
+    end
+
+    it 'fires after_hunt with counter 0 when a before_hunt plugin calls the hunt off' do
+      register(Class.new do
+        def initialize(calls) = (@calls = calls)
+        def before_hunt(buddy, hunting_room:) = (@calls << [:before_hunt, hunting_room]) && buddy.stop_hunting
+        def after_hunt(_buddy, hunting_room:, counter:) = @calls << [:after_hunt, hunting_room, counter]
+      end)
+
+      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+
+      expect(calls).to eq([[:before_hunt, 100], [:after_hunt, 100, 0]])
+      expect(buddy).not_to have_received(:start_script)
+    end
+
+    it 'reports :manual_stop, not the previous hunt\'s reason, when the hunt is called off early' do
+      buddy.hunt_stop_reason = :duration
+      buddy.stop_hunting
+
+      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+
+      expect(buddy.hunt_stop_reason).to eq(:manual_stop)
+    end
+
+    it 'clears the previous hunt\'s reason when a plugin ends the hunt with :break' do
+      register(Class.new do
+        def initialize(calls) = (@calls = calls)
+        def hunt_tick(*) = :break
+      end)
+      buddy.hunt_stop_reason = :duration
+
+      buddy.hunt([], 30, nil, nil, nil, nil, nil, nil)
+
+      expect(buddy.hunt_stop_reason).to be_nil
+    end
+  end
 end
