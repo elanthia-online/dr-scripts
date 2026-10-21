@@ -1108,10 +1108,15 @@ class DRYamlValidator
     warn('prehunt_buffs is deprecated, please change to prehunt_buffing_room: <num>.')
   end
 
+  # Same lookups hunting-buddy makes: the waggle set named by
+  # prehunt_buff_waggle (default prehunt_buffs), and prehunt_buffing_room or
+  # the deprecated prehunt_buffs room.
   def assert_that_prehunt_buffing_room_exists_without_waggle_set(settings)
-    return unless settings.waggle_sets['prehunt_buffs'] && settings.prehunt_buffing_room.nil?
+    waggle = settings.prehunt_buff_waggle || 'prehunt_buffs'
+    return unless (settings.waggle_sets || {})[waggle]
+    return unless (settings.prehunt_buffing_room || settings.prehunt_buffs).nil?
 
-    warn('You have a prehunt_buffs waggle set without a room defined, you will buff in place!')
+    warn("You have a #{waggle} waggle set (prehunt_buff_waggle) without a prehunt_buffing_room, you will buff in place!")
   end
 
   def assert_that_use_barrage_attacks_is_deprecated(settings)
