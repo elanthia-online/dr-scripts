@@ -602,8 +602,11 @@ priority_skills_lower_limit: 6
 # https://github.com/elanthia-online/dr-scripts/wiki/YAML-Basics:-Part-2---Creating-Your-Own-YAML
 # Full reference: https://github.com/elanthia-online/dr-scripts/wiki/Hunting-Buddy-Settings
 # Keys for each hunting_info entry, used by hunting-buddy:
-#   :zone:                    zone name or list of names, in priority order: base-hunting.yaml
-#                             hunting_zones/escort_zones or your custom_hunting_zones
+#   :zone:                    zone name or list of names: base-hunting.yaml hunting_zones/escort_zones
+#                             or your custom_hunting_zones. An escort zone listed first is entered
+#                             straight away; otherwise the rooms of all the other zones are searched
+#                             in list order, and the first escort zone listed is used only if no room
+#                             is found (after hunting_room_max_searches rounds)
 #   :duration:                minutes to hunt
 #   stop_on:                  skip / end the hunt once ALL of these skills reach stop_on_high_threshold
 #                             (or their per-skillset threshold when that is blank)
