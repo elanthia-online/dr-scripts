@@ -258,7 +258,7 @@ RSpec.describe 'StatusMonitorImport database operations' do
 
     it 'stores binary-encoded lines as TEXT so the live monitor can match them' do
       db = StatusMonitorImport.open_database('Test')
-      StatusMonitorImport.flush_batch(db, ['a line read as binary'.b, "invalid \xFF byte".b])
+      StatusMonitorImport.flush_batch(db, ['a line read as binary'.b, "invalid #{0xFF.chr} byte".b])
       expect(db.execute('SELECT DISTINCT typeof(line_text) FROM seen_messages').flatten).to eq(['text'])
       expect(db.get_first_value('SELECT COUNT(*) FROM seen_messages WHERE line_text = ?', ['a line read as binary'])).to eq(1)
       db.close

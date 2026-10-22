@@ -174,14 +174,14 @@ RSpec.describe StatusMonitor::MessageStore do
     end
 
     it 'matches non-ASCII text across encodings' do
-      line = "The bard sings of Tr\u00e9maine and the \u00e6ther."
+      line = "The bard sings of Tr#{0xE9.chr(Encoding::UTF_8)}maine and the #{0xE6.chr(Encoding::UTF_8)}ther."
       store
       import_text_row(db_path, line)
       expect(described_class.new(db_path).in_corpus?(line.b)).to be true
     end
 
     it 'matches a line with invalid UTF-8 bytes the same way the importer stores it (scrubbed)' do
-      raw = "a broken \xFF byte line".b
+      raw = "a broken #{0xFF.chr} byte line".b
       store
       import_text_row(db_path, raw.dup.force_encoding('UTF-8').scrub)
       expect(described_class.new(db_path).in_corpus?(raw)).to be true
