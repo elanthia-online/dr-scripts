@@ -3673,13 +3673,14 @@ class ManipulateProcess
 
   # Live, hostile creatures we may manipulate this tick, keyed by stable
   # <crtrStatus> id, minus those an ignore entry names by noun or full name
-  # (CreatureInstance#matches?, case-insensitive). Constructs are still counted here
+  # (CreatureInstance#matches?, case-insensitive; Lich releases before it match
+  # by noun only). Constructs are still counted here
   # (matching the pre-migration threshold, which read the hostility-agnostic
   # game_state.npcs) but skipped in #manipulate below.
   def manipulable_targets
     Lich::DragonRealms::Creature.targets.reject do |creature|
       (creature.noun && @ignored_npcs.include?(creature.noun)) ||
-        @ignored_npcs.any? { |entry| creature.matches?(entry) }
+        (creature.respond_to?(:matches?) && @ignored_npcs.any? { |entry| creature.matches?(entry) })
     end
   end
 
@@ -6187,7 +6188,7 @@ class GameState
   end
 
   def update_room_npcs
-    @cached_npcs = DRRoom.unignored_npcs(@ignored_npcs || [])
+    @cached_npcs = unignored_room_npcs
     @dancing = @cached_npcs.length <= @dance_threshold || @cached_npcs.empty?
     @retreating = @retreat_threshold && @cached_npcs.length >= @retreat_threshold
   end
@@ -6636,7 +6637,7 @@ class GameState
   end
 
   def npcs
-    @cached_npcs || DRRoom.unignored_npcs(@ignored_npcs || [])
+    @cached_npcs || unignored_room_npcs
   end
 
   def dual_load?
@@ -6946,6 +6947,13 @@ class GameState
   attr_reader :aiming_trainables, :summoned_weapons
 
   private
+
+  # Lich releases before DRRoom.unignored_npcs only match ignored_npcs by noun.
+  def unignored_room_npcs
+    return DRRoom.npcs - (@ignored_npcs || []) unless DRRoom.respond_to?(:unignored_npcs)
+
+    DRRoom.unignored_npcs(@ignored_npcs || [])
+  end
 
   # Is the weapon swappable, like a riste?
   # If don't pass in an item to check, defaults to current weapon being trained.
