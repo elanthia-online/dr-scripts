@@ -4,6 +4,21 @@
   while a watch is in progress and unpauses it once the maneuver is set.
 =end
 
+# The opponent to WATCH: the first live room creature whose noun is not an
+# ignored arena NPC, addressed by id ("#123"). A creature with no noun yet is
+# skipped, since it could be an ignored NPC. Falls back to the first
+# non-ignored noun from DRRoom.npcs when no such creature is known.
+# Nil when only ignored NPCs are present.
+def arena_target(ignore_npcs)
+  ignored = ignore_npcs.map(&:downcase)
+  opponent = Lich::DragonRealms::Creature.in_room(:not_dead).find do |creature|
+    creature.id && creature.noun && !ignored.include?(creature.noun.downcase)
+  end
+  return "##{opponent.id}" if opponent
+
+  DRRoom.npcs.find { |npc| !ignored.include?(npc.downcase) }
+end
+
 def mainloop
   ignore_npcs = %w[Usdiwi Servant Traumatologist Usdiwi]
   npcs = DRRoom.npcs - ignore_npcs
@@ -21,7 +36,12 @@ def mainloop
           DRC.message("Elapsed Time: #{elapsed_time}")
         end
 
-        target = DRRoom.npcs.first
+        target = arena_target(ignore_npcs)
+        if target.nil?
+          unpause_script('combat-trainer')
+          break
+        end
+
         waitrt?
         case DRC.bput("watch #{target}",
                       'you could try to pedal', 'you could try to bob', 'you could try to duck', 'you could try to jump', 'you could try to lean',

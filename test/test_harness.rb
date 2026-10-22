@@ -734,6 +734,10 @@ module Harness
   def unpause_all_list(scripts)
   end
 
+  def pause_script(*_names); end
+
+  def unpause_script(*_names); end
+
   def custom_require(*)
     proc { |_args| }
   end
