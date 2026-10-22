@@ -83,5 +83,33 @@ RSpec.describe TheurgyActions do
         aborts_on_invasion
       end
     end
+
+    # Lich releases before DRRoom.unignored_npcs: the noun-only rule.
+    context 'on a Lich without DRRoom.unignored_npcs' do
+      before do
+        allow(DRRoom).to receive(:respond_to?).and_call_original
+        allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
+        allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
+      end
+
+      it 'gathers when every creature has an ignored noun' do
+        DRRoom.npcs = %w[cat cat leopard]
+        gathers_seed
+      end
+
+      it 'aborts when an unignored creature is present' do
+        DRRoom.npcs = %w[cat moradu]
+        aborts_on_invasion
+      end
+
+      context 'when ignored_npcs is nil' do
+        let(:ignored_npcs) { nil }
+
+        it 'aborts when any creature is present' do
+          DRRoom.npcs = ['cat']
+          aborts_on_invasion
+        end
+      end
+    end
   end
 end

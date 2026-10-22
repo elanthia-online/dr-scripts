@@ -649,7 +649,13 @@ class TheurgyActions
 
     safe_walk_to @data['gather_sirese']['id']
 
-    exit unless DRRoom.unignored_npcs(@settings.ignored_npcs).empty? # Invasion check
+    # Lich releases before DRRoom.unignored_npcs only match ignored_npcs by noun.
+    unignored = if DRRoom.respond_to?(:unignored_npcs)
+                  DRRoom.unignored_npcs(@settings.ignored_npcs)
+                else
+                  DRRoom.npcs - Array(@settings.ignored_npcs)
+                end
+    exit unless unignored.empty? # Invasion check
     waitrt? while DRC.bput('gather seed',
                            'You find a tiny',
                            'This is not a good',
