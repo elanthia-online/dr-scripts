@@ -369,6 +369,28 @@ class DRYamlValidator
             .each { |skill| error("stop_on: weapon skill #{skill} not in weapon_training: setting") }
   end
 
+  # hunting-buddy's stop_on check uses stop_on_high_threshold when it is set and
+  # only falls back to the per-skillset *_exp_training_max_threshold settings
+  # when it is blank, so a per-skillset value that differs from it is ignored
+  # for stop_on. Only skillsets that some hunt's stop_on skills belong to are
+  # checked: magic_exp_training_max_threshold, for example, is commonly set
+  # for combat-trainer alone.
+  def assert_that_stop_on_high_threshold_does_not_hide_skillset_thresholds(settings)
+    return unless settings.stop_on_high_threshold
+    return unless settings.hunting_info
+
+    skillsets = Lich::DragonRealms::DR_SKILLS_DATA[:skillsets]
+    settings.hunting_info
+            .flat_map { |info| Array(info['stop_on']).flatten }
+            .filter_map { |skill| skillsets.find { |_skillset, skills| skills.include?(skill) }&.first }
+            .uniq
+            .map { |skillset| "#{skillset.downcase}_exp_training_max_threshold" }
+            .reject { |name| settings[name].nil? || settings[name] == settings.stop_on_high_threshold }
+            .each do |name|
+              warn("stop_on_high_threshold (#{settings.stop_on_high_threshold}) overrides #{name} (#{settings[name]}) for hunting-buddy's stop_on. Leave stop_on_high_threshold blank to use the per-skillset thresholds.")
+            end
+  end
+
   def assert_that_hunting_info_has_duration_or_stop_on(settings)
     return unless settings.hunting_info
 
@@ -424,6 +446,27 @@ class DRYamlValidator
       .reject { |name| !escort_zones.nil? && escort_zones.include?(name) }
       .reject { |name| !settings.custom_hunting_zones.nil? && settings.custom_hunting_zones.include?(name) }
       .each { |name| error("Hunting zone not found in hunting_zones, escort_zones, or custom-defined zones. '#{name}'") }
+  end
+
+  # hunting-buddy enters an escort zone listed first and never uses the rest of
+  # the :zone: list; otherwise only the first escort zone listed is used, as
+  # the fallback when no room is found.
+  def assert_that_hunting_info_escort_zones_are_reachable(settings)
+    return unless settings.hunting_info
+
+    escort_zones = get_data('hunting').escort_zones || {}
+    custom_zones = settings.custom_hunting_zones || {}
+    settings.hunting_info.each do |info|
+      zones = [info[:zone]].flatten.compact.map(&:to_s)
+      escorts = zones.select { |zone| escort_zones.include?(zone) && !custom_zones[zone] }
+      next if escorts.empty?
+
+      if escorts.first == zones.first && zones.size > 1
+        warn("hunting_info :zone: #{zones.join(', ')}: #{zones.first} is an escort zone listed first, so hunting-buddy always goes there and never uses #{zones.drop(1).join(', ')}.")
+      elsif escorts.size > 1
+        warn("hunting_info :zone: #{zones.join(', ')}: only the first escort zone (#{escorts.first}) is used, as the fallback; #{escorts.drop(1).join(', ')} never will be.")
+      end
+    end
   end
 
   def assert_that_gear_sets_not_nil(settings)
@@ -1086,10 +1129,27 @@ class DRYamlValidator
     warn('prehunt_buffs is deprecated, please change to prehunt_buffing_room: <num>.')
   end
 
+  # Same lookups hunting-buddy makes: the waggle set named by
+  # prehunt_buff_waggle (default prehunt_buffs), and prehunt_buffing_room or
+  # the deprecated prehunt_buffs room.
   def assert_that_prehunt_buffing_room_exists_without_waggle_set(settings)
-    return unless settings.waggle_sets['prehunt_buffs'] && settings.prehunt_buffing_room.nil?
+    waggle = settings.prehunt_buff_waggle || 'prehunt_buffs'
+    return unless (settings.waggle_sets || {})[waggle]
+    return unless (settings.prehunt_buffing_room || settings.prehunt_buffs).nil?
 
-    warn('You have a prehunt_buffs waggle set without a room defined, you will buff in place!')
+    warn("You have a #{waggle} waggle set (prehunt_buff_waggle) without a prehunt_buffing_room, you will buff in place!")
+  end
+
+  # hunting-buddy silently skips prehunt buffs when the set named by
+  # prehunt_buff_waggle doesn't exist; flag that when the name was set on
+  # purpose (the default prehunt_buffs set is optional).
+  def assert_that_prehunt_buff_waggle_set_exists(settings)
+    waggle = settings.prehunt_buff_waggle
+    # A blank or false value means the default set, as in hunting-buddy.
+    return if !waggle || waggle == 'prehunt_buffs'
+    return if (settings.waggle_sets || {})[waggle]
+
+    warn("prehunt_buff_waggle is #{waggle}, but you have no #{waggle} waggle set, so no prehunt buffs will be cast.")
   end
 
   def assert_that_use_barrage_attacks_is_deprecated(settings)

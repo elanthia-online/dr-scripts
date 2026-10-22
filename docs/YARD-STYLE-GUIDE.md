@@ -5,7 +5,7 @@ This guide defines documentation standards for the dr-scripts codebase using
 it, and what to skip.
 
 This guide adapts the
-[lich-5 YARD Style Guide](https://github.com/elanthia-online/lich-5/blob/main/docs/YARD-STYLE-GUIDE.md)
+[lich-5 YARD Style Guide](https://github.com/elanthia-online/lich-5/blob/main/docs/contributing/yard-style-guide.md)
 for standalone `.lic` scripts. YARD syntax is used purely as a human-readable
 convention — no HTML documentation is generated.
 

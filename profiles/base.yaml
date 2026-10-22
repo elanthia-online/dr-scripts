@@ -524,9 +524,13 @@ using_light_crossbow: false
 attack_overrides:
 # use attack overrides for aiming trainable skills
 use_overrides_for_aiming_trainables: false
-# Thresholds in mind-states at which point hunting-buddy considers
-# the 'stop_on' skills to be done training and will end the hunt.
-# You can specify a different threshold per skillset.
+# Per-skillset learning-rate thresholds (mind states).
+# hunting-buddy: a hunt's stop_on skills count as done training once they reach
+# the threshold for their skillset. These are used ONLY when
+# stop_on_high_threshold (below) is blank; when that is set, it applies to every
+# skillset instead (;validate warns if it hides a different value here).
+# magic_exp_training_max_threshold is also read by combat-trainer and
+# magic-training, regardless of stop_on_high_threshold.
 armor_exp_training_max_threshold: 32
 weapon_exp_training_max_threshold: 32
 magic_exp_training_max_threshold: 32
@@ -596,6 +600,30 @@ training_manager_priority_skills:
 priority_skills_lower_limit: 6
 # define one or multiple hunting zones (see base-hunting in scripts/data) and the behaviors for those hunts.
 # https://github.com/elanthia-online/dr-scripts/wiki/YAML-Basics:-Part-2---Creating-Your-Own-YAML
+# Full reference: https://github.com/elanthia-online/dr-scripts/wiki/Hunting-Buddy-Settings
+# Keys for each hunting_info entry, used by hunting-buddy:
+#   :zone:                    zone name or list of names: base-hunting.yaml hunting_zones/escort_zones
+#                             or your custom_hunting_zones. An escort zone listed first is entered
+#                             straight away; otherwise the rooms of all the other zones are searched
+#                             in list order, and the first escort zone listed is used only if no room
+#                             is found (after hunting_room_max_searches rounds)
+#   :duration:                minutes to hunt
+#   stop_on:                  skip / end the hunt once ALL of these skills reach stop_on_high_threshold
+#                             (or their per-skillset threshold when that is blank)
+#   stop_on_low:              skip / end the hunt once ANY of these skills is at or below stop_on_low_threshold
+#   args:                     arguments passed to combat-trainer
+#   before: / after:          scripts (with arguments) run before / after the hunt
+#   during:                   scripts started in the background for the hunt, stopped when it ends
+#   boxes: (stop_on_boxes:)   skip the hunt unless you have box_hunt_minimum boxes or fewer;
+#                             end it once combat-trainer reaches box_loot_limit
+#   moons: (stop_on_moons:)   skip / end the hunt when no moons are visible
+#   stop_on_encumbrance:      skip / end the hunt at or above this encumbrance (0 None - 11)
+#   stop_on_burgle_cooldown:  end the hunt when your burgle cooldown expires (see stop_to_burgle)
+#   disable_room_descriptions: per-hunt override of hunting_disable_room_descriptions
+#   full_waiting_room:        room to wait in between room searches (default: safe_room)
+#   prefer_buddies:           look first for a room one of your hunting_buddies is in
+#   avoid_buddies:            treat a room with a hunting buddy in it (seen, found hiding or heard)
+#                             as occupied, unless the buddy is in your group
 hunting_info:
 # Global toggle to cause hunting buddy to stop a hunt short when the burgle
 # timer hits. Note there is also a per-hunt toggle that goes in hunting_info
@@ -648,9 +676,23 @@ safety_concentration_minimum: 0
 # NOTE: because one value drives all three, raising it (e.g. 90) makes Vanish very eager AND
 # largely cancels the heal-over-time bleed grace (you are usually below it once bleeding).
 safety_escape_health_threshold:
-# Room that you will use to prebuff your character before a hunt, utilizes the prehunt_buffs waggle set.
+# Room that you will use to prebuff your character before a hunt, utilizes the prehunt_buff_waggle waggle set.
+# Before each hunt, if that waggle set exists, hunting-buddy walks here and runs ;buff with it.
 prehunt_buffing_room:
+# Name of the waggle set used for prehunt buffs.
+prehunt_buff_waggle: prehunt_buffs
+# Turn room descriptions off (FLAG DESCRIPTION OFF) while hunting and back on afterwards.
+# A hunt can override this with disable_room_descriptions in its hunting_info entry.
+hunting_disable_room_descriptions: false
+# Your own hunting zones, by name, usable in hunting_info :zone: lists. A name that matches a
+# base-hunting.yaml zone replaces that zone's rooms.
+# custom_hunting_zones:
+#   my_rats:
+#   - 1234
+#   - 1235
+custom_hunting_zones:
 # Minimum perc mana to look for in a hunting room. If hunting_room_strict_mana is true, then it will skip a hunt if it can't find the mana
+# (unless the hunt's :zone: list has an escort zone to fall back on; escort zones aren't checked for mana).
 hunting_room_min_mana: 0
 hunting_room_strict_mana: false
 # When unable to find a room to hunt in,
@@ -662,8 +704,12 @@ hunting_room_strict_mana: false
 # This is the number of times to wait then revisit the area to find a room.
 hunting_room_max_searches: 30
 hunting_file_list:
+# hunting-buddy ends (or skips) a hunt when ANY of its stop_on_low skills is at
+# or below this many mind states.
 stop_on_low_threshold: 2
-# sets the mindstates required for hunting-buddy.lic's stop_on skills
+# hunting-buddy ends (or skips) a hunt when ALL of its stop_on skills are at or
+# above this many mind states. Takes precedence over the per-skillset
+# *_exp_training_max_threshold settings; leave blank to use those instead.
 stop_on_high_threshold: 32
 
 
@@ -815,7 +861,8 @@ loot_subtractions:
 loot_specials:
 # only loot up to this many boxes
 box_loot_limit:
-# if boxes: true is set in a hunt, then the hunt will only hunt until it gets this box minimum
+# A hunt with boxes: true is skipped unless you have this many boxes or fewer.
+# (The hunt itself ends when combat-trainer reaches box_loot_limit.)
 box_hunt_minimum: 1
 
 # Custom name substitutions (Lich >= the release that adds Lich::DragonRealms::CustomSubstitutions)
