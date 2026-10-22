@@ -830,16 +830,28 @@ class UlfHara
 
   # NPCs in the room still to visit, skipping baddies, @ignore names and the
   # ones already handled here. Each is "#<id>" so same-noun NPCs stay apart;
-  # a creature without an id (or no roster at all) falls back to its noun.
+  # when the roster can't be trusted for the room, each is its noun instead.
   def unhandled_npcs
     skip = @baddies + @ignore
+    # Lich releases before DRRoom.unignored_npcs (and CreatureInstance#matches?)
+    # only have the noun list.
+    return DRRoom.npcs - skip unless DRRoom.respond_to?(:unignored_npcs)
+
     creatures = Lich::DragonRealms::Creature.in_room(:not_dead)
-    # A creature with no noun yet can't be checked against the baddies, so
-    # address the room by noun until every creature is named.
-    return DRRoom.unignored_npcs(skip) if creatures.empty? || creatures.any? { |creature| creature.noun.nil? }
+    return DRRoom.unignored_npcs(skip) unless roster_covers_room?(creatures)
 
     creatures.reject { |creature| @handled_ids.include?(creature.id) || skipped?(creature, skip) }
-             .map { |creature| creature.id ? "##{creature.id}" : creature.noun }
+             .map { |creature| "##{creature.id}" }
+  end
+
+  # Ids are only used when the roster holds every NPC DRRoom.npcs lists, each
+  # with a noun to check against the baddies. A roster built from <crtrStatus>
+  # alone (legacy stream) misses NPCs that send none, such as townsfolk, and a
+  # creature not yet named can't be checked at all.
+  def roster_covers_room?(creatures)
+    !creatures.empty? &&
+      creatures.size == DRRoom.npcs.size &&
+      creatures.none? { |creature| creature.noun.nil? }
   end
 
   # Named by an entry: its noun (also a noun Lich derived from the name, which

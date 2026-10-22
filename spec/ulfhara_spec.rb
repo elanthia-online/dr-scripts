@@ -24,6 +24,12 @@ RSpec.describe UlfHara do
     Lich::DragonRealms::CreatureInstance.new(id, noun, name, noun_from_server: noun_from_server)
   end
 
+  # Seats NPCs in the room: on the roster and, by noun, in DRRoom.npcs.
+  def seat(*npcs)
+    creature._set_room(npcs)
+    DRRoom.npcs = npcs.map(&:noun)
+  end
+
   def finish_task
     Flags['UlfHara-task-complete'] = true
   end
@@ -44,23 +50,23 @@ RSpec.describe UlfHara do
 
   describe '#unhandled_npcs' do
     it 'asks the roster for living creatures only' do
-      creature._set_room([npc(1, 'guard')])
+      seat(npc(1, 'guard'))
       ulfhara.unhandled_npcs
       expect(creature).to have_received(:in_room).with(:not_dead)
     end
 
     it 'lists two same-noun NPCs apart, by id' do
-      creature._set_room([npc(11, 'guard'), npc(12, 'guard')])
+      seat(npc(11, 'guard'), npc(12, 'guard'))
       expect(ulfhara.unhandled_npcs).to eq(['#11', '#12'])
     end
 
     it 'skips baddies and ignored names by noun, case-insensitively' do
-      creature._set_room([npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'human', 'a filthy human'), npc(4, 'guard')])
+      seat(npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'human', 'a filthy human'), npc(4, 'guard'))
       expect(ulfhara.unhandled_npcs).to eq(['#4'])
     end
 
     it 'skips a baddie whose noun Lich derived from its name (legacy stream)' do
-      creature._set_room([npc(1, 'ruffian', 'a scarred ruffian', noun_from_server: false), npc(2, 'guard')])
+      seat(npc(1, 'ruffian', 'a scarred ruffian', noun_from_server: false), npc(2, 'guard'))
       expect(ulfhara.unhandled_npcs).to eq(['#2'])
     end
 
@@ -70,21 +76,23 @@ RSpec.describe UlfHara do
       expect(ulfhara.unhandled_npcs).to eq(['guard'])
     end
 
+    it 'falls back to DRRoom.unignored_npcs when the roster misses NPCs DRRoom.npcs lists' do
+      # Legacy stream: only the baddie sent <crtrStatus>; the townsfolk aren't on the roster.
+      creature._set_room([npc(1, 'ruffian', 'a scarred ruffian', noun_from_server: false)])
+      DRRoom.npcs = %w[guard guard ruffian]
+      expect(ulfhara.unhandled_npcs).to eq(%w[guard guard])
+    end
+
     it 'skips an NPC an @ignore entry names by full name' do
       ulfhara.instance_variable_get(:@ignore).push('wounded guard')
-      creature._set_room([npc(1, 'guard', 'a wounded guard'), npc(2, 'guard', 'a weary guard')])
+      seat(npc(1, 'guard', 'a wounded guard'), npc(2, 'guard', 'a weary guard'))
       expect(ulfhara.unhandled_npcs).to eq(['#2'])
     end
 
     it 'skips handled ids but keeps the other same-noun NPC' do
       ulfhara.instance_variable_set(:@handled_ids, [11])
-      creature._set_room([npc(11, 'guard'), npc(12, 'guard')])
+      seat(npc(11, 'guard'), npc(12, 'guard'))
       expect(ulfhara.unhandled_npcs).to eq(['#12'])
-    end
-
-    it 'falls back to the noun for a creature without an id' do
-      creature._set_room([npc(nil, 'sentry', nil), npc(5, 'guard')])
-      expect(ulfhara.unhandled_npcs).to eq(['sentry', '#5'])
     end
 
     it 'falls back to DRRoom.unignored_npcs when the roster is empty' do
@@ -96,6 +104,27 @@ RSpec.describe UlfHara do
 
     it 'is empty for an empty room' do
       expect(ulfhara.unhandled_npcs).to eq([])
+    end
+
+    # Lich releases before DRRoom.unignored_npcs and CreatureInstance#matches?.
+    context 'on a Lich without DRRoom.unignored_npcs' do
+      before do
+        allow(DRRoom).to receive(:respond_to?).and_call_original
+        allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
+        allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
+      end
+
+      it 'lists the room by noun, minus baddies and @ignore names, without the roster' do
+        seat(npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'guard'), npc(4, 'guard'))
+        expect(ulfhara.unhandled_npcs).to eq(%w[guard guard])
+        expect(creature).not_to have_received(:in_room)
+      end
+
+      it 'drops a handled noun' do
+        DRRoom.npcs = %w[sentry guard]
+        ulfhara.mark_handled('sentry')
+        expect(ulfhara.unhandled_npcs).to eq(['guard'])
+      end
     end
   end
 
@@ -134,16 +163,14 @@ RSpec.describe UlfHara do
     end
 
     it 'studies each of two same-noun NPCs once, by id, then moves on' do
-      DRRoom.npcs = %w[guard guard]
-      creature._set_room([npc(11, 'guard'), npc(12, 'guard')])
+      seat(npc(11, 'guard'), npc(12, 'guard'))
       ulfhara.supply
       expect(sent.grep(/^study/)).to eq(['study #11', 'study #12'])
       expect(walks).to eq(['12873'])
     end
 
     it 'gives to the NPC it studied, by id, and keeps @ignore to configured names' do
-      DRRoom.npcs = %w[guard guard]
-      creature._set_room([npc(11, 'guard'), npc(12, 'guard')])
+      seat(npc(11, 'guard'), npc(12, 'guard'))
       study_replies['#11'] = 'They are in need of loaves to complete their mission.'
       ulfhara.supply
       expect(sent).to include('give #11')
@@ -152,20 +179,38 @@ RSpec.describe UlfHara do
     end
 
     it 'resets handled ids when it walks to the next room' do
-      creature._set_room([npc(11, 'guard')])
+      seat(npc(11, 'guard'))
       ulfhara.supply
       expect(ulfhara.instance_variable_get(:@handled_ids)).to eq([])
       expect(ulfhara.instance_variable_get(:@ignore)).to eq(['Zukir'])
     end
 
     it 'never studies baddies or Zukir' do
-      creature._set_room([npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'guard')])
+      seat(npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'guard'))
       ulfhara.supply
       expect(sent.grep(/^study/)).to eq(['study #3'])
     end
 
     it 'studies by noun on a stream without creature ids' do
       DRRoom.npcs = %w[Zukir sentry]
+      ulfhara.supply
+      expect(sent.grep(/^study/)).to eq(['study sentry'])
+      expect(walks).to eq(['12873'])
+    end
+
+    it 'studies townsfolk by noun when the roster holds only the baddie' do
+      creature._set_room([npc(1, 'ruffian', 'a scarred ruffian', noun_from_server: false)])
+      DRRoom.npcs = %w[ruffian sentry]
+      ulfhara.supply
+      expect(sent.grep(/^study/)).to eq(['study sentry'])
+      expect(walks).to eq(['12873'])
+    end
+
+    it 'studies by noun on a Lich without DRRoom.unignored_npcs' do
+      allow(DRRoom).to receive(:respond_to?).and_call_original
+      allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
+      allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
+      DRRoom.npcs = %w[Zukir ruffian sentry]
       ulfhara.supply
       expect(sent.grep(/^study/)).to eq(['study sentry'])
       expect(walks).to eq(['12873'])
@@ -204,8 +249,7 @@ RSpec.describe UlfHara do
     end
 
     it 'studies and tends each of two same-noun NPCs by id' do
-      DRRoom.npcs = %w[soldier soldier]
-      creature._set_room([npc(21, 'soldier'), npc(22, 'soldier')])
+      seat(npc(21, 'soldier'), npc(22, 'soldier'))
       ulfhara.healing
       expect(sent.grep(/^study/)).to eq(['study #21', 'study #22'])
       expect(sent.grep(/^rub/)).to eq(['rub #21 with cloth'])
@@ -220,7 +264,7 @@ RSpec.describe UlfHara do
       allow(Room).to receive(:[]).and_return(room)
       allow(ulfhara).to receive(:walk_to_special) do |dest|
         walks << dest
-        creature._set_room([]) # the next room is empty
+        seat # the next room is empty
         finish_task
       end
       allow(DRC).to receive(:bput) do |cmd, *_matches|
@@ -235,15 +279,14 @@ RSpec.describe UlfHara do
     end
 
     it 'asks each of two same-noun NPCs in turn, by id, before moving on' do
-      DRRoom.npcs = %w[refugee refugee]
-      creature._set_room([npc(31, 'refugee'), npc(32, 'refugee')])
+      seat(npc(31, 'refugee'), npc(32, 'refugee'))
       ulfhara.missing
       expect(sent.grep(/^ask/)).to eq(['ask #31 about follow', 'ask #32 about follow'])
       expect(walks).to be_empty
     end
 
     it 'walks on once every NPC in the room has answered no' do
-      creature._set_room([npc(31, 'refugee'), npc(33, 'refugee')])
+      seat(npc(31, 'refugee'), npc(33, 'refugee'))
       ulfhara.missing
       expect(sent.grep(/^ask/)).to eq(['ask #31 about follow', 'ask #33 about follow'])
       expect(walks).to eq(['12873'])
