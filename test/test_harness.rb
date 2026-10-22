@@ -1468,23 +1468,25 @@ module Harness
 
         attr_reader :id, :noun, :name
 
-        def initialize(id, noun, name, dead: false)
+        # noun_from_server: false models the legacy stream, where Lich derives
+        # the noun from the name's last word instead of reading a link noun.
+        def initialize(id, noun, name, dead: false, noun_from_server: true)
           @id = id
           @noun = noun
           @name = name
           @dead = dead
+          @noun_from_server = noun_from_server
         end
 
         def crtr_flag?(key)
-          key == :dead && @dead
+          key.to_sym == :dead && @dead == true
         end
 
         # Keep in sync with lich-5 CreatureInstance#matches?.
-        # The seeded noun stands in for the game's link noun.
         def matches?(entry)
           wanted = entry.to_s.strip.downcase.squeeze(' ').sub(NAME_ARTICLE, '')
           return false if wanted.empty?
-          return true if @noun&.downcase == wanted
+          return true if @noun_from_server && @noun&.downcase == wanted
 
           full = @name.to_s.strip.downcase.squeeze(' ').sub(NAME_ARTICLE, '')
           return false if full.empty?
