@@ -78,10 +78,12 @@ RSpec.describe 'test harness NPC doubles' do
       expect(nameless.matches?('white leopard')).to be(false)
     end
 
-    it 'drops only a leading article from the name' do
+    it 'ignores a leading article on the name and on the entry' do
       cat = described_class.new(9, 'cat', 'The Great Cat')
       expect(cat.matches?('great cat')).to be(true)
-      expect(cat.matches?('the great cat')).to be(false)
+      expect(cat.matches?('the great cat')).to be(true)
+      expect(cat.matches?('a great cat')).to be(true)
+      expect(cat.matches?('great the cat')).to be(false)
     end
 
     it 'reports :dead only when built dead, and no other flag' do
