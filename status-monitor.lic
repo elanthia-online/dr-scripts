@@ -16,6 +16,11 @@ arg_definitions = [
 args = parse_args(arg_definitions)
 
 nowindow = args.nowindow || get_settings.status_monitor_no_window
+# Without GTK (e.g. a headless host), run headless instead of exiting.
+unless nowindow || HAVE_GTK
+  echo 'ruby-gtk bindings are not installed or failed to load; running without a window.'
+  nowindow = true
+end
 
 require 'sqlite3'
 require 'fileutils'
@@ -702,13 +707,6 @@ if nowindow
     end
     monitor.consume_spam_line
   end
-end
-
-unless HAVE_GTK
-  respond
-  respond 'error: ruby-gtk bindings are not installed or failed to load'
-  respond
-  exit
 end
 
 window = nil
