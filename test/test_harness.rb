@@ -1479,8 +1479,9 @@ module Harness
         end
 
         # Keep in sync with lich-5 CreatureInstance#matches?.
+        # The seeded noun stands in for the game's link noun.
         def matches?(entry)
-          wanted = entry.to_s.strip.downcase.squeeze(' ')
+          wanted = entry.to_s.strip.downcase.squeeze(' ').sub(NAME_ARTICLE, '')
           return false if wanted.empty?
           return true if @noun&.downcase == wanted
 
