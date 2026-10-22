@@ -362,6 +362,68 @@ RSpec.describe GameState do
       gs.update_room_npcs
       expect(gs.dancing?).to be false
     end
+
+    # ignored_npcs entries may name one creature by full name (issue #7666):
+    # DRRoom.unignored_npcs drops only that creature, not every same-noun one.
+    context 'with a full-name ignore entry' do
+      def live(id, noun, name)
+        Lich::DragonRealms::CreatureInstance.new(id, noun, name)
+      end
+
+      let(:pet) { live(1, 'leopard', 'a spectral white leopard with luminous blue eyes') }
+      let(:wild) { live(2, 'leopard', 'a sinewy leopard') }
+      let(:rat) { live(3, 'rat', 'a giant rat') }
+
+      it 'drops only the named creature from duplicate same-noun npcs and counts the rest' do
+        DRRoom.npcs = %w[leopard leopard rat]
+        Lich::DragonRealms::Creature._set_room([pet, wild, rat])
+        gs = build_npc_state(ignored: ['spectral white leopard'], dance_threshold: 1, retreat_threshold: 2)
+        gs.update_room_npcs
+        expect(gs.npcs).to eq(%w[leopard rat])
+        expect(gs.dancing?).to be false
+        expect(gs.retreating?).to be true
+      end
+
+      it 'still drops every same-noun npc for a plain noun entry' do
+        DRRoom.npcs = %w[leopard leopard rat]
+        Lich::DragonRealms::Creature._set_room([pet, wild, rat])
+        gs = build_npc_state(ignored: ['leopard'], dance_threshold: 1)
+        gs.update_room_npcs
+        expect(gs.npcs).to eq(['rat'])
+        expect(gs.dancing?).to be true
+      end
+
+      it 'keeps a live same-noun creature when only a dead one would match the name' do
+        DRRoom.npcs = ['leopard']
+        DRRoom.dead_npcs = ['leopard']
+        Lich::DragonRealms::Creature._set_room([wild])
+        gs = build_npc_state(ignored: ['spectral white leopard'], dance_threshold: 0)
+        gs.update_room_npcs
+        expect(gs.npcs).to eq(['leopard'])
+        expect(gs.dancing?).to be false
+      end
+
+      it 'falls back to the noun rule while a roster creature has no name yet' do
+        DRRoom.npcs = %w[leopard leopard]
+        Lich::DragonRealms::Creature._set_room([live(1, 'leopard', nil), wild])
+        gs = build_npc_state(ignored: ['spectral white leopard'])
+        gs.update_room_npcs
+        expect(gs.npcs).to eq(%w[leopard leopard])
+
+        gs = build_npc_state(ignored: ['leopard'])
+        gs.update_room_npcs
+        expect(gs.npcs).to eq([])
+      end
+
+      it 'treats an empty room as empty and dancing' do
+        DRRoom.npcs = []
+        Lich::DragonRealms::Creature._set_room([])
+        gs = build_npc_state(ignored: ['spectral white leopard'], dance_threshold: 0)
+        gs.update_room_npcs
+        expect(gs.npcs).to eq([])
+        expect(gs.dancing?).to be true
+      end
+    end
   end
 
   describe '#npcs' do
@@ -372,6 +434,17 @@ RSpec.describe GameState do
       expect(gs.npcs).to eq(['rat'])
       DRRoom.npcs = ['kobold']
       expect(gs.npcs).to eq(['kobold'])
+    end
+
+    it 'honors a full-name ignore entry before the first update_room_npcs' do
+      gs = GameState.allocate
+      gs.instance_variable_set(:@ignored_npcs, ['spectral white leopard'])
+      DRRoom.npcs = %w[leopard leopard]
+      Lich::DragonRealms::Creature._set_room(
+        [Lich::DragonRealms::CreatureInstance.new(1, 'leopard', 'a spectral white leopard'),
+         Lich::DragonRealms::CreatureInstance.new(2, 'leopard', 'a sinewy leopard')]
+      )
+      expect(gs.npcs).to eq(['leopard'])
     end
   end
 
@@ -608,7 +681,7 @@ RSpec.describe ManipulateProcess do
   end
 
   def creature(id:, noun: 'rat', name: 'a giant rat')
-    OpenStruct.new(id: id, noun: noun, name: name)
+    Lich::DragonRealms::CreatureInstance.new(id, noun, name)
   end
 
   describe '#execute' do
@@ -661,6 +734,43 @@ RSpec.describe ManipulateProcess do
       build_manipulate(threshold: 1, ignored_npcs: ['kobold']).execute(gs)
       expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
       expect(DRC).not_to have_received(:bput).with('manipulate friendship #2', any_args)
+    end
+
+    it 'excludes only the creature a full-name ignore entry names among same-noun targets' do
+      allow(DRSkill).to receive(:getxp).and_return(10)
+      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+      seed_targets(creature(id: 1, noun: 'leopard', name: 'a spectral white leopard'),
+                   creature(id: 2, noun: 'leopard', name: 'a sinewy leopard'),
+                   creature(id: 3, noun: 'rat'))
+      gs = gs_double
+      allow(gs).to receive(:construct?).and_return(false)
+      build_manipulate(threshold: 2, ignored_npcs: ['spectral white leopard']).execute(gs)
+      expect(DRC).not_to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #2', any_args)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #3', any_args)
+    end
+
+    it 'matches a noun ignore entry case-insensitively' do
+      allow(DRSkill).to receive(:getxp).and_return(10)
+      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+      seed_targets(creature(id: 1, noun: 'rat'), creature(id: 2, noun: 'kobold', name: 'a kobold'),
+                   creature(id: 3, noun: 'goblin', name: 'a goblin'))
+      gs = gs_double
+      allow(gs).to receive(:construct?).and_return(false)
+      build_manipulate(threshold: 2, ignored_npcs: ['Kobold']).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).not_to have_received(:bput).with('manipulate friendship #2', any_args)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #3', any_args)
+    end
+
+    it 'keeps a target with no noun or name instead of crashing on the ignore check' do
+      allow(DRSkill).to receive(:getxp).and_return(10)
+      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+      seed_targets(creature(id: 7, noun: nil, name: nil))
+      gs = gs_double
+      allow(gs).to receive(:construct?).and_return(false)
+      build_manipulate(threshold: 1, ignored_npcs: ['kobold', 'spectral white leopard']).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #7', any_args)
     end
 
     # BUG-FINDING: shock disables manipulation permanently for this hunt

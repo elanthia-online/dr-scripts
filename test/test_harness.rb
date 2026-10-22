@@ -416,6 +416,28 @@ module Harness
       @@_data_store['pcs_sitting'] = val
     end
 
+    # Mirrors lich-5 DRRoom.unignored_npcs: npcs minus every NPC whose noun
+    # equals an entry, and, when the Creature roster lists exactly the
+    # creatures in npcs, minus the creatures an entry names by full name too
+    # (CreatureInstance#matches?). Harness differences: Lich parses each
+    # creature's noun from its name, the harness uses the seeded noun; the
+    # roster ignores the :not_dead filter (seed living creatures only); and a
+    # roster creature that does not answer matches? (an OpenStruct) disables
+    # the full-name rule, as a nameless creature does in Lich.
+    def self.unignored_npcs(ignored)
+      ignored = Array(ignored).compact.map(&:to_s)
+      by_noun = npcs - ignored
+      return by_noun if by_noun.empty?
+
+      roster = Lich::DragonRealms::Creature.in_room(:not_dead)
+      return by_noun unless roster.all? { |creature| creature.name && creature.respond_to?(:matches?) }
+      return by_noun unless roster.map(&:noun).sort == npcs.sort
+
+      roster.reject { |creature| ignored.include?(creature.noun) || ignored.any? { |entry| creature.matches?(entry) } }
+            .map(&:noun)
+            .sort
+    end
+
     def self.dead_npcs
       @@_data_store['dead_npcs'] || []
     end
@@ -1449,6 +1471,34 @@ module Harness
           "Survival" => ["Evasion", "Athletics", "Perception", "Stealth", "Locksmithing", "Thievery", "First Aid", "Outdoorsmanship", "Skinning", "Instinct", "Backstab", "Thanatology"].freeze
         }.freeze
       }.freeze unless const_defined?(:DR_SKILLS_DATA)
+
+      # Stand-in for lich-5's CreatureInstance (lib/dragonrealms/creature.rb)
+      # for specs that need #matches?, which an OpenStruct roster entry lacks.
+      class CreatureInstance
+        NAME_ARTICLE = /\A(?:an?|the|some)\s+/i.freeze
+
+        attr_reader :id, :noun, :name
+
+        def initialize(id, noun, name)
+          @id = id
+          @noun = noun
+          @name = name
+        end
+
+        # Same rule as lich-5: case-insensitive; the noun, the whole name
+        # without its article, or a phrase of two or more words in the name.
+        def matches?(entry)
+          wanted = entry.to_s.strip.downcase.squeeze(' ')
+          return false if wanted.empty?
+          return true if @noun&.downcase == wanted
+
+          full = @name.to_s.strip.downcase.squeeze(' ').sub(NAME_ARTICLE, '')
+          return false if full.empty?
+          return true if full == wanted
+
+          wanted.include?(' ') && " #{full} ".include?(" #{wanted} ")
+        end
+      end
 
       # Stand-in for lich-5's creature registry (lib/dragonrealms/creature.rb).
       # Real CreatureInstance objects expose id/noun/name plus status flags; a
