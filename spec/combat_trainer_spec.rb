@@ -363,22 +363,17 @@ RSpec.describe GameState do
       expect(gs.dancing?).to be false
     end
 
-    # ignored_npcs entries may name one creature by full name (issue #7666):
-    # DRRoom.unignored_npcs drops only that creature, not every same-noun one.
+    # ignored_npcs entries may name one creature by full name (issue #7666).
+    # DRRoom.unignored_npcs (lich-5) owns that rule and is tested there; these
+    # stub it and check the script hands it the ignore list and counts
+    # what it returns.
     context 'with a full-name ignore entry' do
-      def live(id, noun, name)
-        Lich::DragonRealms::CreatureInstance.new(id, noun, name)
-      end
-
-      let(:pet) { live(1, 'leopard', 'a spectral white leopard with luminous blue eyes') }
-      let(:wild) { live(2, 'leopard', 'a sinewy leopard') }
-      let(:rat) { live(3, 'rat', 'a giant rat') }
-
-      it 'drops only the named creature from duplicate same-noun npcs and counts the rest' do
+      it 'counts only what DRRoom.unignored_npcs leaves of duplicate same-noun npcs' do
         DRRoom.npcs = %w[leopard leopard rat]
-        Lich::DragonRealms::Creature._set_room([pet, wild, rat])
+        allow(DRRoom).to receive(:unignored_npcs).and_return(%w[leopard rat])
         gs = build_npc_state(ignored: ['spectral white leopard'], dance_threshold: 1, retreat_threshold: 2)
         gs.update_room_npcs
+        expect(DRRoom).to have_received(:unignored_npcs).with(['spectral white leopard'])
         expect(gs.npcs).to eq(%w[leopard rat])
         expect(gs.dancing?).to be false
         expect(gs.retreating?).to be true
@@ -386,38 +381,32 @@ RSpec.describe GameState do
 
       it 'still drops every same-noun npc for a plain noun entry' do
         DRRoom.npcs = %w[leopard leopard rat]
-        Lich::DragonRealms::Creature._set_room([pet, wild, rat])
         gs = build_npc_state(ignored: ['leopard'], dance_threshold: 1)
         gs.update_room_npcs
         expect(gs.npcs).to eq(['rat'])
         expect(gs.dancing?).to be true
       end
 
-      it 'keeps a live same-noun creature when only a dead one would match the name' do
+      it 'keeps a live same-noun npc and does not count a dead one' do
         DRRoom.npcs = ['leopard']
         DRRoom.dead_npcs = ['leopard']
-        Lich::DragonRealms::Creature._set_room([wild])
         gs = build_npc_state(ignored: ['spectral white leopard'], dance_threshold: 0)
         gs.update_room_npcs
         expect(gs.npcs).to eq(['leopard'])
         expect(gs.dancing?).to be false
       end
 
-      it 'falls back to the noun rule while a roster creature has no name yet' do
+      it 'passes an unset ignore list as an empty one' do
         DRRoom.npcs = %w[leopard leopard]
-        Lich::DragonRealms::Creature._set_room([live(1, 'leopard', nil), wild])
-        gs = build_npc_state(ignored: ['spectral white leopard'])
+        allow(DRRoom).to receive(:unignored_npcs).and_call_original
+        gs = build_npc_state(ignored: nil)
         gs.update_room_npcs
+        expect(DRRoom).to have_received(:unignored_npcs).with([])
         expect(gs.npcs).to eq(%w[leopard leopard])
-
-        gs = build_npc_state(ignored: ['leopard'])
-        gs.update_room_npcs
-        expect(gs.npcs).to eq([])
       end
 
       it 'treats an empty room as empty and dancing' do
         DRRoom.npcs = []
-        Lich::DragonRealms::Creature._set_room([])
         gs = build_npc_state(ignored: ['spectral white leopard'], dance_threshold: 0)
         gs.update_room_npcs
         expect(gs.npcs).to eq([])
@@ -440,10 +429,7 @@ RSpec.describe GameState do
       gs = GameState.allocate
       gs.instance_variable_set(:@ignored_npcs, ['spectral white leopard'])
       DRRoom.npcs = %w[leopard leopard]
-      Lich::DragonRealms::Creature._set_room(
-        [Lich::DragonRealms::CreatureInstance.new(1, 'leopard', 'a spectral white leopard'),
-         Lich::DragonRealms::CreatureInstance.new(2, 'leopard', 'a sinewy leopard')]
-      )
+      allow(DRRoom).to receive(:unignored_npcs).with(['spectral white leopard']).and_return(['leopard'])
       expect(gs.npcs).to eq(['leopard'])
     end
   end

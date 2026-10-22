@@ -416,34 +416,20 @@ module Harness
       @@_data_store['pcs_sitting'] = val
     end
 
-    # Mirrors lich-5 DRRoom.unignored_npcs: npcs minus every NPC whose noun
-    # equals an entry, and, when the Creature roster lists exactly the
-    # creatures in npcs, minus the creatures an entry names by full name too
-    # (CreatureInstance#matches?). Harness differences: Lich parses each
-    # creature's noun from its name, the harness uses the seeded noun; the
-    # roster ignores the :not_dead filter (seed living creatures only); and a
-    # roster creature that does not answer matches? (an OpenStruct) disables
-    # the full-name rule, as a nameless creature does in Lich.
-    def self.unignored_npcs(ignored)
-      ignored = Array(ignored).compact.map(&:to_s)
-      by_noun = npcs - ignored
-      return by_noun if by_noun.empty?
-
-      roster = Lich::DragonRealms::Creature.in_room(:not_dead)
-      return by_noun unless roster.all? { |creature| creature.name && creature.respond_to?(:matches?) }
-      return by_noun unless roster.map(&:noun).sort == npcs.sort
-
-      roster.reject { |creature| ignored.include?(creature.noun) || ignored.any? { |entry| creature.matches?(entry) } }
-            .map(&:noun)
-            .sort
-    end
-
     def self.dead_npcs
       @@_data_store['dead_npcs'] || []
     end
 
     def self.dead_npcs=(val)
       @@_data_store['dead_npcs'] = val
+    end
+
+    # Noun rule only: npcs minus every NPC whose noun equals an entry. The
+    # real lich-5 method (#1817) also drops the creatures an entry names by
+    # full name or a multi-word phrase; a spec that needs that should
+    # `allow(DRRoom).to receive(:unignored_npcs).and_return(...)`.
+    def self.unignored_npcs(ignored)
+      npcs - Array(ignored).compact.map(&:to_s)
     end
 
     def self.room_objs
@@ -1473,20 +1459,26 @@ module Harness
       }.freeze unless const_defined?(:DR_SKILLS_DATA)
 
       # Stand-in for lich-5's CreatureInstance (lib/dragonrealms/creature.rb)
-      # for specs that need #matches?, which an OpenStruct roster entry lacks.
+      # for roster entries a script calls #matches? or #crtr_flag?(:dead) on.
+      # Seed it with Creature._set_room. crtr_flag? answers only :dead (from
+      # the dead: keyword); every other flag is false.
       class CreatureInstance
         NAME_ARTICLE = /\A(?:an?|the|some)\s+/i.freeze
 
         attr_reader :id, :noun, :name
 
-        def initialize(id, noun, name)
+        def initialize(id, noun, name, dead: false)
           @id = id
           @noun = noun
           @name = name
+          @dead = dead
         end
 
-        # Same rule as lich-5: case-insensitive; the noun, the whole name
-        # without its article, or a phrase of two or more words in the name.
+        def crtr_flag?(key)
+          key == :dead && @dead
+        end
+
+        # Keep in sync with lich-5 CreatureInstance#matches?.
         def matches?(entry)
           wanted = entry.to_s.strip.downcase.squeeze(' ')
           return false if wanted.empty?
@@ -1503,7 +1495,9 @@ module Harness
       # Stand-in for lich-5's creature registry (lib/dragonrealms/creature.rb).
       # Real CreatureInstance objects expose id/noun/name plus status flags; a
       # spec only needs to seed the room roster, so any object answering the
-      # attributes the script under test reads (an OpenStruct is plenty) works.
+      # attributes the script under test reads (an OpenStruct is plenty) works;
+      # use CreatureInstance above when the script calls #matches? or
+      # #crtr_flag?.
       #
       # in_room/targets ignore their status filters (:dead, :not_dead, :hostile,
       # ...) and return whatever was seeded -- seed the roster you want the
