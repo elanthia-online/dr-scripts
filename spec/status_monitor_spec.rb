@@ -137,6 +137,57 @@ RSpec.describe StatusMonitor::MessageStore do
     end
   end
 
+  # Lich hands scripts binary (ASCII-8BIT) game lines; logs are imported as
+  # UTF-8 TEXT. The sqlite3 gem binds binary strings as BLOBs, and a BLOB never
+  # equals TEXT, so without normalization the two corpora never matched.
+  describe 'encoding (binary live lines vs imported UTF-8 TEXT)' do
+    snowflakes = 'You feel your coralite yiamura cool and sense that a frosty observer manifested as a series of swirling snowflakes has imparted some new knowledge it observed to the device.'
+
+    def import_text_row(path, line)
+      db = SQLite3::Database.new(path)
+      db.execute("INSERT INTO seen_messages (line_text, source) VALUES (?, 'import')", [line.encode('UTF-8')])
+      db.close
+    end
+
+    def row_types(path)
+      db = SQLite3::Database.new(path)
+      db.execute('SELECT typeof(line_text), typeof(source) FROM seen_messages').tap { db.close }
+    end
+
+    it 'finds an imported TEXT line when the live line arrives binary-encoded' do
+      store # create the schema
+      import_text_row(db_path, snowflakes)
+      fresh = described_class.new(db_path) # no in-process cache
+      expect(fresh.in_corpus?(snowflakes.b)).to be true
+    end
+
+    it 'stores a binary-encoded live line as TEXT (and its source tag as TEXT)' do
+      store.record(snowflakes.b, 'learn:Testchar:2026-10-22T04:00:00Z'.b)
+      expect(row_types(db_path)).to eq([%w[text text]])
+    end
+
+    it 'does not store a second row for a line already imported as TEXT' do
+      store
+      import_text_row(db_path, snowflakes)
+      described_class.new(db_path).record(snowflakes.b)
+      expect(store.count).to eq(1)
+    end
+
+    it 'matches non-ASCII text across encodings' do
+      line = "The bard sings of Tr\u00e9maine and the \u00e6ther."
+      store
+      import_text_row(db_path, line)
+      expect(described_class.new(db_path).in_corpus?(line.b)).to be true
+    end
+
+    it 'matches a line with invalid UTF-8 bytes the same way the importer stores it (scrubbed)' do
+      raw = "a broken \xFF byte line".b
+      store
+      import_text_row(db_path, raw.dup.force_encoding('UTF-8').scrub)
+      expect(described_class.new(db_path).in_corpus?(raw)).to be true
+    end
+  end
+
   describe '#shutdown' do
     it 'persists records and closes the database' do
       store.record('persist me')

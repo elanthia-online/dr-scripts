@@ -179,13 +179,18 @@ module StatusMonitorImport
 
   # Inserts a batch of lines into the database in a single transaction.
   #
+  # Lines are bound as UTF-8 TEXT regardless of the encoding they were read in:
+  # the sqlite3 gem binds binary strings as BLOBs, which never match the live
+  # monitor's TEXT lookups (see StatusMonitor::MessageStore#as_text).
+  #
   # @param db [SQLite3::Database] database connection
   # @param lines [Array<String>] lines to insert
   # @return [Integer] number of lines inserted (approximate)
   def self.flush_batch(db, lines)
     db.transaction do
       lines.each do |line|
-        db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, 'import'])
+        text = String.new(line, encoding: Encoding::UTF_8).scrub
+        db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [text, 'import'])
       end
     end
     lines.size

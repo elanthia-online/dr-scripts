@@ -158,14 +158,25 @@ module StatusMonitor
     # @param line [String] message line to check
     # @return [Boolean] true if line exists in the database
     def exists_in_db?(line)
-      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_text = ?', [line]) ? true : false
+      @db.get_first_value('SELECT 1 FROM seen_messages WHERE line_text = ?', [as_text(line)]) ? true : false
     end
 
     # @param line [String] message line to insert
     # @param source [String] origin of the line ('live', 'import', 'migration')
     # @return [void]
     def insert_line(line, source = 'live')
-      @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [line, source])
+      @db.execute('INSERT OR IGNORE INTO seen_messages (line_text, source) VALUES (?, ?)', [as_text(line), as_text(source)])
+    end
+
+    # Game lines arrive from Lich as binary (ASCII-8BIT) strings, and the sqlite3
+    # gem binds binary strings as BLOBs. A BLOB never equals TEXT in SQLite, so a
+    # live line would never match the same line imported from a log (TEXT), and
+    # would be stored again as a separate BLOB row. Always bind UTF-8 TEXT.
+    #
+    # @param value [String] string to bind
+    # @return [String] UTF-8 copy with invalid bytes scrubbed (as the importer does)
+    def as_text(value)
+      String.new(value.to_s, encoding: Encoding::UTF_8).scrub
     end
 
     # Merges any legacy per-character corpora (Marshal .dat and per-character
