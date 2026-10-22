@@ -21,7 +21,7 @@ RSpec.describe UlfHara do
   let(:walks) { [] }
 
   def npc(id, noun, name = "a #{noun}")
-    Lich::DragonRealms::Creature::Double.new(id: id, noun: noun, name: name)
+    Lich::DragonRealms::CreatureInstance.new(id, noun, name)
   end
 
   def finish_task
