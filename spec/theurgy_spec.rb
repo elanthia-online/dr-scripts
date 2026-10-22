@@ -5,13 +5,6 @@ require 'ostruct'
 load_lic_class('theurgy.lic', 'TheurgyActions')
 
 RSpec.describe TheurgyActions do
-  # Creature roster entry: what Lich::DragonRealms::Creature.in_room yields.
-  def creature(id, name, noun, dead: false)
-    double("creature #{id}", id: id, name: name, noun: noun, crtr_flag?: dead)
-  end
-
-  let(:pet_name) { 'a spectral white leopard with luminous blue eyes' }
-
   describe '#sirese_seed invasion check' do
     let(:ignored_npcs) { %w[cat leopard] }
     let(:actions) do
@@ -57,46 +50,33 @@ RSpec.describe TheurgyActions do
       aborts_on_invasion
     end
 
+    # Which creatures a full-name entry names is DRRoom.unignored_npcs's rule
+    # (lich-5, tested there); these stub it and check the check passes the
+    # configured list through and acts on what comes back.
     context 'with a full-name ignore entry' do
       let(:ignored_npcs) { ['spectral white leopard'] }
 
-      it 'gathers when the only creature is the named pet' do
-        Lich::DragonRealms::Creature._set_room([creature(10, pet_name, 'leopard')])
+      it 'gathers when DRRoom.unignored_npcs drops the only creature, the named pet' do
         DRRoom.npcs = ['leopard']
+        allow(DRRoom).to receive(:unignored_npcs).and_return([])
         gathers_seed
+        expect(DRRoom).to have_received(:unignored_npcs).with(['spectral white leopard'])
       end
 
-      it 'aborts when a wild creature with the same noun is also present' do
-        Lich::DragonRealms::Creature._set_room([creature(10, pet_name, 'leopard'),
-                                                creature(11, 'a sinewy leopard', 'leopard')])
+      it 'aborts when DRRoom.unignored_npcs keeps a wild creature with the same noun' do
         DRRoom.npcs = %w[leopard leopard]
+        allow(DRRoom).to receive(:unignored_npcs).with(['spectral white leopard']).and_return(['leopard'])
         aborts_on_invasion
       end
 
-      it 'gathers when the same-noun creature beside the pet is dead' do
-        Lich::DragonRealms::Creature._set_room([creature(10, pet_name, 'leopard'),
-                                                creature(11, 'a sinewy leopard', 'leopard', dead: true)])
+      it 'gathers when only a corpse is left beside the pet' do
         DRRoom.npcs = ['leopard']
+        DRRoom.dead_npcs = ['leopard']
+        allow(DRRoom).to receive(:unignored_npcs).with(['spectral white leopard']).and_return([])
         gathers_seed
       end
 
-      it 'aborts (noun rule only) while the pet has no name yet' do
-        Lich::DragonRealms::Creature._set_room([creature(10, nil, 'leopard')])
-        DRRoom.npcs = ['leopard']
-        aborts_on_invasion
-      end
-
-      it 'aborts when there is no creature roster to match the name against' do
-        DRRoom.npcs = ['leopard']
-        aborts_on_invasion
-      end
-    end
-
-    context 'with a single-word entry that is not the noun' do
-      let(:ignored_npcs) { ['eyes'] }
-
-      it 'does not skip a creature whose name merely contains the word' do
-        Lich::DragonRealms::Creature._set_room([creature(10, pet_name, 'leopard')])
+      it 'aborts when DRRoom.unignored_npcs falls back to the noun rule' do
         DRRoom.npcs = ['leopard']
         aborts_on_invasion
       end
