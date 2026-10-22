@@ -834,11 +834,18 @@ class UlfHara
   def unhandled_npcs
     skip = @baddies + @ignore
     creatures = Lich::DragonRealms::Creature.in_room(:not_dead)
-    return DRRoom.unignored_npcs(skip) if creatures.empty?
+    # A creature with no noun yet can't be checked against the baddies, so
+    # address the room by noun until every creature is named.
+    return DRRoom.unignored_npcs(skip) if creatures.empty? || creatures.any? { |creature| creature.noun.nil? }
 
-    creatures.reject { |creature| @handled_ids.include?(creature.id) || skip.any? { |entry| creature.matches?(entry) } }
+    creatures.reject { |creature| @handled_ids.include?(creature.id) || skipped?(creature, skip) }
              .map { |creature| creature.id ? "##{creature.id}" : creature.noun }
-             .compact
+  end
+
+  # Named by an entry: its noun (also a noun Lich derived from the name, which
+  # CreatureInstance#matches? leaves out), its full name or a multi-word phrase.
+  def skipped?(creature, skip)
+    skip.any? { |entry| entry.to_s.casecmp?(creature.noun) || creature.matches?(entry) }
   end
 
   def mark_handled(npc)

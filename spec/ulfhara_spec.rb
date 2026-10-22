@@ -20,8 +20,8 @@ RSpec.describe UlfHara do
   let(:sent) { [] }
   let(:walks) { [] }
 
-  def npc(id, noun, name = "a #{noun}")
-    Lich::DragonRealms::CreatureInstance.new(id, noun, name)
+  def npc(id, noun, name = "a #{noun}", noun_from_server: true)
+    Lich::DragonRealms::CreatureInstance.new(id, noun, name, noun_from_server: noun_from_server)
   end
 
   def finish_task
@@ -57,6 +57,17 @@ RSpec.describe UlfHara do
     it 'skips baddies and ignored names by noun, case-insensitively' do
       creature._set_room([npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'human', 'a filthy human'), npc(4, 'guard')])
       expect(ulfhara.unhandled_npcs).to eq(['#4'])
+    end
+
+    it 'skips a baddie whose noun Lich derived from its name (legacy stream)' do
+      creature._set_room([npc(1, 'ruffian', 'a scarred ruffian', noun_from_server: false), npc(2, 'guard')])
+      expect(ulfhara.unhandled_npcs).to eq(['#2'])
+    end
+
+    it 'falls back to DRRoom.unignored_npcs while a roster creature has no noun' do
+      creature._set_room([npc(1, nil, nil), npc(2, 'guard')])
+      DRRoom.npcs = %w[guard ruffian]
+      expect(ulfhara.unhandled_npcs).to eq(['guard'])
     end
 
     it 'skips an NPC an @ignore entry names by full name' do
