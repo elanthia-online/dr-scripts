@@ -5,13 +5,14 @@
 =end
 
 # The opponent to WATCH: the first live room creature whose noun is not an
-# ignored arena NPC, addressed by id ("#123"). Falls back to the first
-# non-ignored noun from DRRoom.npcs when no creature with an id is known.
+# ignored arena NPC, addressed by id ("#123"). A creature with no noun yet is
+# skipped, since it could be an ignored NPC. Falls back to the first
+# non-ignored noun from DRRoom.npcs when no such creature is known.
 # Nil when only ignored NPCs are present.
 def arena_target(ignore_npcs)
   ignored = ignore_npcs.map(&:downcase)
   opponent = Lich::DragonRealms::Creature.in_room(:not_dead).find do |creature|
-    creature.id && !ignored.include?(creature.noun.to_s.downcase)
+    creature.id && creature.noun && !ignored.include?(creature.noun.downcase)
   end
   return "##{opponent.id}" if opponent
 

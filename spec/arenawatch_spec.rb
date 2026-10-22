@@ -60,6 +60,19 @@ RSpec.describe 'arenawatch' do
       expect(arenawatch.arena_target(ignore_npcs)).to eq('#9')
     end
 
+    it 'never picks a creature with no noun yet, which could be an ignored NPC' do
+      seed_room(creature(9, nil, name: nil))
+      DRRoom.npcs = %w[Servant]
+
+      expect(arenawatch.arena_target(ignore_npcs)).to be_nil
+    end
+
+    it 'picks a named opponent past a creature with no noun yet' do
+      seed_room(creature(9, nil, name: nil), creature(10, 'leucro'))
+
+      expect(arenawatch.arena_target(ignore_npcs)).to eq('#10')
+    end
+
     it 'skips a creature without an id in favour of a later one that has one' do
       seed_room(creature(nil, 'leucro'), creature(12, 'rat'))
 
