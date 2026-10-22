@@ -7,13 +7,10 @@ load_lic_class('stabbity.lic', 'Stabbity')
 RSpec.describe Stabbity do
   let(:creature_registry) { Lich::DragonRealms::Creature }
 
-  # A roster creature as Lich's Creature exposes it. matches? models lich-5's
-  # contract for these specs: the noun, or the whole name minus its article.
+  # A roster creature: the harness CreatureInstance, whose matches? follows
+  # lich-5's rule.
   def creature(id:, noun:, name:, dead: false)
-    c = double("creature #{id.inspect}", id: id, noun: noun, name: name)
-    allow(c).to receive(:crtr_flag?) { |flag| flag == :dead && dead }
-    allow(c).to receive(:matches?) { |entry| entry == noun || entry == name.to_s.sub(/\A(?:a|an) /, '') }
-    c
+    Lich::DragonRealms::CreatureInstance.new(id, noun, name, dead: dead)
   end
 
   # Seeds the roster: in_room(:not_dead) answers the live creatures, in_room
