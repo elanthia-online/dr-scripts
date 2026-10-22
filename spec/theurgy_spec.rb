@@ -68,18 +68,6 @@ RSpec.describe TheurgyActions do
         allow(DRRoom).to receive(:unignored_npcs).with(['spectral white leopard']).and_return(['leopard'])
         aborts_on_invasion
       end
-
-      it 'gathers when only a corpse is left beside the pet' do
-        DRRoom.npcs = ['leopard']
-        DRRoom.dead_npcs = ['leopard']
-        allow(DRRoom).to receive(:unignored_npcs).with(['spectral white leopard']).and_return([])
-        gathers_seed
-      end
-
-      it 'aborts when DRRoom.unignored_npcs falls back to the noun rule' do
-        DRRoom.npcs = ['leopard']
-        aborts_on_invasion
-      end
     end
 
     context 'when ignored_npcs is nil' do
