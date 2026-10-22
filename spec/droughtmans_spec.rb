@@ -610,6 +610,21 @@ RSpec.describe Droughtmans do
       expect(bot.dropped_targets(:pcs)).to eq(%w[Bob])
     end
 
+    it 're-waves by noun when the game cannot find a creature by id' do
+      Lich::DragonRealms::Creature._set_room([OpenStruct.new(id: 12, noun: 'warrior', name: 'a warrior')])
+      replies = ['Wave at what?', 'You wave an icy blue wand at the warrior.']
+      allow(DRC).to receive(:bput) { replies.shift }
+      bot.wave('#12')
+      expect(DRC).to have_received(:bput).with('wave my wand at warrior', any_args).once
+      expect(bot.instance_variable_get(:@known_frozen)).to have_key([[0, 0], 'warrior'])
+    end
+
+    it 'does not re-wave a name the game cannot find' do
+      allow(DRC).to receive(:bput).and_return('Wave at what?')
+      bot.wave('warrior')
+      expect(DRC).to have_received(:bput).once
+    end
+
     it 'camps a confirmed holder found already frozen' do
       allow(DRC).to receive(:bput).and_return('The guard is already frozen.')
       allow(bot).to receive(:camp_frozen_keyholder)
@@ -651,6 +666,15 @@ RSpec.describe Droughtmans do
       expect(bot.maze_npcs_present?).to be(false)
     end
 
+    it 'stays true for an unnamed twin after the named one is dropped' do
+      Lich::DragonRealms::Creature._set_room([OpenStruct.new(id: 11, noun: 'warrior', name: 'a warrior'),
+                                              OpenStruct.new(id: 12, noun: nil, name: nil)])
+      allow(DRC).to receive(:bput) { |cmd, *_| cmd.end_with?('at warrior') ? 'The warrior is already frozen.' : 'You wave an icy blue wand at the warrior.' }
+      bot.freeze_npcs
+      expect(DRC).to have_received(:bput).with('wave my wand at second warrior', any_args)
+      expect(bot.maze_npcs_present?).to be(true)
+    end
+
     it 'stays true while any maze mob was frozen by us rather than dropped' do
       allow(DRC).to receive(:bput) { |cmd, *_| cmd.end_with?('#11') ? 'The warrior is already frozen.' : 'You wave an icy blue wand at the warrior.' }
       bot.freeze_npcs
@@ -677,9 +701,9 @@ RSpec.describe Droughtmans do
     end
 
     # Lich lists duplicates as repeated plain nouns, sorted, and freezes the
-    # array. Its order is not the game's, so numbering it ("second warrior")
-    # could wave at the wrong mob; each live creature is addressed by its id.
-    it 'waves each duplicate maze mob by creature id, never by a built ordinal' do
+    # array. While the roster names every listed mob, each live creature is
+    # addressed by its id.
+    it 'waves each duplicate maze mob by creature id when the roster names them all' do
       DRRoom.npcs = %w[warrior warrior].freeze
       Lich::DragonRealms::Creature._set_room([creature(11, 'warrior'), creature(12, 'warrior')])
       allow(bot).to receive(:wave)
@@ -709,13 +733,50 @@ RSpec.describe Droughtmans do
       expect(bot).to have_received(:wave).once
     end
 
-    it 'falls back to the plain noun, once, when no maze creature has an id' do
+    # A plain noun reaches only the game's first match, so duplicates are waved
+    # by the game's own numbering for that noun.
+    it 'waves every listed duplicate by the game numbering when the roster has no maze mob yet' do
       DRRoom.npcs = %w[warrior warrior].freeze
-      Lich::DragonRealms::Creature._set_room([creature(nil, 'warrior')])
+      Lich::DragonRealms::Creature._set_room([])
       allow(bot).to receive(:wave)
       bot.freeze_npcs
+      expect(bot).to have_received(:wave).with('warrior').ordered
+      expect(bot).to have_received(:wave).with('second warrior').ordered
+      expect(bot).to have_received(:wave).twice
+    end
+
+    # Released Lich still puts its own ordinals in DRRoom.npcs.
+    it 'counts a listing that already carries ordinals by its last word' do
+      DRRoom.npcs = ['warrior', 'second warrior'].freeze
+      Lich::DragonRealms::Creature._set_room([])
+      allow(bot).to receive(:wave)
+      bot.freeze_npcs
+      expect(bot).to have_received(:wave).with('warrior').ordered
+      expect(bot).to have_received(:wave).with('second warrior').ordered
+      expect(bot).to have_received(:wave).twice
+    end
+
+    # Lich names roster creatures only when its name and id counts agree, so one
+    # duplicate can be named while its twin is not. Waving just the named id
+    # would walk out past the twin.
+    it 'waves a noun by the game numbering when the roster names fewer than the room lists' do
+      DRRoom.npcs = %w[healer warrior warrior].freeze
+      Lich::DragonRealms::Creature._set_room([creature(10, 'healer'), creature(11, 'warrior'),
+                                              OpenStruct.new(id: 12, noun: nil, name: nil)])
+      allow(bot).to receive(:wave)
+      bot.freeze_npcs
+      expect(bot).to have_received(:wave).with('#10').once
       expect(bot).to have_received(:wave).with('warrior').once
-      expect(bot).to have_received(:wave).once
+      expect(bot).to have_received(:wave).with('second warrior').once
+      expect(bot).to have_received(:wave).exactly(3).times
+    end
+
+    it 'still waves a roster creature the listing has not caught up with' do
+      DRRoom.npcs = [].freeze
+      Lich::DragonRealms::Creature._set_room([creature(11, 'warrior')])
+      allow(bot).to receive(:wave)
+      bot.freeze_npcs
+      expect(bot).to have_received(:wave).with('#11').once
     end
 
     it 'falls back to the plain noun while the roster creature has no name (nil noun) yet' do
