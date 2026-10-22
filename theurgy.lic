@@ -649,7 +649,7 @@ class TheurgyActions
 
     safe_walk_to @data['gather_sirese']['id']
 
-    exit unless (DRRoom.npcs - @settings.ignored_npcs).empty? # Invasion check
+    exit unless DRRoom.unignored_npcs(@settings.ignored_npcs).empty? # Invasion check
     waitrt? while DRC.bput('gather seed',
                            'You find a tiny',
                            'This is not a good',
