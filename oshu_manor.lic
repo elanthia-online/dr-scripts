@@ -31,7 +31,7 @@ class Oshu
   end
 
   def safe_to_dig?
-    (DRRoom.npcs - @ignored_npcs).empty?
+    DRRoom.unignored_npcs(@ignored_npcs).empty?
   end
 
   def grave_digger
