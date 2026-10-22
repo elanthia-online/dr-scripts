@@ -53,6 +53,7 @@ class UlfHara
     @current_room = MazeRoom.new
 
     @ignore = ['Zukir']
+    @handled_ids = []
     @rooms_count = 0
 
     Flags.add('UlfHara-task-complete', 'You have completed your task!  Return to Zukir!', 'ASK ZUKIR ABOUT TASK COMPLETE', 'You quickly snatch', 'You should probably go find Zukir.', 'You should notify Zukir at once!', 'You should go and report', 'give you another mission', 'You should head back to Zukir')
@@ -117,6 +118,7 @@ class UlfHara
     @equipment_manager.wear_items(UserVars.ulfhara_removed_items)
     UserVars.ulfhara_removed_items = nil
     @ignore = ['Zukir']
+    @handled_ids = []
     @rooms_count = 0
     fput('drop my sack') if (DRC.right_hand || DRC.left_hand) =~ /sack/
     walk_to_special(@rooms[0])
@@ -241,12 +243,13 @@ class UlfHara
     end
 
     until Flags['UlfHara-task-complete']
-      if (DRRoom.npcs - @baddies - @ignore).empty?
+      if unhandled_npcs.empty?
         @rooms_count += 1
         @ignore = ['Zukir']
+        @handled_ids = []
         walk_to_special(@rooms[@rooms_count])
       end
-      npcs = DRRoom.npcs - @baddies - @ignore
+      npcs = unhandled_npcs
       npcs.each do |npc|
         break if Flags['UlfHara-task-complete']
 
@@ -263,7 +266,7 @@ class UlfHara
               fput("put my #{supply} in my sack")
             when /Save that for our allies/
               fput("put my #{supply} in my sack")
-              @ignore.push(npc)
+              mark_handled(npc)
             end
           when /What were you referring to|Please rephrase that/
             fput('drop my sack')
@@ -284,7 +287,7 @@ class UlfHara
               fput("put my #{food[0]} in my sack")
             when /Save that for our allies/
               fput("put my #{food[0]} in my sack")
-              @ignore.push(npc)
+              mark_handled(npc)
             else
               food = food.drop(1)
             end
@@ -307,7 +310,7 @@ class UlfHara
               fput("put my #{drink[0]} in my sack")
             when /Save that for our allies/
               fput("put my #{drink[0]} in my sack")
-              @ignore.push(npc)
+              mark_handled(npc)
             else
               drink = drink.drop(1)
             end
@@ -323,7 +326,7 @@ class UlfHara
             walk_to_special(temproom)
           end
         when /Others will assist|You give .* a studious look/
-          @ignore.push(npc)
+          mark_handled(npc)
         end
       end
     end
@@ -377,10 +380,11 @@ class UlfHara
       @rooms_count += 1
       walk_to_special(@rooms[@rooms_count])
       @ignore = ['Zukir']
+      @handled_ids = []
       next unless lastroom != Room.current
 
       lastroom = Room.current
-      npcs = DRRoom.npcs - @baddies - @ignore
+      npcs = unhandled_npcs
       npcs.each do |npc|
         cast if Flags['spell-ready']
         break if Flags['UlfHara-task-complete']
@@ -408,10 +412,10 @@ class UlfHara
             end
             walk_to_special(temproom)
           end
-          @ignore.push(npc)
+          mark_handled(npc)
           break if Flags['UlfHara-task-complete']
         elsif reget(5, 'Others will assist', /You give .* a studious look/)
-          @ignore.push(npc)
+          mark_handled(npc)
         end
       end
     end
@@ -494,19 +498,22 @@ class UlfHara
     lastroom = nil
     missingfound = false
     until Flags['UlfHara-task-complete']
-      if missingfound == false && (DRRoom.npcs - @baddies - @ignore).empty?
+      if missingfound == false && unhandled_npcs.empty?
         @rooms_count += 1
         walk_to_special(@rooms[@rooms_count])
         @ignore = ['Zukir']
+        @handled_ids = []
       end
-      next unless lastroom != Room.current && missingfound == false
+      # In the same room, carry on while some NPC here is still to be asked.
+      next unless missingfound == false && (lastroom != Room.current || !unhandled_npcs.empty?)
 
       lastroom = Room.current
-      if !(DRRoom.npcs - @baddies - @ignore).empty?
+      npc = unhandled_npcs.first
+      if npc
         DRC.retreat if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
-        case DRC.bput("ask #{(DRRoom.npcs - @baddies - @ignore)[0]} about follow", 'Usage: ASK', 'appreciate your help', 'is already guiding me', 'does not seem to know anything about that', 'Did you hit your head too')
+        case DRC.bput("ask #{npc} about follow", 'Usage: ASK', 'appreciate your help', 'is already guiding me', 'does not seem to know anything about that', 'Did you hit your head too')
         when /Usage: ASK|is already guiding me|does not seem to know anything about that/
-          @ignore.push((DRRoom.npcs - @baddies - @ignore)[0])
+          mark_handled(npc)
         when /appreciate your help|Did you hit your head too/
           destination = Room['12872']
           missingfound = true
@@ -818,6 +825,27 @@ class UlfHara
           fput('stow left') if DRC.left_hand
         end
       end
+    end
+  end
+
+  # NPCs in the room still to visit, skipping baddies, @ignore names and the
+  # ones already handled here. Each is "#<id>" so same-noun NPCs stay apart;
+  # a creature without an id (or no roster at all) falls back to its noun.
+  def unhandled_npcs
+    skip = @baddies + @ignore
+    creatures = Lich::DragonRealms::Creature.in_room(:not_dead)
+    return DRRoom.unignored_npcs(skip) if creatures.empty?
+
+    creatures.reject { |creature| @handled_ids.include?(creature.id) || skip.any? { |entry| creature.matches?(entry) } }
+             .map { |creature| creature.id ? "##{creature.id}" : creature.noun }
+             .compact
+  end
+
+  def mark_handled(npc)
+    if npc.start_with?('#')
+      @handled_ids.push(npc.delete_prefix('#').to_i)
+    else
+      @ignore.push(npc)
     end
   end
 

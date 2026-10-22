@@ -424,6 +424,13 @@ module Harness
       @@_data_store['dead_npcs'] = val
     end
 
+    # lich-5's DRRoom.unignored_npcs: npcs minus the ignored entries. The real
+    # one also drops creatures an entry names by full name (via the Creature
+    # roster); this double only subtracts nouns.
+    def self.unignored_npcs(ignored)
+      npcs - Array(ignored).compact.map(&:to_s)
+    end
+
     def self.room_objs
       @@_data_store['room_objs'] || []
     end
@@ -1496,6 +1503,23 @@ module Harness
 
         def self.[](id)
           @@_room.find { |creature| creature.id == id }
+        end
+
+        # A roster entry for scripts that also call #matches? (lich-5's
+        # CreatureInstance#matches?): an entry names the creature by its noun,
+        # its full name without the article, or a multi-word phrase within it.
+        Double = Struct.new(:id, :noun, :name, keyword_init: true) do
+          def matches?(entry)
+            wanted = entry.to_s.strip.downcase.squeeze(' ')
+            return false if wanted.empty?
+            return true if noun&.downcase == wanted
+
+            full = name.to_s.strip.downcase.squeeze(' ').sub(/\A(?:a|an|the|some)\s+/, '')
+            return false if full.empty?
+            return true if full == wanted
+
+            wanted.include?(' ') && " #{full} ".include?(" #{wanted} ")
+          end
         end
       end
     end
