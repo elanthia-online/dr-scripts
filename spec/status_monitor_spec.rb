@@ -7,7 +7,7 @@ require 'fileutils'
 
 # Test suite for status-monitor.lic
 #
-# Covers MessageStore, MessageFilter, CommandDetector, AlertHandler,
+# Covers MessageStore, MessageFilter, AlertHandler,
 # and Monitor orchestration. Aggressively tests edge cases, boundary
 # conditions, and error paths.
 
@@ -251,172 +251,15 @@ RSpec.describe StatusMonitor::MessageStore do
 end
 
 # ---------------------------------------------------------------------------
-# CommandDetector -- deduplication and command extraction
-# ---------------------------------------------------------------------------
-RSpec.describe StatusMonitor::CommandDetector do
-  # CommandDetector.check calls the harness fput on the module itself; capture
-  # those calls per-example instead of redefining the shared fput seam.
-  let(:fput_commands) { [] }
-  before { allow(described_class).to receive(:fput) { |cmd| fput_commands << cmd } }
-
-  describe '.check' do
-    it 'detects uppercase commands in a line' do
-      described_class.execute('you see JUMP here')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'does not auto-execute denylisted destructive commands' do
-      described_class.execute('you must QUIT and SELL and DROP now')
-      expect(fput_commands).to be_empty
-    end
-
-    it 'does not execute a denylisted command even when obfuscated' do
-      described_class.execute('try Q_U_I_T now')
-      expect(fput_commands).not_to include('quit')
-    end
-
-    it 'still executes safe commands in a line that also contains a denylisted one' do
-      described_class.execute('you should JUMP but do not QUIT')
-      expect(fput_commands).to include('jump')
-      expect(fput_commands).not_to include('quit')
-    end
-
-    it 'detects obfuscated commands with separators' do
-      described_class.execute('try J_U_M_P now')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'deduplicates commands that match both scanners' do
-      described_class.execute('do J_U_M_P or JUMP')
-      jump_count = fput_commands.count('jump')
-      expect(jump_count).to eq(1)
-    end
-
-    it 'detects multiple different commands' do
-      described_class.execute('JUMP and LOOK around')
-      expect(fput_commands).to include('jump', 'look')
-    end
-
-    it 'ignores commands not in VALID_COMMANDS' do
-      described_class.execute('XYZZY is not a command')
-      expect(fput_commands).to be_empty
-    end
-
-    it 'ignores short uppercase sequences (< 3 chars)' do
-      described_class.execute('I AM here')
-      expect(fput_commands).not_to include('am')
-    end
-
-    it 'handles a line with no commands' do
-      described_class.execute('just a normal line of text')
-      expect(fput_commands).to be_empty
-    end
-
-    it 'handles empty string' do
-      expect { described_class.execute('') }.not_to raise_error
-      expect(fput_commands).to be_empty
-    end
-
-    it 'detects tilde-separated obfuscation' do
-      described_class.execute('try L~O~O~K now')
-      expect(fput_commands).to include('look')
-    end
-
-    it 'detects equals-separated obfuscation' do
-      described_class.execute('try L=O=O=K now')
-      expect(fput_commands).to include('look')
-    end
-
-    it 'handles mixed separators in one token' do
-      described_class.execute('try J_U~M=P now')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'detects dot-separated obfuscation via first scanner' do
-      described_class.execute('try J.U.M.P now')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'detects hyphen-separated obfuscation' do
-      described_class.execute('try J-U-M-P now')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'detects a bare command with no surrounding text' do
-      described_class.execute('JUMP')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'detects uppercase runs embedded in lowercase words (character class scan)' do
-      described_class.execute('theJUMPwasfast')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'detects commands with multiple consecutive separators' do
-      described_class.execute('try J__U__M__P now')
-      expect(fput_commands).to include('jump')
-    end
-  end
-
-  describe 'adversarial evasion' do
-    it 'misses commands with Cyrillic lookalike letters (known gap, needs transliteration)' do
-      cyrillic_em = 0x041C.chr(Encoding::UTF_8) # lookalike for Latin capital M
-      line = "JU#{cyrillic_em}P here"
-      described_class.execute(line)
-      expect(fput_commands).not_to include('jump')
-    end
-
-    it 'detects commands despite zero-width characters inserted' do
-      zero_width_space = 0x200B.chr(Encoding::UTF_8)
-      line = "JU#{zero_width_space}MP here"
-      described_class.execute(line)
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'detects mixed-case commands via second scanner upcase' do
-      described_class.execute('try j_U_m_P now')
-      expect(fput_commands).to include('jump')
-    end
-
-    it 'finds commands in very long lines' do
-      padding = 'a' * 5000
-      described_class.execute("#{padding} JUMP #{padding}")
-      expect(fput_commands).to include('jump')
-    end
-  end
-
-  describe '.commands_in (detect only, no side effects)' do
-    it 'returns detected valid commands without typing anything' do
-      expect(described_class.commands_in('you should JUMP and LOOK')).to contain_exactly('JUMP', 'LOOK')
-      expect(fput_commands).to be_empty
-    end
-
-    it 'includes denylisted commands (they are still a check signal)' do
-      expect(described_class.commands_in('you must QUIT now')).to include('QUIT')
-    end
-
-    it 'returns [] for a line with no commands' do
-      expect(described_class.commands_in('just some ordinary prose')).to eq([])
-    end
-
-    it 'detects obfuscated commands' do
-      expect(described_class.commands_in('try J_U_M_P')).to include('JUMP')
-    end
-  end
-end
-
-# ---------------------------------------------------------------------------
 # AlertHandler -- alert responses
 # ---------------------------------------------------------------------------
 RSpec.describe StatusMonitor::AlertHandler do
-  # handle sends via the harness fput on the handler instance, and delegates
-  # command execution to CommandDetector (which sends on the module). Capture
-  # both per-example rather than redefining the shared fput seam. echo output
+  # handle sends via the harness fput on the handler instance. Capture it
+  # per-example rather than redefining the shared fput seam. echo output
   # (beeps, the alert line) lands in the harness displayed_messages.
   let(:fput_commands) { [] }
   before do
     allow_any_instance_of(described_class).to receive(:fput) { |_receiver, cmd| fput_commands << cmd }
-    allow(StatusMonitor::CommandDetector).to receive(:fput) { |cmd| fput_commands << cmd }
   end
 
   def make_alert_settings(respond: false, quit: false, slack: nil)
@@ -432,7 +275,7 @@ RSpec.describe StatusMonitor::AlertHandler do
     expect(displayed_messages.count { |m| m == "\a" }).to eq(3)
   end
 
-  context 'notify-only (novelty, not a strong signal)' do
+  context 'notify-only (novel line, not a GM check)' do
     it 'does not type commands, canned responses, or exit' do
       handler = described_class.new(make_alert_settings(respond: true, quit: true))
       handler.handle('you see JUMP here', strong: false)
@@ -440,10 +283,10 @@ RSpec.describe StatusMonitor::AlertHandler do
     end
   end
 
-  context 'strong signal (repeat or embedded command)' do
-    it 'executes detected commands via CommandDetector' do
+  context 'strong signal (GM check)' do
+    it 'never types a command found in the line' do
       described_class.new(make_alert_settings).handle('you see JUMP here', strong: true)
-      expect(fput_commands).to include('jump')
+      expect(fput_commands).to be_empty
     end
 
     it 'sends a canned response when status_monitor_respond is true' do
@@ -745,7 +588,7 @@ RSpec.describe StatusMonitor::Monitor do
   end
   # Injected shared corpus, scoped to the test's tmpdir (never the real DATA_DIR).
   let(:store) { StatusMonitor::MessageStore.new(File.join(tmpdir, 'corpus.db')) }
-  # Capture strong-signal auto-actions (typed commands / responses / exit)
+  # Capture strong-signal auto-actions (canned responses / exit)
   # without redefining the shared fput seam.
   let(:fput_commands) { [] }
 
@@ -760,7 +603,6 @@ RSpec.describe StatusMonitor::Monitor do
     # returns $test_data[:filters] (reset before each example by reset_data).
     $test_data.filters = OpenStruct.new('filter_strings' => [])
     allow_any_instance_of(StatusMonitor::AlertHandler).to receive(:fput) { |_r, cmd| fput_commands << cmd }
-    allow(StatusMonitor::CommandDetector).to receive(:fput) { |cmd| fput_commands << cmd }
   end
 
   after do
@@ -790,48 +632,134 @@ RSpec.describe StatusMonitor::Monitor do
     end
   end
 
-  describe 'alerted lines are never whitelisted' do
-    it 'keeps alerting on a plain novel line on every recurrence' do
+  describe 'alert once, then known' do
+    it 'alerts on the first sight of a novel line and records it' do
       monitor = build_monitor
       expect(monitor.process(+'a brand new benign remark')).to be true
-      expect(monitor.process(+'a brand new benign remark')).to be true
-      expect(store.in_corpus?('a brand new benign remark')).to be false
+      expect(store.in_corpus?('a brand new benign remark')).to be true
     end
 
-    it 'never whitelists an own-name line it alerted on (the Kaluto opener stays hot)' do
+    it 'stays silent on the second sight of a line it alerted on' do
+      monitor = build_monitor
+      expect(monitor.process(+'a brand new benign remark')).to be true
+      expect(monitor.process(+'a brand new benign remark')).to be false
+    end
+
+    it 'goes quiet for every character once any character has alerted on it (shared corpus)' do
+      build_monitor.process(+'a line first seen on one character')
+      other_character = build_monitor
+      expect(other_character.process(+'a line first seen on one character')).to be false
+    end
+
+    it 'treats an own-name line like any other line (alert once)' do
       # checkname is 'Testchar' in the harness.
       monitor = build_monitor
-      expect(monitor.process(+'a crewman mutters that Testchar is wanted')).to be true
-      expect(monitor.process(+'a crewman mutters that Testchar is wanted')).to be true
-    end
-
-    it 'keeps alerting on a line embedding a command' do
-      monitor = build_monitor
-      expect(monitor.process(+'a voice says you should JUMP')).to be true
-      expect(monitor.process(+'a voice says you should JUMP')).to be true
+      expect(monitor.process(+'The clerk says, "Testchar, your balance is low."')).to be true
+      expect(monitor.process(+'The clerk says, "Testchar, your balance is low."')).to be false
     end
   end
 
-  describe 'auto-actions gated behind the strong signal' do
-    it 'auto-types an embedded command on a novel line (command = strong)' do
-      build_monitor.process(+'a voice says you should JUMP')
-      expect(fput_commands).to include('jump')
+  describe 'commands in game output are never typed' do
+    it 'alerts on "---Active RPA---" once without typing rpa, then goes quiet (no rpag feedback loop)' do
+      monitor = build_monitor
+      expect(monitor.process(+'   ---Active RPA---')).to be true
+      expect(monitor.process(+'   ---Active RPA---')).to be false
+      expect(fput_commands).to be_empty
     end
 
-    it 'does not auto-type or quit on a plain novel line, even with those settings on' do
+    it 'does not type open for the autoloot "when OPENed" notice' do
+      build_monitor.process(+'You will automatically loot treasure chests when OPENed. (requires AutoLoot to be enabled)')
+      expect(fput_commands).to be_empty
+    end
+
+    it 'does not type an obfuscated command either' do
+      build_monitor.process(+'a voice says you should J_U_M_P now')
+      expect(fput_commands).to be_empty
+    end
+  end
+
+  describe 'GM checks (CHECK_PATTERNS)' do
+    # Verbatim from a failed check (DR-Gnarta, 2026-10-22).
+    squirrel_lines = [
+      'A fuzzy brown squirrel scurries into the room and looks at you with curious eyes before it runs off.  You hear a child nearby yelling, "Where is my pet squirrel it, it has run away to bother people.  Say go away to shoo him away!"',
+      'A large burly squirrel scurries into the room and runs over your foot before it runs off.  You hear a child nearby yelling, "Crazy squirrel, stop bothering people!  Say go away to shoo him away!"',
+      'A giant scruffy squirrel scurries into the room and stomps on your feet before it runs off.  You hear a child nearby yelling, "Stupid squirrel, stop bothering people!  Say go away and shake fist to shoo him away!"',
+      'A massive red squirrel scurries into the room and stomps on your feet before it runs off.  You hear a child nearby yelling, "That squirrel is very annoying.  It would be a very good idea to shoo it away.  Say go away to get him to leave, before he gets even more annoying."',
+      'The child voice sounds like a very sad GameMaster. "I\'m sorry, but have failed this test of your conscious awareness and must now take a little nap.',
+      '[Scripting Violation Limbo]',
+      'SEND[Sarhanna] ***THIS IS FOR YOUR SCROLLBACK*** You were moved here because you were unresponsive.',
+      '[You can use RESPOND {MESSAGE} to reply!]'
+    ]
+
+    squirrel_lines.each do |line|
+      it "alerts on every recurrence of: #{line[0, 50]}" do
+        monitor = build_monitor
+        3.times { expect(monitor.process(+line)).to be true }
+        expect(store.in_corpus?(line.strip)).to be false
+      end
+    end
+
+    it 'alerts even when the line is already in the corpus (e.g. merged from a legacy file)' do
+      store.record(squirrel_lines.first)
+      expect(build_monitor.process(+squirrel_lines.first)).to be true
+    end
+
+    it 'alerts during the start-up grace period, and does not record it' do
+      settings.status_monitor_grace_seconds = 300
+      expect(build_monitor.process(+squirrel_lines.first)).to be true
+      expect(store.in_corpus?(squirrel_lines.first)).to be false
+    end
+
+    it 'alerts in learn mode, and does not record it' do
+      settings.status_monitor_learn = true
+      expect(build_monitor.process(+squirrel_lines.first)).to be true
+      expect(store.in_corpus?(squirrel_lines.first)).to be false
+    end
+
+    it 'alerts past the rate cap' do
+      monitor = build_monitor
+      StatusMonitor::Monitor::ALERT_RATE_MAX.times { |i| monitor.process(+"distinct novel remark item #{('a'..'z').to_a[i]}") }
+      expect(monitor.process(+'yet another distinct novel line over the cap')).to be false
+      expect(monitor.process(+squirrel_lines.first)).to be true
+    end
+
+    it 'alerts even when a configured filter would hide the line' do
+      $test_data.filters = OpenStruct.new('filter_strings' => ['squirrel'])
+      expect(build_monitor.process(+squirrel_lines.first)).to be true
+    end
+
+    it 'matches the check on the tag-stripped line' do
+      expect(build_monitor.process(+'<pushBold/>[Scripting Violation Limbo]<popBold/>')).to be true
+    end
+
+    it 'is the strong signal: canned response and auto-quit fire when configured' do
+      settings.status_monitor_respond = true
+      settings.quit_on_status_warning = true
+      build_monitor.process(+squirrel_lines.first)
+      expect(fput_commands).to include('exit')
+      expect(fput_commands.any? { |cmd| ["'Hmmm?", "'Yes", "'Ok?"].include?(cmd) }).to be true
+    end
+
+    it 'does not auto-act on a plain novel line, even with those settings on' do
       settings.status_monitor_respond = true
       settings.quit_on_status_warning = true
       build_monitor.process(+'an entirely new but harmless observation')
       expect(fput_commands).to be_empty
     end
+
+    it 'does not treat ambient squirrel room text as a check' do
+      monitor = build_monitor
+      line = 'A fluffy-tailed grey squirrel dashes across the path, closely followed by another.'
+      expect(monitor.process(+line)).to be true
+      expect(monitor.process(+line)).to be false
+    end
   end
 
-  describe 'warm-up suppression (learn / grace / rate-limit)' do
+  describe 'warm-up suppression (learn / grace) and the rate cap' do
     it 'learns silently with no alert when status_monitor_learn is true' do
       settings.status_monitor_learn = true
       monitor = build_monitor
       expect(monitor.process(+'a novel line during learn mode')).to be false
-      # ...but it was still recorded, so it is now known-safe.
       expect(store.in_corpus?(+'a novel line during learn mode')).to be true
     end
 
@@ -842,22 +770,39 @@ RSpec.describe StatusMonitor::Monitor do
       expect(store.in_corpus?(+'a novel line during grace')).to be true
     end
 
-    it 'never silently whitelists a command line, even during grace' do
-      settings.status_monitor_grace_seconds = 300
+    it 'alerts again once the grace period has elapsed' do
+      settings.status_monitor_grace_seconds = 60
+      start = Time.now
+      allow(Time).to receive(:now).and_return(start)
       monitor = build_monitor
-      expect(monitor.process(+'a voice says you should JUMP')).to be false # suppressed
-      expect(store.in_corpus?('a voice says you should JUMP')).to be false # but NOT recorded
+      allow(Time).to receive(:now).and_return(start + 61)
+      expect(monitor.process(+'a novel line after grace')).to be true
     end
 
-    it 'rate-limits alerts past the cap, still learning the excess quietly' do
+    it 'drops lines past the cap WITHOUT recording them' do
       monitor = build_monitor
       cap = StatusMonitor::Monitor::ALERT_RATE_MAX
-      # Distinct, digit-free novel lines so each is its own corpus key.
       cap.times { |i| expect(monitor.process(+"distinct novel remark item #{('a'..'z').to_a[i]}")).to be true }
-      # The next distinct novel line is over the cap -> suppressed but learned.
       over = 'yet another distinct novel line over the cap'
       expect(monitor.process(+over)).to be false
-      expect(store.in_corpus?(over)).to be true
+      expect(store.in_corpus?(over)).to be false
+    end
+
+    it 'alerts on a dropped line once the cap window clears' do
+      start = Time.now
+      allow(Time).to receive(:now).and_return(start)
+      monitor = build_monitor
+      StatusMonitor::Monitor::ALERT_RATE_MAX.times { |i| monitor.process(+"distinct novel remark item #{('a'..'z').to_a[i]}") }
+      over = 'yet another distinct novel line over the cap'
+      expect(monitor.process(+over)).to be false
+      allow(Time).to receive(:now).and_return(start + StatusMonitor::Monitor::ALERT_RATE_WINDOW + 1)
+      expect(monitor.process(+over)).to be true
+    end
+
+    it 'does not count GM-check alerts toward the cap' do
+      monitor = build_monitor
+      20.times { monitor.process(+'[Scripting Violation Limbo]') }
+      expect(monitor.process(+'a plain novel line after many checks')).to be true
     end
   end
 

@@ -355,16 +355,16 @@ module StatusMonitor
       @slackbot = nil
     end
 
-    # Handles a novel line.
+    # Handles an alerted line.
     #
-    # Novelty alone is a NOTIFY signal (audible beeps, echo to the window, Slack)
-    # -- because with a trusted corpus every unknown line is worth a glance, but
-    # far too many to auto-act on. The full bundle (auto-type embedded commands,
-    # canned response, auto-quit) only runs on a STRONG signal: the line repeated
-    # past threshold, or it actually contains an embedded command.
+    # Every alert notifies (audible beeps, echo to the window, Slack). The
+    # optional auto-actions (canned response, auto-quit) only run on a STRONG
+    # signal: the line matched a known GM-check pattern. Commands found in a line
+    # are never typed -- ordinary game output is full of capitalised verbs
+    # ("---Active RPA---", "when OPENed"), and a real check needs a human answer.
     #
-    # @param line [String] the novel line
-    # @param strong [Boolean] whether the strong signal fired (repeat or command)
+    # @param line [String] the alerted line
+    # @param strong [Boolean] whether the line matched a GM-check pattern
     # @return [void]
     def handle(line, strong:)
       3.times do
@@ -372,7 +372,6 @@ module StatusMonitor
         pause 0.25
       end
       if strong
-        CommandDetector.execute(line)
         fput @responses.first if @settings.status_monitor_respond
         # Queue the auto-quit before send_slack: constructing the SlackBot on the
         # first alert can block for several seconds, and we do not want that to
@@ -426,64 +425,6 @@ module StatusMonitor
     end
   end
 
-  # Scans suspicious lines for embedded game commands and executes them.
-  # Handles both uppercase sequences (JUMP) and obfuscated separators (J_u_M_p).
-  module CommandDetector
-    # Commands that are destructive, irreversible, or session-ending and must
-    # never be auto-executed from an untrusted line, even when they match. A
-    # legitimate GM sanity-probe would never ask you to run these, so there is
-    # no upside to obeying them and real downside (forced logout, etc).
-    #
-    # @note Today the parser only ever fires a bare verb (targets never survive
-    #   scanning), so most of these are no-ops without an argument -- QUIT is
-    #   the one with a real effect. The denylist keeps them safe regardless if
-    #   the scanner is ever taught to attach arguments.
-    DENYLISTED_COMMANDS = %w[QUIT SELL DROP DUMP EMPTY WITHDRAW RELEASE GET PUT KILL].freeze
-
-    VALID_COMMANDS = %w[ACTION ADVICE AFT AGREE ANSWER APPLAUD ASK AVOID AWAKEN BABBLE BALANCE BANDAGE BARK BARTER BASK BAWL BEAM BEARD BECKON BELCH BITE BLAME BLANCH BLAZE BLINK BLOCK BLUFF BLUSH BONDED BOO BOP BOUNCE BOW BRAWL BREAK BREATHE BRUSH BUTT BUY CACKLE CARDS CARVE CENTER CHANT CHAT CHECK CHEER CHIRR CHOKE CHOOSE CHOP CHORTLE CHORUS CHUCKLE CLAIM CLAP CLEAN CLENCH CLIMB CLOSE CLUTCH COIN COLLECT COMBAT COMPARE CONCENTRATE CONTACT COUGH COUNT COVER COWER CRAWL CRINGE CRUSH CRY CURSE CURTSY CUT DANCE DANCE FLOOR DAYDREAM DEAD DESCRIBE DRAG DRINK DROOL DROP DUCK DUMP EAR EAT ELBOW EMAIL EMPTY ENCUMBRANCE ENGAGE EXAMINE EXCHANGE EXHALE EXPRESS FACE FAINT FALL FATIGUE FEED FEMALE FIDGET FIGURE FIND FIRE FIT FIX FLAGS FLAIL FLAP FLETCH FLINCH FLIRT FLUSTER FLY FOCUS FOLLOW FORAGE FRET FROWN FURROW GASP GAWK GAZE GEM GET GIGGLE GLANCE GLARE GLOWER GNASH GO GOBBLE GRIEVE GRIMACE GRIN GRIND GROAN GROVEL GROWL GRUMBLE GRUNT GUARD GULP GUZZLE HACK HAIL HAIR HANGBACK HELLO HICCUP HIDE HISS HOLD HOME HOOT HOWL HUG HUM HUZZAH IGNORE INFAMY INFO INFUSE INHALE INSTRUCT INSULT INTELLIGENCE INVENTORY INVFIX JAB JOIN JUGGLE JUMP KHRI KICK KILL KISS KNEE KNEEL KNOCK LANGUAGE LATCH LAUGH LEAD LEAN LEAP LEAVE LECTURE LICK LIE LIGHT LINK LISTEN LOAD LOAN LOCK LOOK LOWER LUNGE MAKE MALE MANA MARCH MARK MEDITATE MEETING MENU MEOW MESSAGE MIND MIX MOAN MOCK MONEY MOOR MORE MOTION MOUNT MUMBLE MUSS MUTTER NAG NAME NIBBLE NOCK NOD NOTE NUDGE OBSERVE OFFER OPEN ORDER PACE PANIC PANT PARRY PAT PATHWAY PAY PEER PERCEIVE PET PICK PIN PINCH PLANT PLAY PLAYACT POACH POINT POKE POLICY PONDER PORT PORTRAIT POSE POUND POUR POUT PRACTICE PRAISE PRAY PREACH PREDICT PREEN PREMIUM PREPARE PROCRASTINATE PROD PROTECT PUCKER PULL PUMMEL PUNCH PUNISH PURR PUSH PUT PUZZLE QUEST QUEUE QUIT RAISE RASPBERRY READ RECALL RECITE REFER REFLEX REFUSE RELEASE REMOVE REPAIR REPENT REROLL RETREAT RETURN RING ROAR ROFL ROLL ROSHAMBO ROW RPA RUB RUMMAGE SALUTE SCOFF SCOUT SCOWL SCRAPE SCRATCH SCREAM SCRIBE SEARCH SELL SHAKE SHAPE SHARE SHEATHE SHIFT SHIP SHIVER SHOOT SHOVE SHOW SHRIEK SHRUG SHUDDER SHUFFLE SHUN SIGH SIGN SIGNAL SIGNATURE SING SIT SKATE SKILLS SKIN SLAP SLEEP SLICE SLINK SLIP SMELL SMILE SMIRK SMOOCH SNAP SNARL SNEAK SNEER SNEEZE SNICKER SNIFFLE SNORE SNORT SNUFF SNUGGLE SOB SONG SORT SPECULATE SPELLS SPIT SPLASH SPLUTTER SPRINKLE SQUINT SQUIRM STABLE STALK STAMINA STANCE STAND STARBOARD STARE STATUS STEAL STIR STITCH STOMP STOP STOW STRENGTH STRETCH STRING STUBBLE STUDY SULK SUMMON SURPRISE SURRENDER SURVEY SWAP SWEAR SWEAT SWEEP SWIM SWIMMING SWING TACKLE TAG TAIL TAKE TALK TAP TARGET TEACH TEASE TELL TEND THINK THROW THRUST THUMP TICKLE TIE TILT TIME TIP TITLE TOSS TOUCH TRACE TRACK TRAIN TRANSFER TRILL TUNE TURN TYPO UNBRAID UNBUNDLE UNCOIL UNHIDE UNLATCH UNLOAD UNLOCK UNTIE UNWRAP VAULT VOTE WAIL WAIT WAKE WARN WATCH WAVE WEALTH WEAR WEAVE WEDDING WEEP WHEEZE WHIMPER WHINE WHIRLWIND WHISTLE WHO WIELD WINCE WINK WIPE WITHDRAW WOBBLE WRING WRITE YANK YAWN YELP].freeze
-
-    # Detects embedded game commands in a line WITHOUT executing them. Used both
-    # to decide whether a line is "check-like" (an embedded command is a strong
-    # signal) and to drive execution.
-    #
-    # @param line [String] line to scan
-    # @return [Array<String>] valid commands found (upcased), denylisted included
-    def self.commands_in(line)
-      normalized = line.gsub(/[^\x20-\x7E]/, '')
-      found = Set.new
-
-      normalized.gsub(/_|~|-|=|\./, '')
-                .scan(/[A-Z\s]{3,}/)
-                .each do |match|
-                  match = match.gsub(/\s/, '')
-                  found << match if VALID_COMMANDS.include?(match)
-                end
-
-      normalized.split(' ').each do |token|
-        next unless token =~ /[_~=-]/
-
-        cleaned = token.gsub(/_|~|-|=/, '').upcase
-        found << cleaned if VALID_COMMANDS.include?(cleaned)
-      end
-
-      found.to_a
-    end
-
-    # Executes the non-denylisted commands found in a line (the "act" path).
-    #
-    # @param line [String] suspicious line to scan and act on
-    # @return [void]
-    def self.execute(line)
-      commands_in(line).each do |cmd|
-        next if DENYLISTED_COMMANDS.include?(cmd)
-
-        pause 3
-        fput(cmd.downcase)
-        pause 5
-      end
-    end
-  end
-
   # Top-level orchestrator for status monitoring.
   #
   # Coordinates message filtering, seen tracking, spam detection,
@@ -500,7 +441,7 @@ module StatusMonitor
   #   - `quit_on_status_warning` [Boolean] auto-quit on alert
   #   - `slack_username` [String] Slack user to notify
   #   - `status_monitor_learn` [Boolean] record novel lines silently, never alert
-  #     (used to prime the shared corpus)
+  #     (used to prime the shared corpus); GM-check lines still alert
   #   - `status_monitor_grace_seconds` [Integer] warm-up window at session start
   #     during which novel lines are learned silently (default 60; 0 disables)
   #
@@ -519,9 +460,21 @@ module StatusMonitor
     # silently (no alert) to absorb the warm-up burst before the corpus is warm.
     GRACE_SECONDS = 60
     # Notification safety valve: at most this many alerts per rolling window;
-    # beyond it, novel lines are still learned but not announced.
+    # beyond it, novel lines are dropped unrecorded so they can alert later.
     ALERT_RATE_MAX = 10
     ALERT_RATE_WINDOW = 60
+    # Known GM-check wordings, matched against the cleaned line. These always
+    # alert -- regardless of the corpus, grace, learn mode or the rate cap -- and
+    # are never recorded, so a check can never be whitelisted into silence.
+    CHECK_PATTERNS = Regexp.union(
+      /Say go away/i, # squirrel check: 'You hear a child nearby yelling, "... Say go away to shoo him away!"'
+      /scurries into the room and .+ before it runs off/, # squirrel check
+      /test of your conscious awareness/i, # failed check, about to be moved
+      /Scripting Violation Limbo/, # moved to limbo
+      /game ?master/i,
+      /SEND\[/,
+      /You can use RESPOND/
+    )
 
     attr_reader :spam_line
 
@@ -545,42 +498,41 @@ module StatusMonitor
 
     # Processes a single raw game line through the full pipeline.
     #
-    # Detection is novelty-gated: a line already in the shared corpus is
-    # known-safe and is neither analysed nor alerted on. A NOVEL line alerts
-    # (novel-alone).
+    # A line matching CHECK_PATTERNS always alerts as a strong signal (canned
+    # response / auto-quit if configured) and is never recorded.
     #
-    # Whitelisting is deliberately one-directional: a line the tool ALERTED on is
-    # NEVER recorded, so it stays novel and every recurrence keeps alerting until
-    # an import (or a silent learn/grace window) retires it. Only lines learned
-    # SILENTLY -- during the start-up grace period, explicit learn mode, or the
-    # rate-limit valve -- are recorded, and even then a command-bearing line is
-    # never silently whitelisted so a command-check stays catchable.
-    #
-    # Auto-actions (type the command, canned response, auto-quit) fire only when
-    # the line embeds a command; mere novelty or repetition never triggers them.
+    # Any other line is novelty-gated: a line already in the shared corpus is
+    # known-safe and silent. A NOVEL line alerts once and is then recorded, so it
+    # goes quiet on every character. During the start-up grace period or learn
+    # mode a novel line is recorded silently instead; past the rate cap it is
+    # dropped unrecorded, so it can still alert once the cap clears.
     #
     # @param line [String] raw game stream line
-    # @return [Boolean] true if a novel line actually alerted
+    # @return [Boolean] true if the line alerted
     def process(line)
       cleaned = @filter.clean(line)
       @last_clean_line = cleaned
       return false if cleaned.nil?
+
+      if cleaned.match?(CHECK_PATTERNS)
+        alert(cleaned.strip, strong: true)
+        return true
+      end
       return false if @filter.filtered?(cleaned)
 
       scrubbed = @filter.similarity_scrub(cleaned).strip
       return false if scrubbed.empty?
       return false if @store.in_corpus?(scrubbed) # known-safe -> silent
 
-      has_command = CommandDetector.commands_in(scrubbed).any?
-
-      if suppress_alert?
-        @store.record(scrubbed) unless has_command # learn silently, keep commands hot
+      if learning?
+        @store.record(scrubbed)
         return false
       end
+      return false if rate_limited?
 
-      @alerter.handle(scrubbed, strong: has_command)
-      @spam_line = scrubbed
+      alert(scrubbed, strong: false)
       @alert_times << Time.now
+      @store.record(scrubbed)
       true
     end
 
@@ -607,15 +559,22 @@ module StatusMonitor
 
     private
 
+    # @param line [String] the line to announce
+    # @param strong [Boolean] whether it matched a GM-check pattern
+    # @return [void]
+    def alert(line, strong:)
+      @alerter.handle(line, strong: strong)
+      @spam_line = line
+    end
+
     # Whether a novel line should be learned silently instead of alerted:
-    # explicit learn mode, the start-up grace period, or the rate-limit valve.
+    # explicit learn mode or the start-up grace period.
     #
     # @return [Boolean]
-    def suppress_alert?
+    def learning?
       return true if @learn
-      return true if @grace_seconds.positive? && (Time.now - @started_at < @grace_seconds)
 
-      rate_limited?
+      @grace_seconds.positive? && (Time.now - @started_at < @grace_seconds)
     end
 
     # Whether the alert rate cap has been reached in the current window.
@@ -626,7 +585,7 @@ module StatusMonitor
       @alert_times.reject! { |t| t < cutoff }
       if @alert_times.size >= ALERT_RATE_MAX
         unless @rate_notice
-          echo "status-monitor: alert rate cap reached (#{ALERT_RATE_MAX}/#{ALERT_RATE_WINDOW}s); learning quietly until it clears."
+          echo "status-monitor: alert rate cap reached (#{ALERT_RATE_MAX}/#{ALERT_RATE_WINDOW}s); dropping alerts until it clears."
           @rate_notice = true
         end
         return true
