@@ -3678,7 +3678,8 @@ class ManipulateProcess
   # game_state.npcs) but skipped in #manipulate below.
   def manipulable_targets
     Lich::DragonRealms::Creature.targets.reject do |creature|
-      @ignored_npcs.any? { |entry| creature.matches?(entry) }
+      (creature.noun && @ignored_npcs.include?(creature.noun)) ||
+        @ignored_npcs.any? { |entry| creature.matches?(entry) }
     end
   end
 

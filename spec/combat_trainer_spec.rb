@@ -666,8 +666,8 @@ RSpec.describe ManipulateProcess do
     Lich::DragonRealms::Creature._set_room(creatures)
   end
 
-  def creature(id:, noun: 'rat', name: 'a giant rat')
-    Lich::DragonRealms::CreatureInstance.new(id, noun, name)
+  def creature(id:, noun: 'rat', name: 'a giant rat', noun_from_server: true)
+    Lich::DragonRealms::CreatureInstance.new(id, noun, name, noun_from_server: noun_from_server)
   end
 
   describe '#execute' do
@@ -714,7 +714,19 @@ RSpec.describe ManipulateProcess do
     it 'excludes ignored npcs from the manipulate set' do
       allow(DRSkill).to receive(:getxp).and_return(10)
       allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
-      seed_targets(creature(id: 1, noun: 'rat'), creature(id: 2, noun: 'kobold', name: 'a kobold'))
+      seed_targets(creature(id: 2, noun: 'kobold', name: 'a kobold'), creature(id: 1, noun: 'rat'))
+      gs = gs_double
+      allow(gs).to receive(:construct?).and_return(false)
+      build_manipulate(threshold: 1, ignored_npcs: ['kobold']).execute(gs)
+      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
+      expect(DRC).not_to have_received(:bput).with('manipulate friendship #2', any_args)
+    end
+
+    it 'excludes a noun ignore entry when the noun was derived from the name (legacy stream)' do
+      allow(DRSkill).to receive(:getxp).and_return(10)
+      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
+      seed_targets(creature(id: 2, noun: 'kobold', name: 'a big kobold', noun_from_server: false),
+                   creature(id: 1, noun: 'rat'))
       gs = gs_double
       allow(gs).to receive(:construct?).and_return(false)
       build_manipulate(threshold: 1, ignored_npcs: ['kobold']).execute(gs)
