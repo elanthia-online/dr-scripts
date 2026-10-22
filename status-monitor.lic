@@ -9,7 +9,8 @@ no_kill_all
 arg_definitions = [
   [
     { name: 'debug', regex: /debug/i, optional: true },
-    { name: 'nowindow', regex: /nowindow/i, optional: true }
+    { name: 'nowindow', regex: /nowindow/i, optional: true },
+    { name: 'learn', regex: /^learn(=[1-9]\d*)?$/i, optional: true, description: 'learn new lines silently for 30 min (learn=N for N min)' }
   ]
 ]
 
@@ -86,12 +87,14 @@ module StatusMonitor
     # immediately so other characters see it at once.
     #
     # @param line [String] scrubbed message line
+    # @param source [String] provenance tag; learn sessions use a unique tag so
+    #   everything one session learned can be deleted by source
     # @return [void]
-    def record(line)
+    def record(line, source = 'live')
       return if line.nil? || line.strip.empty?
 
       remember(line)
-      with_retry { insert_line(line, 'live') }
+      with_retry { insert_line(line, source) }
     end
 
     # Closes the database connection.
@@ -385,6 +388,15 @@ module StatusMonitor
       pause 2 if strong
     end
 
+    # Echoes and Slacks an informational notice (no beeps, no auto-actions).
+    #
+    # @param message [String] notice text
+    # @return [void]
+    def notify(message)
+      echo(message)
+      send_slack(message)
+    end
+
     private
 
     # Lazily constructs the SlackBot on first use.
@@ -440,13 +452,21 @@ module StatusMonitor
   #   - `status_monitor_respond` [Boolean] auto-respond with canned phrases
   #   - `quit_on_status_warning` [Boolean] auto-quit on alert
   #   - `slack_username` [String] Slack user to notify
-  #   - `status_monitor_learn` [Boolean] record novel lines silently, never alert
-  #     (used to prime the shared corpus); GM-check lines still alert
   #   - `status_monitor_grace_seconds` [Integer] warm-up window at session start
   #     during which novel lines are learned silently (default 60; 0 disables)
   #
+  # Learn mode is deliberately NOT a setting, so it can never be left on: it is
+  # only enabled by the `learn` argument and always expires. While learning,
+  # novel lines are recorded silently (GM-check lines still alert and are never
+  # recorded). The start-up grace period is the same mechanism with a short
+  # default window and no Slack notices.
+  #
   # @example Basic usage
   #   ;status-monitor
+  #
+  # @example Learn mode (30 minutes, or N minutes)
+  #   ;status-monitor learn
+  #   ;status-monitor learn=90
   #
   # @example Headless mode
   #   ;status-monitor nowindow
@@ -459,6 +479,9 @@ module StatusMonitor
     # Seconds at the start of a session during which novel lines are learned
     # silently (no alert) to absorb the warm-up burst before the corpus is warm.
     GRACE_SECONDS = 60
+    # Default length of an explicit `learn` session, and how often it reminds.
+    LEARN_DEFAULT_MINUTES = 30
+    LEARN_REMINDER_SECONDS = 600
     # Notification safety valve: at most this many alerts per rolling window;
     # beyond it, novel lines are dropped unrecorded so they can alert later.
     ALERT_RATE_MAX = 10
@@ -481,19 +504,28 @@ module StatusMonitor
     # @return [String, nil] the most recent cleaned line (tags stripped), for debug logging
     attr_reader :last_clean_line
 
+    # @return [String] corpus source tag for lines learned silently this session
+    attr_reader :learn_source
+
     # @param settings [OpenStruct] user settings from get_settings
     # @param store [MessageStore] shared corpus (defaults to the installation-wide store)
-    def initialize(settings, store = MessageStore.new)
+    # @param learn_minutes [Integer, nil] explicit learn session length; nil for
+    #   the normal start-up grace period
+    def initialize(settings, store = MessageStore.new, learn_minutes: nil)
       @store = store
       @filter = MessageFilter.new(load_filter_strings)
       @alerter = AlertHandler.new(settings)
-      @learn = settings.status_monitor_learn ? true : false
-      @grace_seconds = settings.status_monitor_grace_seconds || GRACE_SECONDS
-      @started_at = Time.now
+      started_at = Time.now
+      @explicit_learn = !learn_minutes.nil?
+      window = @explicit_learn ? learn_minutes * 60 : (settings.status_monitor_grace_seconds || GRACE_SECONDS)
+      @learning = window.positive?
+      @learn_until = started_at + window
+      @last_reminder = started_at
+      @learn_source = "learn:#{checkname}:#{started_at.utc.strftime('%Y-%m-%dT%H:%M:%SZ')}"
       @alert_times = []
       @spam_line = nil
       @last_clean_line = nil
-      announce_mode
+      announce_learning(window) if @learning
     end
 
     # Processes a single raw game line through the full pipeline.
@@ -504,12 +536,14 @@ module StatusMonitor
     # Any other line is novelty-gated: a line already in the shared corpus is
     # known-safe and silent. A NOVEL line alerts once and is then recorded, so it
     # goes quiet on every character. During the start-up grace period or learn
-    # mode a novel line is recorded silently instead; past the rate cap it is
-    # dropped unrecorded, so it can still alert once the cap clears.
+    # mode a novel line is recorded silently instead (tagged with learn_source);
+    # past the rate cap it is dropped unrecorded, so it can still alert once the
+    # cap clears.
     #
     # @param line [String] raw game stream line
     # @return [Boolean] true if the line alerted
     def process(line)
+      update_learning
       cleaned = @filter.clean(line)
       @last_clean_line = cleaned
       return false if cleaned.nil?
@@ -524,8 +558,8 @@ module StatusMonitor
       return false if scrubbed.empty?
       return false if @store.in_corpus?(scrubbed) # known-safe -> silent
 
-      if learning?
-        @store.record(scrubbed)
+      if @learning
+        @store.record(scrubbed, @learn_source)
         return false
       end
       return false if rate_limited?
@@ -567,14 +601,23 @@ module StatusMonitor
       @spam_line = line
     end
 
-    # Whether a novel line should be learned silently instead of alerted:
-    # explicit learn mode or the start-up grace period.
+    # Advances the learning window; called for every line so expiry and
+    # reminders happen on time even when no novel line arrives. Ends the
+    # session (with a notice for explicit learn) once it expires, and reminds
+    # periodically during explicit learn.
     #
-    # @return [Boolean]
-    def learning?
-      return true if @learn
+    # @return [void]
+    def update_learning
+      return unless @learning
 
-      @grace_seconds.positive? && (Time.now - @started_at < @grace_seconds)
+      now = Time.now
+      if now >= @learn_until
+        @learning = false
+        @alerter.notify('status-monitor: learn mode ended -- alerting on new lines again.') if @explicit_learn
+      elsif @explicit_learn && now - @last_reminder >= LEARN_REMINDER_SECONDS
+        @last_reminder = now
+        echo "status-monitor: LEARN MODE until #{@learn_until.strftime('%H:%M')} -- not alerting on new lines."
+      end
     end
 
     # Whether the alert rate cap has been reached in the current window.
@@ -594,13 +637,20 @@ module StatusMonitor
       false
     end
 
-    # One-time notice about which warm-up mode is active.
-    def announce_mode
-      if @learn
-        echo 'status-monitor: learn mode -- recording novel lines silently, no alerts.'
-      elsif @grace_seconds.positive?
-        echo "status-monitor: warming up for #{@grace_seconds}s -- learning novel lines quietly before alerting."
+    # One-time notice that a learning window has started. Explicit learn mode
+    # also goes to Slack and names the tag that undoes the session.
+    #
+    # @param window [Integer] learning window in seconds
+    # @return [void]
+    def announce_learning(window)
+      unless @explicit_learn
+        echo "status-monitor: warming up for #{window}s -- learning novel lines quietly before alerting."
+        return
       end
+
+      @alerter.notify("status-monitor: LEARN MODE for #{window / 60} min (until #{@learn_until.strftime('%H:%M')}) -- " \
+                      'recording new lines silently, not alerting. GM checks still alert.')
+      echo "status-monitor: to undo this session: DELETE FROM seen_messages WHERE source = '#{@learn_source}'"
     end
 
     # Loads the configurable ignore patterns from the 'filters' data file.
@@ -652,7 +702,8 @@ def write_debug_log(raw, cleaned, player_line)
 end
 
 settings = get_settings
-monitor = StatusMonitor::Monitor.new(settings)
+learn_minutes = (args.learn[/\d+/] || StatusMonitor::Monitor::LEARN_DEFAULT_MINUTES).to_i if args.learn
+monitor = StatusMonitor::Monitor.new(settings, learn_minutes: learn_minutes)
 
 before_dying do
   monitor.shutdown

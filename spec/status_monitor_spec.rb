@@ -581,7 +581,6 @@ RSpec.describe StatusMonitor::Monitor do
       line_similarity_percentage: 80,
       status_monitor_respond: false,
       quit_on_status_warning: false,
-      status_monitor_learn: false,
       status_monitor_grace_seconds: 0, # disable warm-up grace so alert behavior is testable
       slack_username: nil
     )
@@ -592,8 +591,8 @@ RSpec.describe StatusMonitor::Monitor do
   # without redefining the shared fput seam.
   let(:fput_commands) { [] }
 
-  def build_monitor
-    described_class.new(settings, store)
+  def build_monitor(learn_minutes: nil)
+    described_class.new(settings, store, learn_minutes: learn_minutes)
   end
 
   before do
@@ -711,8 +710,7 @@ RSpec.describe StatusMonitor::Monitor do
     end
 
     it 'alerts in learn mode, and does not record it' do
-      settings.status_monitor_learn = true
-      expect(build_monitor.process(+squirrel_lines.first)).to be true
+      expect(build_monitor(learn_minutes: 30).process(+squirrel_lines.first)).to be true
       expect(store.in_corpus?(squirrel_lines.first)).to be false
     end
 
@@ -756,9 +754,8 @@ RSpec.describe StatusMonitor::Monitor do
   end
 
   describe 'warm-up suppression (learn / grace) and the rate cap' do
-    it 'learns silently with no alert when status_monitor_learn is true' do
-      settings.status_monitor_learn = true
-      monitor = build_monitor
+    it 'learns silently with no alert in learn mode' do
+      monitor = build_monitor(learn_minutes: 30)
       expect(monitor.process(+'a novel line during learn mode')).to be false
       expect(store.in_corpus?(+'a novel line during learn mode')).to be true
     end
@@ -803,6 +800,148 @@ RSpec.describe StatusMonitor::Monitor do
       monitor = build_monitor
       20.times { monitor.process(+'[Scripting Violation Limbo]') }
       expect(monitor.process(+'a plain novel line after many checks')).to be true
+    end
+  end
+
+  describe 'learn mode (explicit, expiring)' do
+    let(:start) { Time.local(2026, 10, 22, 16, 30, 0) }
+    let(:db) { SQLite3::Database.new(File.join(tmpdir, 'corpus.db')) }
+
+    before do
+      allow(Time).to receive(:now).and_return(start)
+      Lich::DragonRealms::SlackBot.instances.clear
+      settings.slack_username = 'someuser'
+    end
+
+    after { db.close }
+
+    def slack_messages
+      Lich::DragonRealms::SlackBot.instances.flat_map { |bot| bot.dm_calls.map(&:last) }
+    end
+
+    def source_of(line)
+      db.get_first_value('SELECT source FROM seen_messages WHERE line_text = ?', [line])
+    end
+
+    it 'is off unless requested: a plain start alerts on novel lines (grace disabled in these specs)' do
+      expect(build_monitor.process(+'a novel line with no learn argument')).to be true
+    end
+
+    it 'announces the session, its end time and that GM checks still alert, on Slack too' do
+      build_monitor(learn_minutes: 30)
+      expect(slack_messages.last).to include('LEARN MODE for 30 min (until 17:00)', 'GM checks still alert')
+    end
+
+    it 'prints the exact undo statement for the session' do
+      monitor = build_monitor(learn_minutes: 30)
+      expect(displayed_messages.last).to eq("status-monitor: to undo this session: DELETE FROM seen_messages WHERE source = '#{monitor.learn_source}'")
+    end
+
+    it 'tags lines it learns with a per-session source naming the character and start time' do
+      monitor = build_monitor(learn_minutes: 30)
+      monitor.process(+'a line learned in this session')
+      expect(monitor.learn_source).to eq("learn:Testchar:#{start.utc.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+      expect(source_of('a line learned in this session')).to eq(monitor.learn_source)
+    end
+
+    it 'the undo statement removes exactly what the session learned' do
+      store.record('a line known before the session')
+      monitor = build_monitor(learn_minutes: 30)
+      monitor.process(+'a line learned in this session')
+      db.execute('DELETE FROM seen_messages WHERE source = ?', [monitor.learn_source])
+      expect(source_of('a line learned in this session')).to be_nil
+      expect(source_of('a line known before the session')).to eq('live')
+    end
+
+    it 'still learns right up to the last second of the window' do
+      monitor = build_monitor(learn_minutes: 30)
+      allow(Time).to receive(:now).and_return(start + (30 * 60) - 1)
+      expect(monitor.process(+'a line just before expiry')).to be false
+    end
+
+    it 'expires on its own and alerts on the next novel line' do
+      monitor = build_monitor(learn_minutes: 30)
+      allow(Time).to receive(:now).and_return(start + (30 * 60))
+      expect(monitor.process(+'a novel line after learn mode')).to be true
+    end
+
+    it 'announces the end on Slack as soon as any line arrives, even a known one' do
+      store.record('a line already known')
+      monitor = build_monitor(learn_minutes: 30)
+      allow(Time).to receive(:now).and_return(start + (31 * 60))
+      monitor.process(+'a line already known')
+      expect(slack_messages.last).to eq('status-monitor: learn mode ended -- alerting on new lines again.')
+    end
+
+    it 'announces the end only once' do
+      monitor = build_monitor(learn_minutes: 30)
+      allow(Time).to receive(:now).and_return(start + (31 * 60))
+      3.times { monitor.process(+'a line already known') }
+      expect(slack_messages.count { |m| m.include?('learn mode ended') }).to eq(1)
+    end
+
+    it 'reminds every 10 minutes while learning' do
+      monitor = build_monitor(learn_minutes: 30)
+      [599, 600, 900, 1200].each do |offset|
+        allow(Time).to receive(:now).and_return(start + offset)
+        monitor.process(+'a line already known')
+      end
+      reminders = displayed_messages.grep(/LEARN MODE until 17:00 -- not alerting/)
+      expect(reminders.size).to eq(2) # at 600s and 1200s, not at 599s or 900s
+    end
+
+    it 'honours a custom length' do
+      monitor = build_monitor(learn_minutes: 90)
+      allow(Time).to receive(:now).and_return(start + (89 * 60))
+      expect(monitor.process(+'still learning at 89 minutes')).to be false
+      allow(Time).to receive(:now).and_return(start + (90 * 60))
+      expect(monitor.process(+'alerting at 90 minutes')).to be true
+    end
+
+    it 'never records a GM check line while learning' do
+      monitor = build_monitor(learn_minutes: 30)
+      monitor.process(+'[Scripting Violation Limbo]')
+      expect(source_of('[Scripting Violation Limbo]')).to be_nil
+    end
+
+    it 'keeps the start-up grace period quiet: no Slack notices at start or end' do
+      settings.status_monitor_grace_seconds = 60
+      monitor = build_monitor
+      allow(Time).to receive(:now).and_return(start + 61)
+      monitor.process(+'a line after grace')
+      expect(slack_messages.grep(/LEARN MODE|learn mode ended/)).to be_empty
+    end
+
+    it 'tags lines learned during the grace period with the session source too' do
+      settings.status_monitor_grace_seconds = 60
+      monitor = build_monitor
+      monitor.process(+'a line learned during grace')
+      expect(source_of('a line learned during grace')).to eq(monitor.learn_source)
+    end
+
+    it 'records alerted lines as live, not as learned' do
+      monitor = build_monitor
+      monitor.process(+'an alerted novel line')
+      expect(source_of('an alerted novel line')).to eq('live')
+    end
+  end
+
+  describe 'the learn argument' do
+    # The arg definitions are top-level script code, so read the literal back.
+    let(:learn_regex) do
+      definition = File.readlines(File.join(File.dirname(__FILE__), '..', 'status-monitor.lic')).grep(/name: 'learn'/).first
+      source, flags = definition.match(%r{regex: /(.*?)/(\w*),}).captures
+      Regexp.new(source, flags.include?('i') ? Regexp::IGNORECASE : nil)
+    end
+
+    it 'accepts learn and learn=N' do
+      expect(%w[learn LEARN learn=90 learn=5]).to all(match(learn_regex))
+    end
+
+    it 'rejects learn=0, negative, non-numeric and partial words (Lich then shows usage)' do
+      %w[learn=0 learn=-5 learn=abc learning relearn learn= learn=05].each do |arg|
+        expect(arg).not_to match(learn_regex)
+      end
     end
   end
 
