@@ -424,6 +424,12 @@ module Harness
       @@_data_store['dead_npcs'] = val
     end
 
+    # lich-5's version also drops creatures an entry names by full name; this
+    # stand-in only subtracts nouns. Stub it to model a full-name ignore.
+    def self.unignored_npcs(ignored)
+      npcs - Array(ignored).compact.map(&:to_s)
+    end
+
     def self.room_objs
       @@_data_store['room_objs'] || []
     end
