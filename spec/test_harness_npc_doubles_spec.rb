@@ -10,6 +10,9 @@ RSpec.describe 'test harness NPC doubles' do
       expect(DRRoom.unignored_npcs(['rat'])).to eq(%w[goblin goblin])
     end
 
+    # Guards the double's contract: lich-5 itself would return ['leopard'] here,
+    # because this roster matches DRRoom.npcs. Specs that need the full-name
+    # rule stub unignored_npcs; don't upgrade the double to emulate it.
     it 'applies the noun rule only, ignoring a full-name entry' do
       DRRoom.npcs = %w[leopard leopard]
       Lich::DragonRealms::Creature._set_room(
@@ -90,7 +93,19 @@ RSpec.describe 'test harness NPC doubles' do
       expect(leopard.crtr_flag?(:dead)).to be(false)
       corpse = described_class.new(10, 'leopard', 'a sinewy leopard', dead: true)
       expect(corpse.crtr_flag?(:dead)).to be(true)
+      expect(corpse.crtr_flag?('dead')).to be(true)
       expect(corpse.crtr_flag?(:stunned)).to be(false)
+    end
+
+    it 'returns a strict boolean from crtr_flag? whatever dead: was given' do
+      expect(described_class.new(11, 'rat', 'a rat', dead: 1).crtr_flag?(:dead)).to be(false)
+      expect(described_class.new(12, 'rat', 'a rat', dead: nil).crtr_flag?(:dead)).to be(false)
+    end
+
+    it 'never matches a single word against a derived (legacy) noun' do
+      legacy = described_class.new(13, 'eyes', 'a spectral white leopard with luminous blue eyes', noun_from_server: false)
+      expect(legacy.matches?('eyes')).to be(false)
+      expect(legacy.matches?('white leopard')).to be(true)
     end
 
     it 'resolves through the Creature roster by id' do
