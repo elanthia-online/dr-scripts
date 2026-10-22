@@ -280,13 +280,16 @@ class Stabbity
     @target_id ? "##{@target_id}" : @target
   end
 
-  # With an id, only that creature counts: dead or out of the room. Without
-  # one, any same-noun corpse is taken as the target.
+  # With an id, only that creature counts: dead, or out of the room once its
+  # noun has left too (the roster is briefly empty while a room refresh
+  # rebuilds it). Without one, any same-noun corpse is taken as the target.
   def target_dead?
     return DRRoom.dead_npcs.include?(@target) unless @target_id
 
     target = Lich::DragonRealms::Creature.in_room.find { |creature| creature.id == @target_id }
-    target.nil? || target.crtr_flag?(:dead)
+    return !get_npcs.include?(@target) if target.nil?
+
+    target.crtr_flag?(:dead)
   end
 
   def npc_dead?

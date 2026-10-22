@@ -253,10 +253,30 @@ RSpec.describe Stabbity do
     end
 
     it 'is true once the target has left the room, though other NPCs remain' do
-      DRRoom.npcs = ['moradu']
-      seed_roster(live: [creature(id: 6, noun: 'moradu', name: 'a lean moradu')])
+      DRRoom.npcs = ['goblin']
+      seed_roster(live: [creature(id: 6, noun: 'goblin', name: 'a goblin')])
 
       expect(target(build, 'moradu', 9).npc_dead?).to be(true)
+    end
+
+    it 'is true once the target has left and only an ignored same-noun creature remains' do
+      DRRoom.npcs = %w[goblin moradu]
+      allow(DRRoom).to receive(:unignored_npcs).with(['jeol moradu']).and_return(['goblin'])
+      seed_roster(live: [creature(id: 6, noun: 'moradu', name: 'a jeol moradu'),
+                         creature(id: 7, noun: 'goblin', name: 'a goblin')])
+
+      expect(target(build(ignored: ['jeol moradu']), 'moradu', 9).npc_dead?).to be(true)
+    end
+
+    # A room refresh clears the roster before re-registering its creatures
+    # (lich-5 Creature.clear_room); DRRoom.npcs is replaced whole.
+    it 'is false while the roster is empty mid-refresh and the target noun is still listed' do
+      DRRoom.npcs = ['moradu']
+      seed_roster(live: [])
+      stabbity = target(build, 'moradu', 6)
+
+      expect(stabbity.npc_dead?).to be(false)
+      expect(stabbity.instance_variable_get(:@npc_is_alive)).to be(true)
     end
 
     it 'falls back to the corpse noun when no id is known' do
