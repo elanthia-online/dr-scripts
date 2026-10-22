@@ -477,6 +477,23 @@ RSpec.describe Droughtmans do
       bot.scan_players
     end
 
+    it 'skips a whitelisted player the wand could not find, until the player list refreshes' do
+      DRRoom.pcs = %w[Bob].freeze
+      bot.instance_variable_set(:@whitelist, %w[Bob])
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@known_frozen, {})
+      stub_flags({})
+      allow(DRC).to receive(:bput).and_return('Wave at what?')
+
+      bot.scan_players
+      bot.scan_players
+      expect(DRC).to have_received(:bput).with('wave my wand at Bob', any_args).once
+
+      DRRoom.pcs = %w[Bob].freeze
+      bot.scan_players
+      expect(DRC).to have_received(:bput).with('wave my wand at Bob', any_args).twice
+    end
+
     it 'does nothing while carrying the key (run for the door, do not fight)' do
       allow(bot).to receive(:have_key?).and_return(true)
       DRRoom.pcs = ['Bob']
@@ -604,6 +621,50 @@ RSpec.describe Droughtmans do
   # ===========================================================================
   # freeze_npcs: creature ids + the known-frozen ledger
   # ===========================================================================
+  # Dowsing waits for a room without maze mobs. Mobs the wand reported already
+  # frozen (or gone) used to be deleted from DRRoom.npcs, so they stopped
+  # counting until the next room refresh; the script-local drops must match.
+  describe '#maze_npcs_present?' do
+    before do
+      allow(bot).to receive(:in_maze?).and_return(true)
+      bot.instance_variable_set(:@pos, [0, 0])
+      bot.instance_variable_set(:@known_frozen, {})
+      stub_flags({})
+      DRRoom.npcs = %w[warrior warrior].freeze
+      Lich::DragonRealms::Creature._set_room([
+                                               OpenStruct.new(id: 11, noun: 'warrior', name: 'a warrior'),
+                                               OpenStruct.new(id: 12, noun: 'warrior', name: 'a warrior')
+                                             ])
+    end
+
+    it 'is false once the wand has dropped every maze mob in the listing' do
+      allow(DRC).to receive(:bput) { |cmd, *_| cmd.end_with?('#11') ? 'The warrior is already frozen.' : 'Wave at what?' }
+      bot.freeze_npcs
+      expect(bot.maze_npcs_present?).to be(false)
+    end
+
+    it 'is false once the wand has dropped the only mob named by plain noun (no ids)' do
+      Lich::DragonRealms::Creature._set_room([])
+      DRRoom.npcs = %w[warrior].freeze
+      allow(DRC).to receive(:bput).and_return('The warrior is already frozen.')
+      bot.freeze_npcs
+      expect(bot.maze_npcs_present?).to be(false)
+    end
+
+    it 'stays true while any maze mob was frozen by us rather than dropped' do
+      allow(DRC).to receive(:bput) { |cmd, *_| cmd.end_with?('#11') ? 'The warrior is already frozen.' : 'You wave an icy blue wand at the warrior.' }
+      bot.freeze_npcs
+      expect(bot.maze_npcs_present?).to be(true)
+    end
+
+    it 'counts the dropped mobs again once Lich refreshes the room listing' do
+      allow(DRC).to receive(:bput).and_return('The warrior is already frozen.')
+      bot.freeze_npcs
+      DRRoom.npcs = %w[warrior warrior].freeze # a new listing, same contents
+      expect(bot.maze_npcs_present?).to be(true)
+    end
+  end
+
   describe '#freeze_npcs' do
     before do
       allow(bot).to receive(:in_maze?).and_return(true)

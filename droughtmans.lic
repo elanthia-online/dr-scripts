@@ -1351,9 +1351,11 @@ class Droughtmans
   # Wanding: maze NPC mobs (always frozen, regardless of player settings)
   # --------------------------------------------------------------------------
 
-  # @return [Boolean] whether any maze mobs are present (frozen or not)
+  # Mobs we froze ourselves still count; ones the wand dropped from this listing
+  # (reported already frozen, or gone) do not.
+  # @return [Boolean] whether any maze mobs are present
   def maze_npcs_present?
-    DRRoom.npcs.any? { |npc| npc =~ MAZE_NPCS }
+    (maze_mob_targets - dropped_targets(:npcs)).any?
   end
 
   # Who to wave at for the maze mobs in the room: '#<id>' for each live roster
