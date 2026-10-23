@@ -74,6 +74,7 @@ class PlantHeal
 
   def initialize
     settings = get_settings
+    @settings = settings
     ps = load_settings(settings)
 
     # Resolve rooms
@@ -402,13 +403,19 @@ class PlantHeal
     end
   end
 
-  # Ensure at least one of Heal or Regenerate is active.
-  # Rebuffs via plantheal waggle_set if neither is up (waggle healing only).
+  HEALING_SPELL_KEYS = %w[Heal Regenerate].freeze
+
+  # Ensure at least one of Heal or Regenerate is active (waggle healing only).
+  # Casts only the Heal/Regenerate entries of the plantheal waggle_set. Running
+  # buff on the whole set would also recast EV whenever buff judges it due,
+  # e.g. right after release_and_recast_ev cast a fresh one.
   def ensure_healing_spells
     return unless @waggle_healing
-    return if DRSpells.active_spells.include?('Heal') || DRSpells.active_spells.include?('Regenerate')
+    return if HEALING_SPELL_KEYS.any? { |name| DRSpells.active_spells.include?(name) }
 
-    DRC.wait_for_script_to_complete('buff', ['plantheal'])
+    healing_spells = @ev_waggle.select { |name, _data| HEALING_SPELL_KEYS.include?(name) }
+    healing_spells.each_value { |data| DRCA.check_discern(data, @settings) if data['use_auto_mana'] }
+    DRCA.cast_spells(healing_spells, @settings)
   end
 
   PASSIVE_HEAL_POLL_INTERVAL = 5
