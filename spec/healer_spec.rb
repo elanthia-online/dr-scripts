@@ -1125,9 +1125,8 @@ RSpec.describe Healer do
 
     context 'when the Unity link succeeds on a poisoned patient' do
       before do
-        allow(DRCH).to receive(:perceive_health_other).with('Tenuk')
-                                                     .and_return(health_result(score: 9, poisoned: true,
-                                                                               wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }))
+        poisoned = health_result(score: 9, poisoned: true, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+        allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(poisoned)
         stub_game('Stretching your senses')
         healer.send(:heal_patient, healer.get_patient('Tenuk'))
       end
