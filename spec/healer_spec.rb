@@ -1064,6 +1064,8 @@ RSpec.describe Healer do
     before do
       healer.add_patient('Tenuk')
       healer.send(:update_patient, 'Tenuk', needs_teach: false)
+      # A readiness result cached earlier this cycle, from before Unity moved wounds onto us
+      healer.instance_variable_set(:@last_health_check, Time.now)
       DRRoom.pcs = ['Tenuk']
       allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
       allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(chest_wounds)
@@ -1133,6 +1135,12 @@ RSpec.describe Healer do
 
       it 'still claims the spell slot for the poison' do
         expect(healer.instance_variable_get(:@spell_task)).to include(patient: 'Tenuk', type: :poison)
+      end
+
+      # Unity moved the wounds onto us even though the poison branch returns early,
+      # so the next cycle must re-check our own health instead of reusing a stale "ready".
+      it 'invalidates the cached readiness check' do
+        expect(healer.instance_variable_get(:@last_health_check)).to be_nil
       end
     end
   end

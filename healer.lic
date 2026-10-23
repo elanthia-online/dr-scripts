@@ -860,8 +860,10 @@ class Healer
           end
           if link_result =~ LINK_SUCCESS_PATTERN
             # Unity draws the wounds over on the spot and then ebbs away; there
-            # is no lasting link for a later transfer to use.
+            # is no lasting link for a later transfer to use. It never moves
+            # poison or disease, so those branches below still run.
             unity_took_wounds = true
+            @last_health_check = nil # Invalidate cache -- we just took wounds
           else
             log("Unity link failed for #{victim}, falling back to redirect flow")
           end
@@ -900,7 +902,6 @@ class Healer
         # Nothing left to transfer -- the next cycle re-perceives and picks up
         # anything Unity did not take.
         update_patient(victim, touched: true, timer: Time.now)
-        @last_health_check = nil # Invalidate cache -- we just took wounds
         heal_self
       else
         transfer_wounds(victim, victim_health.score)
