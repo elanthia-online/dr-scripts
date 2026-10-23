@@ -145,6 +145,17 @@ class Healer
   TRANSFER_NOT_FOUND_PATTERN = /What do you want to get/.freeze
   TRANSFER_RESPONSES = [TRANSFER_SUCCESS_PATTERN, TRANSFER_NOT_FOUND_PATTERN].freeze
 
+  # Patterns for "transfer <patient> quick all" (wound transfer). The game always
+  # echoes "You touch <patient>." first, so these match the line AFTER the touch;
+  # matching the touch itself would hide a failure such as a lapsed empathic link.
+  WOUND_TRANSFER_STARTED_PATTERN = /You feel the transfer beginning|already have an active transfer with/.freeze
+  WOUND_TRANSFER_NOTHING_PATTERN = /is not wounded in that location/.freeze
+  WOUND_TRANSFER_NO_LINK_PATTERN = /You have no empathic link with/.freeze
+  WOUND_TRANSFER_RESPONSES = [
+    WOUND_TRANSFER_STARTED_PATTERN, WOUND_TRANSFER_NOTHING_PATTERN,
+    WOUND_TRANSFER_NO_LINK_PATTERN, TRANSFER_NOT_FOUND_PATTERN
+  ].freeze
+
   # Patterns for whisper responses. "Whisper what to who?" is the game's reply when
   # the target isn't a valid whisper recipient (e.g. the patient left the room in the
   # window between our in-room check and the whisper). Without it, DRC.bput finds no
@@ -965,11 +976,19 @@ class Healer
       DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
     end
 
-    result = DRC.bput("transfer #{victim} quick all", *TRANSFER_RESPONSES)
+    result = DRC.bput("transfer #{victim} quick all", *WOUND_TRANSFER_RESPONSES)
 
     if result =~ TRANSFER_NOT_FOUND_PATTERN
       Lich::Messaging.msg("bold", "Healer: #{victim} not found during wound transfer")
       remove_patient(victim, reason: :not_found)
+      return
+    end
+
+    # The link from the perceive touch lapsed before the transfer went out (e.g. we
+    # sat in another script's roundtime). Leave the cooldown untouched so the next
+    # cycle re-perceives -- that touch re-forges the link -- and retries at once.
+    if result =~ WOUND_TRANSFER_NO_LINK_PATTERN
+      log("Empathic link with #{victim} lapsed before transfer, re-touching next cycle")
       return
     end
 

@@ -1047,7 +1047,7 @@ RSpec.describe Healer do
       healer.send(:update_patient, 'Tenuk', unity_linked: true)
 
       allow(DRC).to receive(:bput)
-        .with("transfer Tenuk quick all", anything, anything)
+        .with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
         .and_return('You touch')
       allow(healer).to receive(:heal_self)
 
@@ -1065,7 +1065,7 @@ RSpec.describe Healer do
         .with(/redirect all to/, anything, anything)
         .and_return('You are now redirecting')
       allow(DRC).to receive(:bput)
-        .with("transfer Tenuk quick all", anything, anything)
+        .with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
         .and_return('You touch')
       allow(healer).to receive(:heal_self)
 
@@ -1086,7 +1086,7 @@ RSpec.describe Healer do
       healer.send(:transfer_wounds, 'Tenuk', 5)
 
       expect(healer).to have_received(:heal_self)
-      expect(DRC).not_to have_received(:bput).with(/transfer Tenuk/, anything, anything)
+      expect(DRC).not_to have_received(:bput).with(/transfer Tenuk/, any_args)
     end
 
     it 'transfers even when all body parts are wounded for Unity-linked patient' do
@@ -1098,13 +1098,152 @@ RSpec.describe Healer do
       wounded_health = health_result(wounds: { 2 => all_wounded }, score: 99)
       allow(DRCH).to receive(:check_health).and_return(wounded_health)
       allow(DRC).to receive(:bput)
-        .with("transfer Tenuk quick all", anything, anything)
+        .with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
         .and_return('You touch')
       allow(healer).to receive(:heal_self)
 
       healer.send(:transfer_wounds, 'Tenuk', 5)
 
-      expect(DRC).to have_received(:bput).with("transfer Tenuk quick all", anything, anything)
+      expect(DRC).to have_received(:bput).with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
+    end
+  end
+
+  # ============================================================
+  # Wound Transfer Responses (match the line after the touch)
+  # ============================================================
+
+  describe 'WOUND_TRANSFER_RESPONSES' do
+    # Verbatim game lines seen after "transfer <patient> quick all".
+    started = 'You feel the transfer beginning as a cold stillness settles in the center of your being ' \
+              'and you steel yourself for the impending explosion of pain.'
+    active = 'You are already have an active transfer with Evro for that body part.'
+    nothing = 'Tenuk is not wounded in that location.'
+    no_link = 'You have no empathic link with Mahtra and cannot transfer his wounds.'
+    not_found = 'What do you want to get?'
+
+    def matching_patterns(line)
+      Healer::WOUND_TRANSFER_RESPONSES.select { |pattern| pattern.match?(line) }
+    end
+
+    # Regression: the touch echo arrives before every outcome. Matching it made
+    # bput report success before the "no empathic link" line was even read.
+    it 'does not match the touch echo that precedes every outcome' do
+      expect(matching_patterns('You touch Mahtra.')).to be_empty
+    end
+
+    it 'classifies a started transfer' do
+      expect(matching_patterns(started)).to eq([Healer::WOUND_TRANSFER_STARTED_PATTERN])
+    end
+
+    it 'classifies an already-active transfer as started' do
+      expect(matching_patterns(active)).to eq([Healer::WOUND_TRANSFER_STARTED_PATTERN])
+    end
+
+    it 'classifies a patient with nothing left to take' do
+      expect(matching_patterns(nothing)).to eq([Healer::WOUND_TRANSFER_NOTHING_PATTERN])
+    end
+
+    it 'classifies a lapsed empathic link' do
+      expect(matching_patterns(no_link)).to eq([Healer::WOUND_TRANSFER_NO_LINK_PATTERN])
+    end
+
+    it 'classifies a patient who is gone' do
+      expect(matching_patterns(not_found)).to eq([Healer::TRANSFER_NOT_FOUND_PATTERN])
+    end
+
+    it 'leaves the shared spell-slot transfer responses unchanged' do
+      expect(Healer::TRANSFER_RESPONSES).to eq([Healer::TRANSFER_SUCCESS_PATTERN, Healer::TRANSFER_NOT_FOUND_PATTERN])
+    end
+  end
+
+  describe '#transfer_wounds outcome handling' do
+    let(:healer) { build_healer }
+    let(:stale_timer) { Time.now - 60 }
+
+    before do
+      healer.add_patient('Mahtra')
+      healer.send(:update_patient, 'Mahtra', touched: true, timer: stale_timer)
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+      allow(DRC).to receive(:bput)
+        .with(/redirect all to/, *Healer::REDIRECT_RESPONSES)
+        .and_return('You are now redirecting')
+      allow(healer).to receive(:heal_self)
+    end
+
+    def transfer_returns(response)
+      allow(DRC).to receive(:bput)
+        .with('transfer Mahtra quick all', *Healer::WOUND_TRANSFER_RESPONSES)
+        .and_return(response)
+      healer.send(:transfer_wounds, 'Mahtra', 5)
+    end
+
+    context 'when the empathic link has lapsed' do
+      before { transfer_returns('You have no empathic link with') }
+
+      it 'keeps the patient queued' do
+        expect(healer.patients).to have_key(:mahtra)
+      end
+
+      it 'does not restart the cooldown, so the next cycle re-touches immediately' do
+        expect(healer.get_patient('Mahtra')[:timer]).to eq(stale_timer)
+        expect(healer.patient_ready?('Mahtra')).to be true
+      end
+
+      it 'does not heal self, since no wounds were taken' do
+        expect(healer).not_to have_received(:heal_self)
+      end
+    end
+
+    context 'when the patient was never touched before the link lapsed' do
+      it 'leaves them ready for the next cycle' do
+        healer.send(:update_patient, 'Mahtra', touched: false, timer: Time.now)
+        transfer_returns('You have no empathic link with')
+
+        expect(healer.patient_ready?('Mahtra')).to be true
+      end
+    end
+
+    context 'when the transfer starts' do
+      before { transfer_returns('You feel the transfer beginning') }
+
+      it 'starts the cooldown and heals self' do
+        expect(healer.get_patient('Mahtra')[:timer]).to be > stale_timer
+        expect(healer.patient_ready?('Mahtra')).to be false
+        expect(healer).to have_received(:heal_self)
+      end
+    end
+
+    context 'when a transfer is already active for that body part' do
+      before { transfer_returns('already have an active transfer with') }
+
+      it 'treats it as started' do
+        expect(healer.patient_ready?('Mahtra')).to be false
+        expect(healer).to have_received(:heal_self)
+      end
+    end
+
+    context 'when the patient has nothing left to take' do
+      before { transfer_returns('is not wounded in that location') }
+
+      it 'starts the cooldown so the next cycle re-perceives' do
+        expect(healer.patient_ready?('Mahtra')).to be false
+      end
+    end
+
+    context 'when the patient is gone' do
+      before { transfer_returns('What do you want to get') }
+
+      it 'removes the patient' do
+        expect(healer.patients).to be_empty
+      end
+    end
+
+    context 'when bput times out with no match' do
+      before { transfer_returns('') }
+
+      it 'falls back to the normal cooldown rather than retrying immediately' do
+        expect(healer.patient_ready?('Mahtra')).to be false
+      end
     end
   end
 
