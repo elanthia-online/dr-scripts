@@ -327,14 +327,21 @@ class Taisidon
 
   # Asks the lone suspect in the current room about their alibi and records the murderer if
   # a nervous tell is present. No-ops once the murderer is known or if no suspect is present.
+  #
+  # The suspect is the first live creature in room order, asked by id (#<id>) so the ASK
+  # reaches that NPC even when nouns repeat. Without a creature id/noun (legacy stream) it
+  # falls back to the first DRRoom noun. The murderer is recorded by noun, not id: ACCUSE is
+  # sent after the patrol may have walked on to other rooms, where the id means nothing.
   # @return [void]
   def question_suspect
     return if murderer_found?
 
-    suspect = DRRoom.npcs.first
+    creature = Lich::DragonRealms::Creature.in_room(:not_dead).find { |c| c.id && !c.noun.to_s.strip.empty? }
+    suspect = creature ? creature.noun : DRRoom.npcs.first
     return if suspect.nil? || suspect.to_s.strip.empty?
 
-    response = DRC.bput("ask #{suspect} about alibi", *GUILTY_TELLS, ALIBI_USAGE, INNOCENT_TELL)
+    target = creature ? "##{creature.id}" : suspect
+    response = DRC.bput("ask #{target} about alibi", *GUILTY_TELLS, ALIBI_USAGE, INNOCENT_TELL)
 
     if response =~ ALIBI_USAGE
       DRC.message('Taisidon: ASK ABOUT ALIBI returned a Usage error. Check the things! Aborting.')

@@ -319,11 +319,16 @@ class Droughtmans
       Flags.reset('dm-npc-unfrozen')
       unless npc.nil? || npc.empty?
         # A frozen mob thawed out -- re-freeze it on the spot. Clear its known-
-        # frozen memory first (it is NOT frozen anymore) so the wave below fires.
+        # frozen memory and any drop for it first (it is NOT frozen anymore) so
+        # the waves below fire and later sweeps see it again. The thaw line only
+        # names the noun, so every live mob with that noun gets a wave; the ones
+        # still frozen just answer "already frozen".
         echo("*** A #{npc} thawed out - re-freezing it!")
-        @known_frozen.reject! { |(pos, target), _v| pos == @pos && target.to_s =~ /#{Regexp.escape(npc)}/i }
-        DRRoom.npcs << npc unless DRRoom.npcs.include?(npc)
-        wave(npc)
+        @known_frozen.reject! { |(pos, target), _v| pos == @pos && target_named?(target, npc) }
+        dropped_targets(:npcs).reject! { |target| target_named?(target, npc) }
+        thawed = maze_mob_targets.select { |target| target_named?(target, npc) }
+        thawed = [npc] if thawed.empty?
+        thawed.each { |target| wave(target) }
       end
     end
 
@@ -1204,9 +1209,10 @@ class Droughtmans
     return if have_key?
     return if DRRoom.pcs.empty?
 
-    DRRoom.pcs.dup.each do |pc|
+    DRRoom.pcs.each do |pc|
       name = pc.to_s.split.last.to_s.capitalize
       next if name.empty?
+      next if dropped_targets(:pcs).include?(name)
 
       if @no_attack.include?(name)
         debug("Skipping friend: #{name}")
@@ -1246,7 +1252,7 @@ class Droughtmans
       @whitelist << name unless @whitelist.include?(name)
       wave(name, is_keyholder: true)
     when /I could not find/, /^Look at what/
-      DRRoom.pcs.delete(name)
+      dropped_targets(:pcs) << name
     when /concealing all but/
       # We could not actually see their hands -- this is UNKNOWN, not proof they
       # lack the key. Leave the whitelist untouched; the rate limiter retries.
@@ -1326,13 +1332,15 @@ class Droughtmans
       if is_keyholder
         camp_frozen_keyholder(target)
       else
-        DRRoom.npcs.delete(target)
-        DRRoom.pcs.delete(target)
+        drop_target(target)
       end
     when /Wave at what\?/, /I could not find/
       @known_frozen[[@pos, target]] = Time.now
-      DRRoom.npcs.delete(target)
-      DRRoom.pcs.delete(target)
+      drop_target(target)
+      # "#<id>" has not been tried with this verb in the maze yet. If the game
+      # refuses it, the plain noun still reaches the first such mob.
+      noun = id_target_noun(target)
+      wave(noun) if noun
     when /I do not understand/
       echo('*** "wave wand" not understood (wand lost?) - stopping')
       exit
@@ -1347,9 +1355,69 @@ class Droughtmans
   # Wanding: maze NPC mobs (always frozen, regardless of player settings)
   # --------------------------------------------------------------------------
 
-  # @return [Boolean] whether any maze mobs are present (frozen or not)
+  # Mobs we froze ourselves still count; ones the wand dropped from this listing
+  # (reported already frozen, or gone) do not.
+  # @return [Boolean] whether any maze mobs are present
   def maze_npcs_present?
-    DRRoom.npcs.any? { |npc| npc =~ MAZE_NPCS }
+    (maze_mob_targets - dropped_targets(:npcs)).any?
+  end
+
+  # Who to wave at for the maze mobs in the room, noun by noun: '#<id>' for each
+  # live roster creature with that noun, so duplicates are each addressed
+  # exactly. When the roster names fewer of a noun than DRRoom.npcs lists (older
+  # stream, a refresh in progress, a creature with no name yet), the ids cannot
+  # reach them all, so that noun is waved by the game's own numbering instead
+  # ("warrior", "second warrior"), which counts only that noun.
+  # @return [Array<String>]
+  def maze_mob_targets
+    listed = DRRoom.npcs.map { |npc| npc.to_s.split.last.to_s.downcase }
+                   .select { |noun| noun =~ MAZE_NPCS }
+                   .tally
+    named = Lich::DragonRealms::Creature.in_room(:not_dead)
+                                        .select { |creature| creature.noun.to_s =~ MAZE_NPCS }
+                                        .group_by { |creature| creature.noun.to_s.downcase }
+    (listed.keys | named.keys).flat_map do |noun|
+      creatures = named.fetch(noun, [])
+      count = listed.fetch(noun, 0)
+      next creatures.map { |creature| "##{creature.id}" } if creatures.size >= count
+
+      Array.new(count) { |i| i.zero? ? noun : "#{$ORDINALS[i]} #{noun}" }
+    end
+  end
+
+  # The roster noun of a '#<id>' wave target.
+  # @return [String, nil] nil for a name or an unknown id
+  def id_target_noun(target)
+    id = target.to_s[/\A#(\d+)\z/, 1]
+    id && Lich::DragonRealms::Creature[id.to_i]&.noun
+  end
+
+  # Whether a wave target ('#<id>' or a name) is the creature/person a game
+  # line names by noun.
+  # @return [Boolean]
+  def target_named?(target, noun)
+    name = target.to_s.start_with?('#') ? id_target_noun(target) : target
+    name.to_s =~ /#{Regexp.escape(noun)}/i ? true : false
+  end
+
+  # Targets the wand found already frozen or gone, skipped by later passes until
+  # the room listing next refreshes. DRRoom's lists are shared by every script
+  # (and DRRoom.npcs is frozen), so this lives here rather than deleting from
+  # them. Lich assigns a new array on every refresh, so a different array
+  # object means a fresh listing and the drops are cleared.
+  # @param list [Symbol] :npcs or :pcs
+  # @return [Array<String>]
+  def dropped_targets(list)
+    @dropped ||= {}
+    listing = DRRoom.public_send(list)
+    @dropped[list] = [listing, []] unless @dropped[list]&.first.equal?(listing)
+    @dropped[list].last
+  end
+
+  # @return [void]
+  def drop_target(target)
+    dropped_targets(:npcs) << target
+    dropped_targets(:pcs) << target
   end
 
   # Freeze every maze mob in the room. ignore_ledger bypasses the known-frozen
@@ -1358,22 +1426,16 @@ class Droughtmans
   def freeze_npcs(ignore_ledger: false)
     return unless in_maze?
 
-    mobs = DRRoom.npcs.select { |npc| npc =~ MAZE_NPCS && npc !~ /immobil/i }
-    return if mobs.empty?
-
-    mobs.group_by(&:itself).each do |mob, dupes|
-      dupes.size.times do |i|
-        target = i.zero? ? mob : "#{$ORDINALS[i]} #{mob}"
-        unless ignore_ledger
-          # Confirmed-frozen memory: the game's "already frozen" response is the
-          # only reliable signal. Trust it for KNOWN_FROZEN_TTL seconds, since a
-          # reused coordinate could belong to a different, unfrozen mob later.
-          frozen_at = @known_frozen[[@pos, target]]
-          next if frozen_at && (Time.now - frozen_at) < KNOWN_FROZEN_TTL
-        end
-
-        wave(target)
+    (maze_mob_targets - dropped_targets(:npcs)).each do |target|
+      unless ignore_ledger
+        # Confirmed-frozen memory: the game's "already frozen" response is the
+        # only reliable signal. Trust it for KNOWN_FROZEN_TTL seconds, since a
+        # reused coordinate could belong to a different, unfrozen mob later.
+        frozen_at = @known_frozen[[@pos, target]]
+        next if frozen_at && (Time.now - frozen_at) < KNOWN_FROZEN_TTL
       end
+
+      wave(target)
     end
   end
 
