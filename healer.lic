@@ -395,8 +395,7 @@ class Healer
       touched: false,
       vh_attempted: false,
       needs_teach: true,
-      dead: false,
-      unity_linked: false
+      dead: false
     }
 
     log("Added patient: #{name}")
@@ -847,6 +846,7 @@ class Healer
 
     # First encounter (living patients): use Unity for instant wound transfer if available.
     # Without Unity, wounds transfer via the normal touch flow instead.
+    unity_took_wounds = false
     unless patient_data[:touched] || victim_health.dead
       if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
         DRC.log_window("Healer: New patient: #{victim}", "familiar")
@@ -859,7 +859,9 @@ class Healer
             return
           end
           if link_result =~ LINK_SUCCESS_PATTERN
-            update_patient(victim, unity_linked: true)
+            # Unity draws the wounds over on the spot and then ebbs away; there
+            # is no lasting link for a later transfer to use.
+            unity_took_wounds = true
           else
             log("Unity link failed for #{victim}, falling back to redirect flow")
           end
@@ -894,7 +896,15 @@ class Healer
     # Handle wounds FIRST -- bleeding causes vitality loss, so healing wounds
     # is always higher priority than vitality transfer.
     if victim_health.score > 0
-      transfer_wounds(victim, victim_health.score)
+      if unity_took_wounds
+        # Nothing left to transfer -- the next cycle re-perceives and picks up
+        # anything Unity did not take.
+        update_patient(victim, touched: true, timer: Time.now)
+        @last_health_check = nil # Invalidate cache -- we just took wounds
+        heal_self
+      else
+        transfer_wounds(victim, victim_health.score)
+      end
       return
     end
 
@@ -946,24 +956,17 @@ class Healer
   # @param wound_score [Integer] patient's current wound score
   # @return [void]
   def transfer_wounds(victim, wound_score)
-    patient = get_patient(victim)
+    body_part = next_heal_location
 
-    if patient&.dig(:unity_linked)
-      log("Transferring wounds from #{victim} via Unity (score: #{wound_score})")
-      DRC.log_window("Healer: #{victim} (#{wound_score}) via Unity", "familiar")
-    else
-      body_part = next_heal_location
-
-      unless body_part
-        Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
-        heal_self
-        return
-      end
-
-      log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
-      DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
-      DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
+    unless body_part
+      Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
+      heal_self
+      return
     end
+
+    log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
+    DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
+    DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
 
     result = DRC.bput("transfer #{victim} quick all", *TRANSFER_RESPONSES)
 
@@ -1260,7 +1263,6 @@ class Healer
     @patients.each_value do |p|
       p[:touched] = false
       p[:body_part] = nil
-      p[:unity_linked] = false
     end
 
     # Clear spell slot -- any in-progress FP/CD/VH is invalidated by the fall
