@@ -87,6 +87,7 @@ class Stabbity
       npcs = get_npcs
       if npcs.count > 0
         @target = npcs.first
+        @target_id = find_target_id(@target)
         @npc_is_alive = true
         echo("*** Target is #{@target} ***") if @debug
         watch_target if arena_mode?
@@ -94,13 +95,13 @@ class Stabbity
           dodge_arena_trap if arena_mode?
         end
         if arena_mode?
-          fput("advance #{@target}")
+          fput("advance #{target_ref}")
           if @khri_eliminate && Flags['khri-eliminate']
             fput("khri eliminate")
             Flags.reset('khri-eliminate')
           end
         else
-          case DRC.bput("advance #{@target}", 'You are already at melee', 'is already quite dead', 'You begin to', 'You spin around')
+          case DRC.bput("advance #{target_ref}", 'You are already at melee', 'is already quite dead', 'You begin to', 'You spin around')
           when 'is already quite dead'
             pause 2
           end
@@ -254,13 +255,45 @@ class Stabbity
   def get_npcs
     if arena_mode?
       DRRoom.npcs
+    elsif DRRoom.respond_to?(:unignored_npcs)
+      DRRoom.unignored_npcs(@ignored_npcs)
     else
-      DRRoom.npcs - @ignored_npcs
+      # Lich releases before DRRoom.unignored_npcs only match ignored_npcs by noun.
+      DRRoom.npcs - Array(@ignored_npcs)
     end
   end
 
+  # Id of a live room creature listed under noun (skipping ones the ignore list
+  # names outside the arena), so commands reach that creature rather than
+  # whichever same-noun one the game picks. nil when the roster has none, or on
+  # a Lich release without CreatureInstance#matches?.
+  def find_target_id(noun)
+    target = Lich::DragonRealms::Creature.in_room(:not_dead).find do |creature|
+      creature.id && creature.respond_to?(:matches?) && creature.matches?(noun) &&
+        (arena_mode? || Array(@ignored_npcs).none? { |entry| creature.matches?(entry) })
+    end
+    target&.id
+  end
+
+  # The chosen creature by id when known, else by noun.
+  def target_ref
+    @target_id ? "##{@target_id}" : @target
+  end
+
+  # With an id, only that creature counts: dead, or out of the room once its
+  # noun has left too (the roster is briefly empty while a room refresh
+  # rebuilds it). Without one, any same-noun corpse is taken as the target.
+  def target_dead?
+    return DRRoom.dead_npcs.include?(@target) unless @target_id
+
+    target = Lich::DragonRealms::Creature.in_room.find { |creature| creature.id == @target_id }
+    return !get_npcs.include?(@target) if target.nil?
+
+    target.crtr_flag?(:dead)
+  end
+
   def npc_dead?
-    if DRRoom.dead_npcs.include?(@target) || get_npcs.empty?
+    if target_dead? || get_npcs.empty?
       echo("*** Target #{@target} has died ***") if @debug
       @npc_is_alive = false
       true
@@ -341,7 +374,7 @@ class Stabbity
 
   def watch_target
     # Actions as of DuskRuin 2019: pedal, bob, duck, jump, lean, cower
-    @arena_trap = DRC.bput("watch #{@target}", /(?:pedal|bob|duck|jump|lean|cower)/)
+    @arena_trap = DRC.bput("watch #{target_ref}", /(?:pedal|bob|duck|jump|lean|cower)/)
     echo("*** Will #{@arena_trap} to avoid trap ***") if @debug
   end
 

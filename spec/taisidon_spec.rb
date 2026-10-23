@@ -470,6 +470,98 @@ RSpec.describe Taisidon do
 
       expect { taisidon.send(:question_suspect) }.to raise_error(SystemExit)
     end
+
+    # Creature roster path: DRRoom.npcs is sorted and lists repeated nouns plainly, so the
+    # suspect is taken from Creature.in_room(:not_dead) (room order, townsfolk included)
+    # and asked by id. The murderer is still recorded by noun for the later ACCUSE.
+    context 'when the creature roster has the suspect' do
+      def creature(id, noun, name)
+        OpenStruct.new(id: id, noun: noun, name: name)
+      end
+
+      def asked_command
+        captured = nil
+        allow(DRC).to receive(:bput) do |cmd, *_patterns|
+          captured = cmd
+          'says with a nervous tic'
+        end
+        allow(DRC).to receive(:message)
+        taisidon.send(:question_suspect)
+        captured
+      end
+
+      it 'asks the first live creature in room order by id, not the alphabetically first noun' do
+        DRRoom.npcs = %w[artist steward]
+        Lich::DragonRealms::Creature._set_room([creature(501, 'steward', "a Gor'Tog steward"),
+                                                creature(502, 'artist', 'a Gnomish artist')])
+
+        expect(asked_command).to eq('ask #501 about alibi')
+        expect(taisidon.instance_variable_get(:@murderer)).to eq('steward')
+      end
+
+      it 'singles out one NPC by id when two share a noun, recording the noun for ACCUSE' do
+        DRRoom.npcs = %w[chef chef]
+        Lich::DragonRealms::Creature._set_room([creature(601, 'chef', 'a Dwarven chef'),
+                                                creature(602, 'chef', 'a Dwarven chef')])
+
+        expect(asked_command).to eq('ask #601 about alibi')
+        expect(taisidon.instance_variable_get(:@murderer)).to eq('chef')
+        expect(taisidon.accuse_command).to start_with('accuse chef with')
+      end
+
+      it 'asks only live creatures, never a same-noun corpse' do
+        dead_chef = creature(700, 'chef', 'a Dwarven chef')
+        live_chef = creature(701, 'chef', 'a Dwarven chef')
+        DRRoom.npcs = %w[chef]
+        # The harness ignores filters, so answer per filter: an unfiltered roster puts the
+        # corpse first, and only the :not_dead query yields the live chef.
+        allow(Lich::DragonRealms::Creature).to receive(:in_room) do |*filters|
+          filters == [:not_dead] ? [live_chef] : [dead_chef, live_chef]
+        end
+
+        expect(asked_command).to eq('ask #701 about alibi')
+      end
+
+      it 'asks by id even when the creature has no display name yet' do
+        DRRoom.npcs = %w[bartender]
+        Lich::DragonRealms::Creature._set_room([creature(801, 'bartender', nil)])
+
+        expect(asked_command).to eq('ask #801 about alibi')
+        expect(taisidon.instance_variable_get(:@murderer)).to eq('bartender')
+      end
+
+      it 'falls back to the DRRoom noun when the creature has no id' do
+        DRRoom.npcs = %w[deckhand]
+        Lich::DragonRealms::Creature._set_room([creature(nil, 'deckhand', "a Gor'Tog deckhand")])
+
+        expect(asked_command).to eq('ask deckhand about alibi')
+        expect(taisidon.instance_variable_get(:@murderer)).to eq('deckhand')
+      end
+
+      it 'falls back to the DRRoom noun when the creature has no noun yet' do
+        DRRoom.npcs = %w[director]
+        Lich::DragonRealms::Creature._set_room([creature(901, nil, nil)])
+
+        expect(asked_command).to eq('ask director about alibi')
+        expect(taisidon.instance_variable_get(:@murderer)).to eq('director')
+      end
+
+      it 'falls back to the DRRoom noun when the roster is empty' do
+        DRRoom.npcs = %w[boatswain]
+
+        expect(asked_command).to eq('ask boatswain about alibi')
+        expect(Lich::DragonRealms::Creature._in_room_filters).to eq([[:not_dead]])
+      end
+
+      it 'skips the room (no bput) when both the roster and DRRoom are empty' do
+        DRRoom.npcs = []
+        expect(DRC).not_to receive(:bput)
+
+        taisidon.send(:question_suspect)
+
+        expect(taisidon.instance_variable_get(:@murderer)).to eq('')
+      end
+    end
   end
 
   # ===========================================================================

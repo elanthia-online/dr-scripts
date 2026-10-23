@@ -424,6 +424,14 @@ module Harness
       @@_data_store['dead_npcs'] = val
     end
 
+    # Noun rule only: npcs minus every NPC whose noun equals an entry. The
+    # real lich-5 method (#1817) also drops the creatures an entry names by
+    # full name or a multi-word phrase; a spec that needs that should
+    # `allow(DRRoom).to receive(:unignored_npcs).and_return(...)`.
+    def self.unignored_npcs(ignored)
+      npcs - Array(ignored).compact.map(&:to_s)
+    end
+
     def self.room_objs
       @@_data_store['room_objs'] || []
     end
@@ -725,6 +733,10 @@ module Harness
 
   def unpause_all_list(scripts)
   end
+
+  def pause_script(*_names); end
+
+  def unpause_script(*_names); end
 
   def custom_require(*)
     proc { |_args| }
@@ -1246,6 +1258,7 @@ module Harness
       def wearing?(*_args); false; end
       def inside?(*_args); false; end
       def get_item?(*_args); true; end
+      def get_item_safe(*_args); true; end
       def get_item_if_not_held?(*_args); true; end
       def get_item_unsafe(*_args); end
       def get_item(*_args); end
@@ -1437,10 +1450,62 @@ module Harness
     end
 
     module DragonRealms
+      # Copy of lich-5's static skill table (lib/dragonrealms/drinfomon/
+      # drvariables.rb, DR_SKILLS_DATA[:skillsets]) for scripts that map a
+      # skill name to its skillset without the live DRSkill list.
+      DR_SKILLS_DATA = {
+        skillsets: {
+          "Armor"    => ["Shield Usage", "Light Armor", "Chain Armor", "Brigandine", "Plate Armor", "Defending", "Conviction"].freeze,
+          "Lore"     => ["Alchemy", "Appraisal", "Enchanting", "Engineering", "Forging", "Outfitting", "Performance", "Scholarship", "Tactics", "Empathy", "Bardic Lore", "Trading", "Mechanical Lore"].freeze,
+          "Weapon"   => ["Parry Ability", "Small Edged", "Large Edged", "Twohanded Edged", "Small Blunt", "Large Blunt", "Twohanded Blunt", "Slings", "Bow", "Crossbow", "Staves", "Polearms", "Light Thrown", "Heavy Thrown", "Brawling", "Offhand Weapon", "Melee Mastery", "Missile Mastery", "Expertise"].freeze,
+          "Magic"    => ["Primary Magic", "Arcana", "Attunement", "Augmentation", "Debilitation", "Targeted Magic", "Utility", "Warding", "Sorcery", "Astrology", "Summoning", "Theurgy", "Inner Magic", "Inner Fire", "Lunar Magic", "Elemental Magic", "Holy Magic", "Life Magic", "Arcane Magic"].freeze,
+          "Survival" => ["Evasion", "Athletics", "Perception", "Stealth", "Locksmithing", "Thievery", "First Aid", "Outdoorsmanship", "Skinning", "Instinct", "Backstab", "Thanatology"].freeze
+        }.freeze
+      }.freeze unless const_defined?(:DR_SKILLS_DATA)
+
+      # Stand-in for lich-5's CreatureInstance (lib/dragonrealms/creature.rb)
+      # for roster entries a script calls #matches? or #crtr_flag?(:dead) on.
+      # Seed it with Creature._set_room. crtr_flag? answers only :dead (from
+      # the dead: keyword); every other flag is false.
+      class CreatureInstance
+        NAME_ARTICLE = /\A(?:an?|the|some)\s+/i.freeze
+
+        attr_reader :id, :noun, :name
+
+        # noun_from_server: false models the legacy stream, where Lich derives
+        # the noun from the name's last word instead of reading a link noun.
+        def initialize(id, noun, name, dead: false, noun_from_server: true)
+          @id = id
+          @noun = noun
+          @name = name
+          @dead = dead
+          @noun_from_server = noun_from_server
+        end
+
+        def crtr_flag?(key)
+          key.to_sym == :dead && @dead == true
+        end
+
+        # Keep in sync with lich-5 CreatureInstance#matches?.
+        def matches?(entry)
+          wanted = entry.to_s.strip.downcase.squeeze(' ').sub(NAME_ARTICLE, '')
+          return false if wanted.empty?
+          return true if @noun_from_server && @noun&.downcase == wanted
+
+          full = @name.to_s.strip.downcase.squeeze(' ').sub(NAME_ARTICLE, '')
+          return false if full.empty?
+          return true if full == wanted
+
+          wanted.include?(' ') && " #{full} ".include?(" #{wanted} ")
+        end
+      end
+
       # Stand-in for lich-5's creature registry (lib/dragonrealms/creature.rb).
       # Real CreatureInstance objects expose id/noun/name plus status flags; a
       # spec only needs to seed the room roster, so any object answering the
-      # attributes the script under test reads (an OpenStruct is plenty) works.
+      # attributes the script under test reads (an OpenStruct is plenty) works;
+      # use CreatureInstance above when the script calls #matches? or
+      # #crtr_flag?.
       #
       # in_room/targets ignore their status filters (:dead, :not_dead, :hostile,
       # ...) and return whatever was seeded -- seed the roster you want the

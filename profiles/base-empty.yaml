@@ -130,5 +130,6 @@ empty_values:
   zombie: {}
   script_watch_ignored_scripts: []
   custom_clerk_tools: {}
+  custom_hunting_zones: {}
   healing_plant_adjectives: []
   healing_plant_nouns: []
