@@ -135,6 +135,13 @@ class Healer
   LINK_NOT_FOUND_PATTERN = /could not find/.freeze
   LINK_RESPONSES = [LINK_SUCCESS_PATTERN, LINK_STRAIN_PATTERN, LINK_NOT_FOUND_PATTERN].freeze
 
+  # Unity has a recovery period after each use (58-62s in logs); the game announces
+  # its end. Trying Unity before then only strains. If the announcement is somehow
+  # missed, assume recovery after this long -- a strain re-arms the wait anyway.
+  UNITY_RECOVERED_PATTERN = /fully recovered from your recent manifestation of the unity link/.freeze
+  UNITY_RECOVERED_FLAG = 'healer-unity-recovered'
+  UNITY_RECOVERY_FALLBACK_SECONDS = 90
+
   # Patterns for redirect responses
   REDIRECT_SUCCESS_PATTERN = /You are now redirecting/.freeze
   REDIRECT_FAILURE_PATTERN = /not a valid option/.freeze
@@ -194,6 +201,11 @@ class Healer
 
     @last_health_check = nil
     @last_ready_result = false
+    # Unity recovery: nil = ready (assumed at startup). The flag is set by Lich's
+    # parser when the game announces recovery, and reset before each link.
+    @unity_recovering_since = nil
+    Flags.add(UNITY_RECOVERED_FLAG, UNITY_RECOVERED_PATTERN)
+    before_dying { Flags.delete(UNITY_RECOVERED_FLAG) }
     @emergency_recovery = false
     @self_dead = false
     @drain_landed = false
@@ -504,6 +516,29 @@ class Healer
 
       add_patient(pc)
     end
+  end
+
+  # Records the recovery period implied by a Unity link response: a success
+  # starts one, a strain means one is running. The flag was reset just before
+  # the link, so a recovery line landing right behind a strain (before bput
+  # returns here) still reads as ready via unity_ready?. A success also clears
+  # the flag -- any recovery seen while it was in flight ended the old period.
+  # @param link_result [String] the bput match for "link <patient> unity"
+  # @return [void]
+  def note_unity_used(link_result)
+    return unless link_result =~ LINK_SUCCESS_PATTERN || link_result =~ LINK_STRAIN_PATTERN
+
+    Flags.reset(UNITY_RECOVERED_FLAG) if link_result =~ LINK_SUCCESS_PATTERN
+    @unity_recovering_since = Time.now
+  end
+
+  # Whether Unity is past its recovery period (announced by the game, or the
+  # fallback timeout has elapsed).
+  # @return [Boolean]
+  def unity_ready?
+    return true if @unity_recovering_since.nil? || Flags[UNITY_RECOVERED_FLAG]
+
+    (Time.now - @unity_recovering_since) >= UNITY_RECOVERY_FALLBACK_SECONDS
   end
 
   # Checks if a HealthResult has wounds on healable body parts (not hands/legs).
@@ -861,9 +896,11 @@ class Healer
     unless patient_data[:touched] || victim_health.dead
       if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
         DRC.log_window("Healer: New patient: #{victim}", "familiar")
-        if @unity_available && has_healable_wounds?(victim_health)
+        if @unity_available && unity_ready? && has_healable_wounds?(victim_health)
           log("Using Unity link with #{victim} for instant wound transfer")
+          Flags.reset(UNITY_RECOVERED_FLAG)
           link_result = DRC.bput("link #{victim} unity", *LINK_RESPONSES)
+          note_unity_used(link_result)
           if link_result =~ LINK_NOT_FOUND_PATTERN
             Lich::Messaging.msg("bold", "Healer: Could not link with #{victim}")
             remove_patient(victim, reason: :not_found)
@@ -878,6 +915,8 @@ class Healer
           else
             log("Unity link failed for #{victim}, falling back to redirect flow")
           end
+        elsif @unity_available && !unity_ready?
+          log("Unity still recovering, using redirect flow for #{victim}")
         elsif !has_healable_wounds?(victim_health)
           log("#{victim} only has hands/legs wounds, skipping Unity link")
         end
