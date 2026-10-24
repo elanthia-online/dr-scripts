@@ -1077,7 +1077,16 @@ RSpec.describe Healer do
       allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
     end
 
-    after { DownstreamHook.remove(healer.instance_variable_get(:@hook_id)) if healer.instance_variable_get(:@hook_id) }
+    # Lich's parser sets the flag when the game sends the recovery line.
+    def announce_recovery
+      Flags[Healer::UNITY_RECOVERED_FLAG] = recovered_line.match(Healer::UNITY_RECOVERED_PATTERN)
+    end
+
+    it 'registers a flag that matches the game line, XML and all' do
+      healer
+      matchers = Flags.matchers[Healer::UNITY_RECOVERED_FLAG]
+      expect(matchers.any? { |m| m.match?("<pushBold/>#{recovered_line}<popBold/>") }).to be true
+    end
 
     it 'assumes Unity is ready at startup' do
       expect(healer.send(:unity_ready?)).to be true
@@ -1113,33 +1122,22 @@ RSpec.describe Healer do
 
     it 'tries Unity again once the game announces recovery' do
       stub_game('Stretching your senses')
-      healer.send(:start_line_monitor)
       heal_new_patient('Tenuk')
       commands.clear
 
-      DownstreamHook.run("<pushBold/>#{recovered_line}<popBold/>\r\n")
+      announce_recovery
       heal_new_patient('Navesi')
 
       expect(commands.first).to eq('link Navesi unity')
     end
 
-    it 'still passes the recovery line through and keeps queueing patients from the hook' do
-      healer.send(:start_line_monitor)
-
-      expect(DownstreamHook.run(recovered_line)).to eq(recovered_line)
-      DownstreamHook.run('Navesi just arrived.')
-      expect(healer.patients).to have_key(:navesi)
-    end
-
     # Regression (race): the recovery line can arrive right behind a strain
-    # (seen as adjacent lines in logs). The hook runs on the game thread before
-    # bput hands the strain back, so it clears the state first; the strain must
-    # not then re-arm a recovery that has already ended.
+    # (adjacent lines in logs), and Lich sets the flag before bput hands the
+    # strain back. The strain must not re-arm a recovery that has already ended.
     it 'stays ready when the recovery line lands right behind a strain' do
-      healer.send(:start_line_monitor)
       stub_game('You strain')
       allow(DRC).to receive(:bput).with('link Tenuk unity', any_args) do
-        DownstreamHook.run(recovered_line)
+        announce_recovery
         'You strain'
       end
 
@@ -1148,8 +1146,11 @@ RSpec.describe Healer do
       expect(healer.send(:unity_ready?)).to be true
     end
 
+    # The flag is reset just before each link, so an old recovery line can't
+    # cancel a strain.
     it 'still re-arms on a strain when the last recovery line came before the link was sent' do
-      healer.instance_variable_set(:@unity_recovered_at, Time.now - 30)
+      healer # register the flag first; Healer.new resets it
+      announce_recovery
       stub_game('You strain')
 
       heal_new_patient('Tenuk')
@@ -1158,12 +1159,11 @@ RSpec.describe Healer do
     end
 
     # A success always starts a fresh period, even if an old period's recovery
-    # line was still in flight when we sent the link.
-    it 'still starts a recovery period after a success, whatever the hook saw' do
-      healer.send(:start_line_monitor)
+    # line arrived while the link was in flight.
+    it 'still starts a recovery period after a success, whatever arrived meanwhile' do
       stub_game('Stretching your senses')
       allow(DRC).to receive(:bput).with('link Tenuk unity', any_args) do
-        DownstreamHook.run(recovered_line)
+        announce_recovery
         'Stretching your senses'
       end
 
