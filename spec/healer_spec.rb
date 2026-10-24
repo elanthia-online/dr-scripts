@@ -1224,11 +1224,28 @@ RSpec.describe Healer do
         heal_tenuk(wounded, health_result(score: 0, vitality: 60))
       end
 
-      # Vitality can be taken while we carry the Unity wounds.
-      it 'queues vitality healing instead of finishing' do
-        expect(healer.instance_variable_get(:@spell_task)).to include(patient: 'Tenuk', type: :vitality)
+      it 'leaves vitality healing for the normal cycle' do
+        expect(healer.instance_variable_get(:@spell_task)).to be_nil
         expect(healer.patients).to have_key(:tenuk)
-        expect(commands).not_to include('whisper Tenuk Done!')
+        expect(healer.patient_ready?('Tenuk')).to be false
+        expect(commands).to eq(['link Tenuk unity', :heal_self])
+      end
+    end
+
+    # Regression (review): claiming the vitality slot before heal_self made
+    # spell_conflict? true, so healme never ran for the Unity wounds we carry.
+    context 'when the patient needs vitality and we have no passive healing' do
+      before do
+        healer.instance_variable_set(:@vh_available, true)
+        healer.instance_variable_set(:@passive_healing_available, false)
+        allow(DRC).to receive(:bput) { |cmd, *_| cmd.match?(/^link \w+ unity$/) ? 'Stretching your senses' : '' }
+        allow(DRC).to receive(:wait_for_script_to_complete)
+        allow(Script).to receive(:running?).and_return(false)
+        heal_tenuk(wounded, health_result(score: 0, vitality: 60))
+      end
+
+      it 'still runs healme for the Unity wounds' do
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('healme')
       end
     end
 
@@ -1240,8 +1257,9 @@ RSpec.describe Healer do
         heal_tenuk(wounded, health_result(score: 0, vitality: 100, parasites: leech))
       end
 
-      it 'leaves them for the normal cycle' do
+      it 'leaves them for the normal cycle without tending yet' do
         expect(healer.patients).to have_key(:tenuk)
+        expect(healer).not_to have_received(:fput)
       end
     end
 

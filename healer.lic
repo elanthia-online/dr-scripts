@@ -911,9 +911,13 @@ class Healer
         update_patient(victim, touched: true, timer: Time.now)
         # Unity moves the wounds on the spot, so re-check now instead of after the
         # cooldown and finish the patient before we stop to heal ourselves.
-        # Anything Unity did not take waits for the normal cycle.
+        # Anything Unity did not take waits for the normal cycle -- including
+        # vitality: claiming the spell slot now would make heal_self skip
+        # (spell_conflict?) while we carry the Unity wounds.
         recheck = DRCH.perceive_health_other(victim)
-        finish_clear_patient(victim, get_patient(victim), recheck) if fully_clear?(recheck)
+        if fully_clear?(recheck) && !vitality_healing_due?(recheck, get_patient(victim))
+          complete_healing(victim)
+        end
         heal_self
       else
         transfer_wounds(victim, victim_health.score)
@@ -943,6 +947,14 @@ class Healer
     !health.dead && health.vitality && health.vitality < PATIENT_VIT_THRESHOLD
   end
 
+  # Whether we should queue vitality healing (VH) for this patient now.
+  # @param health [HealthResult] patient health data
+  # @param patient_data [Hash] patient data from queue
+  # @return [Boolean]
+  def vitality_healing_due?(health, patient_data)
+    needs_vitality?(health) && @vh_available && !patient_data[:vh_attempted]
+  end
+
   # Whether a perceive shows nothing left for the healer to do but vitality.
   # @param health [HealthResult, nil] patient health data (nil if perceive failed)
   # @return [Boolean]
@@ -959,7 +971,7 @@ class Healer
   # @param health [HealthResult] the clear perceive result
   # @return [void]
   def finish_clear_patient(victim, patient_data, health)
-    if needs_vitality?(health) && @vh_available && !patient_data[:vh_attempted]
+    if vitality_healing_due?(health, patient_data)
       log("#{victim} wounds clear, needs vitality healing (#{health.vitality}% vit)")
       DRC.log_window("Healer: #{victim} needs vitality healing (#{health.vitality}% vit)", "familiar")
       claim_spell_slot(victim, :vitality)
