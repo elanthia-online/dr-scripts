@@ -1037,6 +1037,123 @@ RSpec.describe Healer do
   end
 
   # ============================================================
+  # Unity Recovery Tracking (skip Unity while it is still recovering)
+  # ============================================================
+
+  describe 'Unity recovery tracking' do
+    let(:healer) { build_healer(friends: %w[Tenuk Navesi], unity: true) }
+    let(:commands) { [] }
+    let(:recovered_line) do
+      'You sense that your system has fully recovered from your recent manifestation of the unity link.'
+    end
+
+    def wounded
+      health_result(score: 9, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+    end
+
+    # Records every command; answers the Unity link with +link_reply+.
+    def stub_game(link_reply)
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        commands << cmd
+        case cmd
+        when /^link \w+ unity$/ then link_reply
+        when /^redirect/ then 'You are now redirecting'
+        when /^transfer/ then 'You feel the transfer beginning'
+        else ''
+        end
+      end
+      allow(healer).to receive(:heal_self)
+    end
+
+    def heal_new_patient(name)
+      healer.add_patient(name)
+      healer.send(:update_patient, name, needs_teach: false)
+      DRRoom.pcs = [name]
+      allow(DRCH).to receive(:perceive_health_other).with(name).and_return(wounded)
+      healer.send(:heal_patient, healer.get_patient(name))
+    end
+
+    before do
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+    end
+
+    after { DownstreamHook.remove(healer.instance_variable_get(:@hook_id)) if healer.instance_variable_get(:@hook_id) }
+
+    it 'assumes Unity is ready at startup' do
+      expect(healer.send(:unity_ready?)).to be true
+    end
+
+    it 'does not try Unity again right after a successful Unity' do
+      stub_game('Stretching your senses')
+      heal_new_patient('Tenuk')
+      commands.clear
+
+      heal_new_patient('Navesi')
+
+      expect(commands).to eq(['redirect all to left arm', 'transfer Navesi quick all'])
+    end
+
+    # A strain at startup means a recovery period we did not see start is running.
+    it 'does not try Unity again after a strain' do
+      stub_game('You strain')
+      heal_new_patient('Tenuk')
+      commands.clear
+
+      heal_new_patient('Navesi')
+
+      expect(commands).to eq(['redirect all to left arm', 'transfer Navesi quick all'])
+    end
+
+    it 'leaves the recovery state alone when the patient cannot be found' do
+      stub_game('could not find')
+      heal_new_patient('Tenuk')
+
+      expect(healer.send(:unity_ready?)).to be true
+    end
+
+    it 'tries Unity again once the game announces recovery' do
+      stub_game('Stretching your senses')
+      healer.send(:start_line_monitor)
+      heal_new_patient('Tenuk')
+      commands.clear
+
+      DownstreamHook.run("<pushBold/>#{recovered_line}<popBold/>\r\n")
+      heal_new_patient('Navesi')
+
+      expect(commands.first).to eq('link Navesi unity')
+    end
+
+    it 'still passes the recovery line through and keeps queueing patients from the hook' do
+      healer.send(:start_line_monitor)
+
+      expect(DownstreamHook.run(recovered_line)).to eq(recovered_line)
+      DownstreamHook.run('Navesi just arrived.')
+      expect(healer.patients).to have_key(:navesi)
+    end
+
+    context 'when the recovery announcement is missed' do
+      it 'stays recovering just short of the fallback' do
+        healer.instance_variable_set(:@unity_recovering_since, Time.now - (Healer::UNITY_RECOVERY_FALLBACK_SECONDS - 1))
+        expect(healer.send(:unity_ready?)).to be false
+      end
+
+      it 'assumes recovery at the fallback' do
+        healer.instance_variable_set(:@unity_recovering_since, Time.now - Healer::UNITY_RECOVERY_FALLBACK_SECONDS)
+        expect(healer.send(:unity_ready?)).to be true
+      end
+    end
+
+    it 'never tracks recovery when Unity is unavailable' do
+      healer.instance_variable_set(:@unity_available, false)
+      stub_game('Stretching your senses')
+      heal_new_patient('Tenuk')
+
+      expect(commands).not_to include('link Tenuk unity')
+      expect(healer.instance_variable_get(:@unity_recovering_since)).to be_nil
+    end
+  end
+
+  # ============================================================
   # Unity Takes Wounds Instantly (no follow-up transfer)
   # ============================================================
 
