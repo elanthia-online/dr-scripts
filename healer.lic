@@ -406,8 +406,7 @@ class Healer
       touched: false,
       vh_attempted: false,
       needs_teach: true,
-      dead: false,
-      unity_linked: false
+      dead: false
     }
 
     log("Added patient: #{name}")
@@ -858,6 +857,7 @@ class Healer
 
     # First encounter (living patients): use Unity for instant wound transfer if available.
     # Without Unity, wounds transfer via the normal touch flow instead.
+    unity_took_wounds = false
     unless patient_data[:touched] || victim_health.dead
       if victim_health.score > 0 || victim_health.poisoned || victim_health.diseased
         DRC.log_window("Healer: New patient: #{victim}", "familiar")
@@ -870,7 +870,11 @@ class Healer
             return
           end
           if link_result =~ LINK_SUCCESS_PATTERN
-            update_patient(victim, unity_linked: true)
+            # Unity draws the wounds over on the spot and then ebbs away; there
+            # is no lasting link for a later transfer to use. It never moves
+            # poison or disease, so those branches below still run.
+            unity_took_wounds = true
+            @last_health_check = nil # Invalidate cache -- we just took wounds
           else
             log("Unity link failed for #{victim}, falling back to redirect flow")
           end
@@ -898,26 +902,32 @@ class Healer
     end
 
     # Check if patient needs vitality healing (only relevant once wounds are clear)
-    needs_vit = !victim_health.dead &&
-                victim_health.vitality &&
-                victim_health.vitality < PATIENT_VIT_THRESHOLD
+    needs_vit = needs_vitality?(victim_health)
 
     # Handle wounds FIRST -- bleeding causes vitality loss, so healing wounds
     # is always higher priority than vitality transfer.
     if victim_health.score > 0
-      transfer_wounds(victim, victim_health.score)
+      if unity_took_wounds
+        update_patient(victim, touched: true, timer: Time.now)
+        # Unity moves the wounds on the spot, so re-check now instead of after the
+        # cooldown and finish the patient before we stop to heal ourselves.
+        # Anything Unity did not take waits for the normal cycle -- including
+        # vitality: claiming the spell slot now would make heal_self skip
+        # (spell_conflict?) while we carry the Unity wounds.
+        recheck = DRCH.perceive_health_other(victim)
+        if fully_clear?(recheck) && !vitality_healing_due?(recheck, get_patient(victim))
+          complete_healing(victim)
+        end
+        heal_self
+      else
+        transfer_wounds(victim, victim_health.score)
+      end
       return
     end
 
     # Wounds clear - now check vitality
     if patient_data[:touched]
-      if needs_vit && @vh_available && !patient_data[:vh_attempted]
-        log("#{victim} wounds clear, needs vitality healing (#{victim_health.vitality}% vit)")
-        DRC.log_window("Healer: #{victim} needs vitality healing (#{victim_health.vitality}% vit)", "familiar")
-        claim_spell_slot(victim, :vitality)
-        return
-      end
-      complete_healing(victim)
+      finish_clear_patient(victim, patient_data, victim_health)
     else
       # First touch, no wounds/afflictions - check vit before removing
       if needs_vit && @vh_available
@@ -928,6 +938,46 @@ class Healer
       log("#{victim} has no wounds, removing from queue")
       remove_patient(victim, reason: :no_wounds)
     end
+  end
+
+  # Whether a patient below the vitality threshold should get vitality healing.
+  # @param health [HealthResult] patient health data
+  # @return [Boolean]
+  def needs_vitality?(health)
+    !health.dead && health.vitality && health.vitality < PATIENT_VIT_THRESHOLD
+  end
+
+  # Whether we should queue vitality healing (VH) for this patient now.
+  # @param health [HealthResult] patient health data
+  # @param patient_data [Hash] patient data from queue
+  # @return [Boolean]
+  def vitality_healing_due?(health, patient_data)
+    needs_vitality?(health) && @vh_available && !patient_data[:vh_attempted]
+  end
+
+  # Whether a perceive shows nothing left for the healer to do but vitality.
+  # @param health [HealthResult, nil] patient health data (nil if perceive failed)
+  # @return [Boolean]
+  def fully_clear?(health)
+    return false unless health
+
+    health.score.zero? && !health.poisoned && !health.diseased && !health.dead && !health.parasites&.any?
+  end
+
+  # Finishes a touched patient whose wounds and afflictions are clear: queue
+  # vitality healing if they need it (once), otherwise whisper done and remove.
+  # @param victim [String] patient name
+  # @param patient_data [Hash] patient data from queue
+  # @param health [HealthResult] the clear perceive result
+  # @return [void]
+  def finish_clear_patient(victim, patient_data, health)
+    if vitality_healing_due?(health, patient_data)
+      log("#{victim} wounds clear, needs vitality healing (#{health.vitality}% vit)")
+      DRC.log_window("Healer: #{victim} needs vitality healing (#{health.vitality}% vit)", "familiar")
+      claim_spell_slot(victim, :vitality)
+      return
+    end
+    complete_healing(victim)
   end
 
   # Tends parasites/leeches found on a patient.
@@ -957,24 +1007,17 @@ class Healer
   # @param wound_score [Integer] patient's current wound score
   # @return [void]
   def transfer_wounds(victim, wound_score)
-    patient = get_patient(victim)
+    body_part = next_heal_location
 
-    if patient&.dig(:unity_linked)
-      log("Transferring wounds from #{victim} via Unity (score: #{wound_score})")
-      DRC.log_window("Healer: #{victim} (#{wound_score}) via Unity", "familiar")
-    else
-      body_part = next_heal_location
-
-      unless body_part
-        Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
-        heal_self
-        return
-      end
-
-      log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
-      DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
-      DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
+    unless body_part
+      Lich::Messaging.msg("bold", "Healer: No unwounded body parts available - healing self first")
+      heal_self
+      return
     end
+
+    log("Transferring wounds from #{victim} (score: #{wound_score}) to #{body_part}")
+    DRC.log_window("Healer: #{victim} (#{wound_score}) -> #{body_part}", "familiar")
+    DRC.bput("redirect all to #{body_part}", *REDIRECT_RESPONSES)
 
     result = DRC.bput("transfer #{victim} quick all", *WOUND_TRANSFER_RESPONSES)
 
@@ -1279,7 +1322,6 @@ class Healer
     @patients.each_value do |p|
       p[:touched] = false
       p[:body_part] = nil
-      p[:unity_linked] = false
     end
 
     # Clear spell slot -- any in-progress FP/CD/VH is invalidated by the fall

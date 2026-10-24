@@ -740,4 +740,267 @@ RSpec.describe Trade do
       end
     end
   end
+
+  # Issue #7679: since the 2026-03-22 mapdb update, the only map route between
+  # Therengia's east (Therenborough, Langenfirth, Riverhaven) and west
+  # (Fornsted, Hvaral, Muspar'i) climbs Ker'Leor's fallen tree and fallen
+  # trunk. You climb over; the caravan can't follow, and the script waited for
+  # it forever. The map below keeps that shape: Fornsted is the nearest outpost
+  # to Therenborough, but only over the tree and trunk. Room is the map, and
+  # Map.dijkstra skips an exit with no timeto, as Lich's does, so the real
+  # forbid_certain_transport and restore_certain_transport decide what the
+  # caravan can reach.
+  describe "Therengia split by Ker'Leor's fallen tree" do
+    # [from, to, way there, way back, time]
+    let(:edges) do
+      [[3155, 3407, 'east', 'west', 13.0],
+       [3155, 386, 'south', 'north', 17.0],
+       [3155, 3640, 'northwest', 'southeast', 1.0],
+       [3640, 3641, 'climb fallen tree', 'climb fallen tree', 0.2],
+       [3641, 3647, 'north', 'south', 1.0],
+       [3647, 3648, 'climb fallen trunk', 'climb fallen trunk', 0.2],
+       [3648, 3693, 'west', 'east', 1.0],
+       [3693, 3751, 'north', 'south', 10.0],
+       [3751, 14_282, 'go barge', 'go barge', 800.0]]
+    end
+    let(:rooms) do
+      map = Hash.new { |all, id| all[id] = OpenStruct.new(id: id, wayto: {}, timeto: {}) }
+      edges.each do |from, to, there, back, time|
+        map[from].wayto[to.to_s] = there
+        map[from].timeto[to.to_s] = time
+        map[to].wayto[from.to_s] = back
+        map[to].timeto[from.to_s] = time
+      end
+      map
+    end
+    let(:outposts) do
+      { 'Therenborough' => 3155, 'Langenfirth' => 3407, 'Riverhaven' => 386,
+        'Fornsted' => 3693, 'Hvaral' => 3751, "Muspar'i" => 14_282 }
+    end
+    let(:location) { { id: 3155 } }
+    let(:clock) { { now: Time.at(1_000_000) } }
+    # The contracts in your contract container, in order.
+    let(:held) { [] }
+    let(:dropped) { [] }
+    let(:messages) { [] }
+
+    def contract(from, to, expires_after: nil)
+      OpenStruct.new(origin_town: from, destination_town: to, expired: false, expires_after: expires_after)
+    end
+
+    def destination_town
+      outposts.key(trade.instance_variable_get(:@current_caravan_destination))
+    end
+
+    before do
+      allow(Room).to receive(:[]) { |id| rooms[id.to_i] }
+      allow(Room).to receive(:current) { rooms[location[:id]] }
+      allow(Map).to receive(:dijkstra) do |source, _destination = nil|
+        distances = { source => 0 }
+        previous = {}
+        queue = [source]
+        until queue.empty?
+          here = queue.min_by { |id| distances[id] }
+          queue.delete(here)
+          rooms[here].wayto.each_key do |key|
+            time = rooms[here].timeto[key]
+            next unless time
+
+            there = key.to_i
+            next if distances[there] && distances[there] <= distances[here] + time
+
+            distances[there] = distances[here] + time
+            previous[there] = here
+            queue << there
+          end
+        end
+        [previous, distances]
+      end
+      # Like the real one: closest first, rooms it can't reach dropped.
+      allow(DRCT).to receive(:sort_destinations) do |ids|
+        _previous, distances = Map.dijkstra(Room.current.id)
+        ids.map(&:to_i).select { |id| distances[id] }.sort_by { |id| distances[id] }
+      end
+      allow(Time).to receive(:now) { clock[:now] }
+      allow(trade).to receive(:pause) do |secs = 1|
+        clock[:now] += secs
+        raise 'waiting forever' if clock[:now] - Time.at(1_000_000) > 86_400
+
+        held.each { |c| c.expired = true if c.expires_after && clock[:now] - Time.at(1_000_000) >= c.expires_after }
+      end
+      allow(trade).to receive(:gather_contracts) { trade.instance_variable_set(:@held_contracts, held.dup) }
+      allow(trade).to receive(:find_crates)
+      in_hand = nil
+      allow(DRC).to receive(:bput) do |command, *_|
+        if (ordinal = command[/^get my (\w+) contract/, 1])
+          in_hand = held.delete_at($ORDINALS.index(ordinal))
+        elsif command == 'drop my contract'
+          dropped << in_hand
+        end
+        'You get'
+      end
+      allow(DRC).to receive(:message) { |text| messages << text }
+      allow(trade).to receive(:echo)
+      allow(trade).to receive(:close_out) { exit }
+
+      towns = outposts.to_h do |name, id|
+        [name, { 'trader_outpost' => { 'id' => id }, 'shipment_clerk' => { 'id' => id }, 'trade_minister' => { 'id' => id } }]
+      end
+      trade.instance_variable_set(:@town_data, towns)
+      trade.instance_variable_set(:@trading_towns, {})
+      trade.instance_variable_set(:@force_contract_from, [])
+      trade.instance_variable_set(:@inconvenient_towns, ['Dirge', 'Riverhaven', "Muspar'i", 'Leth Deriel', 'Ain Ghazal'])
+      trade.instance_variable_set(:@emergency_delivery_town, nil)
+      trade.instance_variable_set(:@closeup, nil)
+      trade.instance_variable_set(:@time_to_end, nil)
+    end
+
+    # What run does at an outpost before setting off.
+    def plan_next_leg
+      trade.mark_towns
+      trade.check_for_emergency_delivery
+      trade.set_next_outpost
+    end
+
+    describe '#forbid_certain_transport' do
+      it 'takes out the fallen tree and trunk both ways, and restore_certain_transport puts them back' do
+        trade.forbid_certain_transport
+        expect([rooms[3640].timeto['3641'], rooms[3641].timeto['3640'],
+                rooms[3647].timeto['3648'], rooms[3648].timeto['3647']]).to all(be_nil)
+        Trade.restore_certain_transport
+        expect([rooms[3640].timeto['3641'], rooms[3641].timeto['3640'],
+                rooms[3647].timeto['3648'], rooms[3648].timeto['3647']]).to all(eq(0.2))
+      end
+    end
+
+    describe '#set_next_outpost' do
+      it 'heads for Langenfirth, not the nearer Fornsted that only the tree reaches' do
+        held.push(contract('Therenborough', 'Fornsted'), contract('Riverhaven', 'Langenfirth'))
+        plan_next_leg
+        expect(destination_town).to eq('Langenfirth')
+      end
+
+      it 'still trades across the west: from Fornsted it heads for Hvaral' do
+        location[:id] = 3693
+        held.push(contract('Fornsted', 'Hvaral'))
+        plan_next_leg
+        expect(destination_town).to eq('Hvaral')
+      end
+
+      context 'when every contract you hold is for the other half' do
+        before do
+          held.push(contract('Therenborough', 'Fornsted', expires_after: 1800),
+                    contract('Langenfirth', 'Hvaral'),
+                    contract('Riverhaven', "Muspar'i"))
+        end
+
+        it 'waits at the outpost for one to expire, drops it, then picks the town whose minister is free again' do
+          plan_next_leg
+          expect(messages).to include(a_string_matching(/can't reach any town you hold a contract for/))
+          expect(dropped.map(&:destination_town)).to eq(['Fornsted'])
+          expect(held.map(&:destination_town)).to eq(%w[Hvaral Muspar'i])
+          expect(destination_town).to eq('Therenborough')
+          expect(clock[:now] - Time.at(1_000_000)).to be_between(1800, 2100)
+        end
+
+        it 'drops a contract that has already expired without waiting' do
+          held.first.expired = true
+          plan_next_leg
+          expect(trade).not_to have_received(:pause)
+          expect(destination_town).to eq('Therenborough')
+        end
+
+        it 'when closing up, waits for them all to expire and then returns the caravan' do
+          held.each_with_index { |c, i| c.expires_after = 600 * (i + 1) }
+          trade.instance_variable_set(:@closeup, true)
+          expect { plan_next_leg }.to raise_error(SystemExit)
+          expect(trade).to have_received(:close_out)
+          expect(dropped.size).to eq(3)
+        end
+
+        it 'notices the time limit passing while it waits' do
+          trade.instance_variable_set(:@time_to_end, clock[:now] + 600)
+          held.each { |c| c.expires_after = 3600 }
+          expect { plan_next_leg }.to raise_error(SystemExit)
+          expect(trade.instance_variable_get(:@closeup)).to be(true)
+        end
+      end
+
+      it 'does not wait with no contract to expire, and reports the error as before' do
+        trade.instance_variable_set(:@force_contract_from, %w[Therenborough Langenfirth Riverhaven])
+        plan_next_leg
+        expect(trade).not_to have_received(:pause)
+        expect(trade.instance_variable_get(:@current_caravan_destination)).to be_nil
+        expect(messages).to include(a_string_matching(/encountered an error/))
+      end
+    end
+
+    describe '#check_for_emergency_delivery' do
+      it "doesn't count contracts for Muspar'i, which the caravan can't reach from the east" do
+        3.times { held.push(contract('Therenborough', "Muspar'i")) }
+        trade.mark_towns
+        trade.check_for_emergency_delivery
+        expect(trade.instance_variable_get(:@emergency_delivery_town)).to be_nil
+      end
+
+      it 'still calls an emergency for Riverhaven' do
+        3.times { held.push(contract('Langenfirth', 'Riverhaven')) }
+        trade.mark_towns
+        trade.check_for_emergency_delivery
+        expect(trade.instance_variable_get(:@emergency_delivery_town)).to eq('Riverhaven')
+      end
+
+      it "doesn't call an emergency for Fornsted however many you hold for it" do
+        2.times { held.push(contract('Langenfirth', 'Fornsted')) }
+        trade.mark_towns
+        trade.check_for_emergency_delivery
+        expect(trade.instance_variable_get(:@emergency_delivery_town)).to be_nil
+      end
+
+      # From Riverhaven, the western outposts have no distance at all. They
+      # must drop out rather than be compared with the ones that do.
+      it 'heads for the emergency town by way of the outposts the caravan can reach' do
+        3.times { held.push(contract('Langenfirth', 'Riverhaven')) }
+        location[:id] = 3407
+        plan_next_leg
+        # Therenborough is on the way and its minister has a contract for you.
+        expect(destination_town).to eq('Therenborough')
+      end
+    end
+
+    describe '#take_caravan_to' do
+      let(:steps) { [] }
+
+      before do
+        trade.instance_variable_set(:@caravan, OpenStruct.new(adjective: 'ox-drawn', noun: 'caravan'))
+        trade.instance_variable_set(:@last_seen_caravan, [])
+        trade.instance_variable_set(:@step_toggle, 0)
+        %i[be_outside_caravan wait_for_known_room_at_caravan track_caravan save_caravan_position
+           training_cleanup wait_for_caravan walk_training].each { |name| allow(trade).to receive(name) }
+        allow(trade).to receive(:command_caravan?).and_return(true)
+        allow(trade).to receive(:caravan_check?).and_return(true)
+        allow(trade).to receive(:handle_special_room?).and_return(false)
+        allow(trade).to receive(:step) do |dir|
+          steps << dir
+          raise 'take_caravan_to is spinning' if steps.size > 20
+
+          location[:id] = rooms[location[:id]].wayto.key(dir).to_i
+        end
+      end
+
+      it 'stops with a message, without the caravan following, when it has no way to the room' do
+        expect(trade).not_to receive(:command_caravan?).with('follow')
+        expect { trade.take_caravan_to(3693) }.to raise_error(SystemExit)
+        expect(steps).to be_empty
+        expect(messages).to include(a_string_matching(/no way to room 3693/))
+      end
+
+      it 'walks the west without the tree: Fornsted to Hvaral' do
+        location[:id] = 3693
+        trade.take_caravan_to(3751)
+        expect(steps).to eq(['north'])
+        expect(location[:id]).to eq(3751)
+      end
+    end
+  end
 end
