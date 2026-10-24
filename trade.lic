@@ -369,6 +369,13 @@ class Trade
     # Faldesu
     Room[1369].timeto.delete('1370')
     Room[472].timeto.delete('473')
+    # Ker'Leor fallen tree and trunk: you climb over, the caravan can't follow.
+    # They were the only way between Therengia's east and west outposts, so the
+    # two halves can't reach each other.
+    Room[3640].timeto.delete('3641')
+    Room[3641].timeto.delete('3640')
+    Room[3647].timeto.delete('3648')
+    Room[3648].timeto.delete('3647')
   end
 
   def self.restore_certain_transport
@@ -391,6 +398,11 @@ class Trade
     # Faldesu
     Room[1369].timeto['1370'] = 0.2
     Room[472].timeto['473'] = 0.2
+    # Ker'Leor fallen tree and trunk
+    Room[3640].timeto['3641'] = 0.2
+    Room[3641].timeto['3640'] = 0.2
+    Room[3647].timeto['3648'] = 0.2
+    Room[3648].timeto['3647'] = 0.2
   end
 
   def setup_town_data # builds @trading_towns from town_data
@@ -444,33 +456,58 @@ class Trade
   end
 
   def set_next_outpost # main method that determines the next outpost you're trying to reach
-    forbid_certain_transport
-    if @emergency_delivery_town
-      @current_caravan_destination = closer_to_emergency_town
-      echo "The next outpost on the way to #{@emergency_delivery_town} is #{find_town(@current_caravan_destination)}"
-      @emergency_delivery_town = nil
-    else
-      @current_caravan_destination = find_closest_id('trader_outpost', true)
+    loop do
+      forbid_certain_transport
+      if @emergency_delivery_town
+        @current_caravan_destination = closer_to_emergency_town
+        echo "The next outpost on the way to #{@emergency_delivery_town} is #{find_town(@current_caravan_destination)}"
+        @emergency_delivery_town = nil
+      else
+        @current_caravan_destination = find_closest_id('trader_outpost', true)
+      end
+      Trade.restore_certain_transport
+      return unless @current_caravan_destination.nil?
+      # No outpost your caravan can reach has business. Any contracts you hold
+      # are for towns it can't reach from here (Ker'Leor's fallen tree cuts
+      # Therengia in two), and their ministers won't issue another until they
+      # expire.
+      break if @held_contracts.empty?
+
+      wait_for_a_contract_to_expire
     end
-    if @current_caravan_destination.zero? || @current_caravan_destination.nil?
-      DRC.message('The script has encountered an error! Please put in an issue at https://github.com/elanthia-online/dr-scripts/issues')
-      DRC.message("Current Room is #{Room.current.id}, closest town is #{find_closest_id('trader_outpost', true)}, and emergency_town is #{@emergency_delivery_town}, if any.")
+    close_out if @closeup
+    DRC.message('The script has encountered an error! Please put in an issue at https://github.com/elanthia-online/dr-scripts/issues')
+    DRC.message("Current Room is #{Room.current.id}, closest town is #{find_closest_id('trader_outpost', true)}, and emergency_town is #{@emergency_delivery_town}, if any.")
+  end
+
+  # Waits with the caravan at the outpost until a contract you hold expires,
+  # then drops it and its crate so its minister will issue a new one.
+  def wait_for_a_contract_to_expire
+    DRC.message("Your caravan can't reach any town you hold a contract for from here. Waiting for a contract to expire.")
+    until @held_contracts.any?(&:expired)
+      pause 300
+      @closeup = true if @time_to_end && Time.now > @time_to_end
+      mark_towns
     end
-    Trade.restore_certain_transport
+    dump_expired
+    mark_towns
   end
 
   def check_for_emergency_delivery # go towards a town if you have a certain amount of business there
     amount = 0
     forbid_certain_transport
-    @trading_towns.select { |name, _info| @inconvenient_towns.include?(name) }
-                  .each   { |_name, info| amount += info['contracts_to'] }
+    _previous, distances = Map.dijkstra(Room.current.id)
+    # A town your caravan can't reach from here is never an emergency.
+    reachable_towns = @trading_towns.select { |_name, info| distances[info['trader_outpost']['id'].to_i] }
+    reachable_towns.select { |name, _info| @inconvenient_towns.include?(name) }
+                   .each   { |_name, info| amount += info['contracts_to'] }
 
     if amount >= @inconvenient_contract_threshold
-      @emergency_delivery_town = @trading_towns.sort_by { |_name, info| time_to_room(Room.current.id, info['trader_outpost']['id']) }
-                                               .max_by  { |_name, info| info['contracts_to'] }.first
+      @emergency_delivery_town = reachable_towns.sort_by { |_name, info| distances[info['trader_outpost']['id'].to_i] }
+                                                .max_by  { |_name, info| info['contracts_to'] }.first
       echo "Emergency delivery needed to #{@emergency_delivery_town}"
     else
-      @trading_towns.find do |name, info|
+      reachable_towns.find do |name, info|
         if info['contracts_to'] - info['contracts_from'] >= info['contract_threshold']
           @emergency_delivery_town = name
           echo "Emergency delivery needed to #{@emergency_delivery_town}"
@@ -487,7 +524,7 @@ class Trade
                           .map { |data| data['trader_outpost']['id'] }
     target_list = rooms.collect(&:to_i)
     _previous, shortest_distances = Map.dijkstra(outpost_from_name(@emergency_delivery_town))
-    target_list.delete_if { |room_num| shortest_distances[room_num].nil? && room_num == Room.current.id }
+    target_list.delete_if { |room_num| shortest_distances[room_num].nil? && room_num != Room.current.id }
     target_list.each { |room_num| echo "Distance from emergency_town to #{room_num} : #{shortest_distances[room_num]} and distance to current room is #{shortest_distances[Room.current.id]}" } if debugging?
     target_list.delete_if { |room_num| shortest_distances[room_num] > shortest_distances[Room.current.id] + 0.5 }
     target_list = DRCT.sort_destinations(target_list)
@@ -586,6 +623,11 @@ class Trade
         take_caravan_to(3943) unless lead_caravan_to?(destination_town)
         lead_caravan_to?(destination_town) unless closest_town == destination_town
       end
+    # Therengia: the branches between the east (Therenborough, Langenfirth,
+    # Riverhaven) and the west (Fornsted, Hvaral, Muspar'i) cross Ker'Leor's
+    # fallen tree, which forbid_certain_transport blocks (#7679).
+    # set_next_outpost never picks a town in the other half, and
+    # take_caravan_to stops if asked to go there.
     when "Muspar'i"
       if %w[Therenborough Langenfirth].include?(nearest_town)
         lead_caravan_to?('Therenborough') if nearest_town == 'Langenfirth'
@@ -862,6 +904,16 @@ class Trade
     path = [destination]
     path.push(previous[path[-1]]) until previous[path[-1]].nil?
     path.reverse
+  end
+
+  # The path from here to +room_id+. When the caravan has no way there,
+  # compute_path returns only the destination, so the script stops instead.
+  def caravan_path_to(room_id)
+    path = compute_path(room_id)
+    return path if path.first == current_room_id
+
+    DRC.message("Your caravan has no way to room #{room_id} from here, so the script is stopping here.")
+    exit
   end
 
   def time_to_room(origin, destination)
@@ -1152,8 +1204,8 @@ class Trade
 
     forbid_certain_transport
     echo "destination is #{room_id}" if debugging?
+    path = caravan_path_to(room_id)
     command_caravan?('follow')
-    path = compute_path(room_id)
     echo "path: #{path}" if debugging?
     pause 0.2 until Flags['caravan-arrived'] || caravan_check?(false)
     until in_room?(room_id)
@@ -1163,12 +1215,12 @@ class Trade
         # it comes after you; you don't step back.
         wait_for_known_room(grace: 2, instruction: 'Manually move one room away, somewhere your caravan can follow, and stay there. Your caravan will follow you, and the script will carry on from that room once it catches up.')
         wait_for_caravan_to_catch_up
-        path = compute_path(room_id)
+        path = caravan_path_to(room_id)
         next
       end
 
       dir = get_next_dir(path)
-      path = compute_path(room_id) if dir.nil?
+      path = caravan_path_to(room_id) if dir.nil?
       if handle_special_room?(dir)
         Flags.reset('caravan-arrived')
         wait_for_caravan(3)
