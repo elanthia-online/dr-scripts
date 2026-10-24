@@ -533,10 +533,13 @@ class Healer
   end
 
   # Whether Unity is past its recovery period (announced by the game, or the
-  # fallback timeout has elapsed).
+  # fallback timeout has elapsed). An announcement ends the period here, so the
+  # reset before the next link can't throw it away if that link then finds no
+  # one or times out.
   # @return [Boolean]
   def unity_ready?
-    return true if @unity_recovering_since.nil? || Flags[UNITY_RECOVERED_FLAG]
+    @unity_recovering_since = nil if Flags[UNITY_RECOVERED_FLAG]
+    return true if @unity_recovering_since.nil?
 
     (Time.now - @unity_recovering_since) >= UNITY_RECOVERY_FALLBACK_SECONDS
   end
@@ -915,10 +918,10 @@ class Healer
           else
             log("Unity link failed for #{victim}, falling back to redirect flow")
           end
-        elsif @unity_available && !unity_ready?
-          log("Unity still recovering, using redirect flow for #{victim}")
         elsif !has_healable_wounds?(victim_health)
           log("#{victim} only has hands/legs wounds, skipping Unity link")
+        elsif @unity_available
+          log("Unity still recovering, using redirect flow for #{victim}")
         end
       end
     end

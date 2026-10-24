@@ -1120,6 +1120,46 @@ RSpec.describe Healer do
       expect(healer.send(:unity_ready?)).to be true
     end
 
+    # Regression (review): the pre-link reset must not throw away a recovery
+    # that was already announced when the link then finds no one.
+    it 'stays ready when a link after an announced recovery finds no one' do
+      stub_game('Stretching your senses')
+      heal_new_patient('Tenuk')
+      announce_recovery
+      stub_game('could not find')
+
+      heal_new_patient('Navesi')
+
+      expect(healer.send(:unity_ready?)).to be true
+    end
+
+    it 'logs the hands/legs reason, not recovery, when Unity could not help anyway' do
+      healer.instance_variable_set(:@unity_recovering_since, Time.now)
+      stub_game('Stretching your senses')
+      allow(healer).to receive(:log)
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', needs_teach: false)
+      DRRoom.pcs = ['Tenuk']
+      legs_only = health_result(score: 3, wounds: { 1 => [wound(body_part: 'left leg', severity: 1)] })
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(legs_only)
+
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+
+      expect(healer).to have_received(:log).with('Tenuk only has hands/legs wounds, skipping Unity link')
+      expect(healer).not_to have_received(:log).with(/Unity still recovering/)
+    end
+
+    it 'stays ready when a link after an announced recovery times out' do
+      stub_game('Stretching your senses')
+      heal_new_patient('Tenuk')
+      announce_recovery
+      stub_game('')
+
+      heal_new_patient('Navesi')
+
+      expect(healer.send(:unity_ready?)).to be true
+    end
+
     it 'tries Unity again once the game announces recovery' do
       stub_game('Stretching your senses')
       heal_new_patient('Tenuk')
