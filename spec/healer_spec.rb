@@ -1146,6 +1146,120 @@ RSpec.describe Healer do
   end
 
   # ============================================================
+  # Finish Unity Patients Immediately (re-check without the cooldown)
+  # ============================================================
+
+  describe 'immediate re-check after a Unity link' do
+    let(:healer) { build_healer(friends: ['Tenuk'], unity: true) }
+    let(:commands) { [] }
+    let(:wounded) { health_result(score: 9, vitality: 100, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }) }
+    let(:clean) { health_result(score: 0, vitality: 100) }
+
+    def stub_game(link_reply = 'Stretching your senses')
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        commands << cmd
+        cmd.match?(/^link \w+ unity$/) ? link_reply : ''
+      end
+      allow(healer).to receive(:heal_self) { commands << :heal_self }
+    end
+
+    # +perceives+ are the successive results of touching Tenuk.
+    def heal_tenuk(*perceives)
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(*perceives)
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+    end
+
+    before do
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', needs_teach: false)
+      DRRoom.pcs = ['Tenuk']
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+    end
+
+    context 'when Unity took everything' do
+      before do
+        stub_game
+        heal_tenuk(wounded, clean)
+      end
+
+      it 'whispers done and removes the patient in the same pass' do
+        expect(commands).to include('whisper Tenuk Done!')
+        expect(healer.patients).to be_empty
+      end
+
+      it 'finishes the patient before stopping to heal self' do
+        expect(commands).to eq(['link Tenuk unity', 'whisper Tenuk Done!', :heal_self])
+      end
+    end
+
+    context 'when wounds remain after Unity' do
+      before do
+        stub_game
+        heal_tenuk(wounded, wounded)
+      end
+
+      it 'leaves the patient on the normal cooldown without transferring' do
+        expect(healer.patients).to have_key(:tenuk)
+        expect(healer.patient_ready?('Tenuk')).to be false
+        expect(commands).to eq(['link Tenuk unity', :heal_self])
+      end
+    end
+
+    context 'when the re-check perceive fails' do
+      before do
+        stub_game
+        heal_tenuk(wounded, nil)
+      end
+
+      it 'keeps the patient for the next cycle' do
+        expect(healer.patients).to have_key(:tenuk)
+        expect(commands).to eq(['link Tenuk unity', :heal_self])
+      end
+    end
+
+    context 'when the patient is clear but low on vitality' do
+      before do
+        healer.instance_variable_set(:@vh_available, true)
+        stub_game
+        heal_tenuk(wounded, health_result(score: 0, vitality: 60))
+      end
+
+      # Vitality can be taken while we carry the Unity wounds.
+      it 'queues vitality healing instead of finishing' do
+        expect(healer.instance_variable_get(:@spell_task)).to include(patient: 'Tenuk', type: :vitality)
+        expect(healer.patients).to have_key(:tenuk)
+        expect(commands).not_to include('whisper Tenuk Done!')
+      end
+    end
+
+    context 'when the patient still has a parasite' do
+      before do
+        stub_game
+        allow(healer).to receive(:fput)
+        leech = { 1 => [OpenStruct.new(body_part: 'neck')] }
+        heal_tenuk(wounded, health_result(score: 0, vitality: 100, parasites: leech))
+      end
+
+      it 'leaves them for the normal cycle' do
+        expect(healer.patients).to have_key(:tenuk)
+      end
+    end
+
+    context 'when Unity strains' do
+      before do
+        stub_game('You strain')
+        allow(DRC).to receive(:bput).with(/^redirect/, any_args) { |cmd, *_| commands << cmd; 'You are now redirecting' }
+        heal_tenuk(wounded, clean)
+      end
+
+      it 'does not re-check early -- the transfer is gradual' do
+        expect(DRCH).to have_received(:perceive_health_other).once
+        expect(healer.patients).to have_key(:tenuk)
+      end
+    end
+  end
+
+  # ============================================================
   # Wound Transfer (redirect, then transfer)
   # ============================================================
 
