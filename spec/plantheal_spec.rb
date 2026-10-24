@@ -207,7 +207,18 @@ RSpec.describe PlantHeal do
         waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Regenerate' => regen_data }
         instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
         expect(DRC).not_to receive(:wait_for_script_to_complete)
-        expect(DRCA).to receive(:cast_spells).with({ 'Regenerate' => regen_data }, settings)
+        expect(DRCA).to receive(:cast_spells).with({ 'Regenerate' => regen_data }, settings, nil)
+        instance.send(:ensure_healing_spells)
+      end
+
+      # do_buffs passes settings.waggle_force_cambrinth; casting directly must too,
+      # or a character set to force cambrinth would harness instead.
+      it 'passes waggle_force_cambrinth through like buff does' do
+        DRSpells._set_active_spells({})
+        forced = OpenStruct.new(waggle_force_cambrinth: true)
+        waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Regenerate' => regen_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: forced)
+        expect(DRCA).to receive(:cast_spells).with({ 'Regenerate' => regen_data }, forced, true)
         instance.send(:ensure_healing_spells)
       end
 

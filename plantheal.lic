@@ -415,7 +415,8 @@ class PlantHeal
 
     healing_spells = @ev_waggle.select { |name, _data| HEALING_SPELL_KEYS.include?(name) }
     healing_spells.each_value { |data| DRCA.check_discern(data, @settings) if data['use_auto_mana'] }
-    DRCA.cast_spells(healing_spells, @settings)
+    # Same cambrinth choice buff/do_buffs makes for these spells.
+    DRCA.cast_spells(healing_spells, @settings, @settings.waggle_force_cambrinth)
   end
 
   PASSIVE_HEAL_POLL_INTERVAL = 5
