@@ -181,10 +181,62 @@ RSpec.describe PlantHeal do
         instance.send(:ensure_healing_spells)
       end
 
-      it 'calls buff plantheal when neither Heal nor Regenerate is active' do
+      let(:ev_data) { { 'abbrev' => 'EV', 'mana' => 525, 'recast' => 5 } }
+      let(:regen_data) { { 'abbrev' => 'regen', 'mana' => 13 } }
+      let(:settings) { OpenStruct.new }
+
+      it 'casts only the Heal/Regenerate entries, never EV, when neither is active' do
         DRSpells._set_active_spells({})
-        instance = build_instance(waggle_healing: true)
-        expect(DRC).to receive(:wait_for_script_to_complete).with('buff', ['plantheal'])
+        waggle = {
+          "Embrace of the Vela'Tohr" => ev_data,
+          'Regenerate'               => regen_data,
+          'Heal'                     => { 'abbrev' => 'heal', 'mana' => 10 }
+        }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRCA).to receive(:cast_spells) do |spells, passed_settings|
+          expect(spells.keys).to contain_exactly('Regenerate', 'Heal')
+          expect(passed_settings).to be(settings)
+        end
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'does not run buff, which would recast EV from the same waggle_set' do
+        # Regression: EV was just cast and DRSpells reports it short of recast;
+        # buff plantheal would cast EV a second time on top of it.
+        DRSpells._set_active_spells({ "Embrace of the Vela'Tohr" => 1 })
+        waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Regenerate' => regen_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(DRCA).to receive(:cast_spells).with({ 'Regenerate' => regen_data }, settings, nil)
+        instance.send(:ensure_healing_spells)
+      end
+
+      # do_buffs passes settings.waggle_force_cambrinth; casting directly must too,
+      # or a character set to force cambrinth would harness instead.
+      it 'passes waggle_force_cambrinth through like buff does' do
+        DRSpells._set_active_spells({})
+        forced = OpenStruct.new(waggle_force_cambrinth: true)
+        waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Regenerate' => regen_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: forced)
+        expect(DRCA).to receive(:cast_spells).with({ 'Regenerate' => regen_data }, forced, true)
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'does not mutate the plantheal waggle_set' do
+        DRSpells._set_active_spells({})
+        waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Regenerate' => regen_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        instance.send(:ensure_healing_spells)
+        expect(waggle.keys).to eq(["Embrace of the Vela'Tohr", 'Regenerate'])
+      end
+
+      it 'discerns mana only for healing entries that use auto mana' do
+        DRSpells._set_active_spells({})
+        auto_regen = regen_data.merge('use_auto_mana' => true)
+        auto_ev = ev_data.merge('use_auto_mana' => true)
+        waggle = { "Embrace of the Vela'Tohr" => auto_ev, 'Regenerate' => auto_regen }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRCA).to receive(:check_discern).once.with(auto_regen, settings)
         instance.send(:ensure_healing_spells)
       end
     end
@@ -194,6 +246,7 @@ RSpec.describe PlantHeal do
         DRSpells._set_active_spells({})
         instance = build_instance(waggle_healing: false)
         expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(DRCA).not_to receive(:cast_spells)
         instance.send(:ensure_healing_spells)
       end
     end

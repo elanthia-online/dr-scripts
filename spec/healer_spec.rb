@@ -1037,26 +1037,252 @@ RSpec.describe Healer do
   end
 
   # ============================================================
-  # Unity Link Wound Transfer (skips redirect for Unity-linked patients)
+  # Unity Takes Wounds Instantly (no follow-up transfer)
+  # ============================================================
+
+  describe 'wound handling after a Unity link' do
+    let(:healer) { build_healer(friends: ['Tenuk'], unity: true) }
+    let(:chest_wounds) do
+      health_result(score: 9, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+    end
+    let(:commands) { [] }
+
+    # Records every command and answers the Unity link with +link_reply+.
+    def stub_game(link_reply)
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        commands << cmd
+        case cmd
+        when /^link \w+ unity$/ then link_reply
+        when /^redirect/ then 'You are now redirecting'
+        when /^transfer/ then 'You feel the transfer beginning'
+        else ''
+        end
+      end
+      allow(healer).to receive(:heal_self)
+    end
+
+    before do
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', needs_teach: false)
+      # A readiness result cached earlier this cycle, from before Unity moved wounds onto us
+      healer.instance_variable_set(:@last_health_check, Time.now)
+      DRRoom.pcs = ['Tenuk']
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(chest_wounds)
+    end
+
+    context 'when the Unity link succeeds' do
+      before do
+        stub_game('Stretching your senses')
+        healer.send(:heal_patient, healer.get_patient('Tenuk'))
+      end
+
+      # Regression: every successful Unity link was followed by a transfer that
+      # always answered "Tenuk is not wounded in that location."
+      it 'does not send a follow-up transfer or redirect' do
+        expect(commands).to eq(['link Tenuk unity'])
+      end
+
+      it 'starts the cooldown and keeps the patient queued for a re-perceive' do
+        expect(healer.patients).to have_key(:tenuk)
+        expect(healer.get_patient('Tenuk')[:touched]).to be true
+        expect(healer.patient_ready?('Tenuk')).to be false
+      end
+
+      it 'heals self, since the wounds are now ours' do
+        expect(healer).to have_received(:heal_self)
+      end
+
+      it 'invalidates the cached readiness check' do
+        expect(healer.instance_variable_get(:@last_health_check)).to be_nil
+      end
+    end
+
+    context 'on the next cycle, when wounds remain after a Unity link' do
+      before do
+        stub_game('Stretching your senses')
+        healer.send(:heal_patient, healer.get_patient('Tenuk'))
+        healer.send(:update_patient, 'Tenuk', timer: Time.now - Healer::COOLDOWN_SECONDS)
+        commands.clear
+        healer.send(:heal_patient, healer.get_patient('Tenuk'))
+      end
+
+      # Regression: a lingering unity_linked flag made later transfers skip the
+      # redirect, so wounds went wherever the last redirect happened to point.
+      it 'redirects to an unwounded part before transferring' do
+        expect(commands).to eq(['redirect all to left arm', 'transfer Tenuk quick all'])
+      end
+    end
+
+    context 'when Unity is still recovering' do
+      before do
+        stub_game('You strain')
+        healer.send(:heal_patient, healer.get_patient('Tenuk'))
+      end
+
+      it 'falls back to redirect and transfer' do
+        expect(commands).to eq(['link Tenuk unity', 'redirect all to left arm', 'transfer Tenuk quick all'])
+      end
+    end
+
+    context 'when the Unity link succeeds on a poisoned patient' do
+      before do
+        poisoned = health_result(score: 9, poisoned: true, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] })
+        allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(poisoned)
+        stub_game('Stretching your senses')
+        healer.send(:heal_patient, healer.get_patient('Tenuk'))
+      end
+
+      it 'still claims the spell slot for the poison' do
+        expect(healer.instance_variable_get(:@spell_task)).to include(patient: 'Tenuk', type: :poison)
+      end
+
+      # Unity moved the wounds onto us even though the poison branch returns early,
+      # so the next cycle must re-check our own health instead of reusing a stale "ready".
+      it 'invalidates the cached readiness check' do
+        expect(healer.instance_variable_get(:@last_health_check)).to be_nil
+      end
+    end
+  end
+
+  # ============================================================
+  # Finish Unity Patients Immediately (re-check without the cooldown)
+  # ============================================================
+
+  describe 'immediate re-check after a Unity link' do
+    let(:healer) { build_healer(friends: ['Tenuk'], unity: true) }
+    let(:commands) { [] }
+    let(:wounded) { health_result(score: 9, vitality: 100, wounds: { 2 => [wound(body_part: 'chest', severity: 2)] }) }
+    let(:clean) { health_result(score: 0, vitality: 100) }
+
+    def stub_game(link_reply = 'Stretching your senses')
+      allow(DRC).to receive(:bput) do |cmd, *_|
+        commands << cmd
+        cmd.match?(/^link \w+ unity$/) ? link_reply : ''
+      end
+      allow(healer).to receive(:heal_self) { commands << :heal_self }
+    end
+
+    # +perceives+ are the successive results of touching Tenuk.
+    def heal_tenuk(*perceives)
+      allow(DRCH).to receive(:perceive_health_other).with('Tenuk').and_return(*perceives)
+      healer.send(:heal_patient, healer.get_patient('Tenuk'))
+    end
+
+    before do
+      healer.add_patient('Tenuk')
+      healer.send(:update_patient, 'Tenuk', needs_teach: false)
+      DRRoom.pcs = ['Tenuk']
+      allow(DRCH).to receive(:check_health).and_return(health_result(wounds: {}))
+    end
+
+    context 'when Unity took everything' do
+      before do
+        stub_game
+        heal_tenuk(wounded, clean)
+      end
+
+      it 'whispers done and removes the patient in the same pass' do
+        expect(commands).to include('whisper Tenuk Done!')
+        expect(healer.patients).to be_empty
+      end
+
+      it 'finishes the patient before stopping to heal self' do
+        expect(commands).to eq(['link Tenuk unity', 'whisper Tenuk Done!', :heal_self])
+      end
+    end
+
+    context 'when wounds remain after Unity' do
+      before do
+        stub_game
+        heal_tenuk(wounded, wounded)
+      end
+
+      it 'leaves the patient on the normal cooldown without transferring' do
+        expect(healer.patients).to have_key(:tenuk)
+        expect(healer.patient_ready?('Tenuk')).to be false
+        expect(commands).to eq(['link Tenuk unity', :heal_self])
+      end
+    end
+
+    context 'when the re-check perceive fails' do
+      before do
+        stub_game
+        heal_tenuk(wounded, nil)
+      end
+
+      it 'keeps the patient for the next cycle' do
+        expect(healer.patients).to have_key(:tenuk)
+        expect(commands).to eq(['link Tenuk unity', :heal_self])
+      end
+    end
+
+    context 'when the patient is clear but low on vitality' do
+      before do
+        healer.instance_variable_set(:@vh_available, true)
+        stub_game
+        heal_tenuk(wounded, health_result(score: 0, vitality: 60))
+      end
+
+      it 'leaves vitality healing for the normal cycle' do
+        expect(healer.instance_variable_get(:@spell_task)).to be_nil
+        expect(healer.patients).to have_key(:tenuk)
+        expect(healer.patient_ready?('Tenuk')).to be false
+        expect(commands).to eq(['link Tenuk unity', :heal_self])
+      end
+    end
+
+    # Regression (review): claiming the vitality slot before heal_self made
+    # spell_conflict? true, so healme never ran for the Unity wounds we carry.
+    context 'when the patient needs vitality and we have no passive healing' do
+      before do
+        healer.instance_variable_set(:@vh_available, true)
+        healer.instance_variable_set(:@passive_healing_available, false)
+        allow(DRC).to receive(:bput) { |cmd, *_| cmd.match?(/^link \w+ unity$/) ? 'Stretching your senses' : '' }
+        allow(DRC).to receive(:wait_for_script_to_complete)
+        allow(Script).to receive(:running?).and_return(false)
+        heal_tenuk(wounded, health_result(score: 0, vitality: 60))
+      end
+
+      it 'still runs healme for the Unity wounds' do
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('healme')
+      end
+    end
+
+    context 'when the patient still has a parasite' do
+      before do
+        stub_game
+        allow(healer).to receive(:fput)
+        leech = { 1 => [OpenStruct.new(body_part: 'neck')] }
+        heal_tenuk(wounded, health_result(score: 0, vitality: 100, parasites: leech))
+      end
+
+      it 'leaves them for the normal cycle without tending yet' do
+        expect(healer.patients).to have_key(:tenuk)
+        expect(healer).not_to have_received(:fput)
+      end
+    end
+
+    context 'when Unity strains' do
+      before do
+        stub_game('You strain')
+        allow(DRC).to receive(:bput).with(/^redirect/, any_args) { |cmd, *_| commands << cmd; 'You are now redirecting' }
+        heal_tenuk(wounded, clean)
+      end
+
+      it 'does not re-check early -- the transfer is gradual' do
+        expect(DRCH).to have_received(:perceive_health_other).once
+        expect(healer.patients).to have_key(:tenuk)
+      end
+    end
+  end
+
+  # ============================================================
+  # Wound Transfer (redirect, then transfer)
   # ============================================================
 
   describe '#transfer_wounds' do
-    it 'skips redirect when patient is Unity-linked' do
-      healer = build_healer
-      healer.add_patient('Tenuk')
-      healer.send(:update_patient, 'Tenuk', unity_linked: true)
-
-      allow(DRC).to receive(:bput)
-        .with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
-        .and_return('You touch')
-      allow(healer).to receive(:heal_self)
-
-      expect(DRC).not_to receive(:bput).with(/redirect/, anything, anything)
-
-      healer.send(:transfer_wounds, 'Tenuk', 5)
-    end
-
-    it 'redirects to an unwounded body part when patient is not Unity-linked' do
+    it 'redirects to an unwounded body part before transferring' do
       healer = build_healer
       healer.add_patient('Tenuk')
 
@@ -1074,7 +1300,7 @@ RSpec.describe Healer do
       expect(DRC).to have_received(:bput).with(/redirect all to/, anything, anything)
     end
 
-    it 'heals self and returns when no unwounded parts available for non-Unity patient' do
+    it 'heals self and returns when no unwounded parts are available' do
       healer = build_healer
       healer.add_patient('Tenuk')
 
@@ -1087,24 +1313,6 @@ RSpec.describe Healer do
 
       expect(healer).to have_received(:heal_self)
       expect(DRC).not_to have_received(:bput).with(/transfer Tenuk/, any_args)
-    end
-
-    it 'transfers even when all body parts are wounded for Unity-linked patient' do
-      healer = build_healer
-      healer.add_patient('Tenuk')
-      healer.send(:update_patient, 'Tenuk', unity_linked: true)
-
-      all_wounded = Healer::HEAL_LOCATIONS.map { |part| wound(body_part: part, severity: 2) }
-      wounded_health = health_result(wounds: { 2 => all_wounded }, score: 99)
-      allow(DRCH).to receive(:check_health).and_return(wounded_health)
-      allow(DRC).to receive(:bput)
-        .with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
-        .and_return('You touch')
-      allow(healer).to receive(:heal_self)
-
-      healer.send(:transfer_wounds, 'Tenuk', 5)
-
-      expect(DRC).to have_received(:bput).with("transfer Tenuk quick all", *Healer::WOUND_TRANSFER_RESPONSES)
     end
   end
 
@@ -1289,23 +1497,23 @@ RSpec.describe Healer do
   end
 
   # ============================================================
-  # Emergency Fall Clears Unity Link State
+  # Emergency Fall Resets Patients
   # ============================================================
 
   describe '#check_emergency_fall' do
-    it 'clears unity_linked flag on all patients when emergency fall triggers' do
+    it 'resets all patients to untouched when emergency fall triggers' do
       healer = build_healer
       healer.add_patient('Tenuk')
       healer.add_patient('Navesi')
-      healer.send(:update_patient, 'Tenuk', unity_linked: true)
-      healer.send(:update_patient, 'Navesi', unity_linked: true)
+      healer.send(:update_patient, 'Tenuk', touched: true)
+      healer.send(:update_patient, 'Navesi', touched: true)
 
       DRStats.health = 25 # Below EMERGENCY_VIT_THRESHOLD of 30
 
       healer.send(:check_emergency_fall)
 
-      expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
-      expect(healer.get_patient('Navesi')[:unity_linked]).to be false
+      expect(healer.get_patient('Tenuk')[:touched]).to be false
+      expect(healer.get_patient('Navesi')[:touched]).to be false
     end
   end
 
@@ -1378,19 +1586,6 @@ RSpec.describe Healer do
       Harness::DRSpells._set_known_spells('Heal' => true)
 
       expect(healer.send(:validate_healing_spells)).to be false
-    end
-  end
-
-  # ============================================================
-  # Patient Initial State Includes unity_linked
-  # ============================================================
-
-  describe 'patient initial state' do
-    it 'initializes unity_linked to false' do
-      healer = build_healer
-      healer.add_patient('Tenuk')
-
-      expect(healer.get_patient('Tenuk')[:unity_linked]).to be false
     end
   end
 
