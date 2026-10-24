@@ -902,17 +902,22 @@ class Healer
     end
 
     # Check if patient needs vitality healing (only relevant once wounds are clear)
-    needs_vit = !victim_health.dead &&
-                victim_health.vitality &&
-                victim_health.vitality < PATIENT_VIT_THRESHOLD
+    needs_vit = needs_vitality?(victim_health)
 
     # Handle wounds FIRST -- bleeding causes vitality loss, so healing wounds
     # is always higher priority than vitality transfer.
     if victim_health.score > 0
       if unity_took_wounds
-        # Nothing left to transfer -- the next cycle re-perceives and picks up
-        # anything Unity did not take.
         update_patient(victim, touched: true, timer: Time.now)
+        # Unity moves the wounds on the spot, so re-check now instead of after the
+        # cooldown and finish the patient before we stop to heal ourselves.
+        # Anything Unity did not take waits for the normal cycle -- including
+        # vitality: claiming the spell slot now would make heal_self skip
+        # (spell_conflict?) while we carry the Unity wounds.
+        recheck = DRCH.perceive_health_other(victim)
+        if fully_clear?(recheck) && !vitality_healing_due?(recheck, get_patient(victim))
+          complete_healing(victim)
+        end
         heal_self
       else
         transfer_wounds(victim, victim_health.score)
@@ -922,13 +927,7 @@ class Healer
 
     # Wounds clear - now check vitality
     if patient_data[:touched]
-      if needs_vit && @vh_available && !patient_data[:vh_attempted]
-        log("#{victim} wounds clear, needs vitality healing (#{victim_health.vitality}% vit)")
-        DRC.log_window("Healer: #{victim} needs vitality healing (#{victim_health.vitality}% vit)", "familiar")
-        claim_spell_slot(victim, :vitality)
-        return
-      end
-      complete_healing(victim)
+      finish_clear_patient(victim, patient_data, victim_health)
     else
       # First touch, no wounds/afflictions - check vit before removing
       if needs_vit && @vh_available
@@ -939,6 +938,46 @@ class Healer
       log("#{victim} has no wounds, removing from queue")
       remove_patient(victim, reason: :no_wounds)
     end
+  end
+
+  # Whether a patient below the vitality threshold should get vitality healing.
+  # @param health [HealthResult] patient health data
+  # @return [Boolean]
+  def needs_vitality?(health)
+    !health.dead && health.vitality && health.vitality < PATIENT_VIT_THRESHOLD
+  end
+
+  # Whether we should queue vitality healing (VH) for this patient now.
+  # @param health [HealthResult] patient health data
+  # @param patient_data [Hash] patient data from queue
+  # @return [Boolean]
+  def vitality_healing_due?(health, patient_data)
+    needs_vitality?(health) && @vh_available && !patient_data[:vh_attempted]
+  end
+
+  # Whether a perceive shows nothing left for the healer to do but vitality.
+  # @param health [HealthResult, nil] patient health data (nil if perceive failed)
+  # @return [Boolean]
+  def fully_clear?(health)
+    return false unless health
+
+    health.score.zero? && !health.poisoned && !health.diseased && !health.dead && !health.parasites&.any?
+  end
+
+  # Finishes a touched patient whose wounds and afflictions are clear: queue
+  # vitality healing if they need it (once), otherwise whisper done and remove.
+  # @param victim [String] patient name
+  # @param patient_data [Hash] patient data from queue
+  # @param health [HealthResult] the clear perceive result
+  # @return [void]
+  def finish_clear_patient(victim, patient_data, health)
+    if vitality_healing_due?(health, patient_data)
+      log("#{victim} wounds clear, needs vitality healing (#{health.vitality}% vit)")
+      DRC.log_window("Healer: #{victim} needs vitality healing (#{health.vitality}% vit)", "familiar")
+      claim_spell_slot(victim, :vitality)
+      return
+    end
+    complete_healing(victim)
   end
 
   # Tends parasites/leeches found on a patient.
