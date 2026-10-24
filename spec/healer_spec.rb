@@ -1131,6 +1131,47 @@ RSpec.describe Healer do
       expect(healer.patients).to have_key(:navesi)
     end
 
+    # Regression (race): the recovery line can arrive right behind a strain
+    # (seen as adjacent lines in logs). The hook runs on the game thread before
+    # bput hands the strain back, so it clears the state first; the strain must
+    # not then re-arm a recovery that has already ended.
+    it 'stays ready when the recovery line lands right behind a strain' do
+      healer.send(:start_line_monitor)
+      stub_game('You strain')
+      allow(DRC).to receive(:bput).with('link Tenuk unity', any_args) do
+        DownstreamHook.run(recovered_line)
+        'You strain'
+      end
+
+      heal_new_patient('Tenuk')
+
+      expect(healer.send(:unity_ready?)).to be true
+    end
+
+    it 'still re-arms on a strain when the last recovery line came before the link was sent' do
+      healer.instance_variable_set(:@unity_recovered_at, Time.now - 30)
+      stub_game('You strain')
+
+      heal_new_patient('Tenuk')
+
+      expect(healer.send(:unity_ready?)).to be false
+    end
+
+    # A success always starts a fresh period, even if an old period's recovery
+    # line was still in flight when we sent the link.
+    it 'still starts a recovery period after a success, whatever the hook saw' do
+      healer.send(:start_line_monitor)
+      stub_game('Stretching your senses')
+      allow(DRC).to receive(:bput).with('link Tenuk unity', any_args) do
+        DownstreamHook.run(recovered_line)
+        'Stretching your senses'
+      end
+
+      heal_new_patient('Tenuk')
+
+      expect(healer.send(:unity_ready?)).to be false
+    end
+
     context 'when the recovery announcement is missed' do
       it 'stays recovering just short of the fallback' do
         healer.instance_variable_set(:@unity_recovering_since, Time.now - (Healer::UNITY_RECOVERY_FALLBACK_SECONDS - 1))
