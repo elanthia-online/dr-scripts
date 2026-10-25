@@ -846,7 +846,7 @@ RSpec.describe HuntingBuddy do
     # Runs the room predicate hunting-buddy hands to find_empty_room, with
     # `say_echo` as the line the game sends back for our own empty-room say
     # and `heard` as anything else that arrives while we wait.
-    def room_judged_empty?(say_echo:, heard: nil, avoid_buddies: false, pcs: [], group: [], search_finds: nil, heard_in_search: nil, arrives: nil)
+    def room_judged_empty?(say_echo:, heard: nil, avoid_buddies: false, pcs: [], group: [], search_finds: nil, heard_in_search: nil, arrives: nil, reget_lines: nil)
       buddy.instance_variable_set(:@settings, settings)
       buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
       buddy.instance_variable_set(:@escort_zones, {})
@@ -857,7 +857,7 @@ RSpec.describe HuntingBuddy do
         deliver(heard_in_search) if heard_in_search
         'Roundtime: 3 sec.'
       end
-      allow(buddy).to receive(:reget).and_return(search_finds ? [search_finds, 'You search around for a moment.'].reverse : [])
+      allow(buddy).to receive(:reget).and_return(reget_lines || (search_finds ? [search_finds, 'You search around for a moment.'].reverse : []))
       allow(buddy).to receive(:waitrt?)
       allow(buddy).to receive(:pause)
       allow(buddy).to receive(:fput) do |command|
@@ -965,6 +965,27 @@ RSpec.describe HuntingBuddy do
       it 'still takes a room whose only other person is a buddy in your group, with avoid_buddies' do
         expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'])).to be true
       end
+
+      # Someone else's quoted words naming the buddy are not the buddy.
+      it 'leaves a room where a hidden stranger only says the buddy\'s name' do
+        expect(room_judged_empty?(say_echo: echo, search_finds: 'You notice the vague silhouette of Mallory.',
+                                  heard_in_search: %(<preset id='speech'>Mallory says</preset>, "Bob will be along soon."))).to be false
+      end
+
+      it 'leaves a room where a hidden stranger only whispers the buddy\'s name' do
+        expect(room_judged_empty?(say_echo: echo, search_finds: 'You notice the vague silhouette of Mallory.',
+                                  heard_in_search: %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "Bob is coming."))).to be false
+      end
+
+      it 'takes a room where a hidden buddy speaks up in a Saga preset line, by default' do
+        expect(room_judged_empty?(say_echo: echo, search_finds: 'You notice Bob, who is quite obviously attempting to remain hidden.',
+                                  heard_in_search: %(<preset id='speech'><a exist="1" noun="Bob">Bob</a> says</preset>, "Here!"))).to be_truthy
+      end
+
+      it 'takes a room where SEARCH names the hidden buddy, by default' do
+        expect(room_judged_empty?(say_echo: echo, search_finds: 'You notice Bob, who is quite obviously attempting to remain hidden.',
+                                  heard_in_search: 'You notice Bob, who is quite obviously attempting to remain hidden.')).to be_truthy
+      end
     end
 
     # Own echoes of the empty-room say: these must not mark the room occupied.
@@ -1016,6 +1037,57 @@ RSpec.describe HuntingBuddy do
       other = %(<preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
 
       expect(room_judged_empty?(say_echo: own, heard: other)).to be false
+    end
+
+    # Talk from elsewhere, or someone's quoted words, must not mark the room occupied:
+    # ESP thoughts, whispers and other windows' lines (raw XML, as the flags see them).
+    {
+      'an ESP'               => ->(t) { %(<pushStream id="thoughts"/>[General][Mallory] "#{t}"<popStream/>) },
+      'an ESP-to-you'        => ->(t) { %(<pushStream id="thoughts"/><preset id='thought'>Your mind hears Mallory thinking, </preset>"#{t}"<popStream/>) },
+      'a whisper'            => ->(t) { %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{t}") },
+      'a plain-text whisper' => ->(t) { %(Mallory whispers, "#{t}") }
+    }.each do |shape, wrap|
+      [
+        'Everdusk Conclave says, "Donate to local orphans in need."',
+        'You hear footsteps nearby.',
+        'Someone snipes a arrow at a jeol moradu!',
+        'Byd leaps from hiding and ambushes a jeol moradu!',
+        'Byd begins to advance on a jeol moradu.',
+        'Byd slices a jeol moradu.'
+      ].each do |text|
+        it "does not treat #{shape} line quoting #{text.inspect} as someone in the room" do
+          expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: wrap.call(text))).to be true
+        end
+      end
+    end
+
+    it 'does not treat a familiar-window line as someone hunting in the room' do
+      heard = '<pushStream id="familiar"/>Byd begins to advance on a jeol moradu.<popStream/>'
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: heard)).to be true
+    end
+
+    # The game's own lines still mark the room occupied.
+    [
+      'You hear Brachius whisper something inaudible before he walks toward the alpine trail.',
+      'Someone snipes a arrow at a jeol moradu!',
+      'Byd leaps from hiding and ambushes a jeol moradu!',
+      '<pushBold/>Byd begins to advance on a jeol moradu.<popBold/>',
+      'Byd slices a jeol moradu.',
+      %(Mallory says, "Byd says, "hi"")
+    ].each do |line|
+      it "leaves the room on the game line: #{line}" do
+        expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: line)).to be false
+      end
+    end
+
+    it 'does not take a SEARCH result quoted in an ESP thought as someone hiding' do
+      reget = ['You search around for a moment.', '[General][Mallory] "You notice Byd, who is quite obviously attempting to remain hidden."']
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', reget_lines: reget)).to be true
+    end
+
+    it 'still finds someone hiding when a later ESP thought mentions searching around' do
+      reget = ['You search around for a moment.', 'You notice the vague silhouette of Mallory.', '[General][Bob] "You search around for ages."']
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', reget_lines: reget)).to be false
     end
   end
 
