@@ -1468,6 +1468,9 @@ class LootProcess
 end
 
 class SafetyProcess
+  # The dodge verbs the game offers in "You believe you could <verb> out of the way of the <thing>".
+  ACTIVE_MITIGATION_ACTIONS = %w[dip jump duck lean dive].freeze
+
   def initialize(settings, equipment_manager)
     echo('New SafetyProcess') if $debug_mode_ct
     Flags.add('ct-engaged', 'closes to pole weapon range on you', 'closes to melee range on you')
@@ -1476,7 +1479,9 @@ class SafetyProcess
     # When you shoot or throw something, the phrase is "The <item> falls to your feet!" (normal mechanics)
     Flags.add('ct-itemdropped', '^Your (?<item>.*) falls to your feet\.', '^You cannot maintain your grip on the (?<item>.*), and it falls to the ground!')
     Flags.add('ct-germshieldlost', 'It jerks the.* (?<shield>\w+) out of your hands')
-    Flags.add('active-mitigation', 'You believe you could \b(?<action>\w+) out of the way of the \b(?<obstacle>\w+)')
+    # Anchored to the start of the line (leading tags allowed) so it only matches the
+    # game's own line, not other players' speech/ESP; the verbs are the game's.
+    Flags.add('active-mitigation', "^(?:<[^>]+>)*You believe you could (?<action>#{ACTIVE_MITIGATION_ACTIONS.join('|')}) out of the way of the (?<obstacle>\\w+)")
     Flags.add('ct-parasite', 'blood mite on your (?<body_part>.*)\.')
     @equipment_manager = equipment_manager
     @health_threshold = settings.health_threshold
@@ -1702,7 +1707,10 @@ class SafetyProcess
   def active_mitigation
     return unless Flags['active-mitigation']
 
-    DRC.bput("#{Flags['active-mitigation'][:action]} #{Flags['active-mitigation'][:obstacle]}", 'You manage to', "You've got to", 'Please rephrase', 'You jump back', "You can't do")
+    action = Flags['active-mitigation'][:action].to_s.downcase
+    obstacle = Flags['active-mitigation'][:obstacle]
+    # Only ever send one of the game's dodge verbs, whatever set the flag.
+    DRC.bput("#{action} #{obstacle}", 'You manage to', "You've got to", 'Please rephrase', 'You jump back', "You can't do") if ACTIVE_MITIGATION_ACTIONS.include?(action)
     Flags.reset('active-mitigation')
   end
 

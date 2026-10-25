@@ -2736,6 +2736,106 @@ RSpec.describe SafetyProcess do
       end
     end
   end
+
+  # The active-mitigation flag turns a game prompt into a command on the next safety
+  # tick, so it must only fire on the game's own line and only ever send a dodge verb.
+  describe 'active mitigation' do
+    let(:sentence) { 'You believe you could duck out of the way of the leucro, if you act quickly enough.' }
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # A real SafetyProcess, so the matchers under test are the ones initialize registers.
+    def registered_safety_process
+      allow(DRC).to receive(:message)
+      settings = OpenStruct.new(
+        health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+        safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+      )
+      SafetyProcess.new(settings, double('EquipmentManager'))
+    end
+
+    # Deliver the lines, run the mitigation step once, and return what was sent to the game.
+    def commands_after(*lines)
+      sent = []
+      allow(DRC).to receive(:bput) do |command, *_matches|
+        sent << command
+        'You manage to'
+      end
+      instance = registered_safety_process
+      lines.each { |line| deliver(line) }
+      instance.send(:active_mitigation)
+      sent
+    end
+
+    it 'sends the dodge the game offers' do
+      expect(commands_after(sentence)).to eq(['duck leucro'])
+    end
+
+    it 'still matches the game line when it arrives behind leading tags' do
+      expect(commands_after("<pushBold/>#{sentence}")).to eq(['duck leucro'])
+    end
+
+    it 'accepts every dodge verb the game uses' do
+      %w[dip jump duck lean dive].each do |verb|
+        line = "You believe you could #{verb} out of the way of the leucro, if you act quickly enough."
+        expect(commands_after(line)).to eq(["#{verb} leucro"])
+      end
+    end
+
+    it 'resets the flag so the dodge is sent once' do
+      instance = registered_safety_process
+      sent = []
+      allow(DRC).to receive(:bput) { |command, *_matches| sent << command }
+      deliver(sentence)
+      instance.send(:active_mitigation)
+      instance.send(:active_mitigation)
+      expect(sent).to eq(['duck leucro'])
+      expect(Flags['active-mitigation']).to be_falsey
+    end
+
+    {
+      'ESP'         => %([General][Mallory] "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "You believe you could duck out of the way of the leucro, if you act quickly enough."<popStream/>),
+      'say'         => %(Mallory says, "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'raw say'     => %(<preset id='speech'>Mallory says</preset>, "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'whisper'     => %(Mallory whispers, "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "You believe you could duck out of the way of the leucro, if you act quickly enough.")
+    }.each do |shape, line|
+      it "ignores the sentence inside another player's #{shape}" do
+        instance = registered_safety_process
+        deliver(line)
+        expect(Flags['active-mitigation']).to be_falsey
+        allow(DRC).to receive(:bput)
+        instance.send(:active_mitigation)
+        expect(DRC).not_to have_received(:bput)
+      end
+    end
+
+    it 'sends nothing for a line offering any other verb' do
+      expect(commands_after('You believe you could drop out of the way of the sword, if you act quickly enough.')).to be_empty
+      expect(Flags['active-mitigation']).to be_falsey
+    end
+
+    it 'sends nothing for a non-dodge verb even if the flag is set some other way, and still resets it' do
+      allow(DRC).to receive(:bput)
+      instance = registered_safety_process
+      Flags['active-mitigation'] = /(?<action>\w+) (?<obstacle>\w+)/.match('drop sword')
+      instance.send(:active_mitigation)
+      expect(DRC).not_to have_received(:bput)
+      expect(Flags['active-mitigation']).to be_falsey
+    end
+  end
 end
 
 # ###################################################################
