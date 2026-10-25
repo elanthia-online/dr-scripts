@@ -678,6 +678,106 @@ RSpec.describe Healer do
                      'non-friend lean', 'Stranger leans on you'
   end
 
+  # The DownstreamHook sees every raw server line (XML included), including other
+  # players' ESP, speech and whispers, so requests and the drain message must only
+  # match the game's own line.
+  describe 'line monitor hook' do
+    let(:healer) { build_healer(friends: %w[Tenuk Navesi Emeshest]) }
+
+    before { healer.send(:start_line_monitor) }
+    after { DownstreamHook.remove(healer.instance_variable_get(:@hook_id)) }
+
+    # Runs a raw server line through the registered hooks, as lich-5 does.
+    def deliver(raw)
+      DownstreamHook.run(raw)
+    end
+
+    def esp_xml(text)
+      %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>)
+    end
+
+    def say_xml(text)
+      %(<preset id='speech'>Mallory says</preset>, "#{text}")
+    end
+
+    def whisper_xml(text, who: 'Mallory')
+      %(<pushStream id="whispers"/><preset id="whisper">#{who} whispers,</preset> "#{text}")
+    end
+
+    def player_shapes(text)
+      [esp_xml(text), say_xml(text), whisper_xml(text), "Mallory says, \"#{text}\""]
+    end
+
+    it 'queues a friend from the real whisper, both stream and main-window copies' do
+      deliver(whisper_xml('heal', who: 'Tenuk'))
+      deliver(%(<popStream/><preset id="whisper">Tenuk whispers,</preset> "heal"))
+      expect(healer.patients.keys).to eq([:tenuk])
+    end
+
+    it 'passes every line through unchanged' do
+      line = esp_xml('x Tenuk whispers, "heal')
+      expect(deliver(line)).to eq(line)
+    end
+
+    {
+      'whisper request' => 'x Tenuk whispers, "heal',
+      'lean'            => 'x Navesi leans on you',
+      'offer'           => 'x Emeshest offers you a pack',
+      'gesture'         => 'x Tenuk gestures.',
+      'moongate line'   => 'As your eyes slowly recover, you notice a dazed-looking Navesi'
+    }.each do |what, text|
+      it "does not queue a friend named in another player's #{what}" do
+        player_shapes(text).each { |line| deliver(line) }
+        expect(healer.patients).to be_empty
+      end
+    end
+
+    it 'does not queue a friend from a titled request inside another player\'s quote' do
+      player_shapes('Dark Summoner Tenuk whispers, "heal').each { |line| deliver(line) }
+      deliver('Mallory says, "Dark Summoner Tenuk whispers, \"heal\""')
+      expect(healer.patients).to be_empty
+    end
+
+    it 'still queues friends from the real lean, offer, gesture, moongate and arrival lines' do
+      deliver('Navesi leans on you.')
+      deliver('Emeshest offers you a scuffed traveler\'s pack.  Enter ACCEPT to accept the offer or DECLINE to decline it.  The offer will expire in 30 seconds.')
+      deliver('Tenuk gestures.')
+      expect(healer.patients.keys).to contain_exactly(:navesi, :emeshest, :tenuk)
+
+      healer.clear_queue
+      deliver('As your eyes slowly recover, you notice a dazed-looking Navesi')
+      deliver('Emerald Knight Tenuk just arrived.')
+      expect(healer.patients.keys).to contain_exactly(:navesi, :tenuk)
+    end
+
+    context 'while waiting for the vitality drain to land' do
+      before do
+        healer.add_patient('Tenuk')
+        healer.instance_variable_set(:@vh_available, true)
+        healer.instance_variable_set(:@vh_spell, { name: 'Vitality Healing', mana: 5, cambrinth: [], prep_time: 3 })
+        DRStats.health = 100
+        healer.claim_spell_slot('Tenuk', :vitality)
+        task = healer.instance_variable_get(:@spell_task)
+        task[:phase] = :awaiting_drain
+        task[:drain_sent_at] = Time.now
+        allow(healer).to receive(:fput)
+      end
+
+      it 'casts VH when the game says the drain landed' do
+        deliver('You feel your vitality transferring to Tenuk.')
+        healer.send(:process_vitality_slot)
+        expect(healer).to have_received(:fput).with('cast')
+      end
+
+      it "does not cast VH early on another player's text" do
+        player_shapes('You feel your vitality transferring to Tenuk.').each { |line| deliver(line) }
+        healer.send(:process_vitality_slot)
+        expect(healer).not_to have_received(:fput)
+        expect(healer.instance_variable_get(:@spell_task)[:phase]).to eq(:awaiting_drain)
+      end
+    end
+  end
+
   # ============================================================
   # Parasite Tending (Single Responsibility)
   # ============================================================

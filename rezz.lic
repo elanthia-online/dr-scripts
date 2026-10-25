@@ -26,6 +26,7 @@ class Rezz
 
     args = parse_args(arg_definitions)
     @settings = get_settings
+    @infuse_attempts = 0
     @total_infused = 0
 
     @target = args.player ? DRRoom.pcs.find { |name| /^#{args.player}/i =~ name }.to_a : find_dead

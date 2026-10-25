@@ -9,6 +9,9 @@ Documentation: https://elanthipedia.play.net/Lich_script_repository#burgle
 class Burgle
   # room titles inside a burgled house all look like "[[Someone Else's Home, Library]]"
   ROOM_TITLE_PATTERN = /\[\[Someone Else's Home, (?<room>.*)\]\]/.freeze
+  # Start of the room title line as bput/waitfor see it ("[Someone Else's Home, Kitchen]"); anchored so other
+  # players' speech/ESP doesn't match.
+  ROOM_TITLE_LINE = "^\\[Someone Else's Home"
 
   def initialize
     arg_definitions = [
@@ -106,7 +109,8 @@ class Burgle
 
     # Add flag to watch for warning sign, unless safe mode is turned off - safe_mode is defaulted
     # anywhere this flag is checked, it prevents further actions being taken and should force you out of the house
-    Flags.add('burgle-footsteps', "Footsteps nearby make you wonder if you're pushing your luck.") unless @burgle_settings['safe_mode'] == false
+    # Anchored so it only matches the game's own line, not other players' speech/ESP.
+    Flags.add('burgle-footsteps', /^(?:<[^>]+>)*Footsteps nearby make you wonder if you're pushing your luck\./i) unless @burgle_settings['safe_mode'] == false
 
     # Check minimal yaml settings before starting.  Missing these can lead to staying in the house too long
     # this is not a 100% check.  it is still possible to mess up and get stuck in the house if you're not careful with your settings
@@ -305,14 +309,16 @@ class Burgle
     end
 
     # setup flags for group burgle here
-    Flags.add('group-burgle-disband', 'With aid from your group')
-    Flags.add('group-burgle-leave', 'With aid from his group', 'With aid from her group')
+    # no quote before the phrase: only the game's own line, not other players' speech/ESP
+    Flags.add('group-burgle-disband', /^(?:<[^>]*>|[^"<])*?With aid from your group/i)
+    Flags.add('group-burgle-leave', /^(?:<[^>]*>|[^"<])*?With aid from (?:his|her) group/i)
 
     # match is for room title, so that in rob_the_place the XMLData.room_title is already properly set
+    # (anchored to the start of the room title line, so other players' speech/ESP doesn't match)
     if @follow
-      waitfor("Someone Else's Home")
+      waitfor(ROOM_TITLE_LINE)
     else
-      DRC.bput('burgle', "Someone Else's Home")
+      DRC.bput('burgle', ROOM_TITLE_LINE)
     end
 
     # leave the group/disband so you aren't carried around
@@ -406,14 +412,14 @@ class Burgle
   def get_entry(entry_type)
     case entry_type
     when /rope/i
-      if DRC.bput("get my #{@rope_adjective} rope", 'You get', 'You are already holding', 'What were you') =~ /What were you/
+      if DRC.bput("get my #{@rope_adjective} rope", '^You get', '^You are already holding', '^What were you') =~ /What were you/
         DRC.message("Couldn't find entry item: #{@rope_adjective} rope")
         end_burgle
       end
     when /lockpick/i
       if @use_lockpick_ring
         return
-      elsif DRC.bput('get my lockpick', 'You get', 'You are already holding', 'What were you') =~ /What were you/
+      elsif DRC.bput('get my lockpick', '^You get', '^You are already holding', '^What were you') =~ /What were you/
         DRC.message("Couldn't find entry item: lockpick")
         end_burgle
       end
@@ -612,15 +618,17 @@ class Burgle
   # specialized move routine - sneaks when in hiding, when needed, moves when not to speed up script
   def burgle_move(direction)
     if @stealth_inside && !invisible? && hidden? && @search_count < @burgle_settings['max_search_count'] && !(Flags['burgle-footsteps'])
-      result = DRC.bput("sneak #{direction}", "Someone Else's Home", 'Sneaking is an', "You can't", 'In YOUR condition')
+      result = DRC.bput("sneak #{direction}", ROOM_TITLE_LINE, '^Sneaking is an', "^You can't", '^In YOUR condition')
       return if /Someone Else's Home/ =~ result
     end
-    DRC.bput(direction, "Someone Else's Home") # don't use move as it can cause a race condition with invisibility and blacklisting kitchen
+    DRC.bput(direction, ROOM_TITLE_LINE) # don't use move as it can cause a race condition with invisibility and blacklisting kitchen
   end
 
   # ripped out of steal.lic
   def put_item?(item)
-    case DRC.bput("put my #{item} in my #{@loot_container}", 'What were you', 'You put', 'You drop', "You can't do that", "You can't put that there", 'no matter how you arrange it', 'even after stuffing', 'The .* is *.* too \w+ to fit in', 'There isn\'t any more room', 'perhaps try doing that again', 'That\'s too heavy to go in there', "^Weirdly, you can't manage", "^There's no room")
+    # Every reply is anchored to the game's own line (mid-line ones: no quote before the phrase, \K keeps the
+    # returned text the bare phrase), so other players' speech/ESP doesn't match.
+    case DRC.bput("put my #{item} in my #{@loot_container}", '^What were you', '^You put', '^You drop', "^You can't do that", "^You can't put that there", '^[^"]*?\Kno matter how you arrange it', '^[^"]*?\Keven after stuffing', '^The .* is *.* too \w+ to fit in', '^There isn\'t any more room', '^[^"]*?\Kperhaps try doing that again', '^[^"]*?\KThat\'s too heavy to go in there', "^Weirdly, you can't manage", "^There's no room")
     when 'perhaps try doing that again'
       return put_item?(item)
     when 'You put', 'You drop'
@@ -637,7 +645,7 @@ class Burgle
 
   # ripped out of steal.lic
   def drop_item(item)
-    case DRC.bput("drop my #{item}", 'You drop', 'You spread', 'You wince', 'would damage it', 'smashing it to bits', 'Something appears different about', 'What were you')
+    case DRC.bput("drop my #{item}", '^You drop', '^You spread', '^You wince', '^[^"]*?\Kwould damage it', '^[^"]*?\Ksmashing it to bits', '^Something appears different about', '^What were you')
     when 'would damage it', 'Something appears different about'
       drop_item(item)
     when 'What were you'
@@ -694,11 +702,11 @@ class Burgle
     DRCT.walk_to(@loot_room_id) unless @loot_room_id == nil
 
     @loot_list.each do |item|
-      case DRC.bput("get #{item} from my #{@loot_container}", 'You get', 'What were you referring to?')
+      case DRC.bput("get #{item} from my #{@loot_container}", '^You get', '^What were you referring to?')
       when /^You get/
         case @loot_type
         when 'bin'
-          DRC.bput("put #{item} in bin", 'nods toward you as your .* falls into the .* bin')
+          DRC.bput("put #{item} in bin", '^[^"]*?nods toward you as your .* falls into the .* bin')
         when 'pawn'
           pawn_item(item)
         when 'drop'

@@ -126,8 +126,8 @@ RSpec.describe Rezz do
 
   def run_rezz
     rezz = Rezz.allocate
-    rezz.instance_variable_set(:@infuse_attempts, 0) # nil + 1 is masked by Lich's NilClass patch
     rezz.define_singleton_method(:checkprep) { 'None' }
+    yield rezz if block_given?
     rezz.send(:initialize)
     arrive_late
     rezz
@@ -200,6 +200,23 @@ RSpec.describe Rezz do
       run_rezz
       expect(commands.count('infuse rezz 40')).to eq(2)
       expect(casts.last(2)).to eq(%w[sb rejuv])
+    end
+
+    # keep_going? reads the answer with `line = get until line.strip ...`,
+    # which only runs under Lich's NilClass patch (nil.strip), so the prompt
+    # is replaced by one that records the count it would show and gives up.
+    it 'counts the infuses before asking whether to keep searching' do
+      replies['infuse rezz 40'] = Array.new(15) { [not_found_line] }
+      counts = []
+      run_rezz do |rezz|
+        allow(rezz).to receive(:keep_going?) do
+          counts << rezz.instance_variable_get(:@infuse_attempts)
+          false
+        end
+      end
+      expect(commands.count('infuse rezz 40')).to eq(15)
+      expect(counts).to eq([15])
+      expect(commands.last).to eq("whisper #{victim} I can't find your soul.  You need more favors!")
     end
 
     it 'announces a body too broken to raise' do

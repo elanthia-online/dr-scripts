@@ -159,7 +159,7 @@ class Shape
     Flags.reset('shaping-assembly')
     DRCC.get_crafting_item(part, @bag, @bag_items, @belt)
     DRC.bput("assemble my #{@noun} with my #{part}", 'affix it securely in place', 'loop both ends', 'loop the string', 'carefully mark where it will attach when you continue crafting', 'add several marks indicating optimal locations')
-    if ['long.pole', 'short.pole'].include?(part)
+    if ['long pole', 'short pole'].include?(part)
       3.times do
         DRCC.get_crafting_item(part, @bag, @bag_items, @belt)
         DRC.bput("assemble my #{@noun} with my #{part}", 'affix it securely in place', 'loop both ends', 'loop the string', 'carefully mark where it will attach when you continue crafting', 'add several marks indicating optimal locations')
