@@ -1726,12 +1726,15 @@ RSpec.describe Sew do
         '<pushBold/>Applying the final touches, you complete working on a burlap rucksack.',
         'The burlap rucksack shows improved protection.',
         'The burlap rucksack shows a slightly reduced weight.',
-        'You realize that cannot be repaired, and stop.'
+        'You realize that cannot be repaired, and stop.',
+        # Lich prepends this tag to the line after an atmospherics push.
+        '<popStream id="atmospherics" />You realize that cannot be repaired, and stop.'
       ]
       done_phrases = [
         'Applying the final touches, you complete working on a burlap rucksack.',
         'The burlap rucksack shows improved protection.',
-        'The burlap rucksack shows a slightly reduced weight.'
+        'The burlap rucksack shows a slightly reduced weight.',
+        'You realize that cannot be repaired, and stop.'
       ]
 
       real_done_lines.each do |line|

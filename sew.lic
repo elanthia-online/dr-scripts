@@ -90,7 +90,7 @@ class Sew
               /#{NO_QUOTE}The #{NO_QUOTE_RUN} shows improved/i,
               /#{LINE_START}Applying the final touches/i,
               /#{NO_QUOTE}The #{NO_QUOTE_RUN} shows a slightly reduced weight/i,
-              /^You realize that cannot be repaired, and stop/)
+              /#{LINE_START}You realize that cannot be repaired, and stop/)
     Flags.add('sew-rental-warning', /#{NO_QUOTE}Your rental time is almost up/i)
 
     if args.resume
