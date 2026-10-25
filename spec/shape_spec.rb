@@ -174,6 +174,7 @@ RSpec.describe Shape do
         'You need another bone, wood or horn backing material to continue crafting.'                  => 'backer',
         'You need another finished bow string to continue crafting.'                                  => 'string',
         'You need another finished long wooden pole to continue crafting.'                            => 'long pole',
+        'You need another finished short wooden pole to continue crafting.'                           => 'short pole',
         'You need another finished leather strips to continue crafting.'                              => 'leather strips',
         'You need another finished short leather cord to continue crafting.'                          => 'short cord',
         'You must assemble the backer before you can continue.'                                       => 'backer',
@@ -194,12 +195,16 @@ RSpec.describe Shape do
       end
 
       real_parts.each do |line, part|
-        it "assembles the #{part} on the game's line: #{line}" do
+        # Tables take four legs (base-recipes: four long or short poles), and
+        # the game asks for the first one only.
+        times = part.end_with?(' pole') ? 4 : 1
+
+        it "assembles the #{part} #{times}x on the game's line: #{line}" do
           crafter
           deliver(line)
 
-          expect(assembly_commands).to eq(["assemble my bow with my #{part}"])
-          expect(DRCC).to have_received(:get_crafting_item).with(part, nil, nil, nil)
+          expect(assembly_commands).to eq(["assemble my bow with my #{part}"] * times)
+          expect(DRCC).to have_received(:get_crafting_item).with(part, nil, nil, nil).exactly(times).times
         end
       end
 
