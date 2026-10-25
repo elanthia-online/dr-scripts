@@ -13,6 +13,15 @@ class Sew
     'titanese', 'zenganne'
   ].freeze
 
+  # Flags see every server line, other players' speech, whispers and ESP
+  # included, and those always have a double quote before the spoken text.
+  # LINE_START: the game's message starts the line (leading tags allowed).
+  # NO_QUOTE: the message may follow other text, but no double quote outside
+  # a tag. NO_QUOTE_RUN stands in for '.*' inside a message.
+  LINE_START = '^(?:<[^>]+>)*'
+  NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
+  NO_QUOTE_RUN = '(?:<[^>]*>|[^"<])*'
+
   def initialize
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
@@ -70,9 +79,19 @@ class Sew
 
     DRC.wait_for_script_to_complete('buff', ['sew'])
 
-    Flags.add('sew-assembly', 'ready to be .* with some (small|large) cloth (padding)', 'another finished \S+ shield (handle)', 'another finished wooden (hilt|haft)', 'another finished (long|short|small|large) leather (cord|backing)', 'another finished (small|large) cloth (padding)', 'another finished (long|short) wooden (pole)')
-    Flags.add('sew-done', 'The .* shows improved', 'Applying the final touches', 'The .* shows a slightly reduced weight', /^You realize that cannot be repaired, and stop/)
-    Flags.add('sew-rental-warning', 'Your rental time is almost up')
+    Flags.add('sew-assembly',
+              /#{NO_QUOTE}ready to be #{NO_QUOTE_RUN} with some (small|large) cloth (padding)/i,
+              /#{NO_QUOTE}another finished \S+ shield (handle)/i,
+              /#{NO_QUOTE}another finished wooden (hilt|haft)/i,
+              /#{NO_QUOTE}another finished (long|short|small|large) leather (cord|backing)/i,
+              /#{NO_QUOTE}another finished (small|large) cloth (padding)/i,
+              /#{NO_QUOTE}another finished (long|short) wooden (pole)/i)
+    Flags.add('sew-done',
+              /#{NO_QUOTE}The #{NO_QUOTE_RUN} shows improved/i,
+              /#{LINE_START}Applying the final touches/i,
+              /#{NO_QUOTE}The #{NO_QUOTE_RUN} shows a slightly reduced weight/i,
+              /^You realize that cannot be repaired, and stop/)
+    Flags.add('sew-rental-warning', /#{NO_QUOTE}Your rental time is almost up/i)
 
     if args.resume
       Lich::Messaging.msg('plain', "Resuming work on #{@noun} (finish mode: #{@finish}).")

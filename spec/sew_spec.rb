@@ -1655,6 +1655,154 @@ RSpec.describe Sew do
     end
   end
 
+  # ===========================================================================
+  # Flags matchers -- only the game's own lines, not other players' text
+  # ===========================================================================
+  describe 'flag matchers registered by #initialize' do
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # The line shapes other players' text arrives in: ESP, say and whisper,
+    # as stripped text and as the raw XML the Flags see.
+    def player_shapes(text)
+      [
+        %([General][Mallory] "#{text}"),
+        %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        %(Mallory says, "#{text}"),
+        %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        %(Mallory whispers, "#{text}"),
+        %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)
+      ]
+    end
+
+    let(:sent) { [] }
+
+    before(:each) do
+      $test_settings = OpenStruct.new(hometown: 'Crossing', crafting_training_spells: [])
+      $test_data = OpenStruct.new(crafting: { 'tailoring' => { 'Crossing' => { 'tool-room' => 1, 'stock-room' => 2 } } })
+      $parsed_args = OpenStruct.new(finish: 'trash', type: 'sewing', chapter: '2', recipe_name: +'rucksack',
+                                    material: 'burlap', noun: 'rucksack', skip: 'skip')
+      allow(sew).to receive(:prep).and_return('push my rucksack with my needles')
+      allow(sew).to receive(:check_rental_status)
+      allow(sew).to receive(:work)
+      sew.send(:initialize)
+      allow(sew).to receive(:work).and_call_original
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+    end
+
+    # Runs the craft loop: `heard` arrives during the first push, the second
+    # push returns Roundtime too, and the third ends the loop.
+    def run_work(heard)
+      pushes = 0
+      allow(DRC).to receive(:bput) do |command, *_matches|
+        sent << command
+        next 'You put' unless command.start_with?('push my rucksack')
+
+        pushes += 1
+        raise StopIteration if pushes > 2
+
+        deliver(heard) if pushes == 1
+        'Roundtime: 5 sec.'
+      end
+      sew.send(:work, 'push my rucksack with my needles')
+      :kept_working
+    rescue SystemExit
+      :finished
+    end
+
+    describe "'sew-done'" do
+      real_done_lines = [
+        'Applying the final touches, you complete working on a burlap rucksack.',
+        '<pushBold/>Applying the final touches, you complete working on a burlap rucksack.',
+        'The burlap rucksack shows improved protection.',
+        'The burlap rucksack shows a slightly reduced weight.',
+        'You realize that cannot be repaired, and stop.'
+      ]
+      done_phrases = [
+        'Applying the final touches, you complete working on a burlap rucksack.',
+        'The burlap rucksack shows improved protection.',
+        'The burlap rucksack shows a slightly reduced weight.'
+      ]
+
+      real_done_lines.each do |line|
+        it "finishes and disposes of the item on the game line: #{line}" do
+          expect(DRCI).to receive(:dispose_trash).with('rucksack', nil, nil)
+
+          expect(run_work(line)).to eq(:finished)
+        end
+      end
+
+      done_phrases.each do |phrase|
+        it "keeps crafting when other players' text carries: #{phrase}" do
+          expect(DRCI).not_to receive(:dispose_trash)
+
+          player_shapes(phrase).each { |line| expect(run_work(line)).to eq(:kept_working) }
+          expect(Flags['sew-done']).to be(false)
+        end
+      end
+
+      it 'finishes when the game line follows a player line in the same chunk' do
+        expect(DRCI).to receive(:dispose_trash).with('rucksack', nil, nil)
+
+        chunk = %(Mallory says, "nearly there"\r\nApplying the final touches, you complete working on a burlap rucksack.)
+        expect(run_work(chunk)).to eq(:finished)
+      end
+    end
+
+    describe "'sew-assembly'" do
+      real_assembly_lines = {
+        'You need another finished small cloth padding to continue crafting a burlap rucksack.'          => 'small padding',
+        'The burlap rucksack is ready to be lined with some large cloth padding.'                        => 'large padding',
+        'You need another finished target shield handle to continue crafting a burlap rucksack.'         => 'handle',
+        'You need another finished wooden hilt to continue crafting a burlap rucksack.'                  => 'hilt',
+        '<pushBold/>You need another finished long leather cord to continue crafting a burlap rucksack.' => 'long cord',
+        'You need another finished short wooden pole to continue crafting a burlap rucksack.'            => 'short pole'
+      }
+
+      real_assembly_lines.each do |line, part|
+        it "assembles '#{part}' on the game line: #{line}" do
+          run_work(line)
+
+          expect(sent).to include("assemble my rucksack with my #{part}")
+        end
+      end
+
+      real_assembly_lines.each_key.map { |line| line.delete_prefix('<pushBold/>') }.each do |phrase|
+        it "assembles nothing when other players' text carries: #{phrase}" do
+          player_shapes(phrase).each { |line| run_work(line) }
+
+          expect(sent.grep(/^assemble/)).to be_empty
+          expect(Flags['sew-assembly']).to be(false)
+        end
+      end
+    end
+
+    describe "'sew-rental-warning'" do
+      it 'renews the rental on the game line' do
+        run_work('Your rental time is almost up.')
+
+        expect(sent).to include('mark notice')
+      end
+
+      it "does not renew when other players' text carries the warning" do
+        player_shapes('Your rental time is almost up.').each { |line| run_work(line) }
+
+        expect(sent).not_to include('mark notice')
+        expect(Flags['sew-rental-warning']).to be(false)
+      end
+    end
+  end
+
   describe 'CLOTH' do
     it 'includes both bare imperial and imperial weave' do
       expect(Sew::CLOTH).to include('imperial', 'imperial weave')
