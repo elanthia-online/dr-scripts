@@ -508,7 +508,8 @@ RSpec.describe SafeRoom do
       "You're in good enough shape, Testchar", 'Gaktrhn bends down as if to touch you', 'After a quick diagnosis',
       'Kaiva crosses your name off the waiting list',
       # The healer named inside another player's quote.
-      'Quentin says, "go have yourself a birthday party"', 'Yolesi says, "Up and out!"'
+      'Quentin says, "go have yourself a birthday party"', 'Yolesi says, "Up and out!"',
+      'Martyr Saedelthorp says, "you are well"', 'The apprentice Kaiva crosses your name off the waiting list'
     ]
 
     # Runs wait_for_healing and delivers heard[n] during the nth pause.
@@ -532,6 +533,36 @@ RSpec.describe SafeRoom do
       it "leaves the queue on the healer's line: #{line[0, 60]}" do
         expect(pauses_in_queue({ 1 => line })).to eq(1)
         expect($stopped_scripts).to include('tendme')
+      end
+    end
+
+    # The game sometimes puts the healer's title before the name: the Crossing
+    # hospital lists "Martyr Saedelthorp" and "the apprentice Kaiva", and Dokt
+    # answers questions as "Bioalchemist Dokt" (Elanthipedia).
+    titled_healer_lines = [
+      'Martyr Saedelthorp says, "I sense you are well."',
+      'The apprentice Kaiva crosses your name off the waiting list.',
+      'Apprentice Kaiva crosses your name off the waiting list.',
+      'Bioalchemist Dokt waves a large hand at you and says, "You look fine to me."',
+      'Healer Adept Onsuwayo says, "Up and out!"',
+      'Lady Atladene says, "There is nothing I can do for you."'
+    ]
+
+    titled_healer_lines.each do |line|
+      it "leaves the queue on the healer's line with a title: #{line[0, 60]}" do
+        expect(pauses_in_queue({ 1 => line })).to eq(1)
+      end
+    end
+
+    # Another player addressing a titled healer: the healer's name follows the
+    # player's name and verb, so it is not the healer's own line.
+    [
+      'Mallory asks Kaiva, "Am I up and out?"',
+      'Mallory says to Martyr Saedelthorp, "I hope you are well."',
+      'Mallory asks the apprentice Kaiva, "Have other patients?"'
+    ].each do |line|
+      it "stays in the queue when another player addresses a titled healer: #{line[0, 50]}" do
+        expect(pauses_in_queue({ 1 => line, 3 => 'Kaiva crosses your name off the waiting list.' })).to eq(3)
       end
     end
 

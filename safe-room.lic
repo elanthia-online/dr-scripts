@@ -12,8 +12,12 @@ class SafeRoom
   NO_QUOTE_BEFORE = '^(?:<[^>]*>|[^"<])*?'
   # NPC hospital healers (plus Dokt, the former Knife Clan healer).
   NPC_HEALERS = %w[Amrillora Arthianna Atladene Dokt Elys Fraethis Gaktrhn Kaiva Mirinn Onsuwayo Quentin Saedelthorp Shalvard Srela Tanalae Yolesi Yrisa].freeze
+  # The game sometimes puts a healer's title before the name ("Martyr Saedelthorp",
+  # "the apprentice Kaiva", "Bioalchemist Dokt"). Only these known titles are
+  # allowed, so "Mallory asks Kaiva" still does not count as the healer's line.
+  NPC_TITLE = '(?i:(?:the )?(?:Apprentice|Bioalchemist|Healer Adept|Lady|Martyr) )?'
   # Start of a line in which a healer NPC is speaking: the text after it is in the healer's quote.
-  NPC_HEALER_SAYS = "#{LINE_START}(?:#{NPC_HEALERS.join('|')})\\b[^\"\\n]*\"[^\"\\n]*".freeze
+  NPC_HEALER_SAYS = "#{LINE_START}#{NPC_TITLE}(?:#{NPC_HEALERS.join('|')})\\b[^\"\\n]*\"[^\"\\n]*".freeze
 
   def initialize
     arg_definitions = [
@@ -103,13 +107,13 @@ class SafeRoom
   def npc_healthy_matchers(name)
     you = Regexp.quote(name)
     [
-      /#{LINE_START}Dokt waves a large hand at you/i,
+      /#{LINE_START}#{NPC_TITLE}Dokt waves a large hand at you/i,
       /^The last of your wounds knit shut/,
-      /#{LINE_START}Dokt gives you a quick glance/i,
+      /#{LINE_START}#{NPC_TITLE}Dokt gives you a quick glance/i,
       /#{NPC_HEALER_SAYS}go have yourself a birthday party/i,
       /#{NPC_HEALER_SAYS}you are well/i,
       /#{NPC_HEALER_SAYS}have other patients/i,
-      /#{LINE_START}Arthianna says "#{you}, you look fine and healthy to me/,
+      /#{LINE_START}#{NPC_TITLE}Arthianna says "#{you}, you look fine and healthy to me/,
       /#{NPC_HEALER_SAYS}A little rest and exercise/i,
       /#{NPC_HEALER_SAYS}There is nothing I can do for you/i,
       /#{NPC_HEALER_SAYS}Up and out/i,
@@ -118,9 +122,9 @@ class SafeRoom
       /#{NPC_HEALER_SAYS}I think you don't really need healing/i,
       /#{NPC_HEALER_SAYS}Now move along, I can't do anything more for you now/i,
       /#{NPC_HEALER_SAYS}You're in good enough shape, #{you}/i,
-      /#{LINE_START}Gaktrhn bends down as if to touch you/i,
+      /#{LINE_START}#{NPC_TITLE}Gaktrhn bends down as if to touch you/i,
       /#{NO_QUOTE_BEFORE}After a quick diagnosis/i,
-      /#{LINE_START}Kaiva crosses your name off the waiting list/i
+      /#{LINE_START}#{NPC_TITLE}Kaiva crosses your name off the waiting list/i
     ]
   end
 
