@@ -1082,4 +1082,165 @@ RSpec.describe Forge do
       expect(forge_instance.send(:private_forge_cost, OpenStruct.new)).to eq(50_000)
     end
   end
+
+  # lich-5 tests every Flags matcher against every raw (XML) game line, other
+  # players' speech, whispers and ESP included, and these flags are never reset
+  # during a craft. Lines are fed through the matchers the way
+  # DRParser.check_events does.
+  describe 'Flags matchers (game lines only)' do
+    let(:forge_instance) { Forge.allocate }
+    let(:flag_keys) { %w[forge-assembly work-done ingot-restow forge-rental-warning] }
+
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # Player-written line shapes, plain (stripped) and raw XML.
+    def player_shapes(text)
+      [
+        %([General][Mallory] "#{text}"),
+        %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        %(Mallory says, "#{text}"),
+        %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        %(Mallory whispers, "#{text}"),
+        %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)
+      ]
+    end
+
+    before do
+      forge_instance.instance_variable_set(:@debug, false)
+      forge_instance.instance_variable_set(:@bag, 'backpack')
+      forge_instance.instance_variable_set(:@forging_belt, nil)
+      forge_instance.instance_variable_set(:@item, 'sword')
+      forge_instance.instance_variable_set(:@hammer, 'forging hammer')
+      forge_instance.instance_variable_set(:@home_tool, 'forging hammer')
+      forge_instance.instance_variable_set(:@home_command, 'pound sword on anvil with my forging hammer')
+      forge_instance.instance_variable_set(:@adjustable_tongs, false)
+      forge_instance.instance_variable_set(:@bag_items, [])
+      forge_instance.instance_variable_set(:@stamp, false)
+      forge_instance.instance_variable_set(:@finish, 'trash')
+      forge_instance.send(:setup_flags)
+    end
+
+    after { flag_keys.each { |key| Flags.delete(key) } }
+
+    describe 'work-done' do
+      let(:real_lines) do
+        [
+          'Applying the final touches, you complete working on a steel sword.',
+          '<pushBold/>Applying the final touches, you complete working on a steel sword.',
+          'The steel sword was successfully balanced.',
+          'The steel sword glows from the successful tempering process.',
+          'The steel sword shows a slightly reduced weight.',
+          'The steel shield shows improved protection.'
+        ]
+      end
+      let(:messages) do
+        ['Applying the final touches, you complete working on a steel sword.', 'The steel sword was successfully balanced.',
+         'from the successful tempering process', 'shows a slightly reduced weight', 'shows improved protection']
+      end
+
+      # Runs the Roundtime branch; returns the items disposed (finish=trash)
+      # if it finished the craft, nil if it kept working.
+      def finish_after_roundtime
+        disposed = []
+        allow(forge_instance).to receive(:waitrt?)
+        allow(forge_instance).to receive(:swap_tool)
+        allow(forge_instance).to receive(:magic_cleanup)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCC).to receive(:get_adjust_tongs?)
+        allow(DRCI).to receive(:dispose_trash) { |item| disposed << item }
+        $right_hand = 'forging hammer'
+        forge_instance.send(:handle_roundtime)
+        expect(disposed).to be_empty
+        nil
+      rescue SystemExit
+        disposed
+      end
+
+      it 'finishes the item on each real completion line' do
+        real_lines.each do |line|
+          Flags.reset('work-done')
+          deliver(line)
+          expect(finish_after_roundtime).to eq(['sword']), "expected finish on: #{line}"
+        end
+      end
+
+      it 'keeps working when the completion text is in speech, whispers or ESP' do
+        messages.flat_map { |m| player_shapes(m) }.each do |line|
+          Flags.reset('work-done')
+          deliver(line)
+          expect(Flags['work-done']).to be(false), "flag set by: #{line}"
+          expect(finish_after_roundtime).to be_nil
+        end
+      end
+    end
+
+    describe 'forge-assembly' do
+      let(:real_parts) do
+        {
+          'You need another finished steel shield handle to continue crafting the sword.' => 'handle',
+          'You need another finished wooden hilt to continue crafting the sword.'         => 'hilt',
+          'You need another finished long leather cord to continue crafting the sword.'   => 'long cord',
+          'You need another finished small cloth padding to continue crafting the sword.' => 'small padding',
+          'You need another finished short wooden pole to continue crafting the sword.'   => 'short pole',
+          'The sword appears ready to be reinforced with some leather strips.'            => 'leather strips'
+        }
+      end
+
+      def assembled_part
+        part = nil
+        $right_hand = nil
+        allow(DRCI).to receive(:get_item?) { |name| part = name }
+        allow(DRC).to receive(:bput).and_return('affix it securely in place')
+        forge_instance.send(:assemble_part)
+        part
+      end
+
+      it 'fetches the same part as before for each real assembly line' do
+        real_parts.each do |line, part|
+          Flags.reset('forge-assembly')
+          deliver(line)
+          expect(assembled_part).to eq(part), "wrong part for: #{line}"
+        end
+      end
+
+      it 'does not assemble when the assembly text is in speech, whispers or ESP' do
+        real_parts.keys.flat_map { |line| player_shapes(line) }.each do |line|
+          Flags.reset('forge-assembly')
+          deliver(line)
+          expect(Flags['forge-assembly']).to be(false), "flag set by: #{line}"
+          expect(assembled_part).to be_nil
+        end
+      end
+    end
+
+    describe 'ingot-restow and forge-rental-warning' do
+      let(:restow_line) { "You realize the sword will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your pack." }
+      let(:rental_line) { 'Your rental time is almost up.' }
+
+      it 'sets both flags from the real lines with the same capture' do
+        ["<pushBold/>#{restow_line}", restow_line].each do |line|
+          Flags.reset('ingot-restow')
+          deliver(line)
+          expect(Flags['ingot-restow'][1]).to eq('pack')
+        end
+        deliver(rental_line)
+        expect(Flags['forge-rental-warning']).to be_truthy
+      end
+
+      it 'ignores both lines in speech, whispers or ESP' do
+        (player_shapes(restow_line) + player_shapes(rental_line)).each { |line| deliver(line) }
+        expect(Flags['ingot-restow']).to be(false)
+        expect(Flags['forge-rental-warning']).to be(false)
+      end
+    end
+  end
 end

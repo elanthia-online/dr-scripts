@@ -288,8 +288,8 @@ class Trade
     take_caravan_to(DRCT.tag_to_id('caravan_stable'))
     store_item_in_box('balsa lumber') if @caravan_training_skills.include?('Engineering') && DRCI.exists?('balsa lumber')
     store_item_in_box(@outfitting_material_type) if @caravan_training_skills.include?('Outfitting') && DRCI.exists?(@outfitting_material_type)
-    /(\d+) (Kronars|Lirums|Dokoras) for a caravan/ =~ DRC.bput('pay', 'The cost for stabling .*')
-    case DRC.bput("pay #{Regexp.last_match(1)}", 'The price for stabling and feeding .*', 'stable.+ who runs up and leads your caravan')
+    /(\d+) (Kronars|Lirums|Dokoras) for a caravan/ =~ DRC.bput('pay', '^The cost for stabling .*')
+    case DRC.bput("pay #{Regexp.last_match(1)}", '^The price for stabling and feeding .*', /^[^"]*?stable.+ who runs up and leads your caravan/i)
     when /The price for stabling and feeding/
       DRC.beep
       DRC.message('Something has gone wrong!  Put in an issue at https://github.com/elanthia-online/dr-scripts/issues/new with a log of this event!')
@@ -852,7 +852,7 @@ class Trade
   # @param container [String] noun of the worn contract container to search
   # @return [Array<String>] descriptions of the contracts found (empty if none)
   def find_contracts(container)
-    result = DRC.bput("look in my #{container}", 'That is closed', 'you see .*', 'While it\'s closed', 'I could not find', 'There is nothing')
+    result = DRC.bput("look in my #{container}", '^That is closed', /^[^"]*?you see .*/i, '^While it\'s closed', '^I could not find', '^There is nothing')
     case result
     when 'That is closed'
       fput("open my #{container}")
@@ -863,7 +863,7 @@ class Trade
   end
 
   def count_grass # sets @current_grass_count of grass in feedbag
-    result = DRC.bput('look in my feedbag', 'That is closed', 'you see .*', 'While it\'s closed', 'I could not find', 'There is nothing', 'Maybe if you')
+    result = DRC.bput('look in my feedbag', '^That is closed', /^[^"]*?you see .*/i, '^While it\'s closed', '^I could not find', '^There is nothing', '^Maybe if you')
     case result
     when 'That is closed', 'Maybe if you'
       fput('open my feedbag')
@@ -985,13 +985,13 @@ class Trade
   def ride_gondola
     mode = 'south' if Room.current.id == 2249
     mode = 'north' if Room.current.id == 2904
-    Flags.add('trade-gondola-arrive', 'The gondola stops on the platform and the door silently swings open', 'With a soft bump, the gondola comes to a stop at its destination')
+    Flags.add('trade-gondola-arrive', /^(?:<[^>]+>)*The gondola stops on the platform and the door silently swings open/i, /^(?:<[^>]+>)*With a soft bump, the gondola comes to a stop at its destination/i)
     @caravan_being_led = true
     wipe_bescort_skills
     Flags.reset('caravan-arrived')
     case DRC.bput('go gondola', 'There is no wooden gondola here', 'Gondola, Cab')
     when /no wooden gondola here/i
-      waitfor 'The gondola stops on the platform and the door silently swings open'
+      waitfor '^The gondola stops on the platform and the door silently swings open'
       until Flags['trade-gondola-arrive']
         pause 1.5
         lead_training
@@ -1370,7 +1370,7 @@ class Trade
       'The shipment clerk shakes his head'
     ]
     current_town = find_town(Room.current.id).split.first
-    until DRC.bput("get my #{current_town} contract from my #{@contract_container}", 'You get', 'What were you') == 'What were you'
+    until DRC.bput("get my #{current_town} contract from my #{@contract_container}", '^You get', '^What were you') == 'What were you'
       case DRC.bput('give my contract to clerk', clerk_messages)
       when 'What have you done with the goods'
         # Potential to do an immediate parse_contract and force_contract_from that town to 1 so you don't go back there for nothing.
@@ -1494,7 +1494,9 @@ class Trade
     DRC.bput("look #{@caravan.adjective} #{@caravan.noun}", 'You tell the driver', 'I could not find', 'There is nothing', 'You carefully go over')
     pause 1
     text = reget(10)
-    text.delete_if { |item| !item.include?('sturdy crate') }
+    # Only the game's own crate lines count, not another player's speech or ESP
+    # (every such line has a quote before its text), so the ordinal stays right.
+    text.delete_if { |item| item !~ /^[^"]*?sturdy crate/ }
     text.each_with_index do |crate, index|
       next unless crate =~ /from.* #{origin_town} and destined for/
 
@@ -1508,7 +1510,7 @@ class Trade
     clerk_id = find_closest_id('shipment_clerk')
     DRCT.walk_to(clerk_id)
     DRC.bput('get my contract', 'You get', 'You are already holding that')
-    Flags.add('caravan-upgrade', /Unfortunately, this load would kill/)
+    Flags.add('caravan-upgrade', /^(?:<[^>]+>)*Unfortunately, this load would kill/)
     DRC.bput('give my contract to clerk', /The .* clerk accepts your contract and peruses it\./)
     get_caravan if Flags['caravan-upgrade']
     DRC.bput("put my contract in my #{@contract_container}", 'You put')
@@ -1748,7 +1750,7 @@ class Trade
     be_outside_caravan # can't pick inside a caravan because reasons
 
     if @box
-      Flags.add('lockbox-done', 'The lock feels warm')
+      Flags.add('lockbox-done', /^(?:<[^>]*>|[^"<])*?The lock feels warm/i)
       start_script('lockbox')
     else
       echo '***UNABLE TO TRAIN LOCKSMITHING, REMOVING IT FROM THE TRAINING LIST***'
@@ -1774,18 +1776,18 @@ class Trade
   def loot_item(item, box) # stolen from pick
     return if item =~ /fragment/i
 
-    message = DRC.bput("get #{item} from my #{box}", 'You get .* from inside', 'You pick up')
+    message = DRC.bput("get #{item} from my #{box}", '^You get .* from inside', '^You pick up')
     return if message == 'You pick up'
 
     message =~ /You get (.*) from inside/
     item_long = Regexp.last_match(1)
     special = @settings.loot_specials.find { |x| /\b#{x['name']}\b/i =~ item_long }
     if special
-      DRC.bput("put #{item} in my #{special['bag']}", 'you put')
+      DRC.bput("put #{item} in my #{special['bag']}", '^you put')
       return
     end
     if @loot_nouns.find { |thing| item_long.include?(thing) && !item_long.include?('sunstone runestone') }
-      message = DRC.bput("stow my #{item}", 'You put', 'You open', 'You think the .* pouch is too full to fit', 'You\'d better tie it up before putting')
+      message = DRC.bput("stow my #{item}", '^You put', '^You open', '^You think the .* pouch is too full to fit', '^You\'d better tie it up before putting')
       return if ['You put', 'You open'].include?(message)
 
       fput("drop #{item}")
@@ -1823,7 +1825,7 @@ class Trade
     stop_script('pick') if Script.running?('pick')
     waitrt?
     if @box && @worn_lockbox && DRCI.in_hands?(@box)
-      DRC.bput("pick my #{@box}", 'not making any progress', 'it opens.', "isn't locked", 'The lock feels warm', 'But you aren\'t')
+      DRC.bput("pick my #{@box}", /^[^"]*?not making any progress/i, /^[^"]*?it opens\./i, /^[^"]*?isn't locked/i, /^[^"]*?The lock feels warm/i, '^But you aren\'t')
       DRC.bput("open my #{@box}", 'You open', 'It is locked')
       DRC.bput("wear my #{@box}", 'You put', 'You sling', 'You are already')
     else
@@ -1844,9 +1846,9 @@ class Trade
   end
 
   def get_grass
-    case DRC.bput('get my grass from my feedbag', 'You get', 'What were you')
+    case DRC.bput('get my grass from my feedbag', '^You get', '^What were you')
     when 'What were you'
-      DRC.bput('get my grass from my feedbag', 'You get', 'What were you')
+      DRC.bput('get my grass from my feedbag', '^You get', '^What were you')
     end
     @current_grass_count -= 1
   end
@@ -1946,10 +1948,10 @@ class Trade
   def buy_cloth(crafting_data)
     count_materials('burlap cloth')
     if @current_materials[@outfitting_material_type] < @outfitting_quantity
-      existing = if DRC.bput("get burlap cloth from my #{@craft_bag}", 'What were', 'You get') == 'What were'
+      existing = if DRC.bput("get burlap cloth from my #{@craft_bag}", '^What were', '^You get') == 'What were'
                    0
                  else
-                   while DRC.bput("get burlap cloth from my #{@craft_bag}", 'What were', 'You get') == 'You get'
+                   while DRC.bput("get burlap cloth from my #{@craft_bag}", '^What were', '^You get') == 'You get'
                      DRC.bput('combine burlap cloth with burlap cloth', 'You combine')
                    end
                    count_materials('burlap cloth')
@@ -2068,7 +2070,7 @@ class Trade
     echo @crafted_item
     recipe = DRCC.recipe_lookup(recipes, @crafted_item)
 
-    if /unfinished/ =~ DRC.bput("tap my #{@crafted_item.split.last} in my #{@craft_bag}", 'You tap .*', 'I could not find')
+    if /unfinished/ =~ DRC.bput("tap my #{@crafted_item.split.last} in my #{@craft_bag}", '^You tap .*', '^I could not find')
       DRC.bput("get my #{@crafted_item.split.last} from my #{@craft_bag}", 'You get', 'What were', 'But that')
       pause 2 if Script.running?('bescort')
       if DRCI.in_hands?(@crafted_item.split.last)
@@ -2106,7 +2108,7 @@ class Trade
       stow_item(DRC.left_hand) if DRC.left_hand
       open_storage_box
       suffix = "in my #{@craft_bag}" unless DRCI.in_hands?(@crafted_item.split.last)
-      case DRC.bput("tap my #{@crafted_item.split.last} #{suffix}", 'unfinished', "You tap .* #{@crafted_item.split.last}", 'I could not find')
+      case DRC.bput("tap my #{@crafted_item.split.last} #{suffix}", /^[^"]*?unfinished/i, "^You tap .* #{@crafted_item.split.last}", '^I could not find')
       when /unfinished/
         get_item(@crafted_item.split.last) if suffix
         stow_item(@crafted_item.split.last)
@@ -2163,14 +2165,14 @@ class Trade
     end
 
     if DRC.left_hand.include?(@crafted_item.split.last) || DRC.right_hand.include?(@crafted_item.split.last)
-      if /unfinished/ =~ DRC.bput("tap my #{@crafted_item.split.last}", 'unfinished', "You tap .* #{@crafted_item.split.last}", 'I could not find')
+      if /unfinished/ =~ DRC.bput("tap my #{@crafted_item.split.last}", /^[^"]*?unfinished/i, "^You tap .* #{@crafted_item.split.last}", '^I could not find')
         stow_item(@crafted_item.split.last)
       else
         dispose_item_caravan(@crafted_item.split.last)
       end
     end
 
-    if /unfinished/ =~ DRC.bput("tap my #{@crafted_item.split.last} in my #{@craft_bag}", 'unfinished', 'You tap .*', 'I could not find')
+    if /unfinished/ =~ DRC.bput("tap my #{@crafted_item.split.last} in my #{@craft_bag}", /^[^"]*?unfinished/i, '^You tap .*', '^I could not find')
       DRC.bput("get my #{@crafted_item.split.last} from my #{@craft_bag}", 'You get', 'What were', 'But that')
       pause 2 if Script.running?('bescort')
       if DRCI.in_hands?(@crafted_item.split.last)
@@ -2203,7 +2205,7 @@ class Trade
     pause 1
     stow_item(DRC.right_hand) if DRC.right_hand
     suffix = "in my #{@craft_bag}" unless DRCI.in_hands?(@crafted_item.split.last)
-    case DRC.bput("tap my #{@crafted_item.split.last} #{suffix}", 'unfinished', "You tap .* #{@crafted_item.split.last}", 'I could not find')
+    case DRC.bput("tap my #{@crafted_item.split.last} #{suffix}", /^[^"]*?unfinished/i, "^You tap .* #{@crafted_item.split.last}", '^I could not find')
     when /unfinished/
       get_item(@crafted_item.split.last) if suffix
       stow_item(@crafted_item.split.last)
@@ -2421,7 +2423,7 @@ class Trade
       find_npc(info['npc-rooms'], info['npc_last_name'])
       DRC.bput("get my #{info['logbook']} logbook", 'You get', 'You are already', 'What is it')
       DRC.release_invisibility
-      result = DRC.bput("give log to #{info['npc']}", 'You hand', 'You can', 'What were you', 'Apparently the work order time limit has expired', 'The work order isn\'t yet complete')
+      result = DRC.bput("give log to #{info['npc']}", '^You hand', '^You can', '^What were you', '^Apparently the work order time limit has expired', '^The work order isn\'t yet complete')
       break unless ['What is it', 'What were you', 'You can'].include?(result)
     end
     stow_item('logbook')

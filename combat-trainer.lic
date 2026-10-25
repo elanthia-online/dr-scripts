@@ -466,6 +466,25 @@ class SetupProcess
 end
 
 class LootProcess
+  # Flags and bput see every game line, other players' speech, whispers and ESP
+  # included, and those always have a double quote before the spoken text, so
+  # the loot matchers only match the game's own line. Flags read the raw XML:
+  # FLAG_LINE_START allows leading tags before a message that starts the line;
+  # FLAG_NO_QUOTE allows other text before the message, but no double quote
+  # outside a tag. bput reads tag-stripped text: '^Message', or /^[^"]*?message/
+  # for a message that follows other text.
+  FLAG_LINE_START = '^(?:<[^>]+>)*'
+  FLAG_NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
+
+  # Replies to "stow <item>" and "stow other <item>".
+  STOW_LOOT_REPLIES = [
+    '^You pick up', '^You put', '^You open', '^You get', '^You need a free hand',
+    /^[^"]*?needs to be tended to be removed/i, "^There isn't any more room", "^You just can't",
+    /^[^"]*?push you over the item limit/i, '^You stop as you realize the .* is not yours', '^Stow what',
+    /^[^"]*?already in your inventory/i, '^The .* is not designed to carry anything',
+    /^[^"]*?rapidly decays away/i, /^[^"]*?cracks and rots away/i, "^That can't be picked up"
+  ].freeze
+
   def initialize(settings, equipment_manager)
     @equipment_manager = equipment_manager
     echo('New LootProcess') if $debug_mode_ct
@@ -641,10 +660,15 @@ class LootProcess
       echo("  @box_loot_limit: #{@box_loot_limit}") if $debug_mode_ct
     end
 
-    Flags.add('using-corpse', 'begins arranging', 'completes arranging', 'kneels down briefly and draws a knife', 'cruelly into the body and carving out a chunk', 'makes additional cuts, purposeful but seemingly at random')
-    Flags.add('pouch-full', 'You think the .* is too full to fit another gem into')
-    Flags.add('pouch-needs-tie', /You'd better tie it up before putting/)
-    Flags.add('container-full', 'There isn\'t any more room')
+    Flags.add('using-corpse',
+              /#{FLAG_NO_QUOTE}begins arranging/i,
+              /#{FLAG_NO_QUOTE}completes arranging/i,
+              /#{FLAG_NO_QUOTE}kneels down briefly and draws a knife/i,
+              /#{FLAG_NO_QUOTE}cruelly into the body and carving out a chunk/i,
+              /#{FLAG_NO_QUOTE}makes additional cuts, purposeful but seemingly at random/i)
+    Flags.add('pouch-full', /#{FLAG_LINE_START}You think the .* is too full to fit another gem into/i)
+    Flags.add('pouch-needs-tie', /#{FLAG_LINE_START}You'd better tie it up before putting/)
+    Flags.add('container-full', /#{FLAG_LINE_START}There isn't any more room/i)
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
 
     # Corpse ids we've finished a given action on. A looted corpse lingers in
@@ -756,15 +780,15 @@ class LootProcess
       return if DRCI.put_away_item?(item, special['bag'])
     end
 
-    case DRC.bput("stow #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
-    when 'already in your inventory'
+    case DRC.bput("stow #{item}", *STOW_LOOT_REPLIES)
+    when /already in your inventory/
       if @gem_nouns.include?(item)
         DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory')
       elsif @box_nouns.include?(item)
         item_reg = item.split.join('.*')
         return stow_loot(DRRoom.room_objs.grep(/\b#{item_reg}$/).first.split.last(2).join(' '), game_state)
       else
-        DRC.bput("stow other #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
+        DRC.bput("stow other #{item}", *STOW_LOOT_REPLIES)
       end
     when 'You pick up', 'You get'
       @current_box_count += 1 if @box_loot_limit && @box_nouns.include?(item)
@@ -1103,7 +1127,7 @@ class LootProcess
       return
     end
 
-    quality = DRC.bput('glance', 'You glance down.*')
+    quality = DRC.bput('glance', '^You glance down.*')
     if quality['great'] || quality['excellent'] || quality['perfect'] || quality['flawless']
       echo 'Harvested high quality material.' if $debug_mode_ct
     else
@@ -1119,9 +1143,9 @@ class LootProcess
       return
     end
 
-    result = DRC.bput("put material in my #{@necro_container}", 'You put', 'material doesn\'t seem to fit')
+    result = DRC.bput("put material in my #{@necro_container}", '^You put', /^[^"]*?material doesn't seem to fit/i)
     @current_harvest_count += 1 if result =~ /^You put/
-    DRC.bput('drop material', 'you discard it') if result =~ /^material doesn't seem to fit/
+    DRC.bput('drop material', 'you discard it') if result =~ /material doesn't seem to fit/
   end
 
   def dispose_body(game_state)
@@ -1259,21 +1283,21 @@ class LootProcess
     arrange_message = "#{arrange_verb} for #{type}"
     while arranges < @arrange_count
       arranges += 1
-      case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'already been skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
-      when 'You complete arranging', 'That has already been arranged', 'You make a serious mistake in the arranging process', 'Arrange what'
+      case DRC.bput(arrange_message, /^[^"]*?You begin to arrange/i, /^[^"]*?You continue arranging/i, /^[^"]*?You make a mistake/i, /^[^"]*?You complete arranging/i, /^[^"]*?That creature cannot/i, /^[^"]*?That has already been arranged/i, '^Arrange what', /^[^"]*?cannot be skinned/i, /^[^"]*?already been skinned/i, /^[^"]*?You make a serious mistake in the arranging process/i, '^The .* is currently being arranged to produce')
+      when /You complete arranging/, /That has already been arranged/, /You make a serious mistake in the arranging process/, /Arrange what/
         break
-      when 'already been skinned'
+      when /already been skinned/
         if corpse
           @skinned_corpse_ids << corpse.id
           echo("corpse-track: mark ##{corpse.id} skinned (via arrange)") if $debug_mode_ct
         end
         break
-      when 'cannot be skinned'
+      when /cannot be skinned/
         game_state.unskinnable(mob_noun)
         @dissect_cycle_skills.delete("Skinning")
         @skin = false
         break
-      when 'That creature cannot'
+      when /That creature cannot/
         arranges = 0
         arrange_message = arrange_verb
       end
@@ -1336,25 +1360,25 @@ class LootProcess
     # to a bare `dissect` on the game's current corpse, as before.
     dissect_command = corpse ? "dissect ##{corpse.id}" : 'dissect'
     case DRC.bput(dissect_command,
-                  /You'll gain no insights from this attempt/,
-                  /You succeed in dissecting the corpse/,
-                  'What exactly are you trying to dissect',
-                  "You'll learn nothing",
-                  'While likely a fascinating study',
-                  'You cannot dissect',
-                  'would probably object',
-                  "should be left alone.",
-                  "That'd be a waste of time.",
-                  'A skinned creature is worthless',
-                  'You do not yet possess the knowledge',
-                  'This ritual may only be performed on a corpse',
-                  /You learn something/i,
-                  'A failed or completed ritual has rendered',
-                  'You realize after a few seconds',
-                  'prevents a meaningful dissection',
-                  "With less concern than you'd give a fresh corpse",
-                  'Rituals do not work upon constructs')
-    when /You succeed in dissecting the corpse/, /You learn something/i, "With less concern than you'd give a fresh corpse"
+                  /^[^"]*?You'll gain no insights from this attempt/,
+                  /^[^"]*?You succeed in dissecting the corpse/,
+                  '^What exactly are you trying to dissect',
+                  /^[^"]*?You'll learn nothing/i,
+                  /^[^"]*?While likely a fascinating study/i,
+                  /^[^"]*?You cannot dissect/i,
+                  /^[^"]*?would probably object/i,
+                  /^[^"]*?should be left alone./i,
+                  /^[^"]*?That'd be a waste of time./i,
+                  /^[^"]*?A skinned creature is worthless/i,
+                  /^[^"]*?You do not yet possess the knowledge/i,
+                  /^[^"]*?This ritual may only be performed on a corpse/i,
+                  /^[^"]*?You learn something/i,
+                  /^[^"]*?A failed or completed ritual has rendered/i,
+                  /^[^"]*?You realize after a few seconds/i,
+                  /^[^"]*?prevents a meaningful dissection/i,
+                  /^[^"]*?With less concern than you'd give a fresh corpse/i,
+                  /^[^"]*?Rituals do not work upon constructs/i)
+    when /You succeed in dissecting the corpse/, /You learn something/i, /With less concern than you'd give a fresh corpse/
       if corpse
         @dissected_corpse_ids << corpse.id
         echo("corpse-track: mark ##{corpse.id} dissected") if $debug_mode_ct
@@ -1364,19 +1388,19 @@ class LootProcess
       waitrt?
       fput("dissect")
       return false
-    when 'This ritual may only be performed on a corpse', 'A failed or completed ritual has rendered', 'You realize after a few seconds', 'prevents a meaningful dissection'
+    when /This ritual may only be performed on a corpse/, /A failed or completed ritual has rendered/, /You realize after a few seconds/, /prevents a meaningful dissection/
       return false
-    when 'Rituals do not work upon constructs'
+    when /Rituals do not work upon constructs/
       game_state.construct(mob_noun) if mob_noun
       game_state.undissectable(mob_noun) if mob_noun
       return false
-    when 'While likely a fascinating study', "That'd be a waste of time.", 'You do not yet possess the knowledge'
+    when /While likely a fascinating study/, /That'd be a waste of time./, /You do not yet possess the knowledge/
       game_state.undissectable(mob_noun) if mob_noun
       @dissect_cycle_skills.delete("First Aid")
       @dissect_cycle_skills.delete("Thanatology") if @dissect_for_thanatology
       @dissect = false
       return false
-    when 'would probably object', "should be left alone."
+    when /would probably object/, /should be left alone./
       return dissected?(nil, game_state)
     end
     return false
@@ -1391,7 +1415,7 @@ class LootProcess
     end
 
     if game_state.need_bundle
-      case DRC.bput('tap my bundle', 'You tap a \w+ bundle\b.*that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
+      case DRC.bput('tap my bundle', '^You tap a \w+ bundle\b.*that you are wearing', '^I could not find what you were referring to', '^You tap a tight bundle inside')
       when /lumpy/
         if @tie_bundle
           lowered_item = nil
@@ -1423,7 +1447,7 @@ class LootProcess
     end
 
     snap = [DRC.left_hand, DRC.right_hand]
-    case DRC.bput("skin ##{corpse.id}", 'roundtime', 'skin what', 'cannot be skinned', 'already been skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
+    case DRC.bput("skin ##{corpse.id}", /^[^"]*?roundtime/i, /^[^"]*?skin what/i, /^[^"]*?cannot be skinned/i, /^[^"]*?already been skinned/i, /^[^"]*?carrying far too many items/i, /^[^"]*?need a more appropriate weapon/i, /^[^"]*?need to have a bladed instrument to skin/i, /^[^"]*?You must have one hand free to skin/i)
     when /roundtime/i
       # Skin started -> this corpse is done; don't re-arrange/re-skin it while it
       # lingers dead in the roster for the ~6-7s until it decays. NB: DRC.bput
@@ -1431,21 +1455,21 @@ class LootProcess
       # matcher, so this branch must be case-insensitive, not `when 'roundtime'`.
       @skinned_corpse_ids << corpse.id
       echo("corpse-track: mark ##{corpse.id} skinned") if $debug_mode_ct
-    when 'already been skinned'
+    when /already been skinned/
       @skinned_corpse_ids << corpse.id
       echo("corpse-track: mark ##{corpse.id} skinned (already)") if $debug_mode_ct
       return
-    when 'You must have one hand free to skin'
+    when /You must have one hand free to skin/
       temp_item = DRC.left_hand
       if DRCI.lower_item?(temp_item)
         check_skinning(mob_noun, game_state, corpse)
         DRCI.get_item?(temp_item)
       end
-    when 'need a more appropriate weapon', 'need to have a bladed instrument to skin'
+    when /need a more appropriate weapon/, /need to have a bladed instrument to skin/
       DRC.message('BUY A SKINNING KNIFE')
       @skin = false
       return
-    when 'cannot be skinned', 'carrying far too many items'
+    when /cannot be skinned/, /carrying far too many items/
       game_state.unskinnable(mob_noun)
       return
     end
@@ -1488,16 +1512,24 @@ class LootProcess
 end
 
 class SafetyProcess
+  # The dodge verbs the game offers in "You believe you could <verb> out of the way of the <thing>".
+  ACTIVE_MITIGATION_ACTIONS = %w[dip jump duck lean dive].freeze
+
   def initialize(settings, equipment_manager)
     echo('New SafetyProcess') if $debug_mode_ct
-    Flags.add('ct-engaged', 'closes to pole weapon range on you', 'closes to melee range on you')
-    Flags.add('ct-lodged', 'from the .* lodged in your (?<body_part>.*)\.')
+    # These game lines follow a creature's name or other game text, so they are matched
+    # anywhere on the line as long as no quote comes first: other players' speech, whispers
+    # and ESP always put a quote before their text.
+    Flags.add('ct-engaged', '^(?:<[^>]*>|[^"<])*?closes to pole weapon range on you', '^(?:<[^>]*>|[^"<])*?closes to melee range on you')
+    Flags.add('ct-lodged', '^(?:<[^>]*>|[^"<])*?from the .* lodged in your (?<body_part>.*)\.')
     # When you drop an item due to loss of hand, the phrase is "Your <item> falls to your feet." (do recovery logic)
     # When you shoot or throw something, the phrase is "The <item> falls to your feet!" (normal mechanics)
     Flags.add('ct-itemdropped', '^Your (?<item>.*) falls to your feet\.', '^You cannot maintain your grip on the (?<item>.*), and it falls to the ground!')
-    Flags.add('ct-germshieldlost', 'It jerks the.* (?<shield>\w+) out of your hands')
-    Flags.add('active-mitigation', 'You believe you could \b(?<action>\w+) out of the way of the \b(?<obstacle>\w+)')
-    Flags.add('ct-parasite', 'blood mite on your (?<body_part>.*)\.')
+    Flags.add('ct-germshieldlost', '^(?:<[^>]*>|[^"<])*?It jerks the.* (?<shield>\w+) out of your hands')
+    # Anchored to the start of the line (leading tags allowed) so it only matches the
+    # game's own line, not other players' speech/ESP; the verbs are the game's.
+    Flags.add('active-mitigation', "^(?:<[^>]+>)*You believe you could (?<action>#{ACTIVE_MITIGATION_ACTIONS.join('|')}) out of the way of the (?<obstacle>\\w+)")
+    Flags.add('ct-parasite', '^(?:<[^>]*>|[^"<])*?blood mite on your (?<body_part>.*)\.')
     @equipment_manager = equipment_manager
     @health_threshold = settings.health_threshold
     @stop_on_bleeding = settings.stop_hunting_if_bleeding
@@ -1722,7 +1754,10 @@ class SafetyProcess
   def active_mitigation
     return unless Flags['active-mitigation']
 
-    DRC.bput("#{Flags['active-mitigation'][:action]} #{Flags['active-mitigation'][:obstacle]}", 'You manage to', "You've got to", 'Please rephrase', 'You jump back', "You can't do")
+    action = Flags['active-mitigation'][:action].to_s.downcase
+    obstacle = Flags['active-mitigation'][:obstacle]
+    # Only ever send one of the game's dodge verbs, whatever set the flag.
+    DRC.bput("#{action} #{obstacle}", 'You manage to', "You've got to", 'Please rephrase', 'You jump back', "You can't do") if ACTIVE_MITIGATION_ACTIONS.include?(action)
     Flags.reset('active-mitigation')
   end
 
@@ -1921,7 +1956,9 @@ class SpellProcess
     @tk_ammo = settings.tk_ammo
     @tk_spell = @offensive_spells.find { |spell| spell['abbrev'] =~ /tkt|tks/i }
     drop_tkt_ammo
-    Flags.add('need-tkt-ammo', 'There is nothing here that can be thrown')
+    # Anchored to the start of the line (leading tags allowed) so only the game's own line
+    # sets it, not other players' speech/ESP.
+    Flags.add('need-tkt-ammo', '^(?:<[^>]+>)*There is nothing here that can be thrown')
 
     # Minimum seconds between recreating telekinetic slivers (see #check_slivers).
     # Without a throttle, slivers are remade the instant they deplete, which can
@@ -2908,7 +2945,9 @@ class SpellProcess
       elsif !moon
         echo "No moon available to cast #{data['abbrev']}" if $debug_mode_ct
 
-        @weather ||= DRC.bput('weather', 'inside', 'You glance up at the sky.', 'You glance outside')
+        # Only the game's reply, not other players' speech/ESP (which always has a quote before
+        # the text); \K keeps the returned text 'inside' as before.
+        @weather ||= DRC.bput('weather', '^[^"]*?\Kinside', '^You glance up at the sky.', '^You glance outside')
         if @weather =~ /inside/
           DRC.message "*** You're inside and there are no available moons. You're going to have a hard time casting #{data['abbrev']}"
         end
@@ -3105,7 +3144,8 @@ class AbilityProcess
     echo("  @meditation_pause_timer: #{@meditation_pause_timer}") if $debug_mode_ct
 
     setup_barb_buff_flags
-    Flags.add('ct-battle-cry-not-facing', 'You are not facing an enemy')
+    # Anchored to the start of the line (leading tags allowed): the game's line, not speech/ESP.
+    Flags.add('ct-battle-cry-not-facing', '^(?:<[^>]+>)*You are not facing an enemy')
 
     @paladin_use_badge = settings.paladin_use_badge
     echo("  @paladin_use_badge: #{@paladin_use_badge}") if $debug_mode_ct
@@ -3497,7 +3537,7 @@ class AbilityProcess
     return unless @paladin_use_badge
     return unless Time.now - UserVars.paladin_last_badge_use > @badge_reuse_cooldown
 
-    case DRC.bput("#{@paladin_badge_get_verb} my pilgrim badge", 'You take off', 'You get', 'You remove', 'What were you referring to', 'You need a free hand', 'Remove what')
+    case DRC.bput("#{@paladin_badge_get_verb} my pilgrim badge", '^You take off', '^You get', '^You remove', '^What were you referring to', '^You need a free hand', '^Remove what')
     when 'You get', 'You remove', 'You take off'
       DRC.retreat
       DRC.bput('pray my pilgrim badge', 'You think upon the immortals')
@@ -4310,7 +4350,10 @@ class TrainerProcess
 
   def determine_time
     echo 'Determining time' if $debug_mode_ct
-    case DRC.bput('time', 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk', 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise')
+    # Only the game's "It is currently ..." reply, not other players' speech/ESP; \K keeps
+    # the returned text to the time-of-day word(s) the case below compares.
+    times = ['it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk', 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise']
+    case DRC.bput('time', *times.map { |time| "^It is currently .*?\\K#{time}" })
     when 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk'
       center('elanthian sun')
     when 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise'
@@ -4462,17 +4505,21 @@ class AttackProcess
     # Tests: https://regex101.com/r/HkIa8j/1
     # IMPORTANT: 'stone shard' must be listed before 'shard' and 'stone' in the pattern else won't match 'senci stone shard' correctly.
     ammo_pattern = "(?<ammo>arrow|bolt|stone shard|shard|rock|sphere|clump|coral|fist|holder|lump|patella|pellet|pulzone|quadrello|quarrel|quill|stone|stopper|verretto|blowgun dart|crumb|spine|mantrap spike|tiny dragon|icicle|fang|scale|grey-black spike|bacon strip|page|naga|thorn|fragment|talon|cork|button|core|pebble|geode|stub|pit|thimble|doorknob|cone|bell|hunk|piece|present|sleighbell|sprig|star|toy|spiral|tile|marble)s?"
-    Flags.add('ct-ranged-ammo', "(you (?<action>fire|poach|snipe) an?|your) (?<prefix>[^\.!]*? )?#{ammo_pattern}(?<altered_poststring>.*)?(?<suffix> [^\.!]*?)?? (at|passes through)")
-    Flags.add('ct-powershot-ammo', "With a loud twang, you let fly your #{ammo_pattern}!")
-    Flags.add('ct-ranged-loaded', 'You reach into', 'You load', 'You carefully load', 'already loaded', 'in your hand')
-    Flags.add('ct-using-repeating-crossbow', /Your repeating crossbow/i, /Your repeating arbalest/i, /Your marksman's arbalest/i, /Your assassin's crossbow/i, /Your riot crossbow/i, /You .* ammunition (chamber|store)/, /already loaded with as much ammunition as it can hold/, /You realize readying more than one/)
-    Flags.add('ct-aim-failed', 'you stop aiming', 'stop concentrating on aiming')
-    Flags.add('ct-ranged-ready', 'You think you have your best shot possible now.')
-    Flags.add('ct-face-what', 'Face what')
-    Flags.add('war-stomp-ready', 'You feel ready to perform another War Stomp'); Flags['war-stomp-ready'] = true
-    Flags.add('pounce-ready', 'You think you have the strength to pounce upon prey once again.'); Flags['pounce-ready'] = true
-    Flags.add('ct-maneuver-cooldown-reduced', "With expert skill you end the attack and maneuver into a better position")
-    Flags.add('ct-attack-out-of-range', "You aren't close enough to attack")
+    # Each matcher only matches the game's own line, not other players' speech, whispers or
+    # ESP: '^(?:<[^>]+>)*' = the message starts the line (leading tags allowed);
+    # '^(?:<[^>]*>|[^"<])*?' = the message may follow other game text, but no quote may come
+    # before it, and player text always starts with a quote.
+    Flags.add('ct-ranged-ammo', "^(?:<[^>]*>|[^\"<])*?(you (?<action>fire|poach|snipe) an?|your) (?<prefix>[^\.!]*? )?#{ammo_pattern}(?<altered_poststring>.*)?(?<suffix> [^\.!]*?)?? (at|passes through)")
+    Flags.add('ct-powershot-ammo', "^(?:<[^>]+>)*With a loud twang, you let fly your #{ammo_pattern}!")
+    Flags.add('ct-ranged-loaded', '^(?:<[^>]+>)*You reach into', '^(?:<[^>]+>)*You load', '^(?:<[^>]+>)*You carefully load', '^(?:<[^>]*>|[^"<])*?already loaded', '^(?:<[^>]*>|[^"<])*?in your hand')
+    Flags.add('ct-using-repeating-crossbow', /^(?:<[^>]*>|[^"<])*?Your repeating crossbow/i, /^(?:<[^>]*>|[^"<])*?Your repeating arbalest/i, /^(?:<[^>]*>|[^"<])*?Your marksman's arbalest/i, /^(?:<[^>]*>|[^"<])*?Your assassin's crossbow/i, /^(?:<[^>]*>|[^"<])*?Your riot crossbow/i, /^(?:<[^>]*>|[^"<])*?You .* ammunition (chamber|store)/, /^(?:<[^>]*>|[^"<])*?already loaded with as much ammunition as it can hold/, /^(?:<[^>]+>)*You realize readying more than one/)
+    Flags.add('ct-aim-failed', '^(?:<[^>]+>)*you stop aiming', '^(?:<[^>]*>|[^"<])*?stop concentrating on aiming')
+    Flags.add('ct-ranged-ready', '^(?:<[^>]+>)*You think you have your best shot possible now.')
+    Flags.add('ct-face-what', '^(?:<[^>]+>)*Face what')
+    Flags.add('war-stomp-ready', '^(?:<[^>]+>)*You feel ready to perform another War Stomp'); Flags['war-stomp-ready'] = true
+    Flags.add('pounce-ready', '^(?:<[^>]+>)*You think you have the strength to pounce upon prey once again.'); Flags['pounce-ready'] = true
+    Flags.add('ct-maneuver-cooldown-reduced', "^(?:<[^>]+>)*With expert skill you end the attack and maneuver into a better position")
+    Flags.add('ct-attack-out-of-range', "^(?:<[^>]+>)*You aren't close enough to attack")
   end
 
   def execute(game_state)
@@ -4572,14 +4619,15 @@ class AttackProcess
 
     waitrt?
 
-    if reget(5, 'flying too high for you to attack')
+    # reget patterns only match the game's own lines, not other players' speech/ESP.
+    if reget(5, '^[^"]*?flying too high for you to attack')
       case DRC.bput('face next', 'There is nothing', 'You turn to face', 'Face what')
       when 'There is nothing'
         pause 5
       end
     end
 
-    if reget(5, 'You can\'t backstab that')
+    if reget(5, '^You can\'t backstab that')
       if game_state.npcs.uniq.length == 1
         game_state.unstabbable(game_state.npcs.first)
       else
@@ -4587,12 +4635,12 @@ class AttackProcess
       end
     end
 
-    if reget(5, 'You aren\'t close enough to attack', 'It would help if you were closer')
+    if reget(5, '^You aren\'t close enough to attack', '^It would help if you were closer')
       game_state.engage
     else
       game_state.action_taken
     end
-    return unless reget(5, 'You need two hands')
+    return unless reget(5, '^You need two hands')
 
     fput('stow left') if DRC.left_hand && DRC.left_hand !~ /\b#{game_state.weapon_name}/i
     fput('stow right') if DRC.right_hand && DRC.right_hand !~ /\b#{game_state.weapon_name}/i
@@ -6420,7 +6468,8 @@ class GameState
     # Shield Rush cannot be used while engaged
     maneuver_retreat_retry_messages = [
       /^You are already engaged/,
-      /is already engaged to you/
+      # Follows the creature's name; no quote before it, so not other players' speech/ESP.
+      /^[^"]*?is already engaged to you/
     ]
 
     is_shield_rush = maneuver.casecmp?(@charged_maneuvers['Shield Usage'])

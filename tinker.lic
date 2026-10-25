@@ -66,8 +66,24 @@ class Tinker
     @mechanisms_per_item = compute_mechanisms_per_item
 
     DRC.wait_for_script_to_complete('buff', ['tinker'])
-    Flags.add('tinkering-assembly', /with.*(backer) material/, /You need another bone, wood or horn (backing) material/, /another finished bow (string)/, /another finished (long|short) wooden (pole)/, /another .* leather (strip|cord)/, /need another (lenses)/, /another finished (mechanism)/, /You must assemble the (strips)/, /^You need another (.* boltheads)/, /You need another (bolt flights)/)
-    Flags.add('tinker-done', /Applying the final touches/, /the successful (lamination|lightening|cable-backing) process/)
+    # Each matcher only matches the game's own line, not other players' speech,
+    # whispers or ESP: messages that start the line are anchored there (leading
+    # tags allowed), mid-line messages need no quote before them (player text
+    # always has one). The captured part nouns are unchanged.
+    Flags.add('tinkering-assembly',
+              /^(?:<[^>]*>|[^"<])*?with(?:<[^>]*>|[^"<])*(backer) material/,
+              /^(?:<[^>]+>)*You need another bone, wood or horn (backing) material/,
+              /^(?:<[^>]*>|[^"<])*?another finished bow (string)/,
+              /^(?:<[^>]*>|[^"<])*?another finished (long|short) wooden (pole)/,
+              /^(?:<[^>]*>|[^"<])*?another (?:<[^>]*>|[^"<])* leather (strip|cord)/,
+              /^(?:<[^>]*>|[^"<])*?need another (lenses)/,
+              /^(?:<[^>]*>|[^"<])*?another finished (mechanism)/,
+              /^(?:<[^>]+>)*You must assemble the (strips)/,
+              /^(?:<[^>]+>)*You need another (.* boltheads)/,
+              /^(?:<[^>]+>)*You need another (bolt flights)/)
+    Flags.add('tinker-done',
+              /^(?:<[^>]+>)*Applying the final touches/,
+              /^(?:<[^>]*>|[^"<])*?the successful (lamination|lightening|cable-backing) process/)
 
     if args.resume
       check_hand(@noun) unless DRCI.in_left_hand?(@noun)

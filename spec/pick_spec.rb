@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -854,6 +855,22 @@ RSpec.describe Pick do
       expect(DRCI).not_to have_received(:fill_gem_pouch_with_container)
       expect(messages.last).to include('Bug')
     end
+
+    it 'loots the box when a player says the locked line before the game reply' do
+      allow(DRC).to receive(:bput).with(/^open my/, anything, anything, anything) do |_command, *patterns|
+        regexes = patterns.map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+        ['Mallory says, "It is locked"', 'In the chest you see a dull gem.'].each do |line|
+          match = regexes.lazy.filter_map { |regex| line.match(regex) }.first
+          break match.to_a.first if match
+        end
+      end
+      instance = build_instance
+
+      instance.send(:loot, 'chest')
+
+      expect(DRCI).to have_received(:fill_gem_pouch_with_container)
+      expect(messages).not_to include(a_string_including('Bug'))
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -1002,6 +1019,257 @@ RSpec.describe Pick do
           expect(stowed_items).to include(item: 'strongbox', container: 'trunk')
           expect(disposed_items).to be_empty
         end
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Trap and lock messages: only the game's own lines count, not other players'
+  # speech, ESP or whispers repeating the same words
+  # ---------------------------------------------------------------------------
+
+  describe 'trap and lock messages heard from other players' do
+    let(:picking_data) do
+      YAML.load_file(File.expand_path('../data/base-picking.yaml', __dir__), aliases: true)['picking']
+    end
+    let(:sent) { [] }
+    let(:instance) do
+      build_instance(
+        all_trap_messages: picking_data['traps'],
+        disarmed_trap_messages: picking_data['disarmed_traps'],
+        disarm_identify_messages: picking_data['disarm_messages_by_difficulty'],
+        disarm_identify_failed: picking_data['disarm_identify_failed'],
+        disarm_succeeded: picking_data['disarm_succeeded'].values,
+        disarm_retry: picking_data['disarm_retry'],
+        trap_sprung_matches: picking_data['trap_sprung'],
+        pick_identify_messages: picking_data['pick_messages_by_difficulty'],
+        pick_retry: picking_data['pick_retry'],
+        disarm_lost_box_matches: ["You'll need to have the item in your hands or placed on the ground."]
+      )
+    end
+
+    # One incoming line: Flags see the raw XML, bput sees the stripped text.
+    def game(text) = { raw: text, text: text }
+    def esp(text) = { raw: %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>), text: %([General][Mallory] "#{text}") }
+    def say(text) = { raw: %(<preset id='speech'>Mallory says</preset>, "#{text}"), text: %(Mallory says, "#{text}") }
+    def whisper(text) = { raw: %(Mallory whispers, "#{text}"), text: %(Mallory whispers, "#{text}") }
+    def player_shapes(text) = [esp(text), say(text), whisper(text)]
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # DRC.bput as lich-5 runs it: Strings compile to /x/i, the first line that
+    # matches any pattern ends the wait and match[0] is returned. Every line up
+    # to that one has already passed through the Flags.
+    def game_replies(replies)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        regexes = patterns.flatten.map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+        lines = replies.find { |prefix, _| command.start_with?(prefix) }&.last || []
+        reply = ''
+        lines.each do |line|
+          deliver(line[:raw])
+          match = regexes.lazy.filter_map { |regex| line[:text].match(regex) }.first
+          next unless match
+
+          reply = match.to_a.first
+          break
+        end
+        reply
+      end
+    end
+
+    let(:shocker_line) { game('You notice two silver studs right below the keyhole.') }
+    let(:difficulty_line) { game('The trap should not take long with your skills.') }
+
+    before(:each) { instance.send(:setup_flags) }
+
+    describe '#setup_flags' do
+      {
+        'disarm-shift'     => 'You find something to shift the odds against you.',
+        'disarm-trap-type' => 'You notice two silver studs right below the keyhole.',
+        'more-traps'       => 'The strongbox is not yet fully disarmed.',
+        'more-locks'       => 'You discover another lock protecting the strongbox.',
+        'glance-no-traps'  => 'It looks like there are no traps left on the strongbox.',
+        'glance-no-locks'  => 'It looks like there are no locks left on the strongbox.'
+      }.each do |key, line|
+        it "sets '#{key}' from the game line but not from ESP, speech or whispers" do
+          deliver(line)
+          expect(Flags[key]).to be_truthy
+
+          player_shapes(line).each do |shape|
+            Flags.reset(key)
+            deliver(shape[:raw])
+            expect(Flags[key]).to be_falsey, "fired on #{shape[:raw]}"
+          end
+        end
+      end
+
+      it 'still sets the flag when the game line carries leading tags' do
+        deliver('<pushBold/>It looks like there are no locks left on the strongbox.<popBold/>')
+
+        expect(Flags['glance-no-locks']).to be_truthy
+      end
+    end
+
+    describe '#identify_trap' do
+      let(:box) { { 'noun' => 'strongbox', 'trapped' => true, 'trap' => nil, 'trap_difficulty' => nil } }
+
+      it 'reads the trap type and difficulty from the game lines' do
+        game_replies([['disarm my strongbox identify', [shocker_line, difficulty_line]]])
+
+        instance.send(:identify_trap, box)
+
+        expect(box).to include('trapped' => true, 'trap' => 'shocker', 'trap_difficulty' => 4)
+      end
+
+      it 'keeps the real trap type when a player names another trap before the difficulty line' do
+        game_replies([['disarm my strongbox identify',
+                       [shocker_line, say(picking_data['traps']['teleport']), difficulty_line]]])
+
+        instance.send(:identify_trap, box)
+
+        expect(box['trap']).to eq('shocker')
+      end
+
+      it 'does not mark the box disarmed when a player says a disarmed-trap phrase' do
+        game_replies([['disarm my strongbox identify',
+                       [whisper(picking_data['disarmed_traps']['acid']), shocker_line, difficulty_line]]])
+
+        instance.send(:identify_trap, box)
+
+        expect(box).to include('trapped' => true, 'trap' => 'shocker', 'trap_difficulty' => 4)
+      end
+
+      it 'ignores a difficulty phrase thought on ESP' do
+        game_replies([['disarm my strongbox identify',
+                       [shocker_line, esp(picking_data['disarm_messages_by_difficulty'][16]), difficulty_line]]])
+
+        instance.send(:identify_trap, box)
+
+        expect(box['trap_difficulty']).to eq(4)
+      end
+
+      it 'still recognises an already disarmed trap from the game line' do
+        game_replies([['disarm my strongbox identify',
+                       [game('You see the hole next to the lock, stuffed with dirt rendering the trap harmless.')]]])
+
+        instance.send(:identify_trap, box)
+
+        expect(box).to include('trapped' => false, 'trap' => 'acid', 'trap_difficulty' => 0)
+      end
+    end
+
+    describe '#disarm_trap' do
+      let(:box) { { 'noun' => 'strongbox', 'trapped' => true, 'trap' => 'acid', 'trap_difficulty' => 4 } }
+      let(:retry_line) { game('You work with the trap for a while but are unable to make any progress.') }
+
+      it 'stays trapped when a player says the disarm-succeeded phrase' do
+        game_replies([['disarm my strongbox', [say(picking_data['disarm_succeeded']['acid']), retry_line]]])
+
+        instance.send(:disarm_trap, box)
+
+        expect(box).to include('trapped' => true, 'trap_difficulty' => 4)
+      end
+
+      it 'is disarmed by the game line' do
+        game_replies([['disarm my strongbox', [game('You work at the hole, stopping it up and disarming the trap.')]]])
+
+        instance.send(:disarm_trap, box)
+
+        expect(box['trapped']).to be(false)
+      end
+    end
+
+    describe '#glance' do
+      let(:box) { { 'noun' => 'strongbox', 'trapped' => true, 'locked' => true } }
+
+      it 'keeps the box locked when a player whispers the no-locks line' do
+        game_replies([['glance my strongbox',
+                       [whisper('It looks like there are no locks left on the strongbox.'), game('You glance at a battered strongbox.')]]])
+
+        instance.send(:glance, box)
+
+        expect(box['locked']).to be(true)
+      end
+
+      it 'unlocks the box on the game line' do
+        game_replies([['glance my strongbox', [game('It looks like there are no locks left on the strongbox.')]]])
+
+        instance.send(:glance, box)
+
+        expect(box['locked']).to be(false)
+      end
+    end
+
+    describe '#identify_lock' do
+      let(:box) { { 'noun' => 'strongbox', 'trapped' => false, 'locked' => true, 'lock_difficulty' => nil } }
+      let(:lock_line) { game('Picking this lock will be a simple matter for you to unlock.') }
+
+      it 'keeps the box locked when a player says the not-locked line' do
+        game_replies([['pick my strongbox ident', [say("It's not even locked, why bother?"), lock_line]]])
+
+        instance.send(:identify_lock, box)
+
+        expect(box).to include('locked' => true, 'lock_difficulty' => 3)
+      end
+
+      it 'keeps using the lockpick ring when a player thinks the wrong-tool line' do
+        game_replies([['pick my strongbox ident', [esp('Find a more appropriate tool and try again.'), lock_line]]])
+
+        instance.send(:identify_lock, box)
+
+        expect(instance.instance_variable_get(:@use_lockpick_ring)).to be(true)
+      end
+    end
+
+    describe '#pick' do
+      let(:box) { { 'noun' => 'strongbox', 'trapped' => false, 'locked' => true, 'lock_difficulty' => 3 } }
+
+      it 'stays locked when a player thinks the not-locked line' do
+        game_replies([['pick my strongbox',
+                       [esp('not even locked'), game('You are unable to make any progress towards opening the lock.')]]])
+
+        instance.send(:pick, box)
+
+        expect(box['locked']).to be(true)
+      end
+
+      it 'opens on the game line' do
+        game_replies([['pick my strongbox', [game('With a soft click, you remove your lockpick and open and remove the lock.')]]])
+
+        instance.send(:pick, box)
+
+        expect(box['locked']).to be(false)
+      end
+    end
+
+    describe '#attempt_open with use_glance' do
+      it 'picks the lock instead of treating the box as open when a player whispers the no-locks line' do
+        instance.instance_variable_set(:@use_glance, true)
+        allow(instance).to receive(:loot)
+        allow(instance).to receive(:dispose_empty_box)
+        game_replies([
+                       ['glance my strongbox', [whisper('It looks like there are no locks left on the strongbox.'), game('You glance at a battered strongbox.')]],
+                       ['disarm my strongbox identify', [game('You see the hole next to the lock, stuffed with dirt rendering the trap harmless.')]],
+                       ['pick my strongbox ident', [game('Picking this lock will be a simple matter for you to unlock.')]],
+                       ['pick my strongbox', [game('With a soft click, you remove your lockpick and open and remove the lock.')]]
+                     ])
+
+        instance.send(:attempt_open, 'strongbox')
+
+        expect(sent).to include('pick my strongbox quick')
+        expect(instance).to have_received(:loot).with('strongbox')
       end
     end
   end

@@ -5,9 +5,6 @@
 
 class Bankbot
   def initialize
-    Flags.add('tip-accepted', '.* accepts your tip and slips it away with a smile')
-    Flags.add('tip-declined', '.* declines your tip offer')
-    Flags.add('tip-expired', 'Your tip offer to .* has expired', 'Your tip offer has expired')
     # This provides a default balance of 0 for all currencies
     @ledger = Hash.new { |hash, key| hash[key] = Hash.new { |h, k| h[k] = 0 } }
     # Convert symbols to strings
@@ -56,7 +53,8 @@ class Bankbot
       return
     end
 
-    case DRC.bput('accept tip', 'But you have no tip offers outstanding', "You accept #{character}'s tip and slip it away", "But #{character} isn't here")
+    name = Regexp.escape(character)
+    case DRC.bput('accept tip', '^But you have no tip offers outstanding', "^You accept #{name}'s tip and slip it away", "^But #{name} isn't here")
     when 'But you have no tip offers outstanding', /But .* isn't here/i
       log(character, 'deposit', amount, currency, 'character not found')
       return
@@ -98,10 +96,8 @@ class Bankbot
       return
     end
 
-    Flags.reset('tip-accepted')
-    Flags.reset('tip-expired')
-    Flags.reset('tip-declined')
-    case DRC.bput("tip #{character} #{amount} #{currency}", 'You offer', "I don't know who", 'you really should keep every bronze you can get your hands on', 'You already have a tip offer outstanding')
+    add_tip_flags(character)
+    case DRC.bput("tip #{character} #{amount} #{currency}", '^You offer', "^I don't know who", '^[^"]*?you really should keep every bronze you can get your hands on', '^You already have a tip offer outstanding')
     when "I don't know who"
       log(character, 'withdrawal', amount, currency, 'character not found')
       return
@@ -109,7 +105,7 @@ class Bankbot
       fput "whisper #{character} Sorry, someone else is in the middle of a withdrawal. Please try again in a moment."
       log(character, 'withdrawal', amount, currency, 'withdrawal already pending')
       return
-    when 'you really should keep every bronze you can get your hands on'
+    when /you really should keep every bronze you can get your hands on/i
       echo '***ERROR*** UNABLE TO TIP DUE TO LOW CIRCLE, EXITING'
       # TODO: Report error to person attempting a withdrawal
       exit
@@ -180,6 +176,15 @@ class Bankbot
   end
 
   private
+
+  # Registered per withdrawal so only the game's own lines about this
+  # character's tip count, not other players' speech or thoughts.
+  def add_tip_flags(character)
+    name = Regexp.escape(character)
+    Flags.add('tip-accepted', /^(?:<[^>]+>)*#{name} accepts your tip and slips it away with a smile/i)
+    Flags.add('tip-declined', /^(?:<[^>]+>)*#{name} declines your tip offer/i)
+    Flags.add('tip-expired', /^(?:<[^>]+>)*Your tip offer to #{name} has expired/i, /^(?:<[^>]+>)*Your tip offer has expired/i)
+  end
 
   def log(character, action, amount, currency, message)
     save_bankbot_transaction("#{character}, #{action}, #{amount}, #{currency}, #{message}", @ledger)
@@ -335,6 +340,34 @@ class BankbotParser
     @controller = BankbotController.new(@validator)
   end
 
+  # \A and \z: a line must be one whole line, so text after a newline in
+  # an LNet message is not read as a game line of its own.
+  def handle_line(line)
+    case line
+    when /\AYou catch (.*) making a grab for your pockets!\z/
+      thief = Regexp.last_match(1)
+      echo "***EXITING, CAUGHT #{thief} TRYING TO STEAL***"
+      fput('exit')
+    when /\A(.*) whispers, "(.*)"\z/i
+      character = Regexp.last_match(1)
+      message = Regexp.last_match(2)
+      handle_whisper(character, message)
+    when /\A(.*) offers you a tip of (.*)\.  Type ACCEPT TIP, to accept it or DECLINE TIP to refuse it\.\z/
+      character = Regexp.last_match(1)
+      message = Regexp.last_match(2)
+      handle_tip(character, message)
+    when /\A\[server\]: "DR:(.*)"\s*(?:\(\d{1,2}:\d{1,2}:\d{1,2}\))?\z/
+      message = Regexp.last_match(1)
+      handle_lnet_server_message(message)
+    # lnet: [Private]-GAME:Name: "message". The sender is the single name
+    # after the game token, so the message text cannot change it.
+    when /\A\[Private\]-[^:\s]+:([^:\s]+): "(.*)"/
+      character = Regexp.last_match(1)
+      message = Regexp.last_match(2)
+      handle_lnet_player_message(character, message)
+    end
+  end
+
   def handle_new_character_seen(character)
     @validator.validate(character)
   end
@@ -450,25 +483,5 @@ loop do
     @last_room_list = DRRoom.pcs
   end
 
-  case line
-  when /^You catch (.*) making a grab for your pockets!$/
-    thief = Regexp.last_match(1)
-    echo "***EXITING, CAUGHT #{thief} TRYING TO STEAL***"
-    fput('exit')
-  when /^(.*) whispers, "(.*)"$/i
-    character = Regexp.last_match(1)
-    message = Regexp.last_match(2)
-    parser.handle_whisper(character, message)
-  when /^(.*) offers you a tip of (.*)\.  Type ACCEPT TIP, to accept it or DECLINE TIP to refuse it\.$/
-    character = Regexp.last_match(1)
-    message = Regexp.last_match(2)
-    parser.handle_tip(character, message)
-  when /^\[server\]: "DR:(.*)"\s*(?:\(\d{1,2}:\d{1,2}:\d{1,2}\))?$/
-    message = Regexp.last_match(1)
-    parser.handle_lnet_server_message(message)
-  when /^\[Private\]-.*:(.*): "(.*)"/
-    character = Regexp.last_match(1)
-    message = Regexp.last_match(2)
-    parser.handle_lnet_player_message(character, message)
-  end
+  parser.handle_line(line)
 end

@@ -18,6 +18,15 @@
 # after_initialize, find_room, before_hunt, hunt_tick, hunt_status,
 # after_hunt and cleanup (see the Hunting-Buddy-Plugins wiki page).
 class HuntingBuddy
+  # Regexp pieces for the empty-room check, which listens to the raw game lines.
+  # ROOM_LINE: the line isn't from a window about elsewhere -- ESP thoughts,
+  # logons, deaths, OOC, familiar or group -- where the stream tag shares the
+  # line with its text.
+  ROOM_LINE = %q{(?!.*<pushStream id=["'](?:thoughts|logons|death|ooc|familiar|group)["'])}
+  # BEFORE_ANY_QUOTE: text before which no `"` opens outside tags, so a match
+  # isn't inside someone's quoted speech, whisper or thought.
+  BEFORE_ANY_QUOTE = %q{(?:<[^>]*>|[^"<])*?}
+
   @registered_plugins = []
 
   class << self
@@ -654,13 +663,15 @@ class HuntingBuddy
 
                            # No visible friends in the room and no visible people
                            # A buddy's (capitalised) name as a whole word ("Will" shouldn't match
-                           # "will not"), on a line that isn't from a window about elsewhere --
-                           # ESP thoughts, logons, deaths, OOC, familiar or group -- where the
-                           # stream tag shares the line with its text.
+                           # "will not"), on a room line (ROOM_LINE), and not inside someone
+                           # else's quoted words (BEFORE_ANY_QUOTE).
                            UserVars.friends.each do |friend|
                              Flags.add("hunting-buddy-room-check-#{friend}",
-                                       /\A(?!.*<pushStream id=["'](?:thoughts|logons|death|ooc|familiar|group)["']).*\b#{Regexp.escape(friend)}\b/)
+                                       /\A#{ROOM_LINE}#{BEFORE_ANY_QUOTE}\b#{Regexp.escape(friend)}\b/)
                            end
+                           # Each of these only counts on a room line (ROOM_LINE) and outside
+                           # anyone's quoted words (BEFORE_ANY_QUOTE), so talk from elsewhere
+                           # doesn't mark the room occupied.
                            Flags.add('hunting-buddy-room-check',
                                      # someone else speaks. Others "say/ask/exclaim" in the
                                      # third person ("Bob politely says, ..."), our own echo of
@@ -669,18 +680,20 @@ class HuntingBuddy
                                      # whatever precedes the speaker (tags, a prompt, spaces).
                                      # Up to 60 characters or tags may sit between the verb and
                                      # the `, "` (an adverb's </preset>, "to Bob", "you").
-                                     /\b(?:says|asks|exclaims)\b(?:[^,"]|<[^>]*>){0,60}?, "/,
-                                     /You hear/,
+                                     /^#{ROOM_LINE}#{BEFORE_ANY_QUOTE}\b(?:says|asks|exclaims)\b(?:[^,"]|<[^>]*>){0,60}?, "/,
+                                     /^#{ROOM_LINE}#{BEFORE_ANY_QUOTE}You hear/,
                                      # someone attacks from the shadows
-                                     /Someone snipes a/,
-                                     /leaps from hiding and ambushes/,
+                                     /^#{ROOM_LINE}#{BEFORE_ANY_QUOTE}Someone snipes a/,
+                                     /^#{ROOM_LINE}#{BEFORE_ANY_QUOTE}leaps from hiding and ambushes/,
                                      # someone is already hunting here
-                                     /[A-Z][a-z]+ begins to advance/,
-                                     /[A-Z][a-z]+ (jabs|slices|draws|chops|sweeps|lunges|thrusts|claws|gouges|elbows|kicks|punches|knees|shoves|lobs|throws|hurls|fires|shoots|feints) (a|an|some|his|her|their)/)
+                                     /^#{ROOM_LINE}#{BEFORE_ANY_QUOTE}[A-Z][a-z]+ begins to advance/,
+                                     /^#{ROOM_LINE}#{BEFORE_ANY_QUOTE}[A-Z][a-z]+ (jabs|slices|draws|chops|sweeps|lunges|thrusts|claws|gouges|elbows|kicks|punches|knees|shoves|lobs|throws|hurls|fires|shoots|feints) (a|an|some|his|her|their)/)
                            case DRC.bput('search', 'roundtime', "You're not in any condition to be searching around")
                            when /roundtime/i
-                             data = reget(40).reverse.take_while { |x| x !~ /You search around/ }
-                             if data.grep(/vague silhouette|You notice \w+, who is|see signs that/).any?
+                             # The SEARCH result lines, read back from the (tag-stripped) game
+                             # text; only the game's own lines, not quoted player text.
+                             data = reget(40).reverse.take_while { |x| x !~ /^[^"]*?You search around/ }
+                             if data.grep(/^[^"]*?(?:vague silhouette|You notice \w+, who is|see signs that)/).any?
                                pause
                                waitrt?
                                # Someone is hidden here. Take the room only if a buddy has been named

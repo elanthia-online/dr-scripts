@@ -388,10 +388,24 @@ class Forge
   #
   # @return [void]
   def setup_flags
-    Flags.add('forge-assembly', 'another finished \S+ shield (handle)', 'another finished wooden (hilt|haft)', 'another finished (long|short|small|large) leather (cord|backing)', 'another finished (small|large) cloth (padding)', 'another finished (long|short) wooden (pole)', 'appears ready to be reinforced with some (leather strips)')
-    Flags.add('work-done', 'from the successful .* process', 'shows a slightly reduced weight', 'shows improved protection', 'Applying the final touches', /^The .* was successfully/)
-    Flags.add('ingot-restow', /^You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
-    Flags.add('forge-rental-warning', 'Your rental time is almost up')
+    # Every matcher only matches the game's own line, not other players' speech
+    # or ESP: line start with optional leading tags, or (mid-line messages) no
+    # quote outside a tag before the message. Captures are unchanged.
+    Flags.add('forge-assembly',
+              /^(?:<[^>]*>|[^"<])*?another finished \S+ shield (handle)/i,
+              /^(?:<[^>]*>|[^"<])*?another finished wooden (hilt|haft)/i,
+              /^(?:<[^>]*>|[^"<])*?another finished (long|short|small|large) leather (cord|backing)/i,
+              /^(?:<[^>]*>|[^"<])*?another finished (small|large) cloth (padding)/i,
+              /^(?:<[^>]*>|[^"<])*?another finished (long|short) wooden (pole)/i,
+              /^(?:<[^>]*>|[^"<])*?appears ready to be reinforced with some (leather strips)/i)
+    Flags.add('work-done',
+              /^(?:<[^>]*>|[^"<])*?from the successful .* process/i,
+              /^(?:<[^>]*>|[^"<])*?shows a slightly reduced weight/i,
+              /^(?:<[^>]*>|[^"<])*?shows improved protection/i,
+              /^(?:<[^>]+>)*Applying the final touches/i,
+              /^(?:<[^>]+>)*The .* was successfully/)
+    Flags.add('ingot-restow', /^(?:<[^>]+>)*You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
+    Flags.add('forge-rental-warning', /^(?:<[^>]*>|[^"<])*?Your rental time is almost up/i)
   end
 
   # Load settings from YAML configuration and command-line arguments.

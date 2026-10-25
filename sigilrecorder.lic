@@ -42,8 +42,12 @@ class SigilRecorder
     DRC.message("Checking for 'outdoors' waggle set...") if @debug
     DRCA.do_buffs(@settings, 'outdoors') # perc sigil uses Outdoorsmanship
 
-    # flag known patterns that suggest the room is unsuitable for sigil hunting or harvesting
-    Flags.add('sigil-danger-room', /.*begins to advance on you.*|You weave back and forth in a dance-like motion|You must be closer to use tactical abilities on your opponent/)
+    # flag known patterns that suggest the room is unsuitable for sigil hunting or harvesting.
+    # Anchored so they only match the game's own lines, not other players' speech or ESP.
+    Flags.add('sigil-danger-room',
+              /^(?:<[^>]*>|[^"<])*?begins to advance on you/,
+              /^(?:<[^>]+>)*You weave back and forth in a dance-like motion/,
+              /^(?:<[^>]+>)*You must be closer to use tactical abilities on your opponent/)
 
     # main travel loop, travels to rooms and then kicks off the sigil hunting process
     walk_list.each do |roomid|

@@ -33,7 +33,9 @@ class ChopWood
 
     Flags.reset('chop-danger')
     waitrt?
-    until /danger|find nothing of concern/ =~ DRC.bput('watch forest danger', 'Unfortunately', 'shown a way to .* reduce the danger', 'find nothing of concern')
+    # Same rule as game_line, on bput's tag-free text; \K keeps bput's
+    # returned text the reply itself for the check on this line.
+    until /danger|find nothing of concern/ =~ DRC.bput('watch forest danger', /^[^"]*?\KUnfortunately/i, /^[^"]*?\Kshown a way to .* reduce the danger/i, /^[^"]*?\Kfind nothing of concern/i)
       pause
       waitrt?
     end
@@ -68,11 +70,18 @@ class ChopWood
   end
 
   def packet?
-    DRC.bput('get my packet', 'You get', 'What were you referring to') == 'You get'
+    DRC.bput('get my packet', /^You get/, /^What were you referring to/) == 'You get'
+  end
+
+  # Only matches the game's own line, not other players' speech/ESP: no quote
+  # may come before the message outside an XML tag, and every player-text line
+  # has one. \K keeps the matched text the message itself.
+  def game_line(message)
+    /^(?:<[^>]*>|[^"<])*?\K#{message}/i
   end
 
   def setup
-    Flags.add('chop-danger', 'You notice an unusual smell drifting through the area', 'A monotonous buzzing sound fills the air', 'A loud cracking sound resonates from somewhere closeby')
+    Flags.add('chop-danger', game_line('You notice an unusual smell drifting through the area'), game_line('A monotonous buzzing sound fills the air'), game_line('A loud cracking sound resonates from somewhere closeby'))
     settings = get_settings
     @equipment_manager = EquipmentManager.new
     @lumber_implement = settings.lumber_implement

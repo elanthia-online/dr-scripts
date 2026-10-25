@@ -11,6 +11,20 @@ class Stabbity
     /(a|an) (light|good|solid|hard|strong) (blow|hit|strike)/,
   ]
 
+  # The arena announcer's call for every fifth round, e.g.
+  #   An iron portcullis is raised, heralding the arrival of a piruati serpent!
+  #   The announcers calls out, "And here's our next foe!  Round 5, FIGHT!"
+  # Anchored to the start of the game's line so another player's speech or
+  # ESP repeating the call does not match.
+  ELIMINATE_ROUND = /^(?:<[^>]+>)*(?:An iron portcullis is raised, .*?)?(?:<[^>]+>)*The announcers? calls out(?:<[^>]+>)*, "And here's our next foe!\s+Round (?:5|10|15|20|25), FIGHT/
+
+  # WATCH reply naming the dodge, e.g. "You appraise the situation and notice
+  # ..., you could try to pedal back out of the way!". Returns just the dodge
+  # verb; only matches the game's own line (no quote before the advice), and
+  # only whole words.
+  # Actions as of DuskRuin 2019: pedal, bob, duck, jump, lean, cower
+  WATCH_DODGE = /^[^"]*?you could try to (?:back |prepare to )?\K(?:pedal|bob|duck|jump|lean|cower)\b/
+
   def initialize
     unless DRStats.thief?
       echo("*** But you're not a thief! ***")
@@ -41,7 +55,7 @@ class Stabbity
     @arena_trap = nil
 
     if arena_mode? && @khri_eliminate
-      Flags.add('khri-eliminate', /Round (?:5|10|15|20|25), FIGHT/)
+      Flags.add('khri-eliminate', ELIMINATE_ROUND)
     end
 
     cleanup if cleanup_mode?
@@ -373,8 +387,7 @@ class Stabbity
   end
 
   def watch_target
-    # Actions as of DuskRuin 2019: pedal, bob, duck, jump, lean, cower
-    @arena_trap = DRC.bput("watch #{target_ref}", /(?:pedal|bob|duck|jump|lean|cower)/)
+    @arena_trap = DRC.bput("watch #{target_ref}", WATCH_DODGE)
     echo("*** Will #{@arena_trap} to avoid trap ***") if @debug
   end
 
