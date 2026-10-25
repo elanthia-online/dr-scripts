@@ -4,6 +4,20 @@
   while a watch is in progress and unpauses it once the maneuver is set.
 =end
 
+# WATCH reply naming the dodge, e.g. "..., you could try to duck down!". The
+# bput returns just the dodge verb. Only matches the game's own line (no quote
+# before the advice, which other players' speech and ESP always have), and
+# only whole words. Covers the "back pedal" and "prepare to jump" wordings.
+ARENA_WATCH_DODGE = /^[^"]*?you could try to (?:back |prepare to )?\K(?:pedal|bob|duck|jump|lean|cower)\b/
+
+# WATCH replies that end the watch without a dodge; each returns just the
+# message text and only matches the game's own line.
+ARENA_WATCH_DONE = [/^[^"]*?\KWatch out for whom/, /^[^"]*?\Kmay not be the best use of your time/, /^[^"]*?\KYou've already spotted the .* intentions/].freeze
+
+# Any other game line ends the WATCH bput at once, as before, but not another
+# player's speech or ESP line, so the real reply is not passed over.
+ARENA_WATCH_OTHER = /^(?!\[[^\]]+\]\[[^\]]+\] |[A-Z][\w'-]* (?:says|asks|exclaims|whispers|yells)\b)./
+
 # The opponent to WATCH: the first live room creature whose noun is not an
 # ignored arena NPC, addressed by id ("#123"). A creature with no noun yet is
 # skipped, since it could be an ignored NPC. Falls back to the first
@@ -43,28 +57,26 @@ def mainloop
         end
 
         waitrt?
-        case DRC.bput("watch #{target}",
-                      'you could try to pedal', 'you could try to bob', 'you could try to duck', 'you could try to jump', 'you could try to lean',
-                      'you could try to cower', 'Watch out for whom', 'may not be the best use of your time', /You've already spotted the .* intentions/, '.*')
-        when 'you could try to pedal'
+        case DRC.bput("watch #{target}", ARENA_WATCH_DODGE, *ARENA_WATCH_DONE, ARENA_WATCH_OTHER)
+        when 'pedal'
           DRC.bput('pedal', 'You set yourself up to back pedal')
           watch_complete = true
-        when 'you could try to bob'
+        when 'bob'
           DRC.bput('bob', 'You set yourself up to bob')
           watch_complete = true
-        when 'you could try to duck'
+        when 'duck'
           DRC.bput('duck', 'You set yourself up to duck')
           watch_complete = true
-        when 'you could try to jump'
+        when 'jump'
           DRC.bput('jump', 'You set yourself up to jump')
           watch_complete = true
-        when 'you could try to lean'
+        when 'lean'
           DRC.bput('lean', 'You set yourself up to lean')
           watch_complete = true
-        when 'you could try to cower'
+        when 'cower'
           DRC.bput('cower', 'You set yourself up to cower')
           watch_complete = true
-        when /You've already spotted the .* intentions/, 'Watch out for whom', 'may not be the best use of your time'
+        when *ARENA_WATCH_DONE
           watch_complete = true
         end
 

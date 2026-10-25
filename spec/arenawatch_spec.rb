@@ -106,20 +106,56 @@ RSpec.describe 'arenawatch' do
 
   describe '#mainloop' do
     let(:sent) { [] }
+    let(:watch_patterns) { [] }
+
+    # The text before the advice is a stand-in; the advice wordings are the
+    # ones the Genie arena triggers on Elanthipedia ("Genie quest triggers")
+    # answer with a dodge.
+    def advice(tail)
+      "You notice the serpent may push you into a jet of steam, you could try to #{tail}"
+    end
+
+    # Reads `lines` against the script's own bput patterns the way lich-5
+    # DRC.bput does: line by line, patterns in order (a String as /x/i), and
+    # returns the matched text of the first hit, or '' when nothing matches.
+    def bput_reply(lines, matches)
+      patterns = matches.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+      lines.each do |line|
+        patterns.each do |pattern|
+          match = line.match(pattern)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
 
     # DRRoom.npcs reads `before` on the first call (the loop's baseline) and
     # `after` from then on, so the loop sees the room change once. `pause` at
     # the bottom of the loop raises StopIteration, which ends `loop do`.
-    def run_mainloop(before:, after:, watch_reply: 'you could try to duck')
+    # The first WATCH of the opponent reads `watch_lines`; a later one reads
+    # the game's re-watch reply. A WATCH of anything else reads 'Watch out
+    # for whom'.
+    def run_mainloop(before:, after:, watch_lines: [advice('duck down!')])
+      %w[ARENA_WATCH_DODGE ARENA_WATCH_DONE ARENA_WATCH_OTHER].each { |c| load_lic_constant('arenawatch.lic', c) }
       calls = 0
       allow(DRRoom).to receive(:npcs) do
         calls += 1
         calls == 1 ? before : after
       end
-      allow(DRC).to receive(:bput) do |command, *_matches|
+      allow(DRC).to receive(:bput) do |command, *matches|
         sent << command
+        raise 'watched too often' if sent.size > 6
+
         if command.start_with?('watch ')
-          command.start_with?('watch #4', 'watch leucro') ? watch_reply : 'Watch out for whom'
+          watch_patterns.replace(matches)
+          lines = if !command.start_with?('watch #4', 'watch leucro')
+                    ['Watch out for whom?']
+                  elsif sent.count { |c| c.start_with?('watch ') } == 1
+                    watch_lines
+                  else
+                    ["You've already spotted the serpent's intentions."]
+                  end
+          bput_reply(lines, matches)
         else
           "You set yourself up to #{command}"
         end
@@ -142,7 +178,7 @@ RSpec.describe 'arenawatch' do
     end
 
     it 'watches the plain noun when no creature id is available' do
-      run_mainloop(before: %w[Servant Usdiwi], after: %w[Servant Usdiwi leucro], watch_reply: 'you could try to jump')
+      run_mainloop(before: %w[Servant Usdiwi], after: %w[Servant Usdiwi leucro], watch_lines: [advice('jump over it!')])
 
       expect(sent).to eq(['watch leucro', 'jump'])
     end
@@ -154,6 +190,76 @@ RSpec.describe 'arenawatch' do
 
       expect(sent).to be_empty
       expect(arenawatch).to have_received(:unpause_script).with('combat-trainer')
+    end
+
+    describe 'reading the WATCH reply' do
+      before { seed_room(creature(4, 'leucro')) }
+
+      def watch_with(*lines)
+        run_mainloop(before: [], after: %w[leucro], watch_lines: lines)
+      end
+
+      {
+        'pedal back out of the way!' => 'pedal', 'back pedal out of the way!' => 'pedal',
+        'jump over it!' => 'jump', 'prepare to jump!' => 'jump',
+        'bob back and forth!' => 'bob', 'cower into a smaller target!' => 'cower',
+        'cower out of the way!' => 'cower', 'duck down!' => 'duck', 'lean out of the way!' => 'lean'
+      }.each do |tail, verb|
+        it "sends #{verb} for the advice '...you could try to #{tail}'" do
+          watch_with(advice(tail))
+
+          expect(sent).to eq(['watch #4', verb])
+          expect(arenawatch).to have_received(:unpause_script).with('combat-trainer')
+        end
+      end
+
+      {
+        'say'     => 'Mallory says, "anyone up for a hunt?"',
+        'ESP'     => '[General][Mallory] "back in a bit"',
+        'whisper' => 'Mallory whispers, "nice hat"'
+      }.each do |shape, line|
+        it "still takes the real advice when another player's #{shape} arrives first" do
+          watch_with(line, advice('duck down!'))
+
+          expect(sent).to eq(['watch #4', 'duck'])
+        end
+      end
+
+      it "never takes a dodge from another player's line that repeats the advice" do
+        watch_with('Mallory says, "you could try to lean on him"', '[General][Mallory] "you could try to cower"', advice('duck down!'))
+
+        expect(sent).to eq(['watch #4', 'duck'])
+      end
+
+      it "never ends the watch on another player's line that repeats a no-dodge reply" do
+        watch_with(%(Mallory whispers, "You've already spotted the troll's intentions"), %([General][Mallory] "Watch out for whom"), advice('lean out of the way!'))
+
+        expect(sent).to eq(['watch #4', 'lean'])
+      end
+
+      it "ends the watch with no dodge on the game's re-watch reply" do
+        watch_with("You've already spotted the serpent's intentions.")
+
+        expect(sent).to eq(['watch #4'])
+        expect(arenawatch).to have_received(:unpause_script).with('combat-trainer')
+      end
+
+      it 'still ends the bput at once on any other game line, then watches again' do
+        watch_with('The serpent hisses.', advice('duck down!'))
+
+        expect(sent).to eq(['watch #4', 'watch #4'])
+      end
+
+      it 'passes WATCH patterns that skip player speech and ESP but still catch game lines' do
+        watch_with(advice('duck down!'))
+        player = ['Mallory says, "you could try to duck"', '[General][Mallory] "you could try to duck"',
+                  'Mallory whispers, "Watch out for whom"', 'Mallory asks, "may not be the best use of your time?"',
+                  'Mallory exclaims, "zzz"', 'Mallory yells, "zzz"']
+
+        expect(player.map { |line| bput_reply([line], watch_patterns) }).to all(eq(''))
+        expect(bput_reply(['The serpent hisses.'], watch_patterns)).not_to be_empty
+        expect(bput_reply([advice('cower out of the way!')], watch_patterns)).to eq('cower')
+      end
     end
   end
 end
