@@ -136,17 +136,7 @@ class TaskForage
       2568   => %w[e s s s s e e ne ne ne n]
     }
 
-    @move_regex = [/The flower peddler gathers her skirts and glides (<?direction>north|south|east|west|northeast|southeast|southwest|northwest)\./]
-    Flags.add('combat', 'You cannot forage while in combat!', 'closes to pole weapon range on you!',
-              'begins to advance on you!')
-    Flags.add('giver-move', *@move_regex)
-    Flags.add('cluttered', 'The room is too cluttered to find anything here', 'tries to forage for something, but can\'t find it with all the clutter here')
-    # All three mean the item in hand won't go into the forage container. The weight
-    # message is a capacity limit rather than a count limit, but emptying the container
-    # is the same remedy.
-    Flags.add('container-full', 'There isn\'t any more room in',
-              /You just can't get .+ to fit in .+ no matter how you arrange it/,
-              'too heavy to go in there')
+    setup_flags
 
     @task_givers = { 'shard'    => { 'npc' => 'peddler', 'location' => @shard_path },
                      'crossing' => { 'npc' => 'Mags', 'location' => '954' } }
@@ -197,6 +187,26 @@ class TaskForage
     end
   end
 
+  # Every matcher only matches the game's own line, not other players' speech or
+  # ESP: line start with optional leading tags, or (mid-line messages) no quote
+  # outside a tag before the message. Another player's clutter line has to start
+  # with that player's name.
+  def setup_flags
+    @move_regex = [/^(?:<[^>]+>)*The flower peddler gathers her skirts and glides (<?direction>north|south|east|west|northeast|southeast|southwest|northwest)\./]
+    Flags.add('combat', /^(?:<[^>]+>)*You cannot forage while in combat!/i,
+              /^(?:<[^>]*>|[^"<])*?closes to pole weapon range on you!/i,
+              /^(?:<[^>]*>|[^"<])*?begins to advance on you!/i)
+    Flags.add('giver-move', *@move_regex)
+    Flags.add('cluttered', /^(?:<[^>]+>)*The room is too cluttered to find anything here/i,
+              /^(?:<[^>]+>)*[A-Z][a-z]+ tries to forage for something, but can't find it with all the clutter here/)
+    # All three mean the item in hand won't go into the forage container. The weight
+    # message is a capacity limit rather than a count limit, but emptying the container
+    # is the same remedy.
+    Flags.add('container-full', /^(?:<[^>]+>)*There isn't any more room in/i,
+              /^(?:<[^>]+>)*You just can't get .+ to fit in .+ no matter how you arrange it/,
+              /^(?:<[^>]*>|[^"<])*?too heavy to go in there/i)
+  end
+
   # Fang Cove has no forage task giver, so fall back through fang_cove_override_town
   # the way other town-bound scripts do, taking the first town that has one.
   def resolve_task_town
@@ -216,8 +226,9 @@ class TaskForage
     # Match the "turn in" line, which the journal prints last, so the entry above it is
     # already in the buffer by the time bput returns. Other task types have no such line,
     # so they fall through to the timeout and are left alone.
-    remaining_regex = /You need to turn in (?<remaining>\d+) more/
-    no_task_regex = /You are not currently on a task/
+    # No quote before the message, so other players' speech or ESP can't answer for the journal
+    remaining_regex = /^[^"]*?You need to turn in (?<remaining>\d+) more/
+    no_task_regex = /^[^"]*?You are not currently on a task/
     result = DRC.bput('task', { 'suppress_no_match' => true, 'timeout' => 3 },
                       remaining_regex, no_task_regex)
     remaining_match = result.match(remaining_regex)
@@ -232,9 +243,10 @@ class TaskForage
     remaining = remaining_match[:remaining].to_i
 
     # Match objects rather than Regexp.last_match -- the sub below would reset it
-    # Leading .* forces the last " in " before the verb, so a descriptor like
-    # "the peddler in red" can't be mistaken for the town
-    entry_regex = /.*\bin (?<town>.+?) wants you to retrieve (?<number>\d+) (?<item>.+?)\./
+    # Leading [^"]* forces the last " in " before the verb, so a descriptor like
+    # "the peddler in red" can't be mistaken for the town. No quote anywhere in the
+    # match, so other players' speech or ESP is never read as the journal entry.
+    entry_regex = /^[^"]*\bin (?<town>[^"]+?) wants you to retrieve (?<number>\d+) (?<item>[^"]+?)\./
     entry = reget(20).reverse.find { |line| line =~ entry_regex }
     unless entry
       DRC.message('Unable to read the task entry from your journal.')
@@ -914,9 +926,11 @@ class TaskForage
   # @return [Boolean] whether the task giver took it
   def give_item(noun = @item)
     echo "give_item: #{noun}" if @debug
-    case DRC.bput("give #{noun} to #{@task_giver}", 'and says, "Thanks,', '^What is it you\'re trying to give?',
+    # The thanks and Mags's replies only match the game's own line, not other players'
+    # speech or ESP: no quote before "and says", or Mags at the start of the line.
+    case DRC.bput("give #{noun} to #{@task_giver}", /^[^"]*?and says, "Thanks,/i, '^What is it you\'re trying to give?',
                   ' I have a few things here for you, thank you so much for your help',
-                  /isnae somethin' I take/, 'Mags sighs and says')
+                  /^Mags sighs and says, "[^"]*isnae somethin' I take/, '^Mags sighs and says')
     when /^What is it you're trying to give?/
       find_giver
       give_item(noun)
