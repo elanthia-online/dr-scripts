@@ -14,6 +14,26 @@ rescue SyntaxError, StandardError => e
   false
 end
 
+# Builds Flags matchers that only match the game's own line, not other players'
+# speech, whispers or ESP, which always put a quote before the player's text.
+module CTGameLine
+  # Leading XML tags, then the message at the start of the line.
+  LINE_START = '^(?:<[^>]+>)*'
+  # Any text before the message, as long as no quote appears outside a tag.
+  NO_QUOTE_BEFORE = '^(?:<[^>]*>|[^"<])*?'
+
+  # '^Message' must start the line; any other message may follow game text
+  # (e.g. a creature's name) on the same line. Works for data-file strings
+  # with or without a leading '^'. Returns a String, so Flags.add still
+  # matches case-insensitively.
+  def self.matcher(message)
+    message = message.to_s
+    return "#{LINE_START}(?:#{message.delete_prefix('^')})" if message.start_with?('^')
+
+    "#{NO_QUOTE_BEFORE}(?:#{message})"
+  end
+end
+
 class SetupProcess
   def initialize(settings, equipment_manager)
     @equipment_manager = equipment_manager
@@ -1876,13 +1896,13 @@ class SpellProcess
     @symbiosis_learning_threshold = settings.symbiosis_learning_threshold
     echo(" @symbiosis_learning_threshold: #{@symbiosis_learning_threshold}") if $debug_mode_ct
 
-    Flags.add('ct-spelllost', 'Your pattern dissipates with the loss of your target', 'Your secondary spell pattern dissipates because your target is dead, but the main spell remains intact', 'Your concentration lapses and you lose your targeting pattern')
-    Flags.add('ct-need-bless', ' passes through the .* with no effect')
-    Flags.add('ct-starlight-depleted', 'enough starlight') if DRStats.trader?
-    Flags.add('ct-regalia-expired', 'Your .* glimmers? weakly') if DRStats.trader?
-    Flags.add('ct-regalia-succeeded', 'You cup your palms skyward to bask in') if DRStats.trader?
-    Flags.add('ct-shock-warning', 'You are distinctly aware that completion of this spell pattern may bring you shock')
-    Flags.add('ct-spell-unknown', 'You have no idea how to cast that spell')
+    Flags.add('ct-spelllost', CTGameLine.matcher('^Your pattern dissipates with the loss of your target'), CTGameLine.matcher('^Your secondary spell pattern dissipates because your target is dead, but the main spell remains intact'), CTGameLine.matcher('^Your concentration lapses and you lose your targeting pattern'))
+    Flags.add('ct-need-bless', CTGameLine.matcher(' passes through the .* with no effect'))
+    Flags.add('ct-starlight-depleted', CTGameLine.matcher('enough starlight')) if DRStats.trader?
+    Flags.add('ct-regalia-expired', CTGameLine.matcher('^Your .* glimmers? weakly')) if DRStats.trader?
+    Flags.add('ct-regalia-succeeded', CTGameLine.matcher('^You cup your palms skyward to bask in')) if DRStats.trader?
+    Flags.add('ct-shock-warning', CTGameLine.matcher('^You are distinctly aware that completion of this spell pattern may bring you shock'))
+    Flags.add('ct-spell-unknown', CTGameLine.matcher('^You have no idea how to cast that spell'))
 
     @offensive_spells
       .select { |spell| spell['expire'] }
@@ -1943,7 +1963,7 @@ class SpellProcess
   end
 
   def add_spell_flag(name, expire)
-    Flags.add("ct-#{name}", expire)
+    Flags.add("ct-#{name}", CTGameLine.matcher(expire))
     Flags["ct-#{name}"] = true
   end
 
@@ -3094,7 +3114,7 @@ class AbilityProcess
     echo("  @paladin_glyphs: #{@paladin_glyphs}") if $debug_mode_ct
 
     if @use_mana_glyph
-      Flags.add('glyph-mana-expired', 'You sense the holy power return to normal')
+      Flags.add('glyph-mana-expired', CTGameLine.matcher('^You sense the holy power return to normal'))
       Flags['glyph-mana-expired'] = true
       echo 'Added glyph of mana expiration flag.' if $debug_mode_ct
     end
@@ -3508,7 +3528,7 @@ class AbilityProcess
   def setup_barb_buff_flags
     @barb_buffs.each do |name|
       ability_data = get_data('spells').barb_abilities[name]
-      Flags.add("ap-#{name}-expired", ability_data['expired_message'])
+      Flags.add("ap-#{name}-expired", CTGameLine.matcher(ability_data['expired_message']))
       Flags["ap-#{name}-expired"] = true unless DRSpells.active_spells[name]
       echo "setup_barb_buff_flags:: adding #{Flags["ap-#{name}-expired"]} flag with an expiration message of: #{ability_data['expired_message']}" if $debug_mode_ct
     end
@@ -5230,7 +5250,7 @@ class CombatTrainer
   end
 
   def setup(settings)
-    Flags.add('ct-spellcast', '^Your formation of a targeting pattern around .+ has completed\.', 'Your target pattern has finished forming around the area', '^You feel fully prepared to cast your spell\.', '^Your spell pattern snaps into shape with little preparation!')
+    Flags.add('ct-spellcast', '^Your formation of a targeting pattern around .+ has completed\.', CTGameLine.matcher('^Your target pattern has finished forming around the area'), '^You feel fully prepared to cast your spell\.', '^Your spell pattern snaps into shape with little preparation!')
 
     Flags.add('last-stance', /^Setting your Evasion stance to (?<evasion>\d+)%,.*your Parry stance to (?<parry>\d+)%,.*your Shield stance to (?<shield>\d+)%.*?You have (?<spare>\d+) stance points left/)
 
@@ -5651,17 +5671,17 @@ class GameState
     echo("  @rush_shield: #{@rush_engage_only}") if $debug_mode_ct
 
     if @use_analyze_combos && DRStats.barbarian?
-      Flags.add('ct-accuracy-ready', 'You sense your combat accuracy decrease')
+      Flags.add('ct-accuracy-ready', CTGameLine.matcher('^You sense your combat accuracy decrease'))
       Flags['ct-accuracy-ready'] = true
-      Flags.add('ct-damage-ready', 'You sense your ability to land deadly blows decrease')
+      Flags.add('ct-damage-ready', CTGameLine.matcher('^You sense your ability to land deadly blows decrease'))
       Flags['ct-damage-ready'] = true
-      Flags.add('ct-balance-ready', 'Your enhanced balance escapes')
+      Flags.add('ct-balance-ready', CTGameLine.matcher('^Your enhanced balance escapes'))
       Flags['ct-balance-ready'] = true
     end
 
     if DRStats.barbarian?
-      Flags.add('ct-barbarian-whirlwind', 'Your inner fire roils with a rising desire to unleash a whirlwind attack!')
-      Flags.add('ct-barbarian-whirlwind-expired', 'The whirlwind moment passes.')
+      Flags.add('ct-barbarian-whirlwind', CTGameLine.matcher('^Your inner fire roils with a rising desire to unleash a whirlwind attack!'))
+      Flags.add('ct-barbarian-whirlwind-expired', CTGameLine.matcher('^The whirlwind moment passes.'))
       echo "Improved whirlwind flags reset" if $debug_mode_ct
     end
 

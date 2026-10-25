@@ -88,6 +88,7 @@ load_lic_class('combat-trainer.lic', 'SpellProcess')
 load_lic_class('combat-trainer.lic', 'PetProcess')
 load_lic_class('combat-trainer.lic', 'TrainerProcess')
 load_lic_class('combat-trainer.lic', 'CombatTrainer')
+load_lic_module('combat-trainer.lic', 'CTGameLine')
 
 # Shared setup for combat-trainer tests that need game state stubs.
 # Include in each describe block via: before(:each) { ct_setup }
@@ -5199,6 +5200,247 @@ RSpec.describe SpellProcess do
       expect(DRCA).not_to have_received(:prepare?) # central guard skipped it
       expect(gs.casting_cfb).to be false           # ...and cleared the flag check_cfb set
       expect(gs.necro_casting?).to be false # so loot/rituals/pets are NOT suppressed
+    end
+  end
+end
+
+# ===========================================================================
+# Spell and ability Flags -- only the game's own line sets them
+#
+# Lich tests every Flags matcher against every server line, including other
+# players' speech, whispers and ESP. These flags make combat-trainer recast,
+# disable or drop spells, so each must match only the game's line. The
+# matchers under test are the ones the real initializers/setup register.
+# ===========================================================================
+RSpec.describe 'Spell and ability flags match only the game line' do
+  before(:each) { ct_setup }
+
+  # Feed a server line through the registered Flags matchers, the way
+  # Lich's DRParser.check_events does for every downstream line.
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # The same text as another player's ESP, speech or whisper, plain and as raw XML.
+  def player_shapes(text)
+    {
+      'ESP'         => %([General][Mallory] "#{text}"),
+      'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+      'say'         => %(Mallory says, "#{text}"),
+      'raw say'     => %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+      'whisper'     => %(Mallory whispers, "#{text}"),
+      'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "#{text}")
+    }
+  end
+
+  def fires?(key, line)
+    Flags.reset(key)
+    deliver(line)
+    Flags[key] ? true : false
+  end
+
+  # Asserts the flag fires on the game line (bare and behind leading tags) and
+  # on none of the player shapes of the same text.
+  def expect_game_line_only(key, game_line)
+    expect(fires?(key, game_line)).to be(true), "#{key} missed the game line"
+    expect(fires?(key, "<pushBold/>#{game_line}")).to be(true), "#{key} missed the game line behind a tag"
+    player_shapes(game_line).each do |shape, line|
+      expect(fires?(key, line)).to be(false), "#{key} fired on #{shape}: #{line}"
+    end
+  end
+
+  def registered_spell_process(buff_spells: {}, offensive_spells: [])
+    settings = OpenStruct.new(buff_spells: buff_spells, offensive_spells: offensive_spells,
+                              waggle_sets: { 'regalia' => {} }, gear_sets: { 'standard' => [] }, avtalia_array: [])
+    SpellProcess.new(settings, double('EquipmentManager'))
+  end
+
+  describe 'CTGameLine.matcher' do
+    it 'keeps a message that follows a creature name, even behind a tag with quoted attributes' do
+      line = '<pushStream id="combat" />The swirling confines of malevolent darkness wane from about a jeol moradu.'
+      expect(line).to match(/#{CTGameLine.matcher('malevolent darkness wane')}/i)
+    end
+
+    it "treats a leading '^' as line start, so the message cannot follow other text" do
+      matcher = /#{CTGameLine.matcher('^Your rage dissipates')}/i
+      expect('<pushBold/>Your rage dissipates, pulling you away.').to match(matcher)
+      expect('The goblin sneers. Your rage dissipates.').not_to match(matcher)
+    end
+
+    it 'groups the message, so an alternation in data stays behind the anchor' do
+      matcher = /#{CTGameLine.matcher('first message|second message')}/i
+      expect('The goblin flees. second message').to match(matcher)
+      expect('Mallory says, "second message"').not_to match(matcher)
+    end
+  end
+
+  describe 'SpellProcess flags' do
+    {
+      'ct-spelllost'     => 'Your concentration lapses and you lose your targeting pattern.',
+      'ct-need-bless'    => 'Your sword passes through the ghost with no effect.',
+      'ct-shock-warning' => 'You are distinctly aware that completion of this spell pattern may bring you shock.',
+      'ct-spell-unknown' => 'You have no idea how to cast that spell.'
+    }.each do |key, game_line|
+      it "#{key} fires on the game line only" do
+        registered_spell_process
+        expect_game_line_only(key, game_line)
+      end
+    end
+
+    it 'ct-spelllost still hears all three game lines' do
+      registered_spell_process
+      expect(fires?('ct-spelllost', 'Your pattern dissipates with the loss of your target.')).to be true
+      expect(fires?('ct-spelllost', 'Your secondary spell pattern dissipates because your target is dead, but the main spell remains intact.')).to be true
+    end
+
+    context 'as a Trader' do
+      before { DRStats.guild = 'Trader' }
+
+      {
+        'ct-starlight-depleted' => 'You do not have enough starlight to cast that.',
+        'ct-regalia-expired'    => 'Your crystalline regalia glimmers weakly.',
+        'ct-regalia-succeeded'  => 'You cup your palms skyward to bask in the starlight.'
+      }.each do |key, game_line|
+        it "#{key} fires on the game line only" do
+          registered_spell_process
+          expect_game_line_only(key, game_line)
+        end
+      end
+
+      it 'keeps the starlight spells when another player talks about starlight' do
+        buffs = { 'Blur' => { 'abbrev' => 'blur', 'starlight_threshold' => 0 } }
+        instance = registered_spell_process(buff_spells: buffs)
+        game_state = double('GameState', casting_regalia: false)
+        allow(game_state).to receive(:regalia_cancel=)
+        allow(DRC).to receive(:message)
+        player_shapes('I do not have enough starlight').each_value do |line|
+          deliver(line)
+          instance.send(:check_trader_magic, game_state)
+        end
+        expect(instance.instance_variable_get(:@buff_spells).keys).to eq(['Blur'])
+        expect(game_state).not_to have_received(:regalia_cancel=)
+      end
+
+      it 'drops the starlight spells on the game line' do
+        buffs = { 'Blur' => { 'abbrev' => 'blur', 'starlight_threshold' => 0 } }
+        instance = registered_spell_process(buff_spells: buffs)
+        game_state = double('GameState', casting_regalia: false)
+        allow(game_state).to receive(:regalia_cancel=)
+        allow(DRC).to receive(:message)
+        deliver('You do not have enough starlight to cast that.')
+        instance.send(:check_trader_magic, game_state)
+        expect(instance.instance_variable_get(:@buff_spells)).to be_empty
+        expect(game_state).to have_received(:regalia_cancel=).with(true)
+      end
+    end
+
+    describe 'unknown spell during preparation' do
+      let(:data) { { 'abbrev' => 'EASE', 'name' => 'Ease Burden', 'mana' => 3 } }
+
+      def prepare_hearing(line)
+        instance = registered_spell_process
+        game_state = GameState.allocate
+        game_state.casting = false
+        allow(DRC).to receive(:message)
+        allow(DRCA).to receive(:prepare?) do
+          deliver(line)
+          false
+        end
+        instance.send(:prepare_spell, data, game_state)
+        instance
+      end
+
+      it 'disables the spell when the game says it is unknown' do
+        expect(prepare_hearing('You have no idea how to cast that spell.').send(:spell_disabled?, 'ease')).to be true
+      end
+
+      it 'keeps the spell when another player says the same thing' do
+        player_shapes('You have no idea how to cast that spell.').each do |shape, line|
+          expect(prepare_hearing(line).send(:spell_disabled?, 'ease')).to be(false), shape
+        end
+      end
+    end
+
+    describe 'spell expiry flags from spell data' do
+      it 'fire on the expiry line, including one that follows a creature name' do
+        offensive = [{ 'abbrev' => 'mb', 'expire' => 'A heavy earthen ballista loses its cohesion and crumples into a pile of debris.' },
+                     { 'abbrev' => 'mal', 'expire' => 'malevolent darkness wane' }]
+        registered_spell_process(offensive_spells: offensive)
+        expect_game_line_only('ct-mb', 'A heavy earthen ballista loses its cohesion and crumples into a pile of debris.')
+        expect_game_line_only('ct-mal', 'The swirling confines of malevolent darkness wane from about a jeol moradu.')
+      end
+
+      it 'start set, so the spell is cast once before any expiry line' do
+        buffs = { 'Zephyr' => { 'abbrev' => 'zephyr', 'expire' => 'the breeze fades from the area' } }
+        registered_spell_process(buff_spells: buffs)
+        expect(Flags['ct-zephyr']).to be true
+        expect_game_line_only('ct-zephyr', 'With a final gust, the breeze fades from the area.')
+      end
+    end
+  end
+
+  describe 'AbilityProcess flags' do
+    let(:barb_abilities) do
+      {
+        'Python'   => { 'expired_message' => 'finish practicing the Form of the Python' },
+        'Blizzard' => { 'expired_message' => '^Your blizzard of hate melts away, leaving you deflated' }
+      }
+    end
+
+    def registered_ability_process(**settings)
+      $test_data = OpenStruct.new(spells: OpenStruct.new(barb_abilities: barb_abilities))
+      AbilityProcess.new(OpenStruct.new({ buff_nonspells: { 'barb_buffs' => %w[Python Blizzard] }, battle_cries: [] }.merge(settings)))
+    end
+
+    it 'barbarian buff expiry flags fire on the game line only, whether or not the data is anchored' do
+      registered_ability_process
+      expect_game_line_only('ap-Python-expired', 'You feel your inner fire cool as you finish practicing the Form of the Python.')
+      expect_game_line_only('ap-Blizzard-expired', 'Your blizzard of hate melts away, leaving you deflated and empty of its violent rage.')
+      expect(fires?('ap-Blizzard-expired', 'The goblin says nothing. Your blizzard of hate melts away, leaving you deflated.')).to be false
+    end
+
+    it 'glyph of mana expiry fires on the game line only' do
+      registered_ability_process(paladin_use_mana_glyph: true)
+      expect_game_line_only('glyph-mana-expired', 'You sense the holy power return to normal.')
+    end
+  end
+
+  describe 'GameState barbarian ability flags' do
+    it 'fire on the game line only' do
+      DRStats.guild = 'Barbarian'
+      settings = OpenStruct.new(use_analyze_combos: true, damaris_weapon_sets: {}, stances: {}, weapon_training: {},
+                                charged_maneuvers: {}, doublestrike_trainables: [], aiming_trainables: [])
+      game_state = GameState.allocate
+      # initialize reads @aiming_trainables before it assigns it.
+      game_state.instance_variable_set(:@aiming_trainables, [])
+      game_state.send(:initialize, settings, double('EquipmentManager'))
+      {
+        'ct-accuracy-ready'              => 'You sense your combat accuracy decrease.',
+        'ct-damage-ready'                => 'You sense your ability to land deadly blows decrease.',
+        'ct-balance-ready'               => 'Your enhanced balance escapes you.',
+        'ct-barbarian-whirlwind'         => 'Your inner fire roils with a rising desire to unleash a whirlwind attack!',
+        'ct-barbarian-whirlwind-expired' => 'The whirlwind moment passes.'
+      }.each { |key, game_line| expect_game_line_only(key, game_line) }
+    end
+  end
+
+  describe 'CombatTrainer ct-spellcast' do
+    it 'fires on the game lines only' do
+      trainer = CombatTrainer.allocate
+      allow(DRC).to receive(:bput)
+      allow(GameState).to receive(:new)
+      allow(SafetyProcess).to receive(:new)
+      allow(trainer).to receive(:make_processes)
+      trainer.setup(OpenStruct.new(default_stance: 'custom'))
+      expect_game_line_only('ct-spellcast', 'Your target pattern has finished forming around the area.')
+      expect(fires?('ct-spellcast', 'You feel fully prepared to cast your spell.')).to be true
     end
   end
 end
