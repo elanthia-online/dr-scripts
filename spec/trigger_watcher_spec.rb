@@ -263,6 +263,76 @@ RSpec.describe 'trigger-watcher.lic' do
         expect(DRC).to have_received(:wait_for_script_to_complete).with('somescript', ['Mallory Smith'])
       end
 
+      # The arguments the started script sees. lich-5 joins the arguments with spaces (start_script
+      # in lib/global_defs.rb) and Script#initialize splits the string again (lib/common/script.rb).
+      def lich_script_vars(joined)
+        joined.scan(/[^\s"]*(?<!\\)"(?:\\"|[^"])+(?<!\\)"[^\s]*|(?:\\"|[^"\s])+/).collect { |s| s.gsub(/(?<!\\)"/, '').gsub('\\"', '"') }
+      end
+
+      def exec_script_vars
+        lich_script_vars($started_scripts.last[1].join(' '))
+      end
+
+      # DRC.wait_for_script_to_complete (lib/dragonrealms/commons/common.rb) wraps an argument
+      # holding whitespace in double quotes before starting the script.
+      def execw_script_vars
+        args = nil
+        expect(DRC).to have_received(:wait_for_script_to_complete) { |_name, script_args| args = script_args }
+        lich_script_vars(args.map { |arg| arg.to_s =~ /\s/ ? "\"#{arg}\"" : arg }.join(' '))
+      end
+
+      context 'when the capture holds double quotes' do
+        let(:captured_text) { 'hi" --flag "x' }
+
+        it 'gives the =exec script the capture as one argument' do
+          fire_trigger(['=exec {somescript $1 now}'])
+
+          expect(exec_script_vars).to eq(['hi" --flag "x', 'now'])
+        end
+
+        it 'gives the =execw script the capture as one argument' do
+          fire_trigger(['=execw {somescript $1 now}'])
+
+          expect(execw_script_vars).to eq(['hi" --flag "x', 'now'])
+        end
+
+        it 'keeps the capture in the argument it is written in' do
+          fire_trigger(['=exec {somescript --say=$1}'])
+
+          expect(exec_script_vars).to eq(['--say=hi" --flag "x'])
+        end
+      end
+
+      context 'when the capture holds a double quote and no space' do
+        let(:captured_text) { 'a"b' }
+
+        it 'gives the script the capture as one argument' do
+          fire_trigger(['=execw {somescript $1 now}'])
+
+          expect(execw_script_vars).to eq(['a"b', 'now'])
+        end
+      end
+
+      context 'when the capture holds a space and ends with a backslash' do
+        let(:captured_text) { 'x --flag y\\' }
+
+        it 'gives the script the capture as one argument, without the trailing backslash' do
+          fire_trigger(['=exec {somescript $1 now}'])
+
+          expect(exec_script_vars).to eq(['x --flag y', 'now'])
+        end
+      end
+
+      context 'when the template quotes several words' do
+        let(:captured_text) { 'Mal"lory' }
+
+        it 'still joins the quoted words into one argument, with the capture text as written' do
+          fire_trigger(['=exec {somescript "$1 now" later}'])
+
+          expect(exec_script_vars).to eq(['Mal"lory now', 'later'])
+        end
+      end
+
       context 'when the script name is a capture' do
         let(:captured_text) { 'somescript' }
 

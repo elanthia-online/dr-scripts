@@ -266,7 +266,8 @@ def parse_enclosing_curly_braces(data)
 end
 
 # Puts the trigger's regex capture groups ($0-$9) into text. Each capture is put in as written,
-# in one pass, so its text isn't read again for $N or backslash references.
+# in one pass, so its text isn't read again for $N or backslash references. A block, if given,
+# transforms each capture's text before it goes in.
 def substitute_captures(text, captures)
   text.gsub(/\$([0-9])\b/) do |reference|
     num = Regexp.last_match(1).to_i
@@ -276,7 +277,7 @@ def substitute_captures(text, captures)
       DRC.message("  Warning, you're referencing capture group $#{num}, which does not exist.")
       reference
     else
-      regex_capture
+      block_given? ? yield(regex_capture) : regex_capture
     end
   end
 end
@@ -310,11 +311,21 @@ end
 # =exec/=execw arguments with capture groups put in. words is the split response, script name
 # first. A capture fills the argument it's written in (it isn't split into more arguments) and
 # never goes into the script name.
+#
+# The arguments reach the script as one string: execute_script and DRC.wait_for_script_to_complete
+# wrap an argument holding whitespace in double quotes, and Lich splits the joined string again,
+# reading \" as a literal quote. So a quote in a capture is escaped, or it would end the wrapping
+# early, and a wrapped argument loses any trailing backslashes, or the closing quote would read as
+# escaped. Either way the capture would split into extra arguments. An empty capture still gives
+# no argument, since Lich drops empty ones.
 def exec_arguments(name, words, captures)
   if words[0] =~ /\$[0-9]\b/
     warn_capture_not_substituted(name, 'an =exec or =execw script name', 'script names')
   end
-  words.drop(1).map { |arg| substitute_captures(arg, captures) }
+  words.drop(1).map do |arg|
+    arg = substitute_captures(arg, captures) { |text| text.gsub('"') { '\"' } }
+    arg =~ /\s/ ? arg.sub(/\\+\z/, '') : arg
+  end
 end
 
 def pull_trigger_data
