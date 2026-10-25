@@ -222,6 +222,156 @@ RSpec.describe Stabbity do
     end
   end
 
+  describe 'arena game-line matchers' do
+    let(:real_watch) do
+      'You appraise the situation and notice the piruati serpent may push you into a jet of scalding-hot steam, ' \
+        'you could try to pedal back out of the way!'
+    end
+    let(:real_round) do
+      %(An iron portcullis is raised, heralding the arrival of a piruati serpent!  ) +
+        %(The announcers calls out, "And here's our next foe!  Round 5, FIGHT!")
+    end
+
+    # Player-written lines as Flags (raw XML) and bput (stripped) see them.
+    def player_shapes(text)
+      [%([General][Mallory] "#{text}"), %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+       %(Mallory says, "#{text}"), %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+       %(Mallory whispers, "#{text}")]
+    end
+
+    # The reply DRC.bput returns, as lich-5 matches it: Strings become /x/i,
+    # and the first line (in arrival order) that hits any pattern returns
+    # match[0]; nothing matching returns ''.
+    def lich_bput_reply(lines, patterns)
+      regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+      lines.each do |line|
+        regexes.each do |r|
+          m = line.match(r)
+          return m.to_a.first if m
+        end
+      end
+      ''
+    end
+
+    # Runs watch_target then dodge_arena_trap with `lines` arriving after the
+    # WATCH; returns the commands sent after the WATCH.
+    def dodge_after_watch(lines)
+      stabbity = build(mode: 'arena')
+      allow(stabbity).to receive(:target_ref).and_return('#60')
+      sent = []
+      allow(DRC).to receive(:bput) do |cmd, *patterns|
+        sent << cmd
+        cmd.start_with?('watch ') ? lich_bput_reply(lines, patterns) : 'You set yourself up to'
+      end
+      stabbity.watch_target
+      stabbity.dodge_arena_trap
+      sent - ['watch #60']
+    end
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # Runs the script's own setup in arena mode with eliminate on, so the
+    # khri-eliminate flag is registered exactly as the script does it.
+    def start_arena_with_eliminate
+      DRStats.guild = 'Thief'
+      $parsed_args = { mode: 'arena' }
+      $test_settings = OpenStruct.new(stabbity: { 'weapons'   => { 'preferred' => 'dagger', 'alternate' => '', 'thrown' => '' },
+                                                  'eliminate' => true },
+                                      ignored_npcs: [])
+      stabbity = Stabbity.allocate
+      allow(stabbity).to receive(:use_weapon)
+      allow(stabbity).to receive(:check_buffs)
+      allow(stabbity).to receive(:check_wands)
+      allow(stabbity).to receive(:combat_loop)
+      allow(DRC).to receive(:hide?)
+      stabbity.send(:initialize)
+      stabbity
+    end
+
+    it 'dodges with the verb from the real WATCH reply' do
+      expect(dodge_after_watch([real_watch])).to eq(['pedal'])
+    end
+
+    it 'reads the dodge verb from the other WATCH reply wordings' do
+      {
+        'you could try to back pedal out of the way!'   => 'pedal',
+        'you could try to prepare to jump!'             => 'jump',
+        'you could try to bob back and forth!'          => 'bob',
+        'you could try to cower into a smaller target!' => 'cower',
+        'you could try to duck down!'                   => 'duck',
+        'you could try to lean out of the way!'         => 'lean'
+      }.each do |tail, verb|
+        line = "You appraise the situation and notice the transmogrified oaf may drive you into a spiked pit, #{tail}"
+        expect(dodge_after_watch([line])).to eq([verb]), "for #{tail}"
+      end
+    end
+
+    it 'ignores player speech, ESP and whispers that arrive before the WATCH reply' do
+      ["I'm cleaning out my pack", 'anyone want to duck out for food', 'you could try to jump over it!'].each do |text|
+        player_shapes(text).values_at(0, 2, 4).each do |line|
+          expect(dodge_after_watch([line, real_watch])).to eq(['pedal']), "for #{line}"
+        end
+      end
+    end
+
+    it 'ignores a dodge word inside another word on a room line' do
+      expect(dodge_after_watch(['Mallory just arrived, bobbing her head.', real_watch])).to eq(['pedal'])
+    end
+
+    it 'sends khri eliminate after the real fifth-round announcement' do
+      DRRoom.npcs = ['serpent']
+      seed_roster(live: [creature(id: 60, noun: 'serpent', name: 'a piruati serpent')])
+      stabbity = start_arena_with_eliminate
+      allow(stabbity).to receive(:combat_loop).and_call_original
+      deliver(real_round)
+
+      expect(run_one_pass(stabbity)).to include('advance #60', 'khri eliminate')
+    end
+
+    it 'does not send khri eliminate when only another player repeated the call' do
+      DRRoom.npcs = ['serpent']
+      seed_roster(live: [creature(id: 60, noun: 'serpent', name: 'a piruati serpent')])
+      stabbity = start_arena_with_eliminate
+      allow(stabbity).to receive(:combat_loop).and_call_original
+      player_shapes('Round 5, FIGHT!').each { |line| deliver(line) }
+
+      commands = run_one_pass(stabbity)
+      expect(commands).to include('advance #60')
+      expect(commands).not_to include('khri eliminate')
+    end
+
+    it 'still hears the announcement with the call wrapped in a speech preset' do
+      start_arena_with_eliminate
+      deliver(%(<preset id='speech'>The announcers calls out</preset>, "And here's our next foe!  Round 25, FIGHT!"))
+      expect(Flags['khri-eliminate']).to be_truthy
+    end
+
+    it 'does not fire on a non-fifth round' do
+      start_arena_with_eliminate
+      deliver(real_round.sub('Round 5,', 'Round 4,'))
+      expect(Flags['khri-eliminate']).to be_falsey
+    end
+
+    it 'does not fire on another player repeating the call' do
+      start_arena_with_eliminate
+      ['Round 10, FIGHT!', %(The announcers calls out, "And here's our next foe!  Round 10, FIGHT!")].each do |text|
+        player_shapes(text).each { |line| deliver(line) }
+      end
+      expect(Flags['khri-eliminate']).to be_falsey
+    end
+  end
+
   describe '#npc_dead?' do
     def target(stabbity, noun, id)
       stabbity.instance_variable_set(:@target, noun)
