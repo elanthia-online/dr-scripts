@@ -54,8 +54,26 @@ class Shape
     @info = get_data('crafting')['shaping'][@hometown]
 
     DRC.wait_for_script_to_complete('buff', ['shape'])
-    Flags.add('shaping-assembly', 'appears ready to be reinforced with some (backer)', 'appears ready to be strengthened with some leather (strips)', 'assembly with the (backing) material can begin', 'You need another bone, wood or horn (backing) material', 'another finished bow (string)', 'another finished (long|short) wooden (pole)', 'another finished (leather strips)', 'another .* (long|short) leather (cord)', 'You must assemble the (backer)', 'You must assemble the (strips)', 'another (arrow flights)', 'another (.* arrowheads)')
-    Flags.add('shaping-done', 'Applying the final touches', 'from the successful (lamination|lightening|cable-backing) process')
+    # These only match the game's own crafting lines, not other players'
+    # speech, whispers or ESP: messages that start the line are anchored there
+    # (after any XML tags), and mid-line messages may have no quote before
+    # them, which every player-text line has.
+    Flags.add('shaping-assembly',
+              /^(?:<[^>]*>|[^"<])*?appears ready to be reinforced with some (backer)/i,
+              /^(?:<[^>]*>|[^"<])*?appears ready to be strengthened with some leather (strips)/i,
+              /^(?:<[^>]*>|[^"<])*?assembly with the (backing) material can begin/i,
+              /^(?:<[^>]+>)*You need another bone, wood or horn (backing) material/i,
+              /^(?:<[^>]*>|[^"<])*?another finished bow (string)/i,
+              /^(?:<[^>]*>|[^"<])*?another finished (long|short) wooden (pole)/i,
+              /^(?:<[^>]*>|[^"<])*?another finished (leather strips)/i,
+              /^(?:<[^>]*>|[^"<])*?another .* (long|short) leather (cord)/i,
+              /^(?:<[^>]+>)*You must assemble the (backer)/i,
+              /^(?:<[^>]+>)*You must assemble the (strips)/i,
+              /^(?:<[^>]*>|[^"<])*?another (arrow flights)/i,
+              /^(?:<[^>]*>|[^"<])*?another (.* arrowheads)/i)
+    Flags.add('shaping-done',
+              /^(?:<[^>]+>)*Applying the final touches/i,
+              /^(?:<[^>]*>|[^"<])*?from the successful (lamination|lightening|cable-backing) process/i)
 
     if args.resume
       check_hand(@noun) unless DRCI.in_left_hand?(@noun)
