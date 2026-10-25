@@ -79,7 +79,7 @@ class HealMe
           end
       end
       @diseased = false if Flags['healme-cured-disease']
-      @poisoned = false if Flags['healme-flushed-poisons']
+      @poisoned = false if Flags['healme-flushed-poison']
       server_string
     end
 
