@@ -7,6 +7,12 @@ no_kill_all
 @settings = get_settings
 @crime_plea = @settings.guilty_plea
 
+# The verdict and release messages are the judge's quoted speech, opened by the
+# game's narration ("The judge nods, \"..." or "After a weighty pause, the judge
+# speaks, \"..."). A player's speech, whisper or ESP line starts with the
+# player's name or a channel tag instead.
+@judge_speaks = '^(?:The |After [^"]*?, the )[^"]*"[^"]*?'
+
 def check_sack
   return unless DRC.right_hand =~ /sack/ || DRC.left_hand =~ /sack/
 
@@ -39,7 +45,7 @@ def wait_stocks
 end
 
 def recover_gear
-  case waitfor('^[^"]*?You are free to go', '^[^"]*?your possessions will be in a sack marked with your name')
+  case waitfor("#{@judge_speaks}You are free to go", "#{@judge_speaks}your possessions will be in a sack marked with your name")
   when /your possessions will be in/i
     DRC.wait_for_script_to_complete('pay-debt', ['sack', determine_province])
     unless [DRC.right_hand, DRC.left_hand].grep(/sack/).any?
@@ -71,7 +77,7 @@ def get_out_of_jail(old_loc)
   fput("plead #{@crime_plea}")
 
   loop do
-    case waitfor('^[^"]*?this court finds you innocent of the charges brought upon you', '^[^"]*?is guilty of no crime in my district', '^[^"]*?I pronounce a fine upon you of', '^[^"]*?I hereby fine you a total of', '^[^"]*?send you to the stocks')
+    case waitfor("#{@judge_speaks}this court finds you innocent of the charges brought upon you", "#{@judge_speaks}is guilty of no crime in my district", "#{@judge_speaks}I pronounce a fine upon you of", "#{@judge_speaks}I hereby fine you a total of", "#{@judge_speaks}send you to the stocks")
     when /this court finds you innocent of the charges brought upon you/i, /is guilty of no crime in my district/i
       pause 5
       check_sack

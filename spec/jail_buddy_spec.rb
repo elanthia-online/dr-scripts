@@ -20,12 +20,15 @@ RSpec.describe 'jail-buddy.lic' do
   # Ends the script's endless loop.
   let(:run_over) { Class.new(StandardError) }
 
-  # The logs hold no copy of the arrest, court or release messages, so these
-  # lines use the script's own words.
+  # Real game lines from this repo's jail-buddy issues (#547, #759, #1092,
+  # #1839). The other four arrest messages have no real copy, so those lines use
+  # the script's own words.
   arrest_lines = [
-    "Before you really realize what's happening, you are marched off.",
-    'The guards wrestle you to the ground, bind you in chains, and drag you off to jail.',
-    'You are ushered to a cell, the door opened just long enough for you to be shoved inside.',
+    "Before you really realize what's going on, your hands are firmly bound behind you and you are marched off.",
+    'The town guard, with the help of several others, wrestle you to the ground, bind you in chains, and drag you off to jail.',
+    'The guard brings you to the jail, where several companions aid to hold you down and strip you of all your possessions.  ' \
+    'They are placed in a sack under the watchful eye of the jail warden, and then you are ushered to a cell, ' \
+    'the door opened just long enough for you to be shoved inside.',
     '[Guard House, Jail Cell]',
     'The guard looks you over carefully and leads you firmly off to jail.',
     'A sparkling cloud of silver motes envelops your body like a mist of stars.',
@@ -33,18 +36,28 @@ RSpec.describe 'jail-buddy.lic' do
     'The sentinel brings you to the jail.',
     'You slowly wake up again to find that all your belongings have been stripped.'
   ]
-  fine_lines = ['I pronounce a fine upon you of 5 silver Kronars.', 'I hereby fine you a total of 5 silver Kronars.']
-  player_prefixes = ['[General][Mallory] "', 'Mallory says, "', 'Mallory whispers, "']
+  # The Hib verdicts (#3064) have no real copy; these assume the judge's
+  # narrated-speech shape of the Zoluren lines.
+  no_crime_line = 'The judge nods, "Mallory is guilty of no crime in my district."'
+  hereby_line = 'The judge nods, "Mallory, I hereby fine you a total of 5 silver Kronars."'
+  pronounce_line = 'After a weighty pause, the judge speaks, "Keldakin, you have been found guilty of thievery in the Principality of Zoluren.  ' \
+                   'It is with a solemn hope that you will change your ways that I pronounce a fine upon you of 1 gold.  ' \
+                   'If you cannot pay immediately, your things will be held until you can repay the debt to society that you owe."'
+  fine_lines = [pronounce_line, hereby_line]
+  player_prefixes = ['[General][Mallory] "', 'Mallory says, "', 'Mallory whispers, "', 'Mallory says to the judge, "']
 
   let(:arrest_line) { '[Guard House, Jail Cell]' }
-  let(:plead_line) { 'You may PLEAD INNOCENT or PLEAD GUILTY.' }
-  let(:innocent_line) { 'Mallory, this court finds you innocent of the charges brought upon you.' }
-  let(:no_crime_line) { 'The magistrate declares that Mallory is guilty of no crime in my district.' }
-  let(:pronounce_line) { fine_lines[0] }
-  let(:hereby_line) { fine_lines[1] }
-  let(:stocks_line) { 'I will send you to the stocks.' }
-  let(:free_line) { 'You are free to go.' }
-  let(:possessions_line) { 'Pay your debt; your possessions will be in a sack marked with your name.' }
+  let(:plead_line) { '[PLEAD INNOCENT or PLEAD GUILTY]' }
+  let(:innocent_line) do
+    'After a long deliberation, the judge finally says, "Gabellia, this court finds you innocent of the charges brought upon you.  ' \
+      'You are free to go.  Guards, please return this woman\'s things."'
+  end
+  let(:stocks_line) do
+    'The judge sighs.  "Gabellia, for your crimes, I find it upon the mercy of this court to send you to the stocks to serve out your punishment.  ' \
+      'Think long upon your actions and perhaps you might be rehabilitated, but I doubt it."'
+  end
+  let(:free_line) { 'The judge nods in satisfaction, "Very well, Keldakin.  You are free to go."' }
+  let(:possessions_line) { 'The judge nods, "Return when you have paid your debts, your possessions will be in a sack marked with your name, Giulietta."' }
   let(:stocks_done_line) { 'You accept a sack and retrieve the equipment stored inside.' }
 
   let(:bput_calls) { [] }
@@ -161,7 +174,7 @@ RSpec.describe 'jail-buddy.lic' do
     end
 
     fine_lines.each do |fine|
-      it "waits for release after the real fine #{fine.inspect} and finishes on the real release line" do
+      it "waits for release after the fine #{fine[0, 40].inspect} and finishes on the real release line" do
         run_script([arrest_line, plead_line, fine, free_line])
         expect(DRC).to have_received(:unpause_all).once
         expect(DRC).not_to have_received(:wait_for_script_to_complete).with('pay-debt', anything)
