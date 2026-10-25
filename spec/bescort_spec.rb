@@ -398,4 +398,168 @@ RSpec.describe Bescort do
       end
     end
   end
+
+  describe 'astral walk flags' do
+    # The game's lines for each astral-walk flag, as Flags see them (raw XML). The
+    # harness-check adverb stands for any wording other than 'effortlessly'.
+    let(:real_lines) do
+      {
+        'harness-check'   => 'You barely maintain your place among the shifting streams of mana.',
+        'pattern-shift'   => 'A wave of rippling air sweeps through the conduit!  The streams of mana writhe violently before settling into new patterns.',
+        'gate-failure'    => 'With supreme effort, you are able to bring the spell to an end without harm.',
+        'ap-danger'       => "Unlike most astral phenomena, the static does not go away after a few moments. In fact, it's getting stronger. Closer.",
+        'walking-circles' => 'You end up walking in circles.'
+      }
+    end
+    let(:center) { /the microcosm is to the (?<direction>.*)\.$/ }
+
+    # Other players' ESP, speech and whispers carrying the same text, raw and stripped.
+    def player_lines(text)
+      {
+        'ESP'       => %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        'say'       => %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        'whisper'   => %(Mallory whispers, "#{text}"),
+        'plain ESP' => %([General][Mallory] "#{text}"),
+        'plain say' => %(Mallory says, "#{text}")
+      }
+    end
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    before do
+      # astral_walk registers its flags first; an unknown shard stops it right after.
+      allow(bescort).to receive(:know_shard?).and_return(false)
+      expect { bescort.send(:astral_walk, 'crossing') }.to raise_error(SystemExit)
+      allow(bescort).to receive(:fput)
+      allow(bescort).to receive(:move)
+      allow(bescort).to receive(:waitrt)
+      allow(bescort).to receive(:pause)
+      allow(DRCA).to receive(:harness_mana)
+      allow(DRCA).to receive(:release_cyclics)
+      allow(DRC).to receive(:bput).with('pow', anything).and_return('the microcosm is to the north.')
+    end
+
+    describe "'ap-danger'" do
+      it 'leaves the game on the real warning' do
+        deliver(real_lines['ap-danger'])
+        bescort.send(:power_walk, center)
+        expect(bescort).to have_received(:fput).with('exit')
+      end
+
+      it 'still matches the warning after leading tags or another sentence' do
+        deliver("<pushBold/>#{real_lines['ap-danger']}<popBold/>")
+        expect(Flags['ap-danger']).to be_truthy
+        Flags.reset('ap-danger')
+        deliver("The static grows louder.  #{real_lines['ap-danger']}")
+        expect(Flags['ap-danger']).to be_truthy
+      end
+
+      it 'keeps walking when another player repeats it' do
+        player_lines(real_lines['ap-danger']).each_value { |line| deliver(line) }
+        expect(Flags['ap-danger']).to be_falsey
+        bescort.send(:power_walk, center)
+        expect(bescort).not_to have_received(:fput).with('exit')
+        expect(bescort).to have_received(:move).with('north')
+      end
+    end
+
+    describe "'harness-check'" do
+      it 'harnesses more mana on the real line' do
+        deliver(real_lines['harness-check'])
+        bescort.send(:power_walk, center)
+        expect(DRCA).to have_received(:harness_mana).with([20])
+        expect(Flags['harness-check']).to be_falsey
+      end
+
+      it 'does not harness on the real effortless line' do
+        deliver('You effortlessly maintain your place among the shifting streams of mana.')
+        bescort.send(:power_walk, center)
+        expect(DRCA).not_to have_received(:harness_mana)
+      end
+
+      it 'ignores the line from another player' do
+        player_lines(real_lines['harness-check']).each_value { |line| deliver(line) }
+        expect(Flags['harness-check']).to be_falsey
+        bescort.send(:power_walk, center)
+        expect(DRCA).not_to have_received(:harness_mana)
+      end
+    end
+
+    describe "'pattern-shift'" do
+      it 'skips the move on the real line' do
+        deliver(real_lines['pattern-shift'])
+        bescort.send(:power_walk, center)
+        expect(bescort).not_to have_received(:move)
+      end
+
+      it 'still moves when another player repeats it' do
+        player_lines(real_lines['pattern-shift']).each_value { |line| deliver(line) }
+        expect(Flags['pattern-shift']).to be_falsey
+        bescort.send(:power_walk, center)
+        expect(bescort).to have_received(:move).with('north').once
+      end
+    end
+
+    describe "'walking-circles'" do
+      # The move's reply arrives while the move is sent.
+      def walk_hearing(line)
+        moves = 0
+        allow(bescort).to receive(:move) do
+          moves += 1
+          deliver(line) if moves == 1
+        end
+        bescort.send(:power_walk, center)
+        moves
+      end
+
+      it 'tries the step again on the real line' do
+        expect(walk_hearing(real_lines['walking-circles'])).to eq(2)
+        expect(DRC).to have_received(:bput).with('pow', center).twice
+      end
+
+      ['ESP', 'say', 'whisper', 'plain ESP', 'plain say'].each do |shape|
+        it "does not retry on another player's #{shape} line" do
+          expect(walk_hearing(player_lines(real_lines['walking-circles'])[shape])).to eq(1)
+          expect(DRC).to have_received(:bput).with('pow', center).once
+        end
+      end
+    end
+
+    describe "'gate-failure'" do
+      # The failure line arrives during the first cast.
+      def open_gate_hearing(line)
+        casts = 0
+        allow(DRCA).to receive(:cast?) do
+          casts += 1
+          deliver(line) if casts == 1
+          true
+        end
+        bescort.send(:open_gate, 'Rolagi', false)
+        casts
+      end
+
+      it 'casts the gate again on the real line' do
+        expect(open_gate_hearing(real_lines['gate-failure'])).to eq(2)
+        expect(DRCA).to have_received(:release_cyclics).twice
+      end
+
+      ['ESP', 'say', 'whisper', 'plain ESP', 'plain say'].each do |shape|
+        it "casts once on another player's #{shape} line" do
+          expect(open_gate_hearing(player_lines(real_lines['gate-failure'])[shape])).to eq(1)
+          expect(DRCA).to have_received(:release_cyclics).once
+        end
+      end
+    end
+  end
 end
