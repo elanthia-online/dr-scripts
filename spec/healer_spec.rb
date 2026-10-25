@@ -1185,7 +1185,23 @@ RSpec.describe Healer do
     it 'registers a flag that matches the game line, XML and all' do
       healer
       matchers = Flags.matchers[Healer::UNITY_RECOVERED_FLAG]
+      expect(matchers.any? { |m| m.match?(recovered_line) }).to be true
       expect(matchers.any? { |m| m.match?("<pushBold/>#{recovered_line}<popBold/>") }).to be true
+    end
+
+    # Flags see every raw line, speech included; a healer stands in busy rooms.
+    # Shapes follow lich-5's recorded DR streams.
+    [
+      %(<pushStream id="talk"/><preset id='speech'>Tenuk says</preset>, "You sense that your system has fully recovered from your recent manifestation of the unity link."),
+      %(Tenuk says, "You sense that your system has fully recovered from your recent manifestation of the unity link."),
+      %(<pushStream id="whispers"/><preset id="whisper">Tenuk whispers,</preset> "You sense that your system has fully recovered from your recent manifestation of the unity link."),
+      %(<pushStream id="thoughts"/>[General][Tenuk] You sense that your system has fully recovered from your recent manifestation of the unity link.)
+    ].each do |spoof|
+      it "ignores another player's copy of the line: #{spoof[0, 48]}" do
+        healer
+        matchers = Flags.matchers[Healer::UNITY_RECOVERED_FLAG]
+        expect(matchers.none? { |m| m.match?(spoof) }).to be true
+      end
     end
 
     it 'assumes Unity is ready at startup' do
