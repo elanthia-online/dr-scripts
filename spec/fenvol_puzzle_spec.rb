@@ -180,6 +180,21 @@ RSpec.describe FenvolPuzzle do
     it 'does not match plain text' do
       expect('some regular text').not_to match(FenvolPuzzle::POEM_DELIMITER)
     end
+
+    # The notecard text is printed inside quotes: the opening delimiter line
+    # starts with the quote and the closing one ends with it (Elanthipedia,
+    # Category:Fenvol's Folly).
+    it 'matches the opening and closing lines of the quoted notecard text' do
+      expect('" - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -').to match(FenvolPuzzle::POEM_DELIMITER)
+      expect(' - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"').to match(FenvolPuzzle::POEM_DELIMITER)
+    end
+
+    it 'does not match a delimiter another player says, whispers or thinks' do
+      player_lines('- - - - - - -').each do |spoof|
+        expect(spoof).not_to match(FenvolPuzzle::POEM_DELIMITER)
+      end
+      expect('Mallory says, "" - - - - - - -"').not_to match(FenvolPuzzle::POEM_DELIMITER)
+    end
   end
 
   # -------------------------------------------------------------------
@@ -613,6 +628,11 @@ RSpec.describe FenvolPuzzle do
       end
     end
 
+    it 'sets the reward flag on the attendant line as Elanthipedia records it' do
+      deliver('The library attendant hands you 100 inkbits before returning to his post to watch over the library.  You recall you now have 300 inkbits.')
+      expect(Flags['fenvol-reward']).to be_truthy
+    end
+
     it 'keeps checking containers when another player speaks or thinks the completion line' do
       player_xml_lines(complete_line).each { |line| deliver(line) }
       expect(instance.send(:complete?)).to be false
@@ -857,6 +877,16 @@ RSpec.describe FenvolPuzzle do
       instance.send(:enter_library)
       touch_commands = commands.select { |c| c == 'touch door' }
       expect(touch_commands.size).to eq(3)
+    end
+
+    # Fenvol's Folly prints its confirmation prompts as bracketed narration;
+    # Elanthipedia records the bell rope's. The door's is assumed to match it.
+    it 'confirms on the bracketed prompt without redeeming a library card' do
+      prompt = "[This will consume a library card for the Fenvol's Folly event.  If you are sure you wish to proceed, TOUCH again within 15 seconds.]"
+      stub_bput_replies('touch door' => [[prompt], ['You touch the door and the world unravels around you.']])
+      allow(instance).to receive(:pause)
+      expect(DRCI).not_to receive(:get_item?)
+      expect(instance.send(:enter_library)).to be true
     end
 
     context 'when another player speaks a door reply first' do
@@ -1366,6 +1396,22 @@ RSpec.describe FenvolPuzzle do
       allow(instance).to receive(:get).and_return(*lines)
       result = instance.send(:capture_poem_lines)
       expect(result).to eq(['fire  ice'])
+    end
+
+    it 'captures the poem from the notecard text as the game prints it, inside quotes' do
+      lines = [
+        '" - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -',
+        '   Among the shelves where whispers dwell,',
+        '   ...and in the margin... an embossed hunter-green binder is named without reason.',
+        '   -----FOUND: a dog-eared teal volume',
+        ' - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
+        '>'
+      ]
+      allow(instance).to receive(:get).and_return(*lines)
+      result = instance.send(:capture_poem_lines)
+      expect(result).to eq(['Among the shelves where whispers dwell,',
+                            '...and in the margin... an embossed hunter-green binder is named without reason.',
+                            '-----FOUND: a dog-eared teal volume'])
     end
 
     it 'ignores delimiter lines spoken or thought by other players' do

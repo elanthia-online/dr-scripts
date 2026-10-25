@@ -41,8 +41,10 @@ class FenvolPuzzle
     'in'        => 'out',       'out'       => 'in'
   }.freeze
 
-  # Delimiter separating the poem from surrounding notecard text.
-  POEM_DELIMITER = /^[^"]*?(?:- ){5,}/.freeze
+  # Delimiter separating the poem from surrounding notecard text. The notecard
+  # text is quoted, so the opening delimiter line starts with the quote; any
+  # other text before the dashes (a speaker's name) rules the line out.
+  POEM_DELIMITER = /^\s*"?\s*(?:- ){5,}/.freeze
 
   # Number of correct items to find.
   TARGET_COUNT = 6
