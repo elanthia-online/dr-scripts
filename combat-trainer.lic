@@ -446,6 +446,25 @@ class SetupProcess
 end
 
 class LootProcess
+  # Flags and bput see every game line, other players' speech, whispers and ESP
+  # included, and those always have a double quote before the spoken text, so
+  # the loot matchers only match the game's own line. Flags read the raw XML:
+  # FLAG_LINE_START allows leading tags before a message that starts the line;
+  # FLAG_NO_QUOTE allows other text before the message, but no double quote
+  # outside a tag. bput reads tag-stripped text: '^Message', or /^[^"]*?message/
+  # for a message that follows other text.
+  FLAG_LINE_START = '^(?:<[^>]+>)*'
+  FLAG_NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
+
+  # Replies to "stow <item>" and "stow other <item>".
+  STOW_LOOT_REPLIES = [
+    '^You pick up', '^You put', '^You open', '^You get', '^You need a free hand',
+    /^[^"]*?needs to be tended to be removed/i, "^There isn't any more room", "^You just can't",
+    /^[^"]*?push you over the item limit/i, '^You stop as you realize the .* is not yours', '^Stow what',
+    /^[^"]*?already in your inventory/i, '^The .* is not designed to carry anything',
+    /^[^"]*?rapidly decays away/i, /^[^"]*?cracks and rots away/i, "^That can't be picked up"
+  ].freeze
+
   def initialize(settings, equipment_manager)
     @equipment_manager = equipment_manager
     echo('New LootProcess') if $debug_mode_ct
@@ -621,10 +640,15 @@ class LootProcess
       echo("  @box_loot_limit: #{@box_loot_limit}") if $debug_mode_ct
     end
 
-    Flags.add('using-corpse', 'begins arranging', 'completes arranging', 'kneels down briefly and draws a knife', 'cruelly into the body and carving out a chunk', 'makes additional cuts, purposeful but seemingly at random')
-    Flags.add('pouch-full', 'You think the .* is too full to fit another gem into')
-    Flags.add('pouch-needs-tie', /You'd better tie it up before putting/)
-    Flags.add('container-full', 'There isn\'t any more room')
+    Flags.add('using-corpse',
+              /#{FLAG_NO_QUOTE}begins arranging/i,
+              /#{FLAG_NO_QUOTE}completes arranging/i,
+              /#{FLAG_NO_QUOTE}kneels down briefly and draws a knife/i,
+              /#{FLAG_NO_QUOTE}cruelly into the body and carving out a chunk/i,
+              /#{FLAG_NO_QUOTE}makes additional cuts, purposeful but seemingly at random/i)
+    Flags.add('pouch-full', /#{FLAG_LINE_START}You think the .* is too full to fit another gem into/i)
+    Flags.add('pouch-needs-tie', /#{FLAG_LINE_START}You'd better tie it up before putting/)
+    Flags.add('container-full', /#{FLAG_LINE_START}There isn't any more room/i)
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
 
     # Corpse ids we've finished a given action on. A looted corpse lingers in
@@ -736,15 +760,15 @@ class LootProcess
       return if DRCI.put_away_item?(item, special['bag'])
     end
 
-    case DRC.bput("stow #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
-    when 'already in your inventory'
+    case DRC.bput("stow #{item}", *STOW_LOOT_REPLIES)
+    when /already in your inventory/
       if @gem_nouns.include?(item)
         DRC.bput('stow gem', 'You pick up', 'You get', 'You need a free hand', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory')
       elsif @box_nouns.include?(item)
         item_reg = item.split.join('.*')
         return stow_loot(DRRoom.room_objs.grep(/\b#{item_reg}$/).first.split.last(2).join(' '), game_state)
       else
-        DRC.bput("stow other #{item}", 'You pick up', 'You put', 'You open', 'You get', 'You need a free hand', 'needs to be tended to be removed', 'There isn\'t any more room', 'You just can\'t', 'push you over the item limit', 'You stop as you realize the .* is not yours', 'Stow what', 'already in your inventory', 'The .* is not designed to carry anything', 'rapidly decays away', 'cracks and rots away', 'That can\'t be picked up')
+        DRC.bput("stow other #{item}", *STOW_LOOT_REPLIES)
       end
     when 'You pick up', 'You get'
       @current_box_count += 1 if @box_loot_limit && @box_nouns.include?(item)
@@ -1083,7 +1107,7 @@ class LootProcess
       return
     end
 
-    quality = DRC.bput('glance', 'You glance down.*')
+    quality = DRC.bput('glance', '^You glance down.*')
     if quality['great'] || quality['excellent'] || quality['perfect'] || quality['flawless']
       echo 'Harvested high quality material.' if $debug_mode_ct
     else
@@ -1099,9 +1123,9 @@ class LootProcess
       return
     end
 
-    result = DRC.bput("put material in my #{@necro_container}", 'You put', 'material doesn\'t seem to fit')
+    result = DRC.bput("put material in my #{@necro_container}", '^You put', /^[^"]*?material doesn't seem to fit/i)
     @current_harvest_count += 1 if result =~ /^You put/
-    DRC.bput('drop material', 'you discard it') if result =~ /^material doesn't seem to fit/
+    DRC.bput('drop material', 'you discard it') if result =~ /material doesn't seem to fit/
   end
 
   def dispose_body(game_state)
@@ -1239,21 +1263,21 @@ class LootProcess
     arrange_message = "#{arrange_verb} for #{type}"
     while arranges < @arrange_count
       arranges += 1
-      case DRC.bput(arrange_message, 'You begin to arrange', 'You continue arranging', 'You make a mistake', 'You complete arranging', 'That creature cannot', 'That has already been arranged', 'Arrange what', 'cannot be skinned', 'already been skinned', 'You make a serious mistake in the arranging process', 'The .* is currently being arranged to produce')
-      when 'You complete arranging', 'That has already been arranged', 'You make a serious mistake in the arranging process', 'Arrange what'
+      case DRC.bput(arrange_message, /^[^"]*?You begin to arrange/i, /^[^"]*?You continue arranging/i, /^[^"]*?You make a mistake/i, /^[^"]*?You complete arranging/i, /^[^"]*?That creature cannot/i, /^[^"]*?That has already been arranged/i, '^Arrange what', /^[^"]*?cannot be skinned/i, /^[^"]*?already been skinned/i, /^[^"]*?You make a serious mistake in the arranging process/i, '^The .* is currently being arranged to produce')
+      when /You complete arranging/, /That has already been arranged/, /You make a serious mistake in the arranging process/, /Arrange what/
         break
-      when 'already been skinned'
+      when /already been skinned/
         if corpse
           @skinned_corpse_ids << corpse.id
           echo("corpse-track: mark ##{corpse.id} skinned (via arrange)") if $debug_mode_ct
         end
         break
-      when 'cannot be skinned'
+      when /cannot be skinned/
         game_state.unskinnable(mob_noun)
         @dissect_cycle_skills.delete("Skinning")
         @skin = false
         break
-      when 'That creature cannot'
+      when /That creature cannot/
         arranges = 0
         arrange_message = arrange_verb
       end
@@ -1316,25 +1340,25 @@ class LootProcess
     # to a bare `dissect` on the game's current corpse, as before.
     dissect_command = corpse ? "dissect ##{corpse.id}" : 'dissect'
     case DRC.bput(dissect_command,
-                  /You'll gain no insights from this attempt/,
-                  /You succeed in dissecting the corpse/,
-                  'What exactly are you trying to dissect',
-                  "You'll learn nothing",
-                  'While likely a fascinating study',
-                  'You cannot dissect',
-                  'would probably object',
-                  "should be left alone.",
-                  "That'd be a waste of time.",
-                  'A skinned creature is worthless',
-                  'You do not yet possess the knowledge',
-                  'This ritual may only be performed on a corpse',
-                  /You learn something/i,
-                  'A failed or completed ritual has rendered',
-                  'You realize after a few seconds',
-                  'prevents a meaningful dissection',
-                  "With less concern than you'd give a fresh corpse",
-                  'Rituals do not work upon constructs')
-    when /You succeed in dissecting the corpse/, /You learn something/i, "With less concern than you'd give a fresh corpse"
+                  /^[^"]*?You'll gain no insights from this attempt/,
+                  /^[^"]*?You succeed in dissecting the corpse/,
+                  '^What exactly are you trying to dissect',
+                  /^[^"]*?You'll learn nothing/i,
+                  /^[^"]*?While likely a fascinating study/i,
+                  /^[^"]*?You cannot dissect/i,
+                  /^[^"]*?would probably object/i,
+                  /^[^"]*?should be left alone./i,
+                  /^[^"]*?That'd be a waste of time./i,
+                  /^[^"]*?A skinned creature is worthless/i,
+                  /^[^"]*?You do not yet possess the knowledge/i,
+                  /^[^"]*?This ritual may only be performed on a corpse/i,
+                  /^[^"]*?You learn something/i,
+                  /^[^"]*?A failed or completed ritual has rendered/i,
+                  /^[^"]*?You realize after a few seconds/i,
+                  /^[^"]*?prevents a meaningful dissection/i,
+                  /^[^"]*?With less concern than you'd give a fresh corpse/i,
+                  /^[^"]*?Rituals do not work upon constructs/i)
+    when /You succeed in dissecting the corpse/, /You learn something/i, /With less concern than you'd give a fresh corpse/
       if corpse
         @dissected_corpse_ids << corpse.id
         echo("corpse-track: mark ##{corpse.id} dissected") if $debug_mode_ct
@@ -1344,19 +1368,19 @@ class LootProcess
       waitrt?
       fput("dissect")
       return false
-    when 'This ritual may only be performed on a corpse', 'A failed or completed ritual has rendered', 'You realize after a few seconds', 'prevents a meaningful dissection'
+    when /This ritual may only be performed on a corpse/, /A failed or completed ritual has rendered/, /You realize after a few seconds/, /prevents a meaningful dissection/
       return false
-    when 'Rituals do not work upon constructs'
+    when /Rituals do not work upon constructs/
       game_state.construct(mob_noun) if mob_noun
       game_state.undissectable(mob_noun) if mob_noun
       return false
-    when 'While likely a fascinating study', "That'd be a waste of time.", 'You do not yet possess the knowledge'
+    when /While likely a fascinating study/, /That'd be a waste of time./, /You do not yet possess the knowledge/
       game_state.undissectable(mob_noun) if mob_noun
       @dissect_cycle_skills.delete("First Aid")
       @dissect_cycle_skills.delete("Thanatology") if @dissect_for_thanatology
       @dissect = false
       return false
-    when 'would probably object', "should be left alone."
+    when /would probably object/, /should be left alone./
       return dissected?(nil, game_state)
     end
     return false
@@ -1371,7 +1395,7 @@ class LootProcess
     end
 
     if game_state.need_bundle
-      case DRC.bput('tap my bundle', 'You tap a \w+ bundle\b.*that you are wearing', 'I could not find what you were referring to', 'You tap a tight bundle inside')
+      case DRC.bput('tap my bundle', '^You tap a \w+ bundle\b.*that you are wearing', '^I could not find what you were referring to', '^You tap a tight bundle inside')
       when /lumpy/
         if @tie_bundle
           lowered_item = nil
@@ -1403,7 +1427,7 @@ class LootProcess
     end
 
     snap = [DRC.left_hand, DRC.right_hand]
-    case DRC.bput("skin ##{corpse.id}", 'roundtime', 'skin what', 'cannot be skinned', 'already been skinned', 'carrying far too many items', 'need a more appropriate weapon', 'need to have a bladed instrument to skin', 'You must have one hand free to skin')
+    case DRC.bput("skin ##{corpse.id}", /^[^"]*?roundtime/i, /^[^"]*?skin what/i, /^[^"]*?cannot be skinned/i, /^[^"]*?already been skinned/i, /^[^"]*?carrying far too many items/i, /^[^"]*?need a more appropriate weapon/i, /^[^"]*?need to have a bladed instrument to skin/i, /^[^"]*?You must have one hand free to skin/i)
     when /roundtime/i
       # Skin started -> this corpse is done; don't re-arrange/re-skin it while it
       # lingers dead in the roster for the ~6-7s until it decays. NB: DRC.bput
@@ -1411,21 +1435,21 @@ class LootProcess
       # matcher, so this branch must be case-insensitive, not `when 'roundtime'`.
       @skinned_corpse_ids << corpse.id
       echo("corpse-track: mark ##{corpse.id} skinned") if $debug_mode_ct
-    when 'already been skinned'
+    when /already been skinned/
       @skinned_corpse_ids << corpse.id
       echo("corpse-track: mark ##{corpse.id} skinned (already)") if $debug_mode_ct
       return
-    when 'You must have one hand free to skin'
+    when /You must have one hand free to skin/
       temp_item = DRC.left_hand
       if DRCI.lower_item?(temp_item)
         check_skinning(mob_noun, game_state, corpse)
         DRCI.get_item?(temp_item)
       end
-    when 'need a more appropriate weapon', 'need to have a bladed instrument to skin'
+    when /need a more appropriate weapon/, /need to have a bladed instrument to skin/
       DRC.message('BUY A SKINNING KNIFE')
       @skin = false
       return
-    when 'cannot be skinned', 'carrying far too many items'
+    when /cannot be skinned/, /carrying far too many items/
       game_state.unskinnable(mob_noun)
       return
     end

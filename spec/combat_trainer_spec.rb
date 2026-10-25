@@ -5382,6 +5382,157 @@ RSpec.describe LootProcess do
     end
   end
 
+  # The loot flags and the stow replies only match the game's own line. Other
+  # players' speech, whispers and ESP reach the same matchers (lich-5 tests
+  # every Flags matcher against every raw line, and bput returns the first line
+  # any reply pattern matches) and must not make stow_loot drop the item, mark
+  # it unlootable, re-stow it, or count a box it did not pick up.
+  describe '#stow_loot ignores other players\' speech and ESP' do
+    let(:game_state) { build_game_state }
+    let(:sent) { [] }
+    let(:loot_flag_keys) { %w[container-full pouch-full pouch-needs-tie] }
+
+    # Register the script's own Flags.add statement for key, evaluated inside
+    # LootProcess the way initialize runs it.
+    def register_loot_flag(key)
+      require 'prism'
+      source = File.read(File.join(__dir__, '..', 'combat-trainer.lic'))
+      find = lambda do |node|
+        return node if node.is_a?(Prism::CallNode) && node.name == :add && node.receiver&.slice == 'Flags' &&
+                       node.arguments&.arguments&.first.is_a?(Prism::StringNode) && node.arguments.arguments.first.unescaped == key
+
+        node.compact_child_nodes.each do |child|
+          found = find.call(child)
+          return found if found
+        end
+        nil
+      end
+      LootProcess.class_eval(find.call(Prism.parse(source).value).slice)
+    end
+
+    # Feed a raw server line through the registered Flags matchers, the way
+    # lich-5's DRParser.check_events does.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        match = regexes.lazy.map { |regex| line.match(regex) }.find(&:itself)
+        Flags[key] = match if match
+      end
+    end
+
+    # lich-5 DRC.bput: Strings become /x/i; the first line (in arrival order)
+    # that any pattern matches returns that pattern's matched text.
+    def game_reply(lines, patterns)
+      regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+      lines.each do |line|
+        regexes.each do |regex|
+          match = line.match(regex)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
+
+    def esp_xml(text) = %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>)
+    def say_xml(text) = %(<preset id='speech'>Mallory says</preset>, "#{text}")
+    def whisper_xml(text) = %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)
+    def player_shapes(text) = [esp_xml(text), say_xml(text), whisper_xml(text)]
+    def esp(text) = %([General][Mallory] "#{text}")
+    def say(text) = %(Mallory says, "#{text}")
+    def whisper(text) = %(Mallory whispers, "#{text}")
+
+    # The stow reply arrives as `stow_lines` (stripped text, what bput reads);
+    # `heard` raw lines reach the Flags while the stow is in flight.
+    def stow_with(instance, item, stow_lines:, heard: [])
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        next 'You drop' if command.start_with?('drop')
+        next 'You put' unless command.start_with?('stow')
+
+        heard.each { |line| deliver(line) }
+        game_reply(stow_lines, patterns)
+      end
+      instance.send(:stow_loot, item, game_state)
+    end
+
+    before(:each) do
+      loot_flag_keys.each { |key| register_loot_flag(key) }
+      allow(DRCI).to receive(:swap_out_full_gempouch?).and_return(true)
+      allow(DRCI).to receive(:tie_gem_pouch?).and_return(true)
+    end
+
+    after(:each) { loot_flag_keys.each { |key| Flags.delete(key) } }
+
+    {
+      'container-full'  => ["There isn't any more room in the eddy for that.", "There isn't any more room in my bag"],
+      'pouch-full'      => ['You think the soft gem pouch is too full to fit another gem into.', 'You think the pouch is too full to fit another gem into'],
+      'pouch-needs-tie' => ["You'd better tie it up before putting anything else in it.", "You'd better tie it up before putting more in"]
+    }.each do |key, (game_line, spoken)|
+      it "sets #{key} on the game's line" do
+        deliver(game_line)
+        expect(Flags[key]).to be_truthy
+      end
+
+      it "leaves #{key} unset on ESP, say and whisper lines" do
+        player_shapes(spoken).each { |line| deliver(line) }
+        expect(Flags[key]).to be_falsey
+      end
+    end
+
+    it 'keeps a stowed gem when another player speaks the container-full or pouch-full line' do
+      heard = player_shapes("There isn't any more room in my bag") + player_shapes('You think the pouch is too full to fit another gem into')
+      stow_with(build_loot_process(spare_gem_pouch_container: nil), 'diamond',
+                stow_lines: ['You put your diamond in your black pouch.'], heard: heard)
+      expect(sent).to eq(['stow diamond'])
+      expect(game_state).not_to have_received(:unlootable)
+    end
+
+    it 'does not untie and re-stow when another player speaks the pouch-needs-tie line' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ['You put your diamond in your black pouch.'],
+                                               heard: player_shapes("You'd better tie it up before putting more in"))
+      expect(DRCI).not_to have_received(:tie_gem_pouch?)
+      expect(sent).to eq(['stow diamond'])
+    end
+
+    it 'still drops the item and marks it unlootable on the game\'s container-full line' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ["There isn't any more room in the backpack for that."],
+                                               heard: ["There isn't any more room in the backpack for that."])
+      expect(sent).to eq(['stow diamond', 'drop diamond'])
+      expect(game_state).to have_received(:unlootable).with('diamond')
+    end
+
+    it 'still swaps the pouch on the game\'s pouch-full line' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ['You put your diamond in your black pouch.'],
+                                               heard: ['You think the black pouch is too full to fit another gem into.'])
+      expect(DRCI).to have_received(:swap_out_full_gempouch?)
+    end
+
+    it 'does not count a box another player claims was picked up' do
+      instance = build_loot_process(box_nouns: ['strongbox'], box_loot_limit: 5, current_box_count: 0)
+      [esp('You get a strongbox'), say('You pick up a strongbox'), whisper('You get the strongbox')].each do |line|
+        stow_with(instance, 'strongbox', stow_lines: [line, "There isn't any more room in the backpack for that."])
+      end
+      expect(instance.instance_variable_get(:@current_box_count)).to eq(0)
+    end
+
+    it 'counts a box the game says was picked up' do
+      instance = build_loot_process(box_nouns: ['strongbox'], box_loot_limit: 5, current_box_count: 0)
+      stow_with(instance, 'strongbox', stow_lines: ['You pick up a battered iron strongbox.'])
+      expect(instance.instance_variable_get(:@current_box_count)).to eq(1)
+    end
+
+    it 'does not re-stow when another player says the item is already in the inventory' do
+      [esp('that is already in your inventory'), say('Already in your inventory, silly'), whisper('already in your inventory')].each do |line|
+        stow_with(build_loot_process, 'diamond', stow_lines: [line, 'You put your diamond in your black pouch.'])
+      end
+      expect(sent).to all(eq('stow diamond'))
+    end
+
+    it 'still re-stows as a gem on the game\'s already-in-inventory reply' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ['But that is already in your inventory.'])
+      expect(sent).to include('stow gem')
+    end
+  end
+
   # Regression: a stray blank/nil entry in the lootables list -- e.g. an empty
   # line in a profile's loot_additions YAML, which parses to nil -- must be
   # dropped before it reaches the stow path. A nil raises on item.split (and on
@@ -7535,6 +7686,290 @@ RSpec.describe LootProcess do
       lp = build_dissect_loot(dissected_corpse_ids: [corpse.id])
       expect(lp.send(:dissected?, corpse, dissect_game_state)).to be true
       expect(DRC).not_to have_received(:bput).with(/\Adissect/, any_args)
+    end
+  end
+
+  # Corpse handling only acts on the game's own lines. Other players' speech,
+  # whispers and ESP reach the same Flags matchers and bput reply patterns
+  # (bput returns the first line any pattern matches), and must not stop the
+  # looting, disable skinning or dissection for the rest of the run, or throw
+  # away harvested material.
+  describe 'corpse handling ignores other players\' speech and ESP' do
+    let(:sent) { [] }
+
+    # Register the script's own Flags.add statement for key, evaluated inside
+    # LootProcess the way initialize runs it.
+    def register_loot_flag(key)
+      require 'prism'
+      source = File.read(File.join(__dir__, '..', 'combat-trainer.lic'))
+      find = lambda do |node|
+        return node if node.is_a?(Prism::CallNode) && node.name == :add && node.receiver&.slice == 'Flags' &&
+                       node.arguments&.arguments&.first.is_a?(Prism::StringNode) && node.arguments.arguments.first.unescaped == key
+
+        node.compact_child_nodes.each do |child|
+          found = find.call(child)
+          return found if found
+        end
+        nil
+      end
+      LootProcess.class_eval(find.call(Prism.parse(source).value).slice)
+    end
+
+    # Feed a raw server line through the registered Flags matchers, the way
+    # lich-5's DRParser.check_events does.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        match = regexes.lazy.map { |regex| line.match(regex) }.find(&:itself)
+        Flags[key] = match if match
+      end
+    end
+
+    # lich-5 DRC.bput: Strings become /x/i; the first line (in arrival order)
+    # that any pattern matches returns that pattern's matched text.
+    def game_reply(lines, patterns)
+      regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+      lines.each do |line|
+        regexes.each do |regex|
+          match = line.match(regex)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
+
+    # Answer each command with the lines listed for it (by prefix); anything
+    # else gets a plain roundtime.
+    def replies(map)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        lines = map.find { |prefix, _| command.start_with?(prefix) }&.last
+        lines ? game_reply(lines, patterns) : 'Roundtime'
+      end
+    end
+
+    def player_shapes_xml(text)
+      [%(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+       %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+       %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)]
+    end
+
+    def player_shapes(text) = [%([General][Mallory] "#{text}"), %(Mallory says, "#{text}"), %(Mallory whispers, "#{text}")]
+
+    def corpse_game_state
+      gs = double('GameState', skinnable?: true, necro_casting?: false, need_bundle: false, blessed_room: false)
+      allow(gs).to receive(:dissectable?).and_return(true)
+      allow(gs).to receive(:unskinnable)
+      allow(gs).to receive(:undissectable)
+      allow(gs).to receive(:construct)
+      allow(gs).to receive(:need_bundle=)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      gs
+    end
+
+    def build_corpse_loot(**overrides)
+      lp = LootProcess.allocate
+      { skin: true, dissect: true, dissect_for_thanatology: false, arrange_for_dissect: false, arrange_count: 1,
+        arrange_all: false, arrange_types: {}, tie_bundle: false, dissect_cycle_skills: ['Skinning', 'First Aid'],
+        skinned_corpse_ids: [], dissected_corpse_ids: [], looted_corpse_ids: [],
+        loot_bodies: true, loot_timer: Time.now - 100, loot_delay: 0, last_rites: false, last_rites_timer: Time.now,
+        custom_loot_type: '', necro_store: true, necro_count: 5, current_harvest_count: 0, necro_container: 'satchel',
+        equipment_manager: double('EquipmentManager', stow_weapon: nil, wield_weapon?: nil, is_listed_item?: false) }
+        .merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+      lp
+    end
+
+    before(:each) do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRSkill).to receive(:getxp).and_return(0)
+    end
+
+    context 'using-corpse' do
+      before(:each) { register_loot_flag('using-corpse') }
+      after(:each) { Flags.delete('using-corpse') }
+
+      let(:game_lines) do
+        ["Refia begins arranging the moth's corpse to increase the chance of a high quality prize.",
+         "Abselom completes arranging the blademaster's corpse to increase the chance of a high quality prize.",
+         "Qizhan kneels down briefly and draws a knife.  She proceeds to make a long, thin cut across the moradu's corpse.",
+         "Qizhan bends over the moradu's corpse briefly, before plunging her knife cruelly into the body and carving out a chunk of its flesh and blood!",
+         'Qizhan makes additional cuts, purposeful but seemingly at random.']
+      end
+
+      it 'is set by each game line' do
+        game_lines.each do |line|
+          Flags.reset('using-corpse')
+          deliver(line)
+          expect(Flags['using-corpse']).to be_truthy, line
+        end
+      end
+
+      it 'is not set by ESP, say or whisper lines' do
+        ['begins arranging the corpse', 'completes arranging', 'kneels down briefly and draws a knife',
+         'stabbing cruelly into the body and carving out a chunk', 'makes additional cuts, purposeful but seemingly at random']
+          .flat_map { |text| player_shapes_xml(text) }.each { |line| deliver(line) }
+        expect(Flags['using-corpse']).to be_falsey
+      end
+
+      it 'still loots the corpse after another player speaks an arranging line' do
+        DRRoom.dead_npcs = ['rat']
+        player_shapes_xml('Mallory begins arranging the rat').each { |line| deliver(line) }
+        replies('loot' => ['You search the giant rat.'])
+        lp = build_corpse_loot
+        allow(lp).to receive(:check_rituals?).and_return(false)
+        lp.dispose_body(corpse_game_state)
+        expect(sent).to include('loot #111')
+      end
+
+      it 'leaves the corpse alone while the game says someone is arranging it' do
+        DRRoom.dead_npcs = ['rat']
+        deliver("Refia begins arranging the rat's corpse to increase the chance of a high quality prize.")
+        replies({})
+        build_corpse_loot.dispose_body(corpse_game_state)
+        expect(sent).to be_empty
+      end
+    end
+
+    describe '#arrange_mob' do
+      it 'keeps skinning enabled when another player says the corpse cannot be skinned' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        player_shapes('that one cannot be skinned').each do |line|
+          replies('arrange' => [line, 'You complete arranging the giant rat.'])
+          lp.send(:arrange_mob, 'rat', gs, corpse)
+        end
+        expect(gs).not_to have_received(:unskinnable)
+        expect(lp.instance_variable_get(:@skin)).to be true
+      end
+
+      it 'still disables skinning on the game\'s cannot-be-skinned reply' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        replies('arrange' => ['The giant rat cannot be skinned.'])
+        lp.send(:arrange_mob, 'rat', gs, corpse)
+        expect(gs).to have_received(:unskinnable).with('rat')
+        expect(lp.instance_variable_get(:@skin)).to be false
+      end
+
+      it 'still records the corpse on the game\'s already-skinned reply' do
+        lp = build_corpse_loot
+        replies('arrange' => ['The giant rat has already been skinned.'])
+        lp.send(:arrange_mob, 'rat', corpse_game_state, corpse)
+        expect(lp.instance_variable_get(:@skinned_corpse_ids)).to eq([111])
+      end
+    end
+
+    describe '#check_skinning' do
+      it 'keeps the creature skinnable when another player says it cannot be skinned' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        player_shapes('it cannot be skinned').each do |line|
+          lp.instance_variable_set(:@skinned_corpse_ids, [])
+          replies('skin' => [line, 'Roundtime: 3 sec.'])
+          lp.send(:check_skinning, 'rat', gs, corpse)
+        end
+        expect(gs).not_to have_received(:unskinnable)
+        expect(lp.instance_variable_get(:@skinned_corpse_ids)).to eq([111])
+      end
+
+      it 'keeps skinning enabled when another player says a better weapon is needed' do
+        lp = build_corpse_loot
+        replies('skin' => [player_shapes('you need a more appropriate weapon').first, 'Roundtime: 3 sec.'])
+        lp.send(:check_skinning, 'rat', corpse_game_state, corpse)
+        expect(lp.instance_variable_get(:@skin)).to be true
+      end
+
+      it 'still marks the creature unskinnable on the game\'s reply' do
+        gs = corpse_game_state
+        replies('skin' => ['The giant rat cannot be skinned.'])
+        build_corpse_loot.send(:check_skinning, 'rat', gs, corpse)
+        expect(gs).to have_received(:unskinnable).with('rat')
+      end
+
+      it 'keeps needing a bundle when another player claims to tap a tight one' do
+        gs = corpse_game_state
+        allow(gs).to receive(:need_bundle).and_return(true)
+        replies('tap my bundle' => [player_shapes('You tap a tight bundle inside my pack').last, 'I could not find what you were referring to.'],
+                'skin'          => ['Roundtime: 3 sec.'])
+        build_corpse_loot.send(:check_skinning, 'rat', gs, corpse)
+        expect(gs).not_to have_received(:need_bundle=)
+      end
+
+      it 'stops needing a bundle on the game\'s tight-bundle reply' do
+        gs = corpse_game_state
+        allow(gs).to receive(:need_bundle).and_return(true)
+        replies('tap my bundle' => ['You tap a tight bundle that you are wearing.'], 'skin' => ['Roundtime: 3 sec.'])
+        build_corpse_loot.send(:check_skinning, 'rat', gs, corpse)
+        expect(gs).to have_received(:need_bundle=).with(false)
+      end
+    end
+
+    describe '#dissected?' do
+      let(:success) { "You smoothly open the corpse of the giant rat, revealing several interesting anatomical structures and features.  Your understanding of the giant rat's bodily structure is reinforced.  You succeed in dissecting the corpse." }
+
+      it 'keeps dissecting enabled when another player says it is a waste of time' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        ["That'd be a waste of time.", 'While likely a fascinating study', 'You do not yet possess the knowledge'].each do |text|
+          player_shapes(text).each do |line|
+            lp.instance_variable_set(:@dissected_corpse_ids, [])
+            replies('dissect' => [line, success])
+            expect(lp.send(:dissected?, corpse, gs)).to be true
+          end
+        end
+        expect(gs).not_to have_received(:undissectable)
+        expect(lp.instance_variable_get(:@dissect)).to be true
+      end
+
+      it 'does not mark a construct when another player names one' do
+        gs = corpse_game_state
+        replies('dissect' => [player_shapes('Rituals do not work upon constructs').first, success])
+        build_corpse_loot.send(:dissected?, corpse, gs)
+        expect(gs).not_to have_received(:construct)
+      end
+
+      it 'still records the game\'s success line, which carries text before the phrase' do
+        lp = build_corpse_loot
+        replies('dissect' => [success])
+        expect(lp.send(:dissected?, corpse, corpse_game_state)).to be true
+        expect(lp.instance_variable_get(:@dissected_corpse_ids)).to eq([111])
+      end
+
+      it 'still disables dissecting on the game\'s waste-of-time reply' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        replies('dissect' => ["That'd be a waste of time."])
+        lp.send(:dissected?, corpse, gs)
+        expect(gs).to have_received(:undissectable).with('rat')
+        expect(lp.instance_variable_get(:@dissect)).to be false
+      end
+    end
+
+    describe '#necro_harvest_check' do
+      let(:glance) { 'You glance down to see some flawless material in your right hand and nothing in your left hand.' }
+
+      it 'keeps high-quality material when another player speaks a glance line' do
+        player_shapes('You glance down at your feet').each do |line|
+          replies('glance' => [line, glance], 'put material' => ['You put your material in your satchel.'])
+          build_corpse_loot.send(:necro_harvest_check)
+        end
+        expect(sent).not_to include('drop material')
+      end
+
+      it 'stores the material when another player says it does not fit' do
+        lp = build_corpse_loot
+        replies('glance' => [glance], 'put material' => [player_shapes("material doesn't seem to fit").first, 'You put your material in your satchel.'])
+        lp.send(:necro_harvest_check)
+        expect(sent).not_to include('drop material')
+        expect(lp.instance_variable_get(:@current_harvest_count)).to eq(1)
+      end
+
+      it 'still drops the material on the game\'s does-not-fit reply' do
+        replies('glance' => [glance], 'put material' => ["The material doesn't seem to fit in your satchel."])
+        build_corpse_loot.send(:necro_harvest_check)
+        expect(sent).to include('drop material')
+      end
     end
   end
 
