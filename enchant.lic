@@ -5,22 +5,28 @@
 =end
 
 class Enchant
+  # Reply patterns that drive a decision only match the game's own line, not
+  # other players' speech or ESP: they start the line (`^`), or, where the
+  # message may follow other text on the line, no quote may come before it
+  # (`^[^"]*?`).
+
   # Analyze patterns
   ANALYZE_READY_PATTERNS = [
-    /scribing additional sigils onto the fount\./,
-    /ready for additional scribing\./,
-    /free of problems that would impede further sigil scribing\./,
-    /You do not see anything that would prevent scribing additional sigils/
+    /^[^"]*?scribing additional sigils onto the fount\./,
+    /^[^"]*?ready for additional scribing\./,
+    /^[^"]*?free of problems that would impede further sigil scribing\./,
+    /^[^"]*?You do not see anything that would prevent scribing additional sigils/
   ].freeze
-  ANALYZE_IMBUE_PATTERN = /application of an imbue spell to advance the enchanting process\./.freeze
+  ANALYZE_IMBUE_PATTERN = /^[^"]*?application of an imbue spell to advance the enchanting process\./.freeze
 
   # Look on brazier
-  BRAZIER_LOOK_PATTERN = /On the.*brazier you see/.freeze
-  BRAZIER_CONTENTS_PATTERN = /On the (?:\w+ )?brazier you see (?<items>.*)\./.freeze
+  # Any brazier: your own (`brass brazier`) or the public `enchanter's brazier`.
+  BRAZIER_CONTENTS_PATTERN = /^[^"]*?On the .*?brazier you see (?<items>.*)\./.freeze
+  BRAZIER_EMPTY = /^[^"]*?There is nothing/i.freeze
 
   # Wave fount
   WAVE_FOUNT_SUCCESS = /^You slowly wave/.freeze
-  WAVE_FOUNT_NOT_NEEDED = 'The fragile mana fount is not required'
+  WAVE_FOUNT_NOT_NEEDED = /^[^"]*?The fragile mana fount is not required/i.freeze
 
   # Touch cube
   TOUCH_CUBE_PATTERNS = [
@@ -31,23 +37,23 @@ class Enchant
 
   # Put on brazier
   PUT_BRAZIER_ALREADY_ENCHANTED = /^The totem is already enchanted/.freeze
-  PUT_BRAZIER_SUCCESS = [/With a flick/, /^You put/].freeze
+  PUT_BRAZIER_SUCCESS = [/^With a flick/, /^You put/].freeze
   PUT_BRAZIER_NEEDS_CLEAN = /^You must first clean/.freeze
   PUT_BRAZIER_GLANCE = /^You glance down/.freeze
 
   # Get item patterns
-  GET_SUCCESS = /You get/.freeze
-  GET_DANGEROUS = 'That is far too dangerous'
+  GET_SUCCESS = /^You get/.freeze
+  GET_DANGEROUS = /^[^"]*?That is far too dangerous/i.freeze
 
   # Imbue wand
   IMBUE_WAND_SUCCESS = /^Roundtime/.freeze
   IMBUE_WAND_SIGIL_NEEDED = /^You need another .* sigil to continue the enchanting process/.freeze
-  IMBUE_WAND_FAILED = 'The streams collide, rending the space before you and disrupting the enchantment'
+  IMBUE_WAND_FAILED = /^[^"]*?The streams collide, rending the space before you and disrupting the enchantment/i.freeze
 
   # Clean brazier
-  CLEAN_SUCCESS = 'You prepare to clean off the brazier'
-  CLEAN_NOTHING = 'There is nothing'
-  CLEAN_NOT_LIT = 'The brazier is not currently lit'
+  CLEAN_SUCCESS = /^[^"]*?You prepare to clean off the brazier/i.freeze
+  CLEAN_NOTHING = BRAZIER_EMPTY
+  CLEAN_NOT_LIT = /^[^"]*?The brazier is not currently lit/i.freeze
   CLEAN_SINGED = 'a massive ball of flame jets forward and singes everything nearby'
 
   # Sigil study/trace
@@ -140,14 +146,21 @@ class Enchant
   end
 
   def setup_flags
-    Flags.add('enchant-focus', 'material struggles to accept the sigil scribing')
-    Flags.add('enchant-meditate', 'The traced sigil pattern blurs before your eyes')
-    Flags.add('enchant-imbue', 'Once finished you sense an imbue spell will be required to continue enchanting')
-    Flags.add('enchant-push', 'You notice many of the scribed sigils are slowly merging back')
-    Flags.add('enchant-sigil', /You need another (?<type>[\w ]*)(?<order>primary|secondary) sigil to continue the enchanting process/)
-    Flags.add('enchant-complete', 'With the enchanting process completed, you believe it is safe to collect your things once more.', 'With the enchantment complete', 'With enchanting complete', /^You collect the \w+ and place it at your feet/)
-    Flags.add('imbue-failed', 'The streams collide, rending the space before you and disrupting the enchantment')
-    Flags.add('imbue-backlash', 'Suddenly the streams slip through your grasp and cascade violently against each other')
+    # Every matcher only matches the game's own line, not other players' speech
+    # or ESP: line start with optional leading tags, or (messages that can
+    # follow other text on the line) no quote outside a tag before the message.
+    Flags.add('enchant-focus', /^(?:<[^>]*>|[^"<])*?material struggles to accept the sigil scribing/i)
+    Flags.add('enchant-meditate', /^(?:<[^>]+>)*The traced sigil pattern blurs before your eyes/i)
+    Flags.add('enchant-imbue', /^(?:<[^>]+>)*Once finished you sense an imbue spell will be required to continue enchanting/i)
+    Flags.add('enchant-push', /^(?:<[^>]+>)*You notice many of the scribed sigils are slowly merging back/i)
+    Flags.add('enchant-sigil', /^(?:<[^>]+>)*You need another (?<type>[\w ]*)(?<order>primary|secondary) sigil to continue the enchanting process/)
+    Flags.add('enchant-complete',
+              /^(?:<[^>]*>|[^"<])*?With the enchanting process completed, you believe it is safe to collect your things once more\./i,
+              /^(?:<[^>]*>|[^"<])*?With the enchantment complete/i,
+              /^(?:<[^>]*>|[^"<])*?With enchanting complete/i,
+              /^You collect the \w+ and place it at your feet/)
+    Flags.add('imbue-failed', /^(?:<[^>]*>|[^"<])*?The streams collide, rending the space before you and disrupting the enchantment/i)
+    Flags.add('imbue-backlash', /^(?:<[^>]*>|[^"<])*?Suddenly the streams slip through your grasp and cascade violently against each other/i)
   end
 
   def cleanup_flags
@@ -182,13 +195,14 @@ class Enchant
   end
 
   def handle_imbue_resume
-    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_LOOK_PATTERN, 'There is nothing')
-    if result.include?('fount')
+    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_CONTENTS_PATTERN, BRAZIER_EMPTY)
+    match = BRAZIER_CONTENTS_PATTERN.match(result)
+    if match && match[:items].match?(/\bfount\b/)
       imbue
     else
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
       wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
-      DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
+      DRCC.stow_crafting_item(@fount, @bag, @belt) if WAVE_FOUNT_NOT_NEEDED.match?(wave_result)
       imbue
     end
   end
@@ -206,7 +220,7 @@ class Enchant
 
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
       wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
-      DRCC.stow_crafting_item(@fount, @bag, @belt) if wave_result == WAVE_FOUNT_NOT_NEEDED
+      DRCC.stow_crafting_item(@fount, @bag, @belt) if WAVE_FOUNT_NOT_NEEDED.match?(wave_result)
     end
 
     DRC.bput("touch my #{@cube}", *TOUCH_CUBE_PATTERNS) if @cube
@@ -227,7 +241,7 @@ class Enchant
     DRCC.get_crafting_item(@brazier, @bag, @bag_items, @belt) if @use_own_brazier
 
     get_result = DRC.bput("get my #{@baseitem} from my #{@bag}", GET_SUCCESS, GET_DANGEROUS)
-    if get_result == GET_DANGEROUS
+    if GET_DANGEROUS.match?(get_result)
       clean_brazier
       empty_brazier
       unless DRCI.get_item?(@baseitem, @bag)
@@ -289,7 +303,7 @@ class Enchant
       end
 
       result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier_ref}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
-      if result == IMBUE_WAND_FAILED
+      if IMBUE_WAND_FAILED.match?(result)
         Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
         imbue
         return
@@ -313,7 +327,7 @@ class Enchant
   def empty_brazier
     DRCC.stow_crafting_item(DRC.left_hand, @bag, @belt) if DRC.left_hand
 
-    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_CONTENTS_PATTERN, 'There is nothing')
+    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_CONTENTS_PATTERN, BRAZIER_EMPTY)
     match = BRAZIER_CONTENTS_PATTERN.match(result)
     return unless match
 

@@ -1334,6 +1334,54 @@ RSpec.describe Astrology do
       astrology.check_heavens
       expect(DRCMM).to have_received(:store_telescope?)
     end
+
+    context 'when the search fails' do
+      # Feed a game line through the registered Flags matchers the way lich-5
+      # DRParser.check_events does: the flag holds the MatchData.
+      def deliver(line)
+        Flags.matchers.each do |key, regexes|
+          regexes.each do |regex|
+            if (match = line.match(regex))
+              Flags[key] = match
+              break
+            end
+          end
+        end
+      end
+
+      # Each peer delivers its first line to the Flags matchers before returning.
+      def peer_results(*results)
+        allow(DRCMM).to receive(:center_telescope).and_return(nil)
+        allow(DRCMM).to receive(:peer_telescope) do
+          result = results.size > 1 ? results.shift : results.first
+          deliver(result.first)
+          result
+        end
+      end
+
+      let(:finished) { ["You've learned all that you can", 'You learned something useful', 'Roundtime: 5 sec.'] }
+
+      it 'starts over from check_heavens when the search is foiled by the daylight' do
+        peer_results(['Your search for the red moon Katamba is foiled by the daylight.'], finished)
+        allow(astrology).to receive(:check_heavens).and_call_original
+
+        astrology.check_heavens
+
+        expect(astrology).to have_received(:check_heavens).with(depth: 1)
+        expect(astrology).not_to have_received(:check_heavens).with(depth: 2)
+        expect(DRCMM).to have_received(:peer_telescope).twice
+        expect(messages).not_to include('Astrology: Max observation retries reached. Aborting check_heavens.')
+      end
+
+      it 'resets the flag after a fruitless search' do
+        peer_results(['Your search for the red moon Katamba turns up fruitless.'])
+
+        astrology.check_heavens
+
+        expect(Flags['bad-search']).to be(false)
+        expect(DRCMM).to have_received(:peer_telescope).exactly(described_class::MAX_OBSERVE_ITERATIONS / 2).times
+      end
+    end
   end
 
   describe '#check_ripples' do

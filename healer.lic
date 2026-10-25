@@ -113,12 +113,19 @@ class Healer
     disease: { command: 'disease', spell: 'Cure Disease', buff_arg: 'cd' }
   }.freeze
 
-  # Patterns for healing request triggers
-  WHISPER_HEAL_PATTERN = /^(?:.+ )?(?<character>\w+) whispers, "heal"$/i.freeze
-  LEAN_OFFER_PATTERN = /^(?:.+ )?(?<character>\w+) (?:leans on|offers) you/i.freeze
-  GESTURE_PATTERN = /^(?:.+ )?(?<character>\w+) gestures\.$/i.freeze
-  MOONGATE_ARRIVAL_PATTERN = /As your eyes slowly recover, you notice a dazed-looking (?<character>\w+)/i.freeze
+  # Patterns for healing request triggers. They run on the tag-stripped line and
+  # only match the game's own line, not other players' speech/ESP/whispers: an
+  # optional title may precede the requester's name, but no quote may (player
+  # text always follows a quote). Arrivals keep their prefix for titles too;
+  # `\.$` already rejects quoted player text there.
+  WHISPER_HEAL_PATTERN = /^(?:[^"]+ )?(?<character>\w+) whispers, "heal"$/i.freeze
+  LEAN_OFFER_PATTERN = /^(?:[^"]+ )?(?<character>\w+) (?:leans on|offers) you/i.freeze
+  GESTURE_PATTERN = /^(?:[^"]+ )?(?<character>\w+) gestures\.$/i.freeze
+  MOONGATE_ARRIVAL_PATTERN = /^[^"]*?As your eyes slowly recover, you notice a dazed-looking (?<character>\w+)/i.freeze
   ARRIVAL_PATTERN = /^(?:.+ )?(?<character>\w+) just arrived\.$/i.freeze
+
+  # The vitality drain landing (starts the line; see #start_line_monitor).
+  DRAIN_LANDED_PATTERN = /^You feel your vitality transferring/.freeze
 
   # Patterns for teaching responses
   TEACH_RESPONSES = [
@@ -778,7 +785,7 @@ class Healer
       begin
         clean = line.gsub(/<[^>]*>/, '').strip
         unless clean.empty?
-          @drain_landed = true if clean.include?('You feel your vitality transferring')
+          @drain_landed = true if clean.match?(DRAIN_LANDED_PATTERN)
           queue_from_line(clean)
         end
       rescue StandardError => e

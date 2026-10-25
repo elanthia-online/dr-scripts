@@ -5,6 +5,20 @@
 =end
 
 class SafeRoom
+  # Game lines can start with XML tags; other players' speech, whispers and ESP
+  # always put a quote before their text. These prefixes make a matcher accept
+  # only the game's own line.
+  LINE_START = '^(?:<[^>]+>)*'
+  NO_QUOTE_BEFORE = '^(?:<[^>]*>|[^"<])*?'
+  # NPC hospital healers (plus Dokt, the former Knife Clan healer).
+  NPC_HEALERS = %w[Amrillora Arthianna Atladene Dokt Elys Fraethis Gaktrhn Kaiva Mirinn Onsuwayo Quentin Saedelthorp Shalvard Srela Tanalae Yolesi Yrisa].freeze
+  # The game sometimes puts a healer's title before the name ("Martyr Saedelthorp",
+  # "the apprentice Kaiva", "Bioalchemist Dokt"). Only these known titles are
+  # allowed, so "Mallory asks Kaiva" still does not count as the healer's line.
+  NPC_TITLE = '(?i:(?:the )?(?:Apprentice|Bioalchemist|Healer Adept|Lady|Martyr) )?'
+  # Start of a line in which a healer NPC is speaking: the text after it is in the healer's quote.
+  NPC_HEALER_SAYS = "#{LINE_START}#{NPC_TITLE}(?:#{NPC_HEALERS.join('|')})\\b[^\"\\n]*\"[^\"\\n]*".freeze
+
   def initialize
     arg_definitions = [
       [
@@ -48,28 +62,7 @@ class SafeRoom
       DRCT.walk_to(settings.safe_room) unless args.skip
       DRC.wait_for_script_to_complete('healme')
     elsif !DRStats.necromancer? || settings.necro_force_safe_room
-      Flags.add('npc-idle', '^Dokt glances around the room')
-      Flags.add('healthy',
-                'Dokt waves a large hand at you',
-                /^The last of your wounds knit shut/,
-                'Dokt gives you a quick glance',
-                'go have yourself a birthday party',
-                'you are well',
-                'have other patients',
-                /Arthianna says "#{Regexp.quote(checkname)}, you look fine and healthy to me/,
-                'A little rest and exercise',
-                'There is nothing I can do for you',
-                'Up and out',
-                'What are you doing lying there with the wounded',
-                'Come along.  Leave room for the others.',
-                "I think you don't really need healing",
-                "Now move along, I can't do anything more for you now",
-                "You're in good enough shape, #{Regexp.quote(checkname)}",
-                'Gaktrhn bends down as if to touch you',
-                'After a quick diagnosis',
-                'Kaiva crosses your name off the waiting list')
-      Flags.add('moved', 'grabs you and drags you', 'grabs your arm and drags you .* with')
-      Flags.add('idle', 'you have been idle too long')
+      add_npc_healer_flags
 
       town_data = get_data('town')
       if settings.force_healer_town
@@ -98,6 +91,41 @@ class SafeRoom
     end
 
     give_and_take(settings.safe_room_id, settings.safe_room_give, settings.safe_room_take)
+  end
+
+  def add_npc_healer_flags
+    Flags.add('npc-idle', '^Dokt glances around the room')
+    Flags.add('healthy', *npc_healthy_matchers(checkname))
+    Flags.add('moved',
+              /#{NO_QUOTE_BEFORE}grabs you and drags you/i,
+              /#{NO_QUOTE_BEFORE}grabs your arm and drags you .* with/i)
+    Flags.add('idle', /#{LINE_START}you have been idle too long/i)
+  end
+
+  # Lines the NPC healer sends when it is done with you. Each one only matches
+  # the healer's own line, not the same words in another player's speech or ESP.
+  def npc_healthy_matchers(name)
+    you = Regexp.quote(name)
+    [
+      /#{LINE_START}#{NPC_TITLE}Dokt waves a large hand at you/i,
+      /^The last of your wounds knit shut/,
+      /#{LINE_START}#{NPC_TITLE}Dokt gives you a quick glance/i,
+      /#{NPC_HEALER_SAYS}go have yourself a birthday party/i,
+      /#{NPC_HEALER_SAYS}you are well/i,
+      /#{NPC_HEALER_SAYS}have other patients/i,
+      /#{LINE_START}#{NPC_TITLE}Arthianna says "#{you}, you look fine and healthy to me/,
+      /#{NPC_HEALER_SAYS}A little rest and exercise/i,
+      /#{NPC_HEALER_SAYS}There is nothing I can do for you/i,
+      /#{NPC_HEALER_SAYS}Up and out/i,
+      /#{NPC_HEALER_SAYS}What are you doing lying there with the wounded/i,
+      /#{NPC_HEALER_SAYS}Come along.  Leave room for the others./i,
+      /#{NPC_HEALER_SAYS}I think you don't really need healing/i,
+      /#{NPC_HEALER_SAYS}Now move along, I can't do anything more for you now/i,
+      /#{NPC_HEALER_SAYS}You're in good enough shape, #{you}/i,
+      /#{LINE_START}#{NPC_TITLE}Gaktrhn bends down as if to touch you/i,
+      /#{NO_QUOTE_BEFORE}After a quick diagnosis/i,
+      /#{LINE_START}#{NPC_TITLE}Kaiva crosses your name off the waiting list/i
+    ]
   end
 
   def need_healing?
@@ -301,7 +329,7 @@ class SafeRoom
     DRCT.walk_to empath['id']
 
     if !DRRoom.pcs.include?(empath['name']) && /.*vela.tohr (\w+)/ =~ DRRoom.room_objs.grep(@plant_regex).to_s
-      Flags.add('doneheal', /You sense that this particular .* has healed all that it can.$/, /^You no longer feel the warmth from the touch of the/, /^The last of your wounds knit shut/)
+      Flags.add('doneheal', /#{LINE_START}You sense that this particular .* has healed all that it can.$/, /^You no longer feel the warmth from the touch of the/, /^The last of your wounds knit shut/)
       while /.*vela.tohr (\w+)/ =~ DRRoom.room_objs.grep(@plant_regex).to_s
         fput("touch #{Regexp.last_match(1)}")
 
@@ -336,11 +364,7 @@ class SafeRoom
       end
       fput("listen to #{empath['name']}")
 
-      if empath['done_healing_matches'] && empath['done_healing_matches'].is_a?(Array)
-        Flags.add('doneheal', *empath['done_healing_matches'])
-      else
-        Flags.add('doneheal', '"Done!"', 'All set', 'not even injured', 'in good enough shape', 'All better')
-      end
+      Flags.add('doneheal', *done_healing_matchers(empath))
       24.times do
         pause 5
         break if Flags['doneheal']
@@ -352,6 +376,23 @@ class SafeRoom
     end
 
     !need_healing?
+  end
+
+  # What the PC empath says when done. Only the empath's own line counts: it
+  # must start with the empath's name, so other players repeating the words
+  # (or naming the empath inside their quote) don't end the wait.
+  def done_healing_matchers(empath)
+    name = Regexp.escape(empath['name'])
+    custom = empath['done_healing_matches']
+    if custom.is_a?(Array)
+      # Custom matchers keep their own wording; the line must start with the empath's name.
+      custom.map do |matcher|
+        inner = matcher.is_a?(Regexp) ? matcher.to_s : "(?:#{matcher})"
+        Regexp.new("^(?=(?:<[^>]+>)*#{name}\\b)(?=.*?#{inner})", Regexp::IGNORECASE)
+      end
+    else
+      [/#{LINE_START}#{name} (?:whispers|says|asks|exclaims)\b[^"\n]*"(?:Done!"|[^"\n]*(?:All set|not even injured|in good enough shape|All better))/i]
+    end
   end
 
   def give_and_take(room_id, give_items, take_items)

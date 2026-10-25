@@ -36,7 +36,7 @@ elsif DRStats.warrior_mage?
 end
 
 loop do
-  next unless script.gets =~ /(.*) begins to lecture you on the proper usage of the (.*) skill/
+  next unless script.gets =~ /^(\w+) begins to lecture you on the proper usage of the (.*) skill/
 
   teacher = Regexp.last_match(1)
   skill = Regexp.last_match(2)

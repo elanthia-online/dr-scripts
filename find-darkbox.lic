@@ -31,17 +31,17 @@ if UserVars.last_darkbox && rooms.include?(UserVars.last_darkbox)
 end
 
 rooms.each do |id|
-  pause 20 if reget(5, 'You try, but')
+  pause 20 if reget(5, '^You try, but')
   break if DRRoom.room_objs.any? { |x| /Darkbox/ =~ x }
 
   DRCT.walk_to(id)
 end
 
 UserVars.last_darkbox = Room.current.id
-Flags.add('darkbox-drop', 'Your .* falls to the ground')
-Flags.add('darkbox-gone', 'Without warning, the Darkbox simply vanishes')
-Flags.add('darkbox-wounded', 'Your injury increases the difficulty of the game, but you press on')
-Flags.add('darkbox-no-money', /You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing./)
+Flags.add('darkbox-drop', '^(?:<[^>]+>)*Your .* falls to the ground')
+Flags.add('darkbox-gone', '^(?:<[^>]+>)*Without warning, the Darkbox simply vanishes')
+Flags.add('darkbox-wounded', '^(?:<[^>]+>)*Your injury increases the difficulty of the game, but you press on')
+Flags.add('darkbox-no-money', /^(?:<[^>]+>)*You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing./)
 
 loop do
   if Flags['darkbox-gone']
@@ -54,7 +54,7 @@ loop do
 
   fput('play darkbox')
   pause 1
-  if reget(5, "What type of song did you want to play?")
+  if reget(5, "^What type of song did you want to play?")
     DRC.message("*** Darkbox not found in any of the rooms! ***")
     exit
   end
@@ -71,14 +71,14 @@ loop do
     DRCT.walk_to(UserVars.last_darkbox)
   end
 
-  if reget(10, 'your wounds make it impossible')
+  if reget(10, '^[^"]*?your wounds make it impossible')
     if he_use_herbs_remedies
       if override
         DRC.wait_for_script_to_complete('heal-remedy', ['quick', 'override'])
       else
         DRC.wait_for_script_to_complete('heal-remedy', ['quick'])
       end
-      if reget(3, 'What were')
+      if reget(3, '^What were')
         DRC.message("*** Out of herbs or remedies! Seek out more or an Empath! ***")
         break
       end

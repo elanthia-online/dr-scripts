@@ -4,6 +4,16 @@
 =end
 
 class SuHelmas
+  # Game lines can start with XML tags; other players' speech, whispers and ESP
+  # always put a quote before their text. These prefixes make a matcher accept
+  # only the game's own line.
+  LINE_START = '^(?:<[^>]+>)*'
+  NO_QUOTE_BEFORE = '^(?:<[^>]*>|[^"<])*?'
+  # The task's NPCs: the empath who sends you in and the guide who meets you on return.
+  NPC = '(?:Your guide|(?:An|The) (?:violet )?empath(?: wreathed in violet robes)?)'
+  # Start of a line in which one of those NPCs is speaking: the text after it is in the NPC's quote.
+  NPC_SAYS = "#{LINE_START}#{NPC}\\b(?:<[^>]*>|[^\"<\\n])*\"[^\"\\n]*".freeze
+
   def initialize
     settings = get_settings
     catacombs_settings = settings.suhelmas['catacombs']
@@ -23,17 +33,19 @@ class SuHelmas
   end
 
   def run_short_maze
-    Flags.add('catacombs_done', "Thanks for all the hard work.  Here's a little something to show my appreciation.")
-    Flags.add('task_search', "tickle at the frayed edges of sanity")
-    Flags.add('task_sit', "In the center of the lit area is a metal seat")
-    Flags.add('task_meditate', "but it's certainly enough to make someone scream, too")
-    Flags.add('task_climb', "granite slab at the center of the sunken pit")
-    Flags.add('task_dodge', "past the vines you see a lit chamber beckoning")
-    Flags.add('task_crawl', "little sense moving forward until this is dealt with")
-    Flags.add('task_break', "magical barrier blocks further travel down the cold passageway")
-    Flags.add('task_smite', "The seed might well be the only thing in the world right now")
-    Flags.add('task_stow', "Here, I have something for you!")
-    Flags.add('need_weapon', "being unarmed you have no way to exploit the weakness")
+    Flags.add('catacombs_done',
+              /#{NO_QUOTE_BEFORE}Thanks for all the hard work.  Here's a little something to show my appreciation./i,
+              /#{NPC_SAYS}Thanks for all the hard work.  Here's a little something to show my appreciation./i)
+    Flags.add('task_search', /#{NO_QUOTE_BEFORE}tickle at the frayed edges of sanity/i)
+    Flags.add('task_sit', /#{NO_QUOTE_BEFORE}In the center of the lit area is a metal seat/i)
+    Flags.add('task_meditate', /#{NO_QUOTE_BEFORE}but it's certainly enough to make someone scream, too/i)
+    Flags.add('task_climb', /#{NO_QUOTE_BEFORE}granite slab at the center of the sunken pit/i)
+    Flags.add('task_dodge', /#{NO_QUOTE_BEFORE}past the vines you see a lit chamber beckoning/i)
+    Flags.add('task_crawl', /#{NO_QUOTE_BEFORE}little sense moving forward until this is dealt with/i)
+    Flags.add('task_break', /#{NO_QUOTE_BEFORE}magical barrier blocks further travel down the cold passageway/i)
+    Flags.add('task_smite', /#{NO_QUOTE_BEFORE}The seed might well be the only thing in the world right now/i)
+    Flags.add('task_stow', /#{NPC_SAYS}Here, I have something for you!/i)
+    Flags.add('need_weapon', /#{NO_QUOTE_BEFORE}being unarmed you have no way to exploit the weakness/i)
 
     join_empath
 
@@ -56,13 +68,13 @@ class SuHelmas
     empath_room = 11553 # empath wreathed in violet robes
     DRCT.walk_to(empath_room)
     join_success = [
-      "who leads you deep into the catacombs"
+      /^[^"]*?who leads you deep into the catacombs/i
     ]
     join_failure = [
-      "What were you referring to?"
+      /^What were you referring to\?/i
     ]
     join_need_pass = [
-      "Sorry, I'm quite busy"
+      /#{NPC_SAYS}Sorry, I'm quite busy/i
     ]
     case DRC.bput("join empath", *join_success, *join_failure, *join_need_pass)
     when *join_failure

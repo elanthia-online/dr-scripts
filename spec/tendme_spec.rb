@@ -141,6 +141,119 @@ RSpec.describe TendMe do
     end
   end
 
+  # monitor_health registers four Flags and loops forever. Each example runs
+  # one pass: the first pause delivers a server line through the registered
+  # matchers (as lich-5's DRParser.check_events does for every raw XML line),
+  # the second pause ends the loop. Only the game's own lines may trigger a
+  # re-tend or an unwrap; another player's speech, whisper or ESP may not.
+  describe '#monitor_health' do
+    subject(:tend_me) { TendMe.allocate }
+
+    before(:each) do
+      reset_data
+      DRSkill._set_xp('First Aid', 10)
+      allow(tend_me).to receive(:bind_open_wounds?)
+      allow(DRCH).to receive(:unwrap_wound)
+    end
+
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    def monitor_once(line, train: true)
+      pauses = 0
+      allow(tend_me).to receive(:pause) do
+        pauses += 1
+        deliver(line) if pauses == 1
+        throw :monitor_stopped if pauses == 2
+      end
+      catch(:monitor_stopped) { tend_me.monitor_health(train) }
+    end
+
+    def player_shapes(text)
+      [
+        %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        %([General][Mallory] "#{text}"),
+        %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        %(Mallory says, "#{text}"),
+        %(<preset id='speech'>Mallory whispers</preset>, "#{text}"),
+        %(Mallory whispers, "#{text}")
+      ]
+    end
+
+    rewrap_text = 'You feel like now might be a good time to change the bandages on your neck.'
+    retend_texts = {
+      'a new lodged item'         => 'The goblin arrow lodges itself deep in your chest!',
+      'a lodged item'             => 'You feel a slight pain from the crossbow bolt lodged in your chest.',
+      'bleeding through bandages' => 'The bandages binding your left arm soak through with blood as it begins bleeding again.',
+      'bandages falling apart'    => 'The bandages binding your chest become useless and fall apart.',
+      'compress soaking through'  => 'The bandages compressing your neck soak through with blood as it begins bleeding again.'
+    }
+
+    context 'when the game says it is time to change bandages (train mode)' do
+      it 'unwraps the named body part and re-tends' do
+        monitor_once(rewrap_text)
+
+        expect(DRCH).to have_received(:unwrap_wound).with('neck')
+        expect(tend_me).to have_received(:bind_open_wounds?)
+      end
+
+      it 'unwraps when the line arrives behind a leading tag' do
+        monitor_once("<pushBold/>#{rewrap_text}")
+
+        expect(DRCH).to have_received(:unwrap_wound).with('neck')
+      end
+
+      it 'accepts the bindings wording' do
+        monitor_once('You feel like now might be a good time to change the bindings on your right leg.')
+
+        expect(DRCH).to have_received(:unwrap_wound).with('right leg')
+      end
+
+      it 'unwraps nothing when another player says, whispers or thinks that line' do
+        player_shapes(rewrap_text).each { |line| monitor_once(line) }
+
+        expect(DRCH).not_to have_received(:unwrap_wound)
+        expect(tend_me).not_to have_received(:bind_open_wounds?)
+      end
+    end
+
+    retend_texts.each do |label, text|
+      context "when the game reports #{label}" do
+        it 're-tends' do
+          monitor_once(text)
+
+          expect(tend_me).to have_received(:bind_open_wounds?)
+        end
+
+        it 're-tends when the line arrives behind a leading tag' do
+          monitor_once("<pushBold/>#{text}")
+
+          expect(tend_me).to have_received(:bind_open_wounds?)
+        end
+
+        it 'does not re-tend when another player says, whispers or thinks that line' do
+          player_shapes(text).each { |line| monitor_once(line) }
+
+          expect(tend_me).not_to have_received(:bind_open_wounds?)
+        end
+      end
+    end
+
+    it 're-tends on a lodge in the combat stream after a creature attack' do
+      monitor_once('<pushStream id="combat" />A goblin fires an arrow at you.  The arrow lodges itself deep in your chest!')
+
+      expect(tend_me).to have_received(:bind_open_wounds?)
+    end
+  end
+
   describe '#bind_open_wounds?' do
     subject(:tend_me) { TendMe.allocate }
 

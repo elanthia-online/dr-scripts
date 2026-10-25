@@ -394,6 +394,173 @@ RSpec.describe Athletics do
           expect(DRC).not_to have_received(:message)
         end
       end
+
+      # Lines are fed through the registered Flags matchers the way Lich's
+      # DRParser.check_events tests every server line (raw XML for Flags).
+      context 'when a line arrives during a rope climb' do
+        let(:learn_on_climb) { -> { Harness::DRSkill._set_xp('Athletics', DRSkill.getxp('Athletics') + 10) } }
+        let(:incoming) { [] }
+        let(:finish_line) { 'You finish practicing your climbing.' }
+        let(:restarts_before_finish) { [] }
+
+        def deliver(line)
+          Flags.matchers.each do |key, regexes|
+            regexes.each do |regex|
+              if (match = line.match(regex))
+                Flags[key] = match
+                break
+              end
+            end
+          end
+        end
+
+        def climb_hearing(line)
+          allow(DRC).to receive(:bput) do |command, *_matches|
+            next "You're certain you can" unless command.start_with?('climb practice')
+
+            restarts_before_finish << command if incoming.include?(finish_line)
+            climb_commands << command
+            raise 'kept climbing past the goal' if climb_commands.size > 10
+
+            learn_on_climb.call
+            incoming << line if climb_commands.size == 1
+            incoming << finish_line
+            'Directing your attention toward your rope'
+          end
+          allow(athletics).to receive(:pause) { deliver(incoming.shift) unless incoming.empty? }
+          athletics.train_with_rope(true)
+        end
+
+        before do
+          Harness::DRSkill._set_rank('Athletics', 300)
+          UserVars.climbing_song_seed = nil
+          UserVars.climbing_song = nil
+        end
+
+        it 'starts the next climb only after the game says the climb finished' do
+          climb_hearing('Roundtime: 1 sec.')
+
+          expect(restarts_before_finish).to be_empty
+          expect(climb_commands.size).to eq(3)
+        end
+
+        it 'plays an easier song after the game says the climb is too difficult' do
+          climb_hearing('This climb is too difficult for you.')
+
+          expect(UserVars.climbing_song).to eq('tarantella halt')
+        end
+
+        it 'plays a harder song after the game says the climb is no challenge' do
+          climb_hearing('<pushBold/>This climb is no challenge at all, so you stop practicing.')
+
+          expect(UserVars.climbing_song).to eq('bolero halt')
+        end
+
+        [
+          '[General][Mallory] "This climb is too difficult"',
+          '<pushStream id="thoughts"/>[General][Mallory] "This climb is too difficult"<popStream/>',
+          'Mallory says, "This climb is no challenge at all, so you stop practicing"',
+          %(<preset id='speech'>Mallory says</preset>, "This climb is no challenge at all, so you stop practicing"),
+          'Mallory whispers, "This climb is too difficult"',
+          '<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "This climb is no challenge at all, so you stop practicing"<popStream/>'
+        ].each do |line|
+          it "keeps the song when another player sends: #{line}" do
+            climb_hearing(line)
+
+            expect(UserVars.climbing_song).to eq('tarantella')
+          end
+        end
+
+        [
+          '[General][Mallory] "You finish practicing your climbing"',
+          'Mallory says, "The rope\'s will quickly fades away"',
+          '<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "Your focus diverts away from the rope"<popStream/>'
+        ].each do |line|
+          it "keeps waiting for the climb to finish when another player sends: #{line}" do
+            climb_hearing(line)
+
+            expect(restarts_before_finish).to be_empty
+          end
+        end
+      end
+    end
+  end
+
+  describe '#climb_practice' do
+    let(:athletics) do
+      described_class.allocate.tap do |a|
+        a.instance_variable_set(:@end_exp, 29)
+        a.instance_variable_set(:@performance_pause, 0)
+      end
+    end
+    let(:incoming) { [] }
+    let(:climbs) { [] }
+    let(:finish_line) { 'You finish practicing your climbing.' }
+
+    # Feeds each line through the registered Flags matchers the way Lich's
+    # DRParser.check_events tests every server line (raw XML for Flags).
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    def practice_hearing(line)
+      allow(DRC).to receive(:bput) do |command, *_matches|
+        next 'You stop practicing your climbing skills.' unless command.start_with?('climb practice')
+
+        climbs << command
+        raise 'kept climbing past the goal' if climbs.size > 5
+
+        incoming << line << finish_line
+        'You begin to practice your climbing skills.'
+      end
+      # Athletics is learned when the game's climb finishes.
+      allow(athletics).to receive(:pause) do
+        next if incoming.empty?
+
+        heard = incoming.shift
+        Harness::DRSkill._set_xp('Athletics', 30) if heard == finish_line
+        deliver(heard)
+      end
+      athletics.climb_practice(1, 'wall')
+    end
+
+    it 'stops climbing when the game says it is engaged in combat' do
+      practice_hearing('You are engaged in combat!')
+
+      expect(DRC).not_to have_received(:bput).with('stop climb', any_args)
+      expect(DRSkill.getxp('Athletics')).to eq(0)
+    end
+
+    it 'finishes the climb when the game says so' do
+      practice_hearing('Roundtime: 1 sec.')
+
+      expect(climbs.size).to eq(1)
+      expect(DRC).to have_received(:bput).with('stop climb', any_args).once
+      expect(DRSkill.getxp('Athletics')).to eq(30)
+    end
+
+    [
+      '[General][Mallory] "You are engaged in combat"',
+      '<pushStream id="thoughts"/>[General][Mallory] "You are engaged in combat"<popStream/>',
+      'Mallory says, "You are engaged in combat"',
+      %(<preset id='speech'>Mallory says</preset>, "You finish practicing your climbing"),
+      'Mallory whispers, "You are engaged in combat"',
+      '<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "You finish practicing your climbing"<popStream/>'
+    ].each do |line|
+      it "keeps climbing until the game's own reply when another player sends: #{line}" do
+        practice_hearing(line)
+
+        expect(climbs.size).to eq(1)
+        expect(DRC).to have_received(:bput).with('stop climb', any_args).once
+        expect(DRSkill.getxp('Athletics')).to eq(30)
+      end
     end
   end
 

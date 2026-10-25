@@ -687,10 +687,12 @@ class Astrology
         get_telescope
 
         MAX_OBSERVE_ITERATIONS.times do
-          if Flags['bad-search'] == 'is foiled by the daylight'
+          bad_search = Flags['bad-search'] && Flags['bad-search'][0]
+          if bad_search == 'is foiled by the daylight'
+            Flags.reset('bad-search')
             return check_heavens(depth: depth + 1)
           end
-          if Flags['bad-search'] == 'turns up fruitless'
+          if bad_search == 'turns up fruitless'
             Flags.reset('bad-search')
             next
           end

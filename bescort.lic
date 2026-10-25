@@ -706,7 +706,7 @@ class Bescort
       hide? unless DRRoom.room_objs.find { |x| x =~ /The Jolas/ }
       pause 1 until DRRoom.room_objs.find { |x| x =~ /The Jolas/ }
       DRC.bput('go Jolas', 'You climb', 'What were you referring')
-      waitfor 'The captain barks the order to tie off the Jolas to the docks'
+      waitfor '^[^"]*?The captain barks the order to tie off the Jolas to the docks'
       DRCT.walk_to(15450) if Room.current.id != 15450
       if DRRoom.room_objs.include?('Sumilo Dock') && mode.include?('harajaal')
         move 'go dock'
@@ -885,19 +885,19 @@ class Bescort
     case end_location # determines how and when to exit the barge
     when 'muspari'
       port_type = 'platform'
-      port_call = 'The sand barge pulls into dock'
+      port_call = '^The sand barge pulls into dock'
     when 'oasis'
       port_type = 'oasis'
-      port_call = 'The sand barge pulls up to a desert oasis'
+      port_call = '^[^"]*?The sand barge pulls up to a desert oasis'
     when 'hvaral'
       port_type = 'dock'
-      port_call = 'The sand barge pulls into dock'
+      port_call = '^The sand barge pulls into dock'
     end
 
     case DRC.bput('go barge', 'What were you referring to', "One of the barge's crew members watching", "You can't do that right now")
     when /What were you referring to/, /You can't do that right now/
       hide?
-      waitfor 'A sand barge pulls'
+      waitfor '^[^"]*?A sand barge pulls'
       take_sandbarge(start_location, end_location)
     when /One of the barge's crew members watching/
       hide?
@@ -1355,10 +1355,10 @@ class Bescort
     end
     case DRC.bput("join #{mammoth_type} mammoth", 'What were you referring to', 'You join the Merelew driver')
     when /What were you referring to/
-      waitfor 'The waves along the waterline increase drastically', 'A watery trumpeting sound heralds the swift approach'
+      waitfor '^[^"]*?The waves along the waterline increase drastically', '^[^"]*?A watery trumpeting sound heralds the swift approach'
       take_mammoth(mode)
     when /You join the Merelew driver/
-      waitfor 'The burly beast trumpets a series of watery blasts', 'Here we are, ladies and gentlemen'
+      waitfor '^[^"]*?The burly beast trumpets a series of watery blasts', 'Here we are, ladies and gentlemen'
     end
   end
 
@@ -1462,11 +1462,11 @@ class Bescort
     case DRC.bput('go ferry', 'You .* climb aboard', 'Come back when you can afford the fare', 'not here', 'I could not find what you were referring to', 'stuck here until the next one arrives')
     when /not here/, /I could not find what you were referring to/i, /stuck here until the next one arrives/
       hide?
-      waitfor 'pulls into the dock', 'pulls up to the dock'
+      waitfor '^[^"]*?pulls into the dock', '^[^"]*?pulls up to the dock'
       take_rh_ferry(north)
     when /climb aboard/
       hide?
-      waitfor 'reaches the dock and its crew ties the ferry off'
+      waitfor '^[^"]*?reaches the dock and its crew ties the ferry off'
       move('go dock')
     end
   end
@@ -1494,12 +1494,12 @@ class Bescort
   end
 
   def wander_maze_until(target, exit_command)
-    Flags.add('maze-reset', 'You can\'t go there')
+    Flags.add('maze-reset', "^(?:<[^>]+>)*You can't go there")
     current_room = MazeRoom.new
     loop do
       if Flags['maze-reset']
         Flags.reset('maze-reset')
-        result = DRC.bput('look', 'Obvious paths:.*').split(':').last.split(', ').first.delete('.')
+        result = DRC.bput('look', '^Obvious paths:.*').split(':').last.split(', ').first.delete('.')
         move(result)
         pause
         current_room = MazeRoom.new
@@ -1858,11 +1858,13 @@ class Bescort
   end
 
   def astral_walk(mode)
-    Flags.add('harness-check', /You (.*) maintain your place among the shifting streams of mana\./)
-    Flags.add('pattern-shift', 'A wave of rippling air sweeps through the conduit!  The streams of mana writhe violently before settling into new patterns')
-    Flags.add('gate-failure', 'With supreme effort, you are able to bring the spell to an end without harm.')
-    Flags.add('ap-danger', "Unlike most astral phenomena, the static does not go away after a few moments. In fact, it's getting stronger. Closer.")
-    Flags.add('walking-circles', "You end up walking in circles")
+    # No quote may come before the message (tags allowed), so these only match the
+    # game's own lines, not other players' speech/ESP.
+    Flags.add('harness-check', /^(?:<[^>]*>|[^"<])*?You ([^"]*) maintain your place among the shifting streams of mana\./)
+    Flags.add('pattern-shift', '^(?:<[^>]*>|[^"<])*?A wave of rippling air sweeps through the conduit!  The streams of mana writhe violently before settling into new patterns')
+    Flags.add('gate-failure', '^(?:<[^>]*>|[^"<])*?With supreme effort, you are able to bring the spell to an end without harm.')
+    Flags.add('ap-danger', "^(?:<[^>]*>|[^\"<])*?Unlike most astral phenomena, the static does not go away after a few moments. In fact, it's getting stronger. Closer.")
+    Flags.add('walking-circles', '^(?:<[^>]*>|[^"<])*?You end up walking in circles')
 
     room_id_to_shard = {
       9999  => "Asharshpar'i",
@@ -1966,12 +1968,12 @@ class Bescort
     when /no wooden gondola here/i
       DRC.bput('look gondola', 'The wooden gondola')
       hide?
-      waitfor 'The gondola stops on the platform and the door silently swings open'
+      waitfor '^[^"]*?The gondola stops on the platform and the door silently swings open'
       ride_gondola(mode)
     when /Gondola, Cab/
       move mode
       hide?
-      waitfor 'With a soft bump, the gondola comes to a stop at its destination'
+      waitfor '^[^"]*?With a soft bump, the gondola comes to a stop at its destination'
       pause 0.5
       move 'out' unless [2249, 2904].include?(Room.current.id)
     end
@@ -2042,7 +2044,7 @@ class Bescort
     case DRC.bput('go ferry', 'The Captain gives you a little nod', 'You hand him', 'The ferry has just pulled away from the dock', 'There is no ferry here to go aboard', 'Come back when you can afford the fare')
     when 'You hand him', 'The Captain gives you a little nod'
       hide?
-      waitfor 'reaches the dock and its crew ties the ferry off'
+      waitfor '^[^"]*?reaches the dock and its crew ties the ferry off'
       pause 0.5
       move 'go dock' unless [1904, 957].include?(Room.current.id)
     when 'The ferry has just pulled away from the dock', 'There is no ferry here to go aboard'
@@ -2072,10 +2074,10 @@ class Bescort
     case DRC.bput('go ferry', 'You hand him', 'The ferry has just pulled away from the dock', 'is steadily approaching', 'Come back when you can afford the fare', 'Sorry, but we cannot take any more passengers', 'You see that the')
     when 'You hand him'
       hide?
-      waitfor 'You come to a very soft stop'
+      waitfor '^You come to a very soft stop'
       move 'go dock'
     when 'is steadily approaching', 'You see that the', 'The ferry has just pulled away from the dock', 'Sorry, but we cannot take any more passengers'
-      waitfor 'comes to an easy landing at the dock and the crew quickly begin to unload the supplies they brought across the river while the passengers make their way off as best they can.'
+      waitfor '^[^"]*?comes to an easy landing at the dock and the crew quickly begin to unload the supplies they brought across the river while the passengers make their way off as best they can.'
       take_ain_ghazal_ferry(mode)
     when 'Come back when you can afford the fare'
       echo('Your fare has mysteriously disappeared!')
@@ -2101,7 +2103,7 @@ class Bescort
     case DRC.bput('go barge', "One of the barge's crew members stops you and requests a transportation fee of 65 lirums as you board the craft", 'You hand him', "The barge .* isn't docked, so you're stuck here until the next one arrives", 'The barge .* has just pulled away from the dock', 'There is no ferry here to go aboard', 'Come back when you can afford the fare')
     when 'You hand him', "One of the barge's crew members stops you and requests a transportation fee of 65 lirums as you board the craft"
       hide?
-      waitfor 'reaches its dock and its crew ties the barge off'
+      waitfor '^[^"]*?reaches its dock and its crew ties the barge off'
       if DRRoom.room_objs.find { |x| x =~ /Langenfirth wharf/ }
         move 'go wharf'
       else
@@ -2131,7 +2133,7 @@ class Bescort
       case DRC.bput('go glory', "One of the barge's crew members stops you and requests a transportation fee of 120 Lirums as you board the craft", 'You hand him', 'What were you referring to', "You can't do that", 'Come back when you can afford the fare')
       when 'You hand him', "One of the barge's crew members stops you and requests a transportation fee of 120 Lirums as you board the craft"
         hide?
-        waitfor 'pulls into dock and its crew quickly ties the barge off'
+        waitfor '^[^"]*?pulls into dock and its crew quickly ties the barge off'
 
         if DRRoom.room_objs.find { |x| x =~ /covered stone dock|salt yard dock/ }
           move 'go dock'
@@ -2140,7 +2142,7 @@ class Bescort
         hide? unless DRRoom.room_objs.find { |x| x =~ /the barge Imperial Glory|the barge Riverhawk/ }
         echo('Waiting for a barge to show up... ')
         hide?
-        waitfor 'A barge pulls into the dock'
+        waitfor '^[^"]*?A barge pulls into the dock'
         take_haven_throne_ferry
       when 'Come back when you can afford the fare'
         echo('Your fare has mysteriously disappeared!')
@@ -2150,7 +2152,7 @@ class Bescort
       case DRC.bput('go riverhawk', "One of the barge's crew members stops you and requests a transportation fee of 120 Lirums as you board the craft", 'You hand him', 'What were you referring to', "You can't do that", 'Come back when you can afford the fare')
       when 'You hand him', "One of the barge's crew members stops you and requests a transportation fee of 120 Lirums as you board the craft"
         hide?
-        waitfor 'pulls into dock and its crew quickly ties the barge off'
+        waitfor '^[^"]*?pulls into dock and its crew quickly ties the barge off'
 
         if DRRoom.room_objs.find { |x| x =~ /covered stone dock|salt yard dock/ }
           move 'go dock'
@@ -2159,7 +2161,7 @@ class Bescort
         hide? unless DRRoom.room_objs.find { |x| x =~ /the barge Imperial Glory|the barge Riverhawk/ }
         echo('Waiting for a barge to show up... ')
         hide?
-        waitfor 'A barge pulls into the dock'
+        waitfor '^[^"]*?A barge pulls into the dock'
         take_haven_throne_ferry
       when 'Come back when you can afford the fare'
         echo('Your fare has mysteriously disappeared!')
@@ -2169,16 +2171,16 @@ class Bescort
       hide? unless DRRoom.room_objs.find { |x| x =~ /the barge Imperial Glory|the barge Riverhawk/ }
       echo('Waiting for a barge to show up... ')
       hide?
-      waitfor 'A barge pulls into the dock'
+      waitfor '^[^"]*?A barge pulls into the dock'
       take_haven_throne_ferry
     end
   end
 
   def hvaral_passport
-    case DRC.bput('get my passport', 'Realizing your passport has expired', 'You get', 'You are already', 'What were you', 'You pick up')
-    when 'Realizing your passport has expired', 'What were you'
+    case DRC.bput('get my passport', '^[^"]*?Realizing your passport has expired', '^You get', '^You are already', '^What were you', '^You pick up')
+    when /Realizing your passport has expired/, 'What were you'
       manual_go2(3632)
-      Flags.add('bescort-dustroad', 'Just when it seems you will never reach')
+      Flags.add('bescort-dustroad', '^(?:<[^>]*>|[^"<])*?Just when it seems you will never reach')
       move 'e'
       pause 1 until Flags['bescort-dustroad']
       Flags.reset('bescort-dustroad')
@@ -2193,7 +2195,7 @@ class Bescort
       pause 2
       Flags.delete('bescort-dustroad')
       manual_go2(3698)
-      DRC.bput('get my passport', 'Realizing your passport has expired', 'You get', 'You are already', 'What were you', 'You pick up')
+      DRC.bput('get my passport', '^[^"]*?Realizing your passport has expired', '^You get', '^You are already', '^What were you', '^You pick up')
     end
     move 'go gate'
     DRC.bput('stow passport', 'You put')
@@ -2260,7 +2262,7 @@ class Bescort
     pause 1
     manual_go2(get_data('town')[town]['deposit']['id'])
     DRC.bput('JUSTICE', 'After assessing', 'lawless and unsafe')
-    result = reget(5, 'You are also fairly sure that the people are convinced')
+    result = reget(5, '^[^"]*?You are also fairly sure that the people are convinced')
     if result
       echo 'You might be a necromancer!  Get some money manually!'
       return false

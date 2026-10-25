@@ -155,6 +155,164 @@ RSpec.describe WalkingAstro do
     end
   end
 
+  describe 'flag matchers registered by #initialize' do
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # The line shapes other players' text arrives in: ESP, say and whisper,
+    # as stripped text and as the raw XML the Flags see.
+    def player_shapes(text)
+      [
+        %([General][Mallory] "#{text}"),
+        %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        %(Mallory says, "#{text}"),
+        %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        %(Mallory whispers, "#{text}"),
+        %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)
+      ]
+    end
+
+    let(:walker) { WalkingAstro.allocate }
+
+    before(:each) do
+      DRStats.guild = 'Moon Mage'
+      $test_settings = OpenStruct.new(walkingastro: {}, walkingastro_no_use_scripts: [], telescope_name: 'telescope',
+                                      telescope_storage: telescope_storage)
+      $test_data = OpenStruct.new(constellations: OpenStruct.new(constellations: [], observe_full_messages: full_messages,
+                                                                 observe_partial_messages: partial_messages,
+                                                                 observe_failed_messages: failed_messages))
+      allow(walker).to receive(:main_loop)
+      walker.send(:initialize)
+    end
+
+    describe 'pool-full flags' do
+      before(:each) do
+        DRSkill._set_xp('Astrology', 0)
+        allow(DRCMM).to receive(:predict)
+        allow(DRCMM).to receive(:align)
+      end
+
+      it 'predicts straight away, without the telescope, on the game line saying every pool is full' do
+        deliver('Too many futures cloud your mind - you learn nothing.')
+        expect(DRCMM).not_to receive(:get_telescope?)
+
+        walker.get_telescope
+
+        expect(DRCMM).to have_received(:align).with('lore')
+      end
+
+      it 'also hears the line behind a leading tag' do
+        deliver('<pushBold/>Too many futures cloud your mind - you learn nothing.')
+        expect(DRCMM).not_to receive(:get_telescope?)
+
+        walker.get_telescope
+      end
+
+      {
+        'offense'  => ["You believe you've learned all that you can about offense.",
+                       'You have a complete understanding of the celestial influences over offensive combat.'],
+        'defense'  => ["You believe you've learned all that you can about defense.",
+                       'You have a complete understanding of the celestial influences over defensive combat.'],
+        'magic'    => ["You believe you've learned all that you can about magic.",
+                       'You have a complete understanding of the celestial influences over magic.'],
+        'survival' => ["You believe you've learned all that you can about survival.",
+                       'You have a complete understanding of the celestial influences over survival.'],
+        'lore'     => ["You believe you've learned all that you can about lore.",
+                       'You have a complete understanding of the celestial influences over lore.']
+      }.each do |pool, lines|
+        lines.each do |line|
+          it "aligns to #{pool} after the game's line: #{line}" do
+            deliver(line)
+
+            walker.check_predict
+
+            expect(DRCMM).to have_received(:align).with(pool)
+          end
+        end
+      end
+
+      ['Too many futures cloud your mind',
+       "You believe you've learned all that you can about lore",
+       'You have a complete understanding of the celestial influences over magic'].each do |text|
+        it "ignores other players' ESP, speech and whispers saying: #{text}" do
+          player_shapes(text).each { |line| deliver(line) }
+          allow(DRCMM).to receive(:get_telescope?).and_return(false)
+          allow(DRCMM).to receive(:store_telescope?).and_return(true)
+
+          expect(walker.get_telescope).to be(true)
+          walker.check_predict
+
+          expect(DRCMM).to have_received(:get_telescope?)
+          expect(DRCMM).not_to have_received(:align)
+        end
+      end
+    end
+
+    describe 'ct-engaged' do
+      ['The jeol moradu closes to melee range on you!',
+       'The void-black moth closes to pole weapon range on you!',
+       "You notice an elder Adan'f blademaster as it stealthily closes to pole weapon range on you."].each do |line|
+        it "retreats before predicting after: #{line}" do
+          deliver(line)
+          expect(DRC).to receive(:retreat)
+
+          walker.keep_away
+        end
+      end
+
+      it "does not retreat for other players' ESP, speech and whispers" do
+        (player_shapes('the troll closes to melee range on you') +
+         player_shapes('it closes to pole weapon range on you')).each { |line| deliver(line) }
+        expect(DRC).not_to receive(:retreat)
+
+        walker.keep_away
+      end
+    end
+
+    describe 'observation-ready' do
+      # Runs main_loop with the clock stopped, delivering `heard` during the
+      # first pause; returns how many times it went to observe.
+      def observations_after(heard)
+        allow(walker).to receive(:main_loop).and_call_original
+        allow(walker).to receive(:should_observe?).and_return(true)
+        allow(Time).to receive(:now).and_return(Time.at(0))
+        observed = 0
+        allow(walker).to receive(:do_prediction) do
+          observed += 1
+          true
+        end
+        ticks = 0
+        allow(walker).to receive(:pause) do
+          ticks += 1
+          Array(heard).each { |line| deliver(line) } if ticks == 1
+          raise StopIteration if ticks >= 2
+        end
+        walker.main_loop
+        observed
+      end
+
+      it 'observes again as soon as the game says the last observation is pondered' do
+        expect(observations_after('You feel you have sufficiently pondered your latest observation.')).to eq(2)
+      end
+
+      it "waits for the timer when other players' text says so" do
+        lines = player_shapes('You feel you have sufficiently pondered your latest observation')
+
+        expect(observations_after(lines)).to eq(1)
+      end
+    end
+  end
+
   describe '#store_telescope' do
     it 'returns true once the telescope is away' do
       walker = build_walker
@@ -271,6 +429,62 @@ RSpec.describe WalkingAstro do
 
       expect(centered_targets(walker)).to eq(['heart'])
       expect(walker.instance_variable_get(:@pool)).to eq('survival')
+    end
+
+    context 'when other players talk while TIME is waiting for its reply' do
+      # DRC.bput as lich-5 runs it: Strings become /x/i, and the first line
+      # that any pattern matches returns that match.
+      def bput_with_lines(lines)
+        allow(DRC).to receive(:bput).with('time', any_args) do |_command, *patterns|
+          regexes = patterns.map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+          match = lines.lazy.filter_map { |line| regexes.lazy.filter_map { |regex| line.match(regex) }.first }.first
+          match&.to_a&.first
+        end
+      end
+
+      def player_lines(text)
+        [%([General][Mallory] "#{text}"), %(Mallory says, "#{text}"), %(Mallory whispers, "#{text}")]
+      end
+
+      it "centers on a night constellation when the game says it is night, whatever players say first" do
+        walker = build_walker
+        player_lines('Hey Harsh, good morning!').each do |player_line|
+          bput_with_lines([player_line, 'It is currently fall and it is night.'])
+
+          expect(centered_targets(walker)).not_to include('elanthian sun')
+        end
+      end
+
+      it "centers on the sun when the game says it is afternoon, whatever players say first" do
+        walker = build_walker
+        player_lines('anyone up for a hunt tonight?').each do |player_line|
+          bput_with_lines([player_line, 'It is currently fall and it is mid-afternoon.'])
+
+          expect(centered_targets(walker)).to eq(['elanthian sun'])
+        end
+      end
+
+      {
+        'dawn' => 'elanthian sun', 'early morning' => 'elanthian sun', 'mid-morning' => 'elanthian sun',
+        'late morning' => 'elanthian sun', 'midday' => 'elanthian sun', 'early afternoon' => 'elanthian sun',
+        'late afternoon' => 'elanthian sun', 'dusk' => 'elanthian sun',
+        'sunset' => :night, 'early evening' => :night, 'evening' => :night, 'late evening' => :night,
+        'night' => :night, 'approaching sunrise' => :night
+      }.each do |phase, expected|
+        it "reads the game's reply for #{phase} as before" do
+          walker = build_walker
+          bput_with_lines(["It is currently fall and it is #{phase}."])
+
+          targets = centered_targets(walker)
+
+          if expected == :night
+            expect(targets).not_to be_empty
+            expect(targets).not_to include('elanthian sun')
+          else
+            expect(targets).to eq([expected])
+          end
+        end
+      end
     end
   end
 
