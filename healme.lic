@@ -41,7 +41,9 @@ class HealMe
   def register_wounds_healed_hook
     wounds_healed_hook = lambda do |server_string|
       # Do regex then look for the wound location, type, and body part matches.
-      if server_string =~ /The (?<location>internal|external) (?<type>wounds|scars) (?:on|to) your (?<body_parts>.*) (?:are fully healed|appear completely healed)/
+      # Both patterns only match the game's own line (leading tags allowed),
+      # not other players' speech, whispers or ESP.
+      if server_string =~ /^(?:<[^>]+>)*The (?<location>internal|external) (?<type>wounds|scars) (?:on|to) your (?<body_parts>.*) (?:are fully healed|appear completely healed)/
         body_parts = Regexp.last_match[:body_parts].to_s
         wound_location = Regexp.last_match[:location].to_s
         wound_type = Regexp.last_match[:type].to_s
@@ -62,7 +64,7 @@ class HealMe
             end
           end
       end
-      if server_string =~ /The bandages (?:binding|compressing) your (?<body_parts>.*) become useless and fall apart./
+      if server_string =~ /^(?:<[^>]+>)*The bandages (?:binding|compressing) your (?<body_parts>.*) become useless and fall apart./
         body_parts = Regexp.last_match[:body_parts].to_s
         echo "Detected bandages fall off: body_parts=#{body_parts}" if $debug_mode_healme
         # One or more body parts lost their bandages.
@@ -578,8 +580,8 @@ class HealMe
     # becomes worse the next due to disease, poison, or other cause.
     @healed_wounds = Hash.new { |h, k| h[k] = false }
     @tended_wounds = Hash.new { |h, k| h[k] = false }
-    Flags.add('healme-cured-disease', 'You feel completely cured of all disease')
-    Flags.add('healme-flushed-poison', 'your spell flushes all poison from your body')
+    Flags.add('healme-cured-disease', /^(?:<[^>]+>)*You feel completely cured of all disease/i)
+    Flags.add('healme-flushed-poison', /^(?:<[^>]*>|[^"<])*?your spell flushes all poison from your body/i)
   end
 
   # The method by similar name in lich.rbw does not support DR
