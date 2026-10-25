@@ -29,9 +29,6 @@ class SellLoot
 
     EquipmentManager.new.empty_hands
 
-    Flags.add('tip-accepted', '.* accepts your tip and slips it away with a smile')
-    Flags.add('tip-declined', '.* declines your tip offer')
-    Flags.add('tip-expired', 'Your tip offer to .* has expired')
     Flags.add('sell-loot-returned-empty', GIVE_RETURNED_EMPTY)
     Flags.add('sell-loot-returned-partial', GIVE_RETURNED_PARTIAL)
 
@@ -341,9 +338,15 @@ class SellLoot
     gem_pouch_state(container) == :open
   end
 
+  # Reply patterns that only match the game's own line, not other players'
+  # speech/ESP. \K keeps the text bput returns the same as before.
+  POUCH_TIED_OFF     = /^[^"]*?\Khas been tied off/i
+  CONTAINER_EMPTY    = /^There is nothing in there/i
+  CONTAINER_CONTENTS = /^In the .*? \Kyou see/i
+
   # @return [Symbol] :open, :tied, or :missing
   def gem_pouch_state(container)
-    case DRC.bput("open my #{container}", 'You open your', 'You open a', 'has been tied off', 'What were you referring to', 'That is already open')
+    case DRC.bput("open my #{container}", '^You open your', '^You open a', POUCH_TIED_OFF, '^What were you referring to', '^That is already open')
     when 'has been tied off' then :tied
     when 'What were you referring to' then :missing
     else :open
@@ -530,7 +533,7 @@ class SellLoot
   def has_traps_to_sell?(container)
     return false unless DRStats.thief?
 
-    result = DRC.bput("look in my #{container}", "There is nothing in there", "you see")
+    result = DRC.bput("look in my #{container}", CONTAINER_EMPTY, CONTAINER_CONTENTS)
     result == "you see"
   rescue StandardError => e
     DRC.message("Error checking traps in #{container}: #{e.message}")
@@ -621,10 +624,11 @@ class SellLoot
     DRCT.walk_to(@bankbot_room_id)
     return unless DRRoom.pcs.include?(@bankbot_name)
 
-    Flags.reset('tip-accepted')
-    Flags.reset('tip-expired')
-    Flags.reset('tip-declined')
-    case DRC.bput("tip #{@bankbot_name} #{deposit_amount} #{currency}", 'You offer', "I don't know who", 'you really should keep every bronze you can get your hands on', 'You already have a tip offer outstanding', 'already has a tip offer pending', "But you don't have that much!")
+    add_tip_flags(@bankbot_name)
+    case DRC.bput("tip #{@bankbot_name} #{deposit_amount} #{currency}", '^You offer', "^I don't know who",
+                  /^[^"]*?\Kyou really should keep every bronze you can get your hands on/i,
+                  '^You already have a tip offer outstanding', /^[^"]*?\Kalready has a tip offer pending/i,
+                  "^But you don't have that much!")
     when "I don't know who"
       echo '***Bankbot not found, skipping deposit***'
       return
@@ -643,6 +647,15 @@ class SellLoot
     end
 
     pause 0.5 until Flags['tip-accepted'] || Flags['tip-expired'] || Flags['tip-declined']
+  end
+
+  # Registered per deposit for the bankbot being tipped, and only on the game's
+  # own line (not other players' speech/ESP).
+  def add_tip_flags(name)
+    name = Regexp.escape(name.to_s)
+    Flags.add('tip-accepted', /^(?:<[^>]+>)*#{name} accepts your tip and slips it away with a smile/i)
+    Flags.add('tip-declined', /^(?:<[^>]+>)*#{name} declines your tip offer/i)
+    Flags.add('tip-expired', /^(?:<[^>]+>)*Your tip offer to #{name} has expired/i)
   end
 
   # ===========================================================================
@@ -688,8 +701,10 @@ class SellLoot
 
   # "now lighter" is a PARTIAL sale: that kiosk is dry, but the pouch still
   # holds gems.
-  GIVE_RETURNED_EMPTY   = /Retrieving your now empty/i
-  GIVE_RETURNED_PARTIAL = /Retrieving your now lighter/i
+  # Only the game's own line: no quote before the phrase (outside tags), which
+  # other players' speech/ESP/whispers always have.
+  GIVE_RETURNED_EMPTY   = /^(?:<[^>]*>|[^"<])*?Retrieving your now empty/i
+  GIVE_RETURNED_PARTIAL = /^(?:<[^>]*>|[^"<])*?Retrieving your now lighter/i
   HANDBACK_WAIT_STEPS   = 30 # of 0.1s
 
   GIVE_BAD_SYNTAX = /What is it you're trying to give|What were you referring to|not something you can/i
@@ -1099,11 +1114,11 @@ class SellLoot
   def stored_pouch_state(pouch)
     return :unrecognised unless "#{DRC.left_hand} #{DRC.right_hand}" =~ /\bgem #{Regexp.escape(@settings.gem_pouch_noun.to_s)}\b/i
 
-    case DRC.bput("open my #{pouch}", 'You open', 'has been tied off', 'What were you referring to', 'That is already open')
+    case DRC.bput("open my #{pouch}", '^You open', POUCH_TIED_OFF, '^What were you referring to', '^That is already open')
     when 'has been tied off' then :tied
     when 'What were you referring to' then :missing
     when 'You open', 'That is already open'
-      DRC.bput("rummage my #{pouch}", /there is nothing in there/i, /You rummage/i) =~ /nothing in there/i ? :empty : :untied
+      DRC.bput("rummage my #{pouch}", /^You rummage .*there is nothing in there/i, /^You rummage/i) =~ /nothing in there/i ? :empty : :untied
     else :unrecognised
     end
   rescue StandardError => e
@@ -1212,7 +1227,7 @@ class SellLoot
 
   def sell_bundle_to_trader(targets)
     return false unless DRC.bput('count my bundle', /^You flip through .* bundle and find \d+ skins? in it/, /^I could not find/).scan(/\d+/).first.to_i.positive?
-    return false if DRC.bput('remove my bundle', 'You remove', 'You sling', 'Remove what', 'You take') == 'Remove what'
+    return false if DRC.bput('remove my bundle', '^You remove', '^You sling', '^Remove what', '^You take') == 'Remove what'
 
     if DRC.bput('tie my bundle', 'you tie the bundle', 'TIE the bundle again', 'has already been tied').to_s =~ /TIE the bundle again/i
       DRC.bput('tie my bundle', 'you tie the bundle', 'has already been tied')
@@ -1237,7 +1252,7 @@ class SellLoot
     return unless tannery_id
     return unless DRCT.walk_to(tannery_id)
 
-    return if DRC.bput('remove my bundle', 'You remove', 'You sling', 'Remove what', 'You take') == 'Remove what'
+    return if DRC.bput('remove my bundle', '^You remove', '^You sling', '^Remove what', '^You take') == 'Remove what'
 
     DRC.release_invisibility
     DRC.bput('sell my bundle',
@@ -1414,10 +1429,10 @@ class SellLoot
   # bulk selling a bundle of skins or a trader bulk selling a gem pouch.
   def sell_traps(container)
     return unless DRStats.thief?
-    return unless DRC.bput("look in my #{container}", "There is nothing in there", "you see") == "you see"
+    return unless DRC.bput("look in my #{container}", CONTAINER_EMPTY, CONTAINER_CONTENTS) == "you see"
 
     DRC.release_invisibility
-    case DRC.bput("remove my #{container}", "You remove", "What were you referring to", "You aren't wearing that", "Remove what")
+    case DRC.bput("remove my #{container}", "^You remove", "^What were you referring to", "^You aren't wearing that", "^Remove what")
     when "What were you referring to", "You aren't wearing that", "Remove what"
       return
     end
