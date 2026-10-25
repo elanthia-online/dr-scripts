@@ -23,6 +23,50 @@ RSpec.describe Droughtmans do
     allow(Flags).to receive(:delete)
   end
 
+  # Feed a raw server line through the registered Flags matchers, the way
+  # Lich's DRParser.check_events does for every downstream line.
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # Other players' ESP, speech and whispers carrying the same text, in the raw
+  # XML shapes Flags see and the stripped shapes bput sees.
+  def player_lines(text)
+    [
+      %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+      %([General][Mallory] "#{text}"),
+      %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+      %(Mallory says, "#{text}"),
+      %(Mallory whispers, "#{text}")
+    ]
+  end
+
+  # DRC.bput as lich-5 runs it: each incoming line, in order, is tried against
+  # every pattern and the first match's text is returned. Lines are consumed
+  # across calls; with none left the reply is '' (a timeout).
+  def bput_reading(*lines)
+    queue = lines.dup
+    allow(DRC).to receive(:bput) do |_command, *patterns|
+      regexes = patterns.map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+      reply = ''
+      while (line = queue.shift)
+        match = regexes.lazy.map { |regex| line.match(regex) }.find(&:itself)
+        next unless match
+
+        reply = match[0]
+        break
+      end
+      reply
+    end
+  end
+
   before do
     # Actions fired by nearly every method; neutralize them by default.
     allow(DRC).to receive(:release_invisibility)
@@ -181,6 +225,32 @@ RSpec.describe Droughtmans do
       expect(bot.instance_variable_get(:@whitelist)).to be_empty
     end
 
+    it 'ignores dowse visions and bearings in other players\' ESP, speech and whispers' do
+      bot.setup_flags
+      bot.instance_variable_set(:@current_quadrant, :northeast)
+      vision = "As the dowsing concludes, a vision of Bob holding the golden key far to the north flits across your mind's eye."
+      bearing = 'Concentrating, you believe the center of the maze is far to the southwest.'
+      (player_lines(vision) + player_lines(bearing)).each { |spoof| deliver(spoof) }
+
+      bot.read_dowse_results
+
+      expect(bot.instance_variable_get(:@whitelist)).to be_empty
+      expect(bot.instance_variable_get(:@dowse_hint)).to be_nil
+      expect(bot.instance_variable_get(:@current_quadrant)).to eq(:northeast)
+    end
+
+    it 'reads the holder and bearing from the game\'s dowse lines' do
+      bot.setup_flags
+      deliver("As the dowsing concludes, a vision of Bob holding the golden key far to the north flits across your mind's eye.")
+      deliver('Concentrating, you believe the center of the maze is far to the north and east.')
+
+      bot.read_dowse_results
+
+      expect(bot.instance_variable_get(:@whitelist)).to eq(%w[Bob])
+      expect(bot.instance_variable_get(:@dowse_hint)).to eq(dirs: %w[north])
+      expect(bot.instance_variable_get(:@current_quadrant)).to eq(:southwest)
+    end
+
     it 'clears the bearing and key state when there is no key vision' do
       bot.instance_variable_set(:@dowse_hint, { dirs: %w[north] })
       bot.instance_variable_set(:@key_in_play, true)
@@ -203,6 +273,7 @@ RSpec.describe Droughtmans do
       bot.instance_variable_set(:@visited, Hash.new(0))
       bot.instance_variable_set(:@blocked, {})
       bot.instance_variable_set(:@known_frozen, {})
+      bot.instance_variable_set(:@no_attack, [])
     end
 
     it 'handles a prevail by dropping the winner and invalidating key intel' do
@@ -298,6 +369,144 @@ RSpec.describe Droughtmans do
       stub_flags('dm-wall-rises' => { dir: 'east' })
       bot.process_flags
       expect(bot.instance_variable_get(:@blocked)[[[0, 0], 'east']]).to be(true)
+    end
+
+    # The thaw line names only a noun; with no such mob listed the script waves
+    # at that noun, so a name on the never-wand list must still be skipped.
+    it 'never falls back to waving at a no_attack name from a thaw line' do
+      allow(bot).to receive(:wave)
+      DRRoom.npcs = [].freeze
+      bot.instance_variable_set(:@no_attack, %w[Friend])
+      stub_flags('dm-npc-unfrozen' => { npc: ' Friend' })
+
+      bot.process_flags
+
+      expect(bot).not_to have_received(:wave)
+    end
+
+    # Flags test every matcher against every line, including other players'
+    # ESP, speech and whispers; each announcement must only match the game's
+    # own line.
+    context 'with the real flag matchers' do
+      real_lines = {
+        'dm-key-found'    => ['Bob just found a golden key!', 'Bob picks up a golden key.'],
+        'dm-prevailed'    => ["Bob has prevailed over Droughtman's Maze!"],
+        'dm-npc-unfrozen' => ['A healer begins to move around again.', 'An old healer begins to move around again.'],
+        'dm-dark'         => ["It's pitch dark and you can't see a thing."],
+        'dm-wall-rises'   => ['With a loud rumble, an entire wall rises from the maze floor to block off northward passage!'],
+        'dm-self-frozen'  => ['The wand circles around Bob and returns to you, freezing you in place.'],
+        'dm-repositioned' => ['A roaring WHOOSH fills your ears and you feel the ground lurch beneath you!'],
+        'dm-dragged'      => ['The current drags you north!'],
+        'dm-dowse-key'    => ["As the dowsing concludes, a vision of Bob holding the golden key far to the north flits across your mind's eye."],
+        'dm-dowse-center' => ['Concentrating, you believe the center of the maze is far to the northwest.']
+      }
+
+      before { bot.setup_flags }
+
+      real_lines.each do |key, lines|
+        lines.each do |line|
+          it "#{key} fires on the game line #{line.inspect}, bare and after a leading tag" do
+            deliver(line)
+            expect(Flags[key]).to be_truthy
+            Flags.reset(key)
+            deliver("<pushBold/>#{line}")
+            expect(Flags[key]).to be_truthy
+          end
+
+          it "#{key} ignores other players' ESP, speech and whispers of #{line.inspect}" do
+            player_lines(line).each { |spoof| deliver(spoof) }
+            expect(Flags[key]).to be_falsey
+          end
+        end
+      end
+
+      it 'keeps the real key holder and waves at no one a player names as the finder' do
+        allow(bot).to receive(:have_key?).and_return(false)
+        allow(bot).to receive(:in_maze?).and_return(true)
+        allow(bot).to receive(:wave)
+        bot.instance_variable_set(:@whitelist, %w[Realholder])
+        DRRoom.pcs = %w[Bob].freeze
+
+        player_lines('Bob just found a golden key!').each { |spoof| deliver(spoof) }
+        bot.process_flags
+        bot.scan_players(verify_unknowns: false)
+
+        expect(bot.instance_variable_get(:@whitelist)).to eq(%w[Realholder])
+        expect(bot).not_to have_received(:wave)
+      end
+
+      it 'whitelists and waves at the finder the game announces' do
+        allow(bot).to receive(:have_key?).and_return(false)
+        allow(bot).to receive(:in_maze?).and_return(true)
+        allow(bot).to receive(:wave)
+        bot.instance_variable_set(:@whitelist, %w[Realholder])
+        DRRoom.pcs = %w[Bob].freeze
+
+        deliver('Bob just found a golden key!')
+        bot.process_flags
+        bot.scan_players(verify_unknowns: false)
+
+        expect(bot.instance_variable_get(:@whitelist)).to eq(%w[Bob])
+        expect(bot).to have_received(:wave).with('Bob', is_keyholder: true)
+      end
+
+      it 'keeps a holder on the list when a player claims they prevailed' do
+        bot.instance_variable_set(:@whitelist, %w[Bob])
+        bot.instance_variable_set(:@key_in_play, true)
+
+        player_lines("Bob has prevailed over Droughtman's Maze!").each { |spoof| deliver(spoof) }
+        bot.process_flags
+
+        expect(bot.instance_variable_get(:@whitelist)).to eq(%w[Bob])
+        expect(bot.instance_variable_get(:@key_in_play)).to be(true)
+      end
+
+      it 'waves at no one a player says has thawed' do
+        allow(bot).to receive(:wave)
+        DRRoom.npcs = [].freeze
+
+        player_lines('A Friend begins to move around again.').each { |spoof| deliver(spoof) }
+        bot.process_flags
+
+        expect(bot).not_to have_received(:wave)
+      end
+
+      it 're-freezes the mob the game says has thawed' do
+        allow(bot).to receive(:wave)
+        DRRoom.npcs = [].freeze
+
+        deliver('A healer begins to move around again.')
+        bot.process_flags
+
+        expect(bot).to have_received(:wave).with('healer').once
+      end
+
+      it 'keeps the map and position when players describe walls, drags and shuffles' do
+        allow(bot).to receive(:reset_section_state)
+        lines = ['With a loud rumble, an entire wall rises from the maze floor to block off northward passage!',
+                 'The current drags you west!',
+                 'A roaring WHOOSH fills your ears and you feel the ground lurch beneath you!']
+        lines.flat_map { |line| player_lines(line) }.each { |spoof| deliver(spoof) }
+
+        bot.process_flags
+
+        expect(bot.instance_variable_get(:@blocked)).to be_empty
+        expect(bot.instance_variable_get(:@pos)).to eq([0, 0])
+        expect(bot).not_to have_received(:reset_section_state)
+      end
+
+      it 'neither waits for a thaw nor shakes the wand on players claiming freeze or darkness' do
+        allow(bot).to receive(:wait_for_self_thaw)
+        allow(bot).to receive(:fput)
+        lines = ['The wand circles around Bob and returns to you, freezing you in place.',
+                 "It's pitch dark and you can't see a thing."]
+        lines.flat_map { |line| player_lines(line) }.each { |spoof| deliver(spoof) }
+
+        bot.process_flags
+
+        expect(bot).not_to have_received(:wait_for_self_thaw)
+        expect(bot).not_to have_received(:fput)
+      end
     end
   end
 
@@ -623,6 +832,57 @@ RSpec.describe Droughtmans do
       allow(DRC).to receive(:bput).and_return('Wave at what?')
       bot.wave('warrior')
       expect(DRC).to have_received(:bput).once
+    end
+
+    # bput reads every line, including other players' ESP, speech and whispers;
+    # the wave replies must only match the game's own line.
+    context 'when other players speak the wave replies' do
+      def spoofs(*texts)
+        texts.flat_map { |text| player_lines(text).reject { |line| line.start_with?('<') } }
+      end
+
+      it 'waits for the real reply instead of grabbing a key a player says was dropped' do
+        bput_reading(*spoofs('Bob drops his golden key!', 'Bob drops her golden key!'), 'You wave an icy blue wand at Bob.')
+        allow(bot).to receive(:get_key)
+
+        bot.wave('Bob', is_keyholder: true)
+
+        expect(bot).not_to have_received(:get_key)
+        expect(bot.instance_variable_get(:@known_frozen)).to have_key([[0, 0], 'Bob'])
+      end
+
+      it 'keeps the suspect and does not wait for a thaw a player claims' do
+        bot.instance_variable_set(:@whitelist, %w[Bob])
+        bput_reading(*spoofs('The wand circles around Bob and returns to you, freezing you in place.'), 'You wave an icy blue wand at Bob.')
+        allow(bot).to receive(:wait_for_self_thaw)
+
+        bot.wave('Bob', is_keyholder: true)
+
+        expect(bot.instance_variable_get(:@whitelist)).to eq(%w[Bob])
+        expect(bot).not_to have_received(:wait_for_self_thaw)
+      end
+
+      it 'does not stop the script, drop or camp the target on player lines' do
+        bput_reading(*spoofs('I do not understand what you are trying to do.', 'Wave at what?', 'I could not find what you were referring to.',
+                             'The guard is already frozen.', 'The guard appears immobilized.'),
+                     'You wave an icy blue wand at the guard.')
+        allow(bot).to receive(:camp_frozen_keyholder)
+
+        expect { bot.wave('guard', is_keyholder: true) }.not_to raise_error
+
+        expect(bot).not_to have_received(:camp_frozen_keyholder)
+        expect(bot.dropped_targets(:npcs)).to be_empty
+        expect(bot.instance_variable_get(:@known_frozen)).to have_key([[0, 0], 'guard'])
+      end
+
+      it 'still grabs the key on the game\'s drop line' do
+        bput_reading('Bob drops his golden key!')
+        allow(bot).to receive(:get_key)
+
+        bot.wave('Bob', is_keyholder: true)
+
+        expect(bot).to have_received(:get_key)
+      end
     end
 
     it 'camps a confirmed holder found already frozen' do

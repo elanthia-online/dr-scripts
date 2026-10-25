@@ -6,13 +6,17 @@ class WalkingAstro
   def initialize
     exit unless DRStats.moon_mage?
 
-    Flags.add('ct-engaged', 'closes to pole weapon range on you', 'closes to melee range on you')
-    Flags.add('observation-ready', 'You feel you have sufficiently pondered your latest observation')
-    Flags.add('offense-full', "You believe you've learned all that you can about offense", 'Too many futures cloud your mind', 'You have a complete understanding of the celestial influences over offensive combat')
-    Flags.add('defense-full', "You believe you've learned all that you can about defense", 'Too many futures cloud your mind', 'You have a complete understanding of the celestial influences over defensive combat')
-    Flags.add('magic-full', "You believe you've learned all that you can about magic", 'Too many futures cloud your mind', 'You have a complete understanding of the celestial influences over magic')
-    Flags.add('survival-full', "You believe you've learned all that you can about survival", 'Too many futures cloud your mind', 'You have a complete understanding of the celestial influences over survival')
-    Flags.add('lore-full', "You believe you've learned all that you can about lore", 'Too many futures cloud your mind', 'You have a complete understanding of the celestial influences over lore')
+    # Each matcher only matches the game's own line, not other players' speech,
+    # whispers or ESP: messages that start the line are anchored there (leading
+    # tags allowed); the creature's closing line can follow other text, but no
+    # quote before it (player text always has one).
+    Flags.add('ct-engaged', /^(?:<[^>]*>|[^"<])*?closes to pole weapon range on you/i, /^(?:<[^>]*>|[^"<])*?closes to melee range on you/i)
+    Flags.add('observation-ready', /^(?:<[^>]+>)*You feel you have sufficiently pondered your latest observation/i)
+    Flags.add('offense-full', /^(?:<[^>]+>)*You believe you've learned all that you can about offense/i, /^(?:<[^>]+>)*Too many futures cloud your mind/i, /^(?:<[^>]+>)*You have a complete understanding of the celestial influences over offensive combat/i)
+    Flags.add('defense-full', /^(?:<[^>]+>)*You believe you've learned all that you can about defense/i, /^(?:<[^>]+>)*Too many futures cloud your mind/i, /^(?:<[^>]+>)*You have a complete understanding of the celestial influences over defensive combat/i)
+    Flags.add('magic-full', /^(?:<[^>]+>)*You believe you've learned all that you can about magic/i, /^(?:<[^>]+>)*Too many futures cloud your mind/i, /^(?:<[^>]+>)*You have a complete understanding of the celestial influences over magic/i)
+    Flags.add('survival-full', /^(?:<[^>]+>)*You believe you've learned all that you can about survival/i, /^(?:<[^>]+>)*Too many futures cloud your mind/i, /^(?:<[^>]+>)*You have a complete understanding of the celestial influences over survival/i)
+    Flags.add('lore-full', /^(?:<[^>]+>)*You believe you've learned all that you can about lore/i, /^(?:<[^>]+>)*Too many futures cloud your mind/i, /^(?:<[^>]+>)*You have a complete understanding of the celestial influences over lore/i)
 
     @settings = get_settings
     arg_definitions = [
@@ -101,7 +105,10 @@ class WalkingAstro
 
   def determine_time
     @pool = nil
-    case DRC.bput('time', 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk', 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise')
+    # Only the game's own reply ("It is currently fall and it is night.") counts,
+    # not other players' speech or ESP; \K keeps the returned match to the word.
+    times = ['it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk', 'sunset', 'evening', 'midnight', 'night', 'almost dawn', 'approaching sunrise']
+    case DRC.bput('time', *times.map { |time| /^It is currently .*?\K#{time}/i })
     when 'it is dawn', 'morning', 'midday', 'noon', 'afternoon', 'dusk'
       @pool = 'survival' if @use_partial_pools == true
       center('elanthian sun')

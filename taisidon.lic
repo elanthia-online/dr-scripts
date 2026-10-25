@@ -75,7 +75,7 @@ class Taisidon
   #
   # NOTE the guilty steward's tell ("says, fingers tapping") itself contains a comma after
   # "says", so it also matches the generic innocent marker /says,/. These patterns are
-  # therefore always offered to DRC.bput BEFORE /says,/ (see #question_suspect), so bput
+  # therefore always offered to DRC.bput BEFORE /says,/ (see #alibi_patterns), so bput
   # returns the specific tell rather than the generic marker for the guilty suspect.
   GUILTY_TELLS = [
     /says with a nervous tic/,
@@ -90,6 +90,7 @@ class Taisidon
   ].freeze
 
   # Generic marker of an innocent (straight) alibi answer. Offered to bput after GUILTY_TELLS.
+  # The bput only accepts these markers on the suspect's own reply line (see #alibi_patterns).
   INNOCENT_TELL = /says,/
 
   # Maximum REDEEM attempts before giving up. REDEEM asks you to repeat the command within a
@@ -341,7 +342,7 @@ class Taisidon
     return if suspect.nil? || suspect.to_s.strip.empty?
 
     target = creature ? "##{creature.id}" : suspect
-    response = DRC.bput("ask #{target} about alibi", *GUILTY_TELLS, ALIBI_USAGE, INNOCENT_TELL)
+    response = DRC.bput("ask #{target} about alibi", *alibi_patterns(suspect))
 
     if response =~ ALIBI_USAGE
       DRC.message('Taisidon: ASK ABOUT ALIBI returned a Usage error. Check the things! Aborting.')
@@ -354,6 +355,26 @@ class Taisidon
     else
       DRC.message("#{suspect} is innocent.")
     end
+  end
+
+  # Builds the ASK ABOUT ALIBI bput patterns for a suspect, in the order bput must try them:
+  # the nervous tells, the Usage error, then the generic innocent marker (the guilty steward's
+  # "says, fingers tapping" also matches "says,", so the tells must come first).
+  #
+  # Each tell and the innocent marker only match the suspect's own reply line, which starts
+  # "A <race> <noun> says" (e.g. "A Gor'Tog steward says, fingers tapping, \"...\""): the line
+  # must begin with the article, and no quote may come before the noun or the tell, so other
+  # players' speech, whispers and ESP never answer for the suspect. The anchor uses the
+  # suspect's last word, so an ordinal DRRoom noun ("second chef") still anchors on "chef".
+  # @param suspect [String] the suspect's noun
+  # @return [Array<Regexp>] patterns for DRC.bput
+  def alibi_patterns(suspect)
+    speaker = "^An? [^\"]*?\\b#{Regexp.escape(suspect.to_s.split.last)} (?=says)[^\"]*?"
+    [
+      *GUILTY_TELLS.map { |tell| /#{speaker}#{tell.source}/ },
+      ALIBI_USAGE,
+      /#{speaker}#{INNOCENT_TELL.source}/
+    ]
   end
 
   # Searches the given room and records it as the crime scene if blood is found. No-ops once

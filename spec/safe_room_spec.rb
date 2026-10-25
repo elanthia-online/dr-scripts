@@ -447,6 +447,286 @@ RSpec.describe SafeRoom do
   end
 
   # ---------------------------------------------------------------------------
+  # Matchers only accept the game's own lines
+  # ---------------------------------------------------------------------------
+
+  # Feed a server line through the registered Flags matchers, the way
+  # Lich's DRParser.check_events does for every downstream line.
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # Other players' text in the raw shapes Flags see: ESP, speech and whispers.
+  def player_shapes(text, who: 'Mallory')
+    [
+      %([General][#{who}] "#{text}"),
+      %(<pushStream id="thoughts"/>[General][#{who}] "#{text}"<popStream/>),
+      %(#{who} says, "#{text}"),
+      %(<preset id='speech'>#{who} says</preset>, "#{text}"),
+      %(#{who} whispers, "#{text}"),
+      %(<pushStream id="whispers"/><preset id="whisper">#{who} whispers,</preset> "#{text}")
+    ]
+  end
+
+  describe 'NPC healer flags' do
+    # Healer lines from the PRs that added each matcher (#1304, #2649, #3971 quote
+    # the game) and from the healer's speech shape for the others.
+    real_healer_lines = [
+      'Dokt waves a large hand at you and says, "You look fine to me."',
+      'Dokt gives you a quick glance and shakes his head.',
+      'Quentin says, "Off with you, go have yourself a birthday party!"',
+      'Fraethis says, "I sense you are well."',
+      'Shalvard looks around and says, "Kindly leave, I have other patients."',
+      'Arthianna says "Testchar, you look fine and healthy to me."',
+      %(Srela says, "You're healthy.  A little rest and exercise and you'll be good as new."),
+      'Yolesi says, "There is nothing I can do for you."',
+      'Yolesi says, "Up and out!"',
+      'Arthianna nudges you.  "What are you doing lying there with the wounded?" she grins.',
+      'Gaktrhn says, "Come along.  Leave room for the others."',
+      %(Quentin says, "I think you don't really need healing."),
+      %(Yrisa reaches into a pocket and produces a bite-sized piece of cebi root and a similar amount of hisan salve.  Before you can even begin to protest, she says simply, "Medicine.  It's good for you.  Now move along, I can't do anything more for you now."),
+      %(<preset id='speech'>Elys says</preset>, "You're in good enough shape, Testchar."),
+      'Gaktrhn bends down as if to touch you, then waves you off.',
+      'After a quick diagnosis, the healer waves you away.',
+      'Kaiva crosses your name off the waiting list.',
+      'The last of your wounds knit shut.'
+    ]
+
+    healer_texts = [
+      'Dokt waves a large hand at you', 'Dokt gives you a quick glance', 'go have yourself a birthday party',
+      'I hope you are well', 'I have other patients', 'Arthianna says "Testchar, you look fine and healthy to me."',
+      'A little rest and exercise', 'There is nothing I can do for you', 'Up and out!',
+      'What are you doing lying there with the wounded?', 'Come along.  Leave room for the others.',
+      "I think you don't really need healing", "Now move along, I can't do anything more for you now",
+      "You're in good enough shape, Testchar", 'Gaktrhn bends down as if to touch you', 'After a quick diagnosis',
+      'Kaiva crosses your name off the waiting list',
+      # The healer named inside another player's quote.
+      'Quentin says, "go have yourself a birthday party"', 'Yolesi says, "Up and out!"',
+      'Martyr Saedelthorp says, "you are well"', 'The apprentice Kaiva crosses your name off the waiting list'
+    ]
+
+    # Runs wait_for_healing and delivers heard[n] during the nth pause.
+    # Returns how many pauses passed before the wait ended.
+    def pauses_in_queue(heard)
+      instance = build_instance
+      instance.send(:add_npc_healer_flags)
+      allow(Script).to receive(:running?).with('tendme').and_return(true)
+      pauses = 0
+      allow(instance).to receive(:pause) do
+        pauses += 1
+        raise 'wait_for_healing never ended' if pauses > 30
+
+        Array(heard[pauses]).each { |line| deliver(line) }
+      end
+      instance.send(:wait_for_healing)
+      pauses
+    end
+
+    real_healer_lines.each do |line|
+      it "leaves the queue on the healer's line: #{line[0, 60]}" do
+        expect(pauses_in_queue({ 1 => line })).to eq(1)
+        expect($stopped_scripts).to include('tendme')
+      end
+    end
+
+    # The game sometimes puts the healer's title before the name: the Crossing
+    # hospital lists "Martyr Saedelthorp" and "the apprentice Kaiva", and Dokt
+    # answers questions as "Bioalchemist Dokt" (Elanthipedia).
+    titled_healer_lines = [
+      'Martyr Saedelthorp says, "I sense you are well."',
+      'The apprentice Kaiva crosses your name off the waiting list.',
+      'Apprentice Kaiva crosses your name off the waiting list.',
+      'Bioalchemist Dokt waves a large hand at you and says, "You look fine to me."',
+      'Healer Adept Onsuwayo says, "Up and out!"',
+      'Lady Atladene says, "There is nothing I can do for you."'
+    ]
+
+    titled_healer_lines.each do |line|
+      it "leaves the queue on the healer's line with a title: #{line[0, 60]}" do
+        expect(pauses_in_queue({ 1 => line })).to eq(1)
+      end
+    end
+
+    # Another player addressing a titled healer: the healer's name follows the
+    # player's name and verb, so it is not the healer's own line.
+    [
+      'Mallory asks Kaiva, "Am I up and out?"',
+      'Mallory says to Martyr Saedelthorp, "I hope you are well."',
+      'Mallory asks the apprentice Kaiva, "Have other patients?"'
+    ].each do |line|
+      it "stays in the queue when another player addresses a titled healer: #{line[0, 50]}" do
+        expect(pauses_in_queue({ 1 => line, 3 => 'Kaiva crosses your name off the waiting list.' })).to eq(3)
+      end
+    end
+
+    it 'leaves the queue on a healer line that starts with XML tags' do
+      expect(pauses_in_queue({ 1 => '<pushBold/>Kaiva crosses your name off the waiting list.' })).to eq(1)
+    end
+
+    healer_texts.each do |text|
+      it "stays in the queue when another player says, whispers or thinks: #{text[0, 50]}" do
+        expect(pauses_in_queue({ 1 => player_shapes(text), 3 => 'Kaiva crosses your name off the waiting list.' })).to eq(3)
+      end
+    end
+
+    it 'stays in the queue on a real ESP line that contains "you are well"' do
+      esp = '<pushStream id="thoughts"/>[General][Harsh] "Hello Tishra, I love you too. I\'m always so happy to hear you thinking. I hope you are well"<popStream/>'
+      expect(pauses_in_queue({ 1 => esp, 2 => 'Kaiva crosses your name off the waiting list.' })).to eq(2)
+    end
+
+    it 'stays in the queue on a room line that happens to contain "up and out"' do
+      expect(pauses_in_queue({ 1 => 'Also here: Coup and Outlander Szaik.', 2 => 'Kaiva crosses your name off the waiting list.' })).to eq(2)
+    end
+
+    it 'stays in the queue when a healer line and another player\'s speech arrive in one server chunk' do
+      chunk = "Quentin glances about.\nMallory says, \"go have yourself a birthday party\""
+      expect(pauses_in_queue({ 1 => chunk, 2 => 'Kaiva crosses your name off the waiting list.' })).to eq(2)
+    end
+
+    it 'goes back into the queue when an orderly drags you away' do
+      pauses_in_queue({ 1 => 'A burly orderly grabs your arm and drags you out of the room with him.',
+                        2 => 'Kaiva crosses your name off the waiting list.' })
+      expect($started_scripts.count { |name, *| name == 'tendme' }).to eq(2)
+    end
+
+    it 'does not restart the wait when another player says the drag message' do
+      pauses_in_queue({ 1 => player_shapes('A burly orderly grabs you and drags you away') +
+                             player_shapes('grabs your arm and drags you out with him'),
+                        2 => 'Kaiva crosses your name off the waiting list.' })
+      expect($started_scripts.count { |name, *| name == 'tendme' }).to eq(1)
+    end
+
+    it 'answers the idle warning with tdp' do
+      pauses_in_queue({ 1 => 'YOU HAVE BEEN IDLE TOO LONG. PLEASE RESPOND.', 2 => 'Kaiva crosses your name off the waiting list.' })
+      expect(drain_sent_messages).to include('tdp')
+    end
+
+    it 'does not send tdp when another player says the idle warning' do
+      pauses_in_queue({ 1 => player_shapes('you have been idle too long'), 2 => 'Kaiva crosses your name off the waiting list.' })
+      expect(drain_sent_messages).not_to include('tdp')
+    end
+  end
+
+  describe 'PC empath done-healing flag' do
+    let(:empath) { { 'name' => 'Healer', 'id' => 123 } }
+
+    before do
+      DRRoom.pcs = ['Healer']
+      DRRoom.room_objs = []
+    end
+
+    # Runs use_pc_empath? (still wounded throughout) and delivers `line` during
+    # the first pause. Returns how many of the 24 pauses passed.
+    def pauses_with_empath(line, empath_settings = empath)
+      instance = build_instance
+      allow(instance).to receive(:need_healing?).and_return(true)
+      pauses = 0
+      allow(instance).to receive(:pause) do
+        pauses += 1
+        Array(line).each { |l| deliver(l) } if pauses == 1
+      end
+      instance.send(:use_pc_empath?, empath_settings)
+      pauses
+    end
+
+    [
+      '<pushStream id="whispers"/><preset id="whisper">Healer whispers,</preset> "Done!"',
+      '<popStream/><preset id="whisper">Healer whispers,</preset> "Done!"',
+      'Healer whispers, "Done!"',
+      'Healer says, "All set."',
+      %(Healer says to you, "You're not even injured!"),
+      %(Healer exclaims, "All better!"),
+      %(<preset id='speech'>Healer says</preset>, "You're in good enough shape.")
+    ].each do |line|
+      it "stops waiting on the empath's line: #{line}" do
+        expect(pauses_with_empath(line)).to eq(1)
+      end
+    end
+
+    ['Done!', 'All set', "You're not even injured", 'in good enough shape', 'All better',
+     'Healer whispers, "Done!"', 'Healer says, "All set."'].each do |text|
+      it "keeps waiting when another player says, whispers or thinks: #{text}" do
+        expect(pauses_with_empath(player_shapes(text))).to eq(24)
+      end
+    end
+
+    it 'keeps waiting on a real ESP line that contains "all set"' do
+      esp = '<pushStream id="thoughts"/>[General][Etasia] "mess is about all set "<popStream/>'
+      expect(pauses_with_empath(esp)).to eq(24)
+    end
+
+    it "keeps waiting when the empath's line and another player's speech arrive in one server chunk" do
+      expect(pauses_with_empath("Healer whispers to Bob.\nMallory says, \"Done!\"")).to eq(24)
+    end
+
+    it "keeps waiting on the empath's ESP (only whispers and speech count)" do
+      expect(pauses_with_empath(player_shapes('Done!', who: 'Healer').first(2))).to eq(24)
+    end
+
+    context 'with custom done_healing_matches' do
+      let(:custom) { empath.merge('done_healing_matches' => ['Custom done message', /nods to you/, /^Healer gives you a thumbs up/]) }
+
+      [
+        '<pushStream id="whispers"/><preset id="whisper">Healer whispers,</preset> "Custom done message"',
+        'Healer nods to you.',
+        'Healer gives you a thumbs up.'
+      ].each do |line|
+        it "stops waiting on the empath's line: #{line}" do
+          expect(pauses_with_empath(line, custom)).to eq(1)
+        end
+      end
+
+      it 'keeps waiting when another player says the custom message, even naming the empath' do
+        lines = player_shapes('Custom done message') + player_shapes('Healer nods to you.') +
+                ['Mallory nods to you.', 'Mallory gives you a thumbs up.']
+        expect(pauses_with_empath(lines, custom)).to eq(24)
+      end
+    end
+  end
+
+  describe 'healing plant flag' do
+    let(:plant_instance) do
+      build_instance(plant_adjectives: ["vela'tohr"], plant_nouns: ['bloom'], adjectives_regex: /vela'tohr/,
+                     noun_regex: /bloom/, plant_regex: /vela'tohr bloom/)
+    end
+
+    before do
+      DRRoom.pcs = []
+      DRRoom.room_objs = ["a vela'tohr bloom"]
+    end
+
+    # Delivers `line` during the first pause; wounds last for 3 more checks.
+    # Returns how many times the plant was touched.
+    def plant_touches(line)
+      checks = 0
+      allow(plant_instance).to receive(:need_healing?) { (checks += 1) <= 3 }
+      pauses = 0
+      allow(plant_instance).to receive(:pause) do
+        pauses += 1
+        Array(line).each { |l| deliver(l) } if pauses == 1
+      end
+      plant_instance.send(:use_pc_empath?, { 'name' => 'Absent', 'id' => 123 })
+      drain_sent_messages.count { |m| m.start_with?('touch ') }
+    end
+
+    it 'touches the plant again when it has healed all it can' do
+      expect(plant_touches("You sense that this particular vela'tohr bloom has healed all that it can.")).to eq(2)
+    end
+
+    it 'does not touch again when another player says the plant message' do
+      text = "You sense that this particular vela'tohr bloom has healed all that it can"
+      expect(plant_touches(player_shapes(text) + player_shapes("#{text}."))).to eq(1)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # use_pc_empaths?
   # ---------------------------------------------------------------------------
 

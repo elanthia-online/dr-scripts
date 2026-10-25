@@ -93,9 +93,19 @@ RSpec.describe Taisidon do
     ''
   end
 
-  # The exact pattern list question_suspect hands to bput, in order.
-  def alibi_patterns
-    [*Taisidon::GUILTY_TELLS, Taisidon::ALIBI_USAGE, Taisidon::INNOCENT_TELL]
+  # The exact pattern list question_suspect hands to bput for +suspect+, in order.
+  def alibi_patterns(suspect = 'steward')
+    taisidon.send(:alibi_patterns, suspect)
+  end
+
+  # The suspect noun of a real alibi line ("A Gor'Tog steward says, ..." => "steward").
+  def speaker_noun(line)
+    line[/\AAn? [^"]*?(\S+) says/, 1]
+  end
+
+  # Index of the alibi pattern whose source ends with +tail+ (the patterns carry a speaker anchor).
+  def pattern_index(patterns, tail)
+    patterns.index { |pattern| pattern.source.end_with?(tail) }
   end
 
   # ===========================================================================
@@ -173,8 +183,8 @@ RSpec.describe Taisidon do
       # first matching pattern, the fingers-tapping tell (which also matches /says,/) must be
       # offered first or the guilty steward would be misread as innocent.
       patterns = alibi_patterns
-      fingers_index = patterns.index(/says, fingers tapping/)
-      innocent_index = patterns.index(described_class::INNOCENT_TELL)
+      fingers_index = pattern_index(patterns, 'says, fingers tapping')
+      innocent_index = pattern_index(patterns, described_class::INNOCENT_TELL.source)
       expect(fingers_index).not_to be_nil
       expect(fingers_index).to be < innocent_index
     end
@@ -280,20 +290,20 @@ RSpec.describe Taisidon do
       # actually returns. Proves both no-collision and correct ordering (esp. the guilty
       # steward whose tell contains "says,").
       guilty_lines.each do |line|
-        fragment = simulate_bput(line, alibi_patterns)
+        fragment = simulate_bput(line, alibi_patterns(speaker_noun(line)))
         expect(taisidon.guilty?(fragment)).to be(true), "guilty line misread: #{line.inspect} -> #{fragment.inspect}"
       end
 
       innocent_lines.each do |line|
-        fragment = simulate_bput(line, alibi_patterns)
+        fragment = simulate_bput(line, alibi_patterns(speaker_noun(line)))
         expect(taisidon.guilty?(fragment)).to be(false), "innocent line misread: #{line.inspect} -> #{fragment.inspect}"
       end
     end
 
     it 'does not misclassify the comma-bearing guilty steward as innocent' do
       line = "A Gor'Tog steward says, fingers tapping, \"I was tidying up the passenger cabins.\""
-      fragment = simulate_bput(line, alibi_patterns)
-      expect(fragment).to eq('says, fingers tapping')
+      fragment = simulate_bput(line, alibi_patterns('steward'))
+      expect(fragment).to eq("A Gor'Tog steward says, fingers tapping")
       expect(taisidon.guilty?(fragment)).to be(true)
     end
   end
@@ -442,8 +452,67 @@ RSpec.describe Taisidon do
       taisidon.send(:question_suspect)
 
       expect(captured_cmd).to eq('ask chef about alibi')
-      expect(captured_patterns.index(/says, fingers tapping/))
-        .to be < captured_patterns.index(described_class::INNOCENT_TELL)
+      expect(pattern_index(captured_patterns, 'says, fingers tapping'))
+        .to be < pattern_index(captured_patterns, described_class::INNOCENT_TELL.source)
+    end
+
+    # Only the questioned suspect's own reply decides the alibi. bput is modelled on lich-5
+    # DRC.bput: it reads lines in arrival order, tries the patterns in the order given, and
+    # returns the first match's text ('' on timeout).
+    context 'when other speech arrives in the alibi window' do
+      def answer_with(*lines)
+        allow(DRC).to receive(:bput) do |_cmd, *patterns|
+          lines.lazy.map { |line| simulate_bput(line, patterns) }.find { |hit| !hit.empty? } || ''
+        end
+        allow(DRC).to receive(:message)
+        taisidon.send(:question_suspect)
+        taisidon.instance_variable_get(:@murderer)
+      end
+
+      def player_shapes(text)
+        [%(Mallory says, "#{text}"), %(Mallory whispers, "#{text}"), %([General][Mallory] "#{text}")]
+      end
+
+      guilty_lines.each do |line|
+        it "still names the suspect from the real tell: #{line[0, 50]}..." do
+          DRRoom.npcs = [speaker_noun(line)]
+          expect(answer_with(line)).to eq(speaker_noun(line))
+        end
+      end
+
+      innocent_lines.each do |line|
+        it "still clears the suspect on the real straight answer: #{line[0, 50]}..." do
+          DRRoom.npcs = [speaker_noun(line)]
+          expect(answer_with(line)).to eq('')
+        end
+      end
+
+      it 'does not clear a guilty suspect because someone else spoke first' do
+        player_shapes('hello').each do |noise|
+          taisidon.instance_variable_set(:@murderer, '')
+          expect(answer_with(noise, 'A Dwarven chef says with a nervous tic, "I was taking inventory of the pantry."'))
+            .to eq('chef'), "misread after #{noise.inspect}"
+        end
+      end
+
+      it 'does not convict an innocent suspect on a tell word in someone else\'s speech' do
+        ['stop pacing', 'A Dwarven chef says with a nervous tic'].flat_map { |text| player_shapes(text) }.each do |noise|
+          taisidon.instance_variable_set(:@murderer, '')
+          expect(answer_with(noise, 'A Dwarven chef says, "I was taking inventory of the pantry."'))
+            .to eq(''), "misread after #{noise.inspect}"
+        end
+      end
+
+      it 'ignores a different NPC answering in the suspect\'s place' do
+        expect(answer_with('A Dwarven bartender says while pacing back and forth, "I was polishing glassware."',
+                           'A Dwarven chef says, "I was taking inventory of the pantry."')).to eq('')
+      end
+
+      it 'anchors an ordinal DRRoom noun on its last word' do
+        DRRoom.npcs = ['second chef']
+        expect(answer_with('A Dwarven chef says with a nervous tic, "I was taking inventory of the pantry."'))
+          .to eq('second chef')
+      end
     end
 
     it 'does nothing (no bput) when the murderer is already known' do

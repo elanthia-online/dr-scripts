@@ -111,4 +111,126 @@ RSpec.describe Tinker do
       expect(@command).to eq('push my crossbow with my clamp')
     end
   end
+  # The crafting loop reads two flags: 'tinker-done' ends the craft (stamp,
+  # stow, exit) and 'tinkering-assembly' names the part to assemble. Lich tests
+  # every raw server line against every Flags matcher (DRParser.check_events);
+  # `deliver` does the same with the matchers tinker registered. The line
+  # arrives with the reply to the first crafting step.
+  describe 'lines heard while crafting' do
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # Runs the shaping loop on a crossbow for up to three commands, delivering
+    # `line` with the first reply. Returns the commands sent and whether the
+    # script exited.
+    def craft_hearing(line)
+      tinker = start(recipe_name: 'laminate', noun: 'crossbow')
+      allow(tinker).to receive(:work).and_call_original
+      allow(tinker).to receive(:exit) { throw :tinker_exited }
+      sent = []
+      allow(DRC).to receive(:bput) do |command, *|
+        throw :tinker_stopped if sent.size >= 3
+        sent << command
+        deliver(line) if sent.size == 1
+        'Roundtime'
+      end
+      exited = true
+      catch(:tinker_exited) do
+        catch(:tinker_stopped) { tinker.work('shape my crossbow with my shaper') }
+        exited = false
+      end
+      { sent: sent, exited: exited }
+    end
+
+    def player_shapes(text)
+      [
+        %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        %(<preset id='speech'>Mallory whispers</preset>, "#{text}")
+      ]
+    end
+
+    describe 'the finished-item line' do
+      [
+        'Applying the final touches, you complete working on a crossbow.',
+        '<pushBold/>Applying the final touches, you complete working on a crossbow.',
+        'You finish the crossbow, which benefits from the successful lamination process.'
+      ].each do |line|
+        it "finishes the item on #{line.inspect}" do
+          run = craft_hearing(line)
+
+          expect(run[:exited]).to be(true)
+          expect(run[:sent]).to eq(['shape my crossbow with my shaper', 'lift'])
+        end
+      end
+
+      [
+        'Applying the final touches, you complete working on a crossbow.',
+        'You finish the crossbow, which benefits from the successful lamination process.'
+      ].each do |text|
+        it "keeps crafting when another player's speech or ESP carries #{text.inspect}" do
+          player_shapes(text).each do |line|
+            run = craft_hearing(line)
+
+            expect(run[:exited]).to be(false), line
+            expect(run[:sent]).to eq(['shape my crossbow with my shaper'] * 3), line
+          end
+        end
+      end
+    end
+
+    # The game logs on hand have no assembly lines, so these carry each
+    # pattern's own text at the start of a plain game line.
+    describe 'the assembly lines' do
+      {
+        'The crossbow appears ready to be reinforced with some backer material.'                => 'assemble my crossbow with my backer',
+        'You need another bone, wood or horn backing material to continue crafting a crossbow.' => 'assemble my crossbow with my backer',
+        'You need another finished bow string to continue crafting a crossbow.'                 => 'assemble my crossbow with my string',
+        'You need another finished long wooden pole to continue crafting a crossbow.'           => 'assemble my crossbow with my long pole',
+        'You need another finished short leather cord to continue crafting a crossbow.'         => 'assemble my crossbow with my cord',
+        'You need another lenses to continue crafting a crossbow.'                              => 'assemble my crossbow with my lenses',
+        'You need another finished mechanism to continue crafting a crossbow.'                  => 'assemble my mechanism with my crossbow',
+        'You must assemble the strips to continue crafting a crossbow.'                         => 'assemble my crossbow with my strips',
+        'You need another barbed boltheads to continue crafting a crossbow.'                    => 'assemble my crossbow with my barbed boltheads',
+        'You need another bolt flights to continue crafting a crossbow.'                        => 'assemble my crossbow with my bolt flights'
+      }.each do |text, assemble|
+        it "runs '#{assemble}' on #{text.inspect}" do
+          run = craft_hearing(text)
+
+          expect(run[:sent]).to eq(['shape my crossbow with my shaper', assemble, 'shape my crossbow with my shaper'])
+        end
+
+        it "assembles nothing when another player's speech or ESP carries #{text.inspect}" do
+          player_shapes(text).each do |line|
+            run = craft_hearing(line)
+
+            expect(run[:sent]).to eq(['shape my crossbow with my shaper'] * 3), line
+          end
+        end
+      end
+
+      # Messages anchored to the line start still match when the game puts
+      # tags in front of them.
+      {
+        '<pushBold/>You need another bone, wood or horn backing material to continue crafting a crossbow.' => 'assemble my crossbow with my backer',
+        '<pushBold/>You must assemble the strips to continue crafting a crossbow.'                         => 'assemble my crossbow with my strips',
+        '<pushBold/>You need another barbed boltheads to continue crafting a crossbow.'                    => 'assemble my crossbow with my barbed boltheads',
+        '<pushBold/>You need another bolt flights to continue crafting a crossbow.'                        => 'assemble my crossbow with my bolt flights'
+      }.each do |line, assemble|
+        it "runs '#{assemble}' on #{line.inspect}" do
+          run = craft_hearing(line)
+
+          expect(run[:sent]).to eq(['shape my crossbow with my shaper', assemble, 'shape my crossbow with my shaper'])
+        end
+      end
+    end
+  end
 end

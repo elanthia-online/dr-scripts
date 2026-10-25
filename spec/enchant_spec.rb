@@ -11,6 +11,21 @@ end
 
 load_lic_class('enchant.lic', 'Enchant')
 
+# The game's own lines (from real logs where we have them) set each flag;
+# the same words in another player's ESP, speech or whisper do not.
+ENCHANT_SPEC_FLAG_LINES = {
+  'enchant-focus'    => ["The totem's material struggles to accept the sigil scribing."],
+  'enchant-meditate' => ['The traced sigil pattern blurs before your eyes, making it difficult to follow.'],
+  'enchant-imbue'    => ['Once finished you sense an imbue spell will be required to continue enchanting.'],
+  'enchant-push'     => ["You notice many of the scribed sigils are slowly merging back into the totem's surface."],
+  'enchant-sigil'    => ['You need another paradox secondary sigil to continue the enchanting process.  You believe you can STUDY the sigil and then TRACE it on the unfinished item to prepare it for continued scribing.'],
+  'enchant-complete' => ["The spell's energies settle upon the totem and seal off the streams of mana.  With the enchanting process completed, you believe it is safe to collect your things once more.",
+                         'With the enchantment complete, you collect your things.',
+                         'With enchanting complete, you collect your things.'],
+  'imbue-failed'     => ['The streams collide, rending the space before you and disrupting the enchantment.'],
+  'imbue-backlash'   => ['Suddenly the streams slip through your grasp and cascade violently against each other!']
+}.freeze
+
 RSpec.describe Enchant do
   before(:each) do
     reset_data
@@ -59,6 +74,56 @@ RSpec.describe Enchant do
     instance
   end
 
+  # The shapes other players' text arrives in. bput reads stripped text
+  # (ESP, say, whisper); Flags see the raw XML server line as well.
+  def player_lines(text)
+    [%([General][Mallory] "#{text}"), %(Mallory says, "#{text}"), %(Mallory whispers, "#{text}")]
+  end
+
+  def raw_player_lines(text)
+    player_lines(text) + [
+      %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+      %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+      %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)
+    ]
+  end
+
+  # Feed a server line through the registered Flags matchers, the way
+  # Lich's DRParser.check_events does for every downstream line.
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # lich-5 DRC.bput matching: Strings compile to /x/i, incoming lines are read
+  # in order, the first line matching any pattern wins and bput returns the
+  # matched text ('' when nothing matches before the timeout).
+  def model_bput(lines, patterns)
+    regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+    lines.each do |line|
+      regexes.each { |re| (m = line.match(re)) && (return m.to_a.first) }
+    end
+    ''
+  end
+
+  # Stub DRC.bput with model_bput. `replies` maps a command regex to the
+  # incoming lines for each time that command is sent. Returns the commands sent.
+  def stub_bput_replies(replies)
+    sent = []
+    allow(DRC).to receive(:bput) do |command, *patterns|
+      sent << command
+      key = replies.keys.find { |k| k.match?(command) }
+      model_bput(Array(key && replies[key].shift), patterns)
+    end
+    sent
+  end
+
   # ---------------------------------------------------------------------------
   # Constants
   # ---------------------------------------------------------------------------
@@ -74,6 +139,7 @@ RSpec.describe Enchant do
       match = pattern.match('On the brass brazier you see a fount and a totem.')
       expect(match).not_to be_nil
       expect(match[:items]).to eq('a fount and a totem')
+      expect(pattern.match("On the enchanter's brazier you see a thin mana fount.")[:items]).to eq('a thin mana fount')
     end
 
     it 'defines FLAG_NAMES as frozen array' do
@@ -100,6 +166,35 @@ RSpec.describe Enchant do
       expect(Flags).to receive(:add).with('imbue-backlash', anything)
 
       instance.send(:setup_flags)
+    end
+  end
+
+  describe 'flag matchers' do
+    before { build_instance.send(:setup_flags) }
+
+    ENCHANT_SPEC_FLAG_LINES.each do |key, lines|
+      it "sets #{key} on the game's own line" do
+        lines.each do |line|
+          Flags.reset(key)
+          deliver(line)
+          expect(Flags[key]).to be_truthy, line
+        end
+      end
+
+      it "ignores #{key} words in other players' ESP, speech and whispers" do
+        lines.map { |line| line.sub(/\A.*?  (?=With the enchanting)/, '') }.each do |text|
+          raw_player_lines(text).each do |line|
+            deliver(line)
+            expect(Flags[key]).to be_falsey, line
+          end
+        end
+      end
+    end
+
+    it 'keeps the sigil type the scribing loop reads' do
+      deliver(ENCHANT_SPEC_FLAG_LINES['enchant-sigil'].first)
+      expect(Flags['enchant-sigil'][:type]).to eq('paradox ')
+      expect(Flags['enchant-sigil'][:order]).to eq('secondary')
     end
   end
 
@@ -149,6 +244,26 @@ RSpec.describe Enchant do
 
       instance.send(:empty_brazier)
     end
+
+    it "empties the public enchanter's brazier" do
+      instance = build_instance(brazier: "enchanter's brazier", brazier_ref: "enchanter's brazier", use_own_brazier: false)
+      stub_bput_replies(/^look on/ => [["On the enchanter's brazier you see a fount and a totem."]])
+
+      expect(DRCI).to receive(:get_item?).with('fount', "enchanter's brazier").and_return(true)
+      expect(DRCI).to receive(:get_item?).with('totem', "enchanter's brazier").and_return(true)
+      expect(DRCC).to receive(:stow_crafting_item).twice
+
+      instance.send(:empty_brazier)
+    end
+
+    it "takes only what the game lists, not what another player says is there" do
+      player_lines('On the brazier you see a burin and a rod.').each do |line|
+        stub_bput_replies(/^look on/ => [[line, 'There is nothing on the brazier.']])
+        expect(DRCI).not_to receive(:get_item?)
+
+        build_instance.send(:empty_brazier)
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -196,6 +311,39 @@ RSpec.describe Enchant do
       expect(instance).to receive(:handle_backlash_flag)
 
       instance.send(:scribe)
+    end
+
+    {
+      'enchant-sigil'    => :handle_sigil_flag,
+      'enchant-focus'    => :handle_focus_flag,
+      'enchant-meditate' => :handle_meditate_flag,
+      'enchant-push'     => :handle_push_flag,
+      'enchant-imbue'    => :handle_imbue_flag,
+      'imbue-backlash'   => :handle_backlash_flag,
+      'enchant-complete' => :handle_complete_flag
+    }.each do |key, handler|
+      it "keeps scribing through other players' #{key} lines and acts on the game's own" do
+        instance = build_instance
+        instance.send(:setup_flags)
+        texts = ENCHANT_SPEC_FLAG_LINES[key].map { |line| line.sub(/\A.*?  (?=With the enchanting)/, '') }
+        heard = texts.flat_map { |text| raw_player_lines(text) } + [ENCHANT_SPEC_FLAG_LINES[key].first]
+        scribes = 0
+        allow(DRC).to receive(:bput) do |command, *_patterns|
+          if command.start_with?('scribe ')
+            scribes += 1
+            deliver(heard.shift)
+          end
+          'Roundtime: 3 sec.'
+        end
+        allow(instance).to receive(:waitrt?)
+        handled_after = nil
+        allow(instance).to receive(handler) { handled_after = scribes }
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+
+        instance.send(:scribe)
+
+        expect(handled_after).to eq(texts.size * 6 + 1)
+      end
     end
   end
 
@@ -356,13 +504,27 @@ RSpec.describe Enchant do
         call_count = 0
         allow(DRC).to receive(:bput) do
           call_count += 1
-          call_count > 1 ? 'Roundtime' : Enchant::IMBUE_WAND_FAILED
+          call_count > 1 ? 'Roundtime' : 'The streams collide, rending the space before you and disrupting the enchantment'
         end
         allow(Flags).to receive(:reset).with('enchant-imbue')
 
         expect(Lich::Messaging).to receive(:msg).with('bold', /Imbue wand failed/).once
 
         instance.send(:imbue)
+      end
+
+      it "waves once when another player says the wand-failure words" do
+        player_lines('The streams collide, rending the space before you and disrupting the enchantment.').each do |line|
+          instance = build_instance(settings: OpenStruct.new('waggle_sets' => { 'imbue' => {} }))
+          $left_hand = 'rod'
+          sent = stub_bput_replies(/^wave rod/ => [[line, 'Roundtime: 5 sec.']])
+          allow(Flags).to receive(:reset).with('enchant-imbue')
+          expect(Lich::Messaging).not_to receive(:msg)
+
+          instance.send(:imbue)
+
+          expect(sent).to eq(['wave rod at totem on brazier']), line
+        end
       end
     end
   end
@@ -380,7 +542,7 @@ RSpec.describe Enchant do
         Enchant::CLEAN_SUCCESS,
         Enchant::CLEAN_NOTHING,
         Enchant::CLEAN_NOT_LIT
-      ).and_return(Enchant::CLEAN_SUCCESS)
+      ).and_return('You prepare to clean off the brazier')
       expect(DRC).to receive(:bput).with('clean brazier', Enchant::CLEAN_SINGED)
 
       instance.send(:clean_brazier)
@@ -390,10 +552,81 @@ RSpec.describe Enchant do
       instance = build_instance
       $left_hand = 'burin'
 
-      allow(DRC).to receive(:bput).and_return(Enchant::CLEAN_NOT_LIT)
+      allow(DRC).to receive(:bput).and_return('The brazier is not currently lit')
       expect(DRCC).to receive(:stow_crafting_item).with('burin', 'backpack', 'toolbelt')
 
       instance.send(:clean_brazier)
+    end
+
+    it "does not confirm the clean when another player says the prompt words" do
+      player_lines('You prepare to clean off the brazier.').each do |line|
+        sent = stub_bput_replies(/^clean/ => [[line, 'There is nothing on the brazier to clean.']])
+
+        build_instance.send(:clean_brazier)
+
+        expect(sent).to eq(['clean brazier']), line
+      end
+    end
+
+    it "does not stow a hand when another player says the brazier is not lit" do
+      player_lines('The brazier is not currently lit.').each do |line|
+        $left_hand = 'burin'
+        stub_bput_replies(/^clean/ => [[line, 'You prepare to clean off the brazier.'], []])
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        build_instance.send(:clean_brazier)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # study_recipe / place_item_on_brazier - get and put replies
+  # ---------------------------------------------------------------------------
+
+  describe '#study_recipe' do
+    it "does not clean the brazier when another player says it is too dangerous" do
+      player_lines('That is far too dangerous!').each do |line|
+        instance = build_instance
+        stub_bput_replies(/^get my totem/ => [[line, 'You get a totem from inside your backpack.']])
+        allow(instance).to receive(:place_item_on_brazier)
+        expect(instance).not_to receive(:clean_brazier)
+        expect(instance).not_to receive(:empty_brazier)
+
+        instance.send(:study_recipe)
+      end
+    end
+
+    it 'cleans the brazier when the game says it is too dangerous' do
+      instance = build_instance
+      stub_bput_replies(/^get my totem/ => [['That is far too dangerous to do while the brazier holds something.']])
+      allow(instance).to receive(:place_item_on_brazier)
+      expect(instance).to receive(:clean_brazier)
+      expect(instance).to receive(:empty_brazier)
+
+      instance.send(:study_recipe)
+    end
+  end
+
+  describe '#place_item_on_brazier' do
+    it "cleans the brazier when the game asks, despite another player's flick words" do
+      player_lines('With a flick, you pop open the lid.').each do |line|
+        instance = build_instance
+        stub_bput_replies(/^put my totem/ => [[line, 'You must first clean the brazier.']])
+        expect(instance).to receive(:clean_brazier)
+        allow(instance).to receive(:empty_brazier)
+        allow(instance).to receive(:place_item_inner)
+
+        instance.send(:place_item_on_brazier)
+      end
+    end
+
+    it "treats the game's own flick line as placed" do
+      instance = build_instance
+      stub_bput_replies(/^put my totem/ => [["With a flick, you pop open the brazier's lid.  A tall and strong flame leaps into being within the brazier.  Carefully you place your totem atop the brazier."]])
+      expect(instance).not_to receive(:clean_brazier)
+      expect(instance).to receive(:waitrt?)
+
+      instance.send(:place_item_on_brazier)
     end
   end
 
@@ -429,6 +662,18 @@ RSpec.describe Enchant do
 
       instance.send(:handle_resume)
     end
+
+    it "follows the game's analysis, not another player's" do
+      player_lines('The totem is ready for additional scribing.').each do |line|
+        instance = build_instance
+        stub_bput_replies(/^analyze/ => [[line, 'The totem awaits the application of an imbue spell to advance the enchanting process.']])
+        allow(DRCC).to receive(:get_crafting_item)
+        expect(instance).to receive(:handle_imbue_resume)
+        expect(instance).not_to receive(:scribe)
+
+        instance.send(:handle_resume)
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -437,34 +682,63 @@ RSpec.describe Enchant do
   # ---------------------------------------------------------------------------
 
   describe '#handle_imbue_resume' do
-    it 'imbues directly when the fount is the only item on the brazier' do
-      instance = build_instance
-      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount.')
+    # bput returns only the matched text, so these feed the game's look line
+    # through model_bput rather than stubbing bput with the whole line.
+    [
+      'On the brass brazier you see a fount.',
+      'On the brass brazier you see a fount and a totem.',
+      'On the brass brazier you see a totem and a fragile mana fount.',
+      "On the enchanter's brazier you see a fount.",
+      "On the enchanter's brazier you see a thin mana fount.",
+      'On the brazier you see a fount.'
+    ].each do |look|
+      it "imbues without fetching a fount when the game shows one: #{look}" do
+        instance = build_instance
+        sent = stub_bput_replies(/^look on/ => [[look]])
 
+        expect(instance).to receive(:imbue)
+        expect(DRCC).not_to receive(:get_crafting_item)
+
+        instance.send(:handle_imbue_resume)
+        expect(sent).to eq(['look on brazier'])
+      end
+    end
+
+    it 'fetches and waves a fount when the brazier is empty' do
+      instance = build_instance
+      sent = stub_bput_replies(/^look on/       => [['There is nothing on the brass brazier.']],
+                               /^wave my fount/ => [['The fragile mana fount is not required to continue crafting.']])
+
+      expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
+      expect(DRCC).to receive(:stow_crafting_item).with('fount', 'backpack', 'toolbelt')
       expect(instance).to receive(:imbue)
-      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:handle_imbue_resume)
+      expect(sent).to eq(['look on brazier', 'wave my fount at totem on brazier'])
+    end
+
+    it 'does not take a word that only contains fount for the fount' do
+      instance = build_instance
+      stub_bput_replies(/^look on/       => [['On the brass brazier you see a fountain-carved totem.']],
+                        /^wave my fount/ => [['You slowly wave the fount over and around the totem.']])
+
+      expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
+      expect(instance).to receive(:imbue)
 
       instance.send(:handle_imbue_resume)
     end
 
-    it 'imbues directly when the fount is present alongside other items' do
-      instance = build_instance
-      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a fount and a totem.')
+    it "ignores another player's claim that a fount is on the brazier" do
+      player_lines('On the brass brazier you see a fount.').each do |line|
+        instance = build_instance
+        stub_bput_replies(/^look on/       => [[line, 'On the brass brazier you see a totem.']],
+                          /^wave my fount/ => [['You slowly wave the fount over and around the totem.']])
 
-      expect(instance).to receive(:imbue)
-      expect(DRCC).not_to receive(:get_crafting_item)
+        expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
+        expect(instance).to receive(:imbue)
 
-      instance.send(:handle_imbue_resume)
-    end
-
-    it 'detects the fount on a public enchanter\'s brazier' do
-      instance = build_instance
-      allow(DRC).to receive(:bput).and_return("On the enchanter's brazier you see a fount.")
-
-      expect(instance).to receive(:imbue)
-      expect(DRCC).not_to receive(:get_crafting_item)
-
-      instance.send(:handle_imbue_resume)
+        instance.send(:handle_imbue_resume)
+      end
     end
 
     it 'fetches and waves a fount when none is on the brazier' do
@@ -472,13 +746,33 @@ RSpec.describe Enchant do
       allow(DRC).to receive(:bput).with(/^look on/, anything, anything)
                                   .and_return('On the brass brazier you see a totem.')
       allow(DRC).to receive(:bput).with(/^wave my fount/, anything, anything)
-                                  .and_return(Enchant::WAVE_FOUNT_NOT_NEEDED)
+                                  .and_return('The fragile mana fount is not required')
 
       expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
       expect(DRCC).to receive(:stow_crafting_item).with('fount', 'backpack', 'toolbelt')
       expect(instance).to receive(:imbue)
 
       instance.send(:handle_imbue_resume)
+    end
+
+    it "keeps the fount when another player says it is not required" do
+      wave = 'You slowly wave the fount over and around the totem.  Motes of light rise up from the brazier and encircle your hand.  Satisfied the bonding is complete, you place the fount atop the totem.'
+      player_lines('The fragile mana fount is not required.').each do |line|
+        instance = build_instance
+        stub_bput_replies(/^look on/ => [['On the brass brazier you see a totem.']], /^wave my fount/ => [[line, wave]])
+        allow(DRCC).to receive(:get_crafting_item)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+        allow(instance).to receive(:imbue)
+
+        instance.send(:handle_imbue_resume)
+      end
+    end
+
+    it "reads the game's look reply, not another player's" do
+      player_lines('There is nothing on it.').each do |line|
+        result = model_bput([line, 'On the brass brazier you see a fount.'], [Enchant::BRAZIER_CONTENTS_PATTERN, Enchant::BRAZIER_EMPTY])
+        expect(result).to start_with('On the brass brazier you see'), line
+      end
     end
   end
 end
