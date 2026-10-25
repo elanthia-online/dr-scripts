@@ -11,7 +11,7 @@ def check_sack
   return unless DRC.right_hand =~ /sack/ || DRC.left_hand =~ /sack/
 
   fput('open my sack')
-  raw_contents = DRC.bput('look in my sack', /^In the .* you see .*\./, 'There is nothing in there')
+  raw_contents = DRC.bput('look in my sack', /^In the .* you see .*\./, '^There is nothing in there')
   if raw_contents == 'There is nothing in there'
     DRCI.dispose_trash('sack')
     return
@@ -19,11 +19,11 @@ def check_sack
   items = raw_contents.match(/^In the .* you see (.*)\./).to_a[1].split(/,|\sand\s/)
 
   items.each do |item|
-    stow_noun = item.split.reverse.find { |noun| /you/i =~ DRC.bput("get #{noun} from my sack", 'You pick up', 'You get', 'What were', 'Please rephrase that command') }
+    stow_noun = item.split.reverse.find { |noun| /you/i =~ DRC.bput("get #{noun} from my sack", '^You pick up', '^You get', '^What were', '^Please rephrase that command') }
     DRCI.put_away_item?(stow_noun)
   end
 
-  raw_contents = DRC.bput('look in my sack', /^In the .* you see .*\./, 'There is nothing in there')
+  raw_contents = DRC.bput('look in my sack', /^In the .* you see .*\./, '^There is nothing in there')
   if raw_contents == 'There is nothing in there'
     DRCI.dispose_trash('sack')
     return
@@ -32,14 +32,14 @@ def check_sack
 end
 
 def wait_stocks
-  waitfor('You accept a sack and retrieve the equipment stored inside')
+  waitfor('^You accept a sack and retrieve the equipment stored inside')
   pause 5
   DRC.fix_standing
   check_sack
 end
 
 def recover_gear
-  case waitfor('You are free to go', 'your possessions will be in a sack marked with your name')
+  case waitfor('^[^"]*?You are free to go', '^[^"]*?your possessions will be in a sack marked with your name')
   when /your possessions will be in/i
     DRC.wait_for_script_to_complete('pay-debt', ['sack', determine_province])
     unless [DRC.right_hand, DRC.left_hand].grep(/sack/).any?
@@ -65,13 +65,13 @@ def get_out_of_jail(old_loc)
   stop_script('go2') if Script.running?('go2')
   echo('** DON\'T PANIC JAIL BUDDY HAS YOUR BACK! **')
 
-  waitfor('PLEAD INNOCENT or PLEAD GUILTY')
+  waitfor('^[^"]*?PLEAD INNOCENT or PLEAD GUILTY')
   stop_script('outdoorsmanship') if Script.running?('outdoorsmanship')
 
   fput("plead #{@crime_plea}")
 
   loop do
-    case waitfor('this court finds you innocent of the charges brought upon you', 'is guilty of no crime in my district', 'I pronounce a fine upon you of', 'I hereby fine you a total of', 'send you to the stocks')
+    case waitfor('^[^"]*?this court finds you innocent of the charges brought upon you', '^[^"]*?is guilty of no crime in my district', '^[^"]*?I pronounce a fine upon you of', '^[^"]*?I hereby fine you a total of', '^[^"]*?send you to the stocks')
     when /this court finds you innocent of the charges brought upon you/i, /is guilty of no crime in my district/i
       pause 5
       check_sack
@@ -100,7 +100,19 @@ loop do
   line = script.gets
   next if line =~ /DRPrime/
 
-  if [/^Before you really realize .* you are marched off./, /wrestle you to the ground, bind you in chains, and drag you off to jail/, /ushered to a cell, the door opened just long enough for you to be shoved inside/, /\[Guard House, Jail Cell\]/, /^The guard looks you over.* and leads you firmly off to jail/, /A sparkling cloud of silver motes envelops your body like a mist of stars/, /Although your head is still ringing from the assault/, /The sentinel brings you to the jail/, /^You slowly wake up again to find that all your belongings have been stripped/].find { |x| x =~ line }
+  # The game's own lines only: anchored at the line start, or with no quote
+  # before the message (other players' speech, whispers and ESP always have one).
+  if [
+    /^Before you really realize .* you are marched off./,
+    /^[^"]*?wrestle you to the ground, bind you in chains, and drag you off to jail/,
+    /^[^"]*?ushered to a cell, the door opened just long enough for you to be shoved inside/,
+    /^\[Guard House, Jail Cell\]/,
+    /^The guard looks you over.* and leads you firmly off to jail/,
+    /^[^"]*?A sparkling cloud of silver motes envelops your body like a mist of stars/,
+    /^[^"]*?Although your head is still ringing from the assault/,
+    /^[^"]*?The sentinel brings you to the jail/,
+    /^You slowly wake up again to find that all your belongings have been stripped/
+  ].find { |x| x =~ line }
     pause 0.5
     get_out_of_jail(current_loc)
   end
