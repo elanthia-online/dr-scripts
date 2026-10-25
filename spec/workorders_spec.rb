@@ -58,7 +58,7 @@ RSpec.describe WorkOrders do
   describe 'constants' do
     it 'defines GIVE_LOGBOOK_SUCCESS_PATTERNS as frozen array' do
       expect(described_class::GIVE_LOGBOOK_SUCCESS_PATTERNS).to be_frozen
-      expect(described_class::GIVE_LOGBOOK_SUCCESS_PATTERNS).to include('You hand')
+      expect(described_class::GIVE_LOGBOOK_SUCCESS_PATTERNS).to include('^You hand')
     end
 
     it 'defines GIVE_LOGBOOK_RETRY_PATTERNS as frozen array' do
@@ -68,7 +68,7 @@ RSpec.describe WorkOrders do
 
     it 'defines NPC_NOT_FOUND_PATTERN as frozen string' do
       expect(described_class::NPC_NOT_FOUND_PATTERN).to be_frozen
-      expect(described_class::NPC_NOT_FOUND_PATTERN).to eq("What is it you're trying to give")
+      expect(described_class::NPC_NOT_FOUND_PATTERN).to eq("^What is it you're trying to give")
     end
 
     it 'defines REPAIR_GIVE_PATTERNS as frozen array' do
@@ -86,7 +86,7 @@ RSpec.describe WorkOrders do
 
     it 'defines BUNDLE_SUCCESS_PATTERNS as frozen array' do
       expect(described_class::BUNDLE_SUCCESS_PATTERNS).to be_frozen
-      expect(described_class::BUNDLE_SUCCESS_PATTERNS).to include('You notate the')
+      expect(described_class::BUNDLE_SUCCESS_PATTERNS).to include('^You notate the')
     end
 
     it 'defines BUNDLE_FAILURE_PATTERN as frozen regex' do
@@ -519,6 +519,353 @@ RSpec.describe WorkOrders do
         expect(DRCI).to receive(:stow_hands)
 
         workorders.send(:bundle_item, 'ingot', 'blacksmithing')
+      end
+    end
+  end
+
+  # ===========================================================================
+  # Reply patterns only match the game's own line
+  # ===========================================================================
+  # DRC.bput is replaced by a model of lich-5's DRC.bput: String patterns
+  # become case-insensitive regexes, the incoming lines are read in order, the
+  # first line matching any pattern wins, and bput returns the matched text
+  # (or '' when nothing matches). Another player's speech, ESP or whisper that
+  # happens to contain a reply's words must not be taken for the reply.
+  describe 'reply patterns and other players' do
+    let(:bput_log) { [] }
+    let(:reply_queues) { [] }
+    let(:failure_text) { 'The work order requires items of a higher quality.' }
+
+    before do
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        bput_log << [command, patterns]
+        model_bput(next_reply(command), patterns)
+      end
+      allow(DRCI).to receive(:dispose_trash)
+      allow(DRCI).to receive(:stow_hands)
+      allow(DRCI).to receive(:get_item?).and_return(true)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      allow(DRCI).to receive(:exists?).and_return(false)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCC).to receive(:find_shaping_room)
+      allow(DRCC).to receive(:find_sewing_room)
+      allow(DRCM).to receive(:ensure_copper_on_hand)
+      allow(DRCT).to receive(:order_item)
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCT).to receive(:dispose)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+      allow(Lich::Messaging).to receive(:msg)
+    end
+
+    def model_bput(lines, patterns)
+      regexes = patterns.flatten.map { |item| item.is_a?(Regexp) ? item : /#{item}/i }
+      lines.each do |line|
+        regexes.each do |regex|
+          match = line.match(regex)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
+
+    # Queue the incoming lines for each call of a command starting with
+    # `prefix`; the last call's lines repeat once the queue runs out.
+    def reply(prefix, *calls)
+      reply_queues << [prefix, calls]
+    end
+
+    def next_reply(command)
+      entry = reply_queues.find { |prefix, _| command.start_with?(prefix) }
+      return [] unless entry
+
+      calls = entry[1]
+      calls.size > 1 ? calls.shift : calls.first
+    end
+
+    def sent?(prefix)
+      bput_log.any? { |command, _| command.start_with?(prefix) }
+    end
+
+    def patterns_for(prefix)
+      bput_log.find { |command, _| command.start_with?(prefix) }&.last
+    end
+
+    def player_lines(text)
+      [%([General][Mallory] "#{text}"), %(Mallory says, "#{text}"), %(Mallory whispers, "#{text}")]
+    end
+
+    describe '#bundle_item' do
+      it 'still throws the item away on the game line' do
+        reply('bundle', [failure_text])
+        expect(DRCI).to receive(:dispose_trash).with('gloves', nil, nil)
+
+        workorders.send(:bundle_item, 'gloves', 'engineering')
+      end
+
+      it 'keeps the item when another player says the failure text' do
+        player_lines(failure_text).each do |line|
+          reply_queues.clear
+          reply('bundle', [line, 'You notate the gloves in the logbook then bundle it up for delivery.'])
+          workorders.send(:bundle_item, 'gloves', 'engineering')
+        end
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+    end
+
+    describe '#remedy_items bundle' do
+      let(:recipe) { { 'chapter' => 1, 'name' => 'blister cream', 'herb1' => 'jadice flower', 'herb2' => nil, 'container' => 'bowl', 'noun' => 'salve' } }
+      let(:info) { { 'stock-room' => 100, 'logbook' => 'alchemy', 'catalyst' => 'coal' } }
+
+      before do
+        allow(workorders).to receive(:count_combine_rem)
+        allow(workorders).to receive(:stow_tool)
+      end
+
+      it 'still disposes and stops on the game line' do
+        reply('bundle', [failure_text])
+        workorders.send(:remedy_items, info, {}, recipe, 1)
+        expect(DRCI).to have_received(:dispose_trash).with('salve', nil, nil)
+      end
+
+      it 'notates and stows the logbook when another player says the failure text or "you put"' do
+        (player_lines(failure_text) + player_lines('you put it where?')).each do |line|
+          reply_queues.clear
+          reply('bundle', [line, 'You notate the salve in the logbook then bundle it up for delivery.'])
+          workorders.send(:remedy_items, info, {}, recipe, 1)
+        end
+        expect(DRCI).not_to have_received(:dispose_trash).with('salve', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('logbook').exactly(6).times
+      end
+    end
+
+    describe '#shape_items lumber count' do
+      let(:materials_info) { { 'stock-name' => 'maple', 'stock-number' => 5, 'stock-volume' => 20 } }
+      let(:recipe) { { 'chapter' => 1, 'name' => 'a wood bowl', 'noun' => 'bowl', 'volume' => 10 } }
+      let(:info) { { 'stock-room' => 100, 'part-room' => 101 } }
+
+      before { allow(workorders).to receive(:stow_tool) }
+
+      it 'does not buy stock when another player says "I could not"' do
+        player_lines('I could not believe it').each do |line|
+          reply_queues.clear
+          reply('count my maple lumber', [line, 'You count out 20 pieces of lumber remaining.'], ['You count out 20 pieces of lumber remaining.'])
+          workorders.send(:shape_items, info, materials_info, recipe, 1)
+        end
+        expect(DRCT).not_to have_received(:order_item)
+      end
+
+      it 'buys stock when the real count is short even if another player names a big count' do
+        reply('count my maple lumber', [player_lines('you count 99 of them').first, 'You count out 5 pieces of lumber remaining.'],
+              ['You count out 25 pieces of lumber remaining.'])
+        workorders.send(:shape_items, info, materials_info, recipe, 1)
+        expect(DRCT).to have_received(:order_item).with(100, 5).once
+      end
+
+      it 'waits for the game reply to stow feet, not a player line' do
+        workorders.instance_variable_set(:@retain_crafting_materials, true)
+        reply('count my maple lumber', ['You count out 20 pieces of lumber remaining.'])
+        workorders.send(:shape_items, info, materials_info, recipe, 1)
+        patterns = patterns_for('stow feet')
+        player_lines('what do you put there?').each { |line| expect(model_bput([line], patterns)).to eq('') }
+        expect(model_bput(["Stow what?  Type 'STOW HELP' for details."], patterns)).to eq('Stow what')
+        expect(model_bput(['You put your lumber in your backpack.'], patterns)).to eq('You put')
+      end
+    end
+
+    describe '#tinker_items lumber count' do
+      let(:materials_info) { { 'stock-name' => 'maple', 'stock-number' => 5, 'stock-volume' => 20 } }
+      let(:recipe) { { 'chapter' => 1, 'name' => 'a wood clock', 'noun' => 'clock', 'volume' => 10 } }
+      let(:info) { { 'stock-room' => 100, 'trash-room' => 200, 'logbook' => 'engineering' } }
+
+      before do
+        workorders.instance_variable_set(:@workorders_materials, {})
+        allow(workorders).to receive(:bundle_item)
+      end
+
+      it 'buys only the first lot when another player says "I could not find"' do
+        reply('count my maple lumber', [player_lines('I could not find it').last, 'You count out 20 pieces of lumber remaining.'],
+              ['You count out 20 pieces of lumber remaining.'])
+        workorders.send(:tinker_items, info, materials_info, recipe, 1)
+        expect(DRCT).to have_received(:order_item).with(100, 5).once
+      end
+    end
+
+    describe '#carve_items stock replies' do
+      let(:materials_info) { { 'stock-name' => 'maple', 'stock-number' => 5, 'stock-volume' => 20 } }
+      let(:info) { { 'stock-room' => 100, 'polish-room' => 102, 'polish-number' => 7, 'logbook' => 'engineering' } }
+
+      before do
+        allow(workorders).to receive(:stow_tool)
+        allow(workorders).to receive(:bundle_item)
+        allow(workorders).to receive(:checkleft)
+        allow(workorders).to receive(:checkright)
+        allow(DRCI).to receive(:get_item?).with('surface polish').and_return(false)
+      end
+
+      it 'goes to the shaping room when another player says "You are not strong"' do
+        recipe = { 'chapter' => 1, 'name' => 'a stone bowl', 'noun' => 'bowl', 'volume' => 10, 'material' => 'stone' }
+        reply('get maple', [player_lines('You are not strong enough for that').first, 'You get a maple rock.'])
+        workorders.send(:carve_items, info, materials_info, recipe, 1)
+        expect(DRCC).to have_received(:find_shaping_room)
+      end
+
+      it 'does not buy bone stock when another player says "I could not"' do
+        recipe = { 'chapter' => 1, 'name' => 'a bone comb', 'noun' => 'comb', 'volume' => 10, 'material' => 'bone' }
+        reply('count my maple stack', [player_lines('I could not')[1], 'You count out 20 pieces of bone remaining.'],
+              ['You count out 20 pieces of bone remaining.'])
+        workorders.send(:carve_items, info, materials_info, recipe, 1)
+        expect(DRCT).not_to have_received(:order_item).with(100, 5)
+      end
+
+      it 'keeps the surface polish when another player names a low count' do
+        recipe = { 'chapter' => 1, 'name' => 'a stone bowl', 'noun' => 'bowl', 'volume' => 10, 'material' => 'stone' }
+        allow(DRCI).to receive(:get_item?).with('surface polish').and_return(true)
+        reply('count my polish', [player_lines('The surface polish has 1 uses remaining')[1], 'The surface polish has 20 uses remaining.'])
+        workorders.send(:carve_items, info, materials_info, recipe, 1)
+        expect(DRCI).not_to have_received(:dispose_trash).with('polish', any_args)
+        expect(DRCT).not_to have_received(:order_item).with(102, 7)
+      end
+
+      it 'still replaces the surface polish on a real low count' do
+        recipe = { 'chapter' => 1, 'name' => 'a stone bowl', 'noun' => 'bowl', 'volume' => 10, 'material' => 'stone' }
+        allow(DRCI).to receive(:get_item?).with('surface polish').and_return(true)
+        reply('count my polish', ['The surface polish has 2 uses remaining.'])
+        workorders.send(:carve_items, info, materials_info, recipe, 1)
+        expect(DRCI).to have_received(:dispose_trash).with('polish', nil, nil)
+        expect(DRCT).to have_received(:order_item).with(102, 7)
+      end
+    end
+
+    describe '#count_combine_rem herb tap and count' do
+      before do
+        workorders.instance_variable_set(:@workorders_override_store, nil)
+        allow(workorders).to receive(:stow_tool)
+      end
+
+      it 'does not buy herbs when another player says "you tap ... inside your" before the real tap' do
+        reply('tap first flower', [player_lines('you tap it inside your pack').first, 'You tap some jadice flowers inside your backpack.'])
+        reply('tap second flower', ['I could not find what you were referring to.'])
+        reply('count first flower', ['You count out 25 pieces.'])
+        workorders.send(:count_combine_rem, 100, 1, 'jadice flower', 11)
+        expect(DRCT).not_to have_received(:order_item)
+      end
+
+      it 'does not buy herbs when another player names a low herb count' do
+        reply('tap first flower', ['You tap some jadice flowers inside your backpack.'])
+        reply('tap second flower', ['I could not find what you were referring to.'])
+        reply('count first flower', [player_lines('You count out 1 pieces.')[1], 'You count out 25 pieces.'])
+        workorders.send(:count_combine_rem, 100, 1, 'jadice flower', 11)
+        expect(DRCT).not_to have_received(:order_item)
+      end
+
+      it 'still buys herbs on a real short count' do
+        reply('tap first flower', ['You tap some jadice flowers inside your backpack.'])
+        reply('tap second flower', ['I could not find what you were referring to.'])
+        reply('count first flower', ['You count out 5 pieces.'])
+        workorders.send(:count_combine_rem, 100, 1, 'jadice flower', 11)
+        expect(DRCT).to have_received(:order_item).with(100, 11).once
+      end
+    end
+
+    describe '#complete_work_order give reply' do
+      let(:info) { { 'npc-rooms' => [100], 'npc_last_name' => 'Jakke', 'npc' => 'Jakke', 'logbook' => 'engineering' } }
+
+      before do
+        allow(workorders).to receive(:find_npc).and_return(true)
+        allow(workorders).to receive(:stow_tool)
+        allow(DRC).to receive(:release_invisibility)
+      end
+
+      it 'does not report a turn-in when another player says "you can"' do
+        reply('give logbook', [player_lines('you can do it').first, "The work order isn't yet complete."])
+        workorders.send(:complete_work_order, info)
+        expect(Lich::Messaging).not_to have_received(:msg).with('plain', 'WorkOrders: Work order completed and turned in')
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /not turned in/)
+      end
+    end
+
+    describe '#logbook_remaining' do
+      let(:complete_line) do
+        'This logbook is tracking a work order requiring you to craft a wood haircomb.  This work order appears to be complete.  ' \
+          'Now give it to a crafting trainer within the next 96 roisaen to receive payment.'
+      end
+      let(:remaining_line) do
+        'This logbook is tracking a work order requiring you to craft a wood haircomb from any material.  ' \
+          'You must bundle and deliver 1 more within the next 101 roisaen.'
+      end
+
+      it 'still reads the count from the real logbook line' do
+        reply('read my engineering logbook', [remaining_line])
+        expect(workorders.send(:logbook_remaining, 'engineering')).to eq(1)
+        reply_queues.clear
+        reply('read my engineering logbook', [complete_line])
+        expect(workorders.send(:logbook_remaining, 'engineering')).to eq(0)
+      end
+
+      it 'ignores a remaining count another player says' do
+        player_lines('You must bundle and deliver 9 more').each do |line|
+          reply_queues.clear
+          reply('read my engineering logbook', [line, complete_line])
+          expect(workorders.send(:logbook_remaining, 'engineering')).to eq(0)
+        end
+      end
+    end
+
+    describe '#forge_items_with_own_ingot deed packet' do
+      let(:materials_info) { { 'stock-volume' => 50 } }
+      let(:item) { { 'name' => 'short sword', 'volume' => 5, 'noun' => 'sword' } }
+      let(:complete_line) { 'This logbook is tracking a work order requiring you to craft a short sword.  This work order appears to be complete.' }
+
+      before do
+        workorders.instance_variable_set(:@use_own_ingot_type, 'bronze')
+        workorders.instance_variable_set(:@deed_own_ingot, true)
+        workorders.instance_variable_set(:@deeds_room, 300)
+        workorders.instance_variable_set(:@deeds_number, 4)
+        reply('analyze my ingot', ['About 50 volume of metal.'])
+        reply('read my forging logbook', [complete_line])
+      end
+
+      it 'does not buy a deed packet when another player says "I could not find what you were referring to"' do
+        reply('look my deed packet', [player_lines('I could not find what you were referring to').first, 'You count 5 deed claim forms remaining.'])
+        workorders.send(:forge_items_with_own_ingot, { 'logbook' => 'forging' }, materials_info, item, 1)
+        expect(DRCT).not_to have_received(:order_item).with(300, 4)
+      end
+
+      it 'still buys a deed packet when there is none' do
+        reply('look my deed packet', ['I could not find what you were referring to.'])
+        workorders.send(:forge_items_with_own_ingot, { 'logbook' => 'forging' }, materials_info, item, 1)
+        expect(DRCT).to have_received(:order_item).with(300, 4)
+      end
+    end
+
+    describe '#sew_items and #knit_items existing stock' do
+      let(:materials_info) { { 'stock-name' => 'burlap', 'stock-number' => 9 } }
+      let(:info) { { 'stock-room' => 100 } }
+
+      before { allow(workorders).to receive(:stow_tool) }
+
+      it 'reads the real cloth count, not a count another player says' do
+        recipe = { 'chapter' => 1, 'name' => 'a burlap sack', 'noun' => 'sack', 'volume' => 10 }
+        reply('get burlap cloth', ['You get some burlap cloth from inside your backpack.'], ['What were you referring to?'])
+        reply('count my burlap cloth', [player_lines('you count out 50 yards').first, 'You count out 10 yards of material there.'])
+        expect(workorders).to receive(:order_fabric).with(100, 2, 9, 'burlap cloth')
+        workorders.send(:sew_items, info, materials_info, recipe, 3)
+      end
+
+      it 'treats "What were you" as no cloth even if another player says "you get" first' do
+        recipe = { 'chapter' => 1, 'name' => 'a burlap sack', 'noun' => 'sack', 'volume' => 10 }
+        reply('get burlap cloth', [player_lines('did you get it?').first, 'What were you referring to?'])
+        expect(workorders).to receive(:order_fabric).with(100, 3, 9, 'burlap cloth')
+        workorders.send(:sew_items, info, materials_info, recipe, 3)
+        expect(sent?('count my burlap cloth')).to be false
+      end
+
+      it 'treats "What were you" as no yarn even if another player says "you get" first' do
+        recipe = { 'chapter' => 1, 'name' => 'a knitted napkin', 'noun' => 'napkin', 'volume' => 100 }
+        reply('get yarn', [player_lines('did you get it?').last, 'What were you referring to?'])
+        expect(workorders).to receive(:order_fabric).with(100, 1, 9, 'yarn')
+        workorders.send(:knit_items, info, materials_info, recipe, 1)
+        expect(sent?('count my yarn')).to be false
       end
     end
   end
