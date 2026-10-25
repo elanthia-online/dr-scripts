@@ -53,7 +53,8 @@ def execute_uservar(data)
 end
 
 # When trigger command =logf has been used. Logs to a file of specified name.
-def execute_logf(data)
+# captures is the trigger's match; its $0-$9 groups are put into the text after the inner-brace Ruby has run.
+def execute_logf(data, captures)
   echo "Logging to file" if $debug_mode_tw
 
   echo "preparsed data is: #{data}" if $debug_mode_tw
@@ -81,6 +82,9 @@ def execute_logf(data)
     end
   end
 
+  # Capture groups go in last, so their text is logged as written
+  parsed_data.map! { |string| substitute_captures(string, captures) }
+
   echo "parsed_data is: #{parsed_data}" if $debug_mode_tw
 
   File.open("#{filename}.txt", 'a') do |f|
@@ -90,8 +94,8 @@ def execute_logf(data)
 end
 
 # When trigger command =logw has been used. Logs to a window of specified name. Creates window
-# if it doesn't exist.
-def execute_logw(data)
+# if it doesn't exist. captures works as for execute_logf.
+def execute_logw(data, captures)
   echo "Logging to window" if $debug_mode_tw
 
   if data =~ /\}\}/
@@ -116,6 +120,9 @@ def execute_logw(data)
       eval($1)
     end
   end
+
+  # Capture groups go in last, so their text is logged as written
+  parsed_data.map! { |string| substitute_captures(string, captures) }
 
   echo "parsed_data is: #{parsed_data}" if $debug_mode_tw
 
@@ -258,6 +265,58 @@ def parse_enclosing_curly_braces(data)
   return elements
 end
 
+# Puts the trigger's regex capture groups ($0-$9) into text. Each capture is put in as written,
+# in one pass, so its text isn't read again for $N or backslash references.
+def substitute_captures(text, captures)
+  text.gsub(/\$([0-9])\b/) do |reference|
+    num = Regexp.last_match(1).to_i
+    regex_capture = captures[num]
+    echo "capture group ##{num} is #{regex_capture}" if $debug_mode_tw
+    if regex_capture.nil?
+      DRC.message("  Warning, you're referencing capture group $#{num}, which does not exist.")
+      reference
+    else
+      regex_capture
+    end
+  end
+end
+
+# Tells the user, once per trigger and place, that a capture group was left as written there.
+def warn_capture_not_substituted(name, place, reason)
+  @capture_warned_triggers ||= []
+  return if @capture_warned_triggers.include?([name, place])
+
+  @capture_warned_triggers << [name, place]
+  DRC.message("  Warning, trigger #{name} uses a capture group ($0-$9) in #{place}. Capture groups aren't substituted into #{reason}, so it is left as written.")
+end
+
+# Capture substitution for one trigger response, given as written in the settings. Capture groups
+# are text from the game line, so they go into commands and log text, but not into =eval, =if or
+# =uvar, which run Ruby. Those are returned unchanged, with a one-time warning per trigger.
+def apply_captures(response, name, captures)
+  return response unless response =~ /\$[0-9]\b/
+
+  if response =~ /^=(eval|if|uvar)\b/i
+    warn_capture_not_substituted(name, 'an =eval, =if or =uvar response', 'responses that run Ruby')
+    return response
+  end
+
+  # =logf/=logw and =exec/=execw put captures in themselves, into their text or arguments only
+  return response if response =~ /^=(log[fw]|execw?)\b/i
+
+  substitute_captures(response, captures)
+end
+
+# =exec/=execw arguments with capture groups put in. words is the split response, script name
+# first. A capture fills the argument it's written in (it isn't split into more arguments) and
+# never goes into the script name.
+def exec_arguments(name, words, captures)
+  if words[0] =~ /\$[0-9]\b/
+    warn_capture_not_substituted(name, 'an =exec or =execw script name', 'script names')
+  end
+  words.drop(1).map { |arg| substitute_captures(arg, captures) }
+end
+
 def pull_trigger_data
   @trigger_data.each do |name, values|
     echo "Trigger name:  #{name}" if $debug_mode_tw
@@ -333,26 +392,11 @@ until script.gets.nil?
         responses = values['responses'].map(&:clone)
 
         # Below we'll look for both regex capture and UserVar subsitutions in trigger responses,
-        # and substitute appropriately if so. Regex subs can be $1-$9. uvar subs can be named anything
+        # and substitute appropriately if so. Regex subs can be $0-$9. uvar subs can be named anything
         # but the first character can NOT be a number.
-        num_subs = responses.join(' ').scan(/\$([0-9])\b/)
         uvar_subs = responses.join(' ').scan(/\$([a-zA-Z]\w+)\b/)
 
-        echo "num_subs are: #{num_subs}" if $debug_mode_tw
         echo "uvar_subs are: #{uvar_subs}" if $debug_mode_tw
-
-        # Process regex substitutions
-        unless num_subs.empty?
-          echo "Recognized regex capture subsitutions" if $debug_mode_tw
-          num_subs.each do |num|
-            regex_capture = Flags[name.to_s][num.first.to_i]
-            echo "capture group ##{num.first.to_i} is #{Flags[name.to_s][num.first.to_i]}" if $debug_mode_tw
-            responses.map { |string| string.gsub!(/\$#{num.first}\b/, regex_capture) if regex_capture }
-            if regex_capture.nil?
-              DRC.message("  Warning, you're referencing capture group $#{num.first}, which does not exist.")
-            end
-          end
-        end
 
         # Process UserVar substitutions
         unless uvar_subs.empty?
@@ -370,13 +414,17 @@ until script.gets.nil?
         # Send our trigger responses. Parse any trigger commands. With the exception of if/elsif/else,
         # all trigger commands are expected only at the beginning of a trigger response line. If/elsif/else
         # expects =if at the beginning of the line.
-        responses.each_with_index do |string, counter|
+        # The kind of response is decided from the template, before regex substitutions, so
+        # captured text can't change it. string is the response with captures put in where they
+        # belong (see apply_captures).
+        responses.each_with_index do |template, counter|
+          string = apply_captures(template, name, Flags[name.to_s])
           DRC.message("    Processing response number #{counter + 1} for trigger #{name}") if $debug_mode_tw
           DRC.message("    Response is: #{string}") if $debug_mode_tw
 
           # Verify trigger command responses are properly enclosed in curly braces
-          if string.start_with?('=')
-            unless string =~ /\=\w+ \{|=reload/
+          if template.start_with?('=')
+            unless template =~ /\=\w+ \{|=reload/
               DRC.message('  NOTE: Trigger command responses must be wrapped in curly braces.')
               DRC.message("   The following response for trigger #{name} is not formatted correctly:")
               DRC.message("    - #{string}")
@@ -384,48 +432,48 @@ until script.gets.nil?
             end
           end
 
-          if string =~ /^=exec\b/i
+          if template =~ /^=exec\b/i
             echo "=exec trigger response" if $debug_mode_tw
             exec_script = string.gsub('=exec', '').strip
             exec_script = parse_enclosing_curly_braces(exec_script)
             exec_script = exec_script.split
-            execute_script(exec_script[0], exec_script.drop(1))
-          elsif string =~ /^=execw\b/i
+            execute_script(exec_script[0], exec_arguments(name, exec_script, Flags[name.to_s]))
+          elsif template =~ /^=execw\b/i
             echo "=execw trigger response" if $debug_mode_tw
             execw_script = string.gsub('=execw', '').strip
             execw_script = parse_enclosing_curly_braces(execw_script)
             execw_script = execw_script.split
-            execute_script_wait(execw_script[0], execw_script.drop(1))
-          elsif string =~ /^=uvar\b/i
+            execute_script_wait(execw_script[0], exec_arguments(name, execw_script, Flags[name.to_s]))
+          elsif template =~ /^=uvar\b/i
             echo "=uvar trigger response" if $debug_mode_tw
             exec_uvar = string.gsub('=uvar', '').strip
             exec_uvar = parse_enclosing_curly_braces(exec_uvar)
             exec_uvar = exec_uvar.split
             execute_uservar(exec_uvar)
-          elsif string =~ /^=logf\b/i
+          elsif template =~ /^=logf\b/i
             echo "=logf trigger response" if $debug_mode_tw
             exec_logf = string.gsub('=logf', '').strip
             exec_logf = parse_enclosing_curly_braces(exec_logf)
-            execute_logf(exec_logf)
-          elsif string =~ /^=logw\b/i
+            execute_logf(exec_logf, Flags[name.to_s])
+          elsif template =~ /^=logw\b/i
             echo "=logw trigger response" if $debug_mode_tw
             exec_logw = string.gsub('=logw', '').strip
             exec_logw = parse_enclosing_curly_braces(exec_logw)
-            execute_logw(exec_logw)
-          elsif string =~ /^=pause\b/i
+            execute_logw(exec_logw, Flags[name.to_s])
+          elsif template =~ /^=pause\b/i
             echo "=pause trigger response" if $debug_mode_tw
             exec_pause = string.gsub('=pause', '').strip
             exec_pause = parse_enclosing_curly_braces(exec_pause)
             execute_pause(exec_pause)
-          elsif string =~ /^=if\b/i
+          elsif template =~ /^=if\b/i
             echo "=if/elsif/else trigger response" if $debug_mode_tw
             execute_if(string)
-          elsif string =~ /^=eval\b/i
+          elsif template =~ /^=eval\b/i
             echo "=eval trigger response" if $debug_mode_tw
             exec_eval = string.gsub('=eval', '').strip
             exec_eval = parse_enclosing_curly_braces(exec_eval)
             execute_eval(exec_eval)
-          elsif string =~ /^=reload\b/i
+          elsif template =~ /^=reload\b/i
             echo "=reload trigger response" if $debug_mode_tw
             execute_reload()
           else
