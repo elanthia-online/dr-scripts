@@ -4,12 +4,19 @@
 =end
 
 class Lichbot
-  def initialize(sleep)
-    Flags.add('give-accepted', '.* has accepted your offer and is now holding .*')
-    Flags.add('give-declined', '.* has declined the offer')
-    Flags.add('give-expired', 'Your offer to .* has expired')
+  # lnet: [Private]-GAME:Name: "message". The sender is the single name
+  # after the game token, so the message text cannot change it.
+  SLACK_TOKEN_REQUEST = /\A\[Private\]-[^:\s]+:([^:\s]+): "RequestSlackToken"/
 
-    Flags.add('stopped-listening', 'Your teacher is not here, so you are no longer learning anything', '.* stops teaching')
+  # The character asking for the Slack token, or nil if the line is not
+  # an LNet private RequestSlackToken message.
+  def self.slack_token_requester(line)
+    match = SLACK_TOKEN_REQUEST.match(line)
+    match && match[1]
+  end
+
+  def initialize(sleep)
+    add_listen_flags(nil)
 
     @settings = get_settings
     @last_action = Time.now
@@ -27,8 +34,8 @@ class Lichbot
   def accept(character)
     @last_action = Time.now
     waitrt?
-    case DRC.bput('accept', 'You accept', 'would push you over your item limit')
-    when 'would push you over your item limit'
+    case DRC.bput('accept', '^You accept', '^[^"]*?would push you over your item limit')
+    when /would push you over your item limit/
       fput "whisper #{character} ***ERROR*** I am at my inventory limit and cannot accept that."
       fput 'decline'
       return
@@ -77,9 +84,7 @@ class Lichbot
       return
     end
 
-    Flags.reset('give-accepted')
-    Flags.reset('give-expired')
-    Flags.reset('give-declined')
+    add_give_flags(character)
     return unless give_item?(character, item, false)
 
     pause 0.5 until Flags['give-accepted'] || Flags['give-expired'] || Flags['give-declined']
@@ -96,7 +101,7 @@ class Lichbot
       command = "give my #{item} to #{character}"
     end
 
-    case DRC.bput(command, 'You offer', 'What is it', "You don't need to specify the object")
+    case DRC.bput(command, '^You offer', '^What is it', "^You don't need to specify the object")
     when 'What is it'
       fput "whisper #{character} Sorry, I failed to give you [#{item}]"
       DRCI.stow_hands
@@ -143,7 +148,7 @@ class Lichbot
                       .sort_by { |_t, s| [DRSkill.getxp(s), DRSkill.getrank(s)] }
                       .find { |t, _s| DRC.listen?(t, @settings.listen_observe) }
                       .first
-      Flags.reset('stopped-listening')
+      add_listen_flags(@last_teacher)
     end
 
     if should_train?('Attunement')
@@ -161,6 +166,23 @@ class Lichbot
   end
 
   private
+
+  # The give flags only match the game's own line about the recipient, not
+  # other players' speech or ESP carrying the same words.
+  def add_give_flags(character)
+    name = Regexp.escape(character)
+    Flags.add('give-accepted', /^(?:<[^>]+>)*#{name} has accepted your offer and is now holding /i)
+    Flags.add('give-declined', /^(?:<[^>]+>)*#{name} has declined the offer/i)
+    Flags.add('give-expired', /^(?:<[^>]+>)*Your offer to #{name} has expired/i)
+  end
+
+  # Only the game's own line about the current teacher counts as the class
+  # ending; there is nothing to stop until a teacher has been picked.
+  def add_listen_flags(teacher)
+    matchers = [/^(?:<[^>]+>)*Your teacher is not here, so you are no longer learning anything/i]
+    matchers << /^(?:<[^>]+>)*#{Regexp.escape(teacher)} stops teaching/i if teacher && !teacher.empty?
+    Flags.add('stopped-listening', *matchers)
+  end
 
   def check_for_junk
     return if DRRoom.room_objs.count < @settings.dump_item_count
@@ -185,7 +207,7 @@ class Lichbot
   def get_item?(item)
     waitrt?
 
-    case DRC.bput("get my #{item}", 'You get', 'You are already holding', 'But that is already in your inventory', 'Please rephrase', 'What were you', 'You should stop playing')
+    case DRC.bput("get my #{item}", '^You get', '^You are already holding', '^But that is already in your inventory', '^Please rephrase', '^What were you', '^You should stop playing')
     when 'But that is already in your inventory'
       return get_item?("second #{item}")
     when 'You should stop playing'
@@ -237,8 +259,7 @@ loop do
   pause 0.05 unless line
 
   # The Slack-token handshake is always answered, even for a passive bot.
-  if line =~ /^\[Private\]-.*:(.*): "RequestSlackToken"/
-    character = Regexp.last_match(1)
+  if (character = Lichbot.slack_token_requester(line))
     validator.confirm(character)
     validator.send_slack_token(character)
     next

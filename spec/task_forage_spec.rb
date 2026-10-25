@@ -178,6 +178,51 @@ RSpec.describe TaskForage do
     end
   end
 
+  describe '#resume_task' do
+    let(:entry) { 'The firewood peddler Mags in The Crossing wants you to retrieve 14 shoe tacks.' }
+
+    # The task command's reply, matched the way DRC.bput does: lines in arrival
+    # order, the first pattern that matches a line wins, Strings as /x/i.
+    def task_reply(*lines)
+      allow(DRC).to receive(:bput).with('task', any_args) do |_command, *patterns|
+        patterns.shift if patterns.first.is_a?(Hash)
+        regexes = patterns.map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+        lines.lazy.map { |line| regexes.lazy.map { |regex| line[regex] }.find(&:itself) }.find(&:itself).to_s
+      end
+    end
+
+    def resumer
+      instance = build_instance(item: nil, number: nil, task_town: 'crossing')
+      %i[known_item? mapped_item? ready_item? closeby_item? use_stored_items].each do |check|
+        allow(instance).to receive(check).and_return(true)
+      end
+      allow(DRCI).to receive(:stow_hands)
+      instance
+    end
+
+    it 'reads the journal entry, not another player\'s ESP or speech arriving after it' do
+      $server_buffer = [entry, 'You need to turn in 9 more.',
+                        %(<pushStream id="thoughts"/>[General][Mallory] "the peddler in Crossing wants you to retrieve 99 blue flowers."<popStream/>),
+                        %(<preset id='speech'>Mallory says</preset>, "Mags in Crossing wants you to retrieve 99 blue flowers.")]
+      task_reply('You need to turn in 9 more.')
+      instance = resumer
+      expect(instance.resume_task).to be(true)
+      expect(instance.instance_variable_get(:@number)).to eq(14)
+      expect(instance.instance_variable_get(:@item)).to eq('shoe tacks')
+      expect(instance.instance_variable_get(:@delivered)).to eq(5)
+      expect(messages.last).to eq('Resuming task: 14 shoe tacks, 9 still to turn in.')
+    end
+
+    it 'takes the count still to turn in from the journal, not another player\'s line before it' do
+      $server_buffer = [entry, 'You need to turn in 9 more.']
+      task_reply('[General][Mallory] "You need to turn in 0 more."', 'Mallory says, "You need to turn in 0 more."',
+                 'Mallory whispers, "You are not currently on a task."', 'You need to turn in 9 more.')
+      instance = resumer
+      expect(instance.resume_task).to be(true)
+      expect(instance.instance_variable_get(:@delivered)).to eq(5)
+    end
+  end
+
   describe '#give_item' do
     def reply(line)
       allow(DRC).to receive(:bput) do |_command, *patterns|
@@ -239,6 +284,52 @@ RSpec.describe TaskForage do
       instance = build_instance
       allow(instance).to receive(:room_safe?)
       expect { instance.give_item('root') }.to raise_error(SystemExit)
+    end
+
+    context 'with other players talking during the give' do
+      let(:thanks) { 'The firewood peddler Mags takes the stems and says, "Thanks, Someone!  I need 4 more."' }
+      let(:player_thanks) { [%([General][Mallory] "#{thanks}"), %(Mallory says, "#{thanks}"), %(Mallory whispers, "#{thanks}")] }
+      let(:player_sighs) do
+        [%([General][Mallory] "Mags sighs and says, it's over"), %(Mallory whispers, "Mags sighs and says, go"),
+         %(Mallory says, "Mags sighs and says, "Aye-yah!  Tha' isnae somethin' I take.")]
+      end
+
+      # The give's reply, matched the way DRC.bput does: lines in arrival order,
+      # the first pattern that matches a line wins, Strings as /x/i.
+      def replies(*lines)
+        allow(DRC).to receive(:bput) do |_command, *patterns|
+          regexes = patterns.map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+          lines.lazy.map { |line| regexes.lazy.map { |regex| line[regex] }.find(&:itself) }.find(&:itself).to_s
+        end
+      end
+
+      it 'counts the giver\'s own thanks after their lines' do
+        replies(*player_thanks, *player_sighs, thanks)
+        instance = build_instance
+        expect(instance.give_item('root')).to be(true)
+        expect(instance.instance_variable_get(:@delivered)).to eq(1)
+      end
+
+      it 'does not count their thanks, and puts the item back' do
+        replies(*player_thanks)
+        allow(DRCI).to receive(:in_hands?).with('root').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('root', 'backpack').and_return(true)
+        instance = build_instance
+        expect(instance.give_item('root')).to be(false)
+        expect(instance.instance_variable_get(:@delivered)).to eq(0)
+      end
+
+      it 'does not exit on their sigh' do
+        replies(*player_sighs)
+        allow(DRCI).to receive(:in_hands?).with('root').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        instance = build_instance
+        allow(instance).to receive(:room_safe?)
+        given = nil
+        expect { given = instance.give_item('root') }.not_to raise_error
+        expect(given).to be(false)
+        expect(instance.instance_variable_get(:@item)).to eq('root')
+      end
     end
   end
 
@@ -343,6 +434,85 @@ RSpec.describe TaskForage do
       expect(instance.fast_find(route)).to be(false)
       expect(sent).to be_empty
       expect(DRCT).to have_received(:walk_to).with(10)
+    end
+  end
+
+  describe '#setup_flags' do
+    let(:instance) { build_instance(item: 'stick') }
+
+    before { instance.setup_flags }
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # Other players' ESP, speech and whisper lines, as the raw stream carries them.
+    def player_shapes(text)
+      [%(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+       %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+       %(Mallory whispers, "#{text}")]
+    end
+
+    game_lines = {
+      'combat'         => ['You cannot forage while in combat!',
+                           'The jeol moradu closes to pole weapon range on you!',
+                           '<pushStream id="combat" />The jeol moradu begins to advance on you!'],
+      'giver-move'     => ['The flower peddler gathers her skirts and glides south.'],
+      'cluttered'      => ['The room is too cluttered to find anything here!',
+                           "Catheroine tries to forage for something, but can't find it with all the clutter here."],
+      'container-full' => ["There isn't any more room in the eddy for that.",
+                           "You just can't get the stick to fit in the backpack, no matter how you arrange it.",
+                           "That's too heavy to go in there!", 'The stick is too heavy to go in there!']
+    }
+
+    game_lines.each do |key, lines|
+      lines.each do |line|
+        it "sets #{key} on the game's line #{line.inspect}" do
+          deliver(line)
+          expect(Flags[key]).to be_truthy
+        end
+
+        it "leaves #{key} unset when another player says, whispers or thinks #{line.inspect}" do
+          player_shapes(line.gsub(/<[^>]+>/, '')).each { |shape| deliver(shape) }
+          expect(Flags[key]).to be(false)
+        end
+      end
+    end
+
+    it 'follows the peddler on her own line, but not on another player\'s' do
+      XMLData.room_exits = %w[south east]
+      allow(instance).to receive(:move)
+      player_shapes('The flower peddler gathers her skirts and glides east.').each { |shape| deliver(shape) }
+      expect(instance.follow_wanderer).to be_nil
+      expect(instance).not_to have_received(:move)
+
+      deliver('The flower peddler gathers her skirts and glides south.')
+      expect(instance.follow_wanderer).to be(true)
+      expect(instance).to have_received(:move).with('south')
+    end
+
+    it 'moves on from a room cluttered for another player, but not on clutter talk' do
+      events = []
+      allow(DRC).to receive(:kick_pile?)
+      allow(instance).to receive(:cluttered_gathering_room) { events << :move_on }
+      heard = player_shapes("Catheroine tries to forage for something, but can't find it with all the clutter here.") +
+              player_shapes('The room is too cluttered to find anything here!')
+      allow(DRC).to receive(:collect) { heard.each { |line| deliver(line) } }
+      instance.collect_pile
+      expect(events).to be_empty
+
+      heard = ["Catheroine tries to forage for something, but can't find it with all the clutter here."]
+      instance.collect_pile
+      expect(events).to eq([:move_on])
     end
   end
 

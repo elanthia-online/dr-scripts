@@ -3,6 +3,13 @@
 =end
 
 class Rezz
+  # Game lines can start with XML tags; other players' speech, whispers and ESP
+  # always put a quote before their text. These prefixes make a Flags matcher
+  # accept only the game's own line. bput reads the text with tags stripped,
+  # so its patterns use a plain ^ (or ^[^"]*? when the message is mid-line).
+  LINE_START = '^(?:<[^>]+>)*'
+  NO_QUOTE_BEFORE = '^(?:<[^>]*>|[^"<])*?'
+
   def initialize
     unless DRStats.cleric?
       echo '*** Nice try, heathen! ***'
@@ -19,6 +26,7 @@ class Rezz
 
     args = parse_args(arg_definitions)
     @settings = get_settings
+    @infuse_attempts = 0
     @total_infused = 0
 
     @target = args.player ? DRRoom.pcs.find { |name| /^#{args.player}/i =~ name }.to_a : find_dead
@@ -42,11 +50,14 @@ class Rezz
                get_data('spells').spell_data['Rejuvenation']
              end
 
-    Flags.add('no-favor', /has no favor with h.. god!/)
-    Flags.add('rejuv-silver', 'A thin silver nimbus surrounds', 'As you concentrate, a thin silver nimbus flickers into view around', 'memories are protected from loss by the Resumption spell')
-    Flags.add('dead', /H.. soul (is|is not) bound to h.. body./)
-    Flags.add('decaying', 'will decay in less than a minute', 'will decay in about a minute', 'decay in a few minutes', 'decay in several minutes')
-    Flags.add('necro', 'has no protection from the gods. judgment')
+    Flags.add('no-favor', /#{NO_QUOTE_BEFORE}has no favor with h.. god!/)
+    Flags.add('rejuv-silver',
+              /#{LINE_START}A thin silver nimbus surrounds/i,
+              /#{LINE_START}As you concentrate, a thin silver nimbus flickers into view around/i,
+              /#{NO_QUOTE_BEFORE}memories are protected from loss by the Resumption spell/i)
+    Flags.add('dead', /#{LINE_START}H.. soul (is|is not) bound to h.. body./)
+    Flags.add('decaying', /#{NO_QUOTE_BEFORE}(?:will decay in less than a minute|will decay in about a minute|decay in a few minutes|decay in several minutes)/i)
+    Flags.add('necro', /#{NO_QUOTE_BEFORE}has no protection from the gods. judgment/i)
 
     @target.each do |name|
       @rejuv['cast'] = "cast #{name}"
@@ -62,7 +73,7 @@ class Rezz
   end
 
   def find_dead
-    /You take a moment to look for everybody in the area and see (.*)/ =~ DRC.bput('look people', "You look around and notice that you're the only one in the area", /You take a moment to look for everybody in the area and see (.*)/)
+    /You take a moment to look for everybody in the area and see (.*)/ =~ DRC.bput('look people', "^You look around and notice that you're the only one in the area", /^You take a moment to look for everybody in the area and see (.*)/)
     Regexp.last_match(1).sub(/ and /, ', ').scan(/the body of (.+?(?=who|\())/i).flatten.map { |obj| obj.split.last }
   end
 
@@ -93,16 +104,16 @@ class Rezz
   end
 
   def find_soul?(player)
-    Flags.add('rotting', /#{player}.s body'?s? (grows paler|seems to|appears to|appearance takes)/)
+    Flags.add('rotting', /#{NO_QUOTE_BEFORE}#{player}.s body'?s? (grows paler|seems to|appears to|appearance takes)/)
     15.times do
       infuse_mana = infuse_amount
       pause 5 while DRStats.mana < 20
       @settings.osrel_no_harness ? nil : DRCA.harness_mana([infuse_mana])
-      match = DRC.bput("infuse rezz #{infuse_mana}", 'You sense a spirit nearby, but you are unable to make it out clearly', /spirit of #{player} in the Void/)
+      match = DRC.bput("infuse rezz #{infuse_mana}", '^You sense a spirit nearby, but you are unable to make it out clearly', /^[^"]*?spirit of #{player} in the Void/)
       @infuse_attempts += 1
       @total_infused += infuse_mana
       vigil(player) if Flags['rotting']
-      return true if match.eql? "spirit of #{player} in the Void"
+      return true if match.end_with?("spirit of #{player} in the Void")
     end
     false
   end
@@ -129,7 +140,7 @@ class Rezz
     Flags.reset('dead')
     Flags.reset('decaying')
     Flags.reset('necro')
-    DRC.bput("perc #{player}", /#{player} has (.*) favors* with h.. god/, /has no favor with h.. god!/)
+    DRC.bput("perc #{player}", /^#{player} has (.*) favors* with h.. god/, /^[^"]*?has no favor with h.. god!/)
     vigil(player) if Flags['decaying']
     !Flags['rejuv-silver'] && Flags['dead'] ? rejuv(player) : nil
   end
@@ -153,8 +164,8 @@ class Rezz
     Flags.reset('rejuv-silver')
     rejuv(player, true)
 
-    case DRC.bput("gesture #{player}", 'Roundtime', 'gift of life to a body that badly broken')
-    when 'gift of life to a body that badly broken'
+    case DRC.bput("gesture #{player}", /^[^"]*?Roundtime/i, /^[^"]*?gift of life to a body that badly broken/i)
+    when /gift of life to a body that badly broken/i
       fput("'#{player} still needs healing.")
       return
     end

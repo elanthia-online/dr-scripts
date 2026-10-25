@@ -18,12 +18,15 @@ loop do
 
   args = parse_args(arg_definitions)
 
-  case DRC.bput('accept', 'You have no offers to accept', "You accept \\w+'s offer and are now holding")
+  # Every reply pattern here only matches the game's own line, not other
+  # players' speech, whispers or ESP: lines that start with the message, or
+  # mid-line messages with no quote before them (player text always has one).
+  case DRC.bput('accept', '^You have no offers to accept', "^You accept \\w+'s offer and are now holding")
   when /You accept (\w+)/
     item_type = GameObj.right_hand.noun
     giver = Regexp.last_match(1)
     unless args.skip
-      until /(\d+) (\w+)/ =~ DRC.bput("app my #{DRC.right_hand}", 'total of about \d+ \w+\.', 'to examine its contents')
+      until /(\d+) (\w+)/ =~ DRC.bput("app my #{DRC.right_hand}", /^[^"]*?total of about \d+ \w+\./i, /^[^"]*?to examine its contents/i)
         pause
         waitrt?
         fput('tie my pouch')
@@ -39,7 +42,7 @@ loop do
       fput("stow #{DRC.right_hand}")
       fput("tip #{giver} #{price} #{currency}")
     else
-      /(\d+) (\w+)/ =~ DRC.bput("sell my #{DRC.right_hand}", 'then hands you \d+ \w+')
+      /(\d+) (\w+)/ =~ DRC.bput("sell my #{DRC.right_hand}", /^[^"]*?then hands you \d+ \w+/i)
       sell = Regexp.last_match(1).to_i
       currency ||= Regexp.last_match(2)
 
@@ -53,8 +56,8 @@ loop do
       if args.dump
         fput("put #{DRC.right_hand} in bucket")
       else
-        case DRC.bput("give #{DRC.right_hand} to #{giver}", 'has declined the offer', 'has accepted your offer')
-        when 'has declined the offer'
+        case DRC.bput("give #{DRC.right_hand} to #{giver}", /^[^"]*?has declined the offer/i, /^[^"]*?has accepted your offer/i)
+        when /has declined the offer/
           fput("put #{DRC.right_hand} in bucket")
         end
       end

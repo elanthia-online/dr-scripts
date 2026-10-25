@@ -4,6 +4,13 @@
 =end
 
 class CornMaze
+  # Anchors so a pattern only matches the game's own line, not other players' speech, whispers
+  # or ESP (those always have a quote before their text).
+  # A line spoken by a Halfling NPC, up to and inside the opening quote of what it says.
+  HALFLING_SAYS = /^(?:<[^>]+>)*(?:An?|The) [^"\[]*?\bHalfling\b[^"\[]*, ".*?/
+  # Game narration: no quote outside tags before the message.
+  NO_QUOTE_BEFORE = /^(?:<[^>]*>|[^"<])*?/
+
   def setup
     @done = false
     @task_count = 0
@@ -211,16 +218,17 @@ class CornMaze
   # --- SHORT MAZE --- #
 
   def run_short_maze
-    Flags.add('maze_done',   "Thanks for all the hard work.  Here's a little something to show my appreciation.")
-    Flags.add('task_build',  "find a good spot and BUILD")
-    Flags.add('task_search', "I'd like you to SEARCH")
-    Flags.add('task_touch',  "I'd like you to find and TOUCH")
-    Flags.add('task_forage', "I'd like you to FORAGE")
-    Flags.add('task_scream', "let out a good SCREAM")
-    Flags.add('task_pull',   "I'd like you to go PULL")
-    Flags.add('task_wave',   "You just have to WAVE your hands")
-    Flags.add('task_disarm', "I'd like you to DISARM")
-    Flags.add('task_poke',   "I'd like you to go find and POKE EMPLOYEEs")
+    # The harried Halfling speaks these lines, so each one must open with a Halfling speaker.
+    Flags.add('maze_done',   /#{HALFLING_SAYS}Thanks for all the hard work\.  Here's a little something to show my appreciation\./i)
+    Flags.add('task_build',  /#{HALFLING_SAYS}find a good spot and BUILD/i)
+    Flags.add('task_search', /#{HALFLING_SAYS}I'd like you to SEARCH/i)
+    Flags.add('task_touch',  /#{HALFLING_SAYS}I'd like you to find and TOUCH/i)
+    Flags.add('task_forage', /#{HALFLING_SAYS}I'd like you to FORAGE/i)
+    Flags.add('task_scream', /#{HALFLING_SAYS}let out a good SCREAM/i)
+    Flags.add('task_pull',   /#{HALFLING_SAYS}I'd like you to go PULL/i)
+    Flags.add('task_wave',   /#{HALFLING_SAYS}You just have to WAVE your hands/i)
+    Flags.add('task_disarm', /#{HALFLING_SAYS}I'd like you to DISARM/i)
+    Flags.add('task_poke',   /#{HALFLING_SAYS}I'd like you to go find and POKE EMPLOYEEs/i)
 
     join_harried_halfling
 
@@ -289,8 +297,8 @@ class CornMaze
   def run_long_maze
     DRC.message("WARNING! THE CORN MAZE IS DIFFICULT TO NAVIGATE, AND IT'S ALWAYS POSSIBLE FOR LAG TO BREAK THE SCRIPT. BE MINDFUL OF YOUR PASSES, AND WATCH IT IN CASE YOU NEED TO TAKE CONTROL.")
 
-    Flags.add('maze_done', 'leads you through the twisting passages and brings you to the exit')
-    Flags.add('task_done', '10 of 10', '10 of the 10', '5 of the 5', '5 of 5', 'return to one of the Halflings and ASK HALFLING ABOUT TASK again')
+    Flags.add('maze_done', /#{NO_QUOTE_BEFORE}leads you through the twisting passages and brings you to the exit/i)
+    Flags.add('task_done', /#{NO_QUOTE_BEFORE}(?:10 of 10|10 of the 10|5 of the 5|5 of 5|return to one of the Halflings and ASK HALFLING ABOUT TASK again)/i)
     find_start
     get_task
   end
@@ -358,7 +366,7 @@ class CornMaze
   end
 
   def traps_task
-    Flags.add('poisoned', 'You choke and gag on the poisonous gas')
+    Flags.add('poisoned', /^(?:<[^>]+>)*You choke and gag on the poisonous gas/i)
     @maze_path.each do |x|
       exit if Flags['maze_done']
       if !Flags['task_done']
@@ -382,8 +390,8 @@ class CornMaze
   end
 
   def scarecrow_task
-    Flags.add('scarecrow_done', 'You put the finishing touches')
-    Flags.add('already_built', 'already built a scarecrow here')
+    Flags.add('scarecrow_done', /^(?:<[^>]+>)*You put the finishing touches/i)
+    Flags.add('already_built', /#{NO_QUOTE_BEFORE}already built a scarecrow here/i)
     @maze_path.each do |x|
       exit if Flags['maze_done']
       if !Flags['task_done']
@@ -630,7 +638,7 @@ class CornMaze
     DRC.bput('ask halfling about task', '^A .+ Halfling smiles happily at you', '^To whom')
     echo "Task count = #{@task_count}"
     if @searching == false
-      case DRC.bput('ask halfling for task', 'A cheerful Halfling smiles happily', 'To whom are you', 'A cheerful Halfling looks at you and says')
+      case DRC.bput('ask halfling for task', 'A cheerful Halfling smiles happily', 'To whom are you', '^A cheerful Halfling looks at you and says')
       when 'A cheerful Halfling looks at you and says'
         fput('ask halfling for task cancel')
         fput('ask halfling for task cancel')
@@ -655,7 +663,7 @@ class CornMaze
     end
     until @done
       exit if Flags['maze_done']
-      find_exits = DRC.bput("look", /Obvious paths: .*\./,)
+      find_exits = DRC.bput("look", /^Obvious paths: .*\./)
       exits = find_exits.match(/^Obvious paths: (.*)\./).to_a[1].split(', ')
       if (exits.include? 'north')
         custom_move 'north'

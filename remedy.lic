@@ -6,6 +6,13 @@
 # ;remedy remedies 2 "blister cream" nemoih "not used" bar mortar cream  - for when only herb is required
 
 class Remedy
+  # The game's own lines can start with XML tags or follow other text; other
+  # players' speech, whispers and ESP always put a double quote before their
+  # text. NO_QUOTE makes a Flags matcher accept only the game's own line. bput
+  # reads the text with tags stripped, so its patterns use ^ where the message
+  # starts the line and ^[^"]*? where it may follow other text.
+  NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
+
   def initialize
     @settings = get_settings
     @bag = @settings.crafting_container
@@ -38,13 +45,13 @@ class Remedy
 
     args = parse_args(arg_definitions)
 
-    Flags.add('remedy-water', 'You need another splash of water')
-    Flags.add('remedy-alcohol', 'You need another splash of alcohol')
-    Flags.add('remedy-catalyst', 'You need another catalyst material')
-    Flags.add('remedy-herb', 'You need another prepared herb')
-    Flags.add('remedy-turn', 'Clumps of material stick to the sides', 'Once finished you notice clumps of material')
-    Flags.add('remedy-smell', 'begins to transition colors', 'you should smell the mixture', 'smell the mixture')
-    Flags.add('remedy-sieve', 'Upon completion you see some particulate clouding up the mixture.', 'with a sieve')
+    Flags.add('remedy-water', /#{NO_QUOTE}You need another splash of water/i)
+    Flags.add('remedy-alcohol', /#{NO_QUOTE}You need another splash of alcohol/i)
+    Flags.add('remedy-catalyst', /#{NO_QUOTE}You need another catalyst material/i)
+    Flags.add('remedy-herb', /#{NO_QUOTE}You need another prepared herb/i)
+    Flags.add('remedy-turn', /#{NO_QUOTE}Clumps of material stick to the sides/i, /#{NO_QUOTE}Once finished you notice clumps of material/i)
+    Flags.add('remedy-smell', /#{NO_QUOTE}begins to transition colors/i, /#{NO_QUOTE}you should smell the mixture/i, /#{NO_QUOTE}smell the mixture/i)
+    Flags.add('remedy-sieve', /#{NO_QUOTE}Upon completion you see some particulate clouding up the mixture./i, /#{NO_QUOTE}with a sieve/i)
 
     @book_type = args.book_type
     @chapter = args.chapter
@@ -64,14 +71,14 @@ class Remedy
     @water_verb = 'put' # changed to pour when using a container
     if @settings.water_container
       get_item(@settings.water_container)
-      if DRC.bput("count water in my #{@settings.water_container}", 'parts left of the', 'part left of the', 'I could not find what you were referring to.') != 'I could not find what you were referring to.'
+      if DRC.bput("count water in my #{@settings.water_container}", /^[^"]*?parts left of the/i, /^[^"]*?part left of the/i, '^I could not find what you were referring to.') != 'I could not find what you were referring to.'
         @water = @settings.water_container
         @water_verb = 'pour'
       else # else (not elsif) needed to rub special container for water before checking again, uses defaults if container doesn't have water
         fput("rub my #{@settings.water_container}")
         fput("get water from #{@bag}") # added this part just in case water is in another bag, get water doesn't work, and container cannot create water
         fput("put water in my #{@settings.water_container}")
-        if DRC.bput("count water in my #{@settings.water_container}", 'parts left of the', 'part left of the', 'I could not find what you were referring to.') != 'I could not find what you were referring to.'
+        if DRC.bput("count water in my #{@settings.water_container}", /^[^"]*?parts left of the/i, /^[^"]*?part left of the/i, '^I could not find what you were referring to.') != 'I could not find what you were referring to.'
           @water = @settings.water_container
           @water_verb = 'pour'
         end
@@ -82,14 +89,14 @@ class Remedy
     @alcohol_verb = 'put' # same as water
     if @settings.alcohol_container
       get_item(@settings.alcohol_container)
-      if DRC.bput("count alcohol in my #{@settings.alcohol_container}", 'parts left of the', 'part left of the', 'I could not find what you were referring to.') != 'I could not find what you were referring to.'
+      if DRC.bput("count alcohol in my #{@settings.alcohol_container}", /^[^"]*?parts left of the/i, /^[^"]*?part left of the/i, '^I could not find what you were referring to.') != 'I could not find what you were referring to.'
         @alcohol = @settings.alcohol_container
         @alcohol_verb = 'pour'
       else # else (not elsif) needed to rub special container for alcohol before checking again, uses defaults if container doesn't have alcohol
         fput("rub my #{@settings.alcohol_container}")
         fput("get alcohol from #{@bag}") # added this part just in case alcohol is in another bag, get alcohol doesn't work, and container cannot create alcohol
         fput("put alcohol in my #{@settings.alcohol_container}")
-        if DRC.bput("count alcohol in my #{@settings.alcohol_container}", 'parts left of the', 'part left of the', 'I could not find what you were referring to.') != 'I could not find what you were referring to.'
+        if DRC.bput("count alcohol in my #{@settings.alcohol_container}", /^[^"]*?parts left of the/i, /^[^"]*?part left of the/i, '^I could not find what you were referring to.') != 'I could not find what you were referring to.'
           @alcohol = @settings.alcohol_container
           @alcohol_verb = 'pour'
         end
@@ -217,7 +224,7 @@ class Remedy
           get_item(@container)
           DRCI.lower_item?(@container)
           DRCI.get_item?(@herb1, @container) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
-          if DRC.bput("combine my #{@herb1}", 'You combine', 'too large to add', 'You must be holding both') == 'You must be holding both'
+          if DRC.bput("combine my #{@herb1}", /^[^"]*?You combine/i, /^[^"]*?too large to add/i, '^You must be holding both') == 'You must be holding both'
             @count = 25 # 25 used to break loops
           else
             @count += DRC.bput("count my #{@herb1}", '^You count out \d+').scan(/\d+/).first.to_i # increment to run again
@@ -225,9 +232,9 @@ class Remedy
         end
       else
         @count += DRC.bput("count my #{@herb1}", '^You count out \d+').scan(/\d+/).first.to_i
-        if DRC.bput("combine my #{@herb1}", 'You combine', 'too large to add', 'You must be holding both') == 'too large to add'
-          f_stack = DRC.bput("count my first #{@herb1}", 'You count out \d+ pieces').scan(/\d+/).first.to_i
-          s_stack = DRC.bput("count my second #{@herb1}", 'I could not find', 'You count out \d+ pieces').scan(/\d+/).first.to_i
+        if DRC.bput("combine my #{@herb1}", /^[^"]*?You combine/i, /^[^"]*?too large to add/i, '^You must be holding both').end_with?('too large to add')
+          f_stack = DRC.bput("count my first #{@herb1}", '^You count out \d+ pieces').scan(/\d+/).first.to_i
+          s_stack = DRC.bput("count my second #{@herb1}", '^I could not find', '^You count out \d+ pieces').scan(/\d+/).first.to_i
           if f_stack == 75
             DRCI.put_away_item?("second #{@herb1}")
           elsif s_stack == 75
@@ -237,10 +244,10 @@ class Remedy
       end
     end
 
-    case DRC.bput("put #{@herb1} in my #{@container}", 'You put', 'already has something', 'can only hold', 'You realize the', 'You vigorously rub')
-    when 'You put', 'can only hold', 'You vigorously rub'
+    case DRC.bput("put #{@herb1} in my #{@container}", '^You put', /^[^"]*?already has something/i, /^[^"]*?can only hold/i, '^You realize the', /^[^"]*?You vigorously rub/i)
+    when 'You put', /can only hold\z/, /You vigorously rub\z/
       stow_item(@herb1) # Added for when the herb is larger than 25 pieces
-    when 'already has something', 'You realize the'
+    when /already has something\z/, 'You realize the'
       DRC.bput("tilt my #{@container}", 'You grab')
       DRC.bput("tilt my #{@container}", 'You grab', 'Roundtime')
       DRC.bput("put #{@herb1} in my #{@container}", 'You put', 'can only hold')
@@ -276,15 +283,15 @@ class Remedy
       smell
     else
       case DRC.bput(command,
-                    'Applying the final touches',
-                    'Interesting thought really... but no.',
-                    'you just can\'t mix',
-                    'Try as you might',
-                    'That craftable requires more pieces of that plant to begin',
-                    'Roundtime:')
-      when 'Applying the final touches', 'Interesting thought really... but no.', 'you just can\'t mix', 'Try as you might', 'That craftable requires more pieces of that plant to begin'
+                    '^Applying the final touches',
+                    /^[^"]*?Interesting thought really... but no./i,
+                    /^[^"]*?you just can't mix/i,
+                    /^[^"]*?Try as you might/i,
+                    /^[^"]*?That craftable requires more pieces of that plant to begin/i,
+                    /^[^"]*?Roundtime:/i)
+      when 'Applying the final touches', /Interesting thought really... but no.\z/, /you just can't mix\z/, /Try as you might\z/, /That craftable requires more pieces of that plant to begin\z/
         finish
-      when 'Roundtime:'
+      when /Roundtime:\z/
         waitrt?
         command = if /mort/ =~ @container
                     "#{@verb} my #{@noun} with my #{@pestle}"
@@ -303,7 +310,7 @@ class Remedy
     stow_item(DRC.left_hand)
     get_item(@water)
     Flags.reset('remedy-water')
-    if DRC.bput("#{@water_verb} #{@water} in my #{@container}", 'Roundtime', 'You toss', 'You cannot find a way to add that as an ingredient') == 'You cannot find a way to add that as an ingredient'
+    if DRC.bput("#{@water_verb} #{@water} in my #{@container}", /^[^"]*?Roundtime/i, /^[^"]*?You toss/i, /^[^"]*?You cannot find a way to add that as an ingredient/i).end_with?('You cannot find a way to add that as an ingredient')
       stow_item(DRC.left_hand)
       unless DRCI.get_item?("water", @water)
         get_item('water')
@@ -323,7 +330,7 @@ class Remedy
     stow_item(DRC.left_hand)
     get_item(@alcohol)
     Flags.reset('remedy-alcohol')
-    if DRC.bput("#{@alcohol_verb} #{@alcohol} in my #{@container}", 'Roundtime', 'You toss', 'You cannot find a way to add that as an ingredient') == 'You cannot find a way to add that as an ingredient'
+    if DRC.bput("#{@alcohol_verb} #{@alcohol} in my #{@container}", /^[^"]*?Roundtime/i, /^[^"]*?You toss/i, /^[^"]*?You cannot find a way to add that as an ingredient/i).end_with?('You cannot find a way to add that as an ingredient')
       stow_item(DRC.left_hand)
       unless DRCI.get_item?("alcohol", @alcohol)
         get_item('alcohol')

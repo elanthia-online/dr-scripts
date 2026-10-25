@@ -11,6 +11,46 @@ RSpec.describe Trade do
   # so a bare allocated instance keeps the parse/filter logic isolated.
   let(:trade) { Trade.allocate }
 
+  # Game-reply matchers must match only the game's own line, not another
+  # player's speech, ESP or whisper carrying the same words. These helpers
+  # model lich-5: DRC.bput compiles Strings to /x/i, tries each incoming line
+  # against every pattern in order and returns the first match's text ('' on
+  # timeout); Flags (DRParser.check_events) test every matcher against each raw
+  # XML line and store the first match.
+  def model_bput(lines, patterns)
+    regexes = patterns.flatten.map { |item| item.is_a?(Regexp) ? item : /#{item}/i }
+    lines.each do |line|
+      regexes.each do |regex|
+        match = line.match(regex)
+        return match.to_a.first if match
+      end
+    end
+    ''
+  end
+
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # Stripped-text shapes, as bput and reget see them.
+  def player_lines(text)
+    [%([General][Mallory] "#{text}"), %(Mallory says, "#{text}"), %(Mallory whispers, "#{text}")]
+  end
+
+  # Raw XML shapes, as Flags see them.
+  def player_xml(text)
+    [%(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+     %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+     %(Mallory whispers, "#{text}")]
+  end
+
   # Issue #4201: the container is rummaged and each entry kept only if it is
   # actually a contract. The bug was a substring match (item.include?('contract'))
   # that also matched a "contract case", so the fix matches on the item noun.
@@ -59,6 +99,295 @@ RSpec.describe Trade do
       sent = []
       sent << $sent_messages.pop until $sent_messages.empty?
       expect(sent).to include('open my contract case')
+    end
+
+    context "when another player's line carries the look reply" do
+      let(:real_look) { 'In the leather case you see a Trading contract and a contract case.' }
+
+      def reply_with(lines)
+        allow(DRC).to receive(:bput) { |_command, *patterns| model_bput(lines, patterns) }
+      end
+
+      it "reads the contracts from the game's own look line (unchanged)" do
+        reply_with([real_look])
+        expect(contracts_in('case')).to eq(['a Trading contract'])
+      end
+
+      it 'ignores ESP, say and whisper lines that say "you see"' do
+        reply_with(player_lines('you see nothing in here.') + [real_look])
+        expect(contracts_in('case')).to eq(['a Trading contract'])
+      end
+    end
+  end
+
+  describe '#count_grass' do
+    let(:real_look) { 'In the feedbag you see some grass, some grass and some grass.' }
+
+    def reply_with(lines)
+      allow(DRC).to receive(:bput) { |_command, *patterns| model_bput(lines, patterns) }
+    end
+
+    it "counts the grass from the game's own look line (unchanged)" do
+      reply_with([real_look])
+      trade.count_grass
+      expect(trade.instance_variable_get(:@current_grass_count)).to eq(3)
+    end
+
+    it 'ignores ESP, say and whisper lines that say "you see"' do
+      reply_with(player_lines('you see me hungry.') + [real_look])
+      trade.count_grass
+      expect(trade.instance_variable_get(:@current_grass_count)).to eq(3)
+    end
+
+    it "does not stop the script on another player's \"I could not find\"" do
+      reply_with(player_lines('I could not find my horse') + [real_look])
+      expect { trade.count_grass }.not_to raise_error
+      expect(trade.instance_variable_get(:@current_grass_count)).to eq(3)
+    end
+  end
+
+  describe '#find_crates' do
+    let(:dumped) { [] }
+    let(:report) do
+      ['You tell the driver to give you an inventory report for your ox-drawn caravan.',
+       '  A sturdy crate is for a contract from Riverhaven and destined for Shard.',
+       '  A sturdy crate is for a contract from Shard and destined for Riverhaven.']
+    end
+
+    before do
+      trade.instance_variable_set(:@caravan, OpenStruct.new(adjective: 'ox-drawn', noun: 'caravan'))
+      allow(trade).to receive(:debugging?).and_return(false)
+      allow(trade).to receive(:pause)
+      allow(trade).to receive(:dump_crate) { |ordinal| dumped << ordinal }
+      allow(DRC).to receive(:bput).and_return('You tell the driver')
+    end
+
+    it "dumps the crate at the game's own position (unchanged)" do
+      $server_buffer = report.dup
+      trade.find_crates('Shard')
+      expect(dumped).to eq(['second'])
+    end
+
+    it 'does not count a crate line said before the report' do
+      $server_buffer = [report.first, *player_xml('a sturdy crate'), *report.drop(1)]
+      trade.find_crates('Shard')
+      expect(dumped).to eq(['second'])
+    end
+
+    it 'does not dump an extra crate for a crate line thought after the report' do
+      $server_buffer = report + player_xml('A sturdy crate is for a contract from Shard and destined for Riverhaven.')
+      trade.find_crates('Shard')
+      expect(dumped).to eq(['second'])
+    end
+  end
+
+  describe '#ride_gondola' do
+    let(:arrival) { 'With a soft bump, the gondola comes to a stop at its destination.' }
+    let(:events) { [] }
+
+    def ride(feed)
+      allow(Room).to receive(:current).and_return(double('room', id: 2249))
+      %i[wipe_bescort_skills restore_bescort_skills wait_for_caravan training_cleanup].each { |name| allow(trade).to receive(name) }
+      allow(DRC).to receive(:bput).and_return('Gondola, Cab')
+      allow(trade).to receive(:move) { |dir| events << [:move, dir] }
+      allow(trade).to receive(:lead_training) do
+        line = feed.shift
+        raise 'never heard the arrival line' unless line
+
+        events << [:heard, line]
+        deliver(line)
+      end
+      trade.ride_gondola
+    end
+
+    it 'steps out once the gondola really arrives (unchanged)' do
+      ride([arrival])
+      expect(events).to eq([[:move, 'south'], [:heard, arrival], [:move, 'out']])
+    end
+
+    it 'stays aboard through ESP, say and whisper lines carrying the arrival text' do
+      ride(player_xml(arrival) + ["<pushBold/>#{arrival}"])
+      expect(events.last).to eq([:move, 'out'])
+      expect(events[-2]).to eq([:heard, "<pushBold/>#{arrival}"])
+      expect(events.count { |event| event.first == :move }).to eq(2)
+    end
+  end
+
+  describe '#give_clerk' do
+    def give(*heard)
+      allow(trade).to receive(:find_closest_id).and_return(1)
+      allow(trade).to receive(:get_caravan)
+      allow(DRC).to receive(:bput) do |command, *_patterns|
+        heard.each { |line| deliver(line) } if command == 'give my contract to clerk'
+        'You get'
+      end
+      trade.give_clerk
+    end
+
+    it 'gets a bigger caravan when the game says the load is too heavy (unchanged)' do
+      give('Unfortunately, this load would kill your current animals.')
+      expect(trade).to have_received(:get_caravan)
+    end
+
+    it "does not rent a caravan on another player's line" do
+      give(*player_xml('Unfortunately, this load would kill your current animals.'))
+      expect(trade).not_to have_received(:get_caravan)
+    end
+  end
+
+  describe '#locksmithing_routine' do
+    let(:running) { [] }
+
+    before do
+      trade.instance_variable_set(:@training_token, 'Locksmithing')
+      trade.instance_variable_set(:@box, 'strongbox')
+      allow(Script).to receive(:running?) { |name| running.include?(name) }
+      allow(trade).to receive(:be_outside_caravan)
+      allow(trade).to receive(:locksmithing_cleanup)
+      trade.locksmithing_routine
+      running << 'lockbox'
+    end
+
+    it 'cleans up when the lock burns out (unchanged)' do
+      deliver('The lock feels warm.')
+      trade.locksmithing_routine
+      expect(trade).to have_received(:locksmithing_cleanup)
+    end
+
+    it 'keeps training through ESP, say and whisper lines carrying the text' do
+      player_xml('The lock feels warm.').each { |line| deliver(line) }
+      trade.locksmithing_routine
+      expect(trade).not_to have_received(:locksmithing_cleanup)
+    end
+  end
+
+  describe '#locksmithing_cleanup' do
+    it "waits for the game's own pick reply, not a player line" do
+      trade.instance_variable_set(:@training_token, 'Locksmithing')
+      trade.instance_variable_set(:@box, 'strongbox')
+      trade.instance_variable_set(:@worn_lockbox, true)
+      allow(Script).to receive(:running?).and_return(false)
+      allow(trade).to receive(:pause)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      pick_patterns = nil
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        pick_patterns = patterns if command.start_with?('pick ')
+        'You open'
+      end
+      trade.locksmithing_cleanup
+
+      ['not making any progress', 'it opens.', "isn't locked", 'The lock feels warm', "But you aren't"].each do |text|
+        expect(model_bput(player_lines(text), pick_patterns)).to eq('')
+      end
+      expect(model_bput(player_lines('it opens.') + ['With a faint *CLICK* it opens.'], pick_patterns)).to match(/it opens\./)
+      expect(model_bput(['The lock feels warm.'], pick_patterns)).to match(/The lock feels warm/)
+    end
+  end
+
+  describe '#loot_item' do
+    before do
+      trade.instance_variable_set(:@settings, OpenStruct.new(loot_specials: [], spare_gem_pouch_container: nil))
+      trade.instance_variable_set(:@loot_nouns, ['ruby'])
+      trade.instance_variable_set(:@trash_nouns, ['rock'])
+      allow(DRCI).to receive(:dispose_trash)
+    end
+
+    def loot(get_lines, stow_lines)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        model_bput(command.start_with?('get ') ? get_lines : stow_lines, patterns)
+      end
+      trade.loot_item('ruby', 'strongbox')
+    end
+
+    def sent
+      [].tap { |out| out << $sent_messages.pop until $sent_messages.empty? }
+    end
+
+    let(:got_ruby) { 'You get a red ruby from inside your strongbox.' }
+    let(:stowed) { 'You put your ruby in your gem pouch.' }
+
+    it 'stows a looted gem (unchanged)' do
+      loot([got_ruby], [stowed])
+      expect(sent).not_to include('drop ruby')
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it "decides from the game's own get line, not a player's" do
+      loot(player_lines('You get a rock from inside it') + [got_ruby], [stowed])
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it "does not drop the gem on another player's \"you put\"" do
+      loot([got_ruby], player_lines('did you put it in your hair') + [stowed])
+      expect(sent).not_to include('drop ruby')
+    end
+  end
+
+  describe 'crafting cleanup taps the item' do
+    let(:unfinished) { 'You tap an unfinished wood band inside your haversack.' }
+
+    before do
+      trade.instance_variable_set(:@crafted_item, 'wood band')
+      trade.instance_variable_set(:@craft_bag, 'haversack')
+      trade.instance_variable_set(:@times_engineering, 0)
+      trade.instance_variable_set(:@times_outfitting, 0)
+      trade.instance_variable_set(:@outfitting_material_type, 'burlap cloth')
+      %i[stow_item get_item dispose_item_caravan be_outside_caravan wipe_token magic_cleanup open_storage_box].each do |name|
+        allow(trade).to receive(name)
+      end
+      allow(trade).to receive(:pause)
+      allow(trade).to receive(:should_knit?).and_return(false)
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+    end
+
+    def tap_with(lines)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        command.start_with?('tap ') ? model_bput(lines, patterns) : 'You get'
+      end
+    end
+
+    { 'Engineering' => :engineering_cleanup, 'Outfitting' => :outfitting_cleanup }.each do |skill, cleanup|
+      context "in ##{cleanup}" do
+        before { trade.instance_variable_set(:@training_token, skill) }
+
+        it 'stores an unfinished item (unchanged)' do
+          tap_with([unfinished])
+          trade.send(cleanup)
+          expect(trade).to have_received(:stow_item).with('band')
+          expect(trade).not_to have_received(:dispose_item_caravan)
+        end
+
+        it 'disposes of a finished item (unchanged)' do
+          tap_with(['You tap a wood band inside your haversack.'])
+          trade.send(cleanup)
+          expect(trade).to have_received(:dispose_item_caravan).with('band')
+        end
+
+        it 'does not throw away an unfinished item on ESP, say or whisper lines' do
+          tap_with(player_lines('You tap a wood band') + [unfinished])
+          trade.send(cleanup)
+          expect(trade).not_to have_received(:dispose_item_caravan)
+          expect(trade).to have_received(:stow_item).with('band')
+        end
+      end
+    end
+  end
+
+  describe '#complete_work_order' do
+    let(:gives) { [] }
+
+    it "hands the logbook in again when only another player's line said \"You hand\"" do
+      replies = [player_lines('You hand it over') + ['What were you referring to?'], ['You hand Jakke your logbook and bundled items.']]
+      allow(trade).to receive(:find_npc)
+      allow(trade).to receive(:stow_item)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        next 'You get' unless command.start_with?('give ')
+
+        gives << command
+        model_bput(replies.shift || [], patterns)
+      end
+      trade.complete_work_order({ 'npc' => 'Jakke', 'logbook' => 'engineering', 'npc-rooms' => [1], 'npc_last_name' => 'Jakke' })
+      expect(gives.size).to eq(2)
     end
   end
 
@@ -537,6 +866,24 @@ RSpec.describe Trade do
         expect { trade.close_out_stable }.to raise_error(SystemExit)
         expect(paid_in).to eq([stable_id, stable_id])
         expect(UserVars.last_seen_caravan['stabled']).to be(true)
+      end
+
+      it "pays the game's stabling price, ignoring ESP, say and whisper lines" do
+        location[:id] = 10
+        paid = []
+        replies = {
+          'pay'    => player_lines('The cost for stabling is 90000 Kronars for a caravan.') +
+                      ['The cost for stabling is 12 Kronars for a caravan.'],
+          'pay 12' => player_lines('The price for stabling and feeding is more than that.') +
+                      ['You hand over the coins to the stable boy who runs up and leads your caravan away.']
+        }
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          paid << command
+          model_bput(replies.fetch(command, []), patterns)
+        end
+        expect { trade.close_out_stable }.to raise_error(SystemExit)
+        expect(paid).to eq(['pay', 'pay 12'])
+        expect(messages).not_to include(a_string_matching(/Something has gone wrong/))
       end
     end
 

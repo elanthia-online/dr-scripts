@@ -88,6 +88,7 @@ load_lic_class('combat-trainer.lic', 'SpellProcess')
 load_lic_class('combat-trainer.lic', 'PetProcess')
 load_lic_class('combat-trainer.lic', 'TrainerProcess')
 load_lic_class('combat-trainer.lic', 'CombatTrainer')
+load_lic_module('combat-trainer.lic', 'CTGameLine')
 
 # Shared setup for combat-trainer tests that need game state stubs.
 # Include in each describe block via: before(:each) { ct_setup }
@@ -532,6 +533,53 @@ RSpec.describe GameState do
       allow(gs).to receive(:retreating?).and_return(false)
       allow(gs).to receive(:loaded).and_return(false)
       expect(gs.rush).to be false
+    end
+  end
+
+  describe '#use_charged_maneuver engaged reply' do
+    # DRC.bput the way lich-5 runs it: Strings become /x/i, the reply lines are read in
+    # order, and the first line matching any pattern returns the matched text.
+    def bput_replying(*lines)
+      allow(DRC).to receive(:bput) do |_command, *matches|
+        regexes = matches.reject { |m| m.is_a?(Hash) }.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+        hit = nil
+        lines.each { |line| break if regexes.any? { |re| (hit = line.match(re)) } }
+        hit ? hit.to_a.first : ''
+      end
+    end
+
+    def rush_state
+      gs = GameState.allocate
+      gs.instance_variable_set(:@charged_maneuvers, { 'Shield Usage' => 'rush' })
+      gs.instance_variable_set(:@cooldown_timers, {})
+      gs.instance_variable_set(:@rush_shield, 'shield')
+      gs.instance_variable_set(:@rush_retreat_skip, false)
+      gs.instance_variable_set(:@equipment_manager, double('EquipmentManager', stow_weapon: nil))
+      allow(gs).to receive(:wield_specific_weapon)
+      allow(gs).to receive(:waitrt?)
+      allow(DRC).to receive(:retreat)
+      gs
+    end
+
+    # Stand-in success reply: one of the maneuver success lines the method lists.
+    let(:success) { 'You lower your shoulders and rush at the goblin.' }
+
+    it 'retreats and retries when the game says the creature is engaged' do
+      gs = rush_state
+      bput_replying('The goblin is already engaged to you.')
+      expect(gs.use_charged_maneuver('rush')).to be false
+      expect(DRC).to have_received(:retreat).at_least(:once)
+    end
+
+    it 'does not retreat for another player saying it' do
+      ['[General][Mallory] "the goblin is already engaged to you"', 'Mallory says, "it is already engaged to you"',
+       'Mallory whispers, "is already engaged to you"'].each do |spoof|
+        gs = rush_state
+        bput_replying(spoof, success)
+        expect(gs.use_charged_maneuver('rush')).to be true
+        expect(gs.instance_variable_get(:@cooldown_timers)['rush']).to be > Time.now
+      end
+      expect(DRC).not_to have_received(:retreat)
     end
   end
 
@@ -989,6 +1037,146 @@ RSpec.describe AttackProcess do
       expect(build_attack.execute(gs)).to be false
     end
   end
+
+  describe 'flags and replies only from the game' do
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # The same text as other players' ESP, speech and whispers, plain and as raw XML.
+    def player_shapes(text)
+      {
+        'ESP'         => %([General][Mallory] "#{text}"),
+        'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        'say'         => %(Mallory says, "#{text}"),
+        'raw say'     => %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        'whisper'     => %(Mallory whispers, "#{text}"),
+        'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "#{text}")
+      }
+    end
+
+    describe 'ranged and maneuver flags' do
+      # A real AttackProcess, so the matchers under test are the ones initialize registers
+      # (this replaces the placeholder matchers of the outer before block).
+      before(:each) { AttackProcess.new(OpenStruct.new) }
+
+      # One game line per matcher. The fire, twang, reach-into, stop-aiming, best-shot,
+      # War Stomp and out-of-range lines are from game logs; the rest use the wording the
+      # matchers expect.
+      {
+        'ct-ranged-ammo'               => ['<pushStream id="combat" />&lt; You fire a blunt-tipped bolt with ashy grey chevrons at a void-black umbral moth.'],
+        'ct-powershot-ammo'            => ['With a loud twang, you let fly your bolt!'],
+        'ct-ranged-loaded'             => ['You reach into your quiver to load the blackwood latchbow with your last blunt-tipped bolt.',
+                                           'You load the bolt.', 'You carefully load the bolt.', 'The latchbow is already loaded.',
+                                           'The bolt in your hand slides home.'],
+        'ct-using-repeating-crossbow'  => ['Your repeating crossbow clicks.', 'Your repeating arbalest clicks.', "Your marksman's arbalest clicks.",
+                                           "Your assassin's crossbow clicks.", 'Your riot crossbow clicks.',
+                                           'You push a bolt into the ammunition chamber.',
+                                           'The crossbow is already loaded with as much ammunition as it can hold.',
+                                           'You realize readying more than one bolt is not possible.'],
+        'ct-aim-failed'                => ['You stop aiming.', 'You stop concentrating on aiming.'],
+        'ct-ranged-ready'              => ['You think you have your best shot possible now.'],
+        'ct-face-what'                 => ['Face what?'],
+        'war-stomp-ready'              => ['You feel ready to perform another War Stomp!'],
+        'pounce-ready'                 => ['You think you have the strength to pounce upon prey once again.'],
+        'ct-maneuver-cooldown-reduced' => ['With expert skill you end the attack and maneuver into a better position.'],
+        'ct-attack-out-of-range'       => ["You aren't close enough to attack."]
+      }.each do |flag, game_lines|
+        describe flag do
+          it 'is set by the game line, bare and behind leading tags' do
+            game_lines.each do |line|
+              ['', '<pushBold/>'].each do |prefix|
+                Flags.reset(flag)
+                deliver("#{prefix}#{line}")
+                expect(Flags[flag]).to be_truthy, "expected #{flag} to match #{prefix}#{line}"
+              end
+            end
+          end
+
+          it 'is not set by the same text from another player' do
+            game_lines.each do |line|
+              player_shapes(line.sub(/\A<[^>]*>&lt; /, '')).each do |shape, spoof|
+                Flags.reset(flag)
+                deliver(spoof)
+                expect(Flags[flag]).to be_falsey, "#{shape} set #{flag}: #{spoof}"
+              end
+            end
+          end
+        end
+      end
+
+      it 'captures the same ammo from the game lines as before' do
+        deliver('<pushStream id="combat" />&lt; You fire a blunt-tipped bolt with ashy grey chevrons at a void-black umbral moth.')
+        deliver('With a loud twang, you let fly your stone!')
+        expect(Flags['ct-ranged-ammo'][:ammo]).to eq('bolt')
+        expect(Flags['ct-powershot-ammo'][:ammo]).to eq('stone')
+      end
+
+      it 'engages on the game "Face what?" but not on a player saying it' do
+        gs = gs_double
+        player_shapes('Face what?').each_value { |line| deliver(line) }
+        build_attack.send(:check_face, gs)
+        expect(gs).not_to have_received(:engage)
+
+        deliver('Face what?')
+        build_attack.send(:check_face, gs)
+        expect(gs).to have_received(:engage).once
+      end
+    end
+
+    describe 'melee attack follow-up checks (reget)' do
+      after(:each) { $server_buffer = [] }
+
+      # Runs one melee attack with +line+ as the latest game output reget reads back.
+      def attack_after(line)
+        $server_buffer = [line]
+        $left_hand = 'steel shield'
+        $right_hand = 'sword'
+        gs = gs_double(unstabbable: nil)
+        allow(gs).to receive(:no_stab_current_mob=)
+        ap = build_attack
+        allow(ap).to receive(:fput)
+        sent = []
+        allow(DRC).to receive(:bput) do |command, *_matches|
+          sent << command
+          'Roundtime'
+        end
+        ap.send(:attack_melee, nil, gs)
+        [gs, ap, sent]
+      end
+
+      {
+        "You can't backstab that."                      => ->(gs, _ap, _sent) { expect(gs).to have_received(:unstabbable).with('rat') },
+        'You need two hands to wield this weapon.'      => ->(_gs, ap, _sent) { expect(ap).to have_received(:fput).with('stow left') },
+        "You aren't close enough to attack."            => ->(gs, _ap, _sent) { expect(gs).to have_received(:engage) },
+        'It would help if you were closer.'             => ->(gs, _ap, _sent) { expect(gs).to have_received(:engage) },
+        'The bat is flying too high for you to attack.' => ->(_gs, _ap, sent) { expect(sent).to include('face next') }
+      }.each do |game_line, acted|
+        it "acts on the game's \"#{game_line}\"" do
+          instance_exec(*attack_after(game_line), &acted)
+        end
+
+        it "ignores \"#{game_line}\" from another player" do
+          player_shapes(game_line).each do |shape, spoof|
+            gs, ap, sent = attack_after(spoof)
+            expect(gs).not_to have_received(:unstabbable), shape
+            expect(ap).not_to have_received(:fput), shape
+            expect(gs).not_to have_received(:engage), shape
+            expect(sent).not_to include('face next'), shape
+          end
+        end
+      end
+    end
+  end
 end
 
 # ===================================================================
@@ -1123,6 +1311,101 @@ RSpec.describe AbilityProcess do
       ap = build_cry_ability
       ap.send(:check_battle_cries, gs_double)
       expect(ap).not_to have_received(:fput)
+    end
+  end
+
+  describe 'battle cry and pilgrim badge replies only from the game' do
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # DRC.bput the way lich-5 runs it: Strings become /x/i, the reply lines are read in
+    # order, and the first line matching any pattern returns the matched text.
+    def bput_replying(*lines)
+      sent = []
+      allow(DRC).to receive(:bput) do |command, *matches|
+        sent << command
+        regexes = matches.reject { |m| m.is_a?(Hash) }.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+        hit = nil
+        lines.each { |line| break if regexes.any? { |re| (hit = line.match(re)) } }
+        hit ? hit.to_a.first : ''
+      end
+      sent
+    end
+
+    def player_shapes(text)
+      {
+        'ESP'         => %([General][Mallory] "#{text}"),
+        'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        'say'         => %(Mallory says, "#{text}"),
+        'raw say'     => %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        'whisper'     => %(Mallory whispers, "#{text}"),
+        'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "#{text}")
+      }
+    end
+
+    describe 'ct-battle-cry-not-facing' do
+      # Registers the real matcher, then roars with +line+ arriving as the game's answer.
+      def roar_with_reply(line)
+        AbilityProcess.new(OpenStruct.new(buff_nonspells: {}, battle_cries: [], battle_cry_cycle: []))
+        ap = build_ability(battle_cries: [{ 'name' => 'Roar', 'command' => 'roar' }], battle_cry_cycle: ['Roar'])
+        allow(ap).to receive(:waitrt?)
+        allow(ap).to receive(:fput) { |command| deliver(line) if command == 'roar' }
+        sent = bput_replying('There is nothing else to face!')
+        ap.send(:check_battle_cries, gs_double)
+        sent
+      end
+
+      it 'faces the next enemy when the game says the cry had no target' do
+        expect(roar_with_reply('You are not facing an enemy!')).to eq(['face next'])
+        expect(roar_with_reply('<pushBold/>You are not facing an enemy!')).to eq(['face next'])
+      end
+
+      it 'does not turn when another player says it' do
+        player_shapes('You are not facing an enemy!').each do |shape, line|
+          expect(roar_with_reply(line)).to be_empty, shape
+        end
+      end
+    end
+
+    describe '#pray_badge' do
+      def badge_ability
+        UserVars.paladin_last_badge_use = Time.now - 3600
+        ap = build_ability(paladin_use_badge: true, badge_reuse_cooldown: 60,
+                           paladin_badge_get_verb: 'get', paladin_badge_store_verb: 'stow')
+        allow(ap).to receive(:waitrt?)
+        allow(DRC).to receive(:retreat)
+        allow(DRC).to receive(:message)
+        ap
+      end
+
+      it 'prays with the badge the game handed over, even when a player says "What were you referring to?" first' do
+        %w[ESP say whisper].each do |shape|
+          ap = badge_ability
+          spoof = player_shapes('What were you referring to?')[shape]
+          sent = bput_replying(spoof, 'You get a pilgrim badge from inside your leather pack.')
+          ap.send(:pray_badge)
+          expect(sent).to include('pray my pilgrim badge'), shape
+          expect(ap.instance_variable_get(:@paladin_use_badge)).to be(true), shape
+        end
+      end
+
+      it 'drops the badge from the hunt when the game cannot find it, even when a player says "You get" first' do
+        ap = badge_ability
+        sent = bput_replying(player_shapes('You get used to it.')['say'], 'What were you referring to?')
+        ap.send(:pray_badge)
+        expect(sent).not_to include('pray my pilgrim badge')
+        expect(ap.instance_variable_get(:@paladin_use_badge)).to be(false)
+      end
     end
   end
 end
@@ -2734,6 +3017,223 @@ RSpec.describe SafetyProcess do
           expect($COMBAT_TRAINER).to have_received(:stop)
         end
       end
+    end
+  end
+
+  # The active-mitigation flag turns a game prompt into a command on the next safety
+  # tick, so it must only fire on the game's own line and only ever send a dodge verb.
+  describe 'active mitigation' do
+    let(:sentence) { 'You believe you could duck out of the way of the leucro, if you act quickly enough.' }
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # A real SafetyProcess, so the matchers under test are the ones initialize registers.
+    def registered_safety_process
+      allow(DRC).to receive(:message)
+      settings = OpenStruct.new(
+        health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+        safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+      )
+      SafetyProcess.new(settings, double('EquipmentManager'))
+    end
+
+    # Deliver the lines, run the mitigation step once, and return what was sent to the game.
+    def commands_after(*lines)
+      sent = []
+      allow(DRC).to receive(:bput) do |command, *_matches|
+        sent << command
+        'You manage to'
+      end
+      instance = registered_safety_process
+      lines.each { |line| deliver(line) }
+      instance.send(:active_mitigation)
+      sent
+    end
+
+    it 'sends the dodge the game offers' do
+      expect(commands_after(sentence)).to eq(['duck leucro'])
+    end
+
+    it 'still matches the game line when it arrives behind leading tags' do
+      expect(commands_after("<pushBold/>#{sentence}")).to eq(['duck leucro'])
+    end
+
+    it 'accepts every dodge verb the game uses' do
+      %w[dip jump duck lean dive].each do |verb|
+        line = "You believe you could #{verb} out of the way of the leucro, if you act quickly enough."
+        expect(commands_after(line)).to eq(["#{verb} leucro"])
+      end
+    end
+
+    it 'resets the flag so the dodge is sent once' do
+      instance = registered_safety_process
+      sent = []
+      allow(DRC).to receive(:bput) { |command, *_matches| sent << command }
+      deliver(sentence)
+      instance.send(:active_mitigation)
+      instance.send(:active_mitigation)
+      expect(sent).to eq(['duck leucro'])
+      expect(Flags['active-mitigation']).to be_falsey
+    end
+
+    {
+      'ESP'         => %([General][Mallory] "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "You believe you could duck out of the way of the leucro, if you act quickly enough."<popStream/>),
+      'say'         => %(Mallory says, "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'raw say'     => %(<preset id='speech'>Mallory says</preset>, "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'whisper'     => %(Mallory whispers, "You believe you could duck out of the way of the leucro, if you act quickly enough."),
+      'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "You believe you could duck out of the way of the leucro, if you act quickly enough.")
+    }.each do |shape, line|
+      it "ignores the sentence inside another player's #{shape}" do
+        instance = registered_safety_process
+        deliver(line)
+        expect(Flags['active-mitigation']).to be_falsey
+        allow(DRC).to receive(:bput)
+        instance.send(:active_mitigation)
+        expect(DRC).not_to have_received(:bput)
+      end
+    end
+
+    it 'sends nothing for a line offering any other verb' do
+      expect(commands_after('You believe you could drop out of the way of the sword, if you act quickly enough.')).to be_empty
+      expect(Flags['active-mitigation']).to be_falsey
+    end
+
+    it 'sends nothing for a non-dodge verb even if the flag is set some other way, and still resets it' do
+      allow(DRC).to receive(:bput)
+      instance = registered_safety_process
+      Flags['active-mitigation'] = /(?<action>\w+) (?<obstacle>\w+)/.match('drop sword')
+      instance.send(:active_mitigation)
+      expect(DRC).not_to have_received(:bput)
+      expect(Flags['active-mitigation']).to be_falsey
+    end
+  end
+
+  describe 'safety flags only hear the game' do
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # A real SafetyProcess, so the matchers under test are the ones initialize registers.
+    def registered_safety_process
+      allow(DRC).to receive(:message)
+      settings = OpenStruct.new(
+        health_threshold: 20, stop_hunting_if_bleeding: true, safety_exit_on_bleeding: false,
+        safety_exit_when_stunned: false, safety_concentration_minimum: nil, safety_escape_health_threshold: nil
+      )
+      SafetyProcess.new(settings, double('EquipmentManager'))
+    end
+
+    # The same text as other players' ESP, speech and whispers, plain and as raw XML.
+    def player_shapes(text)
+      {
+        'ESP'         => %([General][Mallory] "#{text}"),
+        'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+        'say'         => %(Mallory says, "#{text}"),
+        'raw say'     => %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+        'whisper'     => %(Mallory whispers, "#{text}"),
+        'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "#{text}")
+      }
+    end
+
+    let(:game_state) do
+      build_game_state.tap do |gs|
+        allow(gs).to receive(:sheath_whirlwind_offhand)
+        allow(gs).to receive(:wield_whirlwind_offhand)
+      end
+    end
+
+    before(:each) do
+      allow(DRCI).to receive(:get_item_unsafe).and_return(true)
+      allow(DRCI).to receive(:wear_item?).and_return(true)
+      allow(DRCH).to receive(:bind_wound)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+      allow(DRC).to receive(:retreat)
+    end
+
+    # Deliver the lines, then run every step that acts on these flags once.
+    def run_steps_after(*lines)
+      instance = registered_safety_process
+      allow(instance).to receive(:waitrt?)
+      lines.each { |line| deliver(line) }
+      instance.send(:check_item_recovery, game_state)
+      instance.send(:tend_lodged)
+      instance.send(:tend_parasite)
+      instance.send(:keep_away)
+    end
+
+    def expect_no_action
+      expect(DRCI).not_to have_received(:get_item_unsafe)
+      expect(DRCH).not_to have_received(:bind_wound)
+      expect(DRC).not_to have_received(:wait_for_script_to_complete)
+      expect(DRC).not_to have_received(:retreat)
+    end
+
+    # The engaged lines are from game logs; there are no logged examples of the
+    # other three, so those use the wording the matchers expect.
+    {
+      'ct-germshieldlost (pick up and wear)' => [
+        'It jerks the steel shield out of your hands!',
+        -> { expect(DRCI).to have_received(:get_item_unsafe).with('shield') }
+      ],
+      'ct-lodged (bind the wound)'           => [
+        'You feel pain from the bolt lodged in your right arm.',
+        -> { expect(DRCH).to have_received(:bind_wound).with('right arm') }
+      ],
+      'ct-parasite (run tendme)'             => [
+        'You notice a blood mite on your neck.',
+        -> { expect(DRC).to have_received(:wait_for_script_to_complete).with('tendme') }
+      ],
+      'ct-engaged melee (retreat)'           => [
+        'The jeol moradu closes to melee range on you!',
+        -> { expect(DRC).to have_received(:retreat) }
+      ],
+      'ct-engaged pole (retreat)'            => [
+        "You notice an elder Adan'f blademaster as it stealthily closes to pole weapon range on you.",
+        -> { expect(DRC).to have_received(:retreat) }
+      ]
+    }.each do |name, (game_line, acted)|
+      describe name do
+        it 'acts on the game line' do
+          run_steps_after(game_line)
+          instance_exec(&acted)
+        end
+
+        it 'acts on the game line behind leading tags' do
+          run_steps_after("<pushBold/><pushStream id=\"combat\"/>#{game_line}")
+          instance_exec(&acted)
+        end
+
+        it 'ignores the line inside every player-text shape' do
+          player_shapes(game_line).each_value { |line| run_steps_after(line) }
+          expect_no_action
+        end
+      end
+    end
+
+    it 'still retreats when tags sit inside the line, as around a bolded creature name' do
+      run_steps_after('<pushBold/>The jeol moradu<popBold/> closes to melee range on you!')
+      expect(DRC).to have_received(:retreat)
     end
   end
 end
@@ -4543,6 +5043,42 @@ RSpec.describe SpellProcess do
 
         expect(DRCA).not_to have_received(:prepare?)
       end
+
+      describe 'the weather reply' do
+        # DRC.bput the way lich-5 runs it: Strings become /x/i, the reply lines are read
+        # in order, and the first line matching any pattern returns the matched text.
+        def bput_replying(*lines)
+          allow(DRC).to receive(:bput) do |_command, *matches|
+            regexes = matches.reject { |m| m.is_a?(Hash) }.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+            hit = nil
+            lines.each { |line| break if regexes.any? { |re| (hit = line.match(re)) } }
+            hit ? hit.to_a.first : ''
+          end
+        end
+
+        def prepare_without_a_moon
+          UserVars.moons = published_moons([])
+          allow(DRC).to receive(:message)
+          instance = build_spell_process
+          instance.send(:prepare_spell, moon_spell('Focus Moonbeam', 'FM'), build_prep_state)
+          instance
+        end
+
+        it 'warns about being inside on the game reply' do
+          # Stand-in wording: the logs have no example of the indoor reply.
+          bput_replying("That's a bit hard to do while inside.")
+          expect(prepare_without_a_moon.instance_variable_get(:@weather)).to eq('inside')
+          expect(DRC).to have_received(:message).with(/You're inside/)
+        end
+
+        it 'does not take another player saying "inside" as the reply' do
+          ['[General][Mallory] "I am inside the bank"', 'Mallory says, "come inside"', 'Mallory whispers, "inside"'].each do |spoof|
+            bput_replying(spoof, 'You glance up at the sky.')
+            expect(prepare_without_a_moon.instance_variable_get(:@weather)).to eq('You glance up at the sky.')
+          end
+          expect(DRC).not_to have_received(:message).with(/You're inside/)
+        end
+      end
     end
 
     context 'when check_moonwatch returns nil (lich-5 releases before the bounded check)' do
@@ -4569,6 +5105,44 @@ RSpec.describe SpellProcess do
 
       expect(DRCMM).not_to have_received(:check_moonwatch)
       expect(gs.casting).to be true
+    end
+  end
+
+  describe 'need-tkt-ammo flag' do
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # A real SpellProcess, so the matcher under test is the one initialize registers.
+    before(:each) do
+      SpellProcess.new(OpenStruct.new(buff_spells: {}, offensive_spells: [], waggle_sets: { 'regalia' => {} }), double('EquipmentManager'))
+    end
+
+    it 'is set by the game line, bare and behind leading tags' do
+      ['', '<pushBold/>'].each do |prefix|
+        Flags.reset('need-tkt-ammo')
+        deliver("#{prefix}There is nothing here that can be thrown.")
+        expect(Flags['need-tkt-ammo']).to be_truthy
+      end
+    end
+
+    it 'is not set by the same text from another player' do
+      text = 'There is nothing here that can be thrown.'
+      [%([General][Mallory] "#{text}"), %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+       %(Mallory says, "#{text}"), %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+       %(Mallory whispers, "#{text}"), %(<preset id='speech'>Mallory whispers</preset>, "#{text}")].each do |line|
+        deliver(line)
+        expect(Flags['need-tkt-ammo']).to be_falsey, line
+      end
     end
   end
 
@@ -5203,6 +5777,247 @@ RSpec.describe SpellProcess do
   end
 end
 
+# ===========================================================================
+# Spell and ability Flags -- only the game's own line sets them
+#
+# Lich tests every Flags matcher against every server line, including other
+# players' speech, whispers and ESP. These flags make combat-trainer recast,
+# disable or drop spells, so each must match only the game's line. The
+# matchers under test are the ones the real initializers/setup register.
+# ===========================================================================
+RSpec.describe 'Spell and ability flags match only the game line' do
+  before(:each) { ct_setup }
+
+  # Feed a server line through the registered Flags matchers, the way
+  # Lich's DRParser.check_events does for every downstream line.
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # The same text as another player's ESP, speech or whisper, plain and as raw XML.
+  def player_shapes(text)
+    {
+      'ESP'         => %([General][Mallory] "#{text}"),
+      'raw ESP'     => %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+      'say'         => %(Mallory says, "#{text}"),
+      'raw say'     => %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+      'whisper'     => %(Mallory whispers, "#{text}"),
+      'raw whisper' => %(<preset id='speech'>Mallory whispers</preset>, "#{text}")
+    }
+  end
+
+  def fires?(key, line)
+    Flags.reset(key)
+    deliver(line)
+    Flags[key] ? true : false
+  end
+
+  # Asserts the flag fires on the game line (bare and behind leading tags) and
+  # on none of the player shapes of the same text.
+  def expect_game_line_only(key, game_line)
+    expect(fires?(key, game_line)).to be(true), "#{key} missed the game line"
+    expect(fires?(key, "<pushBold/>#{game_line}")).to be(true), "#{key} missed the game line behind a tag"
+    player_shapes(game_line).each do |shape, line|
+      expect(fires?(key, line)).to be(false), "#{key} fired on #{shape}: #{line}"
+    end
+  end
+
+  def registered_spell_process(buff_spells: {}, offensive_spells: [])
+    settings = OpenStruct.new(buff_spells: buff_spells, offensive_spells: offensive_spells,
+                              waggle_sets: { 'regalia' => {} }, gear_sets: { 'standard' => [] }, avtalia_array: [])
+    SpellProcess.new(settings, double('EquipmentManager'))
+  end
+
+  describe 'CTGameLine.matcher' do
+    it 'keeps a message that follows a creature name, even behind a tag with quoted attributes' do
+      line = '<pushStream id="combat" />The swirling confines of malevolent darkness wane from about a jeol moradu.'
+      expect(line).to match(/#{CTGameLine.matcher('malevolent darkness wane')}/i)
+    end
+
+    it "treats a leading '^' as line start, so the message cannot follow other text" do
+      matcher = /#{CTGameLine.matcher('^Your rage dissipates')}/i
+      expect('<pushBold/>Your rage dissipates, pulling you away.').to match(matcher)
+      expect('The goblin sneers. Your rage dissipates.').not_to match(matcher)
+    end
+
+    it 'groups the message, so an alternation in data stays behind the anchor' do
+      matcher = /#{CTGameLine.matcher('first message|second message')}/i
+      expect('The goblin flees. second message').to match(matcher)
+      expect('Mallory says, "second message"').not_to match(matcher)
+    end
+  end
+
+  describe 'SpellProcess flags' do
+    {
+      'ct-spelllost'     => 'Your concentration lapses and you lose your targeting pattern.',
+      'ct-need-bless'    => 'Your sword passes through the ghost with no effect.',
+      'ct-shock-warning' => 'You are distinctly aware that completion of this spell pattern may bring you shock.',
+      'ct-spell-unknown' => 'You have no idea how to cast that spell.'
+    }.each do |key, game_line|
+      it "#{key} fires on the game line only" do
+        registered_spell_process
+        expect_game_line_only(key, game_line)
+      end
+    end
+
+    it 'ct-spelllost still hears all three game lines' do
+      registered_spell_process
+      expect(fires?('ct-spelllost', 'Your pattern dissipates with the loss of your target.')).to be true
+      expect(fires?('ct-spelllost', 'Your secondary spell pattern dissipates because your target is dead, but the main spell remains intact.')).to be true
+    end
+
+    context 'as a Trader' do
+      before { DRStats.guild = 'Trader' }
+
+      {
+        'ct-starlight-depleted' => 'You do not have enough starlight to cast that.',
+        'ct-regalia-expired'    => 'Your crystalline regalia glimmers weakly.',
+        'ct-regalia-succeeded'  => 'You cup your palms skyward to bask in the starlight.'
+      }.each do |key, game_line|
+        it "#{key} fires on the game line only" do
+          registered_spell_process
+          expect_game_line_only(key, game_line)
+        end
+      end
+
+      it 'keeps the starlight spells when another player talks about starlight' do
+        buffs = { 'Blur' => { 'abbrev' => 'blur', 'starlight_threshold' => 0 } }
+        instance = registered_spell_process(buff_spells: buffs)
+        game_state = double('GameState', casting_regalia: false)
+        allow(game_state).to receive(:regalia_cancel=)
+        allow(DRC).to receive(:message)
+        player_shapes('I do not have enough starlight').each_value do |line|
+          deliver(line)
+          instance.send(:check_trader_magic, game_state)
+        end
+        expect(instance.instance_variable_get(:@buff_spells).keys).to eq(['Blur'])
+        expect(game_state).not_to have_received(:regalia_cancel=)
+      end
+
+      it 'drops the starlight spells on the game line' do
+        buffs = { 'Blur' => { 'abbrev' => 'blur', 'starlight_threshold' => 0 } }
+        instance = registered_spell_process(buff_spells: buffs)
+        game_state = double('GameState', casting_regalia: false)
+        allow(game_state).to receive(:regalia_cancel=)
+        allow(DRC).to receive(:message)
+        deliver('You do not have enough starlight to cast that.')
+        instance.send(:check_trader_magic, game_state)
+        expect(instance.instance_variable_get(:@buff_spells)).to be_empty
+        expect(game_state).to have_received(:regalia_cancel=).with(true)
+      end
+    end
+
+    describe 'unknown spell during preparation' do
+      let(:data) { { 'abbrev' => 'EASE', 'name' => 'Ease Burden', 'mana' => 3 } }
+
+      def prepare_hearing(line)
+        instance = registered_spell_process
+        game_state = GameState.allocate
+        game_state.casting = false
+        allow(DRC).to receive(:message)
+        allow(DRCA).to receive(:prepare?) do
+          deliver(line)
+          false
+        end
+        instance.send(:prepare_spell, data, game_state)
+        instance
+      end
+
+      it 'disables the spell when the game says it is unknown' do
+        expect(prepare_hearing('You have no idea how to cast that spell.').send(:spell_disabled?, 'ease')).to be true
+      end
+
+      it 'keeps the spell when another player says the same thing' do
+        player_shapes('You have no idea how to cast that spell.').each do |shape, line|
+          expect(prepare_hearing(line).send(:spell_disabled?, 'ease')).to be(false), shape
+        end
+      end
+    end
+
+    describe 'spell expiry flags from spell data' do
+      it 'fire on the expiry line, including one that follows a creature name' do
+        offensive = [{ 'abbrev' => 'mb', 'expire' => 'A heavy earthen ballista loses its cohesion and crumples into a pile of debris.' },
+                     { 'abbrev' => 'mal', 'expire' => 'malevolent darkness wane' }]
+        registered_spell_process(offensive_spells: offensive)
+        expect_game_line_only('ct-mb', 'A heavy earthen ballista loses its cohesion and crumples into a pile of debris.')
+        expect_game_line_only('ct-mal', 'The swirling confines of malevolent darkness wane from about a jeol moradu.')
+      end
+
+      it 'start set, so the spell is cast once before any expiry line' do
+        buffs = { 'Zephyr' => { 'abbrev' => 'zephyr', 'expire' => 'the breeze fades from the area' } }
+        registered_spell_process(buff_spells: buffs)
+        expect(Flags['ct-zephyr']).to be true
+        expect_game_line_only('ct-zephyr', 'With a final gust, the breeze fades from the area.')
+      end
+    end
+  end
+
+  describe 'AbilityProcess flags' do
+    let(:barb_abilities) do
+      {
+        'Python'   => { 'expired_message' => 'finish practicing the Form of the Python' },
+        'Blizzard' => { 'expired_message' => '^Your blizzard of hate melts away, leaving you deflated' }
+      }
+    end
+
+    def registered_ability_process(**settings)
+      $test_data = OpenStruct.new(spells: OpenStruct.new(barb_abilities: barb_abilities))
+      AbilityProcess.new(OpenStruct.new({ buff_nonspells: { 'barb_buffs' => %w[Python Blizzard] }, battle_cries: [] }.merge(settings)))
+    end
+
+    it 'barbarian buff expiry flags fire on the game line only, whether or not the data is anchored' do
+      registered_ability_process
+      expect_game_line_only('ap-Python-expired', 'You feel your inner fire cool as you finish practicing the Form of the Python.')
+      expect_game_line_only('ap-Blizzard-expired', 'Your blizzard of hate melts away, leaving you deflated and empty of its violent rage.')
+      expect(fires?('ap-Blizzard-expired', 'The goblin says nothing. Your blizzard of hate melts away, leaving you deflated.')).to be false
+    end
+
+    it 'glyph of mana expiry fires on the game line only' do
+      registered_ability_process(paladin_use_mana_glyph: true)
+      expect_game_line_only('glyph-mana-expired', 'You sense the holy power return to normal.')
+    end
+  end
+
+  describe 'GameState barbarian ability flags' do
+    it 'fire on the game line only' do
+      DRStats.guild = 'Barbarian'
+      settings = OpenStruct.new(use_analyze_combos: true, damaris_weapon_sets: {}, stances: {}, weapon_training: {},
+                                charged_maneuvers: {}, doublestrike_trainables: [], aiming_trainables: [])
+      game_state = GameState.allocate
+      # initialize reads @aiming_trainables before it assigns it.
+      game_state.instance_variable_set(:@aiming_trainables, [])
+      game_state.send(:initialize, settings, double('EquipmentManager'))
+      {
+        'ct-accuracy-ready'              => 'You sense your combat accuracy decrease.',
+        'ct-damage-ready'                => 'You sense your ability to land deadly blows decrease.',
+        'ct-balance-ready'               => 'Your enhanced balance escapes you.',
+        'ct-barbarian-whirlwind'         => 'Your inner fire roils with a rising desire to unleash a whirlwind attack!',
+        'ct-barbarian-whirlwind-expired' => 'The whirlwind moment passes.'
+      }.each { |key, game_line| expect_game_line_only(key, game_line) }
+    end
+  end
+
+  describe 'CombatTrainer ct-spellcast' do
+    it 'fires on the game lines only' do
+      trainer = CombatTrainer.allocate
+      allow(DRC).to receive(:bput)
+      allow(GameState).to receive(:new)
+      allow(SafetyProcess).to receive(:new)
+      allow(trainer).to receive(:make_processes)
+      trainer.setup(OpenStruct.new(default_stance: 'custom'))
+      expect_game_line_only('ct-spellcast', 'Your target pattern has finished forming around the area.')
+      expect(fires?('ct-spellcast', 'You feel fully prepared to cast your spell.')).to be true
+    end
+  end
+end
+
 # ###################################################################
 # MERGED FROM spec/combat_trainer_gempouch_spec.rb
 # ###################################################################
@@ -5379,6 +6194,157 @@ RSpec.describe LootProcess do
 
         expect(DRCI).not_to have_received(:swap_out_full_gempouch?)
       end
+    end
+  end
+
+  # The loot flags and the stow replies only match the game's own line. Other
+  # players' speech, whispers and ESP reach the same matchers (lich-5 tests
+  # every Flags matcher against every raw line, and bput returns the first line
+  # any reply pattern matches) and must not make stow_loot drop the item, mark
+  # it unlootable, re-stow it, or count a box it did not pick up.
+  describe '#stow_loot ignores other players\' speech and ESP' do
+    let(:game_state) { build_game_state }
+    let(:sent) { [] }
+    let(:loot_flag_keys) { %w[container-full pouch-full pouch-needs-tie] }
+
+    # Register the script's own Flags.add statement for key, evaluated inside
+    # LootProcess the way initialize runs it.
+    def register_loot_flag(key)
+      require 'prism'
+      source = File.read(File.join(__dir__, '..', 'combat-trainer.lic'))
+      find = lambda do |node|
+        return node if node.is_a?(Prism::CallNode) && node.name == :add && node.receiver&.slice == 'Flags' &&
+                       node.arguments&.arguments&.first.is_a?(Prism::StringNode) && node.arguments.arguments.first.unescaped == key
+
+        node.compact_child_nodes.each do |child|
+          found = find.call(child)
+          return found if found
+        end
+        nil
+      end
+      LootProcess.class_eval(find.call(Prism.parse(source).value).slice)
+    end
+
+    # Feed a raw server line through the registered Flags matchers, the way
+    # lich-5's DRParser.check_events does.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        match = regexes.lazy.map { |regex| line.match(regex) }.find(&:itself)
+        Flags[key] = match if match
+      end
+    end
+
+    # lich-5 DRC.bput: Strings become /x/i; the first line (in arrival order)
+    # that any pattern matches returns that pattern's matched text.
+    def game_reply(lines, patterns)
+      regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+      lines.each do |line|
+        regexes.each do |regex|
+          match = line.match(regex)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
+
+    def esp_xml(text) = %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>)
+    def say_xml(text) = %(<preset id='speech'>Mallory says</preset>, "#{text}")
+    def whisper_xml(text) = %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)
+    def player_shapes(text) = [esp_xml(text), say_xml(text), whisper_xml(text)]
+    def esp(text) = %([General][Mallory] "#{text}")
+    def say(text) = %(Mallory says, "#{text}")
+    def whisper(text) = %(Mallory whispers, "#{text}")
+
+    # The stow reply arrives as `stow_lines` (stripped text, what bput reads);
+    # `heard` raw lines reach the Flags while the stow is in flight.
+    def stow_with(instance, item, stow_lines:, heard: [])
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        next 'You drop' if command.start_with?('drop')
+        next 'You put' unless command.start_with?('stow')
+
+        heard.each { |line| deliver(line) }
+        game_reply(stow_lines, patterns)
+      end
+      instance.send(:stow_loot, item, game_state)
+    end
+
+    before(:each) do
+      loot_flag_keys.each { |key| register_loot_flag(key) }
+      allow(DRCI).to receive(:swap_out_full_gempouch?).and_return(true)
+      allow(DRCI).to receive(:tie_gem_pouch?).and_return(true)
+    end
+
+    after(:each) { loot_flag_keys.each { |key| Flags.delete(key) } }
+
+    {
+      'container-full'  => ["There isn't any more room in the eddy for that.", "There isn't any more room in my bag"],
+      'pouch-full'      => ['You think the soft gem pouch is too full to fit another gem into.', 'You think the pouch is too full to fit another gem into'],
+      'pouch-needs-tie' => ["You'd better tie it up before putting anything else in it.", "You'd better tie it up before putting more in"]
+    }.each do |key, (game_line, spoken)|
+      it "sets #{key} on the game's line" do
+        deliver(game_line)
+        expect(Flags[key]).to be_truthy
+      end
+
+      it "leaves #{key} unset on ESP, say and whisper lines" do
+        player_shapes(spoken).each { |line| deliver(line) }
+        expect(Flags[key]).to be_falsey
+      end
+    end
+
+    it 'keeps a stowed gem when another player speaks the container-full or pouch-full line' do
+      heard = player_shapes("There isn't any more room in my bag") + player_shapes('You think the pouch is too full to fit another gem into')
+      stow_with(build_loot_process(spare_gem_pouch_container: nil), 'diamond',
+                stow_lines: ['You put your diamond in your black pouch.'], heard: heard)
+      expect(sent).to eq(['stow diamond'])
+      expect(game_state).not_to have_received(:unlootable)
+    end
+
+    it 'does not untie and re-stow when another player speaks the pouch-needs-tie line' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ['You put your diamond in your black pouch.'],
+                                               heard: player_shapes("You'd better tie it up before putting more in"))
+      expect(DRCI).not_to have_received(:tie_gem_pouch?)
+      expect(sent).to eq(['stow diamond'])
+    end
+
+    it 'still drops the item and marks it unlootable on the game\'s container-full line' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ["There isn't any more room in the backpack for that."],
+                                               heard: ["There isn't any more room in the backpack for that."])
+      expect(sent).to eq(['stow diamond', 'drop diamond'])
+      expect(game_state).to have_received(:unlootable).with('diamond')
+    end
+
+    it 'still swaps the pouch on the game\'s pouch-full line' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ['You put your diamond in your black pouch.'],
+                                               heard: ['You think the black pouch is too full to fit another gem into.'])
+      expect(DRCI).to have_received(:swap_out_full_gempouch?)
+    end
+
+    it 'does not count a box another player claims was picked up' do
+      instance = build_loot_process(box_nouns: ['strongbox'], box_loot_limit: 5, current_box_count: 0)
+      [esp('You get a strongbox'), say('You pick up a strongbox'), whisper('You get the strongbox')].each do |line|
+        stow_with(instance, 'strongbox', stow_lines: [line, "There isn't any more room in the backpack for that."])
+      end
+      expect(instance.instance_variable_get(:@current_box_count)).to eq(0)
+    end
+
+    it 'counts a box the game says was picked up' do
+      instance = build_loot_process(box_nouns: ['strongbox'], box_loot_limit: 5, current_box_count: 0)
+      stow_with(instance, 'strongbox', stow_lines: ['You pick up a battered iron strongbox.'])
+      expect(instance.instance_variable_get(:@current_box_count)).to eq(1)
+    end
+
+    it 'does not re-stow when another player says the item is already in the inventory' do
+      [esp('that is already in your inventory'), say('Already in your inventory, silly'), whisper('already in your inventory')].each do |line|
+        stow_with(build_loot_process, 'diamond', stow_lines: [line, 'You put your diamond in your black pouch.'])
+      end
+      expect(sent).to all(eq('stow diamond'))
+    end
+
+    it 'still re-stows as a gem on the game\'s already-in-inventory reply' do
+      stow_with(build_loot_process, 'diamond', stow_lines: ['But that is already in your inventory.'])
+      expect(sent).to include('stow gem')
     end
   end
 
@@ -6263,6 +7229,50 @@ RSpec.describe 'TrainerProcess#check_heavens' do
     allow(DRCMM).to receive(:get_telescope?).and_return(true)
     gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
     expect { tp.send(:check_heavens, gs) }.not_to raise_error
+  end
+
+  describe '#determine_time' do
+    # DRC.bput the way lich-5 runs it: Strings become /x/i, the reply lines are read in
+    # order, and the first line matching any pattern returns the matched text.
+    def bput_replying(*lines)
+      allow(DRC).to receive(:bput) do |_command, *matches|
+        regexes = matches.reject { |m| m.is_a?(Hash) }.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+        hit = nil
+        lines.each { |line| break if regexes.any? { |re| (hit = line.match(re)) } }
+        hit ? hit.to_a.first : ''
+      end
+    end
+
+    def centers_after(*lines)
+      tp = build_heavens_trainer
+      allow(tp).to receive(:center)
+      bput_replying(*lines)
+      tp.send(:determine_time)
+      tp
+    end
+
+    # Replies as the game words them (from game logs).
+    {
+      'It is currently fall and it is dawn.'                => 'elanthian sun',
+      'It is currently fall and it is mid-morning.'         => 'elanthian sun',
+      'It is currently fall and it is midday.'              => 'elanthian sun',
+      'It is currently fall and it is early afternoon.'     => 'elanthian sun',
+      'It is currently fall and it is dusk.'                => 'elanthian sun',
+      'It is currently fall and it is sunset.'              => 'heart',
+      'It is currently fall and it is late evening.'        => 'heart',
+      'It is currently fall and it is night.'               => 'heart',
+      'It is currently fall and it is approaching sunrise.' => 'heart'
+    }.each do |reply, target|
+      it "centers on the #{target} for \"#{reply}\"" do
+        expect(centers_after(reply)).to have_received(:center).with(target)
+      end
+    end
+
+    it 'ignores time words in other players\' lines before the reply' do
+      spoofs = ['[General][Mallory] "good morning all"', 'Mallory says, "see you tonight"', 'Mallory whispers, "noon tomorrow?"']
+      expect(centers_after(*spoofs, 'It is currently fall and it is night.')).to have_received(:center).with('heart').once
+      expect(centers_after(*spoofs.rotate, 'It is currently fall and it is mid-morning.')).to have_received(:center).with('elanthian sun').once
+    end
   end
 end
 
@@ -7535,6 +8545,290 @@ RSpec.describe LootProcess do
       lp = build_dissect_loot(dissected_corpse_ids: [corpse.id])
       expect(lp.send(:dissected?, corpse, dissect_game_state)).to be true
       expect(DRC).not_to have_received(:bput).with(/\Adissect/, any_args)
+    end
+  end
+
+  # Corpse handling only acts on the game's own lines. Other players' speech,
+  # whispers and ESP reach the same Flags matchers and bput reply patterns
+  # (bput returns the first line any pattern matches), and must not stop the
+  # looting, disable skinning or dissection for the rest of the run, or throw
+  # away harvested material.
+  describe 'corpse handling ignores other players\' speech and ESP' do
+    let(:sent) { [] }
+
+    # Register the script's own Flags.add statement for key, evaluated inside
+    # LootProcess the way initialize runs it.
+    def register_loot_flag(key)
+      require 'prism'
+      source = File.read(File.join(__dir__, '..', 'combat-trainer.lic'))
+      find = lambda do |node|
+        return node if node.is_a?(Prism::CallNode) && node.name == :add && node.receiver&.slice == 'Flags' &&
+                       node.arguments&.arguments&.first.is_a?(Prism::StringNode) && node.arguments.arguments.first.unescaped == key
+
+        node.compact_child_nodes.each do |child|
+          found = find.call(child)
+          return found if found
+        end
+        nil
+      end
+      LootProcess.class_eval(find.call(Prism.parse(source).value).slice)
+    end
+
+    # Feed a raw server line through the registered Flags matchers, the way
+    # lich-5's DRParser.check_events does.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        match = regexes.lazy.map { |regex| line.match(regex) }.find(&:itself)
+        Flags[key] = match if match
+      end
+    end
+
+    # lich-5 DRC.bput: Strings become /x/i; the first line (in arrival order)
+    # that any pattern matches returns that pattern's matched text.
+    def game_reply(lines, patterns)
+      regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+      lines.each do |line|
+        regexes.each do |regex|
+          match = line.match(regex)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
+
+    # Answer each command with the lines listed for it (by prefix); anything
+    # else gets a plain roundtime.
+    def replies(map)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        lines = map.find { |prefix, _| command.start_with?(prefix) }&.last
+        lines ? game_reply(lines, patterns) : 'Roundtime'
+      end
+    end
+
+    def player_shapes_xml(text)
+      [%(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+       %(<preset id='speech'>Mallory says</preset>, "#{text}"),
+       %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}"<popStream/>)]
+    end
+
+    def player_shapes(text) = [%([General][Mallory] "#{text}"), %(Mallory says, "#{text}"), %(Mallory whispers, "#{text}")]
+
+    def corpse_game_state
+      gs = double('GameState', skinnable?: true, necro_casting?: false, need_bundle: false, blessed_room: false)
+      allow(gs).to receive(:dissectable?).and_return(true)
+      allow(gs).to receive(:unskinnable)
+      allow(gs).to receive(:undissectable)
+      allow(gs).to receive(:construct)
+      allow(gs).to receive(:need_bundle=)
+      allow(gs).to receive(:mob_died=)
+      allow(gs).to receive(:sheath_whirlwind_offhand)
+      allow(gs).to receive(:wield_whirlwind_offhand)
+      gs
+    end
+
+    def build_corpse_loot(**overrides)
+      lp = LootProcess.allocate
+      { skin: true, dissect: true, dissect_for_thanatology: false, arrange_for_dissect: false, arrange_count: 1,
+        arrange_all: false, arrange_types: {}, tie_bundle: false, dissect_cycle_skills: ['Skinning', 'First Aid'],
+        skinned_corpse_ids: [], dissected_corpse_ids: [], looted_corpse_ids: [],
+        loot_bodies: true, loot_timer: Time.now - 100, loot_delay: 0, last_rites: false, last_rites_timer: Time.now,
+        custom_loot_type: '', necro_store: true, necro_count: 5, current_harvest_count: 0, necro_container: 'satchel',
+        equipment_manager: double('EquipmentManager', stow_weapon: nil, wield_weapon?: nil, is_listed_item?: false) }
+        .merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+      lp
+    end
+
+    before(:each) do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      allow(DRSkill).to receive(:getxp).and_return(0)
+    end
+
+    context 'using-corpse' do
+      before(:each) { register_loot_flag('using-corpse') }
+      after(:each) { Flags.delete('using-corpse') }
+
+      let(:game_lines) do
+        ["Refia begins arranging the moth's corpse to increase the chance of a high quality prize.",
+         "Abselom completes arranging the blademaster's corpse to increase the chance of a high quality prize.",
+         "Qizhan kneels down briefly and draws a knife.  She proceeds to make a long, thin cut across the moradu's corpse.",
+         "Qizhan bends over the moradu's corpse briefly, before plunging her knife cruelly into the body and carving out a chunk of its flesh and blood!",
+         'Qizhan makes additional cuts, purposeful but seemingly at random.']
+      end
+
+      it 'is set by each game line' do
+        game_lines.each do |line|
+          Flags.reset('using-corpse')
+          deliver(line)
+          expect(Flags['using-corpse']).to be_truthy, line
+        end
+      end
+
+      it 'is not set by ESP, say or whisper lines' do
+        ['begins arranging the corpse', 'completes arranging', 'kneels down briefly and draws a knife',
+         'stabbing cruelly into the body and carving out a chunk', 'makes additional cuts, purposeful but seemingly at random']
+          .flat_map { |text| player_shapes_xml(text) }.each { |line| deliver(line) }
+        expect(Flags['using-corpse']).to be_falsey
+      end
+
+      it 'still loots the corpse after another player speaks an arranging line' do
+        DRRoom.dead_npcs = ['rat']
+        player_shapes_xml('Mallory begins arranging the rat').each { |line| deliver(line) }
+        replies('loot' => ['You search the giant rat.'])
+        lp = build_corpse_loot
+        allow(lp).to receive(:check_rituals?).and_return(false)
+        lp.dispose_body(corpse_game_state)
+        expect(sent).to include('loot #111')
+      end
+
+      it 'leaves the corpse alone while the game says someone is arranging it' do
+        DRRoom.dead_npcs = ['rat']
+        deliver("Refia begins arranging the rat's corpse to increase the chance of a high quality prize.")
+        replies({})
+        build_corpse_loot.dispose_body(corpse_game_state)
+        expect(sent).to be_empty
+      end
+    end
+
+    describe '#arrange_mob' do
+      it 'keeps skinning enabled when another player says the corpse cannot be skinned' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        player_shapes('that one cannot be skinned').each do |line|
+          replies('arrange' => [line, 'You complete arranging the giant rat.'])
+          lp.send(:arrange_mob, 'rat', gs, corpse)
+        end
+        expect(gs).not_to have_received(:unskinnable)
+        expect(lp.instance_variable_get(:@skin)).to be true
+      end
+
+      it 'still disables skinning on the game\'s cannot-be-skinned reply' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        replies('arrange' => ['The giant rat cannot be skinned.'])
+        lp.send(:arrange_mob, 'rat', gs, corpse)
+        expect(gs).to have_received(:unskinnable).with('rat')
+        expect(lp.instance_variable_get(:@skin)).to be false
+      end
+
+      it 'still records the corpse on the game\'s already-skinned reply' do
+        lp = build_corpse_loot
+        replies('arrange' => ['The giant rat has already been skinned.'])
+        lp.send(:arrange_mob, 'rat', corpse_game_state, corpse)
+        expect(lp.instance_variable_get(:@skinned_corpse_ids)).to eq([111])
+      end
+    end
+
+    describe '#check_skinning' do
+      it 'keeps the creature skinnable when another player says it cannot be skinned' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        player_shapes('it cannot be skinned').each do |line|
+          lp.instance_variable_set(:@skinned_corpse_ids, [])
+          replies('skin' => [line, 'Roundtime: 3 sec.'])
+          lp.send(:check_skinning, 'rat', gs, corpse)
+        end
+        expect(gs).not_to have_received(:unskinnable)
+        expect(lp.instance_variable_get(:@skinned_corpse_ids)).to eq([111])
+      end
+
+      it 'keeps skinning enabled when another player says a better weapon is needed' do
+        lp = build_corpse_loot
+        replies('skin' => [player_shapes('you need a more appropriate weapon').first, 'Roundtime: 3 sec.'])
+        lp.send(:check_skinning, 'rat', corpse_game_state, corpse)
+        expect(lp.instance_variable_get(:@skin)).to be true
+      end
+
+      it 'still marks the creature unskinnable on the game\'s reply' do
+        gs = corpse_game_state
+        replies('skin' => ['The giant rat cannot be skinned.'])
+        build_corpse_loot.send(:check_skinning, 'rat', gs, corpse)
+        expect(gs).to have_received(:unskinnable).with('rat')
+      end
+
+      it 'keeps needing a bundle when another player claims to tap a tight one' do
+        gs = corpse_game_state
+        allow(gs).to receive(:need_bundle).and_return(true)
+        replies('tap my bundle' => [player_shapes('You tap a tight bundle inside my pack').last, 'I could not find what you were referring to.'],
+                'skin'          => ['Roundtime: 3 sec.'])
+        build_corpse_loot.send(:check_skinning, 'rat', gs, corpse)
+        expect(gs).not_to have_received(:need_bundle=)
+      end
+
+      it 'stops needing a bundle on the game\'s tight-bundle reply' do
+        gs = corpse_game_state
+        allow(gs).to receive(:need_bundle).and_return(true)
+        replies('tap my bundle' => ['You tap a tight bundle that you are wearing.'], 'skin' => ['Roundtime: 3 sec.'])
+        build_corpse_loot.send(:check_skinning, 'rat', gs, corpse)
+        expect(gs).to have_received(:need_bundle=).with(false)
+      end
+    end
+
+    describe '#dissected?' do
+      let(:success) { "You smoothly open the corpse of the giant rat, revealing several interesting anatomical structures and features.  Your understanding of the giant rat's bodily structure is reinforced.  You succeed in dissecting the corpse." }
+
+      it 'keeps dissecting enabled when another player says it is a waste of time' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        ["That'd be a waste of time.", 'While likely a fascinating study', 'You do not yet possess the knowledge'].each do |text|
+          player_shapes(text).each do |line|
+            lp.instance_variable_set(:@dissected_corpse_ids, [])
+            replies('dissect' => [line, success])
+            expect(lp.send(:dissected?, corpse, gs)).to be true
+          end
+        end
+        expect(gs).not_to have_received(:undissectable)
+        expect(lp.instance_variable_get(:@dissect)).to be true
+      end
+
+      it 'does not mark a construct when another player names one' do
+        gs = corpse_game_state
+        replies('dissect' => [player_shapes('Rituals do not work upon constructs').first, success])
+        build_corpse_loot.send(:dissected?, corpse, gs)
+        expect(gs).not_to have_received(:construct)
+      end
+
+      it 'still records the game\'s success line, which carries text before the phrase' do
+        lp = build_corpse_loot
+        replies('dissect' => [success])
+        expect(lp.send(:dissected?, corpse, corpse_game_state)).to be true
+        expect(lp.instance_variable_get(:@dissected_corpse_ids)).to eq([111])
+      end
+
+      it 'still disables dissecting on the game\'s waste-of-time reply' do
+        gs = corpse_game_state
+        lp = build_corpse_loot
+        replies('dissect' => ["That'd be a waste of time."])
+        lp.send(:dissected?, corpse, gs)
+        expect(gs).to have_received(:undissectable).with('rat')
+        expect(lp.instance_variable_get(:@dissect)).to be false
+      end
+    end
+
+    describe '#necro_harvest_check' do
+      let(:glance) { 'You glance down to see some flawless material in your right hand and nothing in your left hand.' }
+
+      it 'keeps high-quality material when another player speaks a glance line' do
+        player_shapes('You glance down at your feet').each do |line|
+          replies('glance' => [line, glance], 'put material' => ['You put your material in your satchel.'])
+          build_corpse_loot.send(:necro_harvest_check)
+        end
+        expect(sent).not_to include('drop material')
+      end
+
+      it 'stores the material when another player says it does not fit' do
+        lp = build_corpse_loot
+        replies('glance' => [glance], 'put material' => [player_shapes("material doesn't seem to fit").first, 'You put your material in your satchel.'])
+        lp.send(:necro_harvest_check)
+        expect(sent).not_to include('drop material')
+        expect(lp.instance_variable_get(:@current_harvest_count)).to eq(1)
+      end
+
+      it 'still drops the material on the game\'s does-not-fit reply' do
+        replies('glance' => [glance], 'put material' => ["The material doesn't seem to fit in your satchel."])
+        build_corpse_loot.send(:necro_harvest_check)
+        expect(sent).to include('drop material')
+      end
     end
   end
 
