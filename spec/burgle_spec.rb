@@ -749,10 +749,268 @@ RSpec.describe Burgle do
   end
 
   # ---------------------------------------------------------------------------
+  # Game-line anchors
+  #
+  # Lich tests every Flags/bput/waitfor String as an unanchored /x/i against every incoming
+  # line, and other players' speech, ESP and whispers carry free text. Each matcher below must
+  # fire on the game's own line only. DRC.bput and waitfor are replaced by models of lich-5's:
+  # Strings compile to /x/i, lines are read in order, the first line matching any pattern wins,
+  # and bput returns the matched text. Flags see the raw (XML) line, bput/waitfor the stripped one.
+  # ---------------------------------------------------------------------------
+
+  describe 'game-line anchors' do
+    let(:commands) { [] }
+    # incoming lines per command verb, as the game (and other players) would send them
+    let(:incoming) { Hash.new { |h, k| h[k] = [] } }
+    let(:real_title) { %(<style id="roomName" />[Someone Else's Home, Kitchen]) }
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    def strip_xml(line)
+      line.gsub(/<[^>]+>/, '')
+    end
+
+    # lich-5 DRC.bput: every line reaches Flags; the first stripped line matching a pattern ends the wait.
+    # Lines are consumed as they are read.
+    def model_bput(lines, patterns)
+      regexes = patterns.flatten.map { |item| item.is_a?(Regexp) ? item : /#{item}/i }
+      while (line = lines.shift)
+        deliver(line)
+        regexes.each do |regex|
+          match = strip_xml(line).match(regex)
+          return match.to_a.first if match
+        end
+      end
+      ''
+    end
+
+    # lich-5 waitfor: the strings joined into one /x/i, returns the first stripped line that matches.
+    def model_waitfor(lines, strings)
+      regex = /#{strings.flatten.join('|')}/i
+      lines.each do |line|
+        deliver(line)
+        return strip_xml(line) if strip_xml(line) =~ regex
+      end
+      nil
+    end
+
+    def esp(text) = %([General][Mallory] "#{text}")
+    def esp_xml(text) = %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>)
+    def say(text) = %(Mallory says, "#{text}")
+    def say_xml(text) = %(<preset id='speech'>Mallory says</preset>, "#{text}")
+    def whisper(text) = %(Mallory whispers, "#{text}")
+    def player_lines(text) = [esp(text), esp_xml(text), say(text), say_xml(text), whisper(text)]
+
+    before(:each) do
+      $invisible = false
+      $hidden = true
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        commands << command
+        model_bput(incoming[command.split.first], patterns)
+      end
+    end
+
+    after(:each) do
+      $hidden = nil
+      $invisible = nil
+    end
+
+    describe 'burgle-footsteps' do
+      # registers the flag through the real initialize, with the run itself stubbed out
+      def register_footsteps
+        $test_settings = OpenStruct.new(burgle_settings: { 'loot' => 'keep', 'entry_type' => 'rope' })
+        instance = Burgle.allocate
+        allow(instance).to receive(:valid_burgle_settings?).and_return(true)
+        allow(instance).to receive(:burgle)
+        allow(instance).to receive(:end_burgle)
+        instance.send(:initialize)
+        build_instance(stealth_inside: false)
+      end
+
+      it "stops searching on the game's footsteps warning" do
+        instance = register_footsteps
+        deliver("Footsteps nearby make you wonder if you're pushing your luck.")
+
+        instance.send(:search_for_loot, 'bookshelf')
+
+        expect(commands).to be_empty
+      end
+
+      it "keeps searching when a player's ESP, speech or whisper carries the warning" do
+        player_lines("Footsteps nearby make you wonder if you're pushing your luck.").each do |line|
+          instance = register_footsteps
+          deliver(line)
+
+          instance.send(:search_for_loot, 'bookshelf')
+        end
+
+        expect(commands).to eq(['search bookshelf'] * 5)
+      end
+    end
+
+    describe '#burgle entry' do
+      let(:group_line) { 'With aid from your group, you slip in through the window.' }
+
+      def run_entry(lines, follow:)
+        instance = build_instance(burgle_settings: { 'max_search_count' => 0 }, follow: follow, entry_type: 'rope',
+                                  burgle_before_scripts: [], settings: OpenStruct.new(waggle_sets: {}))
+        $invisible = true
+        allow(instance).to receive(:check_entry?).and_return(true)
+        allow(instance).to receive(:travel_to_burgle_room)
+        allow(instance).to receive(:get_entry)
+        allow(instance).to receive(:store_loot)
+        allow(instance).to receive(:execute_extra_scripts)
+        allow(instance).to receive(:process_loot)
+        allow(instance).to receive(:pause)
+        allow(instance).to receive(:fput) { |command| commands << command }
+        allow(instance).to receive(:waitfor) { |*strings| model_waitfor(lines, strings) }
+        incoming['burgle'].concat(lines)
+        incoming['go'] << 'You take a moment to reflect on the caper.'
+        allow(DRC).to receive(:bput).with('burgle recall', any_args).and_return('The heat has died down from your last caper')
+        instance.send(:burgle)
+      end
+
+      [true, false].each do |follow|
+        context(follow ? 'when following' : 'when burgling') do
+          it "disbands on the game's group-entry line" do
+            run_entry([group_line, real_title], follow: follow)
+
+            expect(commands).to include('disband stalk', 'disband group')
+          end
+
+          it "waits for the real room title, not a player's line naming the house" do
+            # the group line arrives after the player line, so a wait that ended early never sees it
+            run_entry([say("Someone Else's Home"), group_line, real_title], follow: follow)
+
+            expect(commands).to include('disband stalk', 'disband group')
+          end
+
+          it "does not leave or disband for a player's ESP, speech or whisper" do
+            lines = player_lines('With aid from your group we got in') + player_lines('With aid from her group, easy.')
+
+            run_entry(lines + [real_title], follow: follow)
+
+            expect(commands).not_to include('leave', 'disband stalk', 'disband group')
+          end
+        end
+      end
+    end
+
+    describe '#burgle_move' do
+      it 'walks on after a real sneak failure' do
+        incoming['sneak'] << "You can't sneak that way."
+        incoming['north'] << real_title
+
+        build_instance.send(:burgle_move, 'north')
+
+        expect(commands).to eq(['sneak north', 'north'])
+      end
+
+      it "does not move a second time for a player's line before the room title" do
+        [esp("you can't go northwest, go east"), say("You can't do that"), whisper('In YOUR condition?')].each do |line|
+          incoming['sneak'].replace([line, real_title])
+
+          build_instance.send(:burgle_move, 'north')
+        end
+
+        expect(commands).to eq(['sneak north'] * 3)
+      end
+    end
+
+    describe '#put_item?' do
+      let(:instance) { build_instance(loot_container: 'backpack') }
+      let(:put_line) { 'You put your ring in your backpack.' }
+
+      it 'stores on the real reply' do
+        incoming['put'] << put_line
+
+        expect(instance.send(:put_item?, 'ring')).to be(true)
+        expect(commands).to eq(['put my ring in my backpack'])
+      end
+
+      it 'retries on the real refresh message and drops on the real no-fit message' do
+        incoming['put'].concat(['Something appears different about the ring, perhaps try doing that again.', put_line])
+        expect(instance.send(:put_item?, 'ring')).to be(true)
+
+        incoming['put'].replace(["You just can't get the ring to fit in the backpack, no matter how you arrange it."])
+        incoming['drop'] << 'You drop a ring.'
+        expect(instance.send(:put_item?, 'ring')).to be(false)
+
+        expect(commands).to eq(['put my ring in my backpack'] * 3 + ['drop my ring'])
+      end
+
+      it "ignores a player's line ahead of the real reply" do
+        ['The kind that you put in your hair.', 'perhaps try doing that again', 'no matter how you arrange it'].flat_map { |t| player_lines(t) }.each do |line|
+          incoming['put'].replace([line, put_line])
+
+          expect(instance.send(:put_item?, 'ring')).to be(true)
+        end
+
+        expect(commands).to all(eq('put my ring in my backpack'))
+        expect(commands.size).to eq(15)
+      end
+    end
+
+    describe '#drop_item' do
+      it "drops once when a player's line comes ahead of the real reply" do
+        instance = build_instance
+        ['that would damage it', 'Something appears different about you'].flat_map { |t| player_lines(t) }.each do |line|
+          incoming['drop'].replace([line, 'You drop a ring.'])
+
+          instance.send(:drop_item, 'ring')
+        end
+
+        expect(commands).to eq(['drop my ring'] * 10)
+      end
+    end
+
+    describe '#get_entry' do
+      it 'ends the run when the rope is really missing' do
+        incoming['get'] << 'What were you referring to?'
+
+        expect { build_instance(rope_adjective: 'heavy').send(:get_entry, 'rope') }.to raise_error(SystemExit)
+      end
+
+      it "goes on when a player's line comes ahead of the real get" do
+        instance = build_instance(rope_adjective: 'heavy')
+        player_lines('What were you thinking?').each do |line|
+          incoming['get'].replace([line, 'You get a heavy rope from inside your backpack.'])
+
+          expect { instance.send(:get_entry, 'rope') }.not_to raise_error
+          expect { instance.send(:get_entry, 'lockpick') }.not_to raise_error
+        end
+      end
+    end
+
+    describe '#process_loot' do
+      it "drops the loot when a player's line comes ahead of the real get" do
+        instance = build_instance(loot_type: 'drop', loot_list: ['ring'], loot_container: 'backpack', loot_room_id: nil)
+        incoming['get'].concat([esp('What were you referring to?'), 'You get a ring from inside your backpack.'])
+        incoming['drop'] << 'You drop a ring.'
+
+        instance.send(:process_loot)
+
+        expect(commands).to eq(['get ring from my backpack', 'drop my ring'])
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # stealth_inside
   #
-  # These are the only specs that run the real burgle_move and search_for_loot bodies --
-  # everywhere else drive_house stubs both out.
+  # Along with the game-line anchor specs above, these are the only specs that run the real
+  # burgle_move and search_for_loot bodies -- everywhere else drive_house stubs both out.
   # ---------------------------------------------------------------------------
 
   describe 'burgle_settings:stealth_inside' do

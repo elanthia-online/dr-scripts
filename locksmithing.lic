@@ -115,7 +115,12 @@ class Locksmithing
       if @pick_once && DRC.retreat
         fput 'engage'
       end
-      case DRC.bput("pick my #{trainer}", 'Maybe you should close', 'not making any progress', "why bother", "it opens.", "isn't locked", 'The lock feels warm', 'The lock looks weak', 'Pick what', 'You need some type of tool to pick', "But you aren't holding")
+      # Replies only match the game's own line, not other players' speech or ESP
+      # (those always have a quote before the text).
+      case DRC.bput("pick my #{trainer}",
+                    /^[^"]*?Maybe you should close/i, /^[^"]*?not making any progress/i, /^[^"]*?why bother/i,
+                    /^[^"]*?it opens\./i, /^[^"]*?isn't locked/i, /^[^"]*?The lock feels warm/i, /^[^"]*?The lock looks weak/i,
+                    '^Pick what', '^You need some type of tool to pick', "^But you aren't holding")
       when /You need some type of tool to pick/
         DRC.message('YOU HAVE NO LOCKPICKS ON YOUR LOCKPICK RING/BELT.  SORT THAT OUT!')
         exit

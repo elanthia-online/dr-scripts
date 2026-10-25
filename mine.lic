@@ -10,14 +10,14 @@ class Mine
       ]
     ]
     @args = parse_args(arg_definitions)
-    Flags.add('mine-danger', 'The ground rumbles ominously', 'A bitter smell seeps into the air', 'The floor shudders briefly', 'continued mining .* hazardous', 'slightly dangerous because the ground')
-    Flags.add('mine-exit', 'The entire wall of rock fractures at your blow and comes crashing down atop you')
-    Flags.add('mine-pinned', 'You seem to be pinned in place', 'You finally manage to clear away enough rubble')
+    Flags.add('mine-danger', game_line('The ground rumbles ominously'), game_line('A bitter smell seeps into the air'), game_line('The floor shudders briefly'), game_line('continued mining .* hazardous'), game_line('slightly dangerous because the ground'))
+    Flags.add('mine-exit', game_line('The entire wall of rock fractures at your blow and comes crashing down atop you'))
+    Flags.add('mine-pinned', game_line('You seem to be pinned in place'), game_line('You finally manage to clear away enough rubble'))
     Flags.add('resource-level',
-              'certain a scattering of resources', 'enormous quantity remains to be found', 'substantial quantity remains to be found',
-              'good quantity remains to be found', 'decent quantity remains to be found', 'small quantity remains to be found',
-              'enormous quantity \(5/5\) remains to be found', 'substantial quantity \(4/5\) remains to be found', 'good quantity \(3/5\) remains to be found',
-              'decent quantity \(2/5\) remains to be found', 'small quantity \(1/5\) remains to be found', 'scattering of resources \(0/5\) remains to be found')
+              *['certain a scattering of resources', 'enormous quantity remains to be found', 'substantial quantity remains to be found',
+                'good quantity remains to be found', 'decent quantity remains to be found', 'small quantity remains to be found',
+                'enormous quantity \(5/5\) remains to be found', 'substantial quantity \(4/5\) remains to be found', 'good quantity \(3/5\) remains to be found',
+                'decent quantity \(2/5\) remains to be found', 'small quantity \(1/5\) remains to be found', 'scattering of resources \(0/5\) remains to be found'].map { |message| game_line(message) })
     settings = get_settings
     @mining_skip_populated = settings.mining_skip_populated
     @mining_implement = settings.mining_implement
@@ -31,8 +31,8 @@ class Mine
     @bag_items = settings.crafting_items_in_container
     @belt = settings.forging_belt
     @yiamura_resource_minimum = settings.mining_yiamura_resource_minimum + 1
-    Flags.add('yiamura-done', 'stills its flailing as it observes the area') if @args.yiamura
-    Flags.add('yiamura-gone', 'You sense the tether binding your') if @args.yiamura
+    Flags.add('yiamura-done', game_line('stills its flailing as it observes the area')) if @args.yiamura
+    Flags.add('yiamura-gone', game_line('You sense the tether binding your')) if @args.yiamura
     @forage_item = settings.forage_item
     DRCI.stow_hands
     unless settings.adjustable_tongs && @mining_implement.include?('tongs') && DRCC.get_adjust_tongs?('reset shovel', @bag, @bag_items, @belt)
@@ -80,6 +80,14 @@ class Mine
     DRCC.stow_crafting_item(@mining_implement, @bag, @belt) unless @args.yiamura
   end
 
+  # Matches a message only on the game's own line, not in other players'
+  # speech, whispers or ESP: nothing before the message may be a quote outside
+  # an XML tag, and every player-text line has one. \K keeps the matched text
+  # (Flags[key][0]) the message itself, which resource_level compares.
+  def game_line(message)
+    /^(?:<[^>]*>|[^"<])*?\K#{message}/i
+  end
+
   def resource_level
     case Flags['resource-level'][0]
     when 'certain a scattering of resources', 'scattering of resources (0/5) remains to be found'
@@ -120,7 +128,9 @@ class Mine
 
     10.times do
       waitrt?
-      next unless /danger|find nothing of concern/ =~ DRC.bput('prospect danger', 'Unfortunately', 'shown a way to significantly reduce the danger', 'find nothing of concern')
+      # Same rule as game_line, on bput's tag-free text; \K keeps bput's
+      # returned text the reply itself for the check on this line.
+      next unless /danger|find nothing of concern/ =~ DRC.bput('prospect danger', /^[^"]*?\KUnfortunately/i, /^[^"]*?\Kshown a way to significantly reduce the danger/i, /^[^"]*?\Kfind nothing of concern/i)
 
       Flags.reset('mine-danger')
       return

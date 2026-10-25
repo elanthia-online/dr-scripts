@@ -55,9 +55,11 @@ class CrossingTraining
 
     DRCA.release_cyclics
 
-    Flags.add('ct-song', 'you finish playing')
-    Flags.add('ct-no-instrument', 'Play on what instrument')
-    Flags.add('research-partial', 'there is still more to learn before you arrive at a breakthrough', 'distracted by combat', 'distracted by your spellcasting', 'You lose your focus on your research project', 'you forget what you were')
+    # Game-line anchors: these only match the game's own line, not another
+    # player's speech, whisper or ESP (those always have a quote before the text).
+    Flags.add('ct-song', /^(?:<[^>]*>|[^"<])*?you finish playing/i)
+    Flags.add('ct-no-instrument', /^(?:<[^>]+>)*Play on what instrument/i)
+    Flags.add('research-partial', /^(?:<[^>]*>|[^"<])*?(?:there is still more to learn before you arrive at a breakthrough|distracted by combat|distracted by your spellcasting|You lose your focus on your research project|you forget what you were)/i)
     Flags.add('research-complete', '^Breakthrough!')
   end
 
@@ -275,9 +277,11 @@ class CrossingTraining
     DRCT.walk_to(altar_loc)
 
     DRC.bput('kneel', 'You kneel', 'You are already', 'You rise')
-    case DRC.bput('pray chadatru', 'As you kneel', 'decide it would be inappropriate')
+    # No quote before the phrase: only the game's line, not other players' speech.
+    # \K keeps the returned text to the bare phrase compared below.
+    case DRC.bput('pray chadatru', '^[^"]*?\KAs you kneel', '^[^"]*?decide it would be inappropriate')
     when 'As you kneel'
-      waitfor('soothing sensation washes over your soul')
+      waitfor('^[^"]*?soothing sensation washes over your soul')
     end
 
     UserVars.chadatru_prayer_last = Time.now
@@ -288,11 +292,11 @@ class CrossingTraining
     return unless Time.now - UserVars.tessera_invoke_last > @tessera_invoke_cooldown
 
     DRC.retreat
-    return unless /inside your (.*)\./ =~ DRC.bput("get my tessera", 'You get a .+ tessera from inside your (.*).', 'What were you')
+    return unless /inside your (.*)\./ =~ DRC.bput("get my tessera", '^You get a .+ tessera from inside your (.*).', '^What were you')
 
     container = DRC.get_noun(Regexp.last_match(1))
     DRC.bput('Ask my tessera about invest', 'You send your')
-    DRC.bput("put my tessera in my #{container}", 'You put', 'What were you')
+    DRC.bput("put my tessera in my #{container}", '^You put', '^What were you')
     DRCI.stow_hand('left') if DRC.left_hand.include?('tessera')
     DRCI.stow_hand('right') if DRC.right_hand.include?('tessera')
 
@@ -375,7 +379,8 @@ class CrossingTraining
   def train_theurgy
     DRC.wait_for_script_to_complete('theurgy')
     return unless @researching
-    return if fput('research status', 'not researching anything', 'Fundamental', 'Augmentation', 'Stream', 'Sorcery', 'Utility', 'Warding') != 'not researching anything'
+    not_researching = '^[^"]*?not researching anything'
+    return if fput('research status', not_researching, '^[^"]*?Fundamental', '^[^"]*?Augmentation', '^[^"]*?Stream', '^[^"]*?Sorcery', '^[^"]*?Utility', '^[^"]*?Warding') != not_researching
 
     Flags.reset('research-partial')
     Flags.reset('research-complete')
@@ -469,7 +474,7 @@ class CrossingTraining
 
   def research
     refresh_cyclic
-    return if DRC.bput("research #{@researching} 300", 'You focus', 'You tentatively', 'You confidently', 'Abandoning the normal', 'You cannot begin') != 'You cannot begin'
+    return if DRC.bput("research #{@researching} 300", '^[^"]*?\KYou focus', '^[^"]*?\KYou tentatively', '^[^"]*?\KYou confidently', '^[^"]*?\KAbandoning the normal', '^[^"]*?\KYou cannot begin') != 'You cannot begin'
 
     fput('research cancel')
     fput('research cancel')
@@ -543,7 +548,7 @@ class CrossingTraining
       unless moon_data
         return if moon_data_unavailable
 
-        weather = DRC.bput('weather', 'inside', 'You glance up at the sky.')
+        weather = DRC.bput('weather', '^[^"]*?\Kinside', '^You glance up at the sky.')
         DRCT.walk_to @settings.outdoor_room if weather =~ /inside/
         fput('perceive moons')
         # Look for a moon that will be up for the next few minutes
@@ -622,7 +627,7 @@ class CrossingTraining
       return
     end
 
-    case DRC.bput('get my blacksmithing book', 'What were you', 'You get')
+    case DRC.bput('get my blacksmithing book', '^What were you', '^You get')
     when 'What were you'
       echo '***UNABLE TO TRAIN SCHOLARSHIP, REMOVING IT FROM THE TRAINING LIST***'
       @settings.crossing_training.delete('Scholarship')

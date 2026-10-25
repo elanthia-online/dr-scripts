@@ -119,6 +119,52 @@ RSpec.describe SellLoot do
     commands
   end
 
+  # Other players' line shapes. Raw (XML) is what Flags see; plain text is what
+  # bput sees.
+  def esp(text) = %([General][Mallory] "#{text}")
+  def esp_xml(text) = %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>)
+  def say(text) = %(Mallory says, "#{text}")
+  def say_xml(text) = %(<preset id='speech'>Mallory says</preset>, "#{text}")
+  def whisper(text) = %(Mallory whispers, "#{text}")
+
+  # Feed a raw server line through the registered Flags matchers, the way
+  # lich-5 DRParser.check_events does for every downstream line.
+  def deliver(line)
+    Flags.matchers.each do |key, regexes|
+      regexes.each do |regex|
+        if (match = line.match(regex))
+          Flags[key] = match
+          break
+        end
+      end
+    end
+  end
+
+  # What lich-5 DRC.bput returns when +lines+ arrive after the command: String
+  # patterns become /pattern/i, and the first line any pattern matches returns
+  # that match's text ('' when nothing matches).
+  def bput_reply(patterns, lines)
+    regexes = patterns.map { |item| item.is_a?(Regexp) ? item : /#{item}/i }
+    lines.each do |line|
+      regexes.each do |regex|
+        match = line.match(regex)
+        return match.to_a.first if match
+      end
+    end
+    ''
+  end
+
+  # Stub DRC.bput with the lines that arrive after each command (first key
+  # contained in the command wins), run through the real patterns.
+  #
+  # @param responses [Hash{String=>Array<String>}] command text => lines
+  def stub_bput_lines(responses)
+    allow(DRC).to receive(:bput) do |command, *patterns|
+      pair = responses.find { |key, _| command.include?(key) }
+      bput_reply(patterns, pair ? pair.last : [])
+    end
+  end
+
   # =========================================================================
   # #validate_settings
   # =========================================================================
@@ -495,6 +541,20 @@ RSpec.describe SellLoot do
       DRStats.guild = 'Thief'
       stub_bput('look in my sheath' => 'There is nothing in there')
       expect(build_instance.has_traps_to_sell?('sheath')).to be false
+    end
+
+    it 'is true on the real look reply' do
+      DRStats.guild = 'Thief'
+      stub_bput_lines('look in my sheath' => ['In the sheath you see a spring and a needle.'])
+      expect(build_instance.has_traps_to_sell?('sheath')).to be true
+    end
+
+    %i[esp say whisper].each do |shape|
+      it "is false when #{shape} text with 'you see' arrives before the empty reply" do
+        DRStats.guild = 'Thief'
+        stub_bput_lines('look in my sheath' => [send(shape, 'hug Rhadyn when you see em day'), 'There is nothing in there.'])
+        expect(build_instance.has_traps_to_sell?('sheath')).to be false
+      end
     end
   end
 
@@ -955,6 +1015,22 @@ RSpec.describe SellLoot do
       expect(DRCI).to receive(:wear_item?).with('bundle')
       build_instance.sell_bundle
     end
+
+    %i[esp say whisper].each do |shape|
+      it "does not sell when #{shape} text with 'you take' arrives before 'Remove what?'" do
+        stub_bput_lines('count my bundle'  => ['You flip through your bundle and find 5 skins in it.'],
+                        'remove my bundle' => [send(shape, 'If you have issue with it, you take your gweth off.'), 'Remove what?'])
+        build_instance.sell_bundle
+        expect(DRC).not_to have_received(:bput).with('sell my bundle', any_args)
+      end
+
+      it "still sells when #{shape} text says 'Remove what?' before the real removal" do
+        stub_bput_lines('count my bundle'  => ['You flip through your bundle and find 5 skins in it.'],
+                        'remove my bundle' => [send(shape, 'Remove what?'), 'You remove a tight bundle from your belt.'])
+        build_instance.sell_bundle
+        expect(DRC).to have_received(:bput).with('sell my bundle', any_args)
+      end
+    end
   end
 
   # =========================================================================
@@ -1079,7 +1155,8 @@ RSpec.describe SellLoot do
           done
         end
       end
-      # Like DRC.bput: the first pattern that matches wins, '' on no match.
+      # Like DRC.bput: Strings compile to /x/i (unescaped), the first pattern
+      # that matches returns its match text, '' on no match.
       allow(DRC).to receive(:bput) do |command, *patterns|
         commands << command
         line = reply.call(command).to_s
@@ -1221,6 +1298,73 @@ RSpec.describe SellLoot do
       expect { build_instance(bankbot_name: 'Teller', bankbot_room_id: 9).give_money_to_bankbot('kronars', 0) }
         .not_to raise_error
     end
+
+    context 'while the tip is outstanding' do
+      let(:offer_line) { 'You offer Teller a tip of 5000 Kronars.  Type CANCEL TIP to withdraw the offer.' }
+      let(:accept_line) { 'Teller accepts your tip and slips it away with a smile.' }
+
+      before do
+        allow(DRCM).to receive(:check_wealth).and_return(5000)
+        allow(DRRoom).to receive(:pcs).and_return(['Teller'])
+      end
+
+      # `tip_lines` arrive while the tip command waits for its reply; `heard`
+      # arrives one raw line per poll while the deposit waits on the tip flags.
+      # Returns the lines still unheard when the deposit stopped waiting.
+      def deposit(tip_lines:, heard: [])
+        stub_bput_lines('tip Teller' => tip_lines)
+        queue = heard.dup
+        seller = build_instance(bankbot_name: 'Teller', bankbot_room_id: 9)
+        allow(seller).to receive(:pause) do
+          raise 'deposit still waiting after every line was delivered' if queue.empty?
+
+          deliver(queue.shift)
+        end
+        seller.give_money_to_bankbot('kronars', 0)
+        queue
+      end
+
+      it "waits for the bankbot's accept line, also with leading tags" do
+        expect(deposit(tip_lines: [offer_line], heard: [accept_line])).to be_empty
+        expect(deposit(tip_lines: [offer_line], heard: ["<pushBold/>#{accept_line}"])).to be_empty
+      end
+
+      ['Teller declines your tip offer.', 'Your tip offer to Teller has expired.'].each do |line|
+        it "stops waiting on #{line.inspect}" do
+          expect(deposit(tip_lines: [offer_line], heard: [line, accept_line])).to eq([accept_line])
+        end
+      end
+
+      ['Teller declines your tip offer.', 'Your tip offer to Teller has expired.',
+       'Teller accepts your tip and slips it away with a smile.'].each do |text|
+        %i[esp_xml say_xml whisper].each do |shape|
+          it "keeps waiting when #{shape} carries #{text.inspect}" do
+            expect(deposit(tip_lines: [offer_line], heard: [send(shape, text), accept_line])).to be_empty
+            expect(Flags['tip-accepted']).to be_truthy
+          end
+        end
+      end
+
+      it "ignores another character's tip lines" do
+        heard = ['Bob declines your tip offer.', 'Your tip offer to Bob has expired.', 'Bob accepts your tip and slips it away with a smile.', accept_line]
+        expect(deposit(tip_lines: [offer_line], heard: heard)).to be_empty
+      end
+
+      ['Teller already has a tip offer pending.', 'You already have a tip offer outstanding.',
+       "I don't know who you are referring to.", "But you don't have that much!"].each do |text|
+        %i[esp say whisper].each do |shape|
+          it "reads the tip reply, not #{shape} text #{text.inspect} that arrives first" do
+            expect(deposit(tip_lines: [send(shape, text), offer_line], heard: [accept_line])).to be_empty
+            expect(displayed_messages.grep(/skipping deposit|not found|Error calculating/)).to be_empty
+          end
+        end
+      end
+
+      it 'still skips the deposit on the real busy reply' do
+        expect(deposit(tip_lines: ['Teller already has a tip offer pending.'])).to be_empty
+        expect(displayed_messages).to include('***Bankbot is busy, skipping deposit***')
+      end
+    end
   end
 
   # =========================================================================
@@ -1252,6 +1396,27 @@ RSpec.describe SellLoot do
       expect(DRCT).not_to receive(:walk_to)
       build_instance.sell_traps('sheath')
     end
+
+    %i[esp say whisper].each do |shape|
+      it "stays put when #{shape} text with 'you see' arrives before the empty reply" do
+        DRStats.guild = 'Thief'
+        stub_bput_lines('look in my sheath' => [send(shape, 'hug Rhadyn when you see em day'), 'There is nothing in there.'])
+        expect(DRCT).not_to receive(:walk_to)
+        build_instance.sell_traps('sheath')
+        expect(DRC).not_to have_received(:bput).with('remove my sheath', any_args)
+      end
+
+      it "goes on to the locksmith when #{shape} text says 'Remove what' before the real removal" do
+        DRStats.guild = 'Thief'
+        DRRoom.pcs = []
+        stub_bput_lines('look in my sheath' => ['In the sheath you see a trap component.'],
+                        'remove my sheath'  => [send(shape, 'Remove what?'), 'You remove a sheath from your belt.'],
+                        'give my sheath'    => ['Locke hands it back to you along with some coins.'],
+                        'wear my sheath'    => ['You attach a sheath to your belt.'])
+        expect(DRCT).to receive(:walk_to).with(400).and_return(true)
+        build_instance.sell_traps('sheath')
+      end
+    end
   end
 
   # =========================================================================
@@ -1271,6 +1436,16 @@ RSpec.describe SellLoot do
     it 'is false when the container cannot be found' do
       stub_bput('open my soft pouch' => 'What were you referring to')
       expect(build_instance.open_gem_pouch?('soft pouch')).to be false
+    end
+
+    %i[esp say whisper].each do |shape|
+      it "reads the game's reply, not #{shape} text that arrives first" do
+        stub_bput_lines('open my soft pouch' => [send(shape, 'The pouch has been tied off.'), 'You open your soft gem pouch.'])
+        expect(build_instance.open_gem_pouch?('soft pouch')).to be true
+
+        stub_bput_lines('open my soft pouch' => [send(shape, 'What were you referring to?'), 'The soft gem pouch has been tied off.'])
+        expect(build_instance.gem_pouch_state('soft pouch')).to eq(:tied)
+      end
     end
   end
 
@@ -1495,11 +1670,12 @@ RSpec.describe SellLoot do
           end
         end
       end
-      # Like DRC.bput: the first pattern that matches wins, '' on no match.
+      # Like DRC.bput: Strings compile to /x/i (unescaped), the first pattern
+      # that matches returns its match text, '' on no match.
       allow(DRC).to receive(:bput) do |command, *patterns|
         commands << command
         line = reply.call(command).to_s
-        patterns.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : /#{Regexp.escape(pattern)}/i] }
+        patterns.lazy.map { |pattern| line[pattern.is_a?(Regexp) ? pattern : /#{pattern}/i] }
                 .find(&:itself).to_s
       end
       commands
@@ -1779,6 +1955,47 @@ RSpec.describe SellLoot do
       it 'treats both handbacks at once as partial, so any doubt keeps the pouch' do
         expect(confirm(%i[empty partial])).to eq(:sold_partial)
       end
+
+      context 'with handback lines arriving while it waits' do
+        let(:empty_line) { 'Retrieving your now empty soft gem pouch.' }
+        let(:lighter_line) { 'Retrieving your now lighter soft gem pouch.' }
+
+        before do
+          Flags.add('sell-loot-returned-empty', SellLoot::GIVE_RETURNED_EMPTY)
+          Flags.add('sell-loot-returned-partial', SellLoot::GIVE_RETURNED_PARTIAL)
+        end
+
+        # One raw line is delivered per poll of the handback wait.
+        def confirm_hearing(lines)
+          seller = build_instance
+          queue = lines.dup
+          allow(seller).to receive(:pause) { deliver(queue.shift) if queue.any? }
+          allow(DRC).to receive(:bput).and_return(sold_line)
+          seller.confirm_sale('kiosk', 'soft pouch', 'give kiosk')
+        end
+
+        it "reads the game's handback lines, also with leading tags or other text before them" do
+          expect(confirm_hearing([empty_line])).to eq(:sold)
+          expect(confirm_hearing(["<pushBold/>#{empty_line}"])).to eq(:sold)
+          expect(confirm_hearing([lighter_line])).to eq(:sold_partial)
+          expect(confirm_hearing(["The kiosk whirs.  #{lighter_line}"])).to eq(:sold_partial)
+        end
+
+        %i[esp_xml say_xml whisper].each do |shape|
+          it "keeps the pouch when only #{shape} text says it came back empty" do
+            expect(confirm_hearing([send(shape, empty_line)])).to eq(:sold_partial)
+            expect(messages.last).to include('could not tell')
+          end
+
+          it "keeps the pouch when #{shape} text says empty and the game says lighter" do
+            expect(confirm_hearing([send(shape, empty_line), lighter_line])).to eq(:sold_partial)
+          end
+
+          it "ignores #{shape} text saying lighter on a full sale" do
+            expect(confirm_hearing([send(shape, lighter_line), empty_line])).to eq(:sold)
+          end
+        end
+      end
     end
 
     describe '#sell_stored_pouches' do
@@ -1836,6 +2053,41 @@ RSpec.describe SellLoot do
         expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'sack').and_return(true)
 
         seller(spare: 'sack').sell_stored_pouches(['kiosk'], 1)
+      end
+
+      %i[esp say whisper].each do |shape|
+        it "does not discard an untied pouch with gems when #{shape} text says it is empty" do
+          stub_bput_lines('open my'    => ['You open your soft gem pouch.'],
+                          'rummage my' => [send(shape, 'there is nothing in there'),
+                                           'You rummage through a soft gem pouch and see a ruby.'])
+          expect(DRCI).not_to receive(:dispose_trash)
+          expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').and_return(true)
+
+          seller.sell_stored_pouches(['kiosk'], 1)
+        end
+
+        it "does not discard a part-sold pouch when #{shape} text says it came back empty" do
+          Flags.add('sell-loot-returned-empty', SellLoot::GIVE_RETURNED_EMPTY)
+          Flags.add('sell-loot-returned-partial', SellLoot::GIVE_RETURNED_PARTIAL)
+          quoted = false
+          allow(DRC).to receive(:bput) do |command, *patterns|
+            lines = case command
+                    when /^open my / then ['The soft gem pouch has been tied off.']
+                    when /^give /
+                      quoted = !quoted
+                      [quoted ? 'The kiosk will purchase the pouch for 90 platinum Kronars based on the markup of 55%.' : sold_line]
+                    else []
+                    end
+            bput_reply(patterns, lines)
+          end
+          stored = seller
+          heard = [send(shape, 'Retrieving your now empty soft gem pouch.')]
+          allow(stored).to receive(:pause) { deliver(heard.shift) if heard.any? }
+          expect(DRCI).not_to receive(:dispose_trash)
+          expect(DRCI).to receive(:put_away_item?).with('soft pouch', 'pack').and_return(true)
+
+          stored.sell_stored_pouches(['kiosk'], 1)
+        end
       end
 
       context 'without positive evidence that the pouch is empty' do

@@ -59,7 +59,7 @@ class GivePouches
     return if @sell
 
     case DRC.bput('accept', '^You accept .* offer', 'You have no offers to accept')
-    when '^You accept .* offer'
+    when /^You accept .* offer/
       DRCI.dispose_trash('pouch', @worn_trashcan, @worn_trashcan_verb)
     end
   end

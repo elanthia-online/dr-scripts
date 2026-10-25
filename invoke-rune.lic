@@ -89,33 +89,36 @@ class Runestone
 
   def runestone_cast
     pause 1 while mana < @buff_spell_mana_threshold
-    case DRC.bput("invoke my #{@rune}", 'Closing your eyes',\
-                  'Well, that was fun',\
-                  'backfire',\
-                  'The spell pattern resists',\
-                  'You strain, but are too mentally fatigued to finish the pattern',\
-                  'Invoke what\?')
+    # Each reply only matches the game's own line, not other players'
+    # speech or ESP: '^' where the message starts the line, and no quote
+    # before 'backfire', which can follow other text.
+    case DRC.bput("invoke my #{@rune}", '^Closing your eyes',\
+                  '^Well, that was fun',\
+                  /^[^"]*?backfire/i,\
+                  '^The spell pattern resists',\
+                  '^You strain, but are too mentally fatigued to finish the pattern',\
+                  '^Invoke what\?')
     when 'Well, that was fun'
       waitrt?
       DRCI.dispose_trash(@rune)
       return
-    when 'backfire', 'The spell pattern resists', 'Invoke what?'
+    when /backfire\z/, 'The spell pattern resists', 'Invoke what?'
       return
     when 'You strain, but are too mentally fatigued to finish the pattern'
       DRC.message("Cannot cast this spell currently!")
       out_beep
     end
     waitcastrt?
-    DRC.bput("harn #{@harness}", 'You tap into the mana')
+    DRC.bput("harn #{@harness}", '^You tap into the mana')
     waitrt?
-    DRC.bput('cast', 'You')
+    DRC.bput('cast', /^[^"]*?You/i)
     waitrt?
     DRCI.put_away_item?(@rune, @runestone_storage)
   end
 
   def get_runestone
     DRCI.get_item(@rune, @runestone_storage)
-    if reget(3, "You get a useless #{@rune}")
+    if reget(3, "^You get a useless #{@rune}")
       DRCI.dispose_trash(@rune)
       return false
     end

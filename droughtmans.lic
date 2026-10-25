@@ -108,6 +108,14 @@ class Droughtmans
   PREPOSITIONS = %w[of with in on from for bearing wearing holding depicting
                     showing containing wrapped etched carved adorned].freeze
 
+  # Flags see the raw XML line. LINE_START: the message opens the line (only
+  # tags before it). NO_QUOTE_BEFORE: the message follows other text, but no
+  # quote before it outside tags. Either way the pattern only matches the game's
+  # own line, not other players' speech, whispers or ESP, which always carry a
+  # speaker or channel label and a quote first.
+  LINE_START = '^(?:<[^>]+>)*'
+  NO_QUOTE_BEFORE = '^(?:<[^>]*>|[^"<])*?'
+
   # Scripts that must not run while the maze bot drives movement.
   SCRIPTS_TO_STOP = %w[play buff-watcher afk almanac tarantula sanowret-crystal heroic-tattoo wand-watcher].freeze
 
@@ -233,23 +241,23 @@ class Droughtmans
   def setup_flags
     # Someone found/grabbed a golden key -> whitelist them for wanding.
     Flags.add('dm-key-found',
-              /\b(?<who>\w+) just found a golden key!/,
-              /\b(?<who>\w+) picks up a golden key/)
+              /#{LINE_START}(?<who>[A-Z][a-z]+) just found a golden key!/,
+              /#{LINE_START}(?<who>[A-Z][a-z]+) picks up a golden key/)
     # Someone escaped with the key -> they are gone; drop them from the list.
-    Flags.add('dm-prevailed', /\b(?<who>\w+) has prevailed over Droughtman's Maze!/)
+    Flags.add('dm-prevailed', /#{LINE_START}(?<who>[A-Z][a-z]+) has prevailed over Droughtman's Maze!/)
     # Win condition announcement.
     Flags.add('dm-earned', /^You have earned 8 Droughtman/)
     # A frozen mob thawed -- re-add it so it gets re-frozen.
-    Flags.add('dm-npc-unfrozen', /A(?<npc>.*) begins to move around again\./)
+    Flags.add('dm-npc-unfrozen', /#{LINE_START}An? (?<npc>[^"\[]*) begins to move around again\./)
     # Room went dark.
-    Flags.add('dm-dark', /It's pitch dark and you can't see a thing/)
+    Flags.add('dm-dark', /#{LINE_START}It's pitch dark and you can't see a thing/)
     # We tripped/fumbled and dropped OUR key -- react before someone grabs it.
     Flags.add('dm-key-dropped', /^You drop your golden key!/)
     # Someone ELSE dropped the key (our wave froze them, they tripped...).
     # Caught by flag because the drop line arrives AFTER the wave result.
     Flags.add('dm-key-loose', /^(?<who>\w+) drops (?:his|her) golden key!/)
     # The maze raises walls mid-run -- mark the direction blocked here.
-    Flags.add('dm-wall-rises', /an entire wall rises from the maze floor to block off (?<dir>north|south|east|west)ward passage/)
+    Flags.add('dm-wall-rises', /#{NO_QUOTE_BEFORE}an entire wall rises from the maze floor to block off (?<dir>north|south|east|west)ward passage/)
     # Our own wand-freeze thawing out (after a reflected wave).
     Flags.add('dm-self-thawed', /^The soft blue light slowly fades away from you\./)
     # A THIRD PARTY thawing (not us) -- e.g. a keyholder we found already frozen
@@ -260,14 +268,14 @@ class Droughtmans
     # thaw) -- track it separately so we know when we need light again.
     Flags.add('dm-light-faded', /^The soft blue light slowly fades away from you\./)
     # WE got frozen by someone else's wand (mob ambush, player attack).
-    Flags.add('dm-self-frozen', /causing you to immediately freeze in your tracks|freezing you in place/)
+    Flags.add('dm-self-frozen', /#{NO_QUOTE_BEFORE}(?:causing you to immediately freeze in your tracks|freezing you in place)/)
     # The maze shuffled us -- our local map is now wrong.
-    Flags.add('dm-repositioned', /A roaring WHOOSH fills your ears and you feel the ground lurch beneath you/)
+    Flags.add('dm-repositioned', /#{LINE_START}A roaring WHOOSH fills your ears and you feel the ground lurch beneath you/)
     # A current dragged us a direction -- shift our dead-reckoned position.
-    Flags.add('dm-dragged', /The current drags you (?<dir>\w+)/)
+    Flags.add('dm-dragged', /#{LINE_START}The current drags you (?<dir>\w+)/)
     # Dowse results: golden key vision and maze-center bearing.
-    Flags.add('dm-dowse-key', /As the dowsing concludes, a vision of (?:(?<holder>\w+) holding )?the golden key(?<where>[^.]*?) flits across your mind's eye/)
-    Flags.add('dm-dowse-center', /you believe the center of the maze is (?<where>[^.]+)\./)
+    Flags.add('dm-dowse-key', /#{LINE_START}As the dowsing concludes, a vision of (?:(?<holder>\w+) holding )?the golden key(?<where>[^.]*?) flits across your mind's eye/)
+    Flags.add('dm-dowse-center', /#{NO_QUOTE_BEFORE}you believe the center of the maze is (?<where>[^.]+)\./)
   end
 
   # Drain and act on pending game-event flags. Ordering matters (see comments).
@@ -327,7 +335,8 @@ class Droughtmans
         @known_frozen.reject! { |(pos, target), _v| pos == @pos && target_named?(target, npc) }
         dropped_targets(:npcs).reject! { |target| target_named?(target, npc) }
         thawed = maze_mob_targets.select { |target| target_named?(target, npc) }
-        thawed = [npc] if thawed.empty?
+        # With no such mob listed, wave at the noun -- never at a friend's name.
+        thawed = [npc] if thawed.empty? && @no_attack.none? { |name| name.casecmp?(npc) }
         thawed.each { |target| wave(target) }
       end
     end
@@ -1308,15 +1317,15 @@ class Droughtmans
     DRC.release_invisibility
     waitrt?
     case DRC.bput("wave my wand at #{target}",
-                  /circles around .* and returns to you, freezing you in place/,
+                  /^[^"]*?circles around .* and returns to you, freezing you in place/,
                   /^Roundtime/,
                   /^You wave/,
-                  /already frozen/,
-                  /appears immobilized/,
-                  /drops (?:his|her) golden key/,
-                  /Wave at what\?/,
-                  /I could not find/,
-                  /I do not understand/)
+                  /^[^"]*?already frozen/,
+                  /^[^"]*?appears immobilized/,
+                  /^[^"]*?drops (?:his|her) golden key/,
+                  /^Wave at what\?/,
+                  /^I could not find/,
+                  /^I do not understand/)
     when /returns to you, freezing you in place/
       # The wand punishes waving at a non-holder -- our intel was wrong.
       echo("*** WAND REFLECTED! #{target} does NOT have the key - we're frozen!")
