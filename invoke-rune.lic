@@ -94,7 +94,7 @@ class Runestone
                   'backfire',\
                   'The spell pattern resists',\
                   'You strain, but are too mentally fatigued to finish the pattern',\
-                  'Invoke what?')
+                  'Invoke what\?')
     when 'Well, that was fun'
       waitrt?
       DRCI.dispose_trash(@rune)
