@@ -19,6 +19,10 @@ ulfhara:
 @returnpath = []
 
 class UlfHara
+  # The game's own reply to a blocked move (it starts the line), not another
+  # player's speech or ESP with the same words.
+  MAZE_RESET_LINES = [/^(?:<[^>]+>)*You can't go there/i, /^(?:<[^>]+>)*You can't swim in that direction\./i].freeze
+
   def initialize
     @settings = get_settings
 
@@ -56,13 +60,7 @@ class UlfHara
     @handled_ids = []
     @rooms_count = 0
 
-    Flags.add('UlfHara-task-complete', 'You have completed your task!  Return to Zukir!', 'ASK ZUKIR ABOUT TASK COMPLETE', 'You quickly snatch', 'You should probably go find Zukir.', 'You should notify Zukir at once!', 'You should go and report', 'give you another mission', 'You should head back to Zukir')
-    Flags.add('UlfHara-combo-chest', 'You poke and prod, but fail to find anything of interest')
-    Flags.add('disarm-more', 'not fully disarmed', 'not yet fully disarmed', 'still has more to torment you with')
-    Flags.add('maze-reset', 'You can\'t go there', 'You can\'t swim in that direction.')
-    Flags.add('cameo-loot', 'You quickly snatch it up!  Zukir will want this right away!')
-    Flags.add('missing-found', 'enters, following you')
-    Flags.add('spell-ready', 'You feel fully prepared to cast your spell')
+    add_flags
 
     picking_data = get_data('picking').picking
 
@@ -158,9 +156,9 @@ class UlfHara
         DRCA.prepare?(data['abbrev'], data['mana'], data['symbiosis'], 'prep')
       end
       DRCI.stow_hands
-      DRC.bput('get my medi cloth', 'You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime') if DRC.right_hand != 'medicated cloth'
+      DRC.bput('get my medi cloth', *own_reply_lines('You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime')) if DRC.right_hand != 'medicated cloth'
       if DRC.right_hand != 'medicated cloth'
-        while DRC.bput('get medi cloth', 'You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime') =~ /Best wait a bit/
+        while DRC.bput('get medi cloth', *own_reply_lines('You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime')) =~ /Best wait a bit/
         end
       end
       healing
@@ -195,6 +193,46 @@ class UlfHara
     task
   end
 
+  def add_flags
+    Flags.add('UlfHara-task-complete',
+              *own_flag_lines('You have completed your task!  Return to Zukir!', 'ASK ZUKIR ABOUT TASK COMPLETE', 'You quickly snatch'),
+              *spoken_lines('You should probably go find Zukir.'),
+              *own_flag_lines('You should notify Zukir at once!'),
+              *spoken_lines('You should go and report', 'give you another mission', 'You should head back to Zukir'))
+    Flags.add('UlfHara-combo-chest', *own_flag_lines('You poke and prod, but fail to find anything of interest'))
+    Flags.add('disarm-more', *own_flag_lines('not fully disarmed', 'not yet fully disarmed', 'still has more to torment you with'))
+    Flags.add('maze-reset', *MAZE_RESET_LINES)
+    Flags.add('cameo-loot', *own_flag_lines('You quickly snatch it up!  Zukir will want this right away!'))
+    Flags.add('missing-found', *own_flag_lines('enters, following you'))
+    Flags.add('spell-ready', /^(?:<[^>]+>)*You feel fully prepared to cast your spell/i)
+  end
+
+  # Lich tests every Flags matcher and bput reply against every game line,
+  # other players' speech, whispers and ESP included, and their text always
+  # has a double quote before it. These only match the game's own line: no
+  # double quote before the message (outside tags, for the raw lines Flags
+  # see). \K starts the match at the message, so a bput still returns the
+  # bare message text for the `when` branches below.
+  def own_flag_lines(*messages)
+    messages.map { |message| /^(?:<[^>]*>|[^"<])*?\K(?:#{message})/i }
+  end
+
+  def own_reply_lines(*messages)
+    messages.flatten.map { |message| message.is_a?(Regexp) ? message : /^[^"]*?\K(?:#{message})/i }
+  end
+
+  # Messages an NPC may speak (an ally you supplied says "You should probably
+  # go find Zukir."), so a quote before them is allowed. Lines from an ESP
+  # channel or a whisper are still refused.
+  def spoken_lines(*messages)
+    messages.map { |message| /^(?!(?:<[^>]*>)*(?:<pushStream id=["']thoughts|\[[^\]]*\]\[|[A-Z][\w'-]* whispers\b)).*?\K(?:#{message})/i }
+  end
+
+  # Replies to giving supplies to an ally.
+  def give_replies
+    [*spoken_lines('You should head back to Zukir'), *own_reply_lines('Roundtime', "What is it you're trying"), *spoken_lines('Save that for our allies')]
+  end
+
   def cast
     if XMLData.prepared_spell.eql?('Regenerate')
       data = @settings.waggle_sets['healing']['Regenerate']
@@ -227,7 +265,7 @@ class UlfHara
   def supply
     echo 'Ally Re-supply Task'
     fput('swap') if DRC.right_hand == 'dirty sack'
-    temp = DRC.bput('look in my sack', /In the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
+    temp = DRC.bput('look in my sack', /^[^"]*?\KIn the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
     food = DRC.list_to_nouns(temp) - @notfoods
     drink = DRC.list_to_nouns(temp) - @notdrinks
     if food.empty? || drink.empty?
@@ -236,7 +274,7 @@ class UlfHara
       walk_to_special(@rooms[0])
       fput('ask zukir for supplies')
       fput('swap')
-      temp = DRC.bput('look in my sack', /In the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
+      temp = DRC.bput('look in my sack', /^[^"]*?\KIn the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
       food = DRC.list_to_nouns(temp) - @notfoods
       drink = DRC.list_to_nouns(temp) - @notdrinks
       walk_to_special(temproom)
@@ -255,13 +293,13 @@ class UlfHara
 
         DRC.retreat if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
         DRC.bput("stow my #{DRC.right_hand}", 'You put', 'What were you', 'Please rephrase') if DRC.right_hand
-        supply = DRC.bput("study #{npc}", /need of (.*) to complete.*mission|spare some (.*)|Others will assist|You give .* a studious look|surely a sign of dehydration.|Study what?/i)
+        supply = DRC.bput("study #{npc}", /^[^"]*?\K(?:need of (.*) to complete.*mission|spare some (.*)|Others will assist|You give .* a studious look|surely a sign of dehydration.|Study what?)/i)
         case supply
         when /need of (.*) to complete.*mission/
           supply = Regexp.last_match(1).sub(/e?s$/, '')
-          case DRC.bput("get my #{supply} in my sack", 'You get', 'What were you referring to', 'Please rephrase that')
+          case DRC.bput("get my #{supply} in my sack", *own_reply_lines('You get', 'What were you referring to', 'Please rephrase that'))
           when /You get/
-            case DRC.bput("give #{npc}", 'You should head back to Zukir', 'Roundtime', "What is it you're trying", 'Save that for our allies')
+            case DRC.bput("give #{npc}", *give_replies)
             when /What is it you're trying/
               fput("put my #{supply} in my sack")
             when /Save that for our allies/
@@ -274,15 +312,15 @@ class UlfHara
             walk_to_special(@rooms[0])
             fput('ask zukir for supplies')
             fput('swap')
-            temp = DRC.bput('look in my sack', /In the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
+            temp = DRC.bput('look in my sack', /^[^"]*?\KIn the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
             food = DRC.list_to_nouns(temp) - @notfoods
             drink = DRC.list_to_nouns(temp) - @notdrinks
             walk_to_special(temproom)
           end
         when /spare some (.*)/
-          case DRC.bput("get my #{food[0]} in my sack", 'You get', 'What were you referring to', 'Please rephrase that')
+          case DRC.bput("get my #{food[0]} in my sack", *own_reply_lines('You get', 'What were you referring to', 'Please rephrase that'))
           when /You get/
-            case DRC.bput("give #{npc}", 'You should head back to Zukir', 'Roundtime', "What is it you're trying", 'Save that for our allies')
+            case DRC.bput("give #{npc}", *give_replies)
             when /What is it you're trying/
               fput("put my #{food[0]} in my sack")
             when /Save that for our allies/
@@ -297,15 +335,15 @@ class UlfHara
             walk_to_special(@rooms[0])
             fput('ask zukir for supplies')
             fput('swap')
-            temp = DRC.bput('look in my sack', /In the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
+            temp = DRC.bput('look in my sack', /^[^"]*?\KIn the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
             food = DRC.list_to_nouns(temp) - @notfoods
             drink = DRC.list_to_nouns(temp) - @notdrinks
             walk_to_special(temproom)
           end
         when /surely a sign of dehydration/
-          case DRC.bput("get my #{drink[0]} in my sack", 'You get', 'What were you referring to', 'Please rephrase that')
+          case DRC.bput("get my #{drink[0]} in my sack", *own_reply_lines('You get', 'What were you referring to', 'Please rephrase that'))
           when /You get/
-            case DRC.bput("give #{npc}", 'You should head back to Zukir', 'Roundtime', "What is it you're trying", 'Save that for our allies')
+            case DRC.bput("give #{npc}", *give_replies)
             when /What is it you're trying/
               fput("put my #{drink[0]} in my sack")
             when /Save that for our allies/
@@ -320,7 +358,7 @@ class UlfHara
             walk_to_special(@rooms[0])
             fput('ask zukir for supplies')
             fput('swap')
-            temp = DRC.bput('look in my sack', /In the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
+            temp = DRC.bput('look in my sack', /^[^"]*?\KIn the dirty sack you see (.*)/i).gsub(/In the dirty sack you see |\./, '').downcase
             food = DRC.list_to_nouns(temp) - @notfoods
             drink = DRC.list_to_nouns(temp) - @notdrinks
             walk_to_special(temproom)
@@ -343,15 +381,15 @@ class UlfHara
     @current_room = MazeRoom.new
     until Flags['UlfHara-task-complete']
       if DRRoom.pcs.empty?
-        case DRC.bput('search', 'After much shuffling, you manage to find', 'Roundtime', "as you're about to give up", 'You poke and prod, but fail to find anything of interest', 'dust settles, you notice', "You're sure you searched this area recently", 'shattered stone that once formed a wall')
+        case DRC.bput('search', *own_reply_lines('After much shuffling, you manage to find', 'Roundtime', "as you're about to give up", 'You poke and prod, but fail to find anything of interest', 'dust settles, you notice', "You're sure you searched this area recently", 'shattered stone that once formed a wall'))
         when /After much shuffling, you manage to find|as you're about to give up|dust settles, you notice|shattered stone that once formed a wall/
-          while DRC.bput('turn blue dial', /^You turn the .+ dial to .\.$/, 'A faint tick can be heard from the mechanism.', 'A faint click can be heard from the mechanism.') =~ /^You turn the .+ dial to .\.$|A faint tick can be heard from the mechanism./i
+          while DRC.bput('turn blue dial', *own_reply_lines(/^You turn the .+ dial to .\.$/, 'A faint tick can be heard from the mechanism.', 'A faint click can be heard from the mechanism.')) =~ /^You turn the .+ dial to .\.$|A faint tick can be heard from the mechanism./i
           end
           DRC.bput('push blue dial', 'until you feel it lock')
-          while DRC.bput('turn green dial', /^You turn the .+ dial to .\.$/, 'A faint tick can be heard from the mechanism.', 'A faint click can be heard from the mechanism.') =~ /^You turn the .+ dial to .\.$|A faint tick can be heard from the mechanism./i
+          while DRC.bput('turn green dial', *own_reply_lines(/^You turn the .+ dial to .\.$/, 'A faint tick can be heard from the mechanism.', 'A faint click can be heard from the mechanism.')) =~ /^You turn the .+ dial to .\.$|A faint tick can be heard from the mechanism./i
           end
           DRC.bput('push green dial', 'until you feel it lock')
-          while DRC.bput('turn red dial', /^You turn the .+ dial to .\.$/, 'A faint tick can be heard from the mechanism.', 'A faint click can be heard from the mechanism.') =~ /^You turn the .+ dial to .\.$|A faint tick can be heard from the mechanism./i
+          while DRC.bput('turn red dial', *own_reply_lines(/^You turn the .+ dial to .\.$/, 'A faint tick can be heard from the mechanism.', 'A faint click can be heard from the mechanism.')) =~ /^You turn the .+ dial to .\.$|A faint tick can be heard from the mechanism./i
           end
           DRC.bput('push red dial', 'until you feel it lock')
           fput('pull latch')
@@ -370,9 +408,9 @@ class UlfHara
   def healing
     echo 'Healing Task'
     lastroom = Room.current
-    DRC.bput('get my medi cloth', 'You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime') if DRC.right_hand != 'medicated cloth'
+    DRC.bput('get my medi cloth', *own_reply_lines('You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime')) if DRC.right_hand != 'medicated cloth'
     if DRC.right_hand != 'medicated cloth'
-      while DRC.bput('get medi cloth', 'You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime') =~ /Best wait a bit/
+      while DRC.bput('get medi cloth', *own_reply_lines('You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime')) =~ /Best wait a bit/
       end
     end
     until Flags['UlfHara-task-complete']
@@ -390,23 +428,23 @@ class UlfHara
         break if Flags['UlfHara-task-complete']
 
         DRC.retreat if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
-        DRC.bput("study #{npc}", 'carries some wounds that an Empath or medic', 'Others will assist', 'Study what?', "You are NOT on this task, you don\'t need", /You give .* a studious look/)
-        if reget(5, 'carries some wounds that an Empath or medic')
+        DRC.bput("study #{npc}", *own_reply_lines('carries some wounds that an Empath or medic', 'Others will assist', 'Study what?', "You are NOT on this task, you don\'t need", /^[^"]*?\KYou give .* a studious look/))
+        if reget(5, *own_reply_lines('carries some wounds that an Empath or medic'))
           if DRStats.empath? && (DRSpells.active_spells.include?('Regenerate') || DRSpells.active_spells.include?('Heal'))
             fput("touch #{npc}")
             fput("take #{npc}")
           end
-          while DRC.bput("rub #{npc} with cloth", 'Roundtime', 'You discard what', 'swats at you and shouts', 'Rub what?', 'You should go and report', 'That is probably not a good idea') =~ /Roundtime|You discard what/i
+          while DRC.bput("rub #{npc} with cloth", *own_reply_lines('Roundtime', 'You discard what', 'swats at you and shouts', 'Rub what?'), *spoken_lines('You should go and report', 'That is probably not a good idea')) =~ /Roundtime|You discard what/i
             cast if Flags['spell-ready']
             break if Flags['UlfHara-task-complete']
 
             DRC.retreat if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
-            DRC.bput('get my medi cloth', 'You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime') if DRC.right_hand != 'medicated cloth'
+            DRC.bput('get my medi cloth', *own_reply_lines('You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime')) if DRC.right_hand != 'medicated cloth'
             next unless DRC.right_hand != 'medicated cloth'
 
             temproom = Room.current.id
             walk_to_special(@rooms[0])
-            while DRC.bput('get medi cloth', 'You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime') =~ /Best wait a bit/
+            while DRC.bput('get medi cloth', *own_reply_lines('You pick', 'You get', 'What', 'Best wait a bit', 'Roundtime')) =~ /Best wait a bit/
               cast if Flags['spell-ready']
               break if Flags['UlfHara-task-complete']
             end
@@ -414,7 +452,7 @@ class UlfHara
           end
           mark_handled(npc)
           break if Flags['UlfHara-task-complete']
-        elsif reget(5, 'Others will assist', /You give .* a studious look/)
+        elsif reget(5, *own_reply_lines('Others will assist', /^[^"]*?You give .* a studious look/))
           mark_handled(npc)
         end
       end
@@ -425,7 +463,7 @@ class UlfHara
 
   def hunting
     echo 'Hunting Task'
-    task_temp = DRC.bput('task', /wants you to kill as many as you must to recover (.*) of these treasures|You need the killing blow/)
+    task_temp = DRC.bput('task', /^[^"]*?\K(?:wants you to kill as many as you must to recover (.*) of these treasures|You need the killing blow)/)
     if task_temp =~ /wants you to kill as many as you must to recover (.*) of these treasures/i
       @task_return = Regexp.last_match(1).to_i
     end
@@ -511,7 +549,7 @@ class UlfHara
       npc = unhandled_npcs.first
       if npc
         DRC.retreat if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
-        case DRC.bput("ask #{npc} about follow", 'Usage: ASK', 'appreciate your help', 'is already guiding me', 'does not seem to know anything about that', 'Did you hit your head too')
+        case DRC.bput("ask #{npc} about follow", *own_reply_lines('Usage: ASK'), *spoken_lines('appreciate your help', 'is already guiding me'), *own_reply_lines('does not seem to know anything about that'), *spoken_lines('Did you hit your head too'))
         when /Usage: ASK|is already guiding me|does not seem to know anything about that/
           mark_handled(npc)
         when /appreciate your help|Did you hit your head too/
@@ -533,7 +571,7 @@ class UlfHara
           end
         end
       else
-        case DRC.bput('search', 'Roundtime', 'completely surprised as.*stumbles into you', 'Perhaps somewhere else would have better odds', 'you notice.*unconscious form', 'Someone puts a hand on your shoulder', 'crawls out from it', 'As you peek behind a nearby', 'Did you hit your head too')
+        case DRC.bput('search', *own_reply_lines('Roundtime', 'completely surprised as.*stumbles into you', 'Perhaps somewhere else would have better odds', 'you notice.*unconscious form', 'Someone puts a hand on your shoulder', 'crawls out from it', 'As you peek behind a nearby'), *spoken_lines('Did you hit your head too'))
         when /completely surprised as.*stumbles into you|you notice.*unconscious form|Someone puts a hand on your shoulder|crawls out from it|As you peek behind a nearby|Did you hit your head too/
           destination = Room['12872']
           missingfound = true
@@ -542,7 +580,7 @@ class UlfHara
               break
             else
               escort(Room.current, destination)
-              waitfor(/enters, following you/i)
+              waitfor(/^[^"]*?enters, following you/i)
               pause
               DRC.retreat if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
             end
@@ -566,7 +604,7 @@ class UlfHara
           end
         end
       else
-        case DRC.bput('search', 'After much shuffling, you manage to find', 'Roundtime', "as you're about to give up", 'but fail to find anything of interest', 'but fail to find anything of interest.', 'peeking out from a new pile of debris!', 'Somewhere else would have better odds.', 'down a shattered stone that')
+        case DRC.bput('search', *own_reply_lines('After much shuffling, you manage to find', 'Roundtime', "as you're about to give up", 'but fail to find anything of interest', 'but fail to find anything of interest.', 'peeking out from a new pile of debris!', 'Somewhere else would have better odds.', 'down a shattered stone that'))
         when /After much shuffling, you manage to find|as you're about to give up|peeking out from a new pile of debris|down a shattered stone that/
           DRRoom.room_objs.each do |box|
             if box.sub(/gleaming chest/, '') =~ /coffer$|strongbox$|chest$|caddy$|trunk$|casket$|skippet$|crate$|box$/i
@@ -595,7 +633,7 @@ class UlfHara
 
       lastroom = Room.current
       fput 'kneel' unless kneeling?
-      while DRC.bput('search', 'Roundtime', 'You quickly snatch') =~ /Roundtime/i
+      while DRC.bput('search', *own_reply_lines('Roundtime', 'You quickly snatch')) =~ /Roundtime/i
         if DRRoom.npcs.any? { |x| x =~ /#{@baddies.join('|')}/i }
           DRC.fix_standing
           DRC.retreat
@@ -636,7 +674,7 @@ class UlfHara
       if Flags['maze-reset']
         echo 'Maze Reset'
         Flags.reset('maze-reset')
-        result = DRC.bput('look', 'Obvious exits:.*').split(':').last.split(', ').first.delete('.')
+        result = DRC.bput('look', '^Obvious exits:.*').split(':').last.split(', ').first.delete('.')
         move(result)
         @current_room = MazeRoom.new
       end
@@ -693,7 +731,7 @@ class UlfHara
     waitrt?
     echo "disarm?(#{box})" if UserVars.lockpick_debug
 
-    case DRC.bput("disarm #{box} identify", @disarm_identify_failed, @disarm_too_hard, @disarm_careful, @disarm_quick, @disarm_normal, 'Roundtime')
+    case DRC.bput("disarm #{box} identify", *own_reply_lines(@disarm_identify_failed, @disarm_too_hard, @disarm_careful, @disarm_quick, @disarm_normal, 'Roundtime'))
     when 'Roundtime', *@disarm_careful
       disarm_speed?(box, 'careful')
     when *@disarm_quick
@@ -718,14 +756,14 @@ class UlfHara
     echo "disarm_speed?(#{box}, #{speed})" if UserVars.lockpick_debug
     Flags.reset('disarm-more')
 
-    case DRC.bput("disarm #{box} #{speed}", @disarm_failed, @disarm_retry, 'Roundtime')
+    case DRC.bput("disarm #{box} #{speed}", *own_reply_lines(@disarm_failed, @disarm_retry, 'Roundtime'))
     when *@disarm_failed
       DRC.beep
       DRC.beep
       echo('**SPRUNG TRAP**')
       return false
     when *@disarm_retry
-      new_speed = reget(10, 'something to shift') ? 'careful' : speed
+      new_speed = reget(10, *own_reply_lines('something to shift')) ? 'careful' : speed
       return disarm_speed?(box, new_speed)
     end
     pause 1
@@ -746,7 +784,7 @@ class UlfHara
 
   def pick(box)
     waitrt?
-    case DRC.bput("pick #{box} ident", @pick_careful, @pick_quick, @pick_blind, @pick_retry, /Find a more appropriate tool and try again/, /It's not even locked, why bother/)
+    case DRC.bput("pick #{box} ident", *own_reply_lines(@pick_careful, @pick_quick, @pick_blind, @pick_retry, /^[^"]*?\KFind a more appropriate tool and try again/, /^[^"]*?\KIt's not even locked, why bother/))
     when /Find a more appropriate tool and try again/
       find_lockpick
       pick(box)
@@ -773,7 +811,7 @@ class UlfHara
       @original_speed = nil
     end
     waitrt?
-    case DRC.bput("pick #{box} #{speed}", 'It\'s not even locked, why bother?', 'You discover another lock protecting', 'You are unable to make any progress towards opening the lock', 'Roundtime', /Find a more appropriate tool and try again/)
+    case DRC.bput("pick #{box} #{speed}", *own_reply_lines('It\'s not even locked, why bother?', 'You discover another lock protecting', 'You are unable to make any progress towards opening the lock', 'Roundtime', /^[^"]*?\KFind a more appropriate tool and try again/))
     when 'Roundtime'
       waitrt?
       return false
@@ -794,7 +832,7 @@ class UlfHara
 
     waitrt?
 
-    case DRC.bput('get my lockpick', 'referring to\?', '^You get ')
+    case DRC.bput('get my lockpick', *own_reply_lines('referring to\?'), '^You get ')
     when 'referring to?'
       echo '***OUT OF LOCKPICKS***'
       DRC.beep
@@ -805,7 +843,7 @@ class UlfHara
   end
 
   def loot_box(box)
-    loot = DRC.bput("look in #{box}", /.*#{box} you see (.*)/i)
+    loot = DRC.bput("look in #{box}", /^[^"]*?#{box} you see (.*)/i)
 
     DRC.list_to_nouns(loot.gsub(/In the.*you see |\.$/, '')).each do |item|
       next if item =~ /#{@ignoreloot.join('|')}/i && !@ignoreloot.empty?
@@ -889,7 +927,7 @@ class MazeRoom
 
   attr_accessor :desc, :exits, :checked, :parent, :coords
 
-  Flags.add('maze-reset', 'You can\'t go there', 'You can\'t swim in that direction.')
+  Flags.add('maze-reset', *UlfHara::MAZE_RESET_LINES)
 
   def initialize(came_from = nil, source_room = nil, return_direction = [])
     @return = return_direction
@@ -959,7 +997,7 @@ class MazeRoom
     if Flags['maze-reset']
       echo 'Maze Reset'
       Flags.reset('maze-reset')
-      DRC.bput('look', 'Obvious exits:.*')
+      DRC.bput('look', '^Obvious exits:.*')
     end
 
     dir_to_go = @exits.keys.first if @exits.size == 1
