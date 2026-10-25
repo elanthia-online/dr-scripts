@@ -79,7 +79,7 @@ class Tinker
               /^(?:<[^>]*>|[^"<])*?need another (lenses)/,
               /^(?:<[^>]*>|[^"<])*?another finished (mechanism)/,
               /^(?:<[^>]+>)*You must assemble the (strips)/,
-              /^You need another (.* boltheads)/,
+              /^(?:<[^>]+>)*You need another (.* boltheads)/,
               /^(?:<[^>]+>)*You need another (bolt flights)/)
     Flags.add('tinker-done',
               /^(?:<[^>]+>)*Applying the final touches/,

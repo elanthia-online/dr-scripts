@@ -216,6 +216,21 @@ RSpec.describe Tinker do
           end
         end
       end
+
+      # Messages anchored to the line start still match when the game puts
+      # tags in front of them.
+      {
+        '<pushBold/>You need another bone, wood or horn backing material to continue crafting a crossbow.' => 'assemble my crossbow with my backer',
+        '<pushBold/>You must assemble the strips to continue crafting a crossbow.'                         => 'assemble my crossbow with my strips',
+        '<pushBold/>You need another barbed boltheads to continue crafting a crossbow.'                    => 'assemble my crossbow with my barbed boltheads',
+        '<pushBold/>You need another bolt flights to continue crafting a crossbow.'                        => 'assemble my crossbow with my bolt flights'
+      }.each do |line, assemble|
+        it "runs '#{assemble}' on #{line.inspect}" do
+          run = craft_hearing(line)
+
+          expect(run[:sent]).to eq(['shape my crossbow with my shaper', assemble, 'shape my crossbow with my shaper'])
+        end
+      end
     end
   end
 end
