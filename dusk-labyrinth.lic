@@ -45,12 +45,15 @@ class DuskLab
     }
 
     # Be notified when certain events happen, such as seeing a pet move or the maze reshuffle.
-    Flags.add('five-minute-warning', 'You only have about 5 minutes left in the labyrinth!')
-    Flags.add('done', 'A surly Dwarf stomps in and glowers at you in the dim gloom')
-    Flags.add('no-pet', "A small #{pet_noun} scurries #{Regexp.new('(?<pet_dir>\w+)')}!")
-    Flags.add('pet', "You notice a small #{pet_noun} scurrying around the area")
-    Flags.add('caught', 'You pick them both up, claiming your new pet')
-    Flags.add('maze-shuffled', 'no longer certain of your directions')
+    # Each pattern only matches the game's own line, not other players' speech or ESP:
+    # no double quote may come before the message outside a tag, and every speech,
+    # whisper and ESP line has one before the spoken text.
+    Flags.add('five-minute-warning', /^(?:<[^>]*>|[^"<])*?You only have about 5 minutes left in the labyrinth!/i)
+    Flags.add('done', /^(?:<[^>]*>|[^"<])*?A surly Dwarf stomps in and glowers at you in the dim gloom/i)
+    Flags.add('no-pet', /^(?:<[^>]*>|[^"<])*?A small #{pet_noun} scurries (?<pet_dir>\w+)!/i)
+    Flags.add('pet', /^(?:<[^>]*>|[^"<])*?You notice a small #{pet_noun} scurrying around the area/i)
+    Flags.add('caught', /^(?:<[^>]*>|[^"<])*?You pick them both up, claiming your new pet/i)
+    Flags.add('maze-shuffled', /^(?:<[^>]*>|[^"<])*?no longer certain of your directions/i)
 
     # Let's do this!
     init_maze
