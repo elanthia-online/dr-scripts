@@ -20,8 +20,8 @@ class Enchant
   ANALYZE_IMBUE_PATTERN = /^[^"]*?application of an imbue spell to advance the enchanting process\./.freeze
 
   # Look on brazier
-  BRAZIER_LOOK_PATTERN = /^[^"]*?On the.*brazier you see/.freeze
-  BRAZIER_CONTENTS_PATTERN = /^[^"]*?On the (?:\w+ )?brazier you see (?<items>.*)\./.freeze
+  # Any brazier: your own (`brass brazier`) or the public `enchanter's brazier`.
+  BRAZIER_CONTENTS_PATTERN = /^[^"]*?On the .*?brazier you see (?<items>.*)\./.freeze
   BRAZIER_EMPTY = /^[^"]*?There is nothing/i.freeze
 
   # Wave fount
@@ -195,8 +195,9 @@ class Enchant
   end
 
   def handle_imbue_resume
-    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_LOOK_PATTERN, BRAZIER_EMPTY)
-    if result.include?('fount')
+    result = DRC.bput("look on #{@brazier_ref}", BRAZIER_CONTENTS_PATTERN, BRAZIER_EMPTY)
+    match = BRAZIER_CONTENTS_PATTERN.match(result)
+    if match && match[:items].match?(/\bfount\b/)
       imbue
     else
       DRCC.get_crafting_item(@fount, @bag, @bag_items, @belt)
