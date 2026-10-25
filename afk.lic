@@ -14,7 +14,7 @@ def exit_game(message)
 end
 
 def afk?(line)
-  return true if line =~ /you have been idle too long/i
+  return true if line =~ /^you have been idle too long/i
 
   if $_IDLETIMESTAMP_ && $_SCRIPTIDLETIMESTAMP_
     return true if Time.now - $_IDLETIMESTAMP_ > 360 && Time.now - $_SCRIPTIDLETIMESTAMP_ > 360
@@ -48,7 +48,7 @@ loop do
   fput(%w[tdp time age].sample) if afk?(line)
 
   justice_message_count += 1 if line =~ /^"Burn .+!  Burn .+!" .* giving you a wide berth/
-  justice_message_count += 1 if line =~ /authorities will try to bring you in for endangering the public/
+  justice_message_count += 1 if line =~ /^[^"]*?authorities will try to bring you in for endangering the public/
 
   if justice_message_count != spell_check_count
     DRSpells.active_spells.each { |x, _y| fput("release #{get_data("spells")["spell_data"][x]["abbrev"]} spell") if get_data("spells")["spell_data"][x]["triggers_justice"] }
@@ -58,7 +58,7 @@ loop do
     exit_game("It looks like you've run into trouble with the law too many times")
   end
 
-  if line =~ /For a current status of how many items you have, use LOOK PORTAL./
+  if line =~ /^[^"]*?For a current status of how many items you have, use LOOK PORTAL./
     echo "Looks like you're in the junk yard.  We'll log you out in 60 seconds unless you exit the junk yard.  You can also ';kill afk' to stay in the game, just remember to restart it once you get out of the junk yard."
     junk_timer = Time.now
     while XMLData.room_title == '[[A Junk Yard]]'
@@ -72,7 +72,7 @@ loop do
     stop_script('go2') if Script.running?('go2')
   end
 
-  if line =~ /^You notice .* at your feet, and do not wish to leave it behind/ || line =~ /You find yourself unable to sneak with items at your feet/
+  if line =~ /^You notice .* at your feet, and do not wish to leave it behind/ || line =~ /^[^"]*?You find yourself unable to sneak with items at your feet/
     DRCI.stow_hand('left') unless !DRC.right_hand || !DRC.left_hand
     while DRC.bput('stow feet', /You pick up/, /Stow what/) =~ /You pick up/
     end

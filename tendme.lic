@@ -81,10 +81,13 @@ class TendMe
 
   # Monitor for wounds to begin bleeding again then tend them.
   def monitor_health(train)
-    Flags.add('tendme-new-lodge', /lodges .* in your .*!/)
-    Flags.add('tendme-bind-lodged', /You feel a slight pain from the (?<item>.*) lodged in your (?<body_part>.*)\./)
-    Flags.add('tendme-bind-wound', /The bandages (?:binding|compressing) your (?<body_part>.*) (?:become|come|soak)/)
-    Flags.add('tendme-rewrap-wound', /You feel like now might be a good time to change the (?:bandages|bindings) on your (?<body_part>.*)\./)
+    # Anchored so each flag only matches the game's own line, not other players'
+    # speech/ESP: line start (leading tags allowed), or for the mid-line lodge
+    # message no quote before it.
+    Flags.add('tendme-new-lodge', /^(?:<[^>]*>|[^"<])*?lodges .* in your .*!/)
+    Flags.add('tendme-bind-lodged', /^(?:<[^>]+>)*You feel a slight pain from the (?<item>.*) lodged in your (?<body_part>.*)\./)
+    Flags.add('tendme-bind-wound', /^(?:<[^>]+>)*The bandages (?:binding|compressing) your (?<body_part>.*) (?:become|come|soak)/)
+    Flags.add('tendme-rewrap-wound', /^(?:<[^>]+>)*You feel like now might be a good time to change the (?:bandages|bindings) on your (?<body_part>.*)\./)
 
     loop do
       pause 0.5

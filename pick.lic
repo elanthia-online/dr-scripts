@@ -235,13 +235,29 @@ class Pick
     @equipment_manager.wear_equipment_set?('standard')
   end
 
+  # The game's own lines never have a quote before the message; other players'
+  # speech, ESP and whispers always do, so these matchers refuse a quote ahead
+  # of the message. \K starts the match at the message itself, so the matched
+  # text is the message alone: trap-type and difficulty lookups and the `when`
+  # branches compare the same text as before.
+
+  # Flags see the raw XML line, which may carry tags before the message.
+  def own_flag_line(message)
+    /^(?:<[^>]*>|[^"<])*?\K(?:#{message})/i
+  end
+
+  # bput replies are stripped text. Regexps are passed through unchanged.
+  def own_reply_lines(*messages)
+    messages.flatten.map { |message| message.is_a?(Regexp) ? message : /^[^"]*?\K(?:#{message})/i }
+  end
+
   def setup_flags
-    Flags.add('disarm-shift', 'something to shift')
-    Flags.add('disarm-trap-type', *@all_trap_messages.values)
-    Flags.add('more-traps', 'not fully disarmed', 'not yet fully disarmed', 'still has more to torment you with')
-    Flags.add('more-locks', 'You discover another lock protecting')
-    Flags.add('glance-no-traps', 'It looks like there are no traps left on')
-    Flags.add('glance-no-locks', 'It looks like there are no locks left on')
+    Flags.add('disarm-shift', own_flag_line('something to shift'))
+    Flags.add('disarm-trap-type', *@all_trap_messages.values.map { |message| own_flag_line(message) })
+    Flags.add('more-traps', *['not fully disarmed', 'not yet fully disarmed', 'still has more to torment you with'].map { |message| own_flag_line(message) })
+    Flags.add('more-locks', own_flag_line('You discover another lock protecting'))
+    Flags.add('glance-no-traps', own_flag_line('It looks like there are no traps left on'))
+    Flags.add('glance-no-locks', own_flag_line('It looks like there are no locks left on'))
   end
 
   def crack_boxes
@@ -498,7 +514,7 @@ class Pick
     Flags.reset('glance-no-traps')
     Flags.reset('glance-no-locks')
 
-    DRC.bput("glance my #{box['noun']}", "Looking more closely you see", "It looks like there are no locks", /^You glance/)
+    DRC.bput("glance my #{box['noun']}", *own_reply_lines("Looking more closely you see", "It looks like there are no locks", /^You glance/))
 
     box['trapped'] = false if Flags['glance-no-traps']
     box['locked'] = false if Flags['glance-no-locks']
@@ -515,13 +531,13 @@ class Pick
     Flags.reset('disarm-trap-type')
 
     disarm_identify_match = DRC.bput("disarm my #{box['noun']} identify",
-                                     'Thanks to an instinct provided by your sense of security',
-                                     @disarm_lost_box_matches,
-                                     @trap_sprung_matches,
-                                     @disarm_identify_failed,
-                                     @disarm_identify_messages,
-                                     @disarmed_trap_messages.values,
-                                     /^You're in no shape to be disarming anything/)
+                                     *own_reply_lines('Thanks to an instinct provided by your sense of security',
+                                                      @disarm_lost_box_matches,
+                                                      @trap_sprung_matches,
+                                                      @disarm_identify_failed,
+                                                      @disarm_identify_messages,
+                                                      @disarmed_trap_messages.values,
+                                                      /^You're in no shape to be disarming anything/))
 
     trapped = true
     trap = nil
@@ -601,11 +617,11 @@ class Pick
     Flags.reset('disarm-shift')
 
     disarm_result = DRC.bput("disarm my #{box['noun']} #{speed}",
-                             'Thanks to an instinct provided by your sense of security',
-                             @trap_sprung_matches,
-                             @disarmed_trap_messages.values,
-                             @disarm_retry,
-                             @disarm_succeeded)
+                             *own_reply_lines('Thanks to an instinct provided by your sense of security',
+                                              @trap_sprung_matches,
+                                              @disarmed_trap_messages.values,
+                                              @disarm_retry,
+                                              @disarm_succeeded))
 
     echo "disarm_result: #{disarm_result}" if @debug
 
@@ -691,12 +707,12 @@ class Pick
     echo "identify_lock(#{box})" if @debug
 
     pick_identify_match = DRC.bput("pick my #{box['noun']} ident",
-                                   @trap_sprung_matches,
-                                   @pick_identify_messages,
-                                   @pick_retry,
-                                   'better have an empty hand first',
-                                   /Find a more appropriate tool and try again/,
-                                   /It's not even locked, why bother/)
+                                   *own_reply_lines(@trap_sprung_matches,
+                                                    @pick_identify_messages,
+                                                    @pick_retry,
+                                                    'better have an empty hand first',
+                                                    'Find a more appropriate tool and try again',
+                                                    "It's not even locked, why bother"))
 
     case pick_identify_match
     when 'better have an empty hand first'
@@ -731,10 +747,11 @@ class Pick
     Flags.reset('more-traps')
     locked = true
 
-    pick_result = DRC.bput("pick my #{box['noun']} #{speed}", @trap_sprung_matches, 'not even locked',
-                           'you remove your lockpick and open and remove the lock', 'You discover another lock protecting',
-                           'You are unable to make any progress towards opening the lock', 'Find a more appropriate tool and try again',
-                           'better have an empty hand first', /Pick what/)
+    pick_result = DRC.bput("pick my #{box['noun']} #{speed}",
+                           *own_reply_lines(@trap_sprung_matches, 'not even locked',
+                                            'you remove your lockpick and open and remove the lock', 'You discover another lock protecting',
+                                            'You are unable to make any progress towards opening the lock', 'Find a more appropriate tool and try again',
+                                            'better have an empty hand first', 'Pick what'))
     echo "Pick Result: #{pick_result}" if @debug
 
     case pick_result
@@ -825,7 +842,7 @@ class Pick
   # @return [void]
   def loot(box_noun)
     echo "Looting #{box_noun}..." if @debug
-    if DRC.bput("open my #{box_noun}", /^In the .* you see .*\./, 'That is already open', 'It is locked') == 'It is locked'
+    if DRC.bput("open my #{box_noun}", *own_reply_lines(/^In the .* you see .*\./, 'That is already open', 'It is locked')) == 'It is locked'
       DRC.message("Pick: Bug - tried to loot locked box. Skipping.")
       return
     end

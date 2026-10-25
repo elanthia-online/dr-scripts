@@ -469,9 +469,12 @@ class TheurgyActions
       DRCI.get_item_safe('taffelberries', @theurgy_supply_container)
     elsif DRSpells.known_spells.include? 'Glythtide\'s Gift'
       complete_or_interrupt_research
+      # Only the game's own lines, not other players' speech or ESP: no
+      # quote before the chuckle, and the hands-full reply starts the line.
+      # \K keeps the matched text equal to the phrase checked below.
       Flags.add('theurgy-gg-drink',
-                /hearty chuckle as .*?(\w+) appears in your (?:right|left) hand!/,
-                'Both your hands are full!')
+                /^(?:<[^>]*>|[^"<])*?hearty chuckle as .*?(\w+) appears in your (?:right|left) hand!/,
+                '^(?:<[^>]+>)*\KBoth your hands are full!')
       DRCA.cast_spell({ 'abbrev'    => 'gg',
                         'mana'      => 5,
                         'prep_time' => 2,
@@ -563,7 +566,7 @@ class TheurgyActions
 
     safe_walk_to '5872'
     move 'go stair'
-    waitfor 'Four beautifully detailed figures'
+    waitfor_game_line 'Four beautifully detailed figures'
     safe_walk_to '5846'
     case DRC.bput('pull candle',
                   'You tug at the silver candlestick but it',
@@ -573,7 +576,7 @@ class TheurgyActions
                     'Turning your attention to the sigils',
                     'interrupt your research')
       when 'Turning your attention to the sigils'
-        waitfor 'as your understanding of the sigils gradually slips away.'
+        waitfor_game_line 'as your understanding of the sigils gradually slips away.'
       when 'interrupt your research'
         echo 'Researching - skipping Study'
       end
@@ -582,7 +585,7 @@ class TheurgyActions
     end
     safe_walk_to '5756'
     move 'go stair'
-    waitfor 'A low relief has been carefully carved'
+    waitfor_game_line 'A low relief has been carefully carved'
     true
   end
 
@@ -597,6 +600,13 @@ class TheurgyActions
     DRCC.get_crafting_item(name, @bag, @bag_items, @belt)
   end
 
+  # waitfor that only returns on the game's own line: the text must not
+  # follow a quote, so other players' speech, whispers and ESP don't end
+  # the wait.
+  def waitfor_game_line(text)
+    waitfor("^[^\"]*?#{text}")
+  end
+
   def meditate_bead
     return false unless get_prayer_chain?
 
@@ -607,7 +617,7 @@ class TheurgyActions
     safe_walk_to @data['altar']['id']
     fput 'kneel'
     DRC.bput('meditate my prayer chain', 'You clutch')
-    waitfor 'suddenly detaches from your prayer bead chain'
+    waitfor_game_line 'suddenly detaches from your prayer bead chain'
     DRC.fix_standing
     replace_prayer_chain
     waitrt?
@@ -615,8 +625,10 @@ class TheurgyActions
   end
 
   def get_prayer_chain?
-    case DRC.bput('get prayer chain', 'You get', 'I could not find',
-                  'What were you referring to', 'already in your inventory')
+    # Replies only match the game's own line, not other players' speech or
+    # ESP. \K keeps the returned text equal to the phrase in the `when`.
+    case DRC.bput('get prayer chain', '^You get', '^I could not find',
+                  '^What were you referring to', '^[^"]*?\Kalready in your inventory')
     when 'I could not find', 'What were you referring to'
       return false
     when 'already in your inventory'
@@ -677,7 +689,7 @@ class TheurgyActions
       fput "rub my #{herb}"
       pause 1
     end
-    waitfor 'You wake up once more, blinking dazedly.'
+    waitfor_game_line 'You wake up once more, blinking dazedly.'
     # waitfor @data['bath']['room_name']
     DRC.fix_standing
     (@data['bath']['path_out'] || []).each { |dir| move(dir) }
@@ -692,7 +704,7 @@ class TheurgyActions
       waitrt?
       DRC.bput 'wear pilgrim badge', 'You put on a', 'You are already'
     when 'Remove what'
-      return false if DRC.bput('get badge', 'You get', 'I could not find', 'What were you referring to') != 'You get'
+      return false if DRC.bput('get badge', '^You get', '^I could not find', '^What were you referring to') != 'You get'
 
       fput 'pray pilgrim badge'
       pause 2
@@ -722,7 +734,7 @@ class TheurgyActions
   def incense
     walk_to_altar_or_prayer_mat
     DRC.bput("get #{@flint_lighter}",
-             'You get', 'I could not find', 'What were you referring to')
+             '^You get', '^I could not find', '^What were you referring to')
     if DRCI.inside?('burnt incense', @theurgy_supply_container)
       # If we have multiple stacks, use the burnt stack first.
       DRCI.get_item_safe('burnt incense', @theurgy_supply_container)
@@ -732,7 +744,7 @@ class TheurgyActions
 
     # tap test is to determine if flint is available for use or stowed in an eddy
     unless DRCI.exists?('flint')
-      DRC.bput('lower my incense to ground', 'You')
+      DRC.bput('lower my incense to ground', '^[^"]*?You')
       DRCI.get_item_safe('flint', @theurgy_supply_container)
       dropped = true
     end
@@ -746,7 +758,7 @@ class TheurgyActions
     # based on tap test, returns flint to eddy if required
     if dropped
       DRCI.put_away_item?('flint', @theurgy_supply_container)
-      DRC.bput('get my incense', 'You', 'What were')
+      DRC.bput('get my incense', '^[^"]*?You', '^What were')
     end
 
     fput "wave incense at #{@prayer_mat || 'altar'}"
@@ -791,7 +803,7 @@ class TheurgyActions
     safe_walk_to @data['altar']['id']
     DRCI.get_item_safe(@water_holder, @theurgy_supply_container)
     DRC.bput('clean altar with holy water', 'Roundtime')
-    waitfor 'You finish your job'
+    waitfor_game_line 'You finish your job'
     DRCI.put_away_item?(@water_holder, @theurgy_supply_container)
     waitrt?
     true
@@ -838,7 +850,7 @@ class TheurgyActions
     safe_walk_to @safe_room
     DRCI.get_item_safe('golden parchment', @theurgy_supply_container)
     fput 'invoke my parchment'
-    waitfor 'You conclude'
+    waitfor_game_line 'You conclude'
     DRCI.put_away_item?('golden parchment', @theurgy_supply_containe)
   end
 
@@ -888,11 +900,16 @@ class Theurgy
     @favor_god = settings.favor_god
     @theurgy_exp_threshold = settings.theurgy_exp_threshold
 
-    Flags.add('theurgy-commune', 'fully prepared to seek assistance from the Immortals once again', 'You will not be able to open another divine conduit yet', 'You grind some dirt in your fist', 'You feel warmth spread throughout your body', 'The power of Truffenyi has answered your prayer', 'The thick smell of ozone fills your nostrils', 'You stop as you realize that you have attempted a commune too recently in the past.')
-    Flags.add('theurgy-eluned', 'You grind some dirt in your fist', 'The waters of Eluned are still in your thoughts')
-    Flags.add('theurgy-tamsine', 'You feel warmth spread throughout your body', 'You have been recently enlightened by Tamsine')
-    Flags.add('theurgy-truffenyi', 'The power of Truffenyi has answered your prayer', 'You are still captivated by Truffenyi\'s favor')
-    Flags.add('theurgy-kertigen', 'The thick smell of ozone fills your nostrils', 'The sounds of Kertigen\'s forge still ring in your ears')
+    # Each matcher only matches the game's own line, not other players'
+    # speech or ESP: the message starts the line (leading tags allowed).
+    # 'fully prepared' follows other text, so only a quote is refused before
+    # it; \K keeps the matched text equal to the phrase can_commune? checks.
+    starts = '^(?:<[^>]+>)*'
+    Flags.add('theurgy-commune', '^(?:<[^>]*>|[^"<])*?\Kfully prepared to seek assistance from the Immortals once again', "#{starts}You will not be able to open another divine conduit yet", "#{starts}You grind some dirt in your fist", "#{starts}You feel warmth spread throughout your body", "#{starts}The power of Truffenyi has answered your prayer", "#{starts}The thick smell of ozone fills your nostrils", "#{starts}You stop as you realize that you have attempted a commune too recently in the past.")
+    Flags.add('theurgy-eluned', "#{starts}You grind some dirt in your fist", "#{starts}The waters of Eluned are still in your thoughts")
+    Flags.add('theurgy-tamsine', "#{starts}You feel warmth spread throughout your body", "#{starts}You have been recently enlightened by Tamsine")
+    Flags.add('theurgy-truffenyi', "#{starts}The power of Truffenyi has answered your prayer", "#{starts}You are still captivated by Truffenyi's favor")
+    Flags.add('theurgy-kertigen', "#{starts}The thick smell of ozone fills your nostrils", "#{starts}The sounds of Kertigen's forge still ring in your ears")
     Flags.add('research_done', '^Breakthrough!')
 
     @actions = TheurgyActions.new(settings)

@@ -7,6 +7,10 @@ class Athletics
   CLIMBS_WITHOUT_PROGRESS_LIMIT = 3
   # Thrown when a training routine can't reach one of its rooms
   WALK_FAILED = :athletics_walk_failed
+  # Game lines can start with XML tags; other players' speech, whispers and ESP
+  # start with a speaker label. This prefix makes a Flags matcher accept only
+  # the game's own line.
+  LINE_START = '^(?:<[^>]+>)*'
 
   def initialize
     @settings = get_settings
@@ -156,9 +160,9 @@ class Athletics
     echo "UserVars.climbing_song: #{UserVars.climbing_song}" if UserVars.athletics_debug
     @climbs_without_progress = 0
 
-    Flags.add('climbing-finished', 'You finish practicing your climbing', 'The rope\'s will quickly fades away', 'Your focus diverts away from the rope')
-    Flags.add('climbing-too-hard', 'This climb is too difficult')
-    Flags.add('climbing-too-easy', 'This climb is no challenge at all, so you stop practicing')
+    Flags.add('climbing-finished', "#{LINE_START}You finish practicing your climbing", "#{LINE_START}The rope's will quickly fades away", "#{LINE_START}Your focus diverts away from the rope")
+    Flags.add('climbing-too-hard', "#{LINE_START}This climb is too difficult")
+    Flags.add('climbing-too-easy', "#{LINE_START}This climb is no challenge at all, so you stop practicing")
     Flags.add('climbing-dead-rope', '^You believe you can use it for \d+ minutes per day\.')
     Flags.add('climbing-live-rope', '^You believe you haven\'t yet used it today')
 
@@ -410,8 +414,8 @@ class Athletics
         start_script('performance', ['noclean']) unless Script.running?('performance')
         pause @performance_pause # make sure you are playing before starting climb practice
       end
-      Flags.add('ct-climbing-finished', 'You finish practicing your climbing')
-      Flags.add('ct-climbing-combat', 'You are engaged in combat')
+      Flags.add('ct-climbing-finished', "#{LINE_START}You finish practicing your climbing")
+      Flags.add('ct-climbing-combat', "#{LINE_START}You are engaged in combat")
       DRC.bput("climb practice #{target}", 'You begin to practice ')
       loop do
         pause

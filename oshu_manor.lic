@@ -22,9 +22,12 @@ class Oshu
     @waiting_room = 2317
     @graves = [2334, 2337, 2338, 2317]
     @grave_exits = [2356, 2349, 2347]
-    Flags.add('allready', "The gargoyle head doesn't budge.")
-    Flags.add('blasted', 'The blast catches you fully and sends you careening northward through the air!')
-    Flags.add('head-reset', 'A stone gargoyle head suddenly makes a series of loud grinding')
+    # Each matcher only matches the game's own line, not other players' speech,
+    # whispers or ESP: the message may follow tags or other text, but no quote
+    # before it (player text always has one).
+    Flags.add('allready', /^(?:<[^>]*>|[^"<])*?The gargoyle head doesn't budge\./i)
+    Flags.add('blasted', /^(?:<[^>]*>|[^"<])*?The blast catches you fully and sends you careening northward through the air!/i)
+    Flags.add('head-reset', /^(?:<[^>]*>|[^"<])*?A stone gargoyle head suddenly makes a series of loud grinding/i)
 
     DRCI.stow_hands
     grave_digger
@@ -49,7 +52,8 @@ class Oshu
       grave_digger
     when 'You use your bare hands'
       waitrt?
-      waitfor('You dig to the surface')
+      # The game's own line only (no quote before it), not a player's speech or ESP.
+      waitfor('^[^"]*?You dig to the surface')
       waitrt?
       DRC.fix_standing
       return if @critter.worm
@@ -105,7 +109,8 @@ class Oshu
     pause 1
     last_lines = reget(20)
                  .flatten
-    gotfire = last_lines.any? { |line| line.include?('the crooked nose of the gargoyle head is pointed towards the word "Fire."') }
+    # The game's own LOOK line only (no quote before the phrase), not a player's speech or ESP.
+    gotfire = last_lines.any? { |line| line.match?(/^[^"]*?the crooked nose of the gargoyle head is pointed towards the word "Fire\."/) }
     head_turner('Fire') unless gotfire
     wait_and_check
     DRC.bput('push claw', 'claw is already pushed up as far as it will', 'and it clicks into place')
@@ -141,7 +146,8 @@ class Oshu
     DRC.bput('turn head', 'Roundtime', "The gargoyle head doesn't budge.")
     word_list = reget(4)
                 .flatten
-    head_turner(word) unless word_list.any? { |line| line.include?("You grab the gargoyle head and wrestle it around until it points at the word \"#{word}.\"") }
+    turned = /^[^"]*?#{Regexp.escape(%(You grab the gargoyle head and wrestle it around until it points at the word "#{word}."))}/
+    head_turner(word) unless word_list.any? { |line| line.match?(turned) }
   end
 
   def gtfo

@@ -62,7 +62,7 @@ class ShopRestock
   def check_surfaces
     missing_items = []
     @item_list.map { |data| data['surface'] }.uniq.each do |surface|
-      raw_list = DRC.bput("look #{surface}", "There's nothing", 'you see [^\.]*')
+      raw_list = DRC.bput("look #{surface}", "^There's nothing", /^[^"]*?\Kyou see [^.]*/i)
       raw_list = if raw_list == "There's nothing"
                    []
                  else
@@ -271,7 +271,7 @@ class ShopRestock
   def current_ingot_volume
     return 0 unless DRCI.get_item?('steel ingot')
 
-    result = DRC.bput('analyze my ingot', 'About \d+ volume', 'I could not find')
+    result = DRC.bput('analyze my ingot', /^[^"]*?About \d+ volume/i, '^I could not find')
     volume = (result[/About (\d+) volume/, 1] || 0).to_i
     DRCI.stow_item?('ingot')
     volume
@@ -283,7 +283,7 @@ class ShopRestock
   def steel_ingot_carbon
     return nil unless DRCI.get_item?('steel ingot')
 
-    result = DRC.bput('analyze my ingot', /composed of: [\d.]+% \w+ carbon steel/, 'I could not find')
+    result = DRC.bput('analyze my ingot', /^[^"]*?composed of: [\d.]+% \w+ carbon steel/, '^I could not find')
     DRCI.stow_item?('ingot')
     result[/% (\w+) carbon steel/, 1]
   end
@@ -298,9 +298,9 @@ class ShopRestock
       break unless DRCI.get_item?('steel ingot')
 
       case DRC.bput('put my ingot in crucible',
-                    /You put your.*in the.*crucible\./,
-                    /You decide that smelting such a volume of metal at once would be dangerous/,
-                    /identical/i)
+                    /^You put your.*in the.*crucible\./,
+                    /^You decide that smelting such a volume of metal at once would be dangerous/,
+                    /^[^"]*?identical/i)
       when /You put your.*in the.*crucible/
         added += 1
       else
@@ -314,7 +314,7 @@ class ShopRestock
       DRC.wait_for_script_to_complete('smelt')
     elsif added == 1
       # Only one ingot made it in; take it back so it isn't stranded in the crucible.
-      DRC.bput('get ingot from crucible', 'You get', 'What were you referring')
+      DRC.bput('get ingot from crucible', '^You get', '^What were you referring')
     end
     DRCI.stow_item?('ingot')
   end
@@ -370,9 +370,9 @@ class ShopRestock
   # large packet if the current one is empty or missing.
   def ensure_deed_packet
     result = DRC.bput('look my deed packet',
-                      /You count \d+ deed claim forms remaining/,
-                      /I could not find/,
-                      /What were you referring/)
+                      /^[^"]*?You count \d+ deed claim forms remaining/,
+                      /^I could not find/,
+                      /^What were you referring/)
     return if result =~ /deed claim forms remaining/
 
     DRCM.ensure_copper_on_hand(10_000, @settings, @town)
@@ -387,8 +387,8 @@ class ShopRestock
     return if volume.zero?
 
     have = 0
-    if DRC.bput('get burlap cloth', 'You get', 'What were') == 'You get'
-      res = DRC.bput('count my cloth', 'You count out .*')
+    if DRC.bput('get burlap cloth', '^You get', '^What were') == 'You get'
+      res = DRC.bput('count my cloth', '^You count out .*')
       have = res.scan(/\d+/).first.to_i
       DRCI.stow_hands
     end
@@ -402,7 +402,7 @@ class ShopRestock
       end
     end
 
-    while DRC.bput("get burlap cloth from #{@bag}", 'You get', 'What were') == 'You get'
+    while DRC.bput("get burlap cloth from #{@bag}", '^You get', '^What were') == 'You get'
       fput('combine cloth')
     end
     DRCI.stow_hands
@@ -435,8 +435,8 @@ class ShopRestock
     return if volume.zero?
 
     have = 0
-    if DRC.bput('get linen cloth', 'You get', 'What were') == 'You get'
-      res = DRC.bput('count my cloth', 'You count out .*')
+    if DRC.bput('get linen cloth', '^You get', '^What were') == 'You get'
+      res = DRC.bput('count my cloth', '^You count out .*')
       have = res.scan(/\d+/).first.to_i
       DRCI.stow_hands
     end
@@ -450,7 +450,7 @@ class ShopRestock
       end
     end
 
-    while DRC.bput("get linen cloth from #{@bag}", 'You get', 'What were') == 'You get'
+    while DRC.bput("get linen cloth from #{@bag}", '^You get', '^What were') == 'You get'
       fput('combine cloth')
     end
     DRCI.stow_hands
@@ -472,8 +472,8 @@ class ShopRestock
     return if volume.zero?
 
     have = 0
-    if DRC.bput("get silk cloth from my #{@bag}", 'You get', 'What were') == 'You get'
-      res = DRC.bput('count my cloth', 'You count out .*')
+    if DRC.bput("get silk cloth from my #{@bag}", '^You get', '^What were') == 'You get'
+      res = DRC.bput('count my cloth', '^You count out .*')
       have = res.scan(/\d+/).first.to_i
       DRCI.stow_hands
     end
@@ -487,7 +487,7 @@ class ShopRestock
       end
     end
 
-    while DRC.bput("get silk cloth from my #{@bag}", 'You get', 'What were') == 'You get'
+    while DRC.bput("get silk cloth from my #{@bag}", '^You get', '^What were') == 'You get'
       fput('combine cloth')
     end
     DRCI.stow_hands
@@ -533,9 +533,9 @@ class ShopRestock
 
     DRCT.walk_to(@shop_id)
     if DRC.bput("open #{@entrance}",
-                'You will need to contact the owner about that',
-                'But your shop is already set up and ready for you to enter',
-                'Your shop is ready') == 'You will need to contact the owner about that'
+                '^You will need to contact the owner about that',
+                '^But your shop is already set up and ready for you to enter',
+                '^Your shop is ready') == 'You will need to contact the owner about that'
       echo '*****************'
       echo 'Your shop settings appear to be incorrect. Please check the script documentation and update your settings'
       echo '*****************'
@@ -552,7 +552,7 @@ class ShopRestock
   def stamp(item)
     fput("get my #{item['noun']} from my #{@bag}")
     DRCC.get_crafting_item('stamp', @bag, @bag_items, @belt)
-    DRC.bput("mark my #{item['noun']} with my stamp", 'carefully hammer the stamp', 'already a maker\'s mark', 'You cannot figure out how to do that', 'too badly damaged')
+    DRC.bput("mark my #{item['noun']} with my stamp", /^[^"]*?carefully hammer the stamp/i, /^[^"]*?already a maker's mark/i, '^You cannot figure out how to do that', /^[^"]*?too badly damaged/i)
     DRCC.stow_crafting_item('stamp', @bag, @belt)
   end
 
