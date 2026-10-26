@@ -17,6 +17,10 @@ load_lic_class('invoke-rune.lic', 'Runestone')
 #
 # Every reply pattern must match only the game's own line, not another
 # player's speech, ESP or whisper that contains the same words.
+#
+# An unescaped '?' in a String pattern makes the character before it
+# optional and drops the '?' from the returned text: 'Invoke what?' returns
+# "Invoke what", which never equals the `when 'Invoke what?'` literal.
 RSpec.describe Runestone do
   let(:rune_name) { 'elbaite runestone' }
   let(:runestone) { Runestone.allocate }
@@ -119,6 +123,22 @@ RSpec.describe Runestone do
     it 'stops the script when too fatigued to finish the pattern' do
       expect { invoke('You strain, but are too mentally fatigued to finish the pattern.') }.to raise_error(SystemExit)
       expect(DRC).to have_received(:message).with('Cannot cast this spell currently!')
+    end
+  end
+
+  describe '#runestone_cast when the rune is not in hand' do
+    before { invoke('Invoke what?') }
+
+    it 'gets the whole reply, question mark included, back from bput' do
+      expect(model_bput(['Invoke what?'], bput_patterns.fetch('invoke'))).to eq('Invoke what?')
+    end
+
+    it 'gives up on this cast instead of harnessing and casting' do
+      expect(bput_commands).to eq(["invoke my #{rune_name}"])
+    end
+
+    it 'does not try to put away a rune it is not holding' do
+      expect(DRCI).not_to have_received(:put_away_item?)
     end
   end
 
