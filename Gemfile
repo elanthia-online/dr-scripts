@@ -32,7 +32,7 @@ git_source(:github) { |repo_name| "https://github.com/#{repo_name}" }
 group :development do
   gem "simplecov"
   gem "rspec"
-  gem "rubocop", "1.92.0" # pinned: CI lints the whole repo, so a new release must not break unrelated PRs
+  gem "rubocop", "1.92.1" # pinned: CI lints the whole repo, so a new release must not break unrelated PRs
   gem "guard"
   gem "guard-rspec"
   gem "webmock"

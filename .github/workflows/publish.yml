@@ -7,14 +7,14 @@ on:
       - 'dependency.lic'
       - 'noop.lic'
 
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     env:
       BUNDLE_WITHOUT: 'gtk:vscode:profanity'
-    strategy:
-      matrix:
-        ruby: ['4.0']
     name: Publish Updates
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,7 +22,6 @@ jobs:
           fetch-depth: '20'
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
-          ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
       - name: Release updates to Tillmen's Lich repository
         env:
