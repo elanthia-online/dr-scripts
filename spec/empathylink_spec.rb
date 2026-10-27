@@ -122,4 +122,39 @@ describe 'Empathylink#hodierna_heal_patient' do
     expect(DRC).to have_received(:message).with('Failed to establish link Hodierna with Tenuk')
     expect(UserVars.empathylink['Tenuk']).to be_between(now + 300, now + 301)
   end
+
+  # "You strain, but your empathy is not sufficient to sustain another
+  # manifestation of the Hand of Hodierna link." was also unmatched, so a healer
+  # at their Hodierna link capacity hung for 15s (scripts paused) every 5 minutes.
+  context 'when empathy cannot sustain another Hodierna link' do
+    let(:capacity_line) do
+      'You strain, but your empathy is not sufficient to sustain another manifestation of the Hand of Hodierna link.'
+    end
+
+    it 'offers a pattern to bput that matches the game line' do
+      offered = nil
+      allow(DRC).to receive(:bput).with('link Tenuk hodierna', any_args) do |_cmd, *matches|
+        offered = matches
+        'begins to seep through the connection'
+      end
+
+      link.hodierna_heal_patient('Tenuk')
+
+      expect(offered.any? { |m| capacity_line.match?(m) }).to be(true)
+    end
+
+    it 'reports the capacity limit and backs off 5 minutes' do
+      allow(DRC).to receive(:bput)
+        .with('link Tenuk hodierna', any_args)
+        .and_return('your empathy is not sufficient to sustain another manifestation')
+
+      now = Time.now.to_i
+      link.hodierna_heal_patient('Tenuk')
+
+      expect(DRC).to have_received(:message)
+        .with('Not enough empathy to sustain another link of Hodierna, skipping Tenuk for now')
+      expect(DRC).not_to have_received(:message).with('Failed to establish link Hodierna with Tenuk')
+      expect(UserVars.empathylink['Tenuk']).to be_between(now + 300, now + 301)
+    end
+  end
 end
