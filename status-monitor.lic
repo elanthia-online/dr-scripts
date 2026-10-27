@@ -272,9 +272,12 @@ module StatusMonitor
     # Cleans a raw game line by stripping tags and filtering known sources.
     #
     # Does not mutate its argument: tag stripping returns a new String.
+    # Surrounding whitespace is stripped too, as the importer does, so an
+    # indented line (room text arrives as `<style id=""/>  You also see ...`)
+    # still matches a `^`-anchored filter pattern.
     #
     # @param line [String] raw game stream line with XML tags
-    # @return [String, nil] a new cleaned line, or nil if it should be ignored
+    # @return [String, nil] a new cleaned, stripped line, or nil if it should be ignored
     def clean(line)
       update_players(line)
       update_stream_state(line)
@@ -287,7 +290,7 @@ module StatusMonitor
         players_to_check = UserVars.players_online - [checkname, 'Endith']
         return nil if players_to_check.any? { |name| line.include?(name) }
       end
-      line.gsub(/<[^>]+>/, '')
+      line.gsub(/<[^>]+>/, '').strip
     end
 
     # Checks whether a cleaned line matches any configured filter patterns.

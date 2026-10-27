@@ -489,6 +489,15 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(result).to eq('bold text and more')
     end
 
+    it 'strips the indent the game puts before room text' do
+      result = filter.clean(+'<style id=""/>  You also see a <a exist="1" noun="bar">huge bronze bar</a>.')
+      expect(result).to eq('You also see a huge bronze bar.')
+    end
+
+    it 'reduces a whitespace-only line to an empty string' do
+      expect(filter.clean(+"<style id=\"\"/>  \r\n")).to eq('')
+    end
+
     it 'does not mutate its argument' do
       original = +"<b>bold text</b> and more"
       before = original.dup
@@ -1012,6 +1021,13 @@ RSpec.describe StatusMonitor::Monitor do
     it 'returns false for lines matching a filter pattern' do
       $test_data.filters = OpenStruct.new('filter_strings' => ['gold coins'])
       expect(build_monitor.process(+'you see gold coins on the ground')).to be false
+    end
+
+    it 'applies ^-anchored filters to indented room text, and does not record it' do
+      $test_data.filters = OpenStruct.new('filter_strings' => ['^You also see (?:an?|some|[Tt]he) '])
+      line = '<style id=""/>  You also see a <a exist="1" noun="bar">huge bronze bar</a>.'
+      expect(build_monitor.process(+line)).to be false
+      expect(store.in_corpus?('You also see a huge bronze bar.')).to be false
     end
   end
 
