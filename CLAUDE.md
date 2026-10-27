@@ -10,8 +10,8 @@ mind when a symbol appears "undefined" here.
 ## Runtime environment (read before flagging "bugs")
 
 - **Ruby 4.0.0 floor, no ceiling.** Code must run on Ruby `>= 4.0.0`
-  (`.ruby-version` pins `4.0.0` as the minimum; any newer patch/version is fine —
-  don't flag a mismatch against an exact version). The only real constraint is:
+  (`.ruby-version` is the exact version CI runs, currently 4.0.9, but code must
+  still work on any Ruby `>= 4.0.0` — don't flag a mismatch against it). The only real constraint is:
   don't rely on APIs introduced *after* 4.0.0. Stdlib classes autoloaded since
   Ruby 3.2 (e.g. `Set`) need no `require` — a missing `require 'set'` is **not**
   a bug here.
@@ -36,11 +36,15 @@ mind when a symbol appears "undefined" here.
 
 **Run `bundle exec rubocop -A` locally before committing.** RuboCop is pinned
 to an exact version in the `Gemfile`; use that version (via `bundle exec`), as a
-different local RuboCop can disagree with CI. The rubocop floor is set by
-`TargetRubyVersion: 4.0` in `.rubocop.yml` (not `.ruby-version`), with
-`NewCops: disable` and a custom `ascii_only_source` cop; `LineLength` and most
-`Metrics` are off. CI (`.github/workflows/rubocop.yml`) runs **check-only**
-`bundle exec rubocop` under Ruby 4.0 against the **whole repo** (nested files
+different local RuboCop can disagree with CI. The rules are the shared
+Elanthia Online set: `.rubocop/base.yml` and `.rubocop/cops/` are byte-identical
+copies of the master in `elanthia-online/.github` (CI fails if they differ), so
+never edit them here; `.rubocop.yml` may only list excluded files. The rubocop
+floor is set by `TargetRubyVersion: 4.0` in `.rubocop/base.yml` (not
+`.ruby-version`), with `NewCops: disable` and a custom `ascii_only_source` cop;
+`LineLength` and most `Metrics` are off. CI (the `ruby / lint` job of
+`.github/workflows/ci.yml`, from the shared workflow) runs **check-only**
+`bundle exec rubocop` against the **whole repo** (nested files
 such as `spec/*.rb` included), so `main` stays clean and a PR only fails on
 offenses it introduces. Bumping the pinned version is its own PR that fixes
 whatever the new release flags. Assume CI runs the linter; do not re-flag pure
@@ -48,8 +52,8 @@ formatting/style rubocop would catch.
 
 ## Spec suite integrity (hard rule)
 
-The RSpec suite must stay green. A PR that fails the "Run tests on Ruby 4.0" CI
-job when `main` is green is an **automatic blocking issue** — verify with
+The RSpec suite must stay green. A PR that fails the `ruby / test` CI job
+(and therefore the required `ci-gate` check) when `main` is green is an **automatic blocking issue** — verify with
 `gh pr checks <n> --repo elanthia-online/dr-scripts` (or run `bundle exec rspec`
 locally) as a first step of any review.
 
@@ -91,8 +95,8 @@ Full conventions live in **`spec/spec_helper.rb`** and the shared doubles in
 ## Data & profile YAML
 
 Scripts read config from `data/*.yaml` and character/setup files under
-`profiles/**/*.yaml`. **Two CI gates cover YAML:** the `validate-yaml` job
-(`.github/workflows/yamllint.yml`) runs `yamllint` on changed `data/*.yaml` and
+`profiles/**/*.yaml`. **Two CI gates cover YAML:** the `yamllint` job
+of `.github/workflows/ci.yml` runs `yamllint` on changed `data/*.yaml` and
 `profiles/**.yaml`, and `spec/valid_yaml_spec.rb` Ruby-parses every
 `profiles/**/*.yaml` in the rspec suite — so a malformed profile fails CI twice.
 Profiles are loaded permissively (`YAML.unsafe_load_file`) because they use

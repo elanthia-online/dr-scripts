@@ -50,20 +50,6 @@ def usage()
   Message::send(type: "USAGE", exit_after: true)
 end
 
-def substring_var_for_regex(var)
-  var.sub('\\', "\\\\")
-  var.sub('.', "\\.")
-  var.sub('*', "\\*")
-  var.sub('?', "\\?")
-  var.sub('+', "\\+")
-  var.sub('-', "\\-")
-  var.sub('[', "\[")
-  var.sub(']', "\]")
-  var.sub('(', "\\(")
-  var.sub(')', "\\)")
-  return var
-end
-
 def does_line_contain_settings_variables?(line)
   return line.match?(/ ?= ?get_settings\(?/)
 end
