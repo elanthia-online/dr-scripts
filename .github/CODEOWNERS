@@ -1,0 +1,3 @@
+# Workflows hold publishing credentials and run CI for every PR, so changes
+# under .github/ need approval from an active Elanthia Online admin.
+/.github/    @mrhoribu @OSXLich-Doug @MahtraDR

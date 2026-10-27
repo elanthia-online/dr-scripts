@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Shared lint + test from elanthia-online/.github, pinned by full SHA.
+  ruby:
+    uses: elanthia-online/.github/.github/workflows/ruby-ci.yml@277eba54e8b75c7e235e459ea53076f6151a4db0
+    with:
+      lint-scope: repo
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: yamllint (changed data and profile files)
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$PR_BASE...HEAD"
+          elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "$zero" ]; then
+            range="$PUSH_BEFORE..HEAD"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          git diff --name-only -z --diff-filter=ACMR "$range" \
+            | { grep -zE '^(data/[^/]+|profiles/.+)\.yaml$' || true; } > "$RUNNER_TEMP/yaml.z"
+          if [ ! -s "$RUNNER_TEMP/yaml.z" ]; then
+            echo "No changed data or profile YAML; yamllint skipped."
+            exit 0
+          fi
+          pip install --quiet yamllint
+          xargs -0 yamllint -f parsable < "$RUNNER_TEMP/yaml.z"
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs: [ruby, yamllint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null
