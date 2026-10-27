@@ -97,10 +97,14 @@ class Empathylink
                     'I could not find',
                     'You have not established an empathic link',
                     'the diagnostic link is too fragile',
+                    'your empathy is not sufficient to sustain another manifestation',
                     'You sense that you already have such a connection')
       when 'begins to seep through the connection', 'You sense that you already have such a connection'
         DRC.message("Established link of Hodierna with #{target}")
         UserVars.empathylink[target] = Time.now.to_i + 1800 # Put them on hold for 30m
+      when 'your empathy is not sufficient to sustain another manifestation'
+        DRC.message("Not enough empathy to sustain another link of Hodierna, skipping #{target} for now")
+        UserVars.empathylink[target] = Time.now.to_i + 300 # Put them on hold for 5m
       else
         DRC.message("Failed to establish link Hodierna with #{target}")
         UserVars.empathylink[target] = Time.now.to_i + 300 # Put them on hold for 5m
