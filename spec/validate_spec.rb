@@ -249,6 +249,7 @@ RSpec.describe DRYamlValidator do
     it 'accepts every ability combat-trainer dispatches' do
       dispatch = File.read(lic_path('combat-trainer.lic'))[/case select_ability\(game_state\)\n(.*?)^    end$/m, 1]
       patterns = dispatch.scan(%r{^    when /\^(.+)\$/i$}).flatten
+      expect(patterns.size).to eq(dispatch.scan(/^    when /).size)
       # Non-literal patterns need a concrete name to check.
       samples = { 'Summon (?<element>.*?) Domain' => 'Summon Fire Domain', '(Ret|Retreat) Stealth' => 'Retreat Stealth' }
       names = patterns.map { |pattern| samples.fetch(pattern, pattern) }
