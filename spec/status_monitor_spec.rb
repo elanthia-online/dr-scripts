@@ -4,6 +4,7 @@ require 'sqlite3'
 require 'tmpdir'
 require 'ostruct'
 require 'fileutils'
+require 'yaml'
 
 # Test suite for status-monitor.lic
 #
@@ -489,13 +490,9 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(result).to eq('bold text and more')
     end
 
-    it 'strips the indent the game puts before room text' do
+    it 'keeps leading indentation, which whitespace-anchored filters depend on' do
       result = filter.clean(+'<style id=""/>  You also see a <a exist="1" noun="bar">huge bronze bar</a>.')
-      expect(result).to eq('You also see a huge bronze bar.')
-    end
-
-    it 'reduces a whitespace-only line to an empty string' do
-      expect(filter.clean(+"<style id=\"\"/>  \r\n")).to eq('')
+      expect(result).to eq('  You also see a huge bronze bar.')
     end
 
     it 'does not mutate its argument' do
@@ -1023,8 +1020,28 @@ RSpec.describe StatusMonitor::Monitor do
       expect(build_monitor.process(+'you see gold coins on the ground')).to be false
     end
 
-    it 'applies ^-anchored filters to indented room text, and does not record it' do
-      $test_data.filters = OpenStruct.new('filter_strings' => ['^You also see (?:an?|some|[Tt]he) '])
+    context 'with the shipped base-filters.yaml' do
+      before do
+        shipped = YAML.load_file(File.join(File.dirname(__FILE__), '..', 'data', 'base-filters.yaml'))
+        $test_data.filters = OpenStruct.new('filter_strings' => shipped['filter_strings'])
+      end
+
+      # These shipped patterns anchor on the indent (^\s+..., ^  some ), so the
+      # filters must see the line before any whitespace is stripped.
+      [
+        '     Inner Magic:   312 45% scrutinizing  (5/34)          Arcana:   210 12% fascinated    (8/34)',
+        '  some ebon kidskin ice skates with watered steel blades',
+        '  a steel wide shovel'
+      ].each do |line|
+        it "filters the indented line #{line.strip[0, 30].inspect}, and does not record it" do
+          expect(build_monitor.process(+line)).to be false
+          expect(store.in_corpus?(line.strip)).to be false
+        end
+      end
+    end
+
+    it 'filters indented room text with a pattern that allows the indent' do
+      $test_data.filters = OpenStruct.new('filter_strings' => ['^\\s*You also see (?:an?|some|[Tt]he) '])
       line = '<style id=""/>  You also see a <a exist="1" noun="bar">huge bronze bar</a>.'
       expect(build_monitor.process(+line)).to be false
       expect(store.in_corpus?('You also see a huge bronze bar.')).to be false
