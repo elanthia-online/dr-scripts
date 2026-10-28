@@ -169,4 +169,35 @@ describe 'healme.lic' do
       expect(Flags['healme-flushed-poison']).to be(false)
     end
   end
+
+  # The hook clears @poisoned when the flushed flag is set, so the next
+  # attend_vitals does not cast Flush Poisons again before a perceive.
+  describe 'poison flushed' do
+    let(:casts) { [] }
+
+    before do
+      DRStats.health = 100
+      healme.instance_variable_set(:@settings, OpenStruct.new(health_threshold: 50))
+      allow(healme).to receive(:attend_vitals).and_call_original
+      allow(healme).to receive(:use_heal_over_time_spells?).and_return(false)
+      allow(healme).to receive(:cast_spell_or_warn) { |spell_name, _message| casts << spell_name }
+      healme.instance_variable_set(:@poisoned, true)
+    end
+
+    it 'keeps flushing poison while nothing says it is gone' do
+      deliver('You feel a little better.')
+      healme.attend_vitals
+
+      expect(healme.poisoned?).to be(true)
+      expect(casts).to eq(['Flush Poisons'])
+    end
+
+    it 'stops flushing poison once the spell has flushed it' do
+      deliver('Your spell flushes all poison from your body.')
+      healme.attend_vitals
+
+      expect(healme.poisoned?).to be(false)
+      expect(casts).to be_empty
+    end
+  end
 end
