@@ -233,4 +233,36 @@ RSpec.describe DRYamlValidator do
       expect($warn_msgs).to be_empty
     end
   end
+
+  describe '#assert_that_training_abilities_are_valid' do
+    let(:instance) { build }
+
+    def check(abilities)
+      instance.assert_that_training_abilities_are_valid(OpenStruct.new(training_abilities: abilities))
+    end
+
+    it 'accepts Locksmithing and the Berserk abilities' do
+      check('Locksmithing' => 600, 'Berserk Landslide' => 120, 'Berserk Avalanche' => 120)
+      expect($error_msgs).to be_empty
+    end
+
+    it 'accepts every ability combat-trainer dispatches' do
+      dispatch = File.read(lic_path('combat-trainer.lic'))[/case select_ability\(game_state\)\n(.*?)^    end$/m, 1]
+      patterns = dispatch.scan(%r{^    when /\^(.+)\$/i$}).flatten
+      expect(patterns.size).to eq(dispatch.scan(/^    when /).size)
+      # Non-literal patterns need a concrete name to check.
+      samples = { 'Summon (?<element>.*?) Domain' => 'Summon Fire Domain', '(Ret|Retreat) Stealth' => 'Retreat Stealth' }
+      names = patterns.map { |pattern| samples.fetch(pattern, pattern) }
+      expect(names).to include('Locksmithing', 'Tessera', 'Summon Fire Domain')
+
+      check(names.to_h { |name| [name, 60] })
+      expect($error_msgs).to be_empty
+    end
+
+    it 'matches case-insensitively and rejects unknown abilities' do
+      check('locksmithing' => 600, 'Lockpicking' => 600)
+      expect($error_msgs.size).to eq(1)
+      expect($error_msgs.first).to include('not valid: Lockpicking')
+    end
+  end
 end
