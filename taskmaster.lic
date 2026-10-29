@@ -519,10 +519,24 @@ class TaskMaster
     else
       DRCT.walk_to(@crafting_room)
     end
+    check_sewing_consumables(count) unless base == 'yarn'
     count.times do
-      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, @marathon ? 'skip' : nil])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
     DRC.message("#{count} #{item}s completed")
+  end
+
+  # Pins and thread are checked once for the whole task, so each sew run can
+  # skip its own check (two get/count/put rounds per item). An item uses at
+  # most a few pins; sew still restocks mid-item if either runs out.
+  # Knitting uses neither.
+  PIN_USES_PER_ITEM = 3
+
+  def check_sewing_consumables(count)
+    info = get_data('crafting')['tailoring']["Crossing"]
+    belt = @settings.outfitting_belt
+    DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, belt, PIN_USES_PER_ITEM * count + 5)
+    DRCC.check_consumables('thread', info['stock-room'], 6, @bag, @bag_items, belt)
   end
 
   def shape_item(item, count, _base, type)
