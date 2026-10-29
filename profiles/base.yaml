@@ -3030,6 +3030,16 @@ task_junk_list: []
 # Setting for taskmaster - Send a Slack message (to slack_username) for each keeper.
 task_slack_keepers: false
 
+# Setting for taskmaster - boosts to use. task: BOOST TASK when a task is on cooldown
+# (task_use_boost: true also turns this on). haste: keep BOOST HASTE running between tasks.
+task_boosts: []
+# Setting for taskmaster - before each task, if you carry less copper (Kronars) than this,
+# exchange foreign coins and withdraw up to task_copper_target.
+task_copper_floor: 20000
+# Setting for taskmaster - copper (Kronars) to withdraw up to when below task_copper_floor.
+# A value below task_copper_floor is raised to the floor.
+task_copper_target: 110000
+
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:
   # Where foraged items should be temporarily stored
