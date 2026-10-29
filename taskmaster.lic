@@ -602,7 +602,19 @@ class TaskMaster
     end
     result.sub!('In the woven sack you see', '')
     DRC.log_window(result, "Task Master", true, true)
-    UserVars.taskmaster_sacks[@npc] << result
+    remember_sack(result)
+  end
+
+  # Sack history for ;taskmaster loot_history. UserVars persists, so the list
+  # is capped; a character running tasks all event would otherwise add
+  # thousands of entries a month.
+  LOOT_HISTORY_LIMIT = 100
+
+  def remember_sack(contents)
+    UserVars.taskmaster_sacks ||= {}
+    history = (UserVars.taskmaster_sacks[@npc] ||= [])
+    history << contents
+    history.shift(history.size - LOOT_HISTORY_LIMIT) if history.size > LOOT_HISTORY_LIMIT
   end
 end
 
