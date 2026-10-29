@@ -150,7 +150,25 @@ class TaskMaster
 
     noun = unfinished.split.last
     DRC.wait_for_script_to_complete('sew', ['resume', noun])
-    DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
+    # Judge the result by the hand text: DRCI.in_hands?(noun) also matches
+    # the unfinished piece, since the noun is the same.
+    if held_items.any? { |held| held =~ /\bunfinished\b/ }
+      discard_unfinished(noun)
+    elsif held_items.any? { |held| held =~ /\b#{Regexp.escape(noun)}\b/i }
+      DRCC.stow_crafting_item(noun, @bag, nil)
+    end
+  end
+
+  # sew could not finish the piece. Throws it away so it never reaches the
+  # crafting bag, where the turn-in would pick it up, and stows any tool sew
+  # left in hand so the next task starts with free hands. Not exiting: the
+  # next start would try the same resume and stop again.
+  def discard_unfinished(noun)
+    DRC.message("sew could not finish your unfinished #{noun}. Throwing it away and starting a new task.")
+    DRCI.dispose_trash(noun, @worn_trashcan, @worn_trashcan_verb)
+    held_items.reject { |held| held =~ /\bunfinished\b/ }.each do |held|
+      DRCC.stow_crafting_item(held, @bag, @settings.outfitting_belt)
+    end
   end
 
   def held_items
