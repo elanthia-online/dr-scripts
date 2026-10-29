@@ -589,13 +589,31 @@ class TaskMaster
     DRC.message("#{count} #{item}s completed")
   end
 
+  # Consecutive gives that found nobody to take the item before giving up.
+  MAX_GIVE_MISSES = 5
+
   def complete_task(item, _count)
+    misses = 0
     loop do
       find_npc(@rooms, @npc)
-      unless DRCI.get_item?(item, @bag)
+      # A give that missed the taskmaster leaves the item in hand; reuse it
+      # rather than fetching another one from the bag.
+      unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
         exit
       end
-      break if DRC.bput("give my #{item} to #{@npc}", "more .* needed", "hands you a") =~ /hands you a/
+      case DRC.bput("give my #{item} to #{@npc}", "more .* needed", "hands you a", "What is it you're trying to give")
+      when /hands you a/
+        break
+      when /What is it you're trying to give/
+        # The taskmaster wandered off between the get and the give.
+        misses += 1
+        if misses >= MAX_GIVE_MISSES
+          DRC.message("Could not hand a #{item} to #{@npc} after #{misses} tries, stopping.")
+          exit
+        end
+      else
+        misses = 0
+      end
     end
     sort_sack(item)
     fput('dump junk')
