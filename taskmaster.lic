@@ -290,14 +290,33 @@ class TaskMaster
     trash(item, base, type)
   end
 
+  # Taskmasters wander, but between turn-ins they are usually back in the
+  # room they were last seen in. Search from there outwards along the room
+  # list, and remember where each one was found. Kept in UserVars because t2
+  # can start this script once per task.
   def find_npc(rooms, npc)
-    return if DRRoom.npcs.include?(npc.capitalize)
-
-    rooms.each do |room_id|
+    UserVars.taskmaster_last_seen ||= {}
+    search_order(rooms, UserVars.taskmaster_last_seen[npc]).each do |room_id|
       break if DRRoom.npcs.include?(npc.capitalize)
 
       DRCT.walk_to(room_id)
     end
+    UserVars.taskmaster_last_seen[npc] = Room.current.id if DRRoom.npcs.include?(npc.capitalize)
+  end
+
+  # The room list starting at start_room and alternating outwards from it
+  # (start, next, previous, two on, two back, ...), or the list unchanged when
+  # start_room is not in it.
+  def search_order(rooms, start_room)
+    start = rooms.index(start_room)
+    return rooms unless start
+
+    order = [rooms[start]]
+    (1...rooms.size).each do |step|
+      order << rooms[start + step] if start + step < rooms.size
+      order << rooms[start - step] if start - step >= 0
+    end
+    order
   end
 
   def finish
