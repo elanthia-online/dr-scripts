@@ -300,18 +300,42 @@ class TaskMaster
     end
   end
 
+  # The task journal entry. "So far, you have returned N" is optional so an
+  # entry printed without it still parses as nothing returned.
+  TASK_JOURNAL = /wanted you to craft (.*) and indicated that (\d+) would suffice\.(?:\s+So far, you have returned (\d+))?/
+  NOT_ON_TASK = /^You are not currently on a task/
+  INSTRUCTION_MATERIALS = /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/
+
   def finish
-    /wanted you to craft (.*) and indicated that (\d+) would suffice/ =~ DRC.bput("task", /wanted you to craft (.*) and indicated that (\d+) would suffice/, /^You are not currently on a task/)
-    item = Regexp.last_match(1).split.last
-    count = Regexp.last_match(2).to_i
-    DRC.message("Making #{count} #{item}s")
-    case DRC.bput("read my #{item} instructions", /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/)
+    item, count = read_task
+    unless item
+      DRC.message("You are not on a task with #{@npc}.")
+      exit
+    end
+    read_instructions(item, count)
+  end
+
+  # Reads the task journal and returns the item noun and how many are still
+  # owed, or nil when not on a task.
+  def read_task
+    entry = DRC.bput("task", TASK_JOURNAL, NOT_ON_TASK)
+    match = TASK_JOURNAL.match(entry)
+    return nil unless match
+
+    item = match[1].split.last
+    remaining = [match[2].to_i - match[3].to_i, 0].max
+    DRC.message("Making #{remaining} #{item}s")
+    return item, remaining
+  end
+
+  # Reads the item's instructions for its material and volume, then stows
+  # them, returning everything the worker methods need.
+  def read_instructions(item, count)
+    case DRC.bput("read my #{item} instructions", INSTRUCTION_MATERIALS)
     when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
       base = Regexp.last_match(1)
       volume_per_item = Regexp.last_match(3).to_i
-      base.sub!('bone', 'stack')
-      base.sub!('metal', 'ingot')
-      base.sub!('wood', 'lumber')
+      base = base.sub('bone', 'stack').sub('metal', 'ingot').sub('wood', 'lumber')
       DRC.message("Each #{item} requires #{volume_per_item} volumes")
     when /stone .* \((\w+)\)/
       volume_per_item = 'boulder'
@@ -356,28 +380,7 @@ class TaskMaster
       end
     when /You may accept by typing ACCEPT TASK/
       DRC.bput("accept task", /You can check your progress with the TASK verb/)
-      /wanted you to craft (.*) and indicated that (\d+) would suffice.\s+So far, you have returned (\d+)/ =~ DRC.bput("task", /wanted you to craft (.*) and indicated that (\d+) would suffice.\s+So far, you have returned (\d+)/)
-      item = Regexp.last_match(1).split.last
-      count = Regexp.last_match(2).to_i
-      already_returned = Regexp.last_match(3).to_i
-      count = count - already_returned
-      DRC.message("Making #{count} #{item}s")
-      case DRC.bput("read my #{item} instructions", /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/)
-      when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
-        base = Regexp.last_match(1)
-        volume_per_item = Regexp.last_match(3).to_i
-        base.sub!('bone', 'stack')
-        base.sub!('metal', 'ingot')
-        base.sub!('wood', 'lumber')
-        DRC.message("Each #{item} requires #{volume_per_item} volumes")
-      when /stone .* \((\w+)\)/
-        volume_per_item = 'boulder'
-        base = 'stone'
-        DRC.message("Using a boulder for each #{item}")
-      end
-      DRCI.stow_hands
-      type = @stackmap[base].first
-      return item, count, volume_per_item, base, type
+      finish
     end
   end
 
