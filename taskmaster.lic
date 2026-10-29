@@ -13,6 +13,14 @@
 =end
 
 class TaskMaster
+  # Stock base => [stock name, room to order it in]. restock tops up cloth,
+  # leather, yarn and thread for marathon runs; thread is the cotton spool
+  # (stock-name cotton in base-crafting.yaml).
+  STACKMAP = {
+    'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775],
+    'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864], 'thread' => ['cotton', 16667]
+  }.freeze
+
   def initialize
     @settings = get_settings
     @keeplist = @settings.task_keep_list
@@ -35,7 +43,7 @@ class TaskMaster
 
     DRCM.ensure_copper_on_hand(110000, @settings, "Crossing")
     @stockdata = get_data('crafting')['stock']
-    @stackmap = { 'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775], 'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864] }
+    @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
     UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
     arg_definitions = [
@@ -250,7 +258,9 @@ class TaskMaster
     elsif base == 'lumber'
       buy_stackables(item, count, volume_per_item, base)
       shape_item(item, count, base, type)
-      repair(@settings.engineering_tools, @settings.engineering_belt)
+      # base.yaml names the shaping toolset shaping_tools; engineering_tools is the
+      # older key, kept as a fallback the same way clerk-tools resolves it.
+      repair(@settings.shaping_tools || @settings.engineering_tools || [], @settings.engineering_belt)
       trash(item, base, type)
       return
     elsif volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
@@ -538,10 +548,24 @@ class TaskMaster
     else
       DRCT.walk_to(@crafting_room)
     end
+    check_sewing_consumables(count) unless base == 'yarn'
     count.times do
-      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, @marathon ? 'skip' : nil])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
     DRC.message("#{count} #{item}s completed")
+  end
+
+  # Pins and thread are checked once for the whole task, so each sew run can
+  # skip its own check (two get/count/put rounds per item). An item uses at
+  # most a few pins; sew still restocks mid-item if either runs out.
+  # Knitting uses neither.
+  PIN_USES_PER_ITEM = 3
+
+  def check_sewing_consumables(count)
+    info = get_data('crafting')['tailoring']["Crossing"]
+    belt = @settings.outfitting_belt
+    DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, belt, PIN_USES_PER_ITEM * count + 5)
+    DRCC.check_consumables('thread', info['stock-room'], 6, @bag, @bag_items, belt)
   end
 
   def shape_item(item, count, _base, type)
