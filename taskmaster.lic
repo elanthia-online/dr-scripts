@@ -137,7 +137,14 @@ class TaskMaster
 
   HASTE_SECONDS = 3600
   # How long to wait before asking again after an answer that was neither an
-  # activation nor a lack of credits (for instance, haste already running).
+  # activation nor a lack of credits, or no answer at all.
+  # November 2025 logs (Hollow Eve, 21 characters, ~49,000 BOOST HASTE sends)
+  # only ever show those two replies (besides "...wait" in roundtime). Each activation spent exactly one credit
+  # (BOOST listings before and after agree). With haste running and no credits
+  # left, the game gives the no-credits line, not an "already active" one.
+  # BOOST HASTE with haste running and credits left never happened, so whether
+  # it restarts the hour and spends a credit is unknown; the stored expiry
+  # keeps that to at most one credit when the expiry is lost.
   HASTE_RECHECK_SECONDS = 600
   HASTE_ACTIVATED = /You've activated the Minor Haste boost/
   HASTE_NO_CREDITS = /You don't have enough credits for the Minor Haste boost/
