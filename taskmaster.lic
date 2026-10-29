@@ -6,6 +6,8 @@
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_keep_list: list of items to keep. See default in base.yaml
+  task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
+  task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
@@ -15,10 +17,9 @@
 class TaskMaster
   def initialize
     @settings = get_settings
-    @keeplist = @settings.task_keep_list
     @rooms = [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169]
     tools = { 'poltu' => ['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'], 'bradyn' => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'], 'zasele' => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'], 'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife'] }
-    @keeplist_regex = Regexp.union(@keeplist)
+    configure_loot_filter
     @bag = @settings.crafting_container
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
@@ -129,6 +130,31 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  # Either a keep list (keep matches, bin the rest) or a junk list (bin
+  # matches, keep the rest). Entries may be strings or regexps. A missing or
+  # empty junk list falls back to the keep list; a missing keep list keeps
+  # nothing, as before.
+  def configure_loot_filter
+    junk = Array(@settings.task_junk_list)
+    if junk.empty?
+      @junk_regex = nil
+      @keeplist_regex = Regexp.union(Array(@settings.task_keep_list))
+    else
+      @junk_regex = Regexp.union(junk)
+    end
+    @slack_keepers = @settings.task_slack_keepers
+    register_slackbot(@settings.slack_username) if @slack_keepers
+  end
+
+  # An unreadable or empty look is never a keeper, so a failed LOOK cannot
+  # fill the loot bag with empty sacks in junk-list mode.
+  def keeper?(contents)
+    return false if contents.to_s.strip.empty?
+    return !contents.match?(@junk_regex) if @junk_regex
+
+    contents.match?(@keeplist_regex)
   end
 
   def exchange_coins
@@ -592,9 +618,10 @@ class TaskMaster
       DRC.bput("get coin from my sack", "You pick up", "What were you")
     end
     result = DRC.bput("look in my sack", /^In the .* you see.*/)
-    if result.match?(@keeplist_regex)
-      result.sub!(/In the woven sack you see (a|an|some) /, '').sub!(/\.$/, '')
+    if keeper?(result)
+      result = result.sub(/In the woven sack you see (?:(?:a|an|some) )?/, '').sub(/\.$/, '')
       DRC.message("Found a keeper: #{result}")
+      send_slackbot_message("Found a keeper: #{result}") if @slack_keepers
       DRCI.put_away_item?('sack', @lootbag)
     else
       DRC.message("Nothing special: #{result}")
