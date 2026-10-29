@@ -423,28 +423,7 @@ class TaskMaster
   end
 
   def poltu(item, count, volume_per_item, base, type)
-    if volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
-      type = 'steel'
-      buy_ingots(count, type)
-    elsif volume_per_item == 5 # exactly one bronze ingot per item
-      buy_ingots(count, type)
-    elsif count * volume_per_item > 100
-      @remainder = true
-      bingots(3)
-    elsif count * volume_per_item > 50
-      @remainder = (count * volume_per_item) % 100 > 0 ? true : false
-      bingots(2)
-    elsif volume_per_item < 5
-      type = 'steel'
-      @remainder = true
-      buy_ingots(1, type)
-    else # anything between 5 and 10
-      @remainder = true
-      bingots(1)
-    end
-    forge_item(item, count, type)
-    repair(@settings.forging_tools, @settings.forging_belt)
-    trash(item, base, type)
+    forge_metal_task(item, count, volume_per_item, base, type)
   end
 
   def bradyn(item, count, volume_per_item, base, type)
@@ -468,7 +447,25 @@ class TaskMaster
       repair(@settings.shaping_tools || @settings.engineering_tools || [], @settings.engineering_belt)
       trash(item, base, type)
       return
-    elsif volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
+    end
+    forge_metal_task(item, count, volume_per_item, base, type)
+  end
+
+  # A Poltu or Bradyn metal task: buy the metal, forge the items, send the
+  # forging tools for repair and throw away any metal left over.
+  def forge_metal_task(item, count, volume_per_item, base, type)
+    type = buy_metal(count, volume_per_item, type)
+    forge_item(item, count, type)
+    repair(@settings.forging_tools, @settings.forging_belt)
+    trash(item, base, type)
+  end
+
+  # Buys the metal for a forging task and returns the metal to forge with.
+  # Items of exactly one ingot each need no smelting; anything else gets
+  # enough bronze ingots for the whole task, or one steel ingot for small
+  # items, and sets @remainder so trash throws away what is left.
+  def buy_metal(count, volume_per_item, type)
+    if volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
       type = 'steel'
       buy_ingots(count, type)
     elsif volume_per_item == 5 # exactly one bronze ingot per item
@@ -483,13 +480,11 @@ class TaskMaster
       type = 'steel'
       @remainder = true
       buy_ingots(1, type)
-    else # anything between 5 and 10
+    else # 50 volumes or less in all, more than 5 per item
       @remainder = true
       bingots(1)
     end
-    forge_item(item, count, type)
-    repair(@settings.forging_tools, @settings.forging_belt)
-    trash(item, base, type)
+    type
   end
 
   def zasele(item, count, volume_per_item, base, type)
