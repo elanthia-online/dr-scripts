@@ -69,6 +69,7 @@ class TaskMaster
       end
       exit
     elsif args.finish
+      reconcile_hands
       @dispose, @remainder = [false, false]
       get_instructions # picks up a fresh set of instructions from the task master
       item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
@@ -94,6 +95,7 @@ class TaskMaster
       exit
     elsif @marathon
       @npc = 'zasele'
+      reconcile_hands
       restock
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
       DRCM.ensure_copper_on_hand(8000, @settings, "Crossing")
@@ -114,6 +116,7 @@ class TaskMaster
       exit
     end
 
+    reconcile_hands
     loop do
       @dispose, @remainder = [false, false]
       item, count, volume_per_item, base, type = get_task
@@ -129,6 +132,29 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  # Cleans up what a crash or disconnect left in hand before starting: a
+  # reward sack is sorted, and an unfinished tailoring item is finished where
+  # the character stands (sewing works in any room) with sew's resume mode,
+  # then put in the crafting bag for the turn-in. Knitting is not resumed:
+  # the work sits on the needles and does not show in the hand.
+  def reconcile_hands
+    waitrt?
+    DRC.fix_standing
+    sort_sack(nil) if held_items.any? { |held| held =~ /\bwoven sack\b/ }
+    return unless @npc == 'zasele'
+
+    unfinished = held_items.find { |held| held =~ /\bunfinished\b/ }
+    return unless unfinished
+
+    noun = unfinished.split.last
+    DRC.wait_for_script_to_complete('sew', ['resume', noun])
+    DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
+  end
+
+  def held_items
+    [DRC.right_hand, DRC.left_hand].compact
   end
 
   def exchange_coins
