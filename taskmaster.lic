@@ -135,28 +135,41 @@ class TaskMaster
   end
 
   # Cleans up what a crash or disconnect left in hand before starting: a
-  # reward sack is sorted, and an unfinished tailoring item is finished where
-  # the character stands (sewing works in any room) with sew's resume mode,
-  # then put in the crafting bag for the turn-in. Knitting is not resumed:
-  # the work sits on the needles and does not show in the hand.
+  # reward sack is sorted, and an unfinished tailoring item made from the
+  # stock taskmaster buys for Zasele is finished where the character stands
+  # (sewing works in any room) with sew's resume mode, then put in the
+  # crafting bag for the turn-in. Any other unfinished item is the player's
+  # and is left alone. Knitting is not resumed: the work sits on the needles
+  # and does not show in the hand.
   def reconcile_hands
     waitrt?
     DRC.fix_standing
     sort_sack(nil) if held_items.any? { |held| held =~ /\bwoven sack\b/ }
     return unless @npc == 'zasele'
 
-    unfinished = held_items.find { |held| held =~ /\bunfinished\b/ }
-    return unless unfinished
+    unfinished = held_items.grep(/\bunfinished\b/)
+    piece = unfinished.find { |held| task_piece?(held) }
+    (unfinished - [piece]).each do |held|
+      DRC.message("Leaving your #{held} alone: taskmaster only finishes the burlap, rat-pelt and wool pieces from its own tasks.")
+    end
+    return unless piece
 
-    noun = unfinished.split.last
+    noun = piece.split.last
     DRC.wait_for_script_to_complete('sew', ['resume', noun])
     # Judge the result by the hand text: DRCI.in_hands?(noun) also matches
     # the unfinished piece, since the noun is the same.
-    if held_items.any? { |held| held =~ /\bunfinished\b/ }
+    if held_items.any? { |held| task_piece?(held) }
       discard_unfinished(noun)
     elsif held_items.any? { |held| held =~ /\b#{Regexp.escape(noun)}\b/i }
       DRCC.stow_crafting_item(noun, @bag, nil)
     end
+  end
+
+  # An unfinished piece of the cloth, leather or yarn taskmaster buys for
+  # Zasele's tasks (burlap, rat-pelt, wool).
+  def task_piece?(held)
+    materials = @stackmap.values_at('cloth', 'leather', 'yarn').map(&:first)
+    held.match?(/\bunfinished\b/) && held.match?(/\b(?:#{Regexp.union(materials)})\b/)
   end
 
   # sew could not finish the piece. Throws it away so it never reaches the

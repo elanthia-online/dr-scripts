@@ -17,6 +17,8 @@ RSpec.describe TaskMaster do
       tm.instance_variable_set(:@worn_trashcan, nil)
       tm.instance_variable_set(:@worn_trashcan_verb, nil)
       tm.instance_variable_set(:@settings, OpenStruct.new(outfitting_belt: outfitting_belt))
+      # Zasele's entries of the script's @stackmap: the stock it buys.
+      tm.instance_variable_set(:@stackmap, { 'leather' => ['rat', 16_667], 'cloth' => ['burlap', 16_667], 'yarn' => ['wool', 16_667] })
       hands = { right: right, left: left }
       allow(DRC).to receive(:right_hand) { hands[:right] }
       allow(DRC).to receive(:left_hand) { hands[:left] }
@@ -90,6 +92,25 @@ RSpec.describe TaskMaster do
       reconcile(right: 'wide unfinished rat-pelt leather straps', left: nil, after_sew: { right: nil, left: nil })
       expect(DRCC).not_to have_received(:stow_crafting_item)
       expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'leaves an unfinished item not made from the task stock alone, and says so' do
+      ['unfinished bronze dagger', 'unfinished silk shirt'].each do |held|
+        _, launched = reconcile(right: held, left: nil)
+        expect(launched).to be_empty
+        expect(DRCI).not_to have_received(:dispose_trash)
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRC).to have_received(:message).with(/Leaving your #{held} alone/)
+      end
+    end
+
+    it 'resumes the task piece and leaves the player\'s own unfinished item in the other hand' do
+      _, launched = reconcile(right: 'unfinished silk shirt', left: 'coil of unfinished burlap reinforced rope',
+                              after_sew: { left: 'coil of burlap reinforced rope' })
+      expect(launched).to eq([['sew', %w[resume rope]]])
+      expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil)
+      expect(DRCI).not_to have_received(:dispose_trash)
+      expect(DRCC).not_to have_received(:stow_crafting_item).with(/shirt/, anything, anything)
     end
   end
 end
