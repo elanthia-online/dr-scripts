@@ -28,10 +28,39 @@ class TaskMaster
     'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864], 'thread' => ['cotton', 16667]
   }.freeze
 
+  # Search rooms for the taskmasters, in the order find_npc walks them.
+  ROOMS = [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169].freeze
+
+  # Tools each taskmaster's tasks need, for ;taskmaster <npc> tools.
+  TOOLS = {
+    'poltu'   => ['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
+    'bradyn'  => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
+    'zasele'  => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'],
+    'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife']
+  }.freeze
+
+  ARG_DEFINITIONS = [
+    [
+      { name: 'npc', options: %w[poltu bradyn zasele], variable: true, description: "Task npc's name, in full" },
+      { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
+      { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
+      { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
+      { name: 'repeat', regex: /^repeat/i, optional: true, description: 'Repeat tasks for a given taskmaster' }
+    ],
+    [
+      { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
+      { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up any tools left at Rangu for repair' },
+      { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task' },
+      { name: 'marathon', regex: /^marathon/i, optional: true, description: 'stocks up and runs zasele tasks, repairs during restock' },
+      { name: 'loot_history', regex: /^loot_history/i, optional: true, description: 'Prints out saved sack contents history, potentially scrollish' },
+      { name: 'script_summary', optional: true, description: 'Completes Hollows Eve tasks for the crafting taskmasters on the island' }
+    ]
+  ].freeze
+
+  # Reads the settings and sets up state; run does the work.
   def initialize
     @settings = get_settings
-    @rooms = [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169]
-    tools = { 'poltu' => ['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'], 'bradyn' => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'], 'zasele' => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'], 'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife'] }
+    @rooms = ROOMS
     configure_loot_filter
     @bag = @settings.crafting_container
     @worn_trashcan = @settings.worn_trashcan
@@ -54,86 +83,75 @@ class TaskMaster
     @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
     UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
-    arg_definitions = [
-      [
-        { name: 'npc', options: %w[poltu bradyn zasele], variable: true, description: "Task npc's name, in full" },
-        { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
-        { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
-        { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
-        { name: 'repeat', regex: /^repeat/i, optional: true, description: 'Repeat tasks for a given taskmaster' }
-      ],
-      [
-        { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
-        { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up any tools left at Rangu for repair' },
-        { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task' },
-        { name: 'marathon', regex: /^marathon/i, optional: true, description: 'stocks up and runs zasele tasks, repairs during restock' },
-        { name: 'loot_history', regex: /^loot_history/i, optional: true, description: 'Prints out saved sack contents history, potentially scrollish' },
-        { name: 'script_summary', optional: true, description: 'Completes Hollows Eve tasks for the crafting taskmasters on the island' }
-      ]
-    ]
+  end
 
-    args = parse_args(arg_definitions)
+  # Runs the mode the arguments ask for. The one-shot modes exit; cycle and
+  # the plain modes go on to the task loop.
+  def run(args = parse_args(ARG_DEFINITIONS))
     @npc = args.npc
     @marathon = args.marathon
     if args.find
       find_npc(@rooms, @npc)
       exit
     elsif args.tools
-      DRC.message("Tools required:")
-      tools[@npc.downcase].each do |tool|
-        DRC.message("#{tool}")
-      end
-      exit
+      list_tools
     elsif args.finish
-      reconcile_hands
-      resume_task
+      finish_task_in_progress
     elsif args.reset_output
       _respond("<clearStream id='Task Master'/>")
       exit
     elsif args.cycle
       @npc = ['poltu', 'bradyn', 'zasele'].sample
     elsif args.loot_history
-      ['poltu', 'bradyn', 'zasele'].each do |npc|
-        DRC.message("Sack history for Taskmaster #{npc.capitalize}:")
-        UserVars.taskmaster_sacks[npc].each do |sack|
-          DRC.message(sack)
-        end
-      end
-      exit
+      print_loot_history
     elsif args.pickup
       tool_pickup if DRCI.exists?("rangu ticket")
       exit
     elsif @marathon
-      @npc = 'zasele'
-      reconcile_hands
-      restock
-      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-      loop do
-        top_up_copper
-        refresh_haste
-        run_before_scripts
-        item, count, volume_per_item, base, type = get_task
-        unless check_stock(count * volume_per_item, type, base)
-          repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
-          restock
-          tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-          find_npc(@rooms, @npc)
-        end
-        tailor_item(item, count, base, type)
-        DRCT.dispose("#{item} instructions", 16144)
-        complete_task(item, count)
-        break if Flags['wrap-up']
-      end
-      tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket")
-      exit
+      run_marathon
     end
 
+    run_tasks(args)
+  end
+
+  def list_tools
+    DRC.message("Tools required:")
+    TOOLS[@npc.downcase].each do |tool|
+      DRC.message("#{tool}")
+    end
+    exit
+  end
+
+  def print_loot_history
+    ['poltu', 'bradyn', 'zasele'].each do |npc|
+      DRC.message("Sack history for Taskmaster #{npc.capitalize}:")
+      UserVars.taskmaster_sacks[npc].each do |sack|
+        DRC.message(sack)
+      end
+    end
+    exit
+  end
+
+  # resume_task exits once the task is handed in.
+  def finish_task_in_progress
+    reconcile_hands
+    resume_task
+  end
+
+  # Copper, haste and the before scripts, run ahead of asking for each task.
+  def prepare_for_task
+    top_up_copper
+    refresh_haste
+    run_before_scripts
+  end
+
+  # One task, or with repeat or cycle one after another until the wrap-up
+  # call. cycle picks a new taskmaster after each task.
+  def run_tasks(args)
     reconcile_hands
     loop do
       @dispose, @remainder = [false, false]
-      top_up_copper
-      refresh_haste
-      run_before_scripts
+      prepare_for_task
       item, count, volume_per_item, base, type = get_task
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
       send(@npc.to_sym, item, count, volume_per_item, base, type)
@@ -147,6 +165,31 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  # Zasele tasks until the wrap-up call, restocking (and repairing) only when
+  # the stock runs short, then exits.
+  def run_marathon
+    @npc = 'zasele'
+    reconcile_hands
+    restock
+    tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+    loop do
+      prepare_for_task
+      item, count, volume_per_item, base, type = get_task
+      unless check_stock(count * volume_per_item, type, base)
+        repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
+        restock
+        tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+        find_npc(@rooms, @npc)
+      end
+      tailor_item(item, count, base, type)
+      DRCT.dispose("#{item} instructions", 16144)
+      complete_task(item, count)
+      break if Flags['wrap-up']
+    end
+    tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket")
+    exit
   end
 
   # Cleans up what a crash or disconnect left in hand before starting: a
@@ -920,4 +963,4 @@ before_dying do
   Flags.delete("thieving-fog")
 end
 
-TaskMaster.new
+TaskMaster.new.run
