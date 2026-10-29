@@ -98,7 +98,8 @@ class TaskMaster
   # @param args [OpenStruct] parsed arguments (npc, finish, find, tools,
   #   repeat, reset_output, pickup, cycle, marathon, loot_history)
   # @return [void]
-  # @raise [SystemExit] after the one-shot modes, marathon and finish
+  # @raise [SystemExit] after the one-shot modes, marathon and finish, or
+  #   from run_tasks
   def run(args = parse_args(ARG_DEFINITIONS))
     @npc = args.npc
     @marathon = args.marathon
@@ -175,6 +176,9 @@ class TaskMaster
   #
   # @param args [OpenStruct] parsed arguments; reads cycle and repeat
   # @return [void]
+  # @raise [SystemExit] from get_task (a task already in progress is finished
+  #   by resume_task) or complete_task (nothing left to hand in, or the
+  #   taskmaster can't be found)
   def run_tasks(args)
     reconcile_hands
     loop do
