@@ -9,7 +9,7 @@
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
-   ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set) ##
+   ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
 =end
 
 class TaskMaster
@@ -323,10 +323,13 @@ class TaskMaster
     return item, count, volume_per_item, base, type
   end
 
-  # Put the instructions just read into the crafting bag by name, rather than
-  # stowing whatever is in hand into the default stow container.
+  # Put the instructions just read into the crafting bag by name, where the
+  # crafting scripts put them after studying, rather than leaving them to
+  # default stow. Anything else still in hand (a tool or unfinished item held
+  # after a crash) goes to default stow as before.
   def stow_instructions(item)
     DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+    DRCI.stow_hands
   end
 
   def get_instructions

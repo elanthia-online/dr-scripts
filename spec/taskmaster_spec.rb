@@ -45,8 +45,8 @@ RSpec.describe TaskMaster do
       tm = build
       game('ask zasele for task' => 'You may accept by typing ACCEPT TASK', 'task' => task_line, 'read my rope instructions' => read_line,
            'accept task' => 'You can check your progress with the TASK verb')
-      expect(DRCC).to receive(:stow_crafting_item).with('rope instructions', 'duffel bag', nil)
-      expect(DRCI).not_to receive(:stow_hands)
+      expect(DRCC).to receive(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).ordered
+      expect(DRCI).to receive(:stow_hands).ordered
 
       expect(tm.get_task).to eq(['rope', 5, 4, 'cloth', 'burlap'])
     end
@@ -54,8 +54,20 @@ RSpec.describe TaskMaster do
     it 'puts resumed instructions in the crafting bag by name' do
       tm = build
       game('task' => task_line, 'read my rope instructions' => read_line)
-      expect(DRCC).to receive(:stow_crafting_item).with('rope instructions', 'duffel bag', nil)
-      expect(DRCI).not_to receive(:stow_hands)
+      expect(DRCC).to receive(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).ordered
+      allow(DRCI).to receive(:stow_hands)
+
+      tm.finish
+    end
+
+    # After a crash a character can log back in holding a tool and an unfinished
+    # item; those still go to default stow, as before, but only once the
+    # instructions are in the crafting bag.
+    it 'still stows anything else in hand on resume, after the instructions are bagged' do
+      tm = build
+      game('task' => task_line, 'read my rope instructions' => read_line)
+      expect(DRCC).to receive(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).ordered
+      expect(DRCI).to receive(:stow_hands).ordered
 
       tm.finish
     end
@@ -65,6 +77,7 @@ RSpec.describe TaskMaster do
       game('task'                        => 'Zasele wanted you to craft some wide leather straps and indicated that 6 would suffice.  So far, you have returned 2 to her.',
            'read my straps instructions' => '   (1) refined leather material (5 yards)')
       expect(DRCC).to receive(:stow_crafting_item).with('straps instructions', 'duffel bag', nil)
+      allow(DRCI).to receive(:stow_hands)
 
       tm.finish
     end
