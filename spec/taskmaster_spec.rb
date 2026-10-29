@@ -198,7 +198,7 @@ RSpec.describe TaskMaster do
       [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169]
     end
 
-    # Runs the real start-up, as TaskMaster.new does, with every step that
+    # Runs the real start-up, as TaskMaster.new.run does, with every step that
     # talks to the game stubbed to record itself. args: the parsed arguments
     # (npc:, repeat:, marathon: ...). ticket: whether a Rangu ticket is
     # carried; samples: the taskmasters cycle picks, in order. The wrap-up flag
@@ -259,6 +259,7 @@ RSpec.describe TaskMaster do
       allow(DRC).to receive(:message) { |text| events << [:message, text] }
       begin
         tm.send(:initialize)
+        tm.run
       rescue SystemExit
         events << :exit
       end
@@ -283,8 +284,33 @@ RSpec.describe TaskMaster do
         OpenStruct.new(find: true, npc: 'zasele')
       end
       allow(tm).to receive(:find_npc)
-      expect { tm.send(:initialize) }.to raise_error(SystemExit)
+      tm.send(:initialize)
+      expect { tm.run }.to raise_error(SystemExit)
       expect(names).to eq([%w[npc finish find tools repeat], %w[reset_output pickup cycle marathon loot_history script_summary]])
+    end
+
+    it 'only reads the settings when built, leaving the arguments and the game to run' do
+      tm = described_class.allocate
+      allow(tm).to receive(:get_settings).and_return(OpenStruct.new)
+      allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
+      allow(tm).to receive(:parse_args)
+      allow(DRC).to receive(:bput)
+      allow(tm).to receive(:fput)
+      tm.send(:initialize)
+      expect(tm).not_to have_received(:parse_args)
+      expect(DRC).not_to have_received(:bput)
+      expect(tm).not_to have_received(:fput)
+      expect(tm.instance_variable_get(:@rooms)).to eq(all_rooms)
+      expect(Flags['wrap-up']).to be(false)
+    end
+
+    it 'runs the mode it is given without parsing the arguments itself' do
+      tm = build(rooms: described_class::ROOMS)
+      allow(tm).to receive(:parse_args)
+      allow(tm).to receive(:find_npc)
+      expect { tm.run(OpenStruct.new(npc: 'bradyn', find: true)) }.to raise_error(SystemExit)
+      expect(tm).to have_received(:find_npc).with(described_class::ROOMS, 'bradyn')
+      expect(tm).not_to have_received(:parse_args)
     end
 
     describe 'one task' do
