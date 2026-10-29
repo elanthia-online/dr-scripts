@@ -6280,7 +6280,7 @@ RSpec.describe LootProcess do
     {
       'container-full'  => ["There isn't any more room in the eddy for that.", "There isn't any more room in my bag"],
       'pouch-full'      => ['You think the soft gem pouch is too full to fit another gem into.', 'You think the pouch is too full to fit another gem into'],
-      'pouch-needs-tie' => ["You'd better tie it up before putting anything else in it.", "You'd better tie it up before putting more in"]
+      'pouch-needs-tie' => ["You've already got a wealth of gems in there!  You'd better tie it up before putting more gems inside.", "You'd better tie it up before putting more in"]
     }.each do |key, (game_line, spoken)|
       it "sets #{key} on the game's line" do
         deliver(game_line)
