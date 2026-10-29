@@ -667,7 +667,7 @@ class LootProcess
               /#{FLAG_NO_QUOTE}cruelly into the body and carving out a chunk/i,
               /#{FLAG_NO_QUOTE}makes additional cuts, purposeful but seemingly at random/i)
     Flags.add('pouch-full', /#{FLAG_LINE_START}You think the .* is too full to fit another gem into/i)
-    Flags.add('pouch-needs-tie', /You'd better tie it up before putting/)
+    Flags.add('pouch-needs-tie', /#{FLAG_LINE_START}You've already got a wealth of gems in there!  You'd better tie it up before putting/)
     Flags.add('container-full', /#{FLAG_LINE_START}There isn't any more room/i)
     Flags.add('ct-successful-skin', '^You carefully fit .* into your bundle')
 
