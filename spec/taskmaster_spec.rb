@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -27,6 +28,12 @@ RSpec.describe TaskMaster do
 
     it 'runs nothing when the setting is missing' do
       expect(run(nil)).to eq([])
+    end
+
+    it 'runs nothing with the base.yaml default' do
+      base = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__))
+      expect(base).to have_key('task_before_scripts')
+      expect(run(base['task_before_scripts'])).to eq([])
     end
 
     it 'skips blank entries instead of starting a script with no name' do
