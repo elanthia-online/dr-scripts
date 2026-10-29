@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
