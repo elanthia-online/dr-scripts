@@ -7,6 +7,7 @@
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_keep_list: list of items to keep. See default in base.yaml
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
+  task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
    ## Important: set default stow to the same bag as your crafting bag ##
@@ -32,6 +33,7 @@ class TaskMaster
     @pickup_tools = @settings.task_get_tools_on_completion
     @boost = @settings.task_use_boost
     @crafting_room = @settings.task_crafting_room
+    @before_scripts = Array(@settings.task_before_scripts)
 
     DRCM.ensure_copper_on_hand(110000, @settings, "Crossing")
     @stockdata = get_data('crafting')['stock']
@@ -98,6 +100,7 @@ class TaskMaster
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
       DRCM.ensure_copper_on_hand(8000, @settings, "Crossing")
       loop do
+        run_before_scripts
         item, count, volume_per_item, base, type = get_task
         unless check_stock(count * volume_per_item, type, base)
           repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
@@ -116,6 +119,7 @@ class TaskMaster
 
     loop do
       @dispose, @remainder = [false, false]
+      run_before_scripts
       item, count, volume_per_item, base, type = get_task
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
       send(@npc.to_sym, item, count, volume_per_item, base, type)
@@ -129,6 +133,18 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  # Runs each task_before_scripts entry ("script arg arg") to completion. They
+  # run before asking for a task, so they overlap the taskmaster's cooldown
+  # after the previous turn-in instead of adding to the task.
+  def run_before_scripts
+    @before_scripts.each do |entry|
+      name, *script_args = entry.to_s.split
+      next unless name
+
+      DRC.wait_for_script_to_complete(name, script_args)
+    end
   end
 
   def exchange_coins
