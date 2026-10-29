@@ -3025,6 +3025,8 @@ task_keep_list:
   - tomiek
   - tyrium
   - vardite
+# Setting for taskmaster - Seconds between asks while the taskmaster makes you wait (minimum 3).
+task_cooldown_poll: 15
 
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:

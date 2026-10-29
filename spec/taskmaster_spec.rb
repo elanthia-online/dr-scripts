@@ -31,6 +31,12 @@ RSpec.describe TaskMaster do
       expect(build(task_cooldown_poll: 0).cooldown_poll_seconds).to eq(3)
       expect(build(task_cooldown_poll: -10).cooldown_poll_seconds).to eq(3)
     end
+
+    it 'ships the same default in base.yaml' do
+      base = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__))
+      expect(base['task_cooldown_poll']).to eq(15)
+      expect(build(task_cooldown_poll: base['task_cooldown_poll']).cooldown_poll_seconds).to eq(15)
+    end
   end
 
   describe '#get_task while the taskmaster makes you wait' do
