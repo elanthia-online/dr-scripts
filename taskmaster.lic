@@ -7,6 +7,8 @@
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_keep_list: list of items to keep. See default in base.yaml
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
+  task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
+  task_copper_target: 110000
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
    ## Important: set default stow to the same bag as your crafting bag ##
@@ -32,8 +34,8 @@ class TaskMaster
     @pickup_tools = @settings.task_get_tools_on_completion
     @boost = @settings.task_use_boost
     @crafting_room = @settings.task_crafting_room
+    configure_copper
 
-    DRCM.ensure_copper_on_hand(110000, @settings, "Crossing")
     @stockdata = get_data('crafting')['stock']
     @stackmap = { 'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775], 'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864] }
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
@@ -72,6 +74,7 @@ class TaskMaster
       @dispose, @remainder = [false, false]
       get_instructions # picks up a fresh set of instructions from the task master
       item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
+      top_up_copper
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
       send(@npc.to_sym, item, count, volume_per_item, base, type)
       complete_task(item, count)
@@ -96,8 +99,8 @@ class TaskMaster
       @npc = 'zasele'
       restock
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-      DRCM.ensure_copper_on_hand(8000, @settings, "Crossing")
       loop do
+        top_up_copper
         item, count, volume_per_item, base, type = get_task
         unless check_stock(count * volume_per_item, type, base)
           repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
@@ -116,6 +119,7 @@ class TaskMaster
 
     loop do
       @dispose, @remainder = [false, false]
+      top_up_copper
       item, count, volume_per_item, base, type = get_task
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
       send(@npc.to_sym, item, count, volume_per_item, base, type)
@@ -129,6 +133,23 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  def configure_copper
+    @copper_floor = @settings.task_copper_floor || 20_000
+    @copper_target = [@settings.task_copper_target || 110_000, @copper_floor].max
+  end
+
+  # One WEALTH check per task. Only when below the floor does this walk to the
+  # bank, exchanging any foreign coins from reward sacks on the way, and refill
+  # to the target, so most tasks need no trip. The per-purchase
+  # ensure_copper_on_hand calls stay as a guard for tasks that cost more than
+  # the floor; they only walk when short.
+  def top_up_copper
+    return if DRCM.wealth("Crossing") >= @copper_floor
+
+    exchange_coins
+    DRCM.ensure_copper_on_hand(@copper_target, @settings, "Crossing")
   end
 
   def exchange_coins
@@ -167,9 +188,7 @@ class TaskMaster
     end
     return if cost == 0
 
-    exchange_coins
-    DRCM.deposit_coins(5000, @settings, "Crossing")
-    DRCM.ensure_copper_on_hand(8000, @settings, "Crossing")
+    top_up_copper
     DRCM.ensure_copper_on_hand(cost + 8000, @settings, "Crossing")
     ## now we have a hash with stock=># to order, and cash on hand
     need.each do |stock, number|
