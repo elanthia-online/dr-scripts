@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -111,10 +112,27 @@ RSpec.describe TaskMaster do
       expect(DRCI).to have_received(:dispose_trash)
     end
 
-    it 'names a keeper whose description has no leading article without raising' do
+    it 'strips the LOOK prefix from a keeper whose description has no leading article' do
       tm = build(task_junk_list: ['dye'])
-      expect { sort(tm, '3 haledroth shards') }.not_to raise_error
+      sort(tm, '3 haledroth shards')
       expect(DRC).to have_received(:message).with('Found a keeper: 3 haledroth shards')
+    end
+  end
+
+  describe 'profiles/base.yaml defaults' do
+    let(:base) { YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__)) }
+
+    it 'defines task_junk_list as an empty list and task_slack_keepers as false' do
+      expect(base).to include('task_junk_list' => [], 'task_slack_keepers' => false)
+    end
+
+    it 'still sorts by the keep list and leaves Slack alone with the defaults' do
+      tm = described_class.allocate
+      tm.instance_variable_set(:@settings, OpenStruct.new(base.slice('task_keep_list', 'task_junk_list', 'task_slack_keepers')))
+      expect(tm).not_to receive(:register_slackbot)
+      tm.send(:configure_loot_filter)
+      expect(tm.keeper?(sack('a large agonite shard'))).to be(true)
+      expect(tm.keeper?(sack('some coral dye'))).to be(false)
     end
   end
 

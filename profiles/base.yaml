@@ -3025,6 +3025,10 @@ task_keep_list:
   - tomiek
   - tyrium
   - vardite
+# Setting for taskmaster - Items to throw away (strings or regexps); everything else is kept. When non-empty it replaces task_keep_list.
+task_junk_list: []
+# Setting for taskmaster - Send a Slack message (to slack_username) for each keeper.
+task_slack_keepers: false
 
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:
