@@ -368,14 +368,14 @@ class TaskMaster
   end
 
   # Hands in finished items already in the bag and returns how many are still
-  # owed, or 0 once the task is complete (its reward sack sorted). Anything the
-  # taskmaster won't take goes back in the bag and stops the hand-in.
+  # owed, or 0 once the task is complete (its reward sack sorted). A give that
+  # misses a wandering taskmaster is retried (give_item); anything she won't
+  # take goes back in the bag and stops the hand-in.
   def turn_in_banked(item, owed)
     loop do
-      find_npc(@rooms, @npc)
-      break unless DRCI.get_item?(item, @bag)
-
-      case DRC.bput("give my #{item} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, /What is it you're trying to give/)
+      case give_item(item)
+      when nil
+        break
       when /hands you a/
         sort_sack(item)
         fput('dump junk')
@@ -591,29 +591,29 @@ class TaskMaster
 
   # Consecutive gives that found nobody to take the item before giving up.
   MAX_GIVE_MISSES = 5
+  GIVE_MISSED = /What is it you're trying to give/
+
+  # Gives one finished item to the taskmaster and returns the reply, or nil when
+  # there is none in hand or in the bag. A give that misses her (she wandered
+  # off between the get and the give) leaves the item in hand: find her again
+  # and give that same item, stopping after MAX_GIVE_MISSES misses in a row.
+  def give_item(item)
+    MAX_GIVE_MISSES.times do
+      find_npc(@rooms, @npc)
+      return unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
+
+      reply = DRC.bput("give my #{item} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED)
+      return reply unless reply =~ GIVE_MISSED
+    end
+    DRC.message("Could not hand a #{item} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
+    exit
+  end
 
   def complete_task(item, _count)
-    misses = 0
     loop do
-      find_npc(@rooms, @npc)
-      # A give that missed the taskmaster leaves the item in hand; reuse it
-      # rather than fetching another one from the bag.
-      unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
-        exit
-      end
-      case DRC.bput("give my #{item} to #{@npc}", "more .* needed", "hands you a", "What is it you're trying to give")
-      when /hands you a/
-        break
-      when /What is it you're trying to give/
-        # The taskmaster wandered off between the get and the give.
-        misses += 1
-        if misses >= MAX_GIVE_MISSES
-          DRC.message("Could not hand a #{item} to #{@npc} after #{misses} tries, stopping.")
-          exit
-        end
-      else
-        misses = 0
-      end
+      reply = give_item(item)
+      exit unless reply
+      break if reply =~ /hands you a/
     end
     sort_sack(item)
     fput('dump junk')

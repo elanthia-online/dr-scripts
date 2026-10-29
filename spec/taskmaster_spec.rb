@@ -197,6 +197,49 @@ RSpec.describe TaskMaster do
     end
   end
 
+  describe '#turn_in_banked when the taskmaster wanders off' do
+    let(:missed) { "What is it you're trying to give?" }
+
+    # Plays a banked hand-in with the given give responses and tracks what is
+    # in hand: a landed give empties the hand, a missed one leaves the item
+    # there. Returns the owed count and how many items came out of the bag.
+    def hand_in(tm, responses, banked:, owed:)
+      holding = false
+      gets = 0
+      allow(DRCI).to receive(:in_hands?) { holding }
+      allow(DRCI).to receive(:get_item?) do
+        next false unless gets < banked
+
+        gets += 1
+        holding = true
+      end
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *_matchers|
+        next '' unless command.start_with?('give my rope to zasele')
+
+        response = responses.shift
+        holding = false unless response == missed
+        response
+      end
+      [tm.turn_in_banked('rope', owed), gets]
+    end
+
+    it 'finds the taskmaster again and gives the item still in hand' do
+      tm = build
+      responses = [missed, 'Zasele holds up her fingers indicating 2 more are needed.',
+                   'Zasele holds up her fingers indicating 1 more is needed.']
+      expect(hand_in(tm, responses, banked: 2, owed: 3)).to eq([1, 2])
+      expect(tm).to have_received(:find_npc).exactly(4).times
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it 'stops after repeated misses rather than looping forever' do
+      tm = build
+      expect { hand_in(tm, Array.new(10, missed), banked: 2, owed: 3) }.to raise_error(SystemExit)
+      expect(DRC).to have_received(:message).with(/after 5 tries/)
+    end
+  end
+
   describe '#complete_task' do
     # Turn-in responses as the game prints them (2025 Hollow Eve logs).
     let(:more_needed) { 'Zasele holds up her fingers indicating 1 more is needed.' }
