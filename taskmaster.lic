@@ -661,30 +661,36 @@ class TaskMaster
     DRC.bput("ask #{@npc} for instructions", "hands you", "gives you", "handing you")
   end
 
+  # Asks the taskmaster for a task until one is offered, waiting out
+  # cooldowns, and returns what finish reads from it. An ongoing task is
+  # resumed instead, and nil comes back when the reply matches nothing.
+  # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
+  # inside it and return nil, where the old recursion let it propagate.
   def get_task
-    find_npc(@rooms, @npc)
-    case DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
-    when /if you agree to (his|her) terms/, /To whom are you speaking/
-      get_task
-    when /You are already on a task/
-      resume_task
-    when /utterly ignoring you/, /give you a chance a little later/
-      DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
-      pause @cooldown_poll
-      get_task
-    when /you must wait before I can give you a task/
-      if @boost
-        fput("boost task")
-        pause 2
-        @boost = false
-        get_task
-      else
+    while true
+      find_npc(@rooms, @npc)
+      case DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+      when /if you agree to (his|her) terms/, /To whom are you speaking/
+        next
+      when /You are already on a task/
+        return resume_task
+      when /utterly ignoring you/, /give you a chance a little later/
+        DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
-        get_task
+      when /you must wait before I can give you a task/
+        if @boost
+          fput("boost task")
+          pause 2
+          @boost = false
+        else
+          pause @cooldown_poll
+        end
+      when /You may accept by typing ACCEPT TASK/
+        DRC.bput("accept task", /You can check your progress with the TASK verb/)
+        return finish
+      else
+        return nil
       end
-    when /You may accept by typing ACCEPT TASK/
-      DRC.bput("accept task", /You can check your progress with the TASK verb/)
-      finish
     end
   end
 

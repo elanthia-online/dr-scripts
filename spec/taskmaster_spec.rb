@@ -782,7 +782,8 @@ RSpec.describe TaskMaster do
       describe 'accepting a new task' do
         it 'parses it like a resume and puts its instructions in the crafting bag by name' do
           tm = reader
-          game('ask zasele for task' => 'You may accept by typing ACCEPT TASK', 'accept task' => 'You can check your progress with the TASK verb',
+          offers = ['You may accept by typing ACCEPT TASK']
+          game('ask zasele for task' => ->(*) { offers.shift || raise('asked again after the offer') }, 'accept task' => 'You can check your progress with the TASK verb',
                'task' => journal('a coil of reinforced cloth rope', 5, 0), 'read my rope instructions' => rope_materials)
           expect(DRCC).to receive(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).ordered
           expect(DRCI).to receive(:stow_hands).ordered
@@ -822,14 +823,19 @@ RSpec.describe TaskMaster do
             :resumed
           end
           allow(DRC).to receive(:message) { |text| events << [:message, text] }
-          game('ask zasele for task' => lambda do |*|
+          ask = lambda do |*|
             events << :ask
-            replies.shift.to_s
-          end,
-               'accept task'         => lambda do |*|
-                 events << :accept
-                 'You can check your progress with the TASK verb.'
-               end)
+            # A loop that asks past the last reply fails here instead of
+            # hanging the suite.
+            raise 'asked again after the last reply' if replies.empty?
+
+            replies.shift
+          end
+          accept = lambda do |*|
+            events << :accept
+            'You can check your progress with the TASK verb.'
+          end
+          game('ask zasele for task' => ask, 'accept task' => accept)
           [tm.get_task, events, tm]
         end
 
@@ -883,7 +889,7 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
           allow(tm).to receive(:fput) { |command| events << [:fput, command] }
           replies = [wait, offer]
-          game('ask zasele for task' => ->(*) { replies.shift }, 'accept task' => 'You can check your progress with the TASK verb.')
+          game('ask zasele for task' => ->(*) { replies.shift || raise('asked again after the last reply') }, 'accept task' => 'You can check your progress with the TASK verb.')
           tm.get_task
           expect(events).to eq([[:pause, 7]])
         end
@@ -899,6 +905,12 @@ RSpec.describe TaskMaster do
         it 'mixes replies in any order, asking until there is an offer' do
           expect(asking([terms, ignored, wait, nobody, offer], boost: true)[1])
             .to eq([:find, :ask, :find, :ask, cooldown_message, [:pause, 7], :find, :ask, [:fput, 'boost task'], [:pause, 2], :find, :ask, *accepted])
+        end
+
+        it 'keeps asking through a long cooldown without growing the stack' do
+          result, events, = asking([*Array.new(20_000, wait), offer])
+          expect(result).to eq(:accepted)
+          expect(events.count([:pause, 7])).to eq(20_000)
         end
 
         it 'gives up and returns nil, without asking again, when no reply matches' do
