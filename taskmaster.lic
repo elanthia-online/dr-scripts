@@ -156,7 +156,7 @@ class TaskMaster
     return unless @boosts.include?('haste')
     return if Time.now.to_i < UserVars.taskmaster_haste_expires.to_i
 
-    case DRC.bput('boost haste', HASTE_ACTIVATED, HASTE_NO_CREDITS, /\bboost\b/i)
+    case DRC.bput('boost haste', HASTE_ACTIVATED, HASTE_NO_CREDITS, /Minor Haste/)
     when HASTE_ACTIVATED
       UserVars.taskmaster_haste_expires = Time.now.to_i + HASTE_SECONDS
     when HASTE_NO_CREDITS

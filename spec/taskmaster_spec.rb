@@ -87,7 +87,7 @@ RSpec.describe TaskMaster do
     it 'backs off for ten minutes after any other answer, such as haste already running' do
       tm = build(task_boosts: ['haste'])
       # The real wording for an already-running boost is not in the logs; any
-      # reply that mentions a boost but is neither of the known ones lands here.
+      # other reply naming Minor Haste lands here.
       reply_with('You already have an active Minor Haste boost.')
       tm.refresh_haste
       expect(UserVars.taskmaster_haste_expires).to be_within(5).of(Time.now.to_i + 600)
@@ -98,6 +98,12 @@ RSpec.describe TaskMaster do
       reply_with('')
       tm.refresh_haste
       expect(UserVars.taskmaster_haste_expires).to be_within(5).of(Time.now.to_i + 600)
+    end
+
+    it 'ignores other players mentioning a boost while waiting for the reply' do
+      tm = build(task_boosts: ['haste'])
+      expect(DRC).to receive(:bput).with('boost haste', TaskMaster::HASTE_ACTIVATED, TaskMaster::HASTE_NO_CREDITS, /Minor Haste/).and_return(activated)
+      tm.refresh_haste
     end
   end
 end
