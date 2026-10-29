@@ -3026,6 +3026,10 @@ task_keep_list:
   - tyrium
   - vardite
 
+# Setting for taskmaster - boosts to use. task: BOOST TASK when a task is on cooldown
+# (task_use_boost: true also turns this on). haste: keep BOOST HASTE running between tasks.
+task_boosts: []
+
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:
   # Where foraged items should be temporarily stored

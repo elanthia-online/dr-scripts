@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -34,6 +35,15 @@ RSpec.describe TaskMaster do
       expect(tm.instance_variable_get(:@boosts)).to eq(%w[task haste])
     end
 
+    it 'keeps both defaults when task_boosts comes from base.yaml' do
+      base = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__))
+      expect(base).to have_key('task_boosts')
+      expect(build(task_boosts: base['task_boosts']).instance_variable_get(:@boosts)).to eq([])
+      tm = build(task_boosts: base['task_boosts'], task_use_boost: true)
+      expect(tm.instance_variable_get(:@boosts)).to eq(['task'])
+      expect(tm.instance_variable_get(:@boost)).to be(true)
+    end
+
     it 'can run haste without the task boost' do
       tm = build(task_boosts: ['haste'])
       expect(tm.instance_variable_get(:@boost)).to be(false)
@@ -42,7 +52,7 @@ RSpec.describe TaskMaster do
 
   describe '#refresh_haste' do
     # Boost replies as the game prints them (2025 Hollow Eve logs).
-    let(:activated) { "You've activated the Minor Haste boost for an hour!  Check INFO to see your time remaining." }
+    let(:activated) { "You've activated the Minor Haste boost for an hour!" }
     let(:no_credits) { "You don't have enough credits for the Minor Haste boost.  You currently have 0 available but need 1." }
 
     def reply_with(text)
