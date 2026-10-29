@@ -11,10 +11,18 @@
   task_copper_target: 110000
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
-   ## Important: set default stow to the same bag as your crafting bag ##
+   ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
 =end
 
 class TaskMaster
+  # Stock base => [stock name, room to order it in]. restock tops up cloth,
+  # leather, yarn and thread for marathon runs; thread is the cotton spool
+  # (stock-name cotton in base-crafting.yaml).
+  STACKMAP = {
+    'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775],
+    'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864], 'thread' => ['cotton', 16667]
+  }.freeze
+
   def initialize
     @settings = get_settings
     @keeplist = @settings.task_keep_list
@@ -37,7 +45,7 @@ class TaskMaster
     configure_copper
 
     @stockdata = get_data('crafting')['stock']
-    @stackmap = { 'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775], 'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864] }
+    @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
     UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
     arg_definitions = [
@@ -71,14 +79,7 @@ class TaskMaster
       end
       exit
     elsif args.finish
-      @dispose, @remainder = [false, false]
-      get_instructions # picks up a fresh set of instructions from the task master
-      item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
-      top_up_copper
-      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
-      exit
+      resume_task
     elsif args.reset_output
       _respond("<clearStream id='Task Master'/>")
       exit
@@ -269,7 +270,9 @@ class TaskMaster
     elsif base == 'lumber'
       buy_stackables(item, count, volume_per_item, base)
       shape_item(item, count, base, type)
-      repair(@settings.engineering_tools, @settings.engineering_belt)
+      # base.yaml names the shaping toolset shaping_tools; engineering_tools is the
+      # older key, kept as a fallback the same way clerk-tools resolves it.
+      repair(@settings.shaping_tools || @settings.engineering_tools || [], @settings.engineering_belt)
       trash(item, base, type)
       return
     elsif volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
@@ -309,37 +312,154 @@ class TaskMaster
     trash(item, base, type)
   end
 
+  # Taskmasters wander, but between turn-ins they are usually back in the
+  # room they were last seen in. Search from there outwards along the room
+  # list, and remember where each one was found. Kept in UserVars because t2
+  # can start this script once per task.
   def find_npc(rooms, npc)
-    return if DRRoom.npcs.include?(npc.capitalize)
-
-    rooms.each do |room_id|
+    UserVars.taskmaster_last_seen ||= {}
+    search_order(rooms, UserVars.taskmaster_last_seen[npc]).each do |room_id|
       break if DRRoom.npcs.include?(npc.capitalize)
 
       DRCT.walk_to(room_id)
     end
+    UserVars.taskmaster_last_seen[npc] = Room.current.id if DRRoom.npcs.include?(npc.capitalize)
   end
 
+  # The room list starting at start_room and alternating outwards from it
+  # (start, next, previous, two on, two back, ...), or the list unchanged when
+  # start_room is not in it.
+  def search_order(rooms, start_room)
+    start = rooms.index(start_room)
+    return rooms unless start
+
+    order = [rooms[start]]
+    (1...rooms.size).each do |step|
+      order << rooms[start + step] if start + step < rooms.size
+      order << rooms[start - step] if start - step >= 0
+    end
+    order
+  end
+
+  # The task journal entry. "So far, you have returned N" is optional so an
+  # entry printed without it still parses as nothing returned.
+  TASK_JOURNAL = /wanted you to craft (.*) and indicated that (\d+) would suffice\.(?:\s+So far, you have returned (\d+))?/
+  NOT_ON_TASK = /^You are not currently on a task/
+  INSTRUCTION_MATERIALS = /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/
+
   def finish
-    /wanted you to craft (.*) and indicated that (\d+) would suffice/ =~ DRC.bput("task", /wanted you to craft (.*) and indicated that (\d+) would suffice/, /^You are not currently on a task/)
-    item = Regexp.last_match(1).split.last
-    count = Regexp.last_match(2).to_i
-    DRC.message("Making #{count} #{item}s")
-    case DRC.bput("read my #{item} instructions", /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/)
+    item, count = read_task
+    unless item
+      DRC.message("You are not on a task with #{@npc}.")
+      exit
+    end
+    read_instructions(item, count)
+  end
+
+  # Reads the task journal and returns the item noun and how many are still
+  # owed, or nil when not on a task.
+  def read_task
+    entry = DRC.bput("task", TASK_JOURNAL, NOT_ON_TASK)
+    match = TASK_JOURNAL.match(entry)
+    return nil unless match
+
+    item = match[1].split.last
+    remaining = [match[2].to_i - match[3].to_i, 0].max
+    DRC.message("Making #{remaining} #{item}s")
+    return item, remaining
+  end
+
+  # Reads the item's instructions for its material and volume, then stows
+  # them, returning everything the worker methods need.
+  def read_instructions(item, count)
+    case DRC.bput("read my #{item} instructions", INSTRUCTION_MATERIALS)
     when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
       base = Regexp.last_match(1)
       volume_per_item = Regexp.last_match(3).to_i
-      base.sub!('bone', 'stack')
-      base.sub!('metal', 'ingot')
-      base.sub!('wood', 'lumber')
+      base = base.sub('bone', 'stack').sub('metal', 'ingot').sub('wood', 'lumber')
       DRC.message("Each #{item} requires #{volume_per_item} volumes")
     when /stone .* \((\w+)\)/
       volume_per_item = 'boulder'
       base = 'stone'
       DRC.message("Using a boulder for each #{item}")
     end
-    DRCI.stow_hands
+    stow_instructions(item)
     type = @stackmap[base].first
     return item, count, volume_per_item, base, type
+  end
+
+  TURN_IN_MORE_NEEDED = /(\d+) more (?:are|is) needed/
+  INSTRUCTION_USES = /They have only (\d+) uses? remaining/
+
+  # Finishes a task already in progress, for instance after a crash or a
+  # reconnect: hand in any finished items already in the bag, make sure the
+  # instructions have a use for every item still owed (asking the taskmaster
+  # only when they don't, since replacements are limited), then make and hand
+  # in the rest.
+  def resume_task
+    @dispose, @remainder = [false, false]
+    item, owed = read_task
+    unless item
+      DRC.message("You are not on a task with #{@npc}.")
+      exit
+    end
+    owed = turn_in_banked(item, owed)
+    exit if owed.zero?
+
+    ensure_instructions(item, owed)
+    item, count, volume_per_item, base, type = read_instructions(item, owed)
+    top_up_copper
+    tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+    send(@npc.to_sym, item, count, volume_per_item, base, type)
+    complete_task(item, count)
+    exit
+  end
+
+  # Hands in finished items already in the bag and returns how many are still
+  # owed, or 0 once the task is complete (its reward sack sorted). A give that
+  # misses a wandering taskmaster is retried (give_item); anything she won't
+  # take goes back in the bag and stops the hand-in.
+  def turn_in_banked(item, owed)
+    loop do
+      case give_item(item)
+      when nil
+        break
+      when /hands you a/
+        sort_sack(item)
+        fput('dump junk')
+        return 0
+      when TURN_IN_MORE_NEEDED
+        owed = Regexp.last_match(1).to_i
+      else
+        DRCC.stow_crafting_item(item, @bag, nil)
+        break
+      end
+    end
+    owed
+  end
+
+  # Leaves the item's instructions in hand, asking the taskmaster for a fresh
+  # set only when none are carried, they are someone else's, or they have fewer
+  # uses than items owed (each item takes one study).
+  def ensure_instructions(item, owed)
+    carried = DRCI.get_item?("#{item} instructions", @bag)
+    if carried
+      reply = DRC.bput("read my #{item} instructions", INSTRUCTION_USES, /written by or for someone else/, /What were you referring/)
+      return if reply[INSTRUCTION_USES, 1].to_i >= owed
+
+      # Put the short or unreadable set back so only the new one is in hand.
+      DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+    end
+    get_instructions
+  end
+
+  # Put the instructions just read into the crafting bag by name, where the
+  # crafting scripts put them after studying, rather than leaving them to
+  # default stow. Anything else still in hand (a tool or unfinished item held
+  # after a crash) goes to default stow as before.
+  def stow_instructions(item)
+    DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+    DRCI.stow_hands
   end
 
   def get_instructions
@@ -353,12 +473,7 @@ class TaskMaster
     when /if you agree to (his|her) terms/, /To whom are you speaking/
       get_task
     when /You are already on a task/
-      @dispose, @remainder = [false, false]
-      get_instructions # picks up a fresh set of instructions from the task master
-      item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
-      exit
+      resume_task
     when /utterly ignoring you/, /give you a chance a little later/
       DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
       pause 15
@@ -375,28 +490,7 @@ class TaskMaster
       end
     when /You may accept by typing ACCEPT TASK/
       DRC.bput("accept task", /You can check your progress with the TASK verb/)
-      /wanted you to craft (.*) and indicated that (\d+) would suffice.\s+So far, you have returned (\d+)/ =~ DRC.bput("task", /wanted you to craft (.*) and indicated that (\d+) would suffice.\s+So far, you have returned (\d+)/)
-      item = Regexp.last_match(1).split.last
-      count = Regexp.last_match(2).to_i
-      already_returned = Regexp.last_match(3).to_i
-      count = count - already_returned
-      DRC.message("Making #{count} #{item}s")
-      case DRC.bput("read my #{item} instructions", /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/)
-      when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
-        base = Regexp.last_match(1)
-        volume_per_item = Regexp.last_match(3).to_i
-        base.sub!('bone', 'stack')
-        base.sub!('metal', 'ingot')
-        base.sub!('wood', 'lumber')
-        DRC.message("Each #{item} requires #{volume_per_item} volumes")
-      when /stone .* \((\w+)\)/
-        volume_per_item = 'boulder'
-        base = 'stone'
-        DRC.message("Using a boulder for each #{item}")
-      end
-      DRCI.stow_hands
-      type = @stackmap[base].first
-      return item, count, volume_per_item, base, type
+      finish
     end
   end
 
@@ -538,10 +632,24 @@ class TaskMaster
     else
       DRCT.walk_to(@crafting_room)
     end
+    check_sewing_consumables(count) unless base == 'yarn'
     count.times do
-      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, @marathon ? 'skip' : nil])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
     DRC.message("#{count} #{item}s completed")
+  end
+
+  # Pins and thread are checked once for the whole task, so each sew run can
+  # skip its own check (two get/count/put rounds per item). An item uses at
+  # most a few pins; sew still restocks mid-item if either runs out.
+  # Knitting uses neither.
+  PIN_USES_PER_ITEM = 3
+
+  def check_sewing_consumables(count)
+    info = get_data('crafting')['tailoring']["Crossing"]
+    belt = @settings.outfitting_belt
+    DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, belt, PIN_USES_PER_ITEM * count + 5)
+    DRCC.check_consumables('thread', info['stock-room'], 6, @bag, @bag_items, belt)
   end
 
   def shape_item(item, count, _base, type)
@@ -552,13 +660,31 @@ class TaskMaster
     DRC.message("#{count} #{item}s completed")
   end
 
+  # Consecutive gives that found nobody to take the item before giving up.
+  MAX_GIVE_MISSES = 5
+  GIVE_MISSED = /What is it you're trying to give/
+
+  # Gives one finished item to the taskmaster and returns the reply, or nil when
+  # there is none in hand or in the bag. A give that misses her (she wandered
+  # off between the get and the give) leaves the item in hand: find her again
+  # and give that same item, stopping after MAX_GIVE_MISSES misses in a row.
+  def give_item(item)
+    MAX_GIVE_MISSES.times do
+      find_npc(@rooms, @npc)
+      return unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
+
+      reply = DRC.bput("give my #{item} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED)
+      return reply unless reply =~ GIVE_MISSED
+    end
+    DRC.message("Could not hand a #{item} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
+    exit
+  end
+
   def complete_task(item, _count)
     loop do
-      find_npc(@rooms, @npc)
-      unless DRCI.get_item?(item, @bag)
-        exit
-      end
-      break if DRC.bput("give my #{item} to #{@npc}", "more .* needed", "hands you a") =~ /hands you a/
+      reply = give_item(item)
+      exit unless reply
+      break if reply =~ /hands you a/
     end
     sort_sack(item)
     fput('dump junk')
@@ -621,7 +747,19 @@ class TaskMaster
     end
     result.sub!('In the woven sack you see', '')
     DRC.log_window(result, "Task Master", true, true)
-    UserVars.taskmaster_sacks[@npc] << result
+    remember_sack(result)
+  end
+
+  # Sack history for ;taskmaster loot_history. UserVars persists, so the list
+  # is capped; a character running tasks all event would otherwise add
+  # thousands of entries a month.
+  LOOT_HISTORY_LIMIT = 100
+
+  def remember_sack(contents)
+    UserVars.taskmaster_sacks ||= {}
+    history = (UserVars.taskmaster_sacks[@npc] ||= [])
+    history << contents
+    history.shift(history.size - LOOT_HISTORY_LIMIT) if history.size > LOOT_HISTORY_LIMIT
   end
 end
 
