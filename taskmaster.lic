@@ -5,6 +5,7 @@
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
+  task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_keep_list: list of items to keep. See default in base.yaml
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
@@ -32,6 +33,7 @@ class TaskMaster
     @pickup_tools = @settings.task_get_tools_on_completion
     @boost = @settings.task_use_boost
     @crafting_room = @settings.task_crafting_room
+    @cooldown_poll = cooldown_poll_seconds
 
     DRCM.ensure_copper_on_hand(110000, @settings, "Crossing")
     @stockdata = get_data('crafting')['stock']
@@ -129,6 +131,14 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  # A new task is offered about 30 seconds after a turn-in, so the poll
+  # interval decides how much of each wait is lost past that point.
+  MIN_COOLDOWN_POLL = 3
+
+  def cooldown_poll_seconds
+    [(@settings.task_cooldown_poll || 15).to_i, MIN_COOLDOWN_POLL].max
   end
 
   def exchange_coins
@@ -342,7 +352,7 @@ class TaskMaster
       exit
     when /utterly ignoring you/, /give you a chance a little later/
       DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
-      pause 15
+      pause @cooldown_poll
       get_task
     when /you must wait before I can give you a task/
       if @boost
@@ -351,7 +361,7 @@ class TaskMaster
         @boost = false
         get_task
       else
-        pause 15
+        pause @cooldown_poll
         get_task
       end
     when /You may accept by typing ACCEPT TASK/
