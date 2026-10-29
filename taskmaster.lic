@@ -5,6 +5,7 @@
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
+  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks
   task_keep_list: list of items to keep. See default in base.yaml
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
@@ -30,7 +31,7 @@ class TaskMaster
     @anvil_town = @settings.crafting_hometown || "Crossing"
     @self_repair = @settings.task_self_repair
     @pickup_tools = @settings.task_get_tools_on_completion
-    @boost = @settings.task_use_boost
+    configure_boosts
     @crafting_room = @settings.task_crafting_room
 
     DRCM.ensure_copper_on_hand(110000, @settings, "Crossing")
@@ -72,6 +73,7 @@ class TaskMaster
       @dispose, @remainder = [false, false]
       get_instructions # picks up a fresh set of instructions from the task master
       item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
+      refresh_haste
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
       send(@npc.to_sym, item, count, volume_per_item, base, type)
       complete_task(item, count)
@@ -98,6 +100,7 @@ class TaskMaster
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
       DRCM.ensure_copper_on_hand(8000, @settings, "Crossing")
       loop do
+        refresh_haste
         item, count, volume_per_item, base, type = get_task
         unless check_stock(count * volume_per_item, type, base)
           repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
@@ -116,6 +119,7 @@ class TaskMaster
 
     loop do
       @dispose, @remainder = [false, false]
+      refresh_haste
       item, count, volume_per_item, base, type = get_task
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
       send(@npc.to_sym, item, count, volume_per_item, base, type)
@@ -129,6 +133,37 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  HASTE_SECONDS = 3600
+  # How long to wait before asking again after an answer that was neither an
+  # activation nor a lack of credits (for instance, haste already running).
+  HASTE_RECHECK_SECONDS = 600
+  HASTE_ACTIVATED = /You've activated the Minor Haste boost/
+  HASTE_NO_CREDITS = /You don't have enough credits for the Minor Haste boost/
+
+  def configure_boosts
+    @boosts = Array(@settings.task_boosts).map { |boost| boost.to_s.downcase }
+    @boosts |= ['task'] if @settings.task_use_boost
+    @boost = @boosts.include?('task')
+  end
+
+  # Keeps BOOST HASTE running. Its expiry is kept in UserVars because t2 can
+  # start this script once per task, so the hour outlives any single run.
+  # Out of credits costs one command per task and picks up new credits by
+  # itself.
+  def refresh_haste
+    return unless @boosts.include?('haste')
+    return if Time.now.to_i < UserVars.taskmaster_haste_expires.to_i
+
+    case DRC.bput('boost haste', HASTE_ACTIVATED, HASTE_NO_CREDITS, /\bboost\b/i)
+    when HASTE_ACTIVATED
+      UserVars.taskmaster_haste_expires = Time.now.to_i + HASTE_SECONDS
+    when HASTE_NO_CREDITS
+      nil
+    else
+      UserVars.taskmaster_haste_expires = Time.now.to_i + HASTE_RECHECK_SECONDS
+    end
   end
 
   def exchange_coins
