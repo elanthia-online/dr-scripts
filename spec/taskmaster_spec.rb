@@ -191,6 +191,215 @@ RSpec.describe TaskMaster do
     end
   end
 
+  describe 'running the script' do
+    let(:rope_task) { ['rope', 2, 4, 'cloth', 'burlap'] }
+    let(:outfitting_belt) { { 'name' => 'tailor belt', 'items' => [] } }
+    let(:all_rooms) do
+      [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169]
+    end
+
+    # Runs the real start-up, as TaskMaster.new does, with every step that
+    # talks to the game stubbed to record itself. args: the parsed arguments
+    # (npc:, repeat:, marathon: ...). ticket: whether a Rangu ticket is
+    # carried; samples: the taskmasters cycle picks, in order. The wrap-up flag
+    # goes up with the turn-in numbered wrap_up_after. Returns the recorded
+    # steps, in order.
+    def start(settings: {}, ticket: false, stock_ok: true, wrap_up_after: nil, samples: [], **args)
+      tm = described_class.allocate
+      events = []
+      completed = 0
+      allow(tm).to receive(:get_settings).and_return(OpenStruct.new({ outfitting_tools: ['scissors'], outfitting_belt: outfitting_belt }.merge(settings)))
+      allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
+      allow(tm).to receive(:parse_args) do |definitions|
+        events << [:parse_args, definitions.map { |group| group.map { |arg| arg[:name] } }]
+        OpenStruct.new(args)
+      end
+      allow_any_instance_of(Array).to receive(:sample).and_wrap_original do |original, *rest|
+        original.receiver == %w[poltu bradyn zasele] ? samples.shift : original.call(*rest)
+      end
+      allow(DRCI).to receive(:exists?).with('rangu ticket').and_return(ticket)
+      allow(tm).to receive(:reconcile_hands) { events << :reconcile }
+      allow(tm).to receive(:top_up_copper) { events << [:copper, tm.instance_variable_get(:@remainder), tm.instance_variable_get(:@dispose)] }
+      allow(tm).to receive(:refresh_haste) { events << :haste }
+      allow(tm).to receive(:run_before_scripts) { events << :before }
+      allow(tm).to receive(:get_task) do
+        events << :get_task
+        # A loop that no longer stops fails here instead of hanging the suite.
+        raise 'runaway task loop' if events.count(:get_task) > 10
+
+        rope_task
+      end
+      allow(tm).to receive(:tool_pickup) { events << :tool_pickup }
+      %i[poltu bradyn zasele].each do |npc|
+        allow(tm).to receive(npc) do |*task|
+          events << [:work, npc, *task]
+          tm.instance_variable_set(:@remainder, true)
+          tm.instance_variable_set(:@dispose, true)
+        end
+      end
+      allow(tm).to receive(:complete_task) do |item, count|
+        events << [:complete, item, count]
+        completed += 1
+        Flags['wrap-up'] = true if completed == wrap_up_after
+      end
+      allow(tm).to receive(:resume_task) do
+        events << :resume
+        exit
+      end
+      allow(tm).to receive(:restock) { events << :restock }
+      allow(tm).to receive(:check_stock) do |*needed|
+        events << [:check_stock, *needed]
+        stock_ok
+      end
+      allow(tm).to receive(:repair) { |tools, belt| events << [:repair, tools, belt] }
+      allow(tm).to receive(:find_npc) { |rooms, npc| events << [:find_npc, rooms.size, npc] }
+      allow(tm).to receive(:tailor_item) { |*task| events << [:tailor, *task] }
+      allow(DRCT).to receive(:dispose) { |item, room| events << [:dispose, item, room] }
+      allow(tm).to receive(:_respond) { |text| events << [:respond, text] }
+      allow(DRC).to receive(:message) { |text| events << [:message, text] }
+      begin
+        tm.send(:initialize)
+      rescue SystemExit
+        events << :exit
+      end
+      events.reject { |event| event.is_a?(Array) && event.first == :parse_args }
+    end
+
+    def work(npc = :zasele)
+      [:work, npc, 'rope', 2, 4, 'cloth', 'burlap']
+    end
+
+    # The steps before each task: the flags from the previous task are cleared
+    # before the copper check.
+    let(:before_task) { [[:copper, false, false], :haste, :before, :get_task] }
+
+    it 'offers the same arguments' do
+      tm = described_class.allocate
+      allow(tm).to receive(:get_settings).and_return(OpenStruct.new)
+      allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
+      names = nil
+      allow(tm).to receive(:parse_args) do |definitions|
+        names = definitions.map { |group| group.map { |arg| arg[:name] } }
+        OpenStruct.new(find: true, npc: 'zasele')
+      end
+      allow(tm).to receive(:find_npc)
+      expect { tm.send(:initialize) }.to raise_error(SystemExit)
+      expect(names).to eq([%w[npc finish find tools repeat], %w[reset_output pickup cycle marathon loot_history script_summary]])
+    end
+
+    describe 'one task' do
+      it 'sorts the hands, then runs copper, haste, before scripts, the task, the worker and the turn-in, in that order' do
+        expect(start(npc: 'zasele')).to eq([:reconcile, *before_task, work, [:complete, 'rope', 2]])
+      end
+
+      it 'works the task with the named taskmaster' do
+        expect(start(npc: 'poltu')).to include(work(:poltu))
+      end
+
+      it 'picks up repaired tools between getting the task and working it when a ticket is carried' do
+        expect(start(npc: 'zasele', ticket: true)).to eq([:reconcile, *before_task, :tool_pickup, work, [:complete, 'rope', 2]])
+      end
+
+      it 'leaves repaired tools alone when repairing its own tools' do
+        expect(start(npc: 'zasele', settings: { task_self_repair: true }, ticket: true)).not_to include(:tool_pickup)
+      end
+
+      it 'picks up every repaired tool at the end only with task_get_tools_on_completion and a ticket' do
+        events = start(npc: 'zasele', settings: { task_self_repair: true, task_get_tools_on_completion: true }, ticket: true)
+        expect(events.last(2)).to eq([[:complete, 'rope', 2], :tool_pickup])
+        expect(start(npc: 'zasele', settings: { task_get_tools_on_completion: true })).not_to include(:tool_pickup)
+      end
+
+      it 'stops after one task without repeat, wrap-up or not' do
+        expect(start(npc: 'zasele').count(:get_task)).to eq(1)
+      end
+    end
+
+    describe 'repeat and cycle' do
+      it 'repeats tasks until the wrap-up call, clearing the previous task\'s flags each time' do
+        events = start(npc: 'zasele', repeat: true, wrap_up_after: 3)
+        expect(events).to eq([:reconcile, *before_task, work, [:complete, 'rope', 2],
+                              *before_task, work, [:complete, 'rope', 2],
+                              *before_task, work, [:complete, 'rope', 2]])
+      end
+
+      it 'stops on the wrap-up call after the first task too' do
+        expect(start(npc: 'zasele', repeat: true, wrap_up_after: 1).count(:get_task)).to eq(1)
+      end
+
+      it 'picks a taskmaster at random at the start and after every task, until the wrap-up call' do
+        events = start(npc: 'zasele', cycle: true, wrap_up_after: 3, samples: %w[bradyn poltu bradyn zasele])
+        expect(events.grep(Array).select { |event| event.first == :work }.map { |event| event[1] }).to eq(%i[bradyn poltu bradyn])
+      end
+    end
+
+    describe 'marathon' do
+      # Marathon never clears the previous task's flags.
+      let(:marathon_task) do
+        [[:copper, nil, nil], :haste, :before, :get_task, [:check_stock, 8, 'burlap', 'cloth'], [:tailor, 'rope', 2, 'cloth', 'burlap'], [:dispose, 'rope instructions', 16_144], [:complete, 'rope', 2]]
+      end
+
+      it 'runs Zasele tasks after a restock, whatever taskmaster is named, and exits at the wrap-up call' do
+        events = start(npc: 'poltu', marathon: true, wrap_up_after: 2)
+        expect(events).to eq([:reconcile, :restock, *marathon_task, *marathon_task, :exit])
+        expect(start(npc: 'poltu', marathon: true, stock_ok: false, wrap_up_after: 1)).to include([:find_npc, 21, 'zasele'])
+      end
+
+      it 'repairs, restocks and finds the taskmaster again when the stock runs short' do
+        events = start(npc: 'zasele', marathon: true, stock_ok: false, wrap_up_after: 1)
+        expect(events).to eq([:reconcile, :restock, *marathon_task.first(4), [:check_stock, 8, 'burlap', 'cloth'],
+                              [:repair, ['scissors'], outfitting_belt], :restock, [:find_npc, 21, 'zasele'],
+                              [:tailor, 'rope', 2, 'cloth', 'burlap'], [:dispose, 'rope instructions', 16_144], [:complete, 'rope', 2], :exit])
+      end
+
+      it 'skips the repair with task_no_repair' do
+        events = start(npc: 'zasele', marathon: true, settings: { task_no_repair: true }, stock_ok: false, wrap_up_after: 1)
+        expect(events.map { |event| Array(event).first }).not_to include(:repair)
+        expect(events).to include(:restock, [:find_npc, 21, 'zasele'])
+      end
+
+      it 'picks up repaired tools after each restock when a ticket is carried, and at the end only when asked' do
+        events = start(npc: 'zasele', marathon: true, ticket: true, stock_ok: false, wrap_up_after: 1)
+        expect(events.first(3)).to eq(%i[reconcile restock tool_pickup])
+        expect(events.each_cons(2).count { |pair| pair == %i[restock tool_pickup] }).to eq(2)
+        expect(events.last(2)).to eq([[:complete, 'rope', 2], :exit])
+        events = start(npc: 'zasele', marathon: true, settings: { task_self_repair: true, task_get_tools_on_completion: true }, ticket: true, wrap_up_after: 1)
+        expect(events.last(3)).to eq([[:complete, 'rope', 2], :tool_pickup, :exit])
+      end
+    end
+
+    describe 'other modes' do
+      it 'finish sorts the hands and resumes the task in progress, without asking for a new one' do
+        expect(start(npc: 'zasele', finish: true)).to eq(%i[reconcile resume exit])
+      end
+
+      it 'find searches every room for the taskmaster and exits' do
+        expect(start(npc: 'bradyn', find: true)).to eq([[:find_npc, 21, 'bradyn'], :exit])
+      end
+
+      it 'tools lists the named taskmaster\'s tools and exits' do
+        expect(start(npc: 'poltu', tools: true)).to eq([[:message, 'Tools required:'], *['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'].map { |tool| [:message, tool] }, :exit])
+      end
+
+      it 'reset_output clears the Task Master window and exits' do
+        expect(start(npc: 'zasele', reset_output: true)).to eq([[:respond, "<clearStream id='Task Master'/>"], :exit])
+      end
+
+      it 'loot_history prints each taskmaster\'s sacks and exits' do
+        UserVars.taskmaster_sacks = { 'poltu' => ['a bronze bar.'], 'bradyn' => [], 'zasele' => ['some coral dye.', 'a large haledroth shard.'] }
+        expect(start(npc: 'zasele', loot_history: true)).to eq([[:message, 'Sack history for Taskmaster Poltu:'], [:message, 'a bronze bar.'],
+                                                                [:message, 'Sack history for Taskmaster Bradyn:'],
+                                                                [:message, 'Sack history for Taskmaster Zasele:'], [:message, 'some coral dye.'], [:message, 'a large haledroth shard.'],
+                                                                :exit])
+      end
+
+      it 'pickup collects repaired tools only when a ticket is carried, then exits' do
+        expect(start(npc: 'zasele', pickup: true, ticket: true)).to eq(%i[tool_pickup exit])
+        expect(start(npc: 'zasele', pickup: true, ticket: false)).to eq([:exit])
+      end
+    end
+  end
+
   describe '#reconcile_hands' do
     let(:outfitting_belt) { { 'name' => 'tailor belt', 'items' => ['sewing needles', 'scissors'] } }
 
@@ -227,6 +436,11 @@ RSpec.describe TaskMaster do
     it 'finds the unfinished item in either hand' do
       _, launched = reconcile(right: 'wide unfinished rat-pelt leather straps', left: nil)
       expect(launched).to eq([['sew', %w[resume straps]]])
+    end
+
+    it 'resumes an unfinished piece made from the wool it buys for knitting tasks too' do
+      _, launched = reconcile(right: 'unfinished wool knitted hat', left: nil)
+      expect(launched).to eq([['sew', %w[resume hat]]])
     end
 
     it 'sorts a reward sack held at start' do
@@ -551,6 +765,121 @@ RSpec.describe TaskMaster do
         end
       end
 
+      describe 'every reply to ASK FOR TASK' do
+        # Replies shaped to the script's matchers. Offer, wait and ignore lines
+        # are from the 2025 Hollow Eve logs; the others are not in the logs at
+        # hand.
+        let(:offer) { 'You may accept by typing ACCEPT TASK.' }
+        let(:terms) { 'Zasele has a task for you, if you agree to her terms.' }
+        let(:nobody) { 'To whom are you speaking?' }
+        let(:ignored) { 'Seamstress Zasele is utterly ignoring you.' }
+        let(:later) { 'Seamstress Zasele says, "I can give you a chance a little later."' }
+        let(:wait) { 'Seamstress Zasele says, "I am sorry, you must wait before I can give you a task."' }
+        let(:on_task) { 'You are already on a task.' }
+
+        # Plays the replies in order and records each search, ask, pause and
+        # command. Accepting returns finish's result and an ongoing task
+        # resume_task's, both stubbed. Returns get_task's result, the steps
+        # and the instance.
+        def asking(replies, boost: false)
+          tm = reader(boost: boost, cooldown_poll: 7)
+          events = []
+          allow(tm).to receive(:find_npc) { events << :find }
+          allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
+          allow(tm).to receive(:fput) { |command| events << [:fput, command] }
+          allow(tm).to receive(:finish) do
+            events << :finish
+            :accepted
+          end
+          allow(tm).to receive(:resume_task) do
+            events << :resume
+            :resumed
+          end
+          allow(DRC).to receive(:message) { |text| events << [:message, text] }
+          game('ask zasele for task' => lambda do |*|
+            events << :ask
+            replies.shift.to_s
+          end,
+               'accept task'         => lambda do |*|
+                 events << :accept
+                 'You can check your progress with the TASK verb.'
+               end)
+          [tm.get_task, events, tm]
+        end
+
+        let(:accepted) { %i[find ask accept finish] }
+        let(:cooldown_message) { [:message, 'Task on cooldown or recently canceled a task, either way, going to have to wait.'] }
+
+        it 'asks with the same matchers' do
+          asking([offer])
+          expect(DRC).to have_received(:bput).with('ask zasele for task', /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/,
+                                                   /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+          expect(DRC).to have_received(:bput).with('accept task', /You can check your progress with the TASK verb/)
+        end
+
+        it 'accepts an offer and returns what reading the task returns' do
+          expect(asking([offer]).first(2)).to eq([:accepted, accepted])
+        end
+
+        it 'asks again at once when the taskmaster wants her terms agreed first' do
+          expect(asking([terms, offer]).first(2)).to eq([:accepted, [:find, :ask, *accepted]])
+        end
+
+        it 'asks again at once when nobody answered to the name' do
+          expect(asking([nobody, offer]).first(2)).to eq([:accepted, [:find, :ask, *accepted]])
+        end
+
+        it 'waits the poll interval and asks again when ignored after a cancel' do
+          expect(asking([ignored, offer]).first(2)).to eq([:accepted, [:find, :ask, cooldown_message, [:pause, 7], *accepted]])
+        end
+
+        it 'waits the poll interval and asks again when told to come back a little later' do
+          expect(asking([later, offer]).first(2)).to eq([:accepted, [:find, :ask, cooldown_message, [:pause, 7], *accepted]])
+        end
+
+        it 'waits the poll interval for each cooldown reply without the task boost' do
+          expect(asking([wait, wait, offer]).first(2)).to eq([:accepted, [:find, :ask, [:pause, 7], :find, :ask, [:pause, 7], *accepted]])
+        end
+
+        it 'boosts once on a cooldown, waits two seconds and asks again' do
+          result, events, tm = asking([wait, offer], boost: true)
+          expect([result, events]).to eq([:accepted, [:find, :ask, [:fput, 'boost task'], [:pause, 2], *accepted]])
+          expect(tm.instance_variable_get(:@boost)).to be(false)
+        end
+
+        it 'waits the poll interval on a second cooldown instead of boosting again' do
+          expect(asking([wait, wait, offer], boost: true)[1]).to eq([:find, :ask, [:fput, 'boost task'], [:pause, 2], :find, :ask, [:pause, 7], *accepted])
+        end
+
+        it 'does not boost again on a later ask from the same run' do
+          _, _, tm = asking([wait, offer], boost: true)
+          events = []
+          allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
+          allow(tm).to receive(:fput) { |command| events << [:fput, command] }
+          replies = [wait, offer]
+          game('ask zasele for task' => ->(*) { replies.shift }, 'accept task' => 'You can check your progress with the TASK verb.')
+          tm.get_task
+          expect(events).to eq([[:pause, 7]])
+        end
+
+        it 'resumes the task already in progress and returns what resuming returns' do
+          expect(asking([on_task]).first(2)).to eq([:resumed, %i[find ask resume]])
+        end
+
+        it 'resumes after waiting out a cooldown' do
+          expect(asking([wait, on_task]).first(2)).to eq([:resumed, [:find, :ask, [:pause, 7], :find, :ask, :resume]])
+        end
+
+        it 'mixes replies in any order, asking until there is an offer' do
+          expect(asking([terms, ignored, wait, nobody, offer], boost: true)[1])
+            .to eq([:find, :ask, :find, :ask, cooldown_message, [:pause, 7], :find, :ask, [:fput, 'boost task'], [:pause, 2], :find, :ask, *accepted])
+        end
+
+        it 'gives up and returns nil, without asking again, when no reply matches' do
+          expect(asking(['']).first(2)).to eq([nil, %i[find ask]])
+        end
+      end
+
       describe 'while the taskmaster makes you wait' do
         # Waits once, then stops the recursion so only the pause is observed.
         def first_pause(tm, reply)
@@ -719,6 +1048,10 @@ RSpec.describe TaskMaster do
         expect(events).to include([:make, 'rope', 3])
       end
 
+      it 'keeps the carried instructions when they have exactly one use per item owed' do
+        expect(resume(owed: 3, uses: 3)).not_to include(:asked_for_instructions)
+      end
+
       it 'asks for instructions when none are carried' do
         expect(resume(owed: 3, uses: nil)).to include(:asked_for_instructions)
       end
@@ -804,6 +1137,83 @@ RSpec.describe TaskMaster do
 
       it 'repairs nothing, without raising, when neither key is set' do
         expect(tools_sent_for_repair(engineering_belt: nil)).to eq([])
+      end
+    end
+
+    describe 'Poltu and Bradyn tasks' do
+      let(:forging_belt) { { 'name' => 'forging belt', 'items' => [] } }
+      let(:engineering_belt) { { 'name' => 'engineering belt', 'items' => [] } }
+
+      # Runs the taskmaster's real task method with buying, crafting, repair and
+      # disposal stubbed to record their calls, each with the @remainder flag as
+      # it stood then. remainder: the flag before the task.
+      def run_task(npc, item, count, volume_per_item, base, type, remainder: false)
+        tm = build(settings: { forging_tools: ['forging hammer'], forging_belt: forging_belt, engineering_belt: engineering_belt, shaping_tools: ['wood shaper'] },
+                   remainder: remainder)
+        calls = []
+        %i[buy_ingots bingots buy_rocks buy_stackables forge_item carve_stone carve_bone shape_item repair trash].each do |step|
+          allow(tm).to receive(step) { |*step_args| calls << [step, *step_args, tm.instance_variable_get(:@remainder)] }
+        end
+        allow(DRC).to receive(:right_hand).and_return('iron chisels')
+        tm.send(npc, item, count, volume_per_item, base, type)
+        calls
+      end
+
+      # What a metal task does after buying: forge with the metal bought,
+      # repair the forging tools, then throw away any leftover metal.
+      def forged(count, type, remainder)
+        [[:forge_item, 'dagger', count, type, remainder], [:repair, ['forging hammer'], forging_belt, remainder], [:trash, 'dagger', 'ingot', type, remainder]]
+      end
+
+      %i[poltu bradyn].each do |npc|
+        describe "##{npc} metal purchasing" do
+          # count, volume per item => what is bought, the metal forged, @remainder
+          {
+            [3, 10]  => [[:buy_ingots, 3, 'steel'], 'steel', false],
+            [12, 10] => [[:buy_ingots, 12, 'steel'], 'steel', false],
+            [4, 5]   => [[:buy_ingots, 4, 'bronze'], 'bronze', false],
+            [30, 5]  => [[:buy_ingots, 30, 'bronze'], 'bronze', false],
+            [101, 1] => [[:bingots, 3], 'bronze', true],
+            [17, 6]  => [[:bingots, 3], 'bronze', true],
+            [25, 4]  => [[:bingots, 2], 'bronze', false],
+            [17, 3]  => [[:bingots, 2], 'bronze', true],
+            [9, 6]   => [[:bingots, 2], 'bronze', true],
+            [1, 51]  => [[:bingots, 2], 'bronze', true],
+            [25, 2]  => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [3, 4]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [8, 6]   => [[:bingots, 1], 'bronze', true],
+            [3, 6]   => [[:bingots, 1], 'bronze', true],
+            [1, 50]  => [[:bingots, 1], 'bronze', true]
+          }.each do |(count, volume), (bought, metal, remainder)|
+            it "buys #{bought.inspect} and forges #{metal} for #{count} items of #{volume} volumes (#{count * volume} in all)" do
+              calls = run_task(npc, 'dagger', count, volume, 'ingot', 'bronze')
+              expect(calls).to eq([[*bought, remainder], *forged(count, metal, remainder)])
+            end
+          end
+
+          it 'leaves @remainder as it was on tasks of exactly one ingot per item' do
+            expect(run_task(npc, 'dagger', 3, 10, 'ingot', 'bronze', remainder: true).last.last).to be(true)
+            expect(run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', remainder: true).last.last).to be(true)
+          end
+        end
+      end
+
+      describe '#bradyn stone, bone and wood tasks' do
+        it 'buys a rock deed per item, carves the stone and repairs the tool in hand' do
+          expect(run_task(:bradyn, 'idol', 2, 'boulder', 'stone', 'alabaster'))
+            .to eq([[:buy_rocks, 2, false], [:carve_stone, 'idol', 2, false], [:repair, ['iron chisels'], engineering_belt, false], [:trash, 'idol', 'stone', 'alabaster', false]])
+        end
+
+        it 'buys bone stacks, carves the bone and repairs the tool in hand, even at 10 volumes per item' do
+          expect(run_task(:bradyn, 'comb', 3, 10, 'stack', 'deer'))
+            .to eq([[:buy_stackables, 'comb', 3, 10, 'stack', false], [:carve_bone, 'comb', 3, false], [:repair, ['iron chisels'], engineering_belt, false], [:trash, 'comb', 'stack', 'deer', false]])
+        end
+
+        it 'buys lumber, shapes the wood and repairs the shaping tools' do
+          expect(run_task(:bradyn, 'bowl', 2, 5, 'lumber', 'balsa'))
+            .to eq([[:buy_stackables, 'bowl', 2, 5, 'lumber', false], [:shape_item, 'bowl', 2, 'lumber', 'balsa', false], [:repair, ['wood shaper'], engineering_belt, false],
+                    [:trash, 'bowl', 'lumber', 'balsa', false]])
+        end
       end
     end
 
