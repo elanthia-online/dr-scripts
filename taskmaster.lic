@@ -9,10 +9,18 @@
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
-   ## Important: set default stow to the same bag as your crafting bag ##
+   ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
 =end
 
 class TaskMaster
+  # Stock base => [stock name, room to order it in]. restock tops up cloth,
+  # leather, yarn and thread for marathon runs; thread is the cotton spool
+  # (stock-name cotton in base-crafting.yaml).
+  STACKMAP = {
+    'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775],
+    'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864], 'thread' => ['cotton', 16667]
+  }.freeze
+
   def initialize
     @settings = get_settings
     @keeplist = @settings.task_keep_list
@@ -35,7 +43,7 @@ class TaskMaster
 
     DRCM.ensure_copper_on_hand(110000, @settings, "Crossing")
     @stockdata = get_data('crafting')['stock']
-    @stackmap = { 'leather' => ['rat', 16667], 'cloth' => ['burlap', 16667], 'stack' => ['deer', 8864], 'ingot' => ['bronze', 8775], 'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864] }
+    @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
     UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
     arg_definitions = [
@@ -244,7 +252,9 @@ class TaskMaster
     elsif base == 'lumber'
       buy_stackables(item, count, volume_per_item, base)
       shape_item(item, count, base, type)
-      repair(@settings.engineering_tools, @settings.engineering_belt)
+      # base.yaml names the shaping toolset shaping_tools; engineering_tools is the
+      # older key, kept as a fallback the same way clerk-tools resolves it.
+      repair(@settings.shaping_tools || @settings.engineering_tools || [], @settings.engineering_belt)
       trash(item, base, type)
       return
     elsif volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
@@ -284,14 +294,33 @@ class TaskMaster
     trash(item, base, type)
   end
 
+  # Taskmasters wander, but between turn-ins they are usually back in the
+  # room they were last seen in. Search from there outwards along the room
+  # list, and remember where each one was found. Kept in UserVars because t2
+  # can start this script once per task.
   def find_npc(rooms, npc)
-    return if DRRoom.npcs.include?(npc.capitalize)
-
-    rooms.each do |room_id|
+    UserVars.taskmaster_last_seen ||= {}
+    search_order(rooms, UserVars.taskmaster_last_seen[npc]).each do |room_id|
       break if DRRoom.npcs.include?(npc.capitalize)
 
       DRCT.walk_to(room_id)
     end
+    UserVars.taskmaster_last_seen[npc] = Room.current.id if DRRoom.npcs.include?(npc.capitalize)
+  end
+
+  # The room list starting at start_room and alternating outwards from it
+  # (start, next, previous, two on, two back, ...), or the list unchanged when
+  # start_room is not in it.
+  def search_order(rooms, start_room)
+    start = rooms.index(start_room)
+    return rooms unless start
+
+    order = [rooms[start]]
+    (1...rooms.size).each do |step|
+      order << rooms[start + step] if start + step < rooms.size
+      order << rooms[start - step] if start - step >= 0
+    end
+    order
   end
 
   # The task journal entry. "So far, you have returned N" is optional so an
@@ -336,7 +365,7 @@ class TaskMaster
       base = 'stone'
       DRC.message("Using a boulder for each #{item}")
     end
-    DRCI.stow_hands
+    stow_instructions(item)
     type = @stackmap[base].first
     return item, count, volume_per_item, base, type
   end
@@ -403,6 +432,15 @@ class TaskMaster
       DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
     end
     get_instructions
+  end
+
+  # Put the instructions just read into the crafting bag by name, where the
+  # crafting scripts put them after studying, rather than leaving them to
+  # default stow. Anything else still in hand (a tool or unfinished item held
+  # after a crash) goes to default stow as before.
+  def stow_instructions(item)
+    DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+    DRCI.stow_hands
   end
 
   def get_instructions
@@ -575,10 +613,24 @@ class TaskMaster
     else
       DRCT.walk_to(@crafting_room)
     end
+    check_sewing_consumables(count) unless base == 'yarn'
     count.times do
-      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, @marathon ? 'skip' : nil])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
     DRC.message("#{count} #{item}s completed")
+  end
+
+  # Pins and thread are checked once for the whole task, so each sew run can
+  # skip its own check (two get/count/put rounds per item). An item uses at
+  # most a few pins; sew still restocks mid-item if either runs out.
+  # Knitting uses neither.
+  PIN_USES_PER_ITEM = 3
+
+  def check_sewing_consumables(count)
+    info = get_data('crafting')['tailoring']["Crossing"]
+    belt = @settings.outfitting_belt
+    DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, belt, PIN_USES_PER_ITEM * count + 5)
+    DRCC.check_consumables('thread', info['stock-room'], 6, @bag, @bag_items, belt)
   end
 
   def shape_item(item, count, _base, type)
@@ -676,7 +728,19 @@ class TaskMaster
     end
     result.sub!('In the woven sack you see', '')
     DRC.log_window(result, "Task Master", true, true)
-    UserVars.taskmaster_sacks[@npc] << result
+    remember_sack(result)
+  end
+
+  # Sack history for ;taskmaster loot_history. UserVars persists, so the list
+  # is capped; a character running tasks all event would otherwise add
+  # thousands of entries a month.
+  LOOT_HISTORY_LIMIT = 100
+
+  def remember_sack(contents)
+    UserVars.taskmaster_sacks ||= {}
+    history = (UserVars.taskmaster_sacks[@npc] ||= [])
+    history << contents
+    history.shift(history.size - LOOT_HISTORY_LIMIT) if history.size > LOOT_HISTORY_LIMIT
   end
 end
 
