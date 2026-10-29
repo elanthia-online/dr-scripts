@@ -3026,6 +3026,13 @@ task_keep_list:
   - tyrium
   - vardite
 
+# Setting for taskmaster - before each task, if you carry less copper (Kronars) than this,
+# exchange foreign coins and withdraw up to task_copper_target.
+task_copper_floor: 20000
+# Setting for taskmaster - copper (Kronars) to withdraw up to when below task_copper_floor.
+# A value below task_copper_floor is raised to the floor.
+task_copper_target: 110000
+
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:
   # Where foraged items should be temporarily stored

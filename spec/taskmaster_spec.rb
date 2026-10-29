@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -29,6 +30,14 @@ RSpec.describe TaskMaster do
       tm = build(task_copper_floor: 30_000, task_copper_target: 150_000)
       expect(tm.instance_variable_get(:@copper_floor)).to eq(30_000)
       expect(tm.instance_variable_get(:@copper_target)).to eq(150_000)
+    end
+
+    it 'gets the same floor and target from the base.yaml keys as from its own defaults' do
+      base = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__))
+      expect(base).to include('task_copper_floor' => 20_000, 'task_copper_target' => 110_000)
+      tm = build(base.slice('task_copper_floor', 'task_copper_target'))
+      expect(tm.instance_variable_get(:@copper_floor)).to eq(20_000)
+      expect(tm.instance_variable_get(:@copper_target)).to eq(110_000)
     end
 
     it 'never targets less than the floor, which would mean a bank trip every task' do
