@@ -28,10 +28,46 @@ class TaskMaster
     'stone' => ['alabaster', 8864], 'yarn' => ['wool', 16667], 'lumber' => ['balsa', 8864], 'thread' => ['cotton', 16667]
   }.freeze
 
+  # Search rooms for the taskmasters, in the order find_npc walks them.
+  ROOMS = [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169].freeze
+
+  # Tools each taskmaster's tasks need, for ;taskmaster <npc> tools.
+  TOOLS = {
+    'poltu'   => ['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
+    'bradyn'  => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
+    'zasele'  => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'],
+    'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife']
+  }.freeze
+
+  # Arguments for parse_args: the npc and finish/find/tools/repeat, or one
+  # of the other modes.
+  ARG_DEFINITIONS = [
+    [
+      { name: 'npc', options: %w[poltu bradyn zasele], variable: true, description: "Task npc's name, in full" },
+      { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
+      { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
+      { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
+      { name: 'repeat', regex: /^repeat/i, optional: true, description: 'Repeat tasks for a given taskmaster' }
+    ],
+    [
+      { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
+      { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up any tools left at Rangu for repair' },
+      { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task' },
+      { name: 'marathon', regex: /^marathon/i, optional: true, description: 'stocks up and runs zasele tasks, repairs during restock' },
+      { name: 'loot_history', regex: /^loot_history/i, optional: true, description: 'Prints out saved sack contents history, potentially scrollish' },
+      { name: 'script_summary', optional: true, description: 'Completes Hollows Eve tasks for the crafting taskmasters on the island' }
+    ]
+  ].freeze
+
+  # Reads the settings and sets up state. Does not parse arguments or send
+  # anything to the game -- call {#run} to start.
+  #
+  # @note Adds the "wrap-up" flag (the taskmaster's "Finish your tasks."
+  #   call) and seeds UserVars.taskmaster_sacks, which persists across runs.
+  # @return [void]
   def initialize
     @settings = get_settings
-    @rooms = [16_145, 16_146, 16_148, 16_150, 16_153, 16_154, 16_147, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293, 16_295, 16_296, 16_294, 16_159, 16_161, 16_166, 16_169]
-    tools = { 'poltu' => ['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'], 'bradyn' => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'], 'zasele' => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'], 'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife'] }
+    @rooms = ROOMS
     configure_loot_filter
     @bag = @settings.crafting_container
     @worn_trashcan = @settings.worn_trashcan
@@ -54,86 +90,100 @@ class TaskMaster
     @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
     UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
-    arg_definitions = [
-      [
-        { name: 'npc', options: %w[poltu bradyn zasele], variable: true, description: "Task npc's name, in full" },
-        { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
-        { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
-        { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
-        { name: 'repeat', regex: /^repeat/i, optional: true, description: 'Repeat tasks for a given taskmaster' }
-      ],
-      [
-        { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
-        { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up any tools left at Rangu for repair' },
-        { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task' },
-        { name: 'marathon', regex: /^marathon/i, optional: true, description: 'stocks up and runs zasele tasks, repairs during restock' },
-        { name: 'loot_history', regex: /^loot_history/i, optional: true, description: 'Prints out saved sack contents history, potentially scrollish' },
-        { name: 'script_summary', optional: true, description: 'Completes Hollows Eve tasks for the crafting taskmasters on the island' }
-      ]
-    ]
+  end
 
-    args = parse_args(arg_definitions)
+  # Runs the mode the arguments ask for. The one-shot modes exit; cycle and
+  # the plain modes go on to the task loop.
+  #
+  # @param args [OpenStruct] parsed arguments (npc, finish, find, tools,
+  #   repeat, reset_output, pickup, cycle, marathon, loot_history)
+  # @return [void]
+  # @raise [SystemExit] after the one-shot modes, marathon and finish, or
+  #   from run_tasks
+  def run(args = parse_args(ARG_DEFINITIONS))
     @npc = args.npc
     @marathon = args.marathon
     if args.find
       find_npc(@rooms, @npc)
       exit
     elsif args.tools
-      DRC.message("Tools required:")
-      tools[@npc.downcase].each do |tool|
-        DRC.message("#{tool}")
-      end
-      exit
+      list_tools
     elsif args.finish
-      reconcile_hands
-      resume_task
+      finish_task_in_progress
     elsif args.reset_output
       _respond("<clearStream id='Task Master'/>")
       exit
     elsif args.cycle
       @npc = ['poltu', 'bradyn', 'zasele'].sample
     elsif args.loot_history
-      ['poltu', 'bradyn', 'zasele'].each do |npc|
-        DRC.message("Sack history for Taskmaster #{npc.capitalize}:")
-        UserVars.taskmaster_sacks[npc].each do |sack|
-          DRC.message(sack)
-        end
-      end
-      exit
+      print_loot_history
     elsif args.pickup
       tool_pickup if DRCI.exists?("rangu ticket")
       exit
     elsif @marathon
-      @npc = 'zasele'
-      reconcile_hands
-      restock
-      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-      loop do
-        top_up_copper
-        refresh_haste
-        run_before_scripts
-        item, count, volume_per_item, base, type = get_task
-        unless check_stock(count * volume_per_item, type, base)
-          repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
-          restock
-          tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-          find_npc(@rooms, @npc)
-        end
-        tailor_item(item, count, base, type)
-        DRCT.dispose("#{item} instructions", 16144)
-        complete_task(item, count)
-        break if Flags['wrap-up']
-      end
-      tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket")
-      exit
+      run_marathon
     end
 
+    run_tasks(args)
+  end
+
+  # Lists the tools the named taskmaster's tasks need, then exits.
+  #
+  # @return [void]
+  # @raise [SystemExit] always
+  def list_tools
+    DRC.message("Tools required:")
+    TOOLS[@npc.downcase].each do |tool|
+      DRC.message("#{tool}")
+    end
+    exit
+  end
+
+  # Prints the saved sack history for each taskmaster, then exits.
+  #
+  # @return [void]
+  # @raise [SystemExit] always
+  def print_loot_history
+    ['poltu', 'bradyn', 'zasele'].each do |npc|
+      DRC.message("Sack history for Taskmaster #{npc.capitalize}:")
+      UserVars.taskmaster_sacks[npc].each do |sack|
+        DRC.message(sack)
+      end
+    end
+    exit
+  end
+
+  # resume_task exits once the task is handed in.
+  #
+  # @return [void]
+  # @raise [SystemExit] from resume_task
+  def finish_task_in_progress
+    reconcile_hands
+    resume_task
+  end
+
+  # Copper, haste and the before scripts, run ahead of asking for each task.
+  #
+  # @return [void]
+  def prepare_for_task
+    top_up_copper
+    refresh_haste
+    run_before_scripts
+  end
+
+  # One task, or with repeat or cycle one after another until the wrap-up
+  # call. cycle picks a new taskmaster after each task.
+  #
+  # @param args [OpenStruct] parsed arguments; reads cycle and repeat
+  # @return [void]
+  # @raise [SystemExit] from get_task (a task already in progress is finished
+  #   by resume_task) or complete_task (nothing left to hand in, or the
+  #   taskmaster can't be found)
+  def run_tasks(args)
     reconcile_hands
     loop do
       @dispose, @remainder = [false, false]
-      top_up_copper
-      refresh_haste
-      run_before_scripts
+      prepare_for_task
       item, count, volume_per_item, base, type = get_task
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
       send(@npc.to_sym, item, count, volume_per_item, base, type)
@@ -149,6 +199,34 @@ class TaskMaster
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
   end
 
+  # Zasele tasks until the wrap-up call, restocking (and repairing) only when
+  # the stock runs short, then exits.
+  #
+  # @return [void]
+  # @raise [SystemExit] after the wrap-up call
+  def run_marathon
+    @npc = 'zasele'
+    reconcile_hands
+    restock
+    tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+    loop do
+      prepare_for_task
+      item, count, volume_per_item, base, type = get_task
+      unless check_stock(count * volume_per_item, type, base)
+        repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
+        restock
+        tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+        find_npc(@rooms, @npc)
+      end
+      tailor_item(item, count, base, type)
+      DRCT.dispose("#{item} instructions", 16144)
+      complete_task(item, count)
+      break if Flags['wrap-up']
+    end
+    tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket")
+    exit
+  end
+
   # Cleans up what a crash or disconnect left in hand before starting: a
   # reward sack is sorted, and an unfinished tailoring item made from the
   # stock taskmaster buys for Zasele is finished where the character stands
@@ -156,6 +234,8 @@ class TaskMaster
   # crafting bag for the turn-in. Any other unfinished item is the player's
   # and is left alone. Knitting is not resumed: the work sits on the needles
   # and does not show in the hand.
+  #
+  # @return [void]
   def reconcile_hands
     waitrt?
     DRC.fix_standing
@@ -182,6 +262,9 @@ class TaskMaster
 
   # An unfinished piece of the cloth, leather or yarn taskmaster buys for
   # Zasele's tasks (burlap, rat-pelt, wool).
+  #
+  # @param held [String] a hand's text, e.g. "coil of unfinished burlap reinforced rope"
+  # @return [Boolean]
   def task_piece?(held)
     materials = @stackmap.values_at('cloth', 'leather', 'yarn').map(&:first)
     held.match?(/\bunfinished\b/) && held.match?(/\b(?:#{Regexp.union(materials)})\b/)
@@ -191,6 +274,9 @@ class TaskMaster
   # crafting bag, where the turn-in would pick it up, and stows any tool sew
   # left in hand so the next task starts with free hands. Not exiting: the
   # next start would try the same resume and stop again.
+  #
+  # @param noun [String] the unfinished item's noun
+  # @return [void]
   def discard_unfinished(noun)
     DRC.message("sew could not finish your unfinished #{noun}. Throwing it away and starting a new task.")
     DRCI.dispose_trash(noun, @worn_trashcan, @worn_trashcan_verb)
@@ -199,6 +285,9 @@ class TaskMaster
     end
   end
 
+  # What is in either hand, right first.
+  #
+  # @return [Array<String>] the hands' text, empty hands left out
   def held_items
     [DRC.right_hand, DRC.left_hand].compact
   end
@@ -207,6 +296,10 @@ class TaskMaster
   # interval decides how much of each wait is lost past that point.
   MIN_COOLDOWN_POLL = 3
 
+  # Seconds between asks while the taskmaster makes you wait:
+  # task_cooldown_poll, 15 by default, never below MIN_COOLDOWN_POLL.
+  #
+  # @return [Integer]
   def cooldown_poll_seconds
     [(@settings.task_cooldown_poll || 15).to_i, MIN_COOLDOWN_POLL].max
   end
@@ -214,6 +307,8 @@ class TaskMaster
   # Runs each task_before_scripts entry ("script arg arg") to completion. They
   # run before asking for a task, so they overlap the taskmaster's cooldown
   # after the previous turn-in instead of adding to the task.
+  #
+  # @return [void]
   def run_before_scripts
     @before_scripts.each do |entry|
       name, *script_args = entry.to_s.split
@@ -227,6 +322,8 @@ class TaskMaster
   # matches, keep the rest). Entries may be strings or regexps. A missing or
   # empty junk list falls back to the keep list; a missing keep list keeps
   # nothing, as before.
+  #
+  # @return [void]
   def configure_loot_filter
     junk = Array(@settings.task_junk_list)
     if junk.empty?
@@ -241,6 +338,9 @@ class TaskMaster
 
   # An unreadable or empty look is never a keeper, so a failed LOOK cannot
   # fill the loot bag with empty sacks in junk-list mode.
+  #
+  # @param contents [String, nil] the LOOK IN reply for the reward sack
+  # @return [Boolean] true to keep the sack
   def keeper?(contents)
     return false if contents.to_s.strip.empty?
     return !contents.match?(@junk_regex) if @junk_regex
@@ -248,6 +348,7 @@ class TaskMaster
     contents.match?(@keeplist_regex)
   end
 
+  # How long one Minor Haste boost lasts.
   HASTE_SECONDS = 3600
   # How long to wait before asking again after an answer that was neither an
   # activation nor a lack of credits, or no answer at all.
@@ -259,9 +360,15 @@ class TaskMaster
   # it restarts the hour and spends a credit is unknown; the stored expiry
   # keeps that to at most one credit when the expiry is lost.
   HASTE_RECHECK_SECONDS = 600
+  # BOOST HASTE reply when a credit was spent.
   HASTE_ACTIVATED = /You've activated the Minor Haste boost/
+  # BOOST HASTE reply with no credits left.
   HASTE_NO_CREDITS = /You don't have enough credits for the Minor Haste boost/
 
+  # Reads task_boosts (and the older task_use_boost, which means the task
+  # boost) into @boosts, and arms the one task boost per run in @boost.
+  #
+  # @return [void]
   def configure_boosts
     @boosts = Array(@settings.task_boosts).map { |boost| boost.to_s.downcase }
     @boosts |= ['task'] if @settings.task_use_boost
@@ -272,6 +379,10 @@ class TaskMaster
   # start this script once per task, so the hour outlives any single run.
   # Out of credits costs one command per task and picks up new credits by
   # itself.
+  #
+  # @note The expiry lives in UserVars.taskmaster_haste_expires, which
+  #   persists across runs, since t2 relaunches this script for each task.
+  # @return [void]
   def refresh_haste
     return unless @boosts.include?('haste')
     return if Time.now.to_i < UserVars.taskmaster_haste_expires.to_i
@@ -286,6 +397,10 @@ class TaskMaster
     end
   end
 
+  # Reads task_copper_floor (20000 by default) and task_copper_target
+  # (110000 by default, never below the floor).
+  #
+  # @return [void]
   def configure_copper
     @copper_floor = @settings.task_copper_floor || 20_000
     @copper_target = [@settings.task_copper_target || 110_000, @copper_floor].max
@@ -296,6 +411,8 @@ class TaskMaster
   # to the target, so most tasks need no trip. The per-purchase
   # ensure_copper_on_hand calls stay as a guard for tasks that cost more than
   # the floor; they only walk when short.
+  #
+  # @return [void]
   def top_up_copper
     return if DRCM.wealth("Crossing") >= @copper_floor
 
@@ -303,6 +420,10 @@ class TaskMaster
     DRCM.ensure_copper_on_hand(@copper_target, @settings, "Crossing")
   end
 
+  # Walks to the Crossing exchange and changes every other currency into
+  # Kronars, such as the coins from reward sacks.
+  #
+  # @return [void]
   def exchange_coins
     DRCT.walk_to(get_data('town')["Crossing"]['exchange']['id'])
     DRC.release_invisibility
@@ -312,6 +433,11 @@ class TaskMaster
       .each { |currency| fput("exchange all #{currency} for #{exchange_to}") }
   end
 
+  # Marathon restock: tops up burlap cloth and rat leather to 100 yards, and
+  # wool yarn and cotton thread to 400, plus pins, paying from the copper
+  # float.
+  #
+  # @return [void]
   def restock
     info = get_data('crafting')['tailoring']["Crossing"]
     DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, nil, 40)
@@ -355,6 +481,12 @@ class TaskMaster
     end
   end
 
+  # Whether the crafting bag holds enough of a stock for a task.
+  #
+  # @param needed [Integer] yards the task needs
+  # @param type [String] stock name, e.g. 'burlap'
+  # @param base [String] stock base, e.g. 'cloth'
+  # @return [Boolean] false when none is carried or it is short
   def check_stock(needed, type, base)
     return false unless DRCI.exists?("#{type} #{base}")
 
@@ -366,6 +498,13 @@ class TaskMaster
     end
   end
 
+  # Throws away what a task leaves over: with @remainder set, every leftover
+  # ingot or piece of stock in the crafting bag, then the instructions.
+  #
+  # @param item [String] item noun, for the instructions
+  # @param base [String] stock base; ingots go to a different bin
+  # @param type [String] metal of leftover ingots
+  # @return [void]
   def trash(item, base, type)
     if @remainder && base == 'ingot'
       until /What were you/ =~ DRC.bput("get my #{type} #{base} from my #{@bag}", "You get", "You are already", "You're already", "What were you")
@@ -379,31 +518,27 @@ class TaskMaster
     DRCT.dispose("#{item} instructions", Room.current.id)
   end
 
+  # Works one of Poltu's metal tasks.
+  #
+  # @param item [String] item noun from the task journal
+  # @param count [Integer] how many items to make
+  # @param volume_per_item [Integer] volumes of metal per item
+  # @param base [String] stock base, 'ingot'
+  # @param type [String] the task's metal, e.g. 'bronze'
+  # @return [void]
   def poltu(item, count, volume_per_item, base, type)
-    if volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
-      type = 'steel'
-      buy_ingots(count, type)
-    elsif volume_per_item == 5 # exactly one bronze ingot per item
-      buy_ingots(count, type)
-    elsif count * volume_per_item > 100
-      @remainder = true
-      bingots(3)
-    elsif count * volume_per_item > 50
-      @remainder = (count * volume_per_item) % 100 > 0 ? true : false
-      bingots(2)
-    elsif volume_per_item < 5
-      type = 'steel'
-      @remainder = true
-      buy_ingots(1, type)
-    else # anything between 5 and 10
-      @remainder = true
-      bingots(1)
-    end
-    forge_item(item, count, type)
-    repair(@settings.forging_tools, @settings.forging_belt)
-    trash(item, base, type)
+    forge_metal_task(item, count, volume_per_item, base, type)
   end
 
+  # Works one of Bradyn's tasks: carving stone or bone, shaping wood, or
+  # forging metal like Poltu.
+  #
+  # @param item [String] item noun from the task journal
+  # @param count [Integer] how many items to make
+  # @param volume_per_item [Integer, String] volumes per item, or 'boulder' for stone
+  # @param base [String] stock base: 'stone', 'stack', 'lumber' or 'ingot'
+  # @param type [String] stock name, e.g. 'alabaster', 'deer', 'balsa' or 'bronze'
+  # @return [void]
   def bradyn(item, count, volume_per_item, base, type)
     if base == 'stone'
       buy_rocks(count)
@@ -425,7 +560,37 @@ class TaskMaster
       repair(@settings.shaping_tools || @settings.engineering_tools || [], @settings.engineering_belt)
       trash(item, base, type)
       return
-    elsif volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
+    end
+    forge_metal_task(item, count, volume_per_item, base, type)
+  end
+
+  # A Poltu or Bradyn metal task: buy the metal, forge the items, send the
+  # forging tools for repair and throw away any metal left over.
+  #
+  # @param item [String] item noun from the task journal
+  # @param count [Integer] how many items to make
+  # @param volume_per_item [Integer] volumes of metal per item
+  # @param base [String] stock base, 'ingot'
+  # @param type [String] the task's metal, e.g. 'bronze'
+  # @return [void]
+  def forge_metal_task(item, count, volume_per_item, base, type)
+    type = buy_metal(count, volume_per_item, type)
+    forge_item(item, count, type)
+    repair(@settings.forging_tools, @settings.forging_belt)
+    trash(item, base, type)
+  end
+
+  # Buys the metal for a forging task and returns the metal to forge with.
+  # Items of exactly one ingot each need no smelting; anything else gets
+  # enough bronze ingots for the whole task, or one steel ingot for small
+  # items, and sets @remainder so trash throws away what is left.
+  #
+  # @param count [Integer] how many items to make
+  # @param volume_per_item [Integer] volumes of metal per item
+  # @param type [String] the task's metal, used for one-ingot-per-item tasks
+  # @return [String] the metal to forge with: 'steel' or type
+  def buy_metal(count, volume_per_item, type)
+    if volume_per_item == 10 # exactly one ingot per item, so no scrap, no smelting
       type = 'steel'
       buy_ingots(count, type)
     elsif volume_per_item == 5 # exactly one bronze ingot per item
@@ -440,15 +605,21 @@ class TaskMaster
       type = 'steel'
       @remainder = true
       buy_ingots(1, type)
-    else # anything between 5 and 10
+    else # 50 volumes or less in all, more than 5 per item
       @remainder = true
       bingots(1)
     end
-    forge_item(item, count, type)
-    repair(@settings.forging_tools, @settings.forging_belt)
-    trash(item, base, type)
+    type
   end
 
+  # Works one of Zasele's tasks: knitting yarn, or sewing cloth or leather.
+  #
+  # @param item [String] item noun from the task journal
+  # @param count [Integer] how many items to make
+  # @param volume_per_item [Integer] yards per item
+  # @param base [String] stock base: 'cloth', 'leather' or 'yarn'
+  # @param type [String] stock name, e.g. 'burlap'
+  # @return [void]
   def zasele(item, count, volume_per_item, base, type)
     if base == 'yarn'
       buy_yarn(item, count, volume_per_item, base)
@@ -466,6 +637,11 @@ class TaskMaster
   # room they were last seen in. Search from there outwards along the room
   # list, and remember where each one was found. Kept in UserVars because t2
   # can start this script once per task.
+  #
+  # @param rooms [Array<Integer>] rooms to search, in order
+  # @param npc [String] taskmaster name, lower case
+  # @note UserVars.taskmaster_last_seen persists across runs.
+  # @return [void]
   def find_npc(rooms, npc)
     UserVars.taskmaster_last_seen ||= {}
     search_order(rooms, UserVars.taskmaster_last_seen[npc]).each do |room_id|
@@ -479,6 +655,10 @@ class TaskMaster
   # The room list starting at start_room and alternating outwards from it
   # (start, next, previous, two on, two back, ...), or the list unchanged when
   # start_room is not in it.
+  #
+  # @param rooms [Array<Integer>] rooms to search, in order
+  # @param start_room [Integer, nil] where the taskmaster was last seen
+  # @return [Array<Integer>] every room, once
   def search_order(rooms, start_room)
     start = rooms.index(start_room)
     return rooms unless start
@@ -494,9 +674,19 @@ class TaskMaster
   # The task journal entry. "So far, you have returned N" is optional so an
   # entry printed without it still parses as nothing returned.
   TASK_JOURNAL = /wanted you to craft (.*) and indicated that (\d+) would suffice\.(?:\s+So far, you have returned (\d+))?/
+  # TASK reply when not on a task.
   NOT_ON_TASK = /^You are not currently on a task/
+  # The materials line of READ INSTRUCTIONS: the stock and its volume, or
+  # the size of rock for stone.
   INSTRUCTION_MATERIALS = /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/
 
+  # Reads the task just accepted, or the one in progress, and its
+  # instructions.
+  #
+  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String)]
+  #   item, count still owed, volume per item ('boulder' for stone), base
+  #   and type
+  # @raise [SystemExit] when not on a task
   def finish
     item, count = read_task
     unless item
@@ -508,6 +698,8 @@ class TaskMaster
 
   # Reads the task journal and returns the item noun and how many are still
   # owed, or nil when not on a task.
+  #
+  # @return [Array(String, Integer), nil] item noun and how many are owed
   def read_task
     entry = DRC.bput("task", TASK_JOURNAL, NOT_ON_TASK)
     match = TASK_JOURNAL.match(entry)
@@ -521,6 +713,13 @@ class TaskMaster
 
   # Reads the item's instructions for its material and volume, then stows
   # them, returning everything the worker methods need.
+  #
+  # @param item [String] item noun
+  # @param count [Integer] how many are owed
+  # @note An unrecognised materials line leaves base nil; Lich's nil patch
+  #   then makes type nil instead of raising.
+  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String)]
+  #   item, count, volume per item ('boulder' for stone), base and type
   def read_instructions(item, count)
     case DRC.bput("read my #{item} instructions", INSTRUCTION_MATERIALS)
     when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
@@ -538,7 +737,9 @@ class TaskMaster
     return item, count, volume_per_item, base, type
   end
 
+  # Turn-in reply while more items are owed.
   TURN_IN_MORE_NEEDED = /(\d+) more (?:are|is) needed/
+  # READ INSTRUCTIONS line giving the uses left.
   INSTRUCTION_USES = /They have only (\d+) uses? remaining/
 
   # Finishes a task already in progress, for instance after a crash or a
@@ -546,6 +747,10 @@ class TaskMaster
   # instructions have a use for every item still owed (asking the taskmaster
   # only when they don't, since replacements are limited), then make and hand
   # in the rest.
+  #
+  # @return [void]
+  # @raise [SystemExit] always: when not on a task, when the banked items
+  #   finish it, or after the last item is handed in
   def resume_task
     @dispose, @remainder = [false, false]
     item, owed = read_task
@@ -570,6 +775,11 @@ class TaskMaster
   # owed, or 0 once the task is complete (its reward sack sorted). A give that
   # misses a wandering taskmaster is retried (give_item); anything she won't
   # take goes back in the bag and stops the hand-in.
+  #
+  # @param item [String] item noun
+  # @param owed [Integer] how many are owed before the hand-in
+  # @return [Integer] how many are still owed, 0 once the task is done
+  # @raise [SystemExit] from give_item after repeated misses
   def turn_in_banked(item, owed)
     loop do
       case give_item(item)
@@ -592,6 +802,10 @@ class TaskMaster
   # Leaves the item's instructions in hand, asking the taskmaster for a fresh
   # set only when none are carried, they are someone else's, or they have fewer
   # uses than items owed (each item takes one study).
+  #
+  # @param item [String] item noun
+  # @param owed [Integer] items still to make, one study each
+  # @return [void]
   def ensure_instructions(item, owed)
     carried = DRCI.get_item?("#{item} instructions", @bag)
     if carried
@@ -608,43 +822,65 @@ class TaskMaster
   # crafting scripts put them after studying, rather than leaving them to
   # default stow. Anything else still in hand (a tool or unfinished item held
   # after a crash) goes to default stow as before.
+  #
+  # @param item [String] item noun
+  # @return [void]
   def stow_instructions(item)
     DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
     DRCI.stow_hands
   end
 
+  # Finds the taskmaster and asks for a fresh set of instructions.
+  #
+  # @return [String] the reply
   def get_instructions
     find_npc(@rooms, @npc)
     DRC.bput("ask #{@npc} for instructions", "hands you", "gives you", "handing you")
   end
 
+  # Asks the taskmaster for a task until one is offered, waiting out
+  # cooldowns, and returns what finish reads from it. An ongoing task is
+  # resumed instead, and nil comes back when the reply matches nothing.
+  # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
+  # inside it and return nil, where the old recursion let it propagate.
+  #
+  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String), nil]
+  #   what {#finish} returns, or nil
+  # @raise [SystemExit] from finish (not on a task) or resume_task
   def get_task
-    find_npc(@rooms, @npc)
-    case DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
-    when /if you agree to (his|her) terms/, /To whom are you speaking/
-      get_task
-    when /You are already on a task/
-      resume_task
-    when /utterly ignoring you/, /give you a chance a little later/
-      DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
-      pause @cooldown_poll
-      get_task
-    when /you must wait before I can give you a task/
-      if @boost
-        fput("boost task")
-        pause 2
-        @boost = false
-        get_task
-      else
+    while true
+      find_npc(@rooms, @npc)
+      case DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+      when /if you agree to (his|her) terms/, /To whom are you speaking/
+        next
+      when /You are already on a task/
+        return resume_task
+      when /utterly ignoring you/, /give you a chance a little later/
+        DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
-        get_task
+      when /you must wait before I can give you a task/
+        if @boost
+          fput("boost task")
+          pause 2
+          @boost = false
+        else
+          pause @cooldown_poll
+        end
+      when /You may accept by typing ACCEPT TASK/
+        DRC.bput("accept task", /You can check your progress with the TASK verb/)
+        return finish
+      else
+        return nil
       end
-    when /You may accept by typing ACCEPT TASK/
-      DRC.bput("accept task", /You can check your progress with the TASK verb/)
-      finish
     end
   end
 
+  # Buys ingots of one metal from room 8775 and puts each in the crafting
+  # bag.
+  #
+  # @param count [Integer] how many ingots
+  # @param type [String] metal, e.g. 'steel'
+  # @return [void]
   def buy_ingots(count, type)
     cost = count * @stockdata[type]['stock-value'] + 7500 # 5 gold for the next task, 2500 for repair monies
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
@@ -654,6 +890,12 @@ class TaskMaster
     end
   end
 
+  # Orders bronze ingot number order from the shop in room 17118 (buy_metal
+  # picks 1, 2 or 3 by the task's total volume) and puts it in the crafting
+  # bag.
+  #
+  # @param order [Integer] order number: 1, 2 or 3
+  # @return [void]
   def bingots(order)
     cost = order * 8000 + 7500
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
@@ -661,6 +903,15 @@ class TaskMaster
     DRCC.stow_crafting_item("ingot", @bag, nil)
   end
 
+  # Buys enough 10-volume stock (cloth, leather, bone, lumber) for the
+  # task, combines it and stows it, setting @remainder when some is left
+  # over.
+  #
+  # @param _item [String] unused
+  # @param count [Integer] how many items
+  # @param vpi [Integer] volumes per item
+  # @param base [String] stock base, a STACKMAP key
+  # @return [void]
   def buy_stackables(_item, count, vpi, base)
     base_to_buy = ((count * vpi) / 10.to_f).ceil
     @remainder = (count * vpi) % 10 > 0 ? true : false
@@ -673,6 +924,14 @@ class TaskMaster
     DRCC.stow_crafting_item(base, @bag, @settings.engineering_belt)
   end
 
+  # Buys enough 100-yard yarn for the task, combines it and stows it,
+  # setting @remainder when some is left over.
+  #
+  # @param _item [String] unused
+  # @param count [Integer] how many items
+  # @param vpi [Integer] yards per item
+  # @param base [String] 'yarn'
+  # @return [void]
   def buy_yarn(_item, count, vpi, base)
     base_to_buy = ((count * vpi) / 100.to_f).ceil
     @remainder = (count * vpi) % 100 > 0 ? true : false
@@ -685,6 +944,10 @@ class TaskMaster
     DRCC.stow_crafting_item(base, @bag, @settings.engineering_belt)
   end
 
+  # Buys one alabaster rock deed per item and stows the deeds.
+  #
+  # @param count [Integer] how many deeds
+  # @return [void]
   def buy_rocks(count)
     cost = count * 1250 + 7500
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
@@ -694,6 +957,13 @@ class TaskMaster
     end
   end
 
+  # Forges each item with the forge script at an anvil (or the
+  # task_crafting_room) and bags it.
+  #
+  # @param item [String] item noun
+  # @param count [Integer] how many
+  # @param type [String] metal to forge with
+  # @return [void]
   def forge_item(item, count, type)
     unless @crafting_room
       info = get_data('crafting')['blacksmithing']["Crossing"]
@@ -710,6 +980,14 @@ class TaskMaster
     DRC.message("#{count} #{item}s completed")
   end
 
+  # Carves each stone item from its rock deed and bags it. When the thief's
+  # fog rolls through mid-carve, it buys a new deed and carves that item
+  # again.
+  #
+  # @param item [String] item noun
+  # @param count [Integer] how many
+  # @note Adds the "thieving-fog" flag, deleted when the script ends.
+  # @return [void]
   def carve_stone(item, count)
     Flags.add("thieving-fog", "A low fog rolls in, then just as quickly rolls out")
     DRCC.find_shaping_room(@anvil_town)
@@ -750,6 +1028,11 @@ class TaskMaster
     DRC.message("#{count} #{item}s completed")
   end
 
+  # Cuts each bone item from the deer stack and bags it.
+  #
+  # @param item [String] item noun
+  # @param count [Integer] how many
+  # @return [void]
   def carve_bone(item, count)
     DRCT.walk_to(8868)
     DRCC.get_crafting_item("bone saw", @bag, @bag_items, @settings.engineering_belt)
@@ -777,6 +1060,14 @@ class TaskMaster
     DRC.message("#{count} #{item}s completed")
   end
 
+  # Sews or knits each item with the sew script, in the tailoring room or
+  # task_crafting_room (marathon sews where it stands).
+  #
+  # @param item [String] item noun
+  # @param count [Integer] how many
+  # @param base [String] 'yarn' knits, anything else sews
+  # @param type [String] stock name
+  # @return [void]
   def tailor_item(item, count, base, type)
     unless @crafting_room
       DRCT.walk_to(14886) unless @marathon
@@ -796,6 +1087,10 @@ class TaskMaster
   # Knitting uses neither.
   PIN_USES_PER_ITEM = 3
 
+  # Checks pins and thread once for the whole sewing task.
+  #
+  # @param count [Integer] items to sew
+  # @return [void]
   def check_sewing_consumables(count)
     info = get_data('crafting')['tailoring']["Crossing"]
     belt = @settings.outfitting_belt
@@ -803,6 +1098,13 @@ class TaskMaster
     DRCC.check_consumables('thread', info['stock-room'], 6, @bag, @bag_items, belt)
   end
 
+  # Shapes each wooden item with the shape script in a shaping room.
+  #
+  # @param item [String] item noun
+  # @param count [Integer] how many
+  # @param _base [String] unused
+  # @param type [String] lumber, e.g. 'balsa'
+  # @return [void]
   def shape_item(item, count, _base, type)
     DRCC.find_shaping_room(@anvil_town)
     count.times do
@@ -813,12 +1115,17 @@ class TaskMaster
 
   # Consecutive gives that found nobody to take the item before giving up.
   MAX_GIVE_MISSES = 5
+  # GIVE reply when the taskmaster is not in the room.
   GIVE_MISSED = /What is it you're trying to give/
 
   # Gives one finished item to the taskmaster and returns the reply, or nil when
   # there is none in hand or in the bag. A give that misses her (she wandered
   # off between the get and the give) leaves the item in hand: find her again
   # and give that same item, stopping after MAX_GIVE_MISSES misses in a row.
+  #
+  # @param item [String] item noun
+  # @return [String, nil] the taskmaster's reply, or nil when none is left
+  # @raise [SystemExit] after MAX_GIVE_MISSES misses in a row
   def give_item(item)
     MAX_GIVE_MISSES.times do
       find_npc(@rooms, @npc)
@@ -831,6 +1138,13 @@ class TaskMaster
     exit
   end
 
+  # Hands in every finished item until the taskmaster gives the reward
+  # sack, then sorts it.
+  #
+  # @param item [String] item noun
+  # @param _count [Integer] unused
+  # @return [void]
+  # @raise [SystemExit] when the items run out first, or from give_item
   def complete_task(item, _count)
     loop do
       reply = give_item(item)
@@ -841,6 +1155,12 @@ class TaskMaster
     fput('dump junk')
   end
 
+  # Deals with worn tools after a task: stows them with task_no_repair,
+  # repairs them with task_self_repair, or leaves them with Rangu.
+  #
+  # @param tools [Array<String>] tool names
+  # @param belt [Hash, nil] toolbelt settings the tools live on
+  # @return [void]
   def repair(tools, belt)
     if @no_repair # skipping repair, stowing tool(s), moving on
       DRCI.stow_hands
@@ -852,6 +1172,12 @@ class TaskMaster
     end
   end
 
+  # Leaves each tool with Rangu for repair and keeps the tickets; a tool he
+  # won't take goes back where it came from.
+  #
+  # @param toolslist [Array<String>] tool names
+  # @param belt [Hash, nil] toolbelt settings the tools live on
+  # @return [void]
   def tool_drop(toolslist, belt = nil) # accepts array of tools for repair
     return if @self_repair
 
@@ -869,6 +1195,12 @@ class TaskMaster
     end
   end
 
+  # Collects every tool Rangu holds a ticket for, waiting until each is
+  # ready, and stows it on the toolbelt that lists it.
+  #
+  # @note A crafting belt setting left unset is nil; Lich's nil patch lets
+  #   the belt search skip it.
+  # @return [void]
   def tool_pickup # picks up all your tools from repair shop
     DRCT.walk_to(19209)
     while DRCI.get_item?("rangu ticket")
@@ -881,6 +1213,13 @@ class TaskMaster
     end
   end
 
+  # Sorts the reward sack: gems go to the gem pouch and coins are picked up,
+  # then a keeper goes into the loot bag (with a Slack message if asked)
+  # and anything else is binned. Logs the contents to the Task Master
+  # window and the sack history.
+  #
+  # @param _item [String, nil] unused
+  # @return [void]
   def sort_sack(_item)
     DRCI.fill_gem_pouch_with_container(@settings.gem_pouch_adjective, @settings.gem_pouch_noun, 'sack', @settings.full_pouch_container, @settings.spare_gem_pouch_container, @settings.tie_gem_pouches)
 
@@ -907,6 +1246,11 @@ class TaskMaster
   # thousands of entries a month.
   LOOT_HISTORY_LIMIT = 100
 
+  # Adds the sack's contents to this taskmaster's history.
+  #
+  # @param contents [String] the sack's contents
+  # @note UserVars.taskmaster_sacks persists across runs.
+  # @return [void]
   def remember_sack(contents)
     UserVars.taskmaster_sacks ||= {}
     history = (UserVars.taskmaster_sacks[@npc] ||= [])
@@ -920,4 +1264,4 @@ before_dying do
   Flags.delete("thieving-fog")
 end
 
-TaskMaster.new
+TaskMaster.new.run
