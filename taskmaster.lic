@@ -69,13 +69,7 @@ class TaskMaster
       end
       exit
     elsif args.finish
-      @dispose, @remainder = [false, false]
-      get_instructions # picks up a fresh set of instructions from the task master
-      item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
-      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
-      exit
+      resume_task
     elsif args.reset_output
       _respond("<clearStream id='Task Master'/>")
       exit
@@ -347,6 +341,70 @@ class TaskMaster
     return item, count, volume_per_item, base, type
   end
 
+  TURN_IN_MORE_NEEDED = /(\d+) more (?:are|is) needed/
+  INSTRUCTION_USES = /They have only (\d+) uses? remaining/
+
+  # Finishes a task already in progress, for instance after a crash or a
+  # reconnect: hand in any finished items already in the bag, make sure the
+  # instructions have a use for every item still owed (asking the taskmaster
+  # only when they don't, since replacements are limited), then make and hand
+  # in the rest.
+  def resume_task
+    @dispose, @remainder = [false, false]
+    item, owed = read_task
+    unless item
+      DRC.message("You are not on a task with #{@npc}.")
+      exit
+    end
+    owed = turn_in_banked(item, owed)
+    exit if owed.zero?
+
+    ensure_instructions(item, owed)
+    item, count, volume_per_item, base, type = read_instructions(item, owed)
+    tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+    send(@npc.to_sym, item, count, volume_per_item, base, type)
+    complete_task(item, count)
+    exit
+  end
+
+  # Hands in finished items already in the bag and returns how many are still
+  # owed, or 0 once the task is complete (its reward sack sorted). Anything the
+  # taskmaster won't take goes back in the bag and stops the hand-in.
+  def turn_in_banked(item, owed)
+    loop do
+      find_npc(@rooms, @npc)
+      break unless DRCI.get_item?(item, @bag)
+
+      case DRC.bput("give my #{item} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, /What is it you're trying to give/)
+      when /hands you a/
+        sort_sack(item)
+        fput('dump junk')
+        return 0
+      when TURN_IN_MORE_NEEDED
+        owed = Regexp.last_match(1).to_i
+      else
+        DRCC.stow_crafting_item(item, @bag, nil)
+        break
+      end
+    end
+    owed
+  end
+
+  # Leaves the item's instructions in hand, asking the taskmaster for a fresh
+  # set only when none are carried, they are someone else's, or they have fewer
+  # uses than items owed (each item takes one study).
+  def ensure_instructions(item, owed)
+    carried = DRCI.get_item?("#{item} instructions", @bag)
+    if carried
+      reply = DRC.bput("read my #{item} instructions", INSTRUCTION_USES, /written by or for someone else/, /What were you referring/)
+      return if reply[INSTRUCTION_USES, 1].to_i >= owed
+
+      # Put the short or unreadable set back so only the new one is in hand.
+      DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+    end
+    get_instructions
+  end
+
   def get_instructions
     find_npc(@rooms, @npc)
     DRC.bput("ask #{@npc} for instructions", "hands you", "gives you", "handing you")
@@ -358,12 +416,7 @@ class TaskMaster
     when /if you agree to (his|her) terms/, /To whom are you speaking/
       get_task
     when /You are already on a task/
-      @dispose, @remainder = [false, false]
-      get_instructions # picks up a fresh set of instructions from the task master
-      item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
-      exit
+      resume_task
     when /utterly ignoring you/, /give you a chance a little later/
       DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
       pause 15
