@@ -871,6 +871,31 @@ RSpec.describe StatusMonitor::Monitor do
         build_monitor.process(+notice)
         expect(fput_commands).to be_empty
       end
+
+      it 'is throttled by the rate cap, and counts toward it' do
+        monitor = build_monitor
+        cap = StatusMonitor::Monitor::ALERT_RATE_MAX
+        cap.times { expect(monitor.process(+notice)).to be true }
+        expect(monitor.process(+notice)).to be false
+        expect(monitor.process(+'a plain novel line after a notice burst')).to be false
+        expect(store.in_corpus?(notice)).to be false
+      end
+
+      it 'alerts again once the cap window clears' do
+        start = Time.now
+        allow(Time).to receive(:now).and_return(start)
+        monitor = build_monitor
+        StatusMonitor::Monitor::ALERT_RATE_MAX.times { monitor.process(+notice) }
+        expect(monitor.process(+notice)).to be false
+        allow(Time).to receive(:now).and_return(start + StatusMonitor::Monitor::ALERT_RATE_WINDOW + 1)
+        expect(monitor.process(+notice)).to be true
+      end
+
+      it 'does not hold back a strong check once the cap is reached' do
+        monitor = build_monitor
+        StatusMonitor::Monitor::ALERT_RATE_MAX.times { monitor.process(+notice) }
+        expect(monitor.process(+squirrel_lines.first)).to be true
+      end
     end
 
     it 'still auto-quits on a GameMaster line that is not the error notice' do

@@ -538,8 +538,8 @@ module StatusMonitor
       /You can use RESPOND/
     )
     # Game wordings that match CHECK_PATTERNS (they mention GameMasters) but are
-    # not a check. They still alert every time and are never recorded, but they
-    # are weak alerts: no canned reply and no auto-quit.
+    # not a check. They are never recorded, but they are weak alerts: no canned
+    # reply, no auto-quit, and they are subject to the rate cap.
     GM_NOTICE_PATTERNS = Regexp.union(
       /error has occurred and the Gamemasters have been alerted/i # 'Some sort of error has occurred and the Gamemasters have been alerted.'
     )
@@ -577,8 +577,8 @@ module StatusMonitor
     #
     # A line matching CHECK_PATTERNS always alerts as a strong signal (canned
     # response / auto-quit if configured) and is never recorded. One that also
-    # matches GM_NOTICE_PATTERNS alerts the same way but weakly (no canned
-    # response or auto-quit).
+    # matches GM_NOTICE_PATTERNS alerts weakly (no canned response or auto-quit),
+    # is never recorded either, and counts toward the rate cap.
     #
     # Any other line is novelty-gated: a line already in the shared corpus is
     # known-safe and silent. A NOVEL line alerts once and is then recorded, so it
@@ -596,7 +596,9 @@ module StatusMonitor
       return false if cleaned.nil?
 
       if cleaned.match?(CHECK_PATTERNS)
-        alert(cleaned.strip, strong: !cleaned.match?(GM_NOTICE_PATTERNS))
+        return alert_gm_notice(cleaned.strip) if cleaned.match?(GM_NOTICE_PATTERNS)
+
+        alert(cleaned.strip, strong: true)
         return true
       end
       return false if @filter.filtered?(cleaned)
@@ -646,6 +648,20 @@ module StatusMonitor
     def alert(line, strong:)
       @alerter.handle(line, strong: strong)
       @spam_line = line
+    end
+
+    # Weak alert for a GM_NOTICE_PATTERNS line. Unlike a real check it is
+    # throttled by, and counts toward, the rate cap, so a burst of the notice
+    # cannot become an unthrottled stream of beeps and Slack DMs. Never recorded.
+    #
+    # @param line [String] the cleaned notice line
+    # @return [Boolean] true if it alerted
+    def alert_gm_notice(line)
+      return false if rate_limited?
+
+      alert(line, strong: false)
+      @alert_times << Time.now
+      true
     end
 
     # Advances the learning window; called for every line so expiry and
