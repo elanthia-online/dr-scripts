@@ -180,7 +180,7 @@ GEM
     set (1.1.3)
     shellany (0.0.1)
     simplecov (1.3.2)
-    sorbet-runtime (0.6.13594)
+    sorbet-runtime (0.6.13602)
     sqlite3 (2.10.2)
       mini_portile2 (~> 2.8.0)
     sqlite3 (2.10.2-aarch64-linux-gnu)
@@ -222,6 +222,7 @@ GEM
     zlib (3.2.4)
 
 PLATFORMS
+  aarch64-darwin
   aarch64-linux
   aarch64-linux-gnu
   aarch64-linux-musl
@@ -229,8 +230,6 @@ PLATFORMS
   arm-linux-gnu
   arm-linux-musl
   arm64-darwin
-  arm64-darwin-27
-  ruby
   x64-mingw
   x64-mingw-ucrt
   x86-darwin
@@ -388,7 +387,7 @@ CHECKSUMS
   set (1.1.3) sha256=12bbbd31c8b177d55ac0314bcc7f4c473276b06e8a2dcfdc14326e73ce7769ce
   shellany (0.0.1) sha256=0e127a9132698766d7e752e82cdac8250b6adbd09e6c0a7fbbb6f61964fedee7
   simplecov (1.3.2) sha256=2a22ec1759f1b8db60881a2e038758956fc69ef93ed669be0bde0678de6d0e85
-  sorbet-runtime (0.6.13594) sha256=cf26f625a84c73d0d4d151fc19cafa1a6c44ad1814f2454e545893773eddd5e3
+  sorbet-runtime (0.6.13602) sha256=a6738fe7b6f22253a32a65ccdcafc2ff0d48dcfcc8df3b1f19c11471bacdd4ac
   sqlite3 (2.10.2) sha256=f1ea68cd3287f8a49f39a088ac9e4bd0ef4e7f394c3d4a60dd4c7e44b0566964
   sqlite3 (2.10.2-aarch64-linux-gnu) sha256=e9aea2c2b3476fc875dd8a89313a9a2862818519c0186bfb5b56d6f57bb08d98
   sqlite3 (2.10.2-aarch64-linux-musl) sha256=4986fc40cdf21342362b72a941df28e95cfe0e644f3ad2532d948b157c39dbee
