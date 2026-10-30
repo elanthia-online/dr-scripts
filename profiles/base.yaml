@@ -1857,9 +1857,9 @@ afk_justice_threshold: 4
 quit_on_status_warning: false
 status_monitor_no_window: false
 status_monitor_respond: false
-unique_line_threshold: 4
-line_frequency_threshold: 6
-line_similarity_percentage: 70
+# Seconds at the start of each session during which status-monitor learns new
+# lines silently instead of alerting (0 disables).
+status_monitor_grace_seconds: 60
 
 lichbot_buffs:
 lichbot_train_when_idle: false
