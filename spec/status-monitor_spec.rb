@@ -19,57 +19,10 @@ require 'yaml'
 # returns 'Testchar' and pause is already a no-op. echo output is captured in the
 # harness's displayed_messages; fput is asserted via per-example spies.
 
-# The generic UserVars store lives in the harness (Harness::UserVars); reopen it
-# to add status-monitor's one domain default: npcs reads back an empty list when
-# unset so MessageFilter#clean can safely call UserVars.npcs.any?. Everything
-# else (players_online, ...) is handled by the shared store (unset -> nil).
-# Do NOT define a fresh top-level `UserVars` -- it would shadow the harness store
-# for the whole process. (See spec_helper's "Shared game doubles" notes.)
-class Harness::UserVars
-  class << self
-    def npcs
-      _store[:npcs] || []
-    end
-  end
-end
-
-# Minimal fake SlackBot so AlertHandler's delivery path can be exercised without
-# any network or lnet dependency. SlackBot is a genuinely new class the harness
-# does not provide, so it is added under the harness's Lich::DragonRealms
-# namespace (resolved as Lich::DragonRealms::SlackBot via `include Harness`).
-# Defining a fresh top-level `module Lich` instead would create a real ::Lich
-# constant that shadows the harness Lich and wipes out Lich::Messaging/Util for
-# every spec that runs after this file loads.
-module Harness
-  module Lich
-    module DragonRealms
-      class SlackBot
-        class << self
-          attr_accessor :next_initialized
-          attr_reader :instances
-        end
-        @instances = []
-
-        attr_reader :dm_calls
-
-        def initialize
-          @initialized = self.class.next_initialized
-          @dm_calls = []
-          self.class.instances << self
-        end
-
-        def initialized?
-          @initialized
-        end
-
-        def direct_message(username, message)
-          @dm_calls << [username, message]
-          { 'ok' => true }
-        end
-      end
-    end
-  end
-end
+# UserVars (unset keys read back nil; MessageFilter#clean nil-guards npcs) and
+# the fake Lich::DragonRealms::SlackBot both come from the shared harness. Do
+# NOT reopen harness modules here: a reopened module changes every spec that
+# loads after this file.
 
 # Extract the StatusMonitor module from the .lic file (lines 22-561).
 # Skip the top-level Lich runtime code (status_tags, parse_args, etc).

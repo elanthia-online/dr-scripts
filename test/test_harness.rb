@@ -1463,6 +1463,35 @@ module Harness
         }.freeze
       }.freeze unless const_defined?(:DR_SKILLS_DATA)
 
+      # Fake lich-5 SlackBot (lib/dragonrealms/commons/slackbot.rb), with no
+      # network or lnet dependency. Every instance is kept in .instances and
+      # records its direct_message calls in #dm_calls; .next_initialized sets
+      # what #initialized? returns for the next instance built.
+      class SlackBot
+        class << self
+          attr_accessor :next_initialized
+          attr_reader :instances
+        end
+        @instances = []
+
+        attr_reader :dm_calls
+
+        def initialize
+          @initialized = self.class.next_initialized
+          @dm_calls = []
+          self.class.instances << self
+        end
+
+        def initialized?
+          @initialized
+        end
+
+        def direct_message(username, message)
+          @dm_calls << [username, message]
+          { 'ok' => true }
+        end
+      end
+
       # Stand-in for lich-5's CreatureInstance (lib/dragonrealms/creature.rb)
       # for roster entries a script calls #matches? or #crtr_flag?(:dead) on.
       # Seed it with Creature._set_room. crtr_flag? answers only :dead (from
