@@ -191,6 +191,121 @@ RSpec.describe TaskMaster do
     end
   end
 
+  describe 'hometown while a task runs' do
+    # $HOMETOWN is the global dependency's shift_hometown sets; lich-5 applies
+    # it to hometown in every get_settings call, so sew and restock follow it.
+    # Entries from lich-5's HOMETOWN_REGEX_MAP (drvariables.rb), which
+    # DRC.get_town_name matches against to return the canonical name.
+    town_regex_map = {
+      'Crossing'   => /^(cross(ing)?)$/i,
+      'Riverhaven' => /^(river|haven|riverhaven)$/i,
+      'Shard'      => /^(shard)$/i
+    }
+
+    let(:messages) { [] }
+
+    before do
+      $HOMETOWN = nil
+      described_class.saved_hometown = nil
+      allow(DRC).to receive(:get_town_name) { |text| town_regex_map.select { |_town, re| re =~ text }.keys.first }
+      allow(DRC).to receive(:message) { |text| messages << text }
+    end
+
+    after do
+      $HOMETOWN = nil
+      described_class.saved_hometown = nil
+    end
+
+    it 'leaves hometown alone when task_hometown is unset, as base.yaml ships it' do
+      tm = build(task_hometown: base_yaml['task_hometown'])
+      tm.shift_to_task_hometown
+      expect($HOMETOWN).to be_nil
+      expect(described_class.saved_hometown).to be_nil
+    end
+
+    it 'treats a blank or missing task_hometown as unset' do
+      build(task_hometown: '  ').shift_to_task_hometown
+      build.shift_to_task_hometown
+      expect($HOMETOWN).to be_nil
+    end
+
+    it 'ignores surrounding spaces in the town name' do
+      build(task_hometown: ' Crossing ').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+    end
+
+    it 'resolves a short or lowercase town name to the canonical one lich-5 looks up' do
+      build(task_hometown: 'cross').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+      described_class.restore_hometown
+      build(task_hometown: 'crossing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+    end
+
+    it 'reports a task_hometown that matches no town and leaves hometown alone' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crosing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Shard')
+      expect(described_class.saved_hometown).to be_nil
+      expect(messages).to include(/task_hometown 'Crosing' does not match any town/)
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Shard')
+    end
+
+    it 'makes task_hometown the hometown while taskmaster runs, and clears it afterwards' do
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+      described_class.restore_hometown
+      expect($HOMETOWN).to be_nil
+    end
+
+    it 'puts back an override another script had set, such as trade' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Shard')
+    end
+
+    it 'leaves an override another script set while taskmaster ran' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      $HOMETOWN = 'Riverhaven' # set by another script mid-run
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Riverhaven')
+      expect(described_class.saved_hometown).to be_nil
+    end
+
+    it 'leaves a mid-run clear by another script in place' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      $HOMETOWN = nil # another script cleared it mid-run
+      described_class.restore_hometown
+      expect($HOMETOWN).to be_nil
+    end
+
+    it 'changes nothing on stop when it never shifted' do
+      $HOMETOWN = 'Riverhaven'
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Riverhaven')
+    end
+
+    it 'restores only once, so a second stop cannot clear a later override' do
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      described_class.restore_hometown
+      $HOMETOWN = 'Shard' # set by something else after taskmaster stopped
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Shard')
+    end
+
+    it 'shifts before running any mode' do
+      tm = build(task_hometown: 'Crossing')
+      allow(tm).to receive(:find_npc)
+      expect { tm.run(OpenStruct.new(npc: 'zasele', find: 'find')) }.to raise_error(SystemExit)
+      expect($HOMETOWN).to eq('Crossing')
+    end
+  end
+
   describe 'running the script' do
     let(:rope_task) { ['rope', 2, 4, 'cloth', 'burlap'] }
     let(:outfitting_belt) { { 'name' => 'tailor belt', 'items' => [] } }
