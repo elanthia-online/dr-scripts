@@ -770,9 +770,10 @@ class TaskMaster
   end
 
   # Hands in finished items already in the bag and returns how many are still
-  # owed, or 0 once the task is complete (its reward sack sorted). A give that
-  # misses a wandering taskmaster is retried (give_item); anything she won't
-  # take goes back in the bag and stops the hand-in.
+  # owed, or 0 once the task is complete (its reward sack sorted and the task
+  # closed out by task_handed_in). A give that misses a wandering taskmaster is
+  # retried (give_item); anything she won't take goes back in the bag and stops
+  # the hand-in.
   #
   # @param item [String] item noun
   # @param owed [Integer] how many are owed before the hand-in
@@ -786,6 +787,7 @@ class TaskMaster
       when /hands you a/
         sort_sack(item)
         fput('dump junk')
+        task_handed_in(item)
         return 0
       when TURN_IN_MORE_NEEDED
         owed = Regexp.last_match(1).to_i
@@ -820,7 +822,12 @@ class TaskMaster
   # request is remembered in UserVars (t2 can start the script once per task),
   # and a second request for the same task stops instead: something keeps the
   # items from being made, and repeated requests risk the taskmaster's
-  # warning that she will stop handing out replacements.
+  # warning that she will stop handing out replacements. This stop is
+  # deliberate even though a replacement has no spare use: the set handed out
+  # with a task has one use more than the task count, but a replacement has
+  # only as many as are still owed (Zasele, Hollow Eve 2025). So, after a
+  # replacement, one more item lost after its study stops the task here for a
+  # person to look at, where asking on every relaunch could go on for hours.
   #
   # @param item [String] the task item's noun
   # @return [void]

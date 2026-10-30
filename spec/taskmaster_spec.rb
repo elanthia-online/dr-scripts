@@ -1118,6 +1118,25 @@ RSpec.describe TaskMaster do
         expect(resume(owed: 3, banked: 3, uses: 4)).to eq([:sack])
       end
 
+      # Regression: trash no longer throws the instructions away, so a task the
+      # banked items finish must close out like complete_task does, or the set
+      # stays in the bag beside the next task's and the replacement record stays.
+      it 'throws the instructions away and clears the replacement record when the banked items finish the task' do
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope', 'poltu' => 'dagger' }
+        allow(DRCT).to receive(:dispose)
+        resume(owed: 3, banked: 3, uses: 4)
+        expect(DRCT).to have_received(:dispose).with('rope instructions', nil, nil, nil)
+        expect(UserVars.taskmaster_replacements).to eq('poltu' => 'dagger')
+      end
+
+      it 'keeps the instructions and the replacement record when the banked items leave some owed' do
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+        allow(DRCT).to receive(:dispose)
+        resume(owed: 5, banked: 2, uses: 4)
+        expect(DRCT).not_to have_received(:dispose)
+        expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+      end
+
       it 'keeps the carried instructions when they have a use for every item owed' do
         events = resume(owed: 3, uses: 4)
         expect(events).not_to include(:asked_for_instructions)
