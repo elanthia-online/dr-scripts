@@ -97,37 +97,51 @@ class TaskMaster
   # Makes task_hometown the hometown every script in this session sees
   # (sew, restock, ...) while taskmaster runs, through dependency's
   # shift_hometown, which lich-5 applies to hometown in get_settings. The
-  # previous override, if another script set one, is kept so that
-  # restore_hometown can put it back when taskmaster stops. Does nothing when
-  # task_hometown is unset.
+  # town is resolved to its canonical name with DRC.get_town_name, so
+  # 'cross' or 'crossing' become 'Crossing'; lich-5's hometown lookups are
+  # case-sensitive on the canonical names. A name that matches no town is
+  # reported and hometown is left alone. The previous override, if another
+  # script set one, is kept so that restore_hometown can put it back when
+  # taskmaster stops. Does nothing when task_hometown is unset.
   #
   # @return [void]
   # @note $HOMETOWN is global to the Lich session, so background scripts
   #   that read settings while a task runs see the same town.
   def shift_to_task_hometown
-    town = @task_hometown.to_s.strip
-    return if town.empty?
+    name = @task_hometown.to_s.strip
+    return if name.empty?
 
-    TaskMaster.saved_hometown = { value: $HOMETOWN }
+    town = DRC.get_town_name(name)
+    unless town
+      DRC.message("task_hometown '#{name}' does not match any town; leaving your hometown alone. Use a town name such as Crossing.")
+      return
+    end
+
+    TaskMaster.saved_hometown = { value: $HOMETOWN, town: town }
     shift_hometown(town)
   end
 
   class << self
-    # The hometown override in place before shift_to_task_hometown, wrapped
-    # in a Hash so a nil override can be told apart from "nothing saved".
+    # The hometown override in place before shift_to_task_hometown (:value),
+    # and the town taskmaster set (:town), wrapped in a Hash so a nil
+    # override can be told apart from "nothing saved".
     #
     # @return [Hash{Symbol => String, nil}, nil]
     attr_accessor :saved_hometown
 
     # Puts back the hometown override taskmaster replaced, from before_dying,
-    # which also runs on exit and when the script is killed.
+    # which also runs on exit and when the script is killed. If something
+    # else changed the override while taskmaster ran, that change is left in
+    # place rather than overwritten.
     #
     # @return [void]
     def restore_hometown
       return unless saved_hometown
 
-      previous = saved_hometown[:value]
-      previous ? shift_hometown(previous) : clear_hometown
+      if $HOMETOWN == saved_hometown[:town]
+        previous = saved_hometown[:value]
+        previous ? shift_hometown(previous) : clear_hometown
+      end
       self.saved_hometown = nil
     end
   end
