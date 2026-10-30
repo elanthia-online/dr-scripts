@@ -75,9 +75,15 @@ class CrossingRepair
     repair_info = repair_prep(town, settings)
 
     # Run through each item with respective metal or leather repairer, turning in items for repair.
+    # Stop as soon as something can't be put away: carrying on fills the other hand,
+    # and with no free hand the tickets can never be collected.
     repair_info.each do |repairer, items|
       DRC.message("Repairing at #{repairer}") if $debug_mode_crossing_repair
-      repair_at(repairer['name'], repairer['id'], items)
+      next if repair_at(repairer['name'], repairer['id'], items)
+
+      DRC.message("Could not put away #{held_items}. Stopping repair.")
+      DRC.message("Make room for it, then run ;crossing-repair force to collect your tickets.")
+      exit
     end
 
     # Deposit remaining coins unless we have setting to skip.
@@ -168,23 +174,25 @@ class CrossingRepair
   end
 
   # Head to the appropriate repair spot. Return if we can't get there. Call the repair method.
+  # Returns false if an item or ticket could not be put away, so the caller stops.
   def repair_at(repairer, target_room, items)
-    return if items.nil? || items.empty?
-    return unless DRCT.walk_to(target_room)
+    return true if items.nil? || items.empty?
+    return true unless DRCT.walk_to(target_room)
 
-    items.each { |item| repair(repairer, item) }
+    items.all? { |item| repair(repairer, item) }
   end
 
+  # Returns false when our hands could not be emptied afterwards.
   def repair(repairer, item, repeat = false)
-    return unless repairer
-    return unless item
+    return true unless repairer
+    return true unless item
 
     DRC.release_invisibility
     if repeat
       fput('swap') unless DRC.right_hand
       command = "give #{repairer}"
     else
-      return unless @equipment_manager.get_item?(item)
+      return true unless @equipment_manager.get_item?(item)
 
       command = "give my #{item.short_name} to #{repairer}"
     end
@@ -195,22 +203,35 @@ class CrossingRepair
     when "I don't work on those here"
       echo "*** ITEM HAS IMPROPER is_leather FLAG: #{item.short_name} ***"
       @equipment_manager.empty_hands
-    when "You don't need to specify the object", 'Just give it to me again'
+    when "You don't need to specify the object", 'Just give it to me again', 'If you agree, give it to me again'
       repair(repairer, item, true)
     when "Please don't lose this ticket!", "You hand.*#{repairer}"
-      DRC.bput('stow my ticket', 'You put')
+      DRCI.stow_item?('ticket')
+    else
+      @equipment_manager.empty_hands
     end
   end
 
+  # Only keep looping after a ticket was actually picked up and handed in;
+  # anything else (no free hand, no response) would loop forever.
   def tickets_left?(repairer)
-    if DRC.bput("get my #{repairer['name']} ticket", 'What were you referring', 'You get') == 'What were you referring'
-      return false
-    end
+    case DRC.bput("get my #{repairer['name']} ticket", 'What were you referring', 'You get', 'You need a free hand')
+    when 'You get'
+      DRCT.walk_to(repairer['id'])
+      return true if turn_in_ticket(repairer['name']) && @equipment_manager.empty_hands
 
-    DRCT.walk_to(repairer['id'])
-    turn_in_ticket(repairer['name'])
-    @equipment_manager.empty_hands
-    true
+      DRC.message("Could not put away #{held_items}. Collect the rest of your #{repairer['name']} tickets by hand.")
+      false
+    when 'You need a free hand'
+      DRC.message("No free hand (holding #{held_items}). Collect your #{repairer['name']} tickets by hand.")
+      false
+    else
+      false
+    end
+  end
+
+  def held_items
+    [DRC.right_hand, DRC.left_hand].compact.join(' and ')
   end
 
   def turn_in_ticket(repairer, failed = false)
@@ -222,11 +243,15 @@ class CrossingRepair
     end
 
     case DRC.bput(command, 'You hand', 'takes your ticket', "You don't need to specify the object", 'almost done', "Well that isn't gonna be done")
+    when 'You hand', 'takes your ticket'
+      true
     when "You don't need to specify the object"
       turn_in_ticket(repairer, true)
     when 'almost done', "Well that isn't gonna be done"
       pause 30
       turn_in_ticket(repairer)
+    else
+      false
     end
   end
 
