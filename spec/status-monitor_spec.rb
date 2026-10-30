@@ -853,6 +853,32 @@ RSpec.describe StatusMonitor::Monitor do
       expect(fput_commands.any? { |cmd| ["'Hmmm?", "'Yes", "'Ok?"].include?(cmd) }).to be true
     end
 
+    describe 'the "Gamemasters have been alerted" error notice' do
+      notice = 'You sense a ripple in the life energy around you.  Some sort of error has occurred and the Gamemasters have been alerted.'
+
+      before do
+        settings.status_monitor_respond = true
+        settings.quit_on_status_warning = true
+      end
+
+      it 'alerts on every recurrence and is never recorded' do
+        monitor = build_monitor
+        2.times { expect(monitor.process(+notice)).to be true }
+        expect(store.in_corpus?(notice)).to be false
+      end
+
+      it 'is a weak alert: no canned response and no auto-quit' do
+        build_monitor.process(+notice)
+        expect(fput_commands).to be_empty
+      end
+    end
+
+    it 'still auto-quits on a GameMaster line that is not the error notice' do
+      settings.quit_on_status_warning = true
+      build_monitor.process(+'Also here: GameMaster Avaari and Trauma Prodigy Yonack.')
+      expect(fput_commands).to include('exit')
+    end
+
     it 'does not auto-act on a plain novel line, even with those settings on' do
       settings.status_monitor_respond = true
       settings.quit_on_status_warning = true
