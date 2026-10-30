@@ -1,5 +1,10 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#status-monitor
+
+  First-time setup: the shared corpus of known lines starts empty, and every
+  line it has not seen alerts (up to 10 a minute). Warm it up first, either by
+  running `;status-monitor learn` through a normal session, or by importing
+  your existing logs with `;status-monitor-import`.
 =end
 
 status_tags
@@ -450,18 +455,13 @@ module StatusMonitor
 
   # Top-level orchestrator for status monitoring.
   #
-  # Coordinates message filtering, seen tracking, spam detection,
-  # and alert handling. Provides both headless and GTK windowed modes.
-  #
-  # @note Required settings keys:
-  #   - `unique_line_threshold` [Integer] repeat count before alert
-  #   - `line_frequency_threshold` [Integer] novel line burst count (90s window)
-  #   - `line_similarity_percentage` [Integer] Levenshtein similarity cutoff
+  # Coordinates message filtering, the shared corpus novelty gate, and alert
+  # handling. Provides both headless and GTK windowed modes.
   #
   # @note Optional settings keys:
   #   - `status_monitor_no_window` [Boolean] disable GTK window
-  #   - `status_monitor_respond` [Boolean] auto-respond with canned phrases
-  #   - `quit_on_status_warning` [Boolean] auto-quit on alert
+  #   - `status_monitor_respond` [Boolean] canned reply on a GM-check alert
+  #   - `quit_on_status_warning` [Boolean] auto-quit on a GM-check alert
   #   - `slack_username` [String] Slack user to notify
   #   - `status_monitor_grace_seconds` [Integer] warm-up window at session start
   #     during which novel lines are learned silently (default 60; 0 disables)

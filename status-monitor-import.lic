@@ -60,9 +60,9 @@ module StatusMonitorImport
   def self.open_database(db_path = default_db_path)
     FileUtils.mkdir_p(File.dirname(db_path))
     db = SQLite3::Database.new(db_path)
-    # Wait up to 5s on a locked db so a concurrent writer (e.g. a running
-    # status-monitor writing to the same per-character db) doesn't raise
-    # SQLITE_BUSY on transient contention.
+    # Wait up to 5s on a locked db so a concurrent writer (any running
+    # status-monitor, all of which share this installation-wide db) doesn't
+    # raise SQLITE_BUSY on transient contention.
     db.busy_timeout = 5000
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA synchronous=NORMAL')
@@ -200,9 +200,9 @@ module StatusMonitorImport
   #
   # Lich names per-character log directories "<GAMECODE>-<Character>", e.g.
   # DR-Mahtra (prime), DRT-Mahtra (test), DRX-Mahtra (platinum), GSIV-Mahtra.
-  # The live seen-messages database is scoped by character only (not by
-  # instance), so the corpus already mixes instances; import all of them by
-  # globbing every "*-<Character>" directory rather than hardcoding "DR-".
+  # The live seen-messages database is installation-wide (shared by every
+  # character and instance), so the corpus already mixes instances; import all
+  # of them by globbing every "*-<Character>" directory rather than hardcoding "DR-".
   #
   # @param character_name [String] character name
   # @return [Array<String>] sorted list of log file paths

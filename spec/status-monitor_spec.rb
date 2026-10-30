@@ -586,9 +586,6 @@ RSpec.describe StatusMonitor::Monitor do
   let(:tmpdir) { Dir.mktmpdir('status-monitor-test') }
   let(:settings) do
     OpenStruct.new(
-      unique_line_threshold: 3,
-      line_frequency_threshold: 5,
-      line_similarity_percentage: 80,
       status_monitor_respond: false,
       quit_on_status_warning: false,
       status_monitor_grace_seconds: 0, # disable warm-up grace so alert behavior is testable
