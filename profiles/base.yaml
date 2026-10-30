@@ -3041,6 +3041,10 @@ task_copper_floor: 20000
 # Setting for taskmaster - copper (Kronars) to withdraw up to when below task_copper_floor.
 # A value below task_copper_floor is raised to the floor.
 task_copper_target: 110000
+# Setting for taskmaster - town scripts such as sew and restock treat as your hometown while
+# a task runs (e.g. Crossing for Hollow Eve); your hometown is put back when taskmaster stops.
+# Empty leaves hometown alone.
+task_hometown:
 
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.

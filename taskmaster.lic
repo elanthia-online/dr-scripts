@@ -14,6 +14,7 @@
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
   task_copper_target: 110000
+  task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
    ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
@@ -85,11 +86,50 @@ class TaskMaster
     @cooldown_poll = cooldown_poll_seconds
     configure_copper
     @before_scripts = Array(@settings.task_before_scripts)
+    @task_hometown = @settings.task_hometown
 
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
     UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
+  end
+
+  # Makes task_hometown the hometown every script in this session sees
+  # (sew, restock, ...) while taskmaster runs, through dependency's
+  # shift_hometown, which lich-5 applies to hometown in get_settings. The
+  # previous override, if another script set one, is kept so that
+  # restore_hometown can put it back when taskmaster stops. Does nothing when
+  # task_hometown is unset.
+  #
+  # @return [void]
+  # @note $HOMETOWN is global to the Lich session, so background scripts
+  #   that read settings while a task runs see the same town.
+  def shift_to_task_hometown
+    town = @task_hometown.to_s.strip
+    return if town.empty?
+
+    TaskMaster.saved_hometown = { value: $HOMETOWN }
+    shift_hometown(town)
+  end
+
+  class << self
+    # The hometown override in place before shift_to_task_hometown, wrapped
+    # in a Hash so a nil override can be told apart from "nothing saved".
+    #
+    # @return [Hash{Symbol => String, nil}, nil]
+    attr_accessor :saved_hometown
+
+    # Puts back the hometown override taskmaster replaced, from before_dying,
+    # which also runs on exit and when the script is killed.
+    #
+    # @return [void]
+    def restore_hometown
+      return unless saved_hometown
+
+      previous = saved_hometown[:value]
+      previous ? shift_hometown(previous) : clear_hometown
+      self.saved_hometown = nil
+    end
   end
 
   # Runs the mode the arguments ask for. The one-shot modes exit; cycle and
@@ -101,6 +141,7 @@ class TaskMaster
   # @raise [SystemExit] after the one-shot modes, marathon and finish, or
   #   from run_tasks
   def run(args = parse_args(ARG_DEFINITIONS))
+    shift_to_task_hometown
     @npc = args.npc
     @marathon = args.marathon
     if args.find
@@ -1260,6 +1301,7 @@ class TaskMaster
 end
 
 before_dying do
+  TaskMaster.restore_hometown
   Flags.delete("wrap-up")
   Flags.delete("thieving-fog")
 end

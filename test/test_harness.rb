@@ -1083,6 +1083,15 @@ module Harness
 
   def setpriority(*); end
 
+  # dependency.lic's hometown override, which lich-5 applies to get_settings.
+  def shift_hometown(town_name)
+    $HOMETOWN = town_name
+  end
+
+  def clear_hometown
+    $HOMETOWN = nil
+  end
+
   def register_slackbot(username); end
 
   def send_slackbot_message(message); end
