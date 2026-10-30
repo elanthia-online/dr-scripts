@@ -6280,7 +6280,7 @@ RSpec.describe LootProcess do
     {
       'container-full'  => ["There isn't any more room in the eddy for that.", "There isn't any more room in my bag"],
       'pouch-full'      => ['You think the soft gem pouch is too full to fit another gem into.', 'You think the pouch is too full to fit another gem into'],
-      'pouch-needs-tie' => ["You've already got a wealth of gems in there!  You'd better tie it up before putting more gems inside.", "You'd better tie it up before putting more in"]
+      'pouch-needs-tie' => ["You've already got a wealth of gems in there!  You'd better tie it up before putting more gems inside.", "You've already got a wealth of gems in there!  You'd better tie it up before putting more gems inside."]
     }.each do |key, (game_line, spoken)|
       it "sets #{key} on the game's line" do
         deliver(game_line)
@@ -6303,7 +6303,7 @@ RSpec.describe LootProcess do
 
     it 'does not untie and re-stow when another player speaks the pouch-needs-tie line' do
       stow_with(build_loot_process, 'diamond', stow_lines: ['You put your diamond in your black pouch.'],
-                                               heard: player_shapes("You'd better tie it up before putting more in"))
+                                               heard: player_shapes("You've already got a wealth of gems in there!  You'd better tie it up before putting more gems inside."))
       expect(DRCI).not_to have_received(:tie_gem_pouch?)
       expect(sent).to eq(['stow diamond'])
     end
