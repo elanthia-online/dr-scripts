@@ -475,9 +475,10 @@ RSpec.describe TaskMaster do
     end
 
     describe 'marathon' do
-      # Marathon never clears the previous task's flags.
+      # Marathon never clears the previous task's flags. The instructions are
+      # thrown away by complete_task once the task is handed in.
       let(:marathon_task) do
-        [[:copper, nil, nil], :haste, :before, :get_task, [:check_stock, 8, 'burlap', 'cloth'], [:tailor, 'rope', 2, 'cloth', 'burlap'], [:dispose, 'rope instructions', 16_144], [:complete, 'rope', 2]]
+        [[:copper, nil, nil], :haste, :before, :get_task, [:check_stock, 8, 'burlap', 'cloth'], [:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2]]
       end
 
       it 'runs Zasele tasks after a restock, whatever taskmaster is named, and exits at the wrap-up call' do
@@ -490,7 +491,7 @@ RSpec.describe TaskMaster do
         events = start(npc: 'zasele', marathon: true, stock_ok: false, wrap_up_after: 1)
         expect(events).to eq([:reconcile, :restock, *marathon_task.first(4), [:check_stock, 8, 'burlap', 'cloth'],
                               [:repair, ['scissors'], outfitting_belt], :restock, [:find_npc, 21, 'zasele'],
-                              [:tailor, 'rope', 2, 'cloth', 'burlap'], [:dispose, 'rope instructions', 16_144], [:complete, 'rope', 2], :exit])
+                              [:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2], :exit])
       end
 
       it 'skips the repair with task_no_repair' do
@@ -905,6 +906,17 @@ RSpec.describe TaskMaster do
 
           expect(tm.get_task).to eq(['rope', 5, 4, 'cloth', 'burlap'])
         end
+
+        it 'starts with no replacement request on record from an earlier task' do
+          tm = reader
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope', 'poltu' => 'dagger' }
+          offers = ['You may accept by typing ACCEPT TASK']
+          game('ask zasele for task' => ->(*) { offers.shift || raise('asked again after the offer') }, 'accept task' => 'You can check your progress with the TASK verb',
+               'task' => journal('a coil of reinforced cloth rope', 5, 0), 'read my rope instructions' => rope_materials)
+          allow(DRCC).to receive(:stow_crafting_item)
+          tm.get_task
+          expect(UserVars.taskmaster_replacements).to eq('poltu' => 'dagger')
+        end
       end
 
       describe 'every reply to ASK FOR TASK' do
@@ -1176,6 +1188,32 @@ RSpec.describe TaskMaster do
         events
       end
 
+      describe 'asking for replacement instructions' do
+        it 'asks once when the carried set is used up, and remembers it for this task' do
+          events = resume(owed: 3, uses: nil)
+          expect(events).to include(:asked_for_instructions)
+          expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+        end
+
+        it 'stops instead of asking a second time for the same task' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          events = resume(owed: 3, uses: nil)
+          expect(events).not_to include(:asked_for_instructions)
+          expect(events).not_to include([:make, 'rope', 3])
+          expect(DRC).to have_received(:message).with(/Already asked zasele for rope instructions/)
+        end
+
+        it 'still asks when the earlier request was for a different item' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'netting' }
+          expect(resume(owed: 3, uses: nil)).to include(:asked_for_instructions)
+        end
+
+        it 'does not ask at all while the carried set has a use for every item owed' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          expect(resume(owed: 3, uses: 4)).to include([:make, 'rope', 3])
+        end
+      end
+
       it 'refreshes haste before making the items still owed' do
         events = resume(owed: 3, uses: 4)
         expect(events.index(:haste)).to be < events.index([:make, 'rope', 3])
@@ -1193,6 +1231,25 @@ RSpec.describe TaskMaster do
 
       it 'finishes the task from the bag alone when enough are banked, buying nothing' do
         expect(resume(owed: 3, banked: 3, uses: 4)).to eq([:sack])
+      end
+
+      # Regression: trash no longer throws the instructions away, so a task the
+      # banked items finish must close out like complete_task does, or the set
+      # stays in the bag beside the next task's and the replacement record stays.
+      it 'throws the instructions away and clears the replacement record when the banked items finish the task' do
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope', 'poltu' => 'dagger' }
+        allow(DRCT).to receive(:dispose)
+        resume(owed: 3, banked: 3, uses: 4)
+        expect(DRCT).to have_received(:dispose).with('rope instructions', nil, nil, nil)
+        expect(UserVars.taskmaster_replacements).to eq('poltu' => 'dagger')
+      end
+
+      it 'keeps the instructions and the replacement record when the banked items leave some owed' do
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+        allow(DRCT).to receive(:dispose)
+        resume(owed: 5, banked: 2, uses: 4)
+        expect(DRCT).not_to have_received(:dispose)
+        expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
       end
 
       it 'keeps the carried instructions when they have a use for every item owed' do
@@ -1257,6 +1314,26 @@ RSpec.describe TaskMaster do
   end
 
   describe 'making the items' do
+    describe '#trash' do
+      def trasher(remainder:)
+        tm = build(remainder: remainder)
+        disposed = []
+        allow(DRCT).to receive(:dispose) { |name, *_| disposed << name }
+        gets = ['You get some burlap cloth from inside your duffel bag.']
+        allow(DRC).to receive(:bput) { |*| gets.shift || 'What were you referring to?' }
+        tm.trash('rope', 'cloth', 'burlap')
+        disposed
+      end
+
+      it 'leaves the instructions alone, so a task that is not handed in yet keeps them' do
+        expect(trasher(remainder: false)).to eq([])
+      end
+
+      it 'still throws away leftover stock' do
+        expect(trasher(remainder: true)).to eq(['burlap cloth'])
+      end
+    end
+
     describe '#bradyn lumber tasks' do
       # Runs the real lumber branch down to the Rangu hand-off and reports which
       # tools were fetched for repair. Buying, shaping and disposal are not under
@@ -1505,6 +1582,27 @@ RSpec.describe TaskMaster do
         giving([missed_give, missed_give, missed_give, missed_give, more_needed(1), missed_give, missed_give, missed_give, missed_give, sack_handed])
         expect { tm.complete_task('rope', 2) }.not_to raise_error
         expect(tm).to have_received(:sort_sack)
+      end
+
+      it 'throws the instructions away in the worn trash can once the task is handed in, and clears the replacement record' do
+        tm = finisher
+        tm.instance_variable_set(:@worn_trashcan, 'bucket')
+        tm.instance_variable_set(:@worn_trashcan_verb, 'tap')
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+        allow(DRCT).to receive(:dispose)
+        giving([more_needed(1), sack_handed])
+        tm.complete_task('rope', 2)
+        expect(DRCT).to have_received(:dispose).with('rope instructions', nil, 'bucket', 'tap')
+        expect(UserVars.taskmaster_replacements).to eq({})
+      end
+
+      it 'keeps the instructions when the items run out before the task is done, for the resume' do
+        tm = finisher
+        allow(DRCT).to receive(:dispose)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        allow(DRCI).to receive(:get_item?).and_return(false)
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+        expect(DRCT).not_to have_received(:dispose)
       end
 
       it 'exits when the bag runs out of items' do
