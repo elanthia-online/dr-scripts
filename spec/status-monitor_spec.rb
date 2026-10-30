@@ -221,9 +221,109 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(s.in_corpus?('good')).to be true
     end
 
+    # The old monitor keyed lines unstripped; the live path strips before every
+    # lookup, so an unstripped migrated key would never match.
+    it 'strips legacy .dat keys so indented lines match the stripped live lookup' do
+      keys = { '  Delphine: Healthy.' => true, ' Turtle ( roisaen) ' => true, '   ' => true, 'already clean' => true }
+      File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump(keys, f) }
+      expect(store.count).to eq(3)
+      expect(store.in_corpus?('Delphine: Healthy.')).to be true
+      expect(store.in_corpus?('Turtle ( roisaen)')).to be true
+      expect(store.in_corpus?('already clean')).to be true
+    end
+
+    it 'strips legacy .db rows, keeping their source tag' do
+      legacy = SQLite3::Database.new('seen_messages_Alice.db')
+      legacy.execute('CREATE TABLE seen_messages (line_text TEXT PRIMARY KEY, first_seen_at DATETIME, source TEXT)')
+      legacy.execute("INSERT INTO seen_messages (line_text, source) VALUES ('  indented db line', 'import'), ('  ', 'live')")
+      legacy.close
+      expect(store.count).to eq(1)
+      expect(store.in_corpus?('indented db line')).to be true
+      db = SQLite3::Database.new(db_path)
+      expect(db.get_first_value('SELECT source FROM seen_messages')).to eq('import')
+      db.close
+    end
+
+    [SQLite3::FullException, SQLite3::BusyException].each do |error|
+      it "leaves a legacy file in place to retry next start when the merge raises #{error}" do
+        File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump({ 'alice line' => true }, f) }
+        allow_any_instance_of(SQLite3::Database).to receive(:transaction).and_raise(error, 'merge failed')
+        expect { described_class.new(db_path) }.not_to raise_error
+        expect(File.exist?('seen_messages_Alice.dat')).to be true
+        expect(File.exist?('seen_messages_Alice.dat.migrated')).to be false
+        expect(displayed_messages.any? { |m| m.include?('could not merge seen_messages_Alice.dat') }).to be true
+      end
+    end
+
+    it 'counts each merged entry once when the merge is retried after contention' do
+      File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump({ 'one' => true, 'two' => true }, f) }
+      # Contention on the second INSERT rolls the first back, then the merge retries.
+      inserts = 0
+      allow_any_instance_of(SQLite3::Database).to receive(:execute).and_wrap_original do |original, sql, *args|
+        if sql.start_with?('INSERT')
+          inserts += 1
+          raise SQLite3::BusyException, 'database is locked' if inserts == 2
+        end
+
+        original.call(sql, *args)
+      end
+      expect(store.count).to eq(2)
+      expect(displayed_messages.any? { |m| m.include?('merged 2 entries') }).to be true
+    end
+
     it 'does nothing when no legacy files are present' do
       expect(store.count).to eq(0)
       expect(displayed_messages.none? { |m| m.include?('merged') }).to be true
+    end
+  end
+
+  # Any SQLite error is logged and ridden out, never raised into process.
+  describe 'DB errors' do
+    let(:db) { store.instance_variable_get(:@db) }
+
+    it 'fails open (novel) when a lookup hits a non-contention error' do
+      allow(db).to receive(:get_first_value).and_raise(SQLite3::CorruptException, 'database disk image is malformed')
+      result = nil
+      expect { result = store.in_corpus?('some line') }.not_to raise_error
+      expect(result).to be false
+    end
+
+    [SQLite3::FullException, SQLite3::ReadOnlyException, SQLite3::IOException].each do |error|
+      it "does not raise from record on #{error}" do
+        allow(db).to receive(:execute).and_raise(error, 'write failed')
+        expect { store.record('some line') }.not_to raise_error
+      end
+    end
+
+    it 'rides out transient contention and returns the real answer' do
+      store.record('known line')
+      fresh = described_class.new(db_path) # no in-process cache
+      fresh_db = fresh.instance_variable_get(:@db)
+      calls = 0
+      allow(fresh_db).to receive(:get_first_value).and_wrap_original do |original, *args|
+        calls += 1
+        raise SQLite3::BusyException, 'database is locked' if calls <= 2
+
+        original.call(*args)
+      end
+      expect(fresh.in_corpus?('known line')).to be true
+      expect(calls).to eq(3)
+    end
+
+    it 'gives up after BUSY_RETRIES and fails open without raising' do
+      allow(db).to receive(:get_first_value).and_raise(SQLite3::BusyException, 'database is locked')
+      expect(store.in_corpus?('some line')).to be false
+      expect(db).to have_received(:get_first_value).exactly(described_class::BUSY_RETRIES + 1).times
+    end
+
+    it 'echoes a persistent error at most once per DB_ERROR_ECHO_SECONDS' do
+      allow(db).to receive(:get_first_value).and_raise(SQLite3::IOException, 'disk I/O error')
+      start = Time.now
+      allow(Time).to receive(:now).and_return(start)
+      3.times { |i| store.in_corpus?("line #{i}") }
+      allow(Time).to receive(:now).and_return(start + described_class::DB_ERROR_ECHO_SECONDS + 1)
+      store.in_corpus?('later line')
+      expect(displayed_messages.count { |m| m.include?('corpus error (SQLite3::IOException') }).to eq(2)
     end
   end
 
@@ -621,6 +721,14 @@ RSpec.describe StatusMonitor::Monitor do
     monitor = nil
     expect { monitor = build_monitor }.not_to raise_error
     expect(monitor.process(+'a wholly ordinary novel line')).to be true
+  end
+
+  it 'keeps processing (fails open) when the corpus raises a non-contention error' do
+    db = store.instance_variable_get(:@db)
+    allow(db).to receive(:get_first_value).and_raise(SQLite3::CorruptException, 'database disk image is malformed')
+    allow(db).to receive(:execute).and_raise(SQLite3::CorruptException, 'database disk image is malformed')
+    monitor = build_monitor
+    expect(monitor.process(+'a novel line on a broken corpus')).to be true
   end
 
   describe 'novelty gating (novel-alone)' do

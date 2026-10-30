@@ -55,6 +55,8 @@ module StatusMonitor
     # Soft cap on the in-process known-line cache before it is cleared (it is
     # only a read optimisation; clearing just forces DB reads again).
     KNOWN_CACHE_CAP = 50_000
+    # Minimum seconds between echoes of a swallowed DB error.
+    DB_ERROR_ECHO_SECONDS = 60
 
     # Installation-wide corpus path, shared by every character and the importer.
     # @return [String] absolute path to the shared seen_messages database
@@ -125,20 +127,44 @@ module StatusMonitor
     end
 
     # Runs a DB operation, retrying past the busy_timeout on contention and
-    # logging-and-continuing (returning nil) rather than raising into process.
-    def with_retry
+    # logging-and-continuing (returning nil) on ANY SQLite error rather than
+    # raising into process: a full disk, read-only file, I/O error or corrupt
+    # page degrades to fail-open alerting instead of killing the monitor.
+    def with_retry(&block)
+      retrying(&block)
+    rescue SQLite3::Exception => e
+      report_db_error(e)
+      nil
+    end
+
+    # Runs a DB operation, retrying on busy/locked contention. Re-raises once
+    # the retries are exhausted, and at once for any other error. Migration
+    # calls this directly so a failed merge leaves the legacy file in place to
+    # retry on the next start instead of renaming it as merged.
+    def retrying
       tries = 0
       begin
         yield
-      rescue SQLite3::BusyException, SQLite3::LockedException => e
+      rescue SQLite3::BusyException, SQLite3::LockedException
         tries += 1
-        if tries <= BUSY_RETRIES
-          pause(0.05 * tries)
-          retry
-        end
-        echo "status-monitor: corpus busy after #{tries} tries (#{e.message}); continuing."
-        nil
+        raise if tries > BUSY_RETRIES
+
+        pause(0.05 * tries)
+        retry
       end
+    end
+
+    # Echoes a DB error at most once per DB_ERROR_ECHO_SECONDS: a persistent
+    # failure is hit on every line, and must not flood the game window.
+    #
+    # @param error [SQLite3::Exception] the error that was swallowed
+    # @return [void]
+    def report_db_error(error)
+      now = Time.now
+      return if @last_db_error_at && now - @last_db_error_at < DB_ERROR_ECHO_SECONDS
+
+      @last_db_error_at = now
+      echo "status-monitor: corpus error (#{error.class}: #{error.message}); continuing."
     end
 
     # Schema must stay in sync with StatusMonitorImport.open_database.
@@ -186,7 +212,9 @@ module StatusMonitor
 
     # Merges any legacy per-character corpora (Marshal .dat and per-character
     # seen_messages_<Char>.db) found in the working directory into the shared
-    # store, then renames each to .migrated so it runs only once.
+    # store, then renames each to .migrated so it runs only once. Keys are
+    # stripped as they are merged: the old monitor stored them unstripped, but
+    # the live path strips before every lookup, so an unstripped key never matches.
     #
     # @return [void]
     def migrate_legacy
@@ -202,19 +230,14 @@ module StatusMonitor
     # @return [Integer] entries merged
     def migrate_dat(path)
       data = File.open(path, 'rb') { |f| Marshal.load(f) }
-      count = 0
-      with_retry do
-        @db.transaction do
-          data.each_key do |line|
-            insert_line(line.to_s, 'migration')
-            count += 1
-          end
-        end
+      lines = data.keys.map { |line| line.to_s.strip }.reject(&:empty?).uniq
+      retrying do
+        @db.transaction { lines.each { |line| insert_line(line, 'migration') } }
       end
       File.rename(path, "#{path}.migrated")
       backup = "backup/#{File.basename(path, '.dat')}.bak"
       File.rename(backup, "#{backup}.migrated") if File.exist?(backup)
-      count
+      lines.size
     rescue => e
       echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
       0
@@ -224,15 +247,20 @@ module StatusMonitor
     # @return [Integer] entries merged
     def migrate_db(path)
       src = SQLite3::Database.new(path)
-      rows = src.execute('SELECT line_text, source FROM seen_messages')
-      src.close
-      with_retry do
-        @db.transaction do
-          rows.each { |line, source| insert_line(line, source || 'migration') }
-        end
+      rows = begin
+        src.execute('SELECT line_text, source FROM seen_messages')
+      ensure
+        src.close
+      end
+      entries = rows.filter_map do |line, source|
+        stripped = line.to_s.strip
+        [stripped, source || 'migration'] unless stripped.empty?
+      end
+      retrying do
+        @db.transaction { entries.each { |line, source| insert_line(line, source) } }
       end
       File.rename(path, "#{path}.migrated")
-      rows.size
+      entries.size
     rescue => e
       echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
       0
