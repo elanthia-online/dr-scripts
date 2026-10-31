@@ -60,6 +60,32 @@ load_lic_class('forge.lic', 'Forge')
 
 RSpec.describe Forge do
   describe 'class constants' do
+    # smith's 'here' runs forge with 'skip here'. On main, forge rejected that
+    # ("DON'T MATCH ANY PATTERN"), so every pattern smith uses must accept it.
+    describe 'ARG_DEFINITIONS' do
+      let(:patterns) { Forge::ARG_DEFINITIONS }
+      let(:here_arg) { ->(pattern) { pattern.find { |arg| arg[:name] == 'here' } } }
+
+      it "accepts an optional 'here' in the item, instructions and enhancement patterns" do
+        patterns.first(3).each do |pattern|
+          expect(here_arg[pattern]).to include(optional: true)
+          expect('here').to match(here_arg[pattern][:regex])
+        end
+      end
+
+      it "matches only the word 'here', not a recipe noun that contains it" do
+        here = here_arg[patterns.first][:regex]
+
+        expect(%w[there hereby]).to all(satisfy { |word| word !~ here })
+      end
+
+      it "keeps 'skip' optional in the same patterns" do
+        patterns.first(3).each do |pattern|
+          expect(pattern.find { |arg| arg[:name] == 'skip' }).to include(optional: true)
+        end
+      end
+    end
+
     it 'defines RENTAL_EXPIRE_PATTERN with named capture' do
       pattern = Forge::RENTAL_EXPIRE_PATTERN
       expect(pattern).to be_a(Regexp)
@@ -944,6 +970,48 @@ RSpec.describe Forge do
         expect(Lich::Messaging).to receive(:msg).with('bold', /No door found/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Falling back/)
         forge_instance.send(:go_to_private_forge)
+      end
+    end
+
+    # 'here' keeps forge in the current room (a rented forge you are already
+    # in, or a forge wand) even with use_private_forge on. smith's 'here'
+    # passes it; before, forge walked to the private forge regardless.
+    describe '#execute_workflow private-forge walk' do
+      before do
+        forge_instance.instance_variable_set(:@use_private_forge, true)
+        allow(forge_instance).to receive(:go_to_private_forge)
+        allow(forge_instance).to receive(:check_rental_status)
+        allow(forge_instance).to receive(:check_all_consumables)
+        allow(forge_instance).to receive(:set_defaults)
+        allow(forge_instance).to receive(:prep)
+        allow(forge_instance).to receive(:work)
+      end
+
+      it 'walks to the private forge by default' do
+        forge_instance.send(:execute_workflow, OpenStruct.new)
+
+        expect(forge_instance).to have_received(:go_to_private_forge)
+      end
+
+      it "stays in the current room with 'here', and still checks the rental" do
+        forge_instance.send(:execute_workflow, OpenStruct.new(here: 'here'))
+
+        expect(forge_instance).not_to have_received(:go_to_private_forge)
+        expect(forge_instance).to have_received(:check_rental_status)
+      end
+
+      it 'does not walk when resuming' do
+        forge_instance.send(:execute_workflow, OpenStruct.new(resume: 'resume'))
+
+        expect(forge_instance).not_to have_received(:go_to_private_forge)
+      end
+
+      it 'does not walk when use_private_forge is off' do
+        forge_instance.instance_variable_set(:@use_private_forge, false)
+
+        forge_instance.send(:execute_workflow, OpenStruct.new)
+
+        expect(forge_instance).not_to have_received(:go_to_private_forge)
       end
     end
 

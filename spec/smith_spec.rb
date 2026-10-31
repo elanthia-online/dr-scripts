@@ -180,6 +180,23 @@ RSpec.describe Smith do
       expect(DRCT).not_to have_received(:dispose)
     end
 
+    it "tells every forge run to skip restocking and stay in the room with 'here'" do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      instance.smith('steel', discipline, recipe, [], nil, nil, 'temper', nil, 'balance', nil, nil, 'here')
+
+      expect(forge_runs).to all(include('skip', 'here'))
+      expect(forge_runs.size).to eq(3)
+    end
+
+    it 'passes neither skip nor here without it' do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      run_smith(instance)
+
+      expect(forge_runs.flatten).not_to include('skip', 'here', nil)
+    end
+
     it 'finds the finished item in the left hand too' do
       instance = build_with_forge_outcomes(nil)
       allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
