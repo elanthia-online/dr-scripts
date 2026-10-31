@@ -100,7 +100,10 @@ class Smith
   # finished, because the item was already in hand when it started. A recipe
   # for a tool also listed in forging_tools (a ball-peen hammer, with
   # 'ball-peen hammer' there) can't be told from that tool, so smith stops
-  # after the item run and says so, even when forge made it.
+  # after the item run and says so, even when forge made it. Workorders for
+  # pliers and the metal rod hit this on every good run when forging_tools
+  # lists bare 'pliers' or 'rod'; those recipes have no parts, and workorders
+  # passes no stamp, buy or enhancement, so only the message is wrong.
   #
   # @param noun [String] the recipe's item noun
   # @param args [Array<String, nil>] forge.lic arguments
