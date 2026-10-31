@@ -14,6 +14,9 @@
 # With use_private_forge, forge.lic walks to and rents the private forge itself.
 # smith only finds a public anvil, and only when that setting is off.
 #
+# Entry points are #initialize and #smith. The step methods stay public so
+# the spec can drive each one on its own; only setup is private.
+#
 # @example Make a steel morning star, then temper and balance it
 #   ;smith steel "metal morning star" temper balance
 # @example Buy a steel ingot that fits, then come back and forge where you stood
@@ -136,7 +139,7 @@ class Smith
   # passes no stamp, buy or enhancement, so only the message is wrong.
   #
   # @param noun [String] the recipe's item noun
-  # @param args [Array<String>] forge.lic arguments
+  # @param args [Array<String, Integer>] forge.lic arguments (the recipe chapter is an Integer)
   # @return [Boolean] true when the finished item is in hand
   def forge_finished?(noun, args)
     DRC.wait_for_script_to_complete('forge', args)
