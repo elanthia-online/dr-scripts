@@ -39,6 +39,8 @@ RSpec.describe Smith do
   # volume 11, one haft
   let(:morning_star) { SmithSpecData.recipe('a metal morning star') }
   let(:forge_runs) { [] }
+  let(:bag_items) { %w[stamp oil] }
+  let(:belt) { { 'name' => 'forging belt', 'items' => %w[hammer tongs] } }
 
   before do
     $test_data[:crafting] = Marshal.load(Marshal.dump(SmithSpecData.crafting))
@@ -60,6 +62,9 @@ RSpec.describe Smith do
     instance.instance_variable_set(:@hometown, 'Shard')
     instance.instance_variable_set(:@discipline, shard)
     instance.instance_variable_set(:@bag, 'duffel bag')
+    # Distinct values, so a spec can tell bag_items from the belt.
+    instance.instance_variable_set(:@bag_items, bag_items)
+    instance.instance_variable_set(:@belt, belt)
     instance.instance_variable_set(:@use_private_forge, use_private_forge)
     instance
   end
@@ -99,9 +104,13 @@ RSpec.describe Smith do
     it 'never starts forge.lic' do
       expect(forge_runs).to be_empty
     end
+  end
 
-    it 'trashes nothing' do
-      expect(DRCT).not_to have_received(:dispose)
+  describe 'the shipped part shops' do
+    it 'sell every part of every smithing recipe, and the reinforce part, in Shard' do
+      parts = SmithSpecData.smithing_recipes.flat_map { |recipe| recipe['part'] || [] }.uniq + [Smith::REINFORCE_PART]
+
+      expect(parts.reject { |part| SmithSpecData.crafting.dig('recipe_parts', part, 'Shard') }).to be_empty
     end
   end
 
@@ -196,7 +205,9 @@ RSpec.describe Smith do
 
       expect(DRCC).not_to have_received(:find_anvil)
       expect(DRCC).not_to have_received(:go_to_private_forge)
-      expect(DRC).not_to have_received(:bput).with('read notice', any_args)
+      # Without skip/here, forge.lic does the walk and the rental itself.
+      expect(forge_runs.size).to eq(1)
+      expect(forge_runs.first).not_to include('skip', 'here')
     end
 
     it "stays in the room with 'here': no anvil search, no walking, no parts, and it forges" do
@@ -243,7 +254,7 @@ RSpec.describe Smith do
 
       instance.smith(smith_args, morning_star)
 
-      expect(calls).to eq([[:oil, 'oil', shard['finisher-room'], shard['finisher-number'], 'duffel bag', nil, nil], ['buff'], ['forge']])
+      expect(calls).to eq([[:oil, 'oil', shard['finisher-room'], shard['finisher-number'], 'duffel bag', bag_items, belt], ['buff'], ['forge']])
     end
   end
 
@@ -295,7 +306,7 @@ RSpec.describe Smith do
 
       instance.smith(smith_args(reinforce: 'reinforce', temper: 'temper', lighten: 'lighten', hone: 'hone', balance: 'balance'), morning_star)
 
-      expect(forge_runs.drop(1).map(&:first)).to eq(Smith::ENHANCEMENTS)
+      expect(forge_runs.drop(1).map(&:first)).to eq(%w[temper hone balance lighten reinforce])
     end
 
     context 'when the item run fails' do
@@ -304,10 +315,9 @@ RSpec.describe Smith do
         make_star_with_everything
       end
 
-      it 'stops after that run, without stamping, trashing or reporting a leftover' do
+      it 'stops after that run, without stamping or reporting a leftover' do
         expect(forge_runs.size).to eq(1)
         expect(instance).not_to have_received(:stamp_item)
-        expect(DRCT).not_to have_received(:dispose)
         expect(Lich::Messaging).not_to have_received(:msg).with('plain', /left over/)
       end
 
@@ -322,15 +332,27 @@ RSpec.describe Smith do
       make_star_with_everything
 
       expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper])
-      expect(DRCT).not_to have_received(:dispose)
     end
 
-    it 'trashes nothing: forge.lic uses the parts, and a bought ingot leftover is kept' do
-      forge_runs_end_holding('steel morning star', 'steel morning star', 'steel morning star')
+    # Regression guards: smith no longer trashes anything (forge.lic uses the
+    # parts, and a bought ingot's leftover is kept). Its old trash step threw
+    # parts away even after a failed run.
+    describe 'the removed trash step' do
+      it 'stays removed after a finished run' do
+        forge_runs_end_holding('steel morning star', 'steel morning star', 'steel morning star')
 
-      make_star_with_everything
+        make_star_with_everything
 
-      expect(DRCT).not_to have_received(:dispose)
+        expect(DRCT).not_to have_received(:dispose)
+      end
+
+      it 'stays removed after a failed run' do
+        forge_runs_end_holding(nil)
+
+        make_star_with_everything
+
+        expect(DRCT).not_to have_received(:dispose)
+      end
     end
   end
 
@@ -408,7 +430,7 @@ RSpec.describe Smith do
     it "adds a leather strip for reinforce without changing the recipe's part list" do
       parts = build_smith.parts_for(morning_star, smith_args(reinforce: 'reinforce'))
 
-      expect(parts).to eq(['haft', Smith::REINFORCE_PART])
+      expect(parts).to eq(['haft', 'leather strip'])
       expect(morning_star['part']).to eq(['haft'])
     end
 
@@ -521,7 +543,7 @@ RSpec.describe Smith do
       instance.buy_parts(['haft'])
 
       expect(DRCI).to have_received(:stow_hands).ordered
-      expect(DRCC).to have_received(:stow_crafting_item).with('haft', 'duffel bag', nil).ordered
+      expect(DRCC).to have_received(:stow_crafting_item).with('haft', 'duffel bag', belt).ordered
     end
 
     it 'reports failure and stops buying when a purchase leaves nothing in hand' do
@@ -622,7 +644,7 @@ RSpec.describe Smith do
 
         instance.buy_ingot({ 'stock-name' => 'steel', 'stock-number' => 13, 'stock-volume' => 50 })
 
-        expect(DRCC).to have_received(:stow_crafting_item).with('ingot', 'duffel bag', nil).ordered
+        expect(DRCC).to have_received(:stow_crafting_item).with('ingot', 'duffel bag', belt).ordered
         expect(DRCI).to have_received(:stow_hands).ordered
       end
 
@@ -784,9 +806,9 @@ RSpec.describe Smith do
     it 'marks the item with the stamp and puts the stamp away' do
       build_smith.stamp_item('star')
 
-      expect(DRCC).to have_received(:get_crafting_item).with('stamp', 'duffel bag', nil, nil).ordered
+      expect(DRCC).to have_received(:get_crafting_item).with('stamp', 'duffel bag', bag_items, belt).ordered
       expect(DRC).to have_received(:bput).with('mark my star with my stamp', 'carefully hammer the stamp', "already a maker's mark", any_args).ordered
-      expect(DRCC).to have_received(:stow_crafting_item).with('stamp', 'duffel bag', nil).ordered
+      expect(DRCC).to have_received(:stow_crafting_item).with('stamp', 'duffel bag', belt).ordered
     end
   end
 
