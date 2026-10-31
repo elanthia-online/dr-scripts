@@ -809,6 +809,44 @@ module Harness
     end
   end
 
+  # Mirrors lich-5's SessionVars (lib/sessionvars.rb): an in-memory store shared
+  # by the scripts of one session and never saved. Keys are strings, read either
+  # as SessionVars[:name] / SessionVars['name'] or SessionVars.name, and storing
+  # nil deletes the key, as in lich-5. _reset (called by reset_data before every
+  # example) clears it.
+  module SessionVars
+    @svars = {}
+
+    class << self
+      def _reset
+        @svars = {}
+      end
+
+      def [](name)
+        @svars[name.to_s]
+      end
+
+      def []=(name, val)
+        val.nil? ? @svars.delete(name.to_s) : @svars[name.to_s] = val
+      end
+
+      def list
+        @svars.dup
+      end
+
+      def method_missing(name, *args)
+        key = name.to_s
+        return self[key] unless key.end_with?('=')
+
+        self[key.chomp('=')] = args.first
+      end
+
+      def respond_to_missing?(_name, _include_private = false)
+        true
+      end
+    end
+  end
+
   # After tests run, we need to wipe out/reset
   # constants and other contextual data so that
   # each test doesn't interfere with the others.
@@ -866,6 +904,7 @@ module Harness
     Map._reset
     XMLData._reset
     UserVars._reset
+    SessionVars._reset
     Lich::DragonRealms::Creature._reset
   end
 
@@ -1322,6 +1361,8 @@ module Harness
       def convert_to_copper(amount, _denom = nil); amount.to_i; end
       def minimize_coins(*_args); []; end
       def deposit_coins(*_args); end
+      def convert_currency(*_args); end
+      def withdraw_exact_amount?(*_args); true; end
     end
   end
 
@@ -1385,6 +1426,7 @@ module Harness
       def shatter_regalia?(*_args); true; end
       def cast_spell(*_args); end
       def cast_spells(*_args); end
+      def do_buffs(*_args); end
       def check_discern(*_args); end
       def check_elemental_charge(*_args); end
       def check_to_harness(*_args); end

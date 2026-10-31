@@ -3152,3 +3152,25 @@ capture_critter_settings:
 # aesthene_lock_answers:
 #   - cloak
 aesthene_lock_answers: []
+
+#kiosk.lic settings
+kiosk_settings:
+  # The town whose bank holds the coins used to refill your kiosk. Must not be blank.
+  bank_town: Crossing
+  # Room number where you want your kiosk
+  cast_room: 4652
+  # What noun your kiosk uses (probably "kiosk" unless you've had it customized)
+  kiosk_noun: kiosk
+  # Markup % (Decimal or whole numbers accepted. Rounds down to nearest 5%)
+  markup: 0
+  # The maximum amount of copper kronar you'll load your kiosk with (probably 1000 plat, unless you can't afford it)
+  target_deposit: 10000000
+  # The remaining balance at which you'll add more money to your kiosk
+  minimum_refill: 5000000
+  # If your pouch amount is more than this, get the pouch
+  minimum_pouch_withdrawal: 5000000
+  # If your bundle amount is more than this, get the bundle.
+  minimum_bundle_withdrawal: 1000000
+  # Set to true and share the log if the script doesn't work correctly.
+  debug: false
+

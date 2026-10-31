@@ -1,0 +1,423 @@
+class Kiosk
+  def initialize
+    unless DRStats.trader?
+      DRC.message('**kiosk EXIT: Must be a Trader with the Prosperity in Absentia spell to run this!**')
+      exit
+    end
+
+    @settings = get_settings
+    @town_data = get_data('town')
+    @kiosk_settings = @settings.kiosk_settings || {}
+
+    if @kiosk_settings['bank_town'].to_s.strip.empty?
+      DRC.message("kiosk: kiosk_settings bank_town is required. Set it to the town whose bank holds the money used to refill your kiosk (e.g. Crossing).")
+      exit
+    end
+
+    # A kiosk_settings block in a character file replaces base.yaml's whole block
+    # rather than merging into it, so a partial block leaves these unset.
+    missing = %w[cast_room target_deposit minimum_refill minimum_pouch_withdrawal minimum_bundle_withdrawal].select { |key| @kiosk_settings[key].nil? }
+    unless missing.empty?
+      DRC.message("kiosk: kiosk_settings is missing #{missing.join(', ')}. A kiosk_settings block in your character file replaces the whole block from base.yaml, so copy every setting into it.")
+      exit
+    end
+
+    @debug = @kiosk_settings['debug']
+    @kiosk_room = @kiosk_settings['cast_room']
+    @kiosk_noun = @kiosk_settings['kiosk_noun'] || "kiosk" # Kiosks, including the noun, can be altered
+    @my_kiosk = nil # ordinal + noun
+    @tessera = @settings.tessera_noun
+    Flags.add('kiosk-desc', /, an? (.+?) unfolds from nothingness|You gesture at an? (.+?), which responds by briefly undulating|You sense your Pros?perity in Abst?entia spell within an? (.+), which/) # Watch for the long kiosk name, which is revealed on PRIA casts. Some messaging has had typos ("Properity in Abstentia")
+    @failed_attempt = false
+    echo @kiosk_settings.to_yaml if @debug
+
+    # Every exit path, not just a clean run, should leave the tessera put away.
+    before_dying do
+      Flags.delete('kiosk-desc')
+      DRCI.put_away_item?(@tessera) if DRCI.in_hands?(@tessera)
+    end
+
+    create_kiosk
+    report = gather_report
+    ensure_markup(report['markup'])
+    refill_kiosk(report['on_hand_amount'])
+    withdraw_kiosk(report['pouch_amount'], report['bundle_amount'])
+
+    DRCI.put_away_item?(@tessera)
+  end
+
+  # Rooms can have multiple kiosks. Kiosks can only be interacted with via ordinal + noun.
+  # As kiosks are created and destroyed, our kiosk's ordinal can change.
+  # The room description (DRRoom.room_objs) contains non-unique long names (eg, "heptagonally symmetrical crystalline kiosk"). Our kiosk's long name is revealed on cast.
+  # We reduce the RT-intensive search for our kiosk by limiting it to only the kiosks matching our long name.
+  # If the kiosk Item ID is ever revealed in the future, this can be massively simplified.
+  def identify_my_kiosk(force = false)
+    if @debug
+      echo "identify_my_kiosk: #{force}"
+      echo "SessionVars.kiosk_name: #{SessionVars.kiosk_name}"
+      echo "my_kiosk: #{@my_kiosk}"
+    end
+
+    return @my_kiosk if @my_kiosk && !force
+
+    create_kiosk unless DRSpells.active_spells['Prosperity in Absentia']
+
+    DRCT.walk_to(@kiosk_room)
+    if Flags['kiosk-desc']
+      match = Flags['kiosk-desc']
+      SessionVars.kiosk_name = match[1] || match[2] || match[3]
+      Flags.reset('kiosk-desc')
+    end
+
+    kiosk_search = SessionVars.kiosk_name || @kiosk_noun
+    # "spindly and acicular crystalline kiosk" gets mangled by the Lich room_obj parser.
+    # Rather than fix that, we'll drop everything to the left of the "and"
+    kiosk_search = kiosk_search.split(' and ', 2).last
+
+    echo "kiosk_search: #{kiosk_search}" if @debug
+    echo "room_objs: #{DRRoom.room_objs.inspect}" if @debug
+
+    kiosk_indices = DRRoom.room_objs.each_index.select { |i| DRRoom.room_objs[i].include?(@kiosk_noun) }
+    kiosks = kiosk_indices.each_with_index
+                          .select { |room_i, _ord_i| SessionVars.kiosk_name.nil? || DRRoom.room_objs[room_i] == kiosk_search }
+                          .map { |_room_i, ord_i| "#{$ORDINALS[ord_i]} #{@kiosk_noun}" }
+
+    echo "kiosks in room: #{kiosks}" if @debug
+
+    # RUB has no roundtime (STUDY does) and answers the ownership question.
+    # It toggles the payout mode between pouch and bundle, so rub again on our kiosk to restore it.
+    # Every candidate is probed, including a lone match, so a foreign kiosk is caught here
+    # and require_my_kiosk exits cleanly instead of the caller sending commands at it.
+    kiosks.find do |kiosk|
+      result = DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of')
+      next false unless result.start_with?('It is now set to pay out')
+
+      DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales')
+      true
+    end
+  end
+
+  # identify_my_kiosk, but not finding a kiosk is fatal. Otherwise callers send
+  # a bare "poke " / "rub ", or keep retrying against someone else's kiosk.
+  def require_my_kiosk(force = false)
+    kiosk = identify_my_kiosk(force)
+    return kiosk if kiosk
+
+    DRC.message("kiosk: Unable to identify my kiosk in room #{@kiosk_room}. Check cast_room, or release PRIA and rerun.")
+    exit
+  end
+
+  def create_kiosk
+    if @debug
+      echo "create_kiosk"
+      echo "PRIA: #{DRSpells.active_spells['Prosperity in Absentia']}"
+      echo "waggle: #{@settings.waggle_sets['kiosk']}"
+      echo "failed_attempt: #{@failed_attempt}"
+    end
+
+    return unless DRSpells.active_spells['Prosperity in Absentia'].nil? ||
+                  DRSpells.active_spells['Prosperity in Absentia'].to_i <= @settings.waggle_sets['kiosk']['Prosperity in Absentia']['recast'] ||
+                  @failed_attempt
+
+    DRCT.walk_to(@kiosk_room)
+    DRCI.get_item_if_not_held?(@tessera)
+
+    cast_type = DRSpells.active_spells['Prosperity in Absentia'].nil? ? 'new' : 'refresh'
+    if cast_type == 'new'
+      # A new kiosk has a new long name. If the flag misses its announcement,
+      # identify_my_kiosk then probes every kiosk rather than filtering on the old name.
+      @my_kiosk = nil
+      SessionVars.kiosk_name = nil
+    end
+    Flags.reset('kiosk-desc')
+    echo "cast_type: #{cast_type}" if @debug
+
+    DRCA.do_buffs(@settings, 'kiosk')
+    pause 0.5
+    fput('perceive self')
+    pause 0.5
+
+    if DRSpells.active_spells['Prosperity in Absentia'].nil?
+      DRC.message("kiosk: Unable to cast Prosperity in Absentia. Ensure that you have a 'kiosk' waggle defined containing PRIA, and that you can cast it reliably.")
+      exit
+    end
+  end
+
+  # The markup the YAML asks for: accepts .6 or 60, rounds down to a multiple of 5, clamps to -10..80.
+  def target_markup
+    target = @kiosk_settings['markup'].to_f
+    target *= 100 if target.abs < 1 # If the player provided .6 instead of 60, convert it
+    target = (target / 5.0).floor * 5 # Round down to a multiple of 5
+    target.clamp(-10, 80) # Must be between -10 and 80
+  end
+
+  # current_markup comes from the tessera report, so checking it costs no roundtime.
+  def ensure_markup(current_markup)
+    return unless @kiosk_settings['markup']
+
+    if current_markup.nil?
+      DRC.message("kiosk: Couldn't read the markup from the report, so I'm leaving it alone.")
+      return
+    end
+
+    target = target_markup
+    echo "ensure_markup: current=#{current_markup}, target=#{target}" if @debug
+    return if current_markup == target
+
+    DRCT.walk_to(@kiosk_room)
+    @my_kiosk ||= require_my_kiosk
+
+    until current_markup == target
+      verb = current_markup < target ? 'pull' : 'push'
+      result = DRC.bput("#{verb} #{@my_kiosk}", /set to -?\d+%/, 'As you are not the owner of a')
+
+      if result == 'As you are not the owner of a'
+        # Our ordinal shifted; re-find the kiosk and retry the same step.
+        @my_kiosk = require_my_kiosk(true)
+        next
+      end
+
+      if result.empty?
+        DRC.message("kiosk: #{@my_kiosk} didn't answer #{verb.upcase}, so I'm leaving the markup at #{current_markup}%.")
+        return
+      end
+
+      new_markup = result.match(/set to (-?\d+)%/)[1].to_i
+      # A cap short of the target repeats the same value, and a step bigger than
+      # 5 can overshoot and see-saw; either way, stop rather than loop.
+      if (new_markup - target).abs >= (current_markup - target).abs
+        DRC.message("kiosk: The markup went from #{current_markup}% to #{new_markup}% instead of toward #{target}%, so I'm leaving it at #{new_markup}%.")
+        return
+      end
+
+      current_markup = new_markup
+    end
+  end
+
+  def parse_coins(line)
+    echo "parse_coins: #{line}" if @debug
+    return 0 if line.nil? || line.include?('No ')
+
+    line.scan(/([\d,]+) (platinum|gold|silver|bronze|copper)/i).sum do |amount, denom|
+      DRCM.convert_to_copper(amount.delete(','), denom)
+    end
+  end
+
+  # The report lines, or [] when the reply didn't arrive in full. issue_command
+  # returns whatever it caught before its timeout, so a report without its end
+  # line is incomplete and would read missing holdings as zero.
+  def ask_for_report
+    waitrt?
+    report = Lich::Util.issue_command(
+      "ask my #{@tessera} about report",
+      /key sales data:$/,
+      /The floating data fades with a friendly chime/,
+      usexml: false
+    )
+    report.last.to_s.include?('The floating data fades with a friendly chime') ? report : []
+  end
+
+  def gather_report
+    echo "gather_report" if @debug
+    unless DRCI.get_item_if_not_held?(@tessera)
+      DRC.message("kiosk: Couldn't get your #{@tessera} in hand. Every kiosk command needs it.")
+      exit
+    end
+
+    # One slow or missed reply shouldn't cost a working kiosk, so ask again before releasing it.
+    report = ask_for_report
+    report = ask_for_report if report.empty?
+
+    if report.empty?
+      if @failed_attempt
+        DRC.message("kiosk: Unable to gather a report.")
+        exit
+      end
+      @failed_attempt = true
+      fput('release PRIA')
+      fput('perceive self')
+      create_kiosk
+      return gather_report
+    end
+
+    echo "report: #{report.inspect}" if @debug
+
+    # The session-purchases section also has "Kronars in pouches/bundles" lines
+    # ("No Kronars in pouches."), so take the last match: the holdings section.
+    on_hand_line = report.reverse.find { |line| line.include?('Kronars on hand') }
+    pouch_line = report.reverse.find { |line| line.include?('Kronars in pouches') }
+    bundle_line = report.reverse.find { |line| line.include?('Kronars in bundles') }
+    markup = report.join("\n")[/markup is set to (-?\d+)%/, 1]&.to_i
+
+    total_on_hand = parse_coins(on_hand_line)
+    total_pouches = parse_coins(pouch_line)
+    total_bundles = parse_coins(bundle_line)
+
+    echo "parsed: on_hand=#{total_on_hand}, pouches=#{total_pouches}, bundles=#{total_bundles}, markup=#{markup.inspect}" if @debug
+
+    return {
+      'on_hand_amount' => total_on_hand,
+      'pouch_amount'   => total_pouches,
+      'bundle_amount'  => total_bundles,
+      'markup'         => markup
+    }
+  end
+
+  # The bank to fund the kiosk from: kiosk_settings' bank_town
+  def find_kiosk_bank
+    echo "find_kiosk_bank" if @debug
+
+    name      = @kiosk_settings['bank_town'].to_s.strip
+    town_name = DRC.get_town_name(name) || name
+    town      = @town_data[town_name]
+    unless town
+      DRC.message("kiosk: bank_town '#{name}' isn't a recognized town.")
+      exit
+    end
+
+    {
+      'town'     => town_name,
+      'id'       => town.dig('exchange', 'id'),
+      'fee'      => town.dig('exchange', 'fee'),
+      'currency' => town['currency']
+    }
+  end
+
+  # Special handling is required to ensure that we're using Kronars, even if our hometown uses another currency.
+  # This logic uses the bank in your bank_town setting to get your Kronars.
+  def ensure_kronars_on_hand(target_amt)
+    echo "ensure_kronars_on_hand: #{target_amt}" if @debug
+    current_k = DRCM.check_wealth('Kronars')
+    return true if current_k >= target_amt
+
+    bank = find_kiosk_bank
+    echo "Bank: #{bank}" if @debug
+
+    if bank['currency'] == 'kronars'
+      echo "Using standard DRCM method" if @debug
+      return DRCM.ensure_copper_on_hand(target_amt, @settings, bank['town'])
+    end
+
+    needed = target_amt - current_k
+
+    withdraw_amt_copper = DRCM.convert_currency(
+      needed,
+      bank['currency'],
+      'kronars',
+      -bank['fee']
+    )
+
+    # Extract platinum and lump the rest as copper to avoid conversion issues with small amounts, while minimizing burden
+    platinum_amt = withdraw_amt_copper / 10000
+    copper_amt = withdraw_amt_copper % 10000
+
+    withdrawals = []
+    withdrawals << "#{platinum_amt} platinum" if platinum_amt > 0
+    withdrawals << "#{copper_amt} copper" if copper_amt > 0
+
+    bank_town = bank['town']
+    success = withdrawals.all? do |amount_as_string|
+      formatted_withdrawal = "#{amount_as_string} #{bank['currency']}"
+      DRCM.withdraw_exact_amount?(formatted_withdrawal, @settings, bank_town)
+    end
+
+    unless success
+      DRC.message("kiosk: Failed to withdraw required currency from the bank.")
+      exit
+    end
+
+    DRCT.walk_to(bank['id'])
+
+    # Exchange only what we withdrew, so any lirums/dokoras already carried aren't swept up (and charged a fee).
+    withdrawals.each do |amount_as_string|
+      result = DRC.bput(
+        "exchange #{amount_as_string} #{bank['currency']} to Kronars",
+        'After figuring a trivial fee',
+        'The money-changer says',
+        'After collecting a modest fee',
+        "You don't have that many"
+      )
+
+      if result == "You don't have that many"
+        DRC.message("Kiosk: You're out of money.")
+        exit
+      end
+    end
+
+    true
+  end
+
+  def refill_kiosk(on_hand)
+    echo "refill_kiosk: #{on_hand}" if @debug
+    return if on_hand >= @kiosk_settings['minimum_refill']
+
+    refill_amount = @kiosk_settings['target_deposit'] - on_hand
+    unless ensure_kronars_on_hand(refill_amount)
+      DRC.message("kiosk: Couldn't get enough Kronars to refill the kiosk. Check your account balance in #{@kiosk_settings['bank_town']}, or change bank_town.")
+      return
+    end
+
+    DRCT.walk_to(@kiosk_room)
+    @my_kiosk ||= require_my_kiosk
+    2.times do
+      result = DRC.bput("poke #{@my_kiosk}", 'The tessera swiftly rearranges', 'pulses with soft light and chimes merrily', 'As you are not the owner of a')
+
+      if result == "As you are not the owner of a"
+        @my_kiosk = require_my_kiosk(true)
+        return refill_kiosk(on_hand)
+      end
+    end
+  end
+
+  def withdraw_kiosk(pouch_amount, bundle_amount)
+    if @debug
+      echo "withdraw_kiosk"
+      echo "  pouch_amount: #{pouch_amount}"
+      echo "  bundle_amount: #{bundle_amount}"
+    end
+
+    return unless pouch_amount >= @kiosk_settings['minimum_pouch_withdrawal'] ||
+                  bundle_amount >= @kiosk_settings['minimum_bundle_withdrawal']
+
+    DRCT.walk_to(@kiosk_room)
+    @my_kiosk ||= require_my_kiosk
+
+    if pouch_amount >= @kiosk_settings['minimum_pouch_withdrawal']
+      result = ''
+      until result.include?('pouch')
+        result = DRC.bput("rub #{@my_kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of a')
+        if result == "As you are not the owner of a"
+          @my_kiosk = require_my_kiosk(true)
+          return withdraw_kiosk(pouch_amount, bundle_amount)
+        end
+        if result.empty?
+          DRC.message("kiosk: #{@my_kiosk} didn't answer RUB, so I'm not collecting sales this run.")
+          return
+        end
+      end
+
+      pouch_amount = 0
+      DRC.bput("tap #{@my_kiosk}", 'been processed and recorded to your tessera-ledger')
+      DRCI.put_away_item?('gem pouch', @settings.full_pouch_container)
+    end
+
+    if bundle_amount >= @kiosk_settings['minimum_bundle_withdrawal']
+      result = ''
+      until result.include?('bundle')
+        result = DRC.bput("rub #{@my_kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of a')
+        if result == "As you are not the owner of a"
+          @my_kiosk = require_my_kiosk(true)
+          return withdraw_kiosk(pouch_amount, bundle_amount)
+        end
+        if result.empty?
+          DRC.message("kiosk: #{@my_kiosk} didn't answer RUB, so I'm not collecting sales this run.")
+          return
+        end
+      end
+      DRC.bput("tap #{@my_kiosk}", 'been processed and recorded to your tessera-ledger')
+      DRCI.put_away_item?('bundle', @settings.full_pouch_container)
+    end
+  end
+end
+
+Kiosk.new
