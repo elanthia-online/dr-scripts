@@ -162,8 +162,6 @@ RSpec.describe CarveLockpicks do
         3.times { carver.check_status }
       end
 
-      # buff itself still casts day spells at night (do_buffs' chained select! skips its day filter),
-      # but carve-lockpicks shouldn't launch buff just for one
       it 'ignores the day-only spell at night, when it should not be cast' do
         UserVars.sun = { 'day' => false, 'night' => true }
         DRSpells._set_active_spells('Ease Burden' => 10, 'Shadows' => 10)
@@ -177,6 +175,23 @@ RSpec.describe CarveLockpicks do
         DRSpells._set_active_spells('Ease Burden' => 10)
 
         expect(DRC).to receive(:wait_for_script_to_complete).with('buff', ['carve'])
+        carver.check_status
+      end
+
+      it 'skips exactly the spells DRCA.day_night_ok? rejects' do
+        UserVars.sun = { 'day' => false, 'night' => true }
+        allow(DRCA).to receive(:day_night_ok?) { |data| data['abbrev'] == 'ease' }
+        DRSpells._set_active_spells('Ease Burden' => 10)
+
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        carver.check_status
+      end
+
+      it 'checks only the plain spell before moonwatch has set UserVars.sun' do
+        UserVars.sun = nil
+        DRSpells._set_active_spells('Ease Burden' => 10)
+
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
         carver.check_status
       end
     end
