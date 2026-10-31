@@ -71,6 +71,10 @@ class CrossingRepair
 
   # Handler method to do our repairs.
   def repair_handler(town, settings)
+    # Something we couldn't put away earlier (e.g. after a stopped run) would fill the other
+    # hand as soon as the first item comes back, so stop before banking or walking anywhere.
+    stop_repair("Could not put away #{held_items} before repairing.") unless hands_empty?
+
     # Calls the repair prep and validation method. Makes sure we're ready and able to repair.
     # Grabs a hash of the items to repair at leather and metal, respectively.
     repair_info = repair_prep(town, settings)
@@ -178,7 +182,8 @@ class CrossingRepair
     return true if items.nil? || items.empty?
     return true unless DRCT.walk_to(target_room)
 
-    items.all? { |item| repair(repairer, item) }
+    # A failed put-away that left the hands empty anyway is no reason to stop.
+    items.all? { |item| repair(repairer, item) || hands_empty? }
   end
 
   # Returns false when our hands could not be emptied afterwards.
@@ -220,7 +225,7 @@ class CrossingRepair
     when 'You get'
       DRCT.walk_to(repairer['id'])
       stop_repair("Could not hand in your #{name} ticket (holding #{held_items}).") unless turn_in_ticket(name)
-      stop_repair("Could not put away #{held_items}.") unless @equipment_manager.empty_hands
+      stop_repair("Could not put away #{held_items}.") unless @equipment_manager.empty_hands || hands_empty?
       true
     when 'What were you referring'
       false
@@ -234,12 +239,17 @@ class CrossingRepair
   # Exits before the repair timer is reset, so the tickets still out are not forgotten.
   def stop_repair(problem)
     DRC.message("#{problem} Stopping repair.")
-    DRC.message("Once that is sorted out, run ;#{['crossing-repair', @town_arg, 'force'].compact.join(' ')} to collect your tickets.")
+    DRC.message("Once that is sorted out, run ;#{['crossing-repair', @town_arg, 'force'].compact.join(' ')} to finish repairing and collect any tickets.")
     exit
   end
 
   def held_items
-    [DRC.right_hand, DRC.left_hand].compact.join(' and ')
+    held = [DRC.right_hand, DRC.left_hand].compact.join(' and ')
+    held.empty? ? 'an item' : held
+  end
+
+  def hands_empty?
+    !DRC.right_hand && !DRC.left_hand
   end
 
   def turn_in_ticket(repairer, failed = false)
