@@ -111,9 +111,7 @@ class BuffWatcher
       # Elements in the waggle set are maps of spell name to spell data
       # DRCA.do_buffs skips night: spells by day and day: spells at night, so
       # don't count them as missing.
-      spells = @settings.waggle_sets[@buff_set_name]
-                        .select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
-                        .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
+      spells = @settings.waggle_sets[@buff_set_name].select { |_name, data| DRCA.day_night_ok?(data) }
       return spells.all? { |name, data| DRSpells.active_spells[name] && (data['recast'].nil? || DRSpells.active_spells[name].to_i > data['recast']) }
     end
   end
