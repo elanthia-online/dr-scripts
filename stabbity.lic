@@ -269,21 +269,17 @@ class Stabbity
   def get_npcs
     if arena_mode?
       DRRoom.npcs
-    elsif DRRoom.respond_to?(:unignored_npcs)
-      DRRoom.unignored_npcs(@ignored_npcs)
     else
-      # Lich releases before DRRoom.unignored_npcs only match ignored_npcs by noun.
-      DRRoom.npcs - Array(@ignored_npcs)
+      DRRoom.unignored_npcs(@ignored_npcs)
     end
   end
 
   # Id of a live room creature listed under noun (skipping ones the ignore list
   # names outside the arena), so commands reach that creature rather than
-  # whichever same-noun one the game picks. nil when the roster has none, or on
-  # a Lich release without CreatureInstance#matches?.
+  # whichever same-noun one the game picks. nil when the roster has none.
   def find_target_id(noun)
     target = Lich::DragonRealms::Creature.in_room(:not_dead).find do |creature|
-      creature.id && creature.respond_to?(:matches?) && creature.matches?(noun) &&
+      creature.id && creature.matches?(noun) &&
         (arena_mode? || Array(@ignored_npcs).none? { |entry| creature.matches?(entry) })
     end
     target&.id
