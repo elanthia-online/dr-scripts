@@ -1310,6 +1310,42 @@ module Harness
       def find_sewing_room(*_args); end
       def find_shaping_room(*_args); end
       def fount(*_args); end
+
+      # Private-forge helpers, the same rules as lich-5 DRCC (#1560), so the
+      # scripts' private-forge specs exercise the real settings resolution and
+      # crafting-data lookups. Keep in sync with lich-5.
+      def crafting_hometown(settings)
+        settings.force_crafting_town || settings.hometown
+      end
+
+      def use_private_forge?(settings)
+        settings.use_private_forge || settings.forge_use_private_forge || false
+      end
+
+      def private_forge_cost(settings)
+        settings.forge_private_forge_cost || 50_000
+      end
+
+      def private_forge_room(hometown)
+        get_data('crafting')['blacksmithing'][hometown]['private_forge']
+      end
+
+      def towns_with_private_forge
+        get_data('crafting')['blacksmithing'].select { |_town, data| data['private_forge'] }.keys
+      end
+
+      def go_to_private_forge(hometown, settings)
+        room = private_forge_room(hometown)
+        return false unless room
+        return false unless DRCM.ensure_copper_on_hand(private_forge_cost(settings), settings, hometown)
+
+        DRCT.walk_to(room)
+        return true if Room.current.id == room
+
+        DRC.bput('go door', 'You head through', 'You walk', 'You go', 'Obvious exits',
+                 "You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay', 'What were you')
+        Room.current.id == room
+      end
     end
   end
 
