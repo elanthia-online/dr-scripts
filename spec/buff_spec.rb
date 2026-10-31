@@ -26,9 +26,7 @@ RSpec.describe Waggle do
       do_buffs_calls << setname
       raise 'strict mode is looping forever' if do_buffs_calls.size > 5
 
-      in_season = settings.waggle_sets[setname].reject do |_name, data|
-        (data['night'] && !UserVars.sun['night']) || (data['day'] && !UserVars.sun['day'])
-      end
+      in_season = settings.waggle_sets[setname].select { |_name, data| DRCA.day_night_ok?(data) }
       DRSpells._set_active_spells(DRSpells.active_spells.merge(in_season.keys.to_h { |name| [name, 10] }))
     end
   end
@@ -108,6 +106,22 @@ RSpec.describe Waggle do
       expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Bless', 'Day Ward'])
       UserVars.sun = night
       expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Bless', 'Night Ward'])
+    end
+
+    it 'leaves out exactly the spells DRCA.day_night_ok? rejects' do
+      UserVars.sun = day
+      allow(DRCA).to receive(:day_night_ok?) { |data| data['abbrev'] != 'bless' }
+      expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Night Ward', 'Day Ward'])
+    end
+
+    it 'waits on no night or day spell before moonwatch has set UserVars.sun' do
+      UserVars.sun = nil
+      expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Bless'])
+    end
+
+    it 'waits on no night or day spell when UserVars.sun has neither key' do
+      UserVars.sun = {}
+      expect(waggle.spells_to_wait_on(waggle_set)).to eq(['Bless'])
     end
 
     it 'leaves the waggle set untouched' do

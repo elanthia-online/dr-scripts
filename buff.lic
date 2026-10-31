@@ -64,9 +64,7 @@ class Waggle
 
     # do_buffs skips night: spells by day and day: spells at night, so don't
     # wait on them.
-    spells.select { |_name, data| data['night'] ? UserVars.sun['night'] : true }
-          .select { |_name, data| data['day'] ? UserVars.sun['day'] : true }
-          .keys
+    spells.select { |_name, data| DRCA.day_night_ok?(data) }.keys
   end
 
   # Thief entries look like 'delay Hasten Focus' or 'Khri Sight'. Parse them
