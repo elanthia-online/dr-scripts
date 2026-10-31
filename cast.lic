@@ -567,7 +567,7 @@ class Cast
   # item's cap skips that item for good, so small items often go unused.
   def charge_plan(num_charges = @charge.to_i)
     prep_mana, charge_values = distribute_num_charges(num_charges)
-    if distribute_charges?
+    if @settings.cambrinth_distribute_charges
       cambrinth, leftover = DRCA.allocate_cambrinth_charges(charge_values.sum, @camb_items, num_charges)
     else
       cambrinth, leftover = pack_charge_values(charge_values)
@@ -576,16 +576,6 @@ class Cast
       logd "Ran out of room in all cambrinth items, will add the remaining #{leftover} to base prep (now #{prep_mana + leftover})."
     end
     [prep_mana + leftover, cambrinth]
-  end
-
-  def distribute_charges?
-    return false unless @settings.cambrinth_distribute_charges
-
-    unless DRCA.respond_to?(:allocate_cambrinth_charges)
-      logd "cambrinth_distribute_charges is set but this Lich has no DRCA.allocate_cambrinth_charges. Using the built-in split."
-      return false
-    end
-    true
   end
 
   # The original scheme: fill each item up to its cap, in order, and never come
