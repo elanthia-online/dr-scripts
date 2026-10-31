@@ -32,6 +32,7 @@ class CrossingRepair
     # This argument has already passed through the $HOMETOWN_REGEX check so we know it to be
     # a valid town.
     settings['hometown'] = town if town
+    @town_arg = args.town
 
     # Check if we have the repair_heuristic_gear yaml settings. This uses appraise to assess
     # condition of listed items, and if damaged to a certain thresshold, then run crossing-repair
@@ -70,14 +71,22 @@ class CrossingRepair
 
   # Handler method to do our repairs.
   def repair_handler(town, settings)
+    # Something we couldn't put away earlier (e.g. after a stopped run) would fill the other
+    # hand as soon as the first item comes back, so stop before banking or walking anywhere.
+    stop_repair("Could not put away #{held_items} before repairing.") unless hands_empty?
+
     # Calls the repair prep and validation method. Makes sure we're ready and able to repair.
     # Grabs a hash of the items to repair at leather and metal, respectively.
     repair_info = repair_prep(town, settings)
 
     # Run through each item with respective metal or leather repairer, turning in items for repair.
+    # Stop as soon as something can't be put away: carrying on fills the other hand,
+    # and with no free hand the tickets can never be collected.
     repair_info.each do |repairer, items|
       DRC.message("Repairing at #{repairer}") if $debug_mode_crossing_repair
-      repair_at(repairer['name'], repairer['id'], items)
+      next if repair_at(repairer['name'], repairer['id'], items)
+
+      stop_repair("Could not put away #{held_items}.")
     end
 
     # Deposit remaining coins unless we have setting to skip.
@@ -168,23 +177,26 @@ class CrossingRepair
   end
 
   # Head to the appropriate repair spot. Return if we can't get there. Call the repair method.
+  # Returns false if an item or ticket could not be put away, so the caller stops.
   def repair_at(repairer, target_room, items)
-    return if items.nil? || items.empty?
-    return unless DRCT.walk_to(target_room)
+    return true if items.nil? || items.empty?
+    return true unless DRCT.walk_to(target_room)
 
-    items.each { |item| repair(repairer, item) }
+    # A failed put-away that left the hands empty anyway is no reason to stop.
+    items.all? { |item| repair(repairer, item) || hands_empty? }
   end
 
+  # Returns false when our hands could not be emptied afterwards.
   def repair(repairer, item, repeat = false)
-    return unless repairer
-    return unless item
+    return true unless repairer
+    return true unless item
 
     DRC.release_invisibility
     if repeat
       fput('swap') unless DRC.right_hand
       command = "give #{repairer}"
     else
-      return unless @equipment_manager.get_item?(item)
+      return true unless @equipment_manager.get_item?(item)
 
       command = "give my #{item.short_name} to #{repairer}"
     end
@@ -195,22 +207,49 @@ class CrossingRepair
     when "I don't work on those here"
       echo "*** ITEM HAS IMPROPER is_leather FLAG: #{item.short_name} ***"
       @equipment_manager.empty_hands
-    when "You don't need to specify the object", 'Just give it to me again'
+    when "You don't need to specify the object", 'Just give it to me again', 'If you agree, give it to me again'
       repair(repairer, item, true)
     when "Please don't lose this ticket!", "You hand.*#{repairer}"
-      DRC.bput('stow my ticket', 'You put')
+      DRCI.stow_item?('ticket')
+    else
+      @equipment_manager.empty_hands
     end
   end
 
+  # True after a ticket was redeemed and the item put away, false once no tickets are left.
+  # Anything else (no free hand, no response, ticket not taken) stops the run rather than
+  # looping forever or letting the repair timer be reset with tickets still out.
   def tickets_left?(repairer)
-    if DRC.bput("get my #{repairer['name']} ticket", 'What were you referring', 'You get') == 'What were you referring'
-      return false
+    name = repairer['name']
+    case DRC.bput("get my #{name} ticket", 'What were you referring', 'You get', 'You need a free hand')
+    when 'You get'
+      DRCT.walk_to(repairer['id'])
+      stop_repair("Could not hand in your #{name} ticket (holding #{held_items}).") unless turn_in_ticket(name)
+      stop_repair("Could not put away #{held_items}.") unless @equipment_manager.empty_hands || hands_empty?
+      true
+    when 'What were you referring'
+      false
+    when 'You need a free hand'
+      stop_repair("No free hand to get your #{name} ticket (holding #{held_items}).")
+    else
+      stop_repair("No response getting your #{name} ticket.")
     end
+  end
 
-    DRCT.walk_to(repairer['id'])
-    turn_in_ticket(repairer['name'])
-    @equipment_manager.empty_hands
-    true
+  # Exits before the repair timer is reset, so the tickets still out are not forgotten.
+  def stop_repair(problem)
+    DRC.message("#{problem} Stopping repair.")
+    DRC.message("Once that is sorted out, run ;#{['crossing-repair', @town_arg, 'force'].compact.join(' ')} to finish repairing and collect any tickets.")
+    exit
+  end
+
+  def held_items
+    held = [DRC.right_hand, DRC.left_hand].compact.join(' and ')
+    held.empty? ? 'an item' : held
+  end
+
+  def hands_empty?
+    !DRC.right_hand && !DRC.left_hand
   end
 
   def turn_in_ticket(repairer, failed = false)
@@ -222,11 +261,15 @@ class CrossingRepair
     end
 
     case DRC.bput(command, 'You hand', 'takes your ticket', "You don't need to specify the object", 'almost done', "Well that isn't gonna be done")
+    when 'You hand', 'takes your ticket'
+      true
     when "You don't need to specify the object"
       turn_in_ticket(repairer, true)
     when 'almost done', "Well that isn't gonna be done"
       pause 30
       turn_in_ticket(repairer)
+    else
+      false
     end
   end
 
