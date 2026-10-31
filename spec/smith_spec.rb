@@ -7,67 +7,58 @@ require_relative 'spec_helper'
 load_lic_class('smith.lic', 'Smith')
 
 RSpec.describe Smith do
-  let(:instance) { Smith.allocate }
+  # The private-forge step of #smith: DRCC (lich-5 #1560) walks to and rents
+  # the forge; without it smith uses the public anvil.
+  describe '#smith private-forge routing' do
+    let(:settings) { OpenStruct.new }
+    let(:discipline) { { 'stock-volume' => 100, 'finisher-room' => 1, 'finisher-number' => 2 } }
+    let(:recipe) { { 'volume' => 5, 'type' => 'weaponsmithing', 'chapter' => 1, 'name' => 'a dagger', 'noun' => 'dagger' } }
 
-  before do
-    $test_data[:crafting] = {
-      'blacksmithing' => {
-        'Shard'      => { 'private_forge' => 51_058 },
-        'Crossing'   => { 'private_forge' => 16_936 },
-        'Riverhaven' => {} # no private forge
-      }
-    }
-  end
-
-  # The dr-scripts harness stubs a DRCC without the new private-forge helpers,
-  # so these exercise smith's local fallbacks (the path on an older lich-5).
-  describe 'gated private-forge settings helpers (local fallback)' do
-    it 'crafting_hometown prefers force_crafting_town, else hometown' do
-      expect(instance.crafting_hometown(OpenStruct.new(force_crafting_town: 'Shard', hometown: 'Crossing'))).to eq('Shard')
-      expect(instance.crafting_hometown(OpenStruct.new(hometown: 'Crossing'))).to eq('Crossing')
+    def build(use_private_forge:)
+      instance = Smith.allocate
+      instance.instance_variable_set(:@hometown, 'Shard')
+      instance.instance_variable_set(:@settings, settings)
+      instance.instance_variable_set(:@use_private_forge, use_private_forge)
+      allow(instance).to receive(:buy_parts)
+      allow(instance).to receive(:check_and_renew_forge_rental)
+      allow(instance).to receive(:dispose_parts)
+      allow(DRCC).to receive(:find_anvil)
+      allow(DRCC).to receive(:go_to_private_forge).and_return(true)
+      instance
     end
 
-    it 'use_private_forge? honors use_private_forge and the legacy forge_use_private_forge' do
-      expect(instance.use_private_forge?(OpenStruct.new(use_private_forge: true))).to be true
-      expect(instance.use_private_forge?(OpenStruct.new(forge_use_private_forge: true))).to be true
-      expect(instance.use_private_forge?(OpenStruct.new)).to be false
+    def run_smith(instance, stay: false)
+      instance.smith('bronze', discipline, recipe, [], nil, nil, nil, nil, nil, nil, nil, stay)
     end
 
-    it 'private_forge_cost uses the setting, else defaults to 50_000' do
-      expect(instance.private_forge_cost(OpenStruct.new(forge_private_forge_cost: 12_345))).to eq(12_345)
-      expect(instance.private_forge_cost(OpenStruct.new)).to eq(50_000)
+    it 'walks to the private forge through DRCC, then checks the rental' do
+      instance = build(use_private_forge: true)
+
+      run_smith(instance)
+
+      expect(DRCC).to have_received(:go_to_private_forge).with('Shard', settings).ordered
+      expect(instance).to have_received(:check_and_renew_forge_rental).ordered
+      expect(DRCC).not_to have_received(:find_anvil)
     end
 
-    it 'private_forge_room returns the room id or nil' do
-      expect(instance.private_forge_room('Shard')).to eq(51_058)
-      expect(instance.private_forge_room('Riverhaven')).to be_nil
+    it "skips the private forge walk and rental check with 'here'" do
+      allow(Lich::Messaging).to receive(:msg)
+      instance = build(use_private_forge: true)
+
+      run_smith(instance, stay: true)
+
+      expect(DRCC).not_to have_received(:go_to_private_forge)
+      expect(instance).not_to have_received(:check_and_renew_forge_rental)
+      expect(DRCC).not_to have_received(:find_anvil)
     end
 
-    it 'towns_with_private_forge lists only towns with a forge' do
-      expect(instance.towns_with_private_forge).to contain_exactly('Shard', 'Crossing')
-    end
-  end
+    it 'finds a public anvil when use_private_forge is off' do
+      instance = build(use_private_forge: false)
 
-  describe 'DRCC delegation gate' do
-    it 'delegates to DRCC.private_forge_cost when lich-5 provides it' do
-      allow(DRCC).to receive(:respond_to?).and_call_original
-      allow(DRCC).to receive(:respond_to?).with(:private_forge_cost).and_return(true)
-      allow(DRCC).to receive(:private_forge_cost).and_return(99_999)
-      expect(instance.private_forge_cost(OpenStruct.new)).to eq(99_999)
-    end
-  end
+      run_smith(instance)
 
-  describe '#go_to_private_forge (local fallback)' do
-    it 'returns false and does not spend when the town has no private forge' do
-      expect(DRCM).not_to receive(:ensure_copper_on_hand)
-      expect(instance.go_to_private_forge('Riverhaven', OpenStruct.new)).to be false
-    end
-
-    it 'ensures funds at the configured cost, walks, and returns true on arrival' do
-      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
-      expect(DRCM).to receive(:ensure_copper_on_hand).with(50_000, anything, 'Shard').and_return(true)
-      expect(DRCT).to receive(:walk_to).with(51_058)
-      expect(instance.go_to_private_forge('Shard', OpenStruct.new)).to be true
+      expect(DRCC).not_to have_received(:go_to_private_forge)
+      expect(DRCC).to have_received(:find_anvil).with('Shard')
     end
   end
 end
