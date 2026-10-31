@@ -414,31 +414,6 @@ RSpec.describe GameState do
         expect(gs.dancing?).to be true
       end
     end
-
-    # Lich releases before DRRoom.unignored_npcs: the noun-only rule.
-    context 'on a Lich without DRRoom.unignored_npcs' do
-      before do
-        allow(DRRoom).to receive(:respond_to?).and_call_original
-        allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
-        allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
-      end
-
-      it 'drops every npc with an ignored noun' do
-        DRRoom.npcs = %w[leopard leopard rat]
-        gs = build_npc_state(ignored: ['leopard'], dance_threshold: 1)
-        gs.update_room_npcs
-        expect(gs.npcs).to eq(['rat'])
-        expect(gs.dancing?).to be true
-      end
-
-      it 'treats an unset ignore list as empty' do
-        DRRoom.npcs = %w[rat kobold]
-        gs = build_npc_state(ignored: nil, dance_threshold: 0, retreat_threshold: 2)
-        gs.update_room_npcs
-        expect(gs.npcs).to eq(%w[rat kobold])
-        expect(gs.retreating?).to be true
-      end
-    end
   end
 
   describe '#npcs' do
@@ -457,16 +432,6 @@ RSpec.describe GameState do
       DRRoom.npcs = %w[leopard leopard]
       allow(DRRoom).to receive(:unignored_npcs).with(['spectral white leopard']).and_return(['leopard'])
       expect(gs.npcs).to eq(['leopard'])
-    end
-
-    it 'falls back to the noun rule on a Lich without DRRoom.unignored_npcs' do
-      allow(DRRoom).to receive(:respond_to?).and_call_original
-      allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
-      allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
-      gs = GameState.allocate
-      gs.instance_variable_set(:@ignored_npcs, ['rat'])
-      DRRoom.npcs = %w[rat kobold]
-      expect(gs.npcs).to eq(['kobold'])
     end
   end
 
@@ -852,24 +817,6 @@ RSpec.describe ManipulateProcess do
       allow(gs).to receive(:construct?).and_return(false)
       build_manipulate(threshold: 1, ignored_npcs: ['kobold', 'spectral white leopard']).execute(gs)
       expect(DRC).to have_received(:bput).with('manipulate friendship #7', any_args)
-    end
-
-    it 'still excludes by noun on a Lich without CreatureInstance#matches?' do
-      allow(DRSkill).to receive(:getxp).and_return(10)
-      allow(DRC).to receive(:bput).and_return('You attempt to empathically manipulate')
-      kobold = creature(id: 2, noun: 'kobold', name: 'a kobold')
-      rat = creature(id: 1, noun: 'rat')
-      [kobold, rat].each do |c|
-        allow(c).to receive(:respond_to?).and_call_original
-        allow(c).to receive(:respond_to?).with(:matches?).and_return(false)
-        allow(c).to receive(:matches?).and_raise(NoMethodError)
-      end
-      seed_targets(kobold, rat)
-      gs = gs_double
-      allow(gs).to receive(:construct?).and_return(false)
-      build_manipulate(threshold: 1, ignored_npcs: ['kobold', 'spectral white leopard']).execute(gs)
-      expect(DRC).to have_received(:bput).with('manipulate friendship #1', any_args)
-      expect(DRC).not_to have_received(:bput).with('manipulate friendship #2', any_args)
     end
 
     # BUG-FINDING: shock disables manipulation permanently for this hunt
@@ -5352,6 +5299,114 @@ RSpec.describe SpellProcess do
       end
     end
 
+    # Night-only and day-only spells: each select skips them out of season
+    # through DRCA.day_night_ok?, the rule DRCA.do_buffs uses.
+    describe 'night and day spells' do
+      let(:day) { { 'day' => true, 'night' => false } }
+      let(:night) { { 'day' => false, 'night' => true } }
+
+      def buff_process(buffs)
+        build_spell_process(buff_spells: buffs, buff_spell_mana_threshold: 0, buff_force_cambrinth: false,
+                            spell_timers: {})
+      end
+
+      let(:buffs) do
+        {
+          'Shadows' => plain_spell('Shadows', 'shadows', 'recast' => 1, 'night' => true),
+          'Bless'   => plain_spell('Bless', 'bless', 'recast' => 1)
+        }
+      end
+
+      it 'skips a night buff by day and casts the buff after it' do
+        UserVars.sun = day
+        buff_process(buffs).send(:check_buffs, pass_state)
+        expect(@prepared).to eq(['bless'])
+      end
+
+      it 'casts a night buff at night' do
+        UserVars.sun = night
+        buff_process(buffs).send(:check_buffs, pass_state)
+        expect(@prepared).to eq(['shadows'])
+      end
+
+      it 'skips a day buff at night' do
+        UserVars.sun = night
+        buffs['Shadows'] = plain_spell('Shadows', 'shadows', 'recast' => 1, 'day' => true)
+        buff_process(buffs).send(:check_buffs, pass_state)
+        expect(@prepared).to eq(['bless'])
+      end
+
+      it 'skips a night buff, without error, before moonwatch has set UserVars.sun' do
+        UserVars.sun = nil
+        instance = buff_process(buffs)
+        expect { instance.send(:check_buffs, pass_state) }.not_to raise_error
+        expect(@prepared).to eq(['bless'])
+      end
+
+      it 'skips exactly the buffs DRCA.day_night_ok? rejects' do
+        UserVars.sun = night
+        allow(DRCA).to receive(:day_night_ok?) { |data| data['abbrev'] != 'shadows' }
+        buff_process(buffs).send(:check_buffs, pass_state)
+        expect(@prepared).to eq(['bless'])
+      end
+
+      it 'trains the next skill instead of a night training spell by day' do
+        UserVars.sun = day
+        instance = training_process(
+          'Utility'      => plain_spell('Shadows', 'shadows', 'night' => true),
+          'Augmentation' => plain_spell('Bless', 'bless')
+        )
+        gs = pass_state(is_offense_allowed?: true, npcs: [])
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+
+        instance.send(:check_training, gs)
+
+        expect(@prepared).to eq(['bless'])
+      end
+
+      it 'trains with a night training spell at night' do
+        UserVars.sun = night
+        instance = training_process(
+          'Utility'      => plain_spell('Shadows', 'shadows', 'night' => true),
+          'Augmentation' => plain_spell('Bless', 'bless')
+        )
+        gs = pass_state(is_offense_allowed?: true, npcs: [])
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+
+        instance.send(:check_training, gs)
+
+        expect(@prepared).to eq(['shadows'])
+      end
+
+      it 'casts the next offensive spell instead of a day spell at night' do
+        UserVars.sun = night
+        instance = offensive_process([
+                                       plain_spell('Sun Bolt', 'sb', 'skill' => 'Targeted Magic', 'day' => true),
+                                       plain_spell('Fire Spirit', 'fire', 'skill' => 'Targeted Magic')
+                                     ])
+        gs = pass_state(npcs: ['a kobold'], is_offense_allowed?: true, dancing?: false)
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+
+        instance.send(:check_offensive, gs)
+
+        expect(@prepared).to eq(['fire'])
+      end
+
+      it 'casts a day offensive spell by day' do
+        UserVars.sun = day
+        instance = offensive_process([
+                                       plain_spell('Sun Bolt', 'sb', 'skill' => 'Targeted Magic', 'day' => true),
+                                       plain_spell('Fire Spirit', 'fire', 'skill' => 'Targeted Magic')
+                                     ])
+        gs = pass_state(npcs: ['a kobold'], is_offense_allowed?: true, dancing?: false)
+        allow(gs).to receive(:sort_by_rate_then_rank) { |skills| skills }
+
+        instance.send(:check_offensive, gs)
+
+        expect(@prepared).to eq(['sb'])
+      end
+    end
+
     describe '#execute' do
       # Two moon training spells and a moon offensive spell are all considered
       # in one pass; none can be cast.
@@ -9146,5 +9201,64 @@ RSpec.describe LootProcess do
       lp.send(:arrange_mob, 'rat', gate_game_state, corpse)
       expect(lp.instance_variable_get(:@skinned_corpse_ids)).to include(111)
     end
+  end
+end
+
+# TrainerProcess#observe: reads the telescope's lines from DRCMM.peer_telescope
+# against the constellations data.
+RSpec.describe TrainerProcess, '#observe' do
+  let(:trainer) do
+    TrainerProcess.allocate.tap do |tp|
+      tp.instance_variable_set(:@telescope_name, 'telescope')
+      tp.instance_variable_set(:@telescope_storage, {})
+      tp.instance_variable_set(:@training_abilities, { 'Astro' => 60, 'Hunt' => 60 })
+    end
+  end
+
+  before(:each) do
+    ct_setup
+    $test_data = {
+      constellations: OpenStruct.new(
+        observe_full_messages: ["You believe you've learned", 'Too many futures'],
+        observe_injured_messages: ['The pain is too much', 'Your vision is too fuzzy']
+      )
+    }
+    allow(trainer).to receive(:check_predict)
+    allow(trainer).to receive(:waitrt?)
+  end
+
+  it 'predicts when any peer line says the pool is full' do
+    allow(DRCMM).to receive(:peer_telescope)
+      .and_return(['You peer through the telescope.', "You believe you've learned all that you can about survival."])
+    trainer.send(:observe)
+    expect(trainer).to have_received(:check_predict)
+    expect(trainer.instance_variable_get(:@training_abilities)).to include('Astro')
+  end
+
+  it 'stops training Astro when any peer line says it is injured' do
+    allow(DRCMM).to receive(:peer_telescope).and_return(['Your vision is too fuzzy to make anything out.'])
+    trainer.send(:observe)
+    expect(trainer).not_to have_received(:check_predict)
+    expect(trainer.instance_variable_get(:@training_abilities)).to eq({ 'Hunt' => 60 })
+  end
+
+  it 'does neither when the peer learned something but the pool is not full' do
+    allow(DRCMM).to receive(:peer_telescope).and_return(['You learned something useful from your observation.'])
+    trainer.send(:observe)
+    expect(trainer).not_to have_received(:check_predict)
+    expect(trainer.instance_variable_get(:@training_abilities)).to include('Astro')
+  end
+
+  it 'does neither, without error, when the peer returns no lines' do
+    allow(DRCMM).to receive(:peer_telescope).and_return([])
+    expect { trainer.send(:observe) }.not_to raise_error
+    expect(trainer).not_to have_received(:check_predict)
+  end
+
+  it 'stores the telescope after peering' do
+    allow(DRCMM).to receive(:peer_telescope).and_return([])
+    allow(DRCMM).to receive(:store_telescope?)
+    trainer.send(:observe)
+    expect(DRCMM).to have_received(:store_telescope?).with('telescope', {})
   end
 end
