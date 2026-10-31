@@ -1333,6 +1333,12 @@ module Harness
   end
 
   module DRCC
+    # Private-forge entry patterns, mirroring lich-5's public DRCC constants
+    # (#1560). Scripts (forge) reference these directly instead of keeping
+    # their own copy. Keep in sync with lich-5.
+    PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
+    PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
+
     class << self
       def check_for_existing_sigil?(*_args); true; end
       def get_adjust_tongs?(*_args); true; end
@@ -1381,8 +1387,7 @@ module Harness
         DRCT.walk_to(room)
         return true if Room.current.id == room
 
-        DRC.bput('go door', 'You head through', 'You walk', 'You go', 'Obvious exits',
-                 "You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay', 'What were you')
+        DRC.bput('go door', *PRIVATE_FORGE_ENTRY_SUCCESS, *PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
         Room.current.id == room
       end
     end

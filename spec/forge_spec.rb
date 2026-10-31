@@ -185,16 +185,11 @@ RSpec.describe Forge do
       expect(Forge::FORGE_EMPTY_PATTERN).to eq('There is nothing')
     end
 
-    it 'defines PRIVATE_FORGE_ENTRY_SUCCESS as frozen array' do
-      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to be_frozen
-      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('You head through')
-      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('Obvious exits')
-    end
-
-    it 'defines PRIVATE_FORGE_ENTRY_BLOCKED as frozen array' do
-      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to be_frozen
-      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to include("You don't have enough")
-      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to include('The sentry blocks')
+    # The private-forge entry patterns live in lich-5 DRCC; a local copy here
+    # would silently drift from the commons version.
+    it 'does not keep its own copy of the DRCC private-forge entry patterns' do
+      expect(Forge.const_defined?(:PRIVATE_FORGE_ENTRY_SUCCESS, false)).to be(false)
+      expect(Forge.const_defined?(:PRIVATE_FORGE_ENTRY_BLOCKED, false)).to be(false)
     end
   end
 
@@ -917,9 +912,46 @@ RSpec.describe Forge do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
         allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
-        expect(DRC).to receive(:bput).with('go door', *Forge::PRIVATE_FORGE_ENTRY_SUCCESS, *Forge::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
+        expect(DRC).to receive(:bput).with('go door', *DRCC::PRIVATE_FORGE_ENTRY_SUCCESS, *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
         expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: Entered private forge.')
         forge_instance.send(:go_to_private_forge)
+      end
+
+      DRCC::PRIVATE_FORGE_ENTRY_SUCCESS.each do |response|
+        it "reports entry on the DRCC success response '#{response}'" do
+          allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+          allow(DRCT).to receive(:walk_to)
+          allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
+          allow(DRC).to receive(:bput).and_return(response)
+          expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: Entered private forge.')
+          forge_instance.send(:go_to_private_forge)
+        end
+      end
+
+      DRCC::PRIVATE_FORGE_ENTRY_BLOCKED.each do |response|
+        it "exits on the DRCC blocked response '#{response}'" do
+          allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+          allow(DRCT).to receive(:walk_to)
+          allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
+          allow(DRC).to receive(:bput).and_return(response)
+          allow(Lich::Messaging).to receive(:msg)
+          expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
+          expect(Lich::Messaging).to have_received(:msg).with('bold', 'Forge: BLOCKED from entering private forge!')
+        end
+      end
+
+      # A blocked response lich-5 adds later must stop forge too, rather than
+      # falling through to "Entered private forge." on a stale local list.
+      it 'follows a blocked pattern added to the DRCC list' do
+        stub_const('Harness::DRCC::PRIVATE_FORGE_ENTRY_BLOCKED', [*DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'The forge is closed'].freeze)
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:walk_to)
+        allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
+        allow(DRC).to receive(:bput).and_return('The forge is closed')
+        allow(Lich::Messaging).to receive(:msg)
+        expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).with('go door', *DRCC::PRIVATE_FORGE_ENTRY_SUCCESS, *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
+        expect(Lich::Messaging).not_to have_received(:msg).with('plain', 'Forge: Entered private forge.')
       end
 
       it 'exits with verbose error when blocked by sentry' do
