@@ -75,13 +75,60 @@ class Smith
     end
     DRCC.check_consumables('oil', discipline['finisher-room'], discipline['finisher-number'], @bag, @bag_items, @belt)
     DRC.wait_for_script_to_complete('buff', ['smith'])
-    DRC.wait_for_script_to_complete('forge', [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], stay ? 'skip' : nil])
+    return unless forge_finished?(recipe['noun'], [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], stay ? 'skip' : nil])
+
     stamp_item(recipe['noun']) if stamp
-    [temper, hone, balance, lighten, reinforce].compact.each do |enhancement|
-      DRC.wait_for_script_to_complete('forge', [enhancement, recipe['noun'], stay ? 'skip' : nil])
+    enhanced = [temper, hone, balance, lighten, reinforce].compact.all? do |enhancement|
+      forge_finished?(recipe['noun'], [enhancement, recipe['noun'], stay ? 'skip' : nil])
     end
+    return unless enhanced
+
     dispose_scrap(discipline, recipe) if buy
     dispose_parts(discipline, parts) unless stay
+  end
+
+  # Run forge.lic and report whether it finished the item.
+  #
+  # forge.lic leaves the finished item in hand (its default 'hold' finish),
+  # and its cleanup_and_exit stows both hands, so the hands tell smith whether
+  # the run worked. On a failed run smith stops: stamping, more forge runs
+  # or disposal would act on an item that was never made.
+  #
+  # Limits: an exit through DRCC's missing-tool check (crafting_item_failed)
+  # doesn't stow. Forge's own tool left in hand isn't mistaken for the item
+  # (see #forging_tool?), but an enhancement run that exits that way looks
+  # finished, because the item was already in hand when it started.
+  #
+  # @param noun [String] the recipe's item noun
+  # @param args [Array<String, nil>] forge.lic arguments
+  # @return [Boolean] true when the finished item is in hand
+  def forge_finished?(noun, args)
+    DRC.wait_for_script_to_complete('forge', args)
+    return true if finished_item_in_hand?(noun)
+
+    Lich::Messaging.msg('bold', "smith: forge did not finish the #{noun}. Stopping before stamping, enhancements and cleanup.")
+    false
+  end
+
+  # @param noun [String] the recipe's item noun
+  # @return [Boolean] true when a hand holds the item, finished, and it isn't
+  #   one of the character's own forging tools
+  def finished_item_in_hand?(noun)
+    item = /\b#{Regexp.escape(noun)}\b/i
+    [DRC.right_hand, DRC.left_hand].compact.any? do |held|
+      held =~ item && held !~ /\bunfinished\b/i && !forging_tool?(held)
+    end
+  end
+
+  # Whether a held item is one of the forging_tools from settings. forge.lic
+  # can exit holding one, e.g. its hammer while making a hammer.
+  #
+  # @param held [String] a hand's item name
+  # @return [Boolean]
+  def forging_tool?(held)
+    (@settings.forging_tools || []).any? do |tool|
+      held =~ /\b#{tool.split.map { |word| Regexp.escape(word) }.join('\b.*\b')}\b/i
+    end
   end
 
   def buy_parts(parts)
