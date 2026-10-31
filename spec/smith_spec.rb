@@ -8,9 +8,11 @@ require_relative 'spec_helper'
 load_lic_class('smith.lic', 'Smith')
 
 RSpec.describe Smith do
-  # The private-forge step of #smith: DRCC (lich-5 #1560) walks to and rents
-  # the forge; without it smith uses the public anvil.
-  describe '#smith private-forge routing' do
+  # Where smith sends the character before forge.lic runs. With
+  # use_private_forge, forge.lic walks to and rents the private forge on every
+  # run (the logs show forge reading the notice seconds after smith did), so
+  # smith leaves that to it and only finds a public anvil otherwise.
+  describe '#smith workplace' do
     let(:settings) { OpenStruct.new }
     let(:discipline) { { 'stock-volume' => 100, 'finisher-room' => 1, 'finisher-number' => 2 } }
     let(:recipe) { { 'volume' => 5, 'type' => 'weaponsmithing', 'chapter' => 1, 'name' => 'a dagger', 'noun' => 'dagger' } }
@@ -21,9 +23,9 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@settings, settings)
       instance.instance_variable_set(:@use_private_forge, use_private_forge)
       allow(instance).to receive(:buy_parts).and_return(true)
-      allow(instance).to receive(:check_and_renew_forge_rental)
       allow(DRCC).to receive(:find_anvil)
-      allow(DRCC).to receive(:go_to_private_forge).and_return(true)
+      allow(DRCC).to receive(:go_to_private_forge)
+      allow(DRC).to receive(:bput)
       instance
     end
 
@@ -31,27 +33,14 @@ RSpec.describe Smith do
       instance.smith('bronze', discipline, recipe, [], nil, nil, nil, nil, nil, nil, nil, stay)
     end
 
-    it 'walks to the private forge through DRCC, then checks the rental' do
+    it 'leaves the private forge walk and rental to forge.lic' do
       instance = build(use_private_forge: true)
 
       run_smith(instance)
 
-      expect(DRCC).to have_received(:go_to_private_forge).with('Shard', settings).ordered
-      expect(instance).to have_received(:check_and_renew_forge_rental).ordered
-      expect(DRCC).not_to have_received(:find_anvil)
-    end
-
-    it "skips the private forge walk and rental check with 'here'" do
-      allow(Lich::Messaging).to receive(:msg)
-      instance = build(use_private_forge: true)
-
-      run_smith(instance, stay: true)
-
       expect(DRCC).not_to have_received(:go_to_private_forge)
-      expect(instance).not_to have_received(:check_and_renew_forge_rental)
       expect(DRCC).not_to have_received(:find_anvil)
-      # forge.lic still reads the rental notice with 'here'.
-      expect(Lich::Messaging).to have_received(:msg).with('plain', /skipping the private forge walk\. forge\.lic still checks the rental notice/)
+      expect(DRC).not_to have_received(:bput).with('read notice', any_args)
     end
 
     it 'finds a public anvil when use_private_forge is off' do
@@ -59,8 +48,15 @@ RSpec.describe Smith do
 
       run_smith(instance)
 
-      expect(DRCC).not_to have_received(:go_to_private_forge)
       expect(DRCC).to have_received(:find_anvil).with('Shard')
+    end
+
+    it "stays put with 'here'" do
+      instance = build(use_private_forge: false)
+
+      run_smith(instance, stay: true)
+
+      expect(DRCC).not_to have_received(:find_anvil)
     end
   end
 
