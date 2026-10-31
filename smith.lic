@@ -5,6 +5,12 @@
 require 'time'
 
 class Smith
+  # Ingots this size and larger are sold at the town's bulk materials shop
+  # (bingots-room), not the stock shop. Shard's Supply Stand lists only the
+  # small sizes (tiny, huge, massive); its Bulk Materials lists immense (50),
+  # gigantic (100) and colossal (200), numbered as in base-crafting's stock.
+  BULK_INGOT_VOLUME = 50
+
   MONTH_ABBREVS = %w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].freeze
   RENEWAL_THRESHOLD_MINUTES = 15
   def initialize
@@ -31,8 +37,6 @@ class Smith
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.forging_belt
     discipline = get_data('crafting')['blacksmithing'][@hometown]
-    workorders_materials = @settings.workorders_materials
-    @materials_info = get_data('crafting')['stock'][workorders_materials['metal_type']]
     @container = get_settings.crafting_container
     recipes = get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /blacksmithing|weaponsmithing|armorsmithing/i }
     recipe = DRCC.recipe_lookup(recipes, args.item_name)
@@ -56,15 +60,26 @@ class Smith
   end
 
   def smith(material, discipline, recipe, parts, buy, stamp, temper, hone, balance, lighten, reinforce, stay)
-    if discipline['stock-volume'] < recipe['volume'] && buy
-      echo '***You cannot buy an ingot large enough to craft this item.***'
-      echo '***Automatically combining ingots via smelting is not yet supported.***'
-      echo '***You will need to do so by hand and then call ;smith again.***'
-      exit
+    if buy
+      ingot = ingot_to_buy(material, recipe['volume'], discipline)
+      return unless ingot
+      return if ingot_already_carried?(material)
+
+      # 'here': come back to this room after shopping.
+      return_room = Room.current.id if stay
+      if stay && !return_room
+        Lich::Messaging.msg('bold', "smith: 'buy' with 'here' needs a known room to come back to. Buy the ingot first, then run smith with 'here'.")
+        return
+      end
+
+      DRCM.ensure_copper_on_hand(DRCC.crafting_cost(recipe, @hometown, parts, 1, ingot), @settings, @hometown)
     end
 
-    buy_parts(parts) unless stay
-    buy_ingot(discipline) if buy
+    return unless stay || buy_parts(parts)
+    return if ingot && !buy_ingot(discipline, ingot)
+
+    DRCT.walk_to(return_room) if return_room
+
     if @use_private_forge && !stay
       DRCC.go_to_private_forge(@hometown, @settings)
       check_and_renew_forge_rental
@@ -83,7 +98,7 @@ class Smith
     end
     return unless enhanced
 
-    dispose_scrap(discipline, recipe) if buy
+    report_leftover(recipe, ingot) if ingot
   end
 
   # Run forge.lic and report whether it finished the item.
@@ -151,18 +166,21 @@ class Smith
   # uses it instead of buying another.
   #
   # @param parts [Array<String>] part names from the recipe (may repeat)
-  # @return [void]
+  # @return [Boolean] false when a purchase failed
   def buy_parts(parts)
     DRCI.stow_hands
 
-    missing_parts(parts).each do |part|
+    missing_parts(parts).all? do |part|
       data = get_data('crafting')['recipe_parts'][part][@hometown]
       if data['part-number']
         DRCT.order_item(data['part-room'], data['part-number'])
       else
         DRCT.buy_item(data['part-room'], part)
       end
+      next false unless bought?(part)
+
       DRCC.stow_crafting_item(part, @bag, @belt)
+      true
     end
   end
 
@@ -190,10 +208,66 @@ class Smith
     /#{adjective}\b#{Regexp.escape(noun)}s?\z/i
   end
 
-  def buy_ingot(discipline)
-    DRCT.order_item(discipline['stock-room'], @materials_info['stock-number'])
+  # The smallest ingot of the material on sale in this town that holds the
+  # recipe's volume. Bulk sizes only count where the town has a bulk shop.
+  #
+  # @param material [String] metal name as typed (e.g. "steel")
+  # @param volume [Integer] the recipe's volume
+  # @param discipline [Hash] the town's blacksmithing data
+  # @return [Hash, nil] the base-crafting stock entry, or nil (with a message)
+  #   when that metal isn't sold or no size is large enough
+  def ingot_to_buy(material, volume, discipline)
+    sizes = get_data('crafting')['stock'].values.select do |stock|
+      stock['stock-name'] == material && (stock['stock-volume'] < BULK_INGOT_VOLUME || discipline['bingots-room'])
+    end
+    if sizes.empty?
+      Lich::Messaging.msg('bold', "smith: #{material} ingots aren't sold here, so 'buy' can't be used for #{material}.")
+      return nil
+    end
+
+    ingot = sizes.select { |stock| stock['stock-volume'] >= volume }.min_by { |stock| stock['stock-volume'] }
+    return ingot if ingot
+
+    largest = sizes.map { |stock| stock['stock-volume'] }.max
+    Lich::Messaging.msg('bold', "smith: The largest #{material} ingot sold holds #{largest} volume; this recipe needs #{volume}.")
+    Lich::Messaging.msg('bold', "smith: Combine ingots by smelting, then run smith without 'buy'.")
+    nil
+  end
+
+  # forge.lic takes the first "<metal> ingot" it finds, so with one already
+  # carried a newly bought ingot might not be the one it uses.
+  #
+  # @param material [String] metal name as typed
+  # @return [Boolean] true (with a message) when an ingot of that metal is carried
+  def ingot_already_carried?(material)
+    return false unless DRCI.exists?("#{material} ingot")
+
+    Lich::Messaging.msg('bold', "smith: You already carry a #{material} ingot, and forge would use that one. Run smith without 'buy' to use it, or put it away first.")
+    true
+  end
+
+  # @param discipline [Hash] the town's blacksmithing data
+  # @param ingot [Hash] the stock entry to order
+  # @return [Boolean] false when the purchase failed
+  def buy_ingot(discipline, ingot)
+    shop = ingot['stock-volume'] >= BULK_INGOT_VOLUME ? discipline['bingots-room'] : discipline['stock-room']
+    DRCT.order_item(shop, ingot['stock-number'])
+    return false unless bought?("#{ingot['stock-name']} ingot")
+
     DRCC.stow_crafting_item('ingot', @bag, @belt)
     DRCI.stow_hands
+    true
+  end
+
+  # Whether a purchase left the item in hand; says so when it didn't.
+  #
+  # @param item [String] the item bought
+  # @return [Boolean]
+  def bought?(item)
+    return true if DRCI.in_hands?(item)
+
+    Lich::Messaging.msg('bold', "smith: Could not buy a #{item} (not enough coin, or the shop is closed). Stopping.")
+    false
   end
 
   def stamp_item(noun)
@@ -206,10 +280,18 @@ class Smith
     DRCC.stow_crafting_item('stamp', @bag, @belt)
   end
 
-  def dispose_scrap(discipline, recipe)
-    return unless @materials_info['stock-volume'] > recipe['volume']
+  # Say how much of a bought ingot is left. forge.lic puts the unused part in
+  # the container; it's kept, since a bulk ingot's leftover is worth more
+  # than the item.
+  #
+  # @param recipe [Hash] the base-recipes entry
+  # @param ingot [Hash] the stock entry that was bought
+  # @return [void]
+  def report_leftover(recipe, ingot)
+    leftover = ingot['stock-volume'] - recipe['volume']
+    return unless leftover.positive?
 
-    DRCT.dispose("#{@materials_info['stock-name']} ingot", discipline['trash-room'])
+    Lich::Messaging.msg('plain', "smith: About #{leftover} volumes of #{ingot['stock-name']} ingot are left over in your #{@bag}.")
   end
 
   # Check forge rental status and auto-renew if less than RENEWAL_THRESHOLD_MINUTES remaining

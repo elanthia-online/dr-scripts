@@ -1345,6 +1345,7 @@ module Harness
       def stow_crafting_item(*_args); true; end
       def get_crafting_item(*_args); end
       def logbook_item(*_args); end
+      def crafting_cost(*_args); 0; end
       def order_enchant(*_args); end
       def repair_own_tools(*_args); end
       def check_consumables(*_args); end
