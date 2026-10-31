@@ -84,7 +84,7 @@ class Smith
       DRCC.go_to_private_forge(@hometown, @settings)
       check_and_renew_forge_rental
     elsif @use_private_forge && stay
-      Lich::Messaging.msg('plain', "smith: Using 'here' -- skipping private forge walk and rental check.")
+      Lich::Messaging.msg('plain', "smith: Using 'here' -- skipping the private forge walk. forge.lic still checks the rental notice.")
     else
       DRCC.find_anvil(@hometown) unless stay
     end

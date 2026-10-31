@@ -50,6 +50,8 @@ RSpec.describe Smith do
       expect(DRCC).not_to have_received(:go_to_private_forge)
       expect(instance).not_to have_received(:check_and_renew_forge_rental)
       expect(DRCC).not_to have_received(:find_anvil)
+      # forge.lic still reads the rental notice with 'here'.
+      expect(Lich::Messaging).to have_received(:msg).with('plain', /skipping the private forge walk\. forge\.lic still checks the rental notice/)
     end
 
     it 'finds a public anvil when use_private_forge is off' do
