@@ -1398,6 +1398,16 @@ module Harness
       def release_cyclics(*_args); end
       def stow_cambrinth(*_args); end
       def update_avtalia(*_args); end
+
+      # Same rule as lich-5 DRCA.day_night_ok? (#1691), so specs exercise the
+      # real skip logic. Keep in sync with lich-5.
+      def day_night_ok?(data)
+        sun = UserVars.sun || {}
+        return false if data['night'] && !sun['night']
+        return false if data['day'] && !sun['day']
+
+        true
+      end
     end
   end
 

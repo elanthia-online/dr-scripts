@@ -47,5 +47,22 @@ RSpec.describe BuffWatcher do
       DRSpells._set_active_spells({ 'Bless' => 10, 'Day Ward' => 2 })
       expect(watcher.buffs_active?).to be(false)
     end
+
+    it 'counts as missing only the down spells DRCA.day_night_ok? keeps' do
+      UserVars.sun = { 'day' => true, 'night' => false }
+      allow(DRCA).to receive(:day_night_ok?) { |data| data['abbrev'] != 'dw' }
+      DRSpells._set_active_spells({ 'Bless' => 10, 'Night Ward' => 10 })
+      expect(watcher.buffs_active?).to be(true)
+      DRSpells._set_active_spells({ 'Bless' => 10, 'Day Ward' => 10 })
+      expect(watcher.buffs_active?).to be(false)
+    end
+
+    it 'checks only the plain spells before moonwatch has set UserVars.sun' do
+      UserVars.sun = nil
+      DRSpells._set_active_spells({ 'Bless' => 10 })
+      expect(watcher.buffs_active?).to be(true)
+      DRSpells._set_active_spells({})
+      expect(watcher.buffs_active?).to be(false)
+    end
   end
 end
