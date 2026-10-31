@@ -1061,25 +1061,35 @@ RSpec.describe Forge do
     end
   end
 
-  # The dr-scripts harness stubs a DRCC without the new private-forge helpers,
-  # so these exercise forge's local fallbacks (the path on an older lich-5).
-  describe 'private-forge settings (gated DRCC helpers with local fallback)' do
+  # load_settings resolves the crafting town and the private-forge settings
+  # through DRCC (lich-5 #1560), the same rules smith and makesteel use.
+  describe '#load_settings private-forge settings' do
     let(:forge_instance) { Forge.allocate }
+    let(:settings) do
+      OpenStruct.new(hometown: 'Crossing', force_crafting_town: 'Shard', forging_tools: ['forging hammer'])
+    end
+    let(:args) { OpenStruct.new(recipe_name: 'short sword') }
 
-    it 'crafting_hometown prefers force_crafting_town over hometown' do
-      expect(forge_instance.send(:crafting_hometown, OpenStruct.new(force_crafting_town: 'Shard', hometown: 'Crossing'))).to eq('Shard')
-      expect(forge_instance.send(:crafting_hometown, OpenStruct.new(hometown: 'Crossing'))).to eq('Crossing')
+    before do
+      $test_settings = settings
+      $test_data[:crafting] = { 'blacksmithing' => { 'Shard' => { 'private_forge' => 51_058 } } }
+      allow(DRCC).to receive(:crafting_hometown).with(settings).and_return('Shard')
+      allow(DRCC).to receive(:use_private_forge?).with(settings).and_return(true)
+      allow(DRCC).to receive(:private_forge_cost).with(settings).and_return(7_500)
     end
 
-    it 'use_private_forge? honors use_private_forge and the legacy forge_use_private_forge' do
-      expect(forge_instance.send(:use_private_forge?, OpenStruct.new(use_private_forge: true))).to be true
-      expect(forge_instance.send(:use_private_forge?, OpenStruct.new(forge_use_private_forge: true))).to be true
-      expect(forge_instance.send(:use_private_forge?, OpenStruct.new)).to be false
+    it 'takes the town, the private-forge toggle and its cost from DRCC' do
+      forge_instance.send(:load_settings, args)
+
+      expect(forge_instance.instance_variable_get(:@hometown)).to eq('Shard')
+      expect(forge_instance.instance_variable_get(:@use_private_forge)).to be true
+      expect(forge_instance.instance_variable_get(:@private_forge_cost)).to eq(7_500)
     end
 
-    it 'private_forge_cost uses the setting, else defaults to 50_000' do
-      expect(forge_instance.send(:private_forge_cost, OpenStruct.new(forge_private_forge_cost: 7_500))).to eq(7_500)
-      expect(forge_instance.send(:private_forge_cost, OpenStruct.new)).to eq(50_000)
+    it "reads the town's blacksmithing data for the town DRCC picks" do
+      forge_instance.send(:load_settings, args)
+
+      expect(forge_instance.instance_variable_get(:@info)).to eq({ 'private_forge' => 51_058 })
     end
   end
 
