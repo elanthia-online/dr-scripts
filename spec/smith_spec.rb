@@ -421,6 +421,29 @@ RSpec.describe Smith do
       expect(DRCT).to have_received(:walk_to).with(51_058).ordered
     end
 
+    it "comes back to the starting room, without forging, when the ingot purchase fails with 'here'" do
+      instance = build
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance, here: 'here')
+
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not buy a steel ingot/)
+      expect(DRCT).to have_received(:walk_to).with(51_058)
+      expect(DRC).not_to have_received(:wait_for_script_to_complete).with('forge', anything)
+    end
+
+    it 'says a leftover counts when refusing to buy over a carried ingot' do
+      instance = build
+      allow(DRCI).to receive(:exists?).with('steel ingot').and_return(true)
+
+      smith_with_buy(instance)
+
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /leftover from an earlier run counts.*without 'buy' to forge from it/)
+    end
+
     it "refuses 'buy' with 'here' when the current room is unknown" do
       instance = build
       allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil))

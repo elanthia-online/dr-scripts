@@ -75,10 +75,10 @@ class Smith
       DRCM.ensure_copper_on_hand(DRCC.crafting_cost(recipe, @hometown, parts, 1, ingot), @settings, @hometown)
     end
 
-    return unless stay || buy_parts(parts)
-    return if ingot && !buy_ingot(discipline, ingot)
-
+    # Come back after a failed purchase too: 'here' means forge where you stood.
+    bought = (stay || buy_parts(parts)) && (!ingot || buy_ingot(discipline, ingot))
     DRCT.walk_to(return_room) if return_room
+    return unless bought
 
     if @use_private_forge && !stay
       DRCC.go_to_private_forge(@hometown, @settings)
@@ -242,7 +242,7 @@ class Smith
   def ingot_already_carried?(material)
     return false unless DRCI.exists?("#{material} ingot")
 
-    Lich::Messaging.msg('bold', "smith: You already carry a #{material} ingot, and forge would use that one. Run smith without 'buy' to use it, or put it away first.")
+    Lich::Messaging.msg('bold', "smith: You already carry a #{material} ingot (a leftover from an earlier run counts), and forge would use it rather than a new one. Run smith without 'buy' to forge from it, or move it out of your inventory before buying.")
     true
   end
 
