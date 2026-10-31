@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'yaml'
 require_relative 'spec_helper'
 
 # Load the Smith class (the trailing Smith.new is not executed; load_lic_class
@@ -19,7 +20,7 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@hometown, 'Shard')
       instance.instance_variable_set(:@settings, settings)
       instance.instance_variable_set(:@use_private_forge, use_private_forge)
-      allow(instance).to receive(:buy_parts)
+      allow(instance).to receive(:buy_parts).and_return(true)
       allow(instance).to receive(:check_and_renew_forge_rental)
       allow(DRCC).to receive(:find_anvil)
       allow(DRCC).to receive(:go_to_private_forge).and_return(true)
@@ -69,7 +70,7 @@ RSpec.describe Smith do
   # that was never made.
   describe '#smith after forge.lic exits' do
     let(:settings) { OpenStruct.new }
-    let(:discipline) { { 'stock-volume' => 100, 'finisher-room' => 1, 'finisher-number' => 2, 'trash-room' => 9 } }
+    let(:discipline) { { 'stock-volume' => 100, 'finisher-room' => 1, 'finisher-number' => 2, 'trash-room' => 9, 'bingots-room' => 17_119 } }
     let(:recipe) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star' } }
     let(:forge_runs) { [] }
 
@@ -85,9 +86,9 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@hometown, 'Shard')
       instance.instance_variable_set(:@settings, settings)
       instance.instance_variable_set(:@use_private_forge, false)
-      instance.instance_variable_set(:@materials_info, { 'stock-volume' => 50, 'stock-name' => 'steel' })
-      allow(instance).to receive(:buy_parts)
-      allow(instance).to receive(:buy_ingot)
+      $test_data[:crafting] = { 'stock' => { 'steel50' => { 'stock-volume' => 50, 'stock-number' => 13, 'stock-name' => 'steel' } } }
+      allow(instance).to receive(:buy_parts).and_return(true)
+      allow(instance).to receive(:buy_ingot).and_return(true)
       allow(instance).to receive(:stamp_item)
       allow(DRCT).to receive(:dispose)
       outcomes = held_after_each_run.dup
@@ -104,14 +105,22 @@ RSpec.describe Smith do
       instance.smith('steel', discipline, recipe, parts, buy, stamp, temper, nil, balance, nil, nil, nil)
     end
 
-    it 'stamps, enhances and disposes of the scrap ingot when every forge run finishes the item' do
+    it 'stamps, enhances and reports the leftover ingot when every forge run finishes the item' do
       instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
 
       run_smith(instance)
 
       expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper balance])
       expect(instance).to have_received(:stamp_item).with('star')
-      expect(DRCT).to have_received(:dispose).with('steel ingot', 9)
+      expect(Lich::Messaging).to have_received(:msg).with('plain', /About 39 volumes of steel ingot are left over/)
+    end
+
+    it 'keeps the leftover of a bought ingot instead of trashing it' do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      run_smith(instance)
+
+      expect(DRCT).not_to have_received(:dispose)
     end
 
     it 'never trashes parts: forge.lic uses them up, and a leftover is kept for the next run' do
@@ -207,6 +216,7 @@ RSpec.describe Smith do
       allow(DRCT).to receive(:buy_item)
       allow(DRCT).to receive(:order_item)
       allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
     end
 
     def build_carrying(*bag_items)
@@ -273,6 +283,178 @@ RSpec.describe Smith do
       instance.buy_parts(['small padding', 'small padding'])
 
       expect(DRCT).to have_received(:order_item).with(4436, 7).twice
+    end
+  end
+
+  # 'buy' used to compare the recipe against the town's stock-volume (5 in
+  # every town) and order the workorders_materials metal, whatever metal was
+  # typed: all three ';smith ... buy' runs in the logs (steel morning star,
+  # tyrium awl pike) were refused. smith now picks the smallest ingot of the
+  # typed metal that holds the recipe, from the real stock catalogue.
+  describe "'buy'" do
+    let(:stock) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__))['stock'] }
+    let(:settings) { OpenStruct.new(workorders_materials: { 'metal_type' => 'bronze' }) }
+    let(:discipline) { { 'stock-room' => 4434, 'bingots-room' => 17_119, 'finisher-room' => 1, 'finisher-number' => 2, 'trash-room' => 9611 } }
+    let(:morning_star) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star' } }
+
+    before do
+      $test_data[:crafting] = { 'stock' => stock }
+      allow(Lich::Messaging).to receive(:msg)
+      allow(DRCT).to receive(:order_item)
+      allow(DRCC).to receive(:find_anvil)
+      allow(DRCC).to receive(:crafting_cost).and_return(6_200)
+      allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+    end
+
+    def build
+      instance = Smith.allocate
+      instance.instance_variable_set(:@hometown, 'Shard')
+      instance.instance_variable_set(:@settings, settings)
+      instance.instance_variable_set(:@use_private_forge, false)
+      instance.instance_variable_set(:@bag, 'duffel bag')
+      instance
+    end
+
+    def smith_with_buy(instance, material: 'steel', recipe: morning_star, parts: ['haft'], here: nil)
+      instance.smith(material, discipline, recipe, parts, 'buy', nil, nil, nil, nil, nil, nil, here)
+    end
+
+    describe '#ingot_to_buy' do
+      it 'picks the smallest ingot of the typed metal that holds the recipe' do
+        expect(build.ingot_to_buy('steel', 11, discipline)).to include('stock-name' => 'steel', 'stock-volume' => 50)
+      end
+
+      it 'takes an ingot whose volume equals the recipe volume' do
+        expect(build.ingot_to_buy('steel', 10, discipline)).to include('stock-volume' => 10)
+      end
+
+      it 'refuses, naming the largest size, when no ingot is large enough' do
+        expect(build.ingot_to_buy('steel', 250, discipline)).to be_nil
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /largest steel ingot sold holds 200 volume; this recipe needs 250/)
+      end
+
+      it "refuses a metal the shop doesn't sell" do
+        expect(build.ingot_to_buy('tyrium', 15, discipline)).to be_nil
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /tyrium ingots aren't sold here/)
+      end
+
+      it 'offers only the stock shop sizes in a town without a bulk shop' do
+        no_bulk_shop = discipline.except('bingots-room')
+
+        expect(build.ingot_to_buy('steel', 10, no_bulk_shop)).to include('stock-volume' => 10)
+        expect(build.ingot_to_buy('steel', 11, no_bulk_shop)).to be_nil
+        expect(build.ingot_to_buy('iron', 11, no_bulk_shop)).to be_nil
+      end
+    end
+
+    # Shard, 2025-05-24: the Supply Stand (stock-room 4434) sold 'a massive
+    # steel ingot' as order 9; the Bulk Materials shop (bingots-room 17119)
+    # sold 'an immense steel ingot' as order 13.
+    it 'orders a bulk-size ingot of the typed metal from the bulk shop, not the workorders_materials metal' do
+      instance = build
+      allow(instance).to receive(:buy_parts).and_return(true)
+      allow(DRCI).to receive(:in_hands?).with('steel ingot').and_return(true)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance)
+
+      expect(DRCT).to have_received(:order_item).with(17_119, 13)
+      expect(DRCT).not_to have_received(:order_item).with(anything, 11)
+    end
+
+    it 'orders a small ingot from the stock shop' do
+      instance = build
+      allow(instance).to receive(:buy_parts).and_return(true)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance, recipe: morning_star.merge('volume' => 10))
+
+      expect(DRCT).to have_received(:order_item).with(4434, 9)
+    end
+
+    it 'refuses to buy when an ingot of that metal is already carried, since forge would use that one' do
+      instance = build
+      allow(instance).to receive(:buy_parts)
+      allow(DRCI).to receive(:exists?).with('steel ingot').and_return(true)
+
+      smith_with_buy(instance)
+
+      expect(instance).not_to have_received(:buy_parts)
+      expect(DRCT).not_to have_received(:order_item)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /already carry a steel ingot/)
+    end
+
+    it "comes back to the starting room after buying with 'here'" do
+      instance = build
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance, here: 'here')
+
+      expect(DRCT).to have_received(:order_item).ordered
+      expect(DRCT).to have_received(:walk_to).with(51_058).ordered
+    end
+
+    it "refuses 'buy' with 'here' when the current room is unknown" do
+      instance = build
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil))
+
+      smith_with_buy(instance, here: 'here')
+
+      expect(DRCT).not_to have_received(:order_item)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /needs a known room to come back to/)
+    end
+
+    it 'gets enough coin for the ingot and the parts before buying' do
+      instance = build
+      allow(instance).to receive(:buy_parts).and_return(true)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance)
+
+      expect(DRCC).to have_received(:crafting_cost).with(morning_star, 'Shard', ['haft'], 1, hash_including('stock-number' => 13))
+      expect(DRCM).to have_received(:ensure_copper_on_hand).with(6_200, settings, 'Shard')
+    end
+
+    it 'buys nothing when no ingot fits' do
+      instance = build
+      allow(instance).to receive(:buy_parts)
+
+      smith_with_buy(instance, recipe: morning_star.merge('volume' => 250))
+
+      expect(instance).not_to have_received(:buy_parts)
+      expect(DRCT).not_to have_received(:order_item)
+    end
+
+    it 'stops before forging when the ingot purchase fails' do
+      instance = build
+      allow(instance).to receive(:buy_parts).and_return(true)
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance)
+
+      expect(DRC).not_to have_received(:wait_for_script_to_complete).with('forge', anything)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not buy a steel ingot/)
+    end
+
+    it 'stops before buying the ingot when a part purchase fails' do
+      $test_data[:crafting]['recipe_parts'] = { 'haft' => { 'Shard' => { 'part-room' => 4436, 'part-number' => nil } } }
+      instance = build
+      allow(DRCI).to receive(:get_item_list).and_return([])
+      allow(DRCT).to receive(:buy_item)
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+      allow(DRC).to receive(:wait_for_script_to_complete)
+
+      smith_with_buy(instance)
+
+      expect(DRCT).not_to have_received(:order_item)
+      expect(DRC).not_to have_received(:wait_for_script_to_complete).with('forge', anything)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not buy a haft/)
     end
   end
 end
