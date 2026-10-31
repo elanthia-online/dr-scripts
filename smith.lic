@@ -84,7 +84,6 @@ class Smith
     return unless enhanced
 
     dispose_scrap(discipline, recipe) if buy
-    dispose_parts(discipline, parts) unless stay
   end
 
   # Run forge.lic and report whether it finished the item.
@@ -146,10 +145,17 @@ class Smith
     end
   end
 
+  # Buy the recipe's parts, skipping any already in the crafting container.
+  #
+  # A part bought for a run that failed stays in the bag, so the next run
+  # uses it instead of buying another.
+  #
+  # @param parts [Array<String>] part names from the recipe (may repeat)
+  # @return [void]
   def buy_parts(parts)
     DRCI.stow_hands
 
-    parts.each do |part|
+    missing_parts(parts).each do |part|
       data = get_data('crafting')['recipe_parts'][part][@hometown]
       if data['part-number']
         DRCT.order_item(data['part-room'], data['part-number'])
@@ -158,6 +164,29 @@ class Smith
       end
       DRCC.stow_crafting_item(part, @bag, @belt)
     end
+  end
+
+  # The parts the crafting container doesn't hold yet, one entry per part
+  # still needed. A container item is that part when it ends with the part's
+  # noun (or its plural) and contains its first word: "short cord" is the
+  # short leather cord, but a short-hafted halberd is not a haft.
+  #
+  # @param parts [Array<String>] part names from the recipe (may repeat)
+  # @return [Array<String>] the parts to buy
+  def missing_parts(parts)
+    carried = DRCI.get_item_list(@bag) || []
+    parts.reject do |part|
+      index = carried.index { |item| item =~ part_pattern(part) }
+      carried.delete_at(index) if index
+    end
+  end
+
+  # @param part [String] a part name, e.g. "short cord"
+  # @return [Regexp] matches a container item that is this part
+  def part_pattern(part)
+    *adjectives, noun = part.split
+    adjective = adjectives.first && "\\b#{Regexp.escape(adjectives.first)}\\b.*"
+    /#{adjective}\b#{Regexp.escape(noun)}s?\z/i
   end
 
   def buy_ingot(discipline)
@@ -180,12 +209,6 @@ class Smith
     return unless @materials_info['stock-volume'] > recipe['volume']
 
     DRCT.dispose("#{@materials_info['stock-name']} ingot", discipline['trash-room'])
-  end
-
-  def dispose_parts(discipline, parts)
-    parts.each do |part|
-      DRCT.dispose(part, discipline['trash-room'])
-    end
   end
 
   # Check forge rental status and auto-renew if less than RENEWAL_THRESHOLD_MINUTES remaining
