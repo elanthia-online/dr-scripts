@@ -301,18 +301,6 @@ class Forge
 
   # @!endgroup
 
-  # @!group Private Forge Constants
-
-  # Patterns for successful private forge entry
-  # @return [Array<String>]
-  PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
-
-  # Patterns for blocked private forge entry
-  # @return [Array<String>]
-  PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
-
-  # @!endgroup
-
   # Initialize and run the forge script.
   #
   # Parses command-line arguments, validates settings, and orchestrates
@@ -715,10 +703,10 @@ class Forge
   # @raise [SystemExit] if blocked from entering
   def attempt_private_forge_entry
     debug_log('Not in private forge room - trying to enter manually...')
-    result = DRC.bput('go door', *PRIVATE_FORGE_ENTRY_SUCCESS, *PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
+    result = DRC.bput('go door', *DRCC::PRIVATE_FORGE_ENTRY_SUCCESS, *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
 
     case result
-    when *PRIVATE_FORGE_ENTRY_BLOCKED
+    when *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED
       error_log('BLOCKED from entering private forge!')
       error_log("The sentry won't let you in. Possible reasons:")
       error_log('  - Not enough money on hand (need ~5 plat)')
