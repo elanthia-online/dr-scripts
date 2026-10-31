@@ -147,6 +147,19 @@ RSpec.describe Smith do
       expect(instance).not_to have_received(:stamp_item)
     end
 
+    it 'stops, naming the clash, when the recipe makes a tool listed in forging_tools' do
+      settings.forging_tools = ['ball-peen hammer', 'tongs']
+      recipe.merge!('name' => 'a metal ball-peen hammer', 'noun' => 'hammer')
+      instance = build_with_forge_outcomes('steel ball-peen hammer')
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(1)
+      expect(instance).not_to have_received(:stamp_item)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /steel ball-peen hammer in hand is named like one of your forging_tools/)
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not finish/)
+    end
+
     it 'does not take an unrelated held item for the finished one' do
       instance = build_with_forge_outcomes('steel starfish')
 
