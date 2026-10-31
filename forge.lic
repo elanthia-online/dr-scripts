@@ -414,7 +414,7 @@ class Forge
   # @return [void]
   def load_settings(args)
     settings = get_settings
-    @hometown = crafting_hometown(settings)
+    @hometown = DRCC.crafting_hometown(settings)
     @stamp = settings.mark_crafted_goods
     @cube = settings.cube_armor_piece
     @bag = settings.crafting_container
@@ -432,34 +432,10 @@ class Forge
     @metal = args.metal
     @next_spin = Time.now
     @debug = args.debug || settings.debug_mode
-    @use_private_forge = use_private_forge?(settings)
-    @private_forge_cost = private_forge_cost(settings)
+    @use_private_forge = DRCC.use_private_forge?(settings)
+    @private_forge_cost = DRCC.private_forge_cost(settings)
     @show_progress = settings.forge_show_progress
     @settings = settings
-  end
-
-  # --- Private-forge helpers (normalized across smith/forge/makesteel). --------
-  # Prefer the shared DRCC helpers (lich-5 #1560); fall back to a local copy so
-  # the script keeps working on an older lich-5. The fallbacks can be deleted
-  # once DRCC ships these methods everywhere. (forge keeps its own richer
-  # go_to_private_forge navigation; only the settings resolution is shared.)
-
-  def crafting_hometown(settings)
-    return DRCC.crafting_hometown(settings) if DRCC.respond_to?(:crafting_hometown)
-
-    settings.force_crafting_town || settings.hometown
-  end
-
-  def use_private_forge?(settings)
-    return DRCC.use_private_forge?(settings) if DRCC.respond_to?(:use_private_forge?)
-
-    settings.use_private_forge || settings.forge_use_private_forge || false
-  end
-
-  def private_forge_cost(settings)
-    return DRCC.private_forge_cost(settings) if DRCC.respond_to?(:private_forge_cost)
-
-    settings.forge_private_forge_cost || 50_000
   end
 
   # Validate required settings and preconditions.
