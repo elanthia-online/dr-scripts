@@ -8,8 +8,10 @@ require_relative 'spec_helper'
 load_lic_class('smith.lic', 'Smith')
 
 # The shipped data smith reads, loaded once. Specs use the real stock
-# catalogue, part shops, town data and recipes, so a data change that breaks
-# smith fails here too.
+# catalogue, part shops, town data and recipes. The rooms and numbers smith
+# sends in Shard are pinned as literals, so a renamed, emptied or changed
+# Shard entry fails here; other towns are checked only where a spec names
+# them (Ratha's missing bulk shop).
 module SmithSpecData
   # @return [Hash] data/base-crafting.yaml
   def self.crafting
@@ -254,7 +256,7 @@ RSpec.describe Smith do
 
       instance.smith(smith_args, morning_star)
 
-      expect(calls).to eq([[:oil, 'oil', shard['finisher-room'], shard['finisher-number'], 'duffel bag', bag_items, belt], ['buff'], ['forge']])
+      expect(calls).to eq([[:oil, 'oil', 4436, 6, 'duffel bag', bag_items, belt], ['buff'], ['forge']])
     end
   end
 
@@ -446,7 +448,6 @@ RSpec.describe Smith do
   # crafting container. Bag items below are the names the logs show.
   describe '#buy_parts' do
     let(:instance) { build_smith }
-    let(:part_shop) { ->(part) { SmithSpecData.crafting['recipe_parts'][part]['Shard'] } }
 
     before do
       allow(DRCT).to receive(:buy_item)
@@ -463,8 +464,9 @@ RSpec.describe Smith do
       carrying('steel ingot', 'flask of oil')
 
       expect(instance.buy_parts(['short cord', 'haft'])).to be true
-      expect(DRCT).to have_received(:buy_item).with(part_shop['short cord']['part-room'], 'short cord')
-      expect(DRCT).to have_received(:buy_item).with(part_shop['haft']['part-room'], 'haft')
+      # Shard sells both parts in room 4436 (base-crafting recipe_parts).
+      expect(DRCT).to have_received(:buy_item).with(4436, 'short cord')
+      expect(DRCT).to have_received(:buy_item).with(4436, 'haft')
     end
 
     it "orders a part the town's shop sells by number (Shard long cord: 'order 17' in Kurtus' logs)" do
@@ -472,7 +474,7 @@ RSpec.describe Smith do
 
       instance.buy_parts(['long cord'])
 
-      expect(DRCT).to have_received(:order_item).with(part_shop['long cord']['part-room'], 17)
+      expect(DRCT).to have_received(:order_item).with(10_939, 17)
       expect(DRCT).not_to have_received(:buy_item)
     end
 
@@ -617,7 +619,7 @@ RSpec.describe Smith do
 
         instance.smith(smith_args(buy: 'buy'), morning_star)
 
-        expect(DRCT).to have_received(:order_item).with(shard['bingots-room'], 13)
+        expect(DRCT).to have_received(:order_item).with(17_119, 13)
         expect(DRCT).not_to have_received(:order_item).with(anything, 11)
         expect(forge_runs.size).to eq(1)
       end
@@ -625,7 +627,7 @@ RSpec.describe Smith do
       it 'orders a small ingot from the stock shop' do
         instance.smith(smith_args(buy: 'buy'), morning_star.merge('volume' => 10))
 
-        expect(DRCT).to have_received(:order_item).with(shard['stock-room'], 9)
+        expect(DRCT).to have_received(:order_item).with(4434, 9)
       end
 
       it "comes back to the starting room after shopping with 'here'" do
