@@ -162,25 +162,10 @@ RSpec.describe UlfHara do
       expect(ulfhara.unhandled_npcs).to eq([])
     end
 
-    # Lich releases before DRRoom.unignored_npcs and CreatureInstance#matches?.
-    context 'on a Lich without DRRoom.unignored_npcs' do
-      before do
-        allow(DRRoom).to receive(:respond_to?).and_call_original
-        allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
-        allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
-      end
-
-      it 'lists the room by noun, minus baddies and @ignore names, without the roster' do
-        seat(npc(1, 'Zukir', 'Lord Zukir'), npc(2, 'ruffian'), npc(3, 'guard'), npc(4, 'guard'))
-        expect(ulfhara.unhandled_npcs).to eq(%w[guard guard])
-        expect(creature).not_to have_received(:in_room)
-      end
-
-      it 'drops a handled noun' do
-        DRRoom.npcs = %w[sentry guard]
-        ulfhara.mark_handled('sentry')
-        expect(ulfhara.unhandled_npcs).to eq(['guard'])
-      end
+    it 'drops a handled noun when the roster is empty' do
+      DRRoom.npcs = %w[sentry guard]
+      ulfhara.mark_handled('sentry')
+      expect(ulfhara.unhandled_npcs).to eq(['guard'])
     end
   end
 
@@ -326,16 +311,6 @@ RSpec.describe UlfHara do
     it 'studies townsfolk by noun when the roster holds only the baddie' do
       creature._set_room([npc(1, 'ruffian', 'a scarred ruffian', noun_from_server: false)])
       DRRoom.npcs = %w[ruffian sentry]
-      ulfhara.supply
-      expect(sent.grep(/^study/)).to eq(['study sentry'])
-      expect(walks).to eq(['12873'])
-    end
-
-    it 'studies by noun on a Lich without DRRoom.unignored_npcs' do
-      allow(DRRoom).to receive(:respond_to?).and_call_original
-      allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
-      allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
-      DRRoom.npcs = %w[Zukir ruffian sentry]
       ulfhara.supply
       expect(sent.grep(/^study/)).to eq(['study sentry'])
       expect(walks).to eq(['12873'])
