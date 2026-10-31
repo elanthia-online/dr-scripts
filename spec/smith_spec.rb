@@ -271,6 +271,16 @@ RSpec.describe Smith do
       expect(DRCT).to have_received(:buy_item).with(4436, 'haft')
     end
 
+    # forge.lic asks for "another finished wooden hilt", so an unfinished
+    # piece left in the bag is not a part it can use.
+    it 'does not count an unfinished part as one already carried' do
+      instance = build_carrying('unfinished simple oak haft')
+
+      instance.buy_parts(%w[haft])
+
+      expect(DRCT).to have_received(:buy_item).with(4436, 'haft')
+    end
+
     it 'buys everything when the container cannot be listed (get_item_list returns nil)' do
       instance = build_carrying
       allow(DRCI).to receive(:get_item_list).and_return(nil)

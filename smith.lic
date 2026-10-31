@@ -169,14 +169,15 @@ class Smith
   # The parts the crafting container doesn't hold yet, one entry per part
   # still needed. A container item is that part when it ends with the part's
   # noun (or its plural) and contains its first word: "short cord" is the
-  # short leather cord, but a short-hafted halberd is not a haft.
+  # short leather cord, but a short-hafted halberd is not a haft. An
+  # unfinished piece doesn't count: forge.lic asks for a finished part.
   #
   # @param parts [Array<String>] part names from the recipe (may repeat)
   # @return [Array<String>] the parts to buy
   def missing_parts(parts)
     carried = DRCI.get_item_list(@bag) || []
     parts.reject do |part|
-      index = carried.index { |item| item =~ part_pattern(part) }
+      index = carried.index { |item| item =~ part_pattern(part) && item !~ /\bunfinished\b/i }
       carried.delete_at(index) if index
     end
   end
