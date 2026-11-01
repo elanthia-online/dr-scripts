@@ -115,7 +115,7 @@ RSpec.describe Smith do
       expect(Lich::Messaging).to have_received(:msg).with('plain', /About 39 volumes of steel ingot are left over/)
     end
 
-    it 'keeps the leftover of a bought ingot instead of trashing it' do
+    it 'keeps the leftover of a bought bulk ingot instead of trashing it' do
       instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
 
       run_smith(instance)
@@ -406,6 +406,47 @@ RSpec.describe Smith do
       expect(instance).not_to have_received(:buy_parts)
       expect(DRCT).not_to have_received(:order_item)
       expect(Lich::Messaging).to have_received(:msg).with('bold', /already carry a steel ingot/)
+    end
+
+    # craft.lic's train_forging runs `smith bronze <item> buy` unattended on
+    # every Forging cycle, for recipes of volume 1-4 cut from a 5-volume
+    # stock-shop ingot. A kept remainder would make the carried-ingot check
+    # refuse every cycle after the first.
+    describe 'leftover of a bought ingot' do
+      let(:cup) { { 'volume' => 1, 'type' => 'blacksmithing', 'chapter' => 1, 'name' => 'a shallow metal cup', 'noun' => 'cup' } }
+      let(:carried) { [] }
+
+      before do
+        allow(DRCI).to receive(:exists?) { |item| carried.include?(item) }
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCT).to receive(:order_item) { |_room, number| carried << (number == 11 ? 'bronze ingot' : 'steel ingot') }
+        allow(DRCT).to receive(:dispose) { |item, *| carried.delete(item) }
+        allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+          $right_hand = "#{args[3]} #{args[4]}" if name == 'forge'
+        end
+      end
+
+      it 'disposes of a stock-shop remainder, so craft.lic can buy again on the next cycle' do
+        2.times { smith_with_buy(build, material: 'bronze', recipe: cup, parts: []) }
+
+        expect(DRCT).to have_received(:order_item).with(4434, 11).twice
+        expect(DRCT).to have_received(:dispose).with('bronze ingot', 9611, nil, nil).twice
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /already carry/)
+      end
+
+      it 'keeps and reports the remainder of a bulk ingot' do
+        smith_with_buy(build, parts: [])
+
+        expect(DRCT).to have_received(:order_item).with(17_119, 13)
+        expect(DRCT).not_to have_received(:dispose)
+        expect(Lich::Messaging).to have_received(:msg).with('plain', /About 39 volumes of steel ingot are left over in your duffel bag/)
+      end
+
+      it 'disposes of nothing when the recipe uses the whole ingot' do
+        smith_with_buy(build, material: 'bronze', recipe: cup.merge('volume' => 5), parts: [])
+
+        expect(DRCT).not_to have_received(:dispose)
+      end
     end
 
     it "comes back to the starting room after buying with 'here'" do
