@@ -442,6 +442,34 @@ RSpec.describe Smith do
         expect(Lich::Messaging).to have_received(:msg).with('plain', /About 39 volumes of steel ingot are left over in your duffel bag/)
       end
 
+      # DRCI.dispose_trash returns false when the drop fails and nil when it
+      # can't get the item. A remainder still carried makes every later 'buy'
+      # refuse, so smith says why.
+      it 'says so when the remainder could not be disposed of and is still carried' do
+        allow(DRCT).to receive(:dispose).and_return(false)
+
+        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not dispose of the leftover bronze ingot.*next 'buy' of bronze will refuse/)
+      end
+
+      it 'stays quiet when a failed disposal left no ingot behind' do
+        allow(DRCT).to receive(:dispose) { |item, *| carried.delete(item) && nil }
+
+        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+
+        expect(DRCI).to have_received(:exists?).with('bronze ingot').twice
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /Could not dispose/)
+      end
+
+      it "doesn't look for the ingot again after a disposal that worked" do
+        allow(DRCT).to receive(:dispose).and_return(true)
+
+        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+
+        expect(DRCI).to have_received(:exists?).with('bronze ingot').once
+      end
+
       it 'disposes of nothing when the recipe uses the whole ingot' do
         smith_with_buy(build, material: 'bronze', recipe: cup.merge('volume' => 5), parts: [])
 

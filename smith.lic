@@ -285,7 +285,8 @@ class Smith
   # is worth more than the item. A stock-shop remainder is disposed of, as
   # before: it is worth little, and a kept one would make the next 'buy' of
   # that metal refuse (#ingot_already_carried?), which stalls callers that
-  # buy every run, such as craft.lic's Forging training.
+  # buy every run, such as craft.lic's Forging training. If the disposal
+  # fails and the remainder is still carried, smith says so.
   #
   # @param discipline [Hash] the town's blacksmithing data
   # @param recipe [Hash] the base-recipes entry
@@ -297,9 +298,14 @@ class Smith
 
     if ingot['stock-volume'] >= BULK_INGOT_VOLUME
       Lich::Messaging.msg('plain', "smith: About #{leftover} volumes of #{ingot['stock-name']} ingot are left over in your #{@bag}.")
-    else
-      DRCT.dispose("#{ingot['stock-name']} ingot", discipline['trash-room'], @settings.worn_trashcan, @settings.worn_trashcan_verb)
+      return
     end
+
+    name = "#{ingot['stock-name']} ingot"
+    return if DRCT.dispose(name, discipline['trash-room'], @settings.worn_trashcan, @settings.worn_trashcan_verb)
+    return unless DRCI.exists?(name)
+
+    Lich::Messaging.msg('bold', "smith: Could not dispose of the leftover #{name}, so the next 'buy' of #{ingot['stock-name']} will refuse. Run smith without 'buy' to forge from it, or get rid of it by hand.")
   end
 
   # Check forge rental status and auto-renew if less than RENEWAL_THRESHOLD_MINUTES remaining
