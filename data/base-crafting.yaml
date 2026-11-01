@@ -468,6 +468,7 @@ blacksmithing:
     bingots-room: 17118 # crossing
     trash-room: 19264
     idle-room: 19246
+    private_forge: 52505
   Muspar'i:
     npc: Master
     npc_last_name: Master
@@ -646,10 +647,10 @@ blacksmithing:
     repair-room: 16409
     repair-npc: clerk
     stock-room: 16405
-    bingots-room: 17119 # shard
+    bingots-room: 51499
     trash-room: 16412
     idle-room: 16405
-    private_forge: 51498
+    private_forge: 52506
   Ratha:
     npc: Grimbly
     npc_last_name: Grimbly
@@ -774,6 +775,7 @@ blacksmithing:
     bingots-room: 51659
     trash-room: 8895
     idle-room: 8893
+    private_forge: 51128
   Fang Cove:
     npc: Phahoe
     npc_last_name: Phahoe
@@ -851,7 +853,7 @@ blacksmithing:
     repair-room: 11807
     repair-npc: Diwitt
     stock-room: 8811
-    bingots-room: # left intentionally blank until bingots are added here
+    bingots-room: 51684
     trash-room: 8813
     idle-room: 8808
   Boar Clan:
@@ -1856,6 +1858,21 @@ recipe_parts:
     Fang Cove:
       part-room: 14793
       part-number:
+    Riverhaven:
+      part-room: 8784
+      part-number:
+    Langenfirth:
+      part-room: 8784
+      part-number:
+    Therenborough:
+      part-room: 8784
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
+      part-number:
   large backing:
     Crossing:
       part-room: 8776
@@ -1886,6 +1903,21 @@ recipe_parts:
       part-number:
     Fang Cove:
       part-room: 14793
+      part-number:
+    Riverhaven:
+      part-room: 8784
+      part-number:
+    Langenfirth:
+      part-room: 8784
+      part-number:
+    Therenborough:
+      part-room: 8784
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   small padding:
     Crossing:
@@ -1927,6 +1959,12 @@ recipe_parts:
     Fang Cove:
       part-room: 14793
       part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
+      part-number:
   long pole:
     Crossing:
       part-room: 8776
@@ -1966,6 +2004,12 @@ recipe_parts:
       part-number:
     Fang Cove:
       part-room: 14793
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   short pole:
     Crossing:
@@ -2007,6 +2051,12 @@ recipe_parts:
     Fang Cove:
       part-room: 14793
       part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
+      part-number:
   long cord:
     Crossing:
       part-room: 8776
@@ -2046,6 +2096,12 @@ recipe_parts:
       part-number:
     Fang Cove:
       part-room: 14793
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   short cord:
     Crossing:
@@ -2087,6 +2143,12 @@ recipe_parts:
     Fang Cove:
       part-room: 14793
       part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
+      part-number:
   large padding:
     Crossing:
       part-room: 8776
@@ -2124,6 +2186,12 @@ recipe_parts:
       part-number:
     Fang Cove:
       part-room: 14793
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   hilt:
     Crossing:
@@ -2165,6 +2233,12 @@ recipe_parts:
     Fang Cove:
       part-room: 14793
       part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
+      part-number:
   haft:
     Crossing:
       part-room: 8776
@@ -2204,6 +2278,12 @@ recipe_parts:
       part-number:
     Fang Cove:
       part-room: 14793
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   leather shield handle:
     Crossing:
@@ -2260,6 +2340,12 @@ recipe_parts:
       part-number: 16
     Fang Cove:
       part-room: 14793
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   thread:
     Crossing:
@@ -2433,6 +2519,15 @@ recipe_parts:
       part-number:
     Fang Cove:
       part-room: 14793
+      part-number:
+    Mer'Kresh:
+      part-room: 8810
+      part-number:
+    Volcano:
+      part-room: 19246
+      part-number:
+    Aesry:
+      part-room: 17692
       part-number:
   backing:
     Crossing:
