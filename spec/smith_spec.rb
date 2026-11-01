@@ -336,9 +336,9 @@ RSpec.describe Smith do
       expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper])
     end
 
-    # Regression guards: smith no longer trashes anything (forge.lic uses the
-    # parts, and a bought ingot's leftover is kept). Its old trash step threw
-    # parts away even after a failed run.
+    # Regression guards: smith no longer trashes parts (forge.lic uses them)
+    # or a bulk ingot's leftover (it's kept). Its old trash step threw parts
+    # away even after a failed run.
     describe 'the removed trash step' do
       it 'stays removed after a finished run' do
         forge_runs_end_holding('steel morning star', 'steel morning star', 'steel morning star')
@@ -690,6 +690,37 @@ RSpec.describe Smith do
       end
     end
 
+    # craft.lic's train_forging runs `smith bronze <item> buy` unattended on
+    # every Forging cycle, for recipes of volume 1-4 cut from a 5-volume
+    # stock-shop ingot. A kept remainder would make the carried-ingot check
+    # refuse every cycle after the first.
+    context 'when craft.lic buys a small bronze ingot on two Forging cycles in a row' do
+      let(:cup) { SmithSpecData.recipe('a shallow metal cup') }
+      let(:carried) { [] }
+
+      before do
+        allow(DRCI).to receive(:exists?) { |item| carried.include?(item) }
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:get_item_list).and_return([])
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCC).to receive(:crafting_cost).and_return(200)
+        allow(DRCT).to receive(:order_item) { carried << 'bronze ingot' }
+        allow(DRCT).to receive(:dispose) { |item, *| carried.delete(item) }
+        forge_runs_end_holding('bronze cup', 'bronze cup')
+        2.times { build_smith.smith(smith_args(material: 'bronze', buy: 'buy'), cup) }
+      end
+
+      it 'buys and forges on both cycles' do
+        expect(DRCT).to have_received(:order_item).with(4434, 11).twice
+        expect(forge_runs.size).to eq(2)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /already carry/)
+      end
+
+      it 'disposes of each 4-volume remainder at the trash room' do
+        expect(DRCT).to have_received(:dispose).with('bronze ingot', 9611, nil, nil).twice
+      end
+    end
+
     context "when 'buy' and 'here' are used in an unknown room" do
       before do
         allow(DRCT).to receive(:order_item)
@@ -814,17 +845,29 @@ RSpec.describe Smith do
     end
   end
 
-  describe '#report_leftover' do
-    it 'says how much of a bought ingot is left in the crafting container' do
-      build_smith.report_leftover(morning_star, { 'stock-name' => 'steel', 'stock-volume' => 50 })
+  describe '#handle_leftover' do
+    it "keeps a bulk ingot's leftover and says how much is in the crafting container" do
+      build_smith.handle_leftover(morning_star, { 'stock-name' => 'steel', 'stock-volume' => 50 })
 
       expect(Lich::Messaging).to have_received(:msg).with('plain', 'smith: About 39 volumes of steel ingot are left over in your duffel bag.')
+      expect(DRCT).not_to have_received(:dispose)
     end
 
-    it 'says nothing when the ingot was exactly the recipe volume' do
-      build_smith.report_leftover(morning_star.merge('volume' => 10), { 'stock-name' => 'steel', 'stock-volume' => 10 })
+    it "disposes of a stock-shop ingot's remainder at the town's trash room" do
+      settings.worn_trashcan = 'leather bucket'
+      settings.worn_trashcan_verb = 'tip'
+
+      build_smith.handle_leftover(morning_star.merge('volume' => 4), { 'stock-name' => 'bronze', 'stock-volume' => 5 })
+
+      expect(DRCT).to have_received(:dispose).with('bronze ingot', 9611, 'leather bucket', 'tip')
+      expect(Lich::Messaging).not_to have_received(:msg)
+    end
+
+    it 'does nothing when the ingot was exactly the recipe volume' do
+      build_smith.handle_leftover(morning_star.merge('volume' => 10), { 'stock-name' => 'steel', 'stock-volume' => 10 })
 
       expect(Lich::Messaging).not_to have_received(:msg)
+      expect(DRCT).not_to have_received(:dispose)
     end
   end
 end
