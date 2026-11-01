@@ -7,9 +7,10 @@
 #
 # smith buys what the recipe needs (parts, and the ingot with 'buy'), gets the
 # character to a workplace, restocks oil, then runs forge.lic for the item and
-# once more for each enhancement. It stamps the item if asked and reports what
-# is left of a bought ingot. After a failed forge run it stops: the remaining
-# steps would act on an item that was never made.
+# once more for each enhancement. It stamps the item if asked, then keeps a
+# bought bulk ingot's leftover or disposes of a smaller remainder. After a
+# failed forge run it stops: the remaining steps would act on an item that was
+# never made.
 #
 # With use_private_forge, forge.lic walks to and rents the private forge itself.
 # smith only finds a public anvil, and only when that setting is off.
@@ -95,7 +96,7 @@ class Smith
     DRC.wait_for_script_to_complete('buff', ['smith'])
     return unless craft(args, recipe)
 
-    handle_leftover(discipline, recipe, ingot) if ingot
+    handle_leftover(recipe, ingot) if ingot
   end
 
   # Run forge.lic for the item, stamp it if asked, then run it for each
@@ -365,11 +366,10 @@ class Smith
   # buy every run, such as craft.lic's Forging training. If the disposal
   # fails and the remainder is still carried, smith says so.
   #
-  # @param discipline [Hash] the town's blacksmithing data
   # @param recipe [Hash] the base-recipes entry
   # @param ingot [Hash] the stock entry that was bought
   # @return [void]
-  def handle_leftover(discipline, recipe, ingot)
+  def handle_leftover(recipe, ingot)
     leftover = ingot['stock-volume'] - recipe['volume']
     return unless leftover.positive?
 
@@ -379,7 +379,7 @@ class Smith
     end
 
     name = "#{ingot['stock-name']} ingot"
-    return if DRCT.dispose(name, discipline['trash-room'], @settings.worn_trashcan, @settings.worn_trashcan_verb)
+    return if DRCT.dispose(name, @discipline['trash-room'], @settings.worn_trashcan, @settings.worn_trashcan_verb)
     return unless DRCI.exists?(name)
 
     Lich::Messaging.msg('bold', "smith: Could not dispose of the leftover #{name}, so the next 'buy' of #{ingot['stock-name']} will refuse. Run smith without 'buy' to forge from it, or get rid of it by hand.")

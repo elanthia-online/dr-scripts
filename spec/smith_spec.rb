@@ -446,7 +446,7 @@ RSpec.describe Smith do
       end
 
       it 'disposes of a stock-shop remainder, so craft.lic can buy again on the next cycle' do
-        2.times { smith_with_buy(build, material: 'bronze', recipe: cup, parts: []) }
+        2.times { smith_with_buy(build, material: 'bronze', recipe: cup) }
 
         expect(DRCT).to have_received(:order_item).with(4434, 11).twice
         expect(DRCT).to have_received(:dispose).with('bronze ingot', 9611, nil, nil).twice
@@ -454,7 +454,7 @@ RSpec.describe Smith do
       end
 
       it 'keeps and reports the remainder of a bulk ingot' do
-        smith_with_buy(build, parts: [])
+        smith_with_buy(build, recipe: morning_star.except('part'))
 
         expect(DRCT).to have_received(:order_item).with(17_119, 13)
         expect(DRCT).not_to have_received(:dispose)
@@ -467,7 +467,7 @@ RSpec.describe Smith do
       it 'says so when the remainder could not be disposed of and is still carried' do
         allow(DRCT).to receive(:dispose).and_return(false)
 
-        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup)
 
         expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not dispose of the leftover bronze ingot.*next 'buy' of bronze will refuse/)
       end
@@ -475,7 +475,7 @@ RSpec.describe Smith do
       it 'stays quiet when a failed disposal left no ingot behind' do
         allow(DRCT).to receive(:dispose) { |item, *| carried.delete(item) && nil }
 
-        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup)
 
         expect(DRCI).to have_received(:exists?).with('bronze ingot').twice
         expect(Lich::Messaging).not_to have_received(:msg).with('bold', /Could not dispose/)
@@ -484,13 +484,13 @@ RSpec.describe Smith do
       it "doesn't look for the ingot again after a disposal that worked" do
         allow(DRCT).to receive(:dispose).and_return(true)
 
-        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup)
 
         expect(DRCI).to have_received(:exists?).with('bronze ingot').once
       end
 
       it 'disposes of nothing when the recipe uses the whole ingot' do
-        smith_with_buy(build, material: 'bronze', recipe: cup.merge('volume' => 5), parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup.merge('volume' => 5))
 
         expect(DRCT).not_to have_received(:dispose)
       end
