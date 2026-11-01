@@ -863,6 +863,40 @@ RSpec.describe Smith do
       expect(Lich::Messaging).not_to have_received(:msg)
     end
 
+    # DRCI.dispose_trash returns false when the drop fails and nil when it
+    # can't get the item. A remainder still carried makes every later 'buy'
+    # refuse, so smith says why.
+    context 'when the disposal fails' do
+      let(:bronze) { { 'stock-name' => 'bronze', 'stock-volume' => 5 } }
+
+      it 'says the next buy will refuse while the remainder is still carried' do
+        allow(DRCT).to receive(:dispose).and_return(false)
+        allow(DRCI).to receive(:exists?).with('bronze ingot').and_return(true)
+
+        build_smith.handle_leftover(morning_star.merge('volume' => 4), bronze)
+
+        expect(Lich::Messaging).to have_received(:msg).with('bold', "smith: Could not dispose of the leftover bronze ingot, so the next 'buy' of bronze will refuse. Run smith without 'buy' to forge from it, or get rid of it by hand.")
+      end
+
+      it 'stays quiet when no remainder is left behind' do
+        allow(DRCT).to receive(:dispose).and_return(nil)
+        allow(DRCI).to receive(:exists?).with('bronze ingot').and_return(false)
+
+        build_smith.handle_leftover(morning_star.merge('volume' => 4), bronze)
+
+        expect(Lich::Messaging).not_to have_received(:msg)
+      end
+    end
+
+    it "doesn't look for the remainder again after a disposal that worked" do
+      allow(DRCT).to receive(:dispose).and_return(true)
+      allow(DRCI).to receive(:exists?)
+
+      build_smith.handle_leftover(morning_star.merge('volume' => 4), { 'stock-name' => 'bronze', 'stock-volume' => 5 })
+
+      expect(DRCI).not_to have_received(:exists?)
+    end
+
     it 'does nothing when the ingot was exactly the recipe volume' do
       build_smith.handle_leftover(morning_star.merge('volume' => 10), { 'stock-name' => 'steel', 'stock-volume' => 10 })
 
