@@ -260,12 +260,12 @@ class CrossingRepair
       command = "give my ticket to #{repairer}"
     end
 
-    case DRC.bput(command, 'You hand', 'takes your ticket', "You don't need to specify the object", 'almost done', "Well that isn't gonna be done")
+    case DRC.bput(command, 'You hand', 'takes your ticket', "You don't need to specify the object", 'almost done', "Well that isn't gonna be done", "That's not ready yet")
     when 'You hand', 'takes your ticket'
       true
     when "You don't need to specify the object"
       turn_in_ticket(repairer, true)
-    when 'almost done', "Well that isn't gonna be done"
+    when 'almost done', "Well that isn't gonna be done", "That's not ready yet"
       pause 30
       turn_in_ticket(repairer)
     else
