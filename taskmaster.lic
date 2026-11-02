@@ -1,4 +1,6 @@
 =begin
+version: 2026.11.02
+
   YAML SETTINGS(all optional but the first)
   task_loot_bag: bagname
   task_no_repair: true/false # skip repairing tools entirely
