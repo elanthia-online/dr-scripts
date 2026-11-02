@@ -1487,6 +1487,65 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #work -- unrecognized replies must not loop forever
+  # ===========================================================================
+  describe '#work unrecognized replies' do
+    let(:sent) { [] }
+    let(:give_up_message) do
+      "sew: No recognized response to 'put thread on my sewing needles' after #{Sew::MAX_UNMATCHED} tries. Cannot continue crafting."
+    end
+
+    # Feeds the replies in order (as bput returns them: the matched text,
+    # or '' on a timeout) and records each command sent. Runs out of
+    # replies with an exit so a broken guard cannot hang the suite.
+    def run_work(command, *replies)
+      allow(DRC).to receive(:bput) do |cmd, *|
+        sent << cmd
+        raise 'too many bput calls' if replies.empty?
+
+        replies.shift
+      end
+      expect { sew.send(:work, command) }.to raise_error(SystemExit)
+    end
+
+    before(:each) do
+      sew.instance_variable_set(:@cube, nil)
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:magic_cleanup)
+      allow(sew).to receive(:swap_tool)
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(Lich::Messaging).to receive(:msg)
+    end
+
+    it 'gives up after MAX_UNMATCHED empty replies in a row' do
+      run_work('put thread on my sewing needles', '', '', '')
+
+      expect(sent).to eq(['put thread on my sewing needles'] * 3)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message)
+      expect(sew).to have_received(:magic_cleanup)
+    end
+
+    it 'keeps retrying while under the limit' do
+      run_work('push my rucksack with my sewing needles', '', '', 'You need a larger amount of material to continue crafting')
+
+      expect(sent).to eq(['push my rucksack with my sewing needles'] * 3)
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No recognized response'))
+    end
+
+    it 'resets the count after a recognized reply' do
+      run_work('push my rucksack with my sewing needles',
+               '', '', 'scissor cuts', '', '', 'You need a larger amount of material to continue crafting')
+
+      expect(sent.length).to eq(6)
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No recognized response'))
+    end
+
+    it 'keeps MAX_UNMATCHED above one so a single late reply is retried' do
+      expect(Sew::MAX_UNMATCHED).to be > 1
+    end
+  end
+
+  # ===========================================================================
   # Edge cases and integration-level scenarios
   # ===========================================================================
   describe 'finish default for resume' do

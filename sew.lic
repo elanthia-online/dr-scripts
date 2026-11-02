@@ -22,6 +22,9 @@ class Sew
   NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
   NO_QUOTE_RUN = '(?:<[^>]*>|[^"<])*'
 
+  # Unrecognized replies in a row before #work gives up on a command.
+  MAX_UNMATCHED = 3
+
   def initialize
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
@@ -210,6 +213,7 @@ class Sew
 
   def work(command)
     DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/, /^You reach out and touch/) if @cube
+    unmatched = 0
     loop do
       DRCA.crafting_magic_routine(@settings)
       renew_rental if Flags['sew-rental-warning']
@@ -259,6 +263,18 @@ class Sew
                         /^You realize that cannot be repaired, and stop/,
                         /^You must be holding the .* to do that/,
                         /^You cannot do that while engaged!/)
+      # bput returns an empty string when no matcher fits. Resending the
+      # same command would loop forever, so give up after a few misses.
+      if result.empty?
+        unmatched += 1
+        next if unmatched < MAX_UNMATCHED
+
+        Lich::Messaging.msg('bold', "sew: No recognized response to '#{command}' after #{MAX_UNMATCHED} tries. Cannot continue crafting.")
+        magic_cleanup
+        exit
+      end
+      unmatched = 0
+
       case result
       when /You need a larger amount of material to continue crafting/
         Lich::Messaging.msg('bold', "sew: Not enough material to continue crafting #{@noun}. Exiting.")
