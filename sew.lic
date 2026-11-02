@@ -249,6 +249,7 @@ class Sew
                         'wrinkles from all the handling and could use',
                         'You are already knitting',
                         'You carefully thread some cotton thread',
+                        'is already threaded with',
                         'You must assemble',
                         'You need another',
                         'You untie and discard',
@@ -284,9 +285,17 @@ class Sew
         swap_tool('slickstone')
         command = "scrape my #{@noun} with my slickstone"
       when 'The needles need to have thread put on them before they can be used for sewing'
+        # Take the id while the needles are still in hand. Once they are tied
+        # or stowed, "my sewing needles" can pick a spare pair instead.
+        needles_id = GameObj.right_hand&.id
+        unless needles_id
+          Lich::Messaging.msg('bold', 'sew: Could not identify the sewing needles to thread. Cannot continue crafting.')
+          magic_cleanup
+          exit
+        end
         swap_tool('cotton thread', true)
-        command = 'put thread on my sewing needles'
-      when 'You carefully thread some cotton thread'
+        command = "put my thread on ##{needles_id}"
+      when 'You carefully thread some cotton thread', 'is already threaded with'
         swap_tool('sewing needles')
         command = "push my #{@noun} with my sewing needles"
       when 'What were you referring', 'I could not find what you were'
