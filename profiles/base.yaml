@@ -3031,6 +3031,9 @@ task_cooldown_poll: 15
 task_junk_list: []
 # Setting for taskmaster - Send a Slack message (to slack_username) for each keeper.
 task_slack_keepers: false
+# Setting for taskmaster - Put a keeper's item in task_loot_bag and bin its empty sack, instead of
+# keeping the whole sack. Falls back to keeping the sack if any step fails.
+task_unpack_keepers: false
 
 # Setting for taskmaster - boosts to use. task: BOOST TASK when a task is on cooldown
 # (task_use_boost: true also turns this on). haste: keep BOOST HASTE running between tasks.

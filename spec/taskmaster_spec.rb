@@ -1717,6 +1717,129 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe '#sort_sack with task_unpack_keepers' do
+      let(:sack) { OpenStruct.new(noun: 'sack', id: '63768227') }
+      let(:bar) { OpenStruct.new(noun: 'bar', id: '63768234') }
+      let(:empty_hand) { OpenStruct.new(noun: nil, id: nil) }
+      # Replies from a live run (Hollow Eve 2026, a woven sack holding a large tyrium bar).
+      let(:got_bar) { 'You get a large tyrium bar from inside your woven sack.' }
+      let(:sack_empty) { "There's nothing inside a woven sack!" }
+
+      def unpacker(**settings)
+        build(settings: { task_junk_list: ['dye'], task_unpack_keepers: true }.merge(settings),
+              lootbag: "traveler's.pack", worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+          .tap { |tm| tm.send(:configure_loot_filter) }
+      end
+
+      # Plays a sack holding `contents` through sort_sack. get_replies are the
+      # replies to successive `get <noun> from #<sack>`; a get answered with
+      # got_bar puts the bar in the left hand.
+      def unpack(tm, contents: 'a large tyrium bar', get_replies: [got_bar], inventory: sack_empty, put_ok: true)
+        hands = { right: sack, left: empty_hand }
+        allow(GameObj).to receive(:right_hand) { hands[:right] }
+        allow(GameObj).to receive(:left_hand) { hands[:left] }
+        allow(DRC).to receive(:left_hand) { hands[:left]&.noun }
+        allow(DRC).to receive(:right_hand) { hands[:right]&.noun }
+        allow(tm).to receive(:pause)
+        game('look in my sack'            => "In the woven sack you see #{contents}.",
+             'get coin from my sack'      => 'What were you referring to?',
+             'get '                       => lambda do |*|
+               reply = get_replies.shift
+               hands[:left] = bar if reply == got_bar
+               reply
+             end,
+             'inventory #63768227'        => inventory,
+             'put #63768234 in #63768227' => 'You put your bar in your woven sack.')
+        allow(DRCI).to receive(:put_away_item?) { |item, _bag| item == '#63768234' ? put_ok : true }
+        allow(DRCI).to receive(:dispose_trash)
+        UserVars.taskmaster_sacks = { 'zasele' => [] }
+        tm.sort_sack('netting')
+      end
+
+      it 'takes the item out by noun from the sack id, puts it away by its own id, and bins the empty sack' do
+        tm = unpacker
+        unpack(tm)
+        expect(DRC).to have_received(:bput).with('get bar from #63768227', any_args)
+        expect(DRC).to have_received(:bput).with('inventory #63768227', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('sack', 'bucket', 'tap')
+        expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
+      end
+
+      it 'waits for a free hand and retries once when another script holds it' do
+        tm = unpacker
+        unpack(tm, get_replies: ['You need a free hand to pick that up.', got_bar])
+        expect(DRC).to have_received(:bput).with('get bar from #63768227', any_args).twice
+        expect(DRCI).to have_received(:dispose_trash)
+      end
+
+      it 'keeps the whole sack when the get fails twice for want of a hand' do
+        tm = unpacker
+        unpack(tm, get_replies: ['You need a free hand to pick that up.'] * 2)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the whole sack when the noun does not match the item' do
+        tm = unpacker
+        unpack(tm, contents: '3 haledroth shards', get_replies: ['What were you referring to?'])
+        expect(DRC).to have_received(:bput).with('get shards from #63768227', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'puts the item back in the sack and keeps the sack when the loot bag will not take the item' do
+        tm = unpacker
+        unpack(tm, put_ok: false)
+        expect(DRC).to have_received(:bput).with('put #63768234 in #63768227', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps a sack that is not empty after the item is out, with whatever is left in it' do
+        tm = unpacker
+        unpack(tm, inventory: 'Inside a woven sack, you see:')
+        expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the sack when INVENTORY gives no recognised reply' do
+        tm = unpacker
+        unpack(tm, inventory: '')
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the sack when the sack in hand has no id' do
+        tm = unpacker
+        allow(tm).to receive(:held_id).and_call_original
+        allow(tm).to receive(:held_id).with('sack').and_return(nil)
+        unpack(tm)
+        expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+      end
+
+      it 'never unpacks junk, which is binned with its sack as before' do
+        tm = unpacker
+        unpack(tm, contents: 'some coral dye')
+        expect(DRC).not_to have_received(:bput).with(/\Aget dye/, any_args)
+        expect(DRCI).to have_received(:dispose_trash).with('sack', 'bucket', 'tap')
+      end
+
+      it 'keeps the whole sack, as before, when task_unpack_keepers is off' do
+        tm = unpacker(task_unpack_keepers: false)
+        unpack(tm)
+        expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'gets task_unpack_keepers as false from base.yaml' do
+        expect(base_yaml).to include('task_unpack_keepers' => false)
+      end
+    end
+
     describe '#remember_sack' do
       it 'records each sack for loot_history' do
         UserVars.taskmaster_sacks = { 'zasele' => [] }
