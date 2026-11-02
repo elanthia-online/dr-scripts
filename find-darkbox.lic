@@ -2,70 +2,153 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#find-darkbox
 =end
 
-arg_definitions = [
-  [
-    { name: 'override', regex: /override/i, optional: true, description: 'Use remedies instead of herbs if herbs defined in yaml and passed into heal-remedy.' }
-  ]
-]
+# Finds the Hollow Eve Darkbox among the rooms it wanders between and plays it
+# until it vanishes, the bank stops lending, herbs run out or wounds stop play.
+# Each prize is thrown away when it matches hollow_eve_junk and put in
+# hollow_eve_loot_container otherwise.
+class FindDarkbox
+  # Rooms the Darkbox wanders between, in search order.
+  ROOMS = [16_150, 16_153, 16_154, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293,
+           16_294, 16_295, 16_296, 16_159, 16_161, 16_166, 16_169, 16_174, 16_185, 16_217,
+           16_221, 16_224, 16_226, 16_227, 16_235, 16_188, 16_195, 16_203, 16_204, 16_205,
+           16_208, 16_238, 16_240, 16_241, 16_242, 16_244, 16_248, 16_249, 16_263,
+           16_264, 16_267, 16_268, 16_318, 16_256, 16_257].freeze
 
-args = parse_args(arg_definitions)
-override = args.override
-settings = get_settings
-# Anchored to the end of the held item's name, which is where its noun sits, so
-# a junk word only matches as the noun: 'peach' trashes a peach but not a peach
-# pearl.
-trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\z/i }
-darkbox_stop_on_wounded = settings.darkbox_stop_on_wounded
-he_use_herbs_remedies = settings.he_use_herbs_remedies
-hollow_eve_loot_container = settings.hollow_eve_loot_container
-worn_trashcan = settings.worn_trashcan
-worn_trashcan_verb = settings.worn_trashcan_verb
+  # Where the script finishes.
+  EXIT_ROOM = 16_150
 
-rooms = [16_150, 16_153, 16_154, 16_276, 16_277, 16_278, 16_290, 16_291, 16_292, 16_293,
-         16_294, 16_295, 16_296, 16_159, 16_161, 16_166, 16_169, 16_174, 16_185, 16_217,
-         16_221, 16_224, 16_226, 16_227, 16_235, 16_188, 16_195, 16_203, 16_204, 16_205,
-         16_208, 16_238, 16_240, 16_241, 16_242, 16_244, 16_248, 16_249, 16_263,
-         16_264, 16_267, 16_268, 16_318, 16_256, 16_257]
+  # The bank to visit when out of Kronars.
+  BANK_ROOM = 16_315
 
-fput("stop play") # In case you were playing a song.
+  # Taken from the bank each visit; one play costs 200 Kronars.
+  WITHDRAWAL = '3 platinum'.freeze
 
-if UserVars.last_darkbox && rooms.include?(UserVars.last_darkbox)
-  rooms.rotate! until rooms.first == UserVars.last_darkbox
-end
+  # Seconds to wait after a refused move before walking on.
+  REFUSED_MOVE_PAUSE = 20
 
-rooms.each do |id|
-  pause 20 if reget(5, '^You try, but')
-  break if DRRoom.room_objs.any? { |x| /Darkbox/ =~ x }
+  # Seconds for herbs to work before the next play, so the game does not answer
+  # with the nausea message.
+  HERB_PAUSE = 65
 
-  DRCT.walk_to(id)
-end
+  # Start of a game line: optional leading XML tags and nothing else, so another
+  # player's speech, ESP or whisper carrying the same words never matches.
+  LINE_START = '^(?:<[^>]+>)*'.freeze
 
-UserVars.last_darkbox = Room.current.id
-Flags.add('darkbox-drop', '^(?:<[^>]+>)*Your .* falls to the ground')
-Flags.add('darkbox-gone', '^(?:<[^>]+>)*Without warning, the Darkbox simply vanishes')
-Flags.add('darkbox-wounded', '^(?:<[^>]+>)*Your injury increases the difficulty of the game, but you press on')
-Flags.add('darkbox-no-money', /^(?:<[^>]+>)*You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing./)
+  # Flags this script registers, by name.
+  FLAGS = {
+    'darkbox-drop'     => "#{LINE_START}Your .* falls to the ground",
+    'darkbox-gone'     => "#{LINE_START}Without warning, the Darkbox simply vanishes",
+    'darkbox-wounded'  => "#{LINE_START}Your injury increases the difficulty of the game, but you press on",
+    'darkbox-no-money' => /#{LINE_START}You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing./
+  }.freeze
 
-loop do
-  if Flags['darkbox-gone']
-    UserVars.last_darkbox = nil
-    break
+  # Removes every flag in {FLAGS}.
+  #
+  # @return [void]
+  def self.delete_flags
+    FLAGS.each_key { |name| Flags.delete(name) }
   end
-  Flags.reset('darkbox-drop')
-  fput('stand') unless checkstanding
-  break if darkbox_stop_on_wounded && Flags['darkbox-wounded']
 
-  fput('play darkbox')
-  pause 1
-  if reget(5, "^What type of song did you want to play?")
-    DRC.message("*** Darkbox not found in any of the rooms! ***")
+  # @param settings [OpenStruct] the character's settings (get_settings)
+  # @param override [Boolean] pass 'override' to heal-remedy, so it uses
+  #   remedies even when herbs are set
+  def initialize(settings, override: false)
+    @override = override
+    # Anchored to the end of the held item's name, which is where its noun
+    # sits, so a junk word only matches as the noun: 'peach' trashes a peach
+    # but not a peach pearl.
+    @trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\z/i }
+    @stop_on_wounded = settings.darkbox_stop_on_wounded
+    @use_herbs_remedies = settings.he_use_herbs_remedies
+    @loot_container = settings.hollow_eve_loot_container
+    @worn_trashcan = settings.worn_trashcan
+    @worn_trashcan_verb = settings.worn_trashcan_verb
+  end
+
+  # Finds the Darkbox, plays it until a stop condition, then walks to
+  # {EXIT_ROOM}.
+  #
+  # @return [void]
+  def run
+    fput('stop play') # In case you were playing a song.
+    find_darkbox
+    UserVars.last_darkbox = Room.current.id
+    FLAGS.each { |name, pattern| Flags.add(name, pattern) }
+    play_until_done
+    DRCT.walk_to(EXIT_ROOM)
+  end
+
+  private
+
+  # {ROOMS}, starting from the room the Darkbox was last played in.
+  #
+  # @return [Array<Integer>]
+  def search_order
+    start = ROOMS.index(UserVars.last_darkbox)
+    start ? ROOMS.rotate(start) : ROOMS
+  end
+
+  # Walks the rooms in {search_order} until one holds the Darkbox. Stops in the
+  # last room when none does; the first play then reports it missing.
+  #
+  # @return [void]
+  def find_darkbox
+    search_order.each do |id|
+      pause REFUSED_MOVE_PAUSE if reget(5, '^You try, but')
+      break if darkbox_here?
+
+      DRCT.walk_to(id)
+    end
+  end
+
+  # @return [Boolean] whether the Darkbox is in the current room
+  def darkbox_here?
+    DRRoom.room_objs.any? { |obj| /Darkbox/ =~ obj }
+  end
+
+  # Plays until a stop condition. Exits the script when there is no Darkbox,
+  # the bank stops lending or a prize cannot be put away.
+  #
+  # @return [void]
+  def play_until_done
+    loop do
+      if Flags['darkbox-gone']
+        UserVars.last_darkbox = nil
+        break
+      end
+      Flags.reset('darkbox-drop')
+      fput('stand') unless checkstanding
+      break if @stop_on_wounded && Flags['darkbox-wounded']
+
+      play
+      restock_kronars if Flags['darkbox-no-money']
+      break if blocked_by_wounds? && !heal_wounds?
+
+      handle_prizes
+      waitrt?
+    end
+  end
+
+  # Plays the Darkbox once. Exits the script when there is none to play.
+  #
+  # @return [void]
+  def play
+    fput('play darkbox')
+    pause 1
+    return unless reget(5, '^What type of song did you want to play?')
+
+    DRC.message('*** Darkbox not found in any of the rooms! ***')
     exit
   end
-  # break if Flags['darkbox-no-money']
-  if Flags['darkbox-no-money']
-    DRC.message("*** You are out of money. Heading to bank to get more! ***")
-    DRCT.walk_to(16_315)
-    case DRC.bput('withdraw 3 platinum', 'we are not lending money at this time', 'The clerk counts out')
+
+  # Takes {WITHDRAWAL} from the bank and walks back. Exits the script when the
+  # bank will not lend.
+  #
+  # @return [void]
+  def restock_kronars
+    DRC.message('*** You are out of money. Heading to bank to get more! ***')
+    DRCT.walk_to(BANK_ROOM)
+    case DRC.bput("withdraw #{WITHDRAWAL}", 'we are not lending money at this time', 'The clerk counts out')
     when 'we are not lending money at this time'
       exit
     end
@@ -74,51 +157,69 @@ loop do
     DRCT.walk_to(UserVars.last_darkbox)
   end
 
-  if reget(10, '^[^"]*?your wounds make it impossible')
-    if he_use_herbs_remedies
-      if override
-        DRC.wait_for_script_to_complete('heal-remedy', ['quick', 'override'])
+  # @return [Boolean] whether the game refused the last play for wounds
+  def blocked_by_wounds?
+    reget(10, '^[^"]*?your wounds make it impossible')
+  end
+
+  # Treats wounds with heal-remedy when he_use_herbs_remedies is set.
+  #
+  # @return [Boolean] true to play on, false to stop
+  def heal_wounds?
+    return false unless @use_herbs_remedies
+
+    DRC.wait_for_script_to_complete('heal-remedy', @override ? %w[quick override] : ['quick'])
+    if reget(3, '^What were')
+      DRC.message('*** Out of herbs or remedies! Seek out more or an Empath! ***')
+      return false
+    end
+    pause HERB_PAUSE
+    true
+  end
+
+  # Throws away or puts away whatever is in either hand.
+  #
+  # @return [void]
+  def handle_prizes
+    [DRC.left_hand, DRC.right_hand].compact.each do |item|
+      if trash?(item)
+        DRCI.dispose_trash(item, @worn_trashcan, @worn_trashcan_verb)
       else
-        DRC.wait_for_script_to_complete('heal-remedy', ['quick'])
+        store(item)
       end
-      if reget(3, '^What were')
-        DRC.message("*** Out of herbs or remedies! Seek out more or an Empath! ***")
-        break
-      end
-      pause 65 # Gives time for herbs to work so you do not receive the feel nasua message
-    else
-      break
     end
   end
 
-  [DRC.left_hand, DRC.right_hand]
-    .compact
-    .each do |in_hand|
-      if in_hand
-        case in_hand
-        when *trash_items
-          DRCI.dispose_trash(in_hand, worn_trashcan, worn_trashcan_verb)
-        else
-          # Coil rope so we can store it
-          if /\brope\b/ =~ in_hand
-            fput("coil my #{in_hand}")
-          end
-          if !DRCI.put_away_item?(in_hand, hollow_eve_loot_container)
-            DRC.message("*** The item is either too big to fit or no more room in the container(s)! ***")
-            DRC.beep
-            exit
-          end
-        end
-      end
-    end
-  waitrt?
+  # @param item [String] a held item's name, as DRC.left_hand returns it
+  # @return [Boolean] whether the item matches hollow_eve_junk
+  def trash?(item)
+    @trash_items.any? { |pattern| pattern.match?(item) }
+  end
+
+  # Puts a prize in hollow_eve_loot_container, coiling a rope first so it fits.
+  # Exits the script when it will not go in.
+  #
+  # @param item [String] a held item's name
+  # @return [void]
+  def store(item)
+    fput("coil my #{item}") if /\brope\b/ =~ item
+    return if DRCI.put_away_item?(item, @loot_container)
+
+    DRC.message('*** The item is either too big to fit or no more room in the container(s)! ***')
+    DRC.beep
+    exit
+  end
 end
 
-DRCT.walk_to(16_150)
+arg_definitions = [
+  [
+    { name: 'override', regex: /override/i, optional: true, description: 'Use remedies instead of herbs if herbs defined in yaml and passed into heal-remedy.' }
+  ]
+]
+
+args = parse_args(arg_definitions)
+FindDarkbox.new(get_settings, override: args.override).run
 
 before_dying do
-  Flags.delete('darkbox-drop')
-  Flags.delete('darkbox-gone')
-  Flags.delete('darkbox-wounded')
-  Flags.delete('darkbox-no-money')
+  FindDarkbox.delete_flags
 end
