@@ -105,6 +105,8 @@ class Sew
       end
       work(command)
     end
+    # Before the consumables check: its get needs a free hand too.
+    clear_hands
     if @recipe_name.include?('seal')
       DRCC.check_consumables('wax', @info['tool-room'], 10, @bag, @bag_items, @belt) unless args.skip
     elsif @chapter != 5
@@ -133,9 +135,12 @@ class Sew
 
   # A new item starts with empty hands. Anything still held, such as the
   # item a previous run finished with 'hold', blocks every later get.
-  # Enhancements work on the held item, so that one stays.
+  # Enhancements work on the held item, so that one stays. DRC.right_hand
+  # and DRC.left_hand shorten names of three or more words to the first and
+  # last word ("quilted cloth shirt" becomes "quilted shirt"), so the keep
+  # matches the noun's last word, the one the shortening leaves in place.
   def clear_hands
-    keep = @noun.tr('.', ' ') if @recipe_name.include?('tailored armor')
+    keep = @noun.tr('.', ' ').split.last if @recipe_name.include?('tailored armor')
     [DRC.right_hand, DRC.left_hand].each do |item|
       next if item.nil? || (keep && item.include?(keep))
 
@@ -144,7 +149,6 @@ class Sew
   end
 
   def prep
-    clear_hands
     DRCA.crafting_magic_routine(@settings)
     if @instructions
       DRCC.get_crafting_item("#{@noun} instructions", @bag, @bag_items, @belt)

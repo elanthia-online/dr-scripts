@@ -1147,9 +1147,21 @@ RSpec.describe Sew do
         expect(DRCC).not_to have_received(:stow_crafting_item)
       end
 
-      it 'keeps a dotted noun once dots become spaces' do
+      # DRC.left_hand shortens 'quilted cloth shirt' to 'quilted shirt'
+      # (fix_dr_bullshit keeps the first and last word), so these fixtures
+      # use the shortened names the real hand readers return.
+      it 'keeps a dotted noun when the hand name has been shortened' do
         sew.instance_variable_set(:@noun, 'cloth.shirt')
-        $left_hand = 'quilted cloth shirt'
+        $left_hand = 'quilted shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'keeps a dotted noun when the hand name was short enough to keep' do
+        sew.instance_variable_set(:@noun, 'cloth.shirt')
+        $left_hand = 'cloth shirt'
 
         sew.send(:clear_hands)
 
@@ -1158,12 +1170,12 @@ RSpec.describe Sew do
 
       it 'still stows anything else' do
         $right_hand = 'sealing wax'
-        $left_hand = 'quilted cloth shirt'
+        $left_hand = 'quilted shirt'
 
         sew.send(:clear_hands)
 
         expect(DRCC).to have_received(:stow_crafting_item).with('sealing wax', 'duffel bag', nil)
-        expect(DRCC).not_to have_received(:stow_crafting_item).with('quilted cloth shirt', anything, anything)
+        expect(DRCC).not_to have_received(:stow_crafting_item).with('quilted shirt', anything, anything)
       end
     end
   end
@@ -1190,13 +1202,6 @@ RSpec.describe Sew do
       sew.instance_variable_set(:@chapter, 1)
       sew.instance_variable_set(:@cloth, Sew::CLOTH)
       sew.instance_variable_set(:@cube, nil)
-    end
-
-    it 'clears its hands before anything else' do
-      expect(sew).to receive(:clear_hands).ordered
-      expect(DRCA).to receive(:crafting_magic_routine).ordered
-
-      sew.send(:prep)
     end
 
     it 'always calls crafting_magic_routine first' do
@@ -1746,6 +1751,52 @@ RSpec.describe Sew do
   # ===========================================================================
   # Flags matchers -- only the game's own lines, not other players' text
   # ===========================================================================
+  # ===========================================================================
+  # #initialize -- hands are cleared before the consumables check
+  # ===========================================================================
+  describe '#initialize clearing hands' do
+    let(:calls) { [] }
+
+    before(:each) do
+      $test_settings = OpenStruct.new(hometown: 'Crossing', crafting_training_spells: [])
+      $test_data = OpenStruct.new(crafting: { 'tailoring' => { 'Crossing' => { 'tool-room' => 1, 'stock-room' => 2 } } })
+      allow(sew).to receive(:clear_hands) { calls << :clear_hands }
+      allow(DRCC).to receive(:check_consumables) { |name, *| calls << "check_consumables #{name}" }
+      allow(sew).to receive(:check_rental_status)
+      allow(sew).to receive(:prep).and_return('push my rucksack with my needles')
+      allow(sew).to receive(:work)
+    end
+
+    # check_consumables starts with a get, which a full pair of hands
+    # answers with "You need a free hand"; it matches neither of its
+    # patterns, so it would time out and buy stock the player owns.
+    it 'clears hands before checking pins and thread' do
+      $parsed_args = OpenStruct.new(finish: 'stow', type: 'sewing', chapter: '2', recipe_name: +'rucksack',
+                                    material: 'burlap', noun: 'rucksack')
+
+      sew.send(:initialize)
+
+      expect(calls).to eq([:clear_hands, 'check_consumables pins', 'check_consumables thread'])
+    end
+
+    it 'clears hands before checking wax for a seal' do
+      $parsed_args = OpenStruct.new(recipe_name: +'seal', noun: 'shirt')
+
+      sew.send(:initialize)
+
+      expect(calls).to eq([:clear_hands, 'check_consumables wax'])
+    end
+
+    it 'still clears hands when skip turns the consumables check off' do
+      $parsed_args = OpenStruct.new(finish: 'stow', type: 'sewing', chapter: '2', recipe_name: +'rucksack',
+                                    material: 'burlap', noun: 'rucksack', skip: 'skip')
+
+      sew.send(:initialize)
+
+      expect(calls).to eq([:clear_hands])
+    end
+  end
+
   describe 'flag matchers registered by #initialize' do
     # Feed a server line through the registered Flags matchers, the way
     # Lich's DRParser.check_events does for every downstream line.
