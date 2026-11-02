@@ -36,6 +36,46 @@
 # @author Elanthia Online
 # @since 2025-12-29 Refactored with finish option and rental renewal
 class Forge
+  # parse_args definitions, one argument pattern per entry (see #initialize).
+  # 'here' keeps forge in the current room instead of walking to the private
+  # forge; smith passes it with its own 'here'.
+  # @return [Array<Array<Hash>>]
+  ARG_DEFINITIONS = [
+    [
+      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
+      { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
+      { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
+      { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'name of item being crafted' },
+      { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
+      { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ],
+    [
+      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
+      { name: 'instructions', regex: /instructions/i, description: 'Instructions if using instructions' },
+      { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item being crafted' },
+      { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
+      { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ],
+    [
+      { name: 'recipe_name', display: 'Enhancement', options: %w[temper balance hone lighten reinforce], description: 'Enhancements applied to finished weapons and armor' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to enhance.' },
+      { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
+      { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ],
+    [
+      { name: 'resume', regex: /resume/i },
+      { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to resume.' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ]
+  ].freeze
+
   # @!group Rental Patterns
 
   # Pattern to extract rental expiration time
@@ -322,40 +362,7 @@ class Forge
   #
   # @return [void]
   def initialize
-    arg_definitions = [
-      [
-        { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
-        { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
-        { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
-        { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
-        { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'name of item being crafted' },
-        { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ],
-      [
-        { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
-        { name: 'instructions', regex: /instructions/i, description: 'Instructions if using instructions' },
-        { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item being crafted' },
-        { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ],
-      [
-        { name: 'recipe_name', display: 'Enhancement', options: %w[temper balance hone lighten reinforce], description: 'Enhancements applied to finished weapons and armor' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to enhance.' },
-        { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ],
-      [
-        { name: 'resume', regex: /resume/i },
-        { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to resume.' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ]
-    ]
-
-    args = parse_args(arg_definitions)
+    args = parse_args(ARG_DEFINITIONS)
     setup_flags
     load_settings(args)
     validate_setup(args)
@@ -504,7 +511,7 @@ class Forge
   # @param args [OpenStruct] parsed command-line arguments
   # @return [void]
   def execute_workflow(args)
-    go_to_private_forge if @use_private_forge && !args.resume
+    go_to_private_forge if @use_private_forge && !args.resume && !args.here
     check_rental_status
     check_all_consumables unless args.skip
     set_defaults

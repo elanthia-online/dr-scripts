@@ -50,6 +50,8 @@ RSpec.describe Smith do
       expect(DRCC).not_to have_received(:go_to_private_forge)
       expect(instance).not_to have_received(:check_and_renew_forge_rental)
       expect(DRCC).not_to have_received(:find_anvil)
+      # forge.lic still reads the rental notice with 'here'.
+      expect(Lich::Messaging).to have_received(:msg).with('plain', /skipping the private forge walk\. forge\.lic still checks the rental notice/)
     end
 
     it 'finds a public anvil when use_private_forge is off' do
@@ -191,6 +193,23 @@ RSpec.describe Smith do
       expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper])
       expect(instance).to have_received(:stamp_item)
       expect(DRCT).not_to have_received(:dispose)
+    end
+
+    it "tells every forge run to skip restocking and stay in the room with 'here'" do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      instance.smith('steel', discipline, recipe, [], nil, nil, 'temper', nil, 'balance', nil, nil, 'here')
+
+      expect(forge_runs).to all(include('skip', 'here'))
+      expect(forge_runs.size).to eq(3)
+    end
+
+    it 'passes neither skip nor here without it' do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      run_smith(instance)
+
+      expect(forge_runs.flatten).not_to include('skip', 'here', nil)
     end
 
     it 'finds the finished item in the left hand too' do

@@ -84,17 +84,19 @@ class Smith
       DRCC.go_to_private_forge(@hometown, @settings)
       check_and_renew_forge_rental
     elsif @use_private_forge && stay
-      Lich::Messaging.msg('plain', "smith: Using 'here' -- skipping private forge walk and rental check.")
+      Lich::Messaging.msg('plain', "smith: Using 'here' -- skipping the private forge walk. forge.lic still checks the rental notice.")
     else
       DRCC.find_anvil(@hometown) unless stay
     end
     DRCC.check_consumables('oil', discipline['finisher-room'], discipline['finisher-number'], @bag, @bag_items, @belt)
     DRC.wait_for_script_to_complete('buff', ['smith'])
-    return unless forge_finished?(recipe['noun'], [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], stay ? 'skip' : nil])
+    # 'here': forge.lic neither restocks consumables nor walks to the private forge.
+    stay_args = stay ? %w[skip here] : []
+    return unless forge_finished?(recipe['noun'], [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], *stay_args])
 
     stamp_item(recipe['noun']) if stamp
     enhanced = [temper, hone, balance, lighten, reinforce].compact.all? do |enhancement|
-      forge_finished?(recipe['noun'], [enhancement, recipe['noun'], stay ? 'skip' : nil])
+      forge_finished?(recipe['noun'], [enhancement, recipe['noun'], *stay_args])
     end
     return unless enhanced
 
