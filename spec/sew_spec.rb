@@ -1088,6 +1088,99 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #clear_hands -- a new item starts with empty hands
+  # ===========================================================================
+  describe '#clear_hands' do
+    before(:each) do
+      allow(DRCC).to receive(:stow_crafting_item)
+      sew.instance_variable_set(:@noun, 'rope')
+      sew.instance_variable_set(:@recipe_name, 'reinforced rope')
+      $right_hand = nil
+      $left_hand = nil
+    end
+
+    it 'stows a finished item left in hand by an earlier run, even with the same noun' do
+      $left_hand = 'burlap reinforced rope'
+
+      sew.send(:clear_hands)
+
+      expect(DRCC).to have_received(:stow_crafting_item).with('burlap reinforced rope', 'duffel bag', nil)
+    end
+
+    it 'stows both hands, right first' do
+      $right_hand = 'clockwork scissors'
+      $left_hand = 'burlap reinforced rope'
+
+      sew.send(:clear_hands)
+
+      expect(DRCC).to have_received(:stow_crafting_item).with('clockwork scissors', 'duffel bag', nil).ordered
+      expect(DRCC).to have_received(:stow_crafting_item).with('burlap reinforced rope', 'duffel bag', nil).ordered
+    end
+
+    it 'does nothing with empty hands' do
+      sew.send(:clear_hands)
+
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it 'passes the belt so belt tools are tied back on' do
+      belt = { 'name' => "tailor's toolbelt", 'items' => ['scissors'] }
+      sew.instance_variable_set(:@belt, belt)
+      $right_hand = 'clockwork scissors'
+
+      sew.send(:clear_hands)
+
+      expect(DRCC).to have_received(:stow_crafting_item).with('clockwork scissors', 'duffel bag', belt)
+    end
+
+    context 'for an enhancement' do
+      before(:each) do
+        sew.instance_variable_set(:@noun, 'shirt')
+        sew.instance_variable_set(:@recipe_name, 'tailored armor sealing')
+      end
+
+      it 'keeps the item being enhanced' do
+        $left_hand = 'quilted cloth shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      # DRC.left_hand shortens 'quilted cloth shirt' to 'quilted shirt'
+      # (fix_dr_bullshit keeps the first and last word), so these fixtures
+      # use the shortened names the real hand readers return.
+      it 'keeps a dotted noun when the hand name has been shortened' do
+        sew.instance_variable_set(:@noun, 'cloth.shirt')
+        $left_hand = 'quilted shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'keeps a dotted noun when the hand name was short enough to keep' do
+        sew.instance_variable_set(:@noun, 'cloth.shirt')
+        $left_hand = 'cloth shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'still stows anything else' do
+        $right_hand = 'sealing wax'
+        $left_hand = 'quilted shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('sealing wax', 'duffel bag', nil)
+        expect(DRCC).not_to have_received(:stow_crafting_item).with('quilted shirt', anything, anything)
+      end
+    end
+  end
+
+  # ===========================================================================
   # #prep -- recipe/instruction lookup and material setup
   # ===========================================================================
   describe '#prep' do
@@ -1487,6 +1580,88 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #work -- re-threading the sewing needles
+  # ===========================================================================
+  describe '#work re-threading' do
+    let(:needs_thread) { 'The needles need to have thread put on them before they can be used for sewing' }
+    let(:out_of_material) { 'You need a larger amount of material to continue crafting' }
+    let(:needles) { OpenStruct.new(name: 'sewing needles', noun: 'needles', id: '63049908') }
+    let(:thread) { OpenStruct.new(name: 'cotton thread', noun: 'thread', id: '63116961') }
+    let(:sent) { [] }
+
+    # Feeds the replies in order (as bput returns them: the matched text)
+    # and records each command sent.
+    # The last reply exits #work through the out-of-material branch.
+    # Running out of replies raises, so a regression fails instead of
+    # looping forever.
+    def run_work(*replies)
+      allow(DRC).to receive(:bput) do |command, *|
+        sent << command
+        raise 'too many bput calls' if replies.empty?
+
+        replies.shift
+      end
+      expect { sew.send(:work, 'push my rucksack with my sewing needles') }.to raise_error(SystemExit)
+    end
+
+    before(:each) do
+      sew.instance_variable_set(:@cube, nil)
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:magic_cleanup)
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(Lich::Messaging).to receive(:msg)
+      allow(GameObj).to receive(:right_hand).and_return(needles)
+      allow(sew).to receive(:swap_tool) do |tool, *|
+        allow(GameObj).to receive(:right_hand).and_return(thread) if tool == 'cotton thread'
+      end
+    end
+
+    it 'threads the needles it was using by id, not by noun' do
+      run_work(needs_thread, 'You carefully thread some cotton thread', out_of_material)
+
+      expect(sent).to include('put my thread on #63049908')
+      expect(sent).not_to include('put thread on my sewing needles')
+    end
+
+    it 'reads the needles id before swap_tool puts the thread in hand' do
+      run_work(needs_thread, out_of_material)
+
+      expect(sent[1]).to eq('put my thread on #63049908')
+      expect(sent[1]).not_to include('63116961')
+    end
+
+    it 'gets the cotton thread, skipping the restock exit' do
+      run_work(needs_thread, out_of_material)
+
+      expect(sew).to have_received(:swap_tool).with('cotton thread', true)
+    end
+
+    it 'goes back to the needles after threading' do
+      run_work(needs_thread, 'You carefully thread some cotton thread', out_of_material)
+
+      expect(sew).to have_received(:swap_tool).with('sewing needles')
+      expect(sent[2]).to eq('push my rucksack with my sewing needles')
+    end
+
+    it 'treats "already threaded" as ready to sew instead of retrying the put' do
+      run_work(needs_thread, 'is already threaded with', out_of_material)
+
+      expect(sent).to eq(['push my rucksack with my sewing needles', 'put my thread on #63049908', 'push my rucksack with my sewing needles'])
+    end
+
+    it 'exits with a message when the needles have no id' do
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'Empty', noun: 'Empty', id: nil))
+
+      run_work(needs_thread)
+
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'sew: Could not identify the sewing needles to thread. Cannot continue crafting.')
+      expect(sew).to have_received(:magic_cleanup)
+      expect(sew).not_to have_received(:swap_tool)
+      expect(sent).to eq(['push my rucksack with my sewing needles'])
+    end
+  end
+
+  # ===========================================================================
   # #work -- unrecognized replies must not loop forever
   # ===========================================================================
   describe '#work unrecognized replies' do
@@ -1717,6 +1892,52 @@ RSpec.describe Sew do
   # ===========================================================================
   # Flags matchers -- only the game's own lines, not other players' text
   # ===========================================================================
+  # ===========================================================================
+  # #initialize -- hands are cleared before the consumables check
+  # ===========================================================================
+  describe '#initialize clearing hands' do
+    let(:calls) { [] }
+
+    before(:each) do
+      $test_settings = OpenStruct.new(hometown: 'Crossing', crafting_training_spells: [])
+      $test_data = OpenStruct.new(crafting: { 'tailoring' => { 'Crossing' => { 'tool-room' => 1, 'stock-room' => 2 } } })
+      allow(sew).to receive(:clear_hands) { calls << :clear_hands }
+      allow(DRCC).to receive(:check_consumables) { |name, *| calls << "check_consumables #{name}" }
+      allow(sew).to receive(:check_rental_status)
+      allow(sew).to receive(:prep).and_return('push my rucksack with my needles')
+      allow(sew).to receive(:work)
+    end
+
+    # check_consumables starts with a get, which a full pair of hands
+    # answers with "You need a free hand"; it matches neither of its
+    # patterns, so it would time out and buy stock the player owns.
+    it 'clears hands before checking pins and thread' do
+      $parsed_args = OpenStruct.new(finish: 'stow', type: 'sewing', chapter: '2', recipe_name: +'rucksack',
+                                    material: 'burlap', noun: 'rucksack')
+
+      sew.send(:initialize)
+
+      expect(calls).to eq([:clear_hands, 'check_consumables pins', 'check_consumables thread'])
+    end
+
+    it 'clears hands before checking wax for a seal' do
+      $parsed_args = OpenStruct.new(recipe_name: +'seal', noun: 'shirt')
+
+      sew.send(:initialize)
+
+      expect(calls).to eq([:clear_hands, 'check_consumables wax'])
+    end
+
+    it 'still clears hands when skip turns the consumables check off' do
+      $parsed_args = OpenStruct.new(finish: 'stow', type: 'sewing', chapter: '2', recipe_name: +'rucksack',
+                                    material: 'burlap', noun: 'rucksack', skip: 'skip')
+
+      sew.send(:initialize)
+
+      expect(calls).to eq([:clear_hands])
+    end
+  end
+
   describe 'flag matchers registered by #initialize' do
     # Feed a server line through the registered Flags matchers, the way
     # Lich's DRParser.check_events does for every downstream line.

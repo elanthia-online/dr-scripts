@@ -303,6 +303,17 @@ RSpec.describe CrossingRepair do
       expect(repair).to have_received(:pause).with(30).once
     end
 
+    it "waits and tries again when Verrys says the repair isn't ready" do
+      # The first reply is Verrys's real game line, matched against the script's own
+      # match list the way bput does; the retry is then handed in.
+      not_ready = %(The Crafty Lady Verrys shakes her head.  "That's not ready yet, sir.  Check your ticket for the estimated time, and please be patient.")
+      replies = [->(matches) { matches.find { |match| not_ready =~ /#{match}/i } || '' }, ->(_matches) { 'You hand' }]
+      allow(DRC).to receive(:bput).with('give my ticket to Verrys', any_args) { |_command, *matches| replies.shift.call(matches) }
+
+      expect(repair.turn_in_ticket('Verrys')).to be true
+      expect(repair).to have_received(:pause).with(30).once
+    end
+
     it 'is not taken when the give gets no response' do
       expect(repair.turn_in_ticket('Granzer')).to be false
     end

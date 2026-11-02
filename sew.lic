@@ -108,6 +108,8 @@ class Sew
       end
       work(command)
     end
+    # Before the consumables check: its get needs a free hand too.
+    clear_hands
     if @recipe_name.include?('seal')
       DRCC.check_consumables('wax', @info['tool-room'], 10, @bag, @bag_items, @belt) unless args.skip
     elsif @chapter != 5
@@ -132,6 +134,21 @@ class Sew
   def list_at_feet
     atfeet = Lich::Util.issue_command('inv atfeet', /All of your items lying at your feet/, /Use INVENTORY HELP for more options/, usexml: false)
     Lich::Messaging.msg('plain', "Items at feet: #{atfeet.join(', ')}") if atfeet&.any?
+  end
+
+  # A new item starts with empty hands. Anything still held, such as the
+  # item a previous run finished with 'hold', blocks every later get.
+  # Enhancements work on the held item, so that one stays. DRC.right_hand
+  # and DRC.left_hand shorten names of three or more words to the first and
+  # last word ("quilted cloth shirt" becomes "quilted shirt"), so the keep
+  # matches the noun's last word, the one the shortening leaves in place.
+  def clear_hands
+    keep = @noun.tr('.', ' ').split.last if @recipe_name.include?('tailored armor')
+    [DRC.right_hand, DRC.left_hand].each do |item|
+      next if item.nil? || (keep && item.include?(keep))
+
+      DRCC.stow_crafting_item(item, @bag, @belt)
+    end
   end
 
   def prep
@@ -253,6 +270,7 @@ class Sew
                         'wrinkles from all the handling and could use',
                         'You are already knitting',
                         'You carefully thread some cotton thread',
+                        'is already threaded with',
                         'You must assemble',
                         'You need another',
                         'You untie and discard',
@@ -300,9 +318,17 @@ class Sew
         swap_tool('slickstone')
         command = "scrape my #{@noun} with my slickstone"
       when 'The needles need to have thread put on them before they can be used for sewing'
+        # Take the id while the needles are still in hand. Once they are tied
+        # or stowed, "my sewing needles" can pick a spare pair instead.
+        needles_id = GameObj.right_hand&.id
+        unless needles_id
+          Lich::Messaging.msg('bold', 'sew: Could not identify the sewing needles to thread. Cannot continue crafting.')
+          magic_cleanup
+          exit
+        end
         swap_tool('cotton thread', true)
-        command = 'put thread on my sewing needles'
-      when 'You carefully thread some cotton thread'
+        command = "put my thread on ##{needles_id}"
+      when 'You carefully thread some cotton thread', 'is already threaded with'
         swap_tool('sewing needles')
         command = "push my #{@noun} with my sewing needles"
       when 'What were you referring', 'I could not find what you were'
