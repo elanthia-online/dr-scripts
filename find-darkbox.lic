@@ -74,6 +74,7 @@ class FindDarkbox
   def run
     before_dying { self.class.delete_flags }
     fput('stop play') # In case you were playing a song.
+    @held_at_start = held_items
     find_darkbox
     UserVars.last_darkbox = Room.current.id
     FLAGS.each { |name, pattern| Flags.add(name, pattern) }
@@ -197,11 +198,26 @@ class FindDarkbox
     end
   end
 
-  # Throws away or puts away whatever is in either hand.
+  # @return [Array<String>] the names of what is in either hand
+  def held_items
+    [DRC.left_hand, DRC.right_hand].compact
+  end
+
+  # What is in hand now and was not when the script started, such as the
+  # instrument a song was played on. Counts duplicates, so a prize named like
+  # a held item is still a prize.
+  #
+  # @return [Array<String>]
+  def prizes_in_hand
+    kept = @held_at_start.dup
+    held_items.reject { |item| (index = kept.index(item)) && kept.delete_at(index) }
+  end
+
+  # Throws away or puts away every prize in hand.
   #
   # @return [void]
   def handle_prizes
-    [DRC.left_hand, DRC.right_hand].compact.each do |item|
+    prizes_in_hand.each do |item|
       if trash?(item)
         DRCI.dispose_trash(item, @worn_trashcan, @worn_trashcan_verb)
       else

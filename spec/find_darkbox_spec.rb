@@ -495,14 +495,33 @@ RSpec.describe FindDarkbox do
   end
 
   describe 'held items' do
-    # Characterises current behaviour, fixed later in this series.
-    it 'handles an item held before the first play as a prize' do
-      $left_hand = 'spider-shaped ocarina'
-      allow(DRCI).to receive(:dispose_trash) { $left_hand = nil }
+    # Playing a song leaves the instrument in hand, and 'ocarina' is in the
+    # base junk list.
+    before do
       settings.hollow_eve_junk = ['ocarina']
+      $left_hand = 'spider-shaped ocarina'
+    end
+
+    it 'leaves alone an item held before the first play' do
       plays << found_nothing
       run_darkbox
-      expect(DRCI).to have_received(:dispose_trash).with('spider-shaped ocarina', nil, nil)
+      expect(DRCI).not_to have_received(:dispose_trash)
+      expect(DRCI).not_to have_received(:put_away_item?)
+    end
+
+    it 'handles a prize in the other hand and leaves the held item alone' do
+      plays << found('a large peach pearl')
+      loot << 'peach pearl'
+      run_darkbox
+      expect(DRCI).to have_received(:put_away_item?).with('peach pearl', 'sack').once
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'handles a prize named like the held item' do
+      plays << found('a carved spider-shaped ocarina')
+      loot << 'spider-shaped ocarina'
+      run_darkbox
+      expect(DRCI).to have_received(:dispose_trash).with('spider-shaped ocarina', nil, nil).once
     end
   end
 
