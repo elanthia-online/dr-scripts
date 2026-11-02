@@ -11,7 +11,10 @@ arg_definitions = [
 args = parse_args(arg_definitions)
 override = args.override
 settings = get_settings
-trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\b/i }
+# Anchored to the end of the held item's name, which is where its noun sits, so
+# a junk word only matches as the noun: 'peach' trashes a peach but not a peach
+# pearl.
+trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\z/i }
 darkbox_stop_on_wounded = settings.darkbox_stop_on_wounded
 he_use_herbs_remedies = settings.he_use_herbs_remedies
 hollow_eve_loot_container = settings.hollow_eve_loot_container
