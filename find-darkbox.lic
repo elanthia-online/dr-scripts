@@ -38,10 +38,16 @@ class FindDarkbox
   FLAGS = {
     # A prize the hissing creature knocks out of a crushed hand.
     'darkbox-drop'     => /#{LINE_START}Your (?<item>.+) falls to (?:your feet|the ground)/,
-    'darkbox-gone'     => "#{LINE_START}Without warning, the Darkbox simply vanishes",
-    'darkbox-wounded'  => "#{LINE_START}Your injury increases the difficulty of the game, but you press on",
-    'darkbox-no-money' => /#{LINE_START}You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing./
+    'darkbox-gone'     => /#{LINE_START}Without warning, the Darkbox simply vanishes/,
+    'darkbox-wounded'  => /#{LINE_START}Your injury increases the difficulty of the game, but you press on/,
+    'darkbox-no-money' => /#{LINE_START}You try to play the Darkbox, but realize you don't have the 200 Kronars required\.  How depressing\./,
+    'darkbox-missing'  => /#{LINE_START}What type of song did you want to play\?/,
+    'darkbox-too-hurt' => /#{LINE_START}[^"]*?your wounds make it impossible/
   }.freeze
+
+  # The flags that answer one play, cleared before each play so a reply to an
+  # earlier play is never read as the answer to this one.
+  PLAY_REPLY_FLAGS = %w[darkbox-no-money darkbox-missing darkbox-too-hurt].freeze
 
   # Removes every flag in {FLAGS}.
   #
@@ -138,9 +144,10 @@ class FindDarkbox
   #
   # @return [void]
   def play
+    PLAY_REPLY_FLAGS.each { |name| Flags.reset(name) }
     fput('play darkbox')
     pause 1
-    return unless reget(5, '^What type of song did you want to play?')
+    return unless Flags['darkbox-missing']
 
     DRC.message('*** Darkbox not found in any of the rooms! ***')
     exit
@@ -158,13 +165,12 @@ class FindDarkbox
       exit
     end
     fput('balance')
-    Flags.reset('darkbox-no-money')
     DRCT.walk_to(UserVars.last_darkbox)
   end
 
   # @return [Boolean] whether the game refused the last play for wounds
   def blocked_by_wounds?
-    reget(10, '^[^"]*?your wounds make it impossible')
+    Flags['darkbox-too-hurt']
   end
 
   # Treats wounds with heal-remedy when he_use_herbs_remedies is set.
