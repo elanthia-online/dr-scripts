@@ -66,10 +66,12 @@ class FindDarkbox
   end
 
   # Finds the Darkbox, plays it until a stop condition, then walks to
-  # {EXIT_ROOM}.
+  # {EXIT_ROOM}. The flags are removed however the script ends: here, at an
+  # exit along the way or when it is killed.
   #
   # @return [void]
   def run
+    before_dying { self.class.delete_flags }
     fput('stop play') # In case you were playing a song.
     find_darkbox
     UserVars.last_darkbox = Room.current.id
@@ -219,7 +221,3 @@ arg_definitions = [
 
 args = parse_args(arg_definitions)
 FindDarkbox.new(get_settings, override: args.override).run
-
-before_dying do
-  FindDarkbox.delete_flags
-end
