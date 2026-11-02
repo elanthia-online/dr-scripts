@@ -1332,6 +1332,69 @@ RSpec.describe TaskMaster do
       it 'still throws away leftover stock' do
         expect(trasher(remainder: true)).to eq(['burlap cloth'])
       end
+
+      it 'takes leftover ingots to the forge bin' do
+        tm = build(remainder: true)
+        rooms = []
+        allow(DRCT).to receive(:dispose) { |name, room| rooms << [name, room] }
+        gets = ['You get a bronze ingot from inside your duffel bag.']
+        allow(DRC).to receive(:bput) { |*| gets.shift || 'What were you referring to?' }
+        tm.trash('hammer', 'ingot', 'bronze')
+        expect(rooms).to eq([['bronze ingot', 793]])
+      end
+
+      # Before the cap, a get the game always answered kept it walking to the
+      # bin forever, and a reply it didn't expect (full hands, a timeout)
+      # disposed of nothing over and over.
+      # Raises past +limit+ gets, so a regression fails instead of hanging.
+      def endless(reply, limit)
+        calls = 0
+        allow(DRC).to receive(:bput) do |*|
+          calls += 1
+          raise "trash sent #{calls} gets" if calls > limit
+
+          reply
+        end
+      end
+
+      it 'stops at TRASH_CAP pieces when every get succeeds' do
+        tm = build(remainder: true)
+        allow(DRCT).to receive(:dispose)
+        endless('You get', described_class::TRASH_CAP + 10)
+        tm.trash('rope', 'cloth', 'burlap')
+        expect(DRCT).to have_received(:dispose).exactly(described_class::TRASH_CAP).times
+      end
+
+      ['', 'You need a free hand to pick that up.'].each do |reply|
+        it "stops without disposing on an unexpected reply (#{reply.inspect})" do
+          tm = build(remainder: true)
+          allow(DRCT).to receive(:dispose)
+          endless(reply, 5)
+          tm.trash('rope', 'cloth', 'burlap')
+          expect(DRCT).not_to have_received(:dispose)
+          expect(DRC).to have_received(:bput).once
+        end
+      end
+    end
+
+    describe '#zasele leftover stock' do
+      def tailor(worn_trashcan:)
+        tm = build(worn_trashcan: worn_trashcan, settings: { outfitting_tools: ['scissors'] })
+        allow(tm).to receive(:buy_stackables)
+        allow(tm).to receive(:tailor_item)
+        allow(tm).to receive(:repair)
+        allow(tm).to receive(:trash)
+        tm.zasele('rope', 8, 10, 'cloth', 'burlap')
+        tm
+      end
+
+      it 'skips the walk to the bin room when a trash can is worn (the stock is binned after the hand-in)' do
+        expect(tailor(worn_trashcan: 'bucket')).not_to have_received(:trash)
+      end
+
+      it 'still walks leftover stock to the bin room without a worn trash can' do
+        expect(tailor(worn_trashcan: nil)).to have_received(:trash).with('rope', 'cloth', 'burlap')
+      end
     end
 
     describe '#bradyn lumber tasks' do
@@ -1613,6 +1676,145 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe '#bin_task_stock' do
+      let(:sent) { [] }
+
+      # A crafting bag holding +pieces+ of each stock and a worn trash can
+      # that takes everything unless +refuse+ names a noun it won't take.
+      # Replies come back the way DRC.bput returns them: the text the first
+      # matching pattern matched, or '' when none did.
+      def world(pieces, refuse: nil, hands_full: false)
+        left = pieces.dup
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          sent << command
+          line =
+            case command
+            when /\Aget my (.+) from my duffel bag\z/
+              stock = Regexp.last_match(1)
+              if hands_full
+                'You need a free hand to pick that up.'
+              elsif left.fetch(stock, 0).positive?
+                left[stock] -= 1
+                "You get some #{stock} from inside your duffel bag."
+              else
+                'What were you referring to?'
+              end
+            when /\Aput my (\w+) in my bucket\z/
+              Regexp.last_match(1) == refuse ? 'There is no room in the bucket for that.' : "You drop your #{Regexp.last_match(1)} in a bucket."
+            when /\Aput my (\w+) in my duffel bag\z/
+              "You put your #{Regexp.last_match(1)} in your duffel bag."
+            when /\Atap my bucket\z/
+              'You drum your fingers on the bucket rhythmically.'
+            else
+              ''
+            end
+          patterns.map { |pattern| line.match(pattern) }.compact.first.to_a.first || ''
+        end
+        left
+      end
+
+      def binner(**ivars)
+        build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', **ivars)
+      end
+
+      it "bins every piece of Zasele's stock from the crafting bag, then taps the trash can twice" do
+        left = world({ 'burlap cloth' => 3, 'rat leather' => 1, 'wool yarn' => 2 })
+        expect(binner.bin_task_stock).to eq(6)
+        expect(left.values).to all(eq(0))
+        expect(sent.count('put my cloth in my bucket')).to eq(3)
+        expect(sent.count('put my leather in my bucket')).to eq(1)
+        expect(sent.count('put my yarn in my bucket')).to eq(2)
+        expect(sent.last(2)).to eq(['tap my bucket', 'tap my bucket'])
+        expect(DRC).to have_received(:message).with('Binned 6 piece(s) of leftover task stock')
+      end
+
+      it 'sends nothing without a worn trash can, so nothing is ever dropped' do
+        world({ 'burlap cloth' => 3 })
+        expect(binner(worn_trashcan: nil).bin_task_stock).to eq(0)
+        expect(sent).to be_empty
+      end
+
+      it "leaves other taskmasters' stock alone" do
+        world({ 'burlap cloth' => 3 })
+        expect(binner(npc: 'poltu').bin_task_stock).to eq(0)
+        expect(sent).to be_empty
+      end
+
+      it 'neither taps nor reports when there was nothing to bin' do
+        world({})
+        expect(binner.bin_task_stock).to eq(0)
+        expect(sent).not_to include('tap my bucket')
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'does not tap without a trash can verb' do
+        world({ 'burlap cloth' => 1 })
+        expect(binner(worn_trashcan_verb: nil).bin_task_stock).to eq(1)
+        expect(sent).not_to include(a_string_starting_with('tap'))
+      end
+
+      it 'puts a refused piece back in the bag, stops that stock and carries on with the next' do
+        left = world({ 'burlap cloth' => 3, 'wool yarn' => 1 }, refuse: 'cloth')
+        expect(binner.bin_task_stock).to eq(1)
+        expect(sent.count('get my burlap cloth from my duffel bag')).to eq(1)
+        expect(sent).to include('put my cloth in my duffel bag')
+        expect(left).to eq({ 'burlap cloth' => 2, 'wool yarn' => 0 })
+      end
+
+      it 'stops at TASK_STOCK_BIN_CAP pieces per stock' do
+        cap = described_class::TASK_STOCK_BIN_CAP
+        world({ 'burlap cloth' => cap + 5 })
+        expect(binner.bin_task_stock).to eq(cap)
+        expect(sent.count('get my burlap cloth from my duffel bag')).to eq(cap)
+      end
+
+      it 'stops on full hands without trying to put anything away' do
+        world({ 'burlap cloth' => 3 }, hands_full: true)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(sent).not_to include(a_string_starting_with('put'))
+      end
+    end
+
+    describe 'binning task stock at the hand-in' do
+      before do
+        allow(DRCT).to receive(:dispose)
+      end
+
+      it 'bins after the instructions are thrown away, once complete_task gets the sack' do
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        order = []
+        allow(DRCT).to receive(:dispose) { order << :instructions }
+        allow(tm).to receive(:bin_task_stock) { order << :stock }
+        giving([more_needed(1), sack_handed])
+        tm.complete_task('rope', 2)
+        expect(order).to eq(%i[instructions stock])
+      end
+
+      it 'bins when banked items finish the task' do
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:bin_task_stock)
+        giving([sack_handed], banked: 1)
+        expect(tm.turn_in_banked('rope', 1)).to eq(0)
+        expect(tm).to have_received(:bin_task_stock).once
+      end
+
+      it 'does not bin while items are still owed' do
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:bin_task_stock)
+        allow(DRCC).to receive(:stow_crafting_item)
+        giving([more_needed(2)], banked: 1)
+        expect(tm.turn_in_banked('rope', 3)).to eq(2)
+        expect(tm).not_to have_received(:bin_task_stock)
+      end
+    end
+
     describe '#keeper?' do
       def filtered(settings = {})
         build(settings: settings, lootbag: 'backpack').tap { |tm| tm.send(:configure_loot_filter) }
@@ -1726,7 +1928,7 @@ RSpec.describe TaskMaster do
         allow(tm).to receive(:find_npc)
         expect { tm.run(OpenStruct.new(npc: 'zasele', find: true)) }.to raise_error(SystemExit)
         expect(order.first).to eq("taskmaster version #{described_class::VERSION}")
-        expect(described_class::VERSION).to match(/\A\d{4}\.\d{2}\.\d{2}\z/)
+        expect(described_class::VERSION).to match(/\A\d{4}\.\d{2}\.\d{2}(\.\d+)?\z/)
       end
     end
 
