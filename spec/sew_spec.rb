@@ -1487,9 +1487,6 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
-  # Edge cases and integration-level scenarios
-  # ===========================================================================
-  # ===========================================================================
   # #work -- re-threading the sewing needles
   # ===========================================================================
   describe '#work re-threading' do
@@ -1571,6 +1568,9 @@ RSpec.describe Sew do
     end
   end
 
+  # ===========================================================================
+  # Edge cases and integration-level scenarios
+  # ===========================================================================
   describe 'finish default for resume' do
     it 'defaults @finish to hold when args.finish is nil' do
       # The @finish default is set in initialize, but we can verify the
