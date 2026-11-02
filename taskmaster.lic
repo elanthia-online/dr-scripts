@@ -23,7 +23,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.02'
+  VERSION = '2026.11.03'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1361,12 +1361,12 @@ class TaskMaster
   # description ends in its noun ("a large tyrium bar"), so the item is taken
   # by that noun from the sack's own id; the id the game gives it in hand is
   # then used for the put. The sack is only binned once INVENTORY shows it
-  # empty, so nothing is ever thrown away unseen.
+  # empty, so nothing is ever thrown away unseen, and it is binned by its id.
   #
   # @param description [String] the sack contents, LOOK prefix stripped
   # @return [Boolean] true when the item is in the loot bag and the sack is
-  #   binned; false leaves the sack in hand (with whatever is still in it)
-  #   for the caller to keep as before
+  #   binned; false leaves the sack in hand (with whatever is still in it,
+  #   or empty when it could not be binned) for the caller to keep as before
   def unpack_keeper?(description)
     sack_id = held_id('sack')
     noun = description.to_s.split.last
@@ -1381,7 +1381,8 @@ class TaskMaster
     end
     return false unless DRC.bput("inventory ##{sack_id}", SACK_EMPTY, SACK_NOT_EMPTY).match?(SACK_EMPTY)
 
-    DRCI.dispose_trash('sack', @worn_trashcan, @worn_trashcan_verb)
+    return false unless DRCI.dispose_trash("##{sack_id}", @worn_trashcan, @worn_trashcan_verb)
+
     true
   end
 

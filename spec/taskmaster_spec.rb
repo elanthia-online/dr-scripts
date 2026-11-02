@@ -1746,8 +1746,9 @@ RSpec.describe TaskMaster do
 
       # Plays a sack holding `contents` through sort_sack. get_replies are the
       # replies to successive `get <noun> from #<sack>`; a get answered with
-      # got_bar puts the bar in the left hand.
-      def unpack(tm, contents: 'a large tyrium bar', get_replies: [got_bar], inventory: sack_empty, put_ok: true)
+      # got_bar puts the bar in the left hand. disposed is what dispose_trash
+      # returns.
+      def unpack(tm, contents: 'a large tyrium bar', get_replies: [got_bar], inventory: sack_empty, put_ok: true, disposed: true)
         hands = { right: sack, left: empty_hand }
         allow(GameObj).to receive(:right_hand) { hands[:right] }
         allow(GameObj).to receive(:left_hand) { hands[:left] }
@@ -1764,19 +1765,33 @@ RSpec.describe TaskMaster do
              'inventory #63768227'        => inventory,
              'put #63768234 in #63768227' => 'You put your bar in your woven sack.')
         allow(DRCI).to receive(:put_away_item?) { |item, _bag| item == '#63768234' ? put_ok : true }
-        allow(DRCI).to receive(:dispose_trash)
+        allow(DRCI).to receive(:dispose_trash).and_return(disposed)
         UserVars.taskmaster_sacks = { 'zasele' => [] }
         tm.sort_sack('netting')
       end
 
-      it 'takes the item out by noun from the sack id, puts it away by its own id, and bins the empty sack' do
+      it 'takes the item out by noun from the sack id, puts it away by its own id, and bins the empty sack by its id' do
         tm = unpacker
         unpack(tm)
         expect(DRC).to have_received(:bput).with('get bar from #63768227', any_args)
         expect(DRC).to have_received(:bput).with('inventory #63768227', any_args)
         expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
-        expect(DRCI).to have_received(:dispose_trash).with('sack', 'bucket', 'tap')
+        expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
         expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
+      end
+
+      it 'puts the empty sack in the loot bag when it cannot be binned' do
+        tm = unpacker
+        unpack(tm, disposed: false)
+        expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+      end
+
+      it 'puts the sack in the loot bag when dispose_trash finds it no longer in hand' do
+        tm = unpacker
+        unpack(tm, disposed: nil)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
       end
 
       it 'waits for a free hand and retries once when another script holds it' do
