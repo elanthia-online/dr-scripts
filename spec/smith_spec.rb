@@ -61,4 +61,135 @@ RSpec.describe Smith do
       expect(DRCC).to have_received(:find_anvil).with('Shard')
     end
   end
+
+  # forge.lic leaves the finished item in hand (its default 'hold' finish) and
+  # stows both hands on every failure, so smith reads the outcome from the
+  # hands. A failed run must not be followed by stamping, enhancement runs or
+  # disposal: on 2024-06-12 smith trashed an unused short cord after forge.lic
+  # exited with an error, and on 2025-05-24 it started a temper run on an item
+  # that was never made.
+  describe '#smith after forge.lic exits' do
+    let(:settings) { OpenStruct.new }
+    let(:discipline) { { 'stock-volume' => 100, 'finisher-room' => 1, 'finisher-number' => 2, 'trash-room' => 9 } }
+    let(:recipe) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star' } }
+    let(:forge_runs) { [] }
+
+    before do
+      allow(Lich::Messaging).to receive(:msg)
+      allow(DRCC).to receive(:find_anvil)
+    end
+
+    # Builds a smith whose forge.lic runs end with the given hand contents,
+    # one entry per run (main item first, then each enhancement).
+    def build_with_forge_outcomes(*held_after_each_run)
+      instance = Smith.allocate
+      instance.instance_variable_set(:@hometown, 'Shard')
+      instance.instance_variable_set(:@settings, settings)
+      instance.instance_variable_set(:@use_private_forge, false)
+      instance.instance_variable_set(:@materials_info, { 'stock-volume' => 50, 'stock-name' => 'steel' })
+      allow(instance).to receive(:buy_parts)
+      allow(instance).to receive(:buy_ingot)
+      allow(instance).to receive(:stamp_item)
+      allow(DRCT).to receive(:dispose)
+      outcomes = held_after_each_run.dup
+      allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+        next unless name == 'forge'
+
+        forge_runs << args
+        $right_hand = outcomes.shift
+      end
+      instance
+    end
+
+    def run_smith(instance, parts: ['haft'], buy: true, stamp: true, temper: 'temper', balance: 'balance')
+      instance.smith('steel', discipline, recipe, parts, buy, stamp, temper, nil, balance, nil, nil, nil)
+    end
+
+    it 'stamps, enhances and disposes when every forge run finishes the item' do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      run_smith(instance)
+
+      expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper balance])
+      expect(instance).to have_received(:stamp_item).with('star')
+      expect(DRCT).to have_received(:dispose).with('steel ingot', 9)
+      expect(DRCT).to have_received(:dispose).with('haft', 9)
+    end
+
+    it 'stops after a failed main run: no stamp, no enhancement runs, nothing trashed' do
+      instance = build_with_forge_outcomes(nil)
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(1)
+      expect(instance).not_to have_received(:stamp_item)
+      expect(DRCT).not_to have_received(:dispose)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /did not finish the star/)
+    end
+
+    it 'treats an unfinished item left in hand as a failed run' do
+      instance = build_with_forge_outcomes('unfinished steel morning star')
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(1)
+      expect(DRCT).not_to have_received(:dispose)
+    end
+
+    it "does not take forge's own hammer for a hammer it failed to make" do
+      settings.forging_tools = ['forging hammer', 'clockwork tongs']
+      recipe.merge!('name' => 'a metal ball-peen hammer', 'noun' => 'hammer')
+      instance = build_with_forge_outcomes('polished forging hammer')
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(1)
+      expect(instance).not_to have_received(:stamp_item)
+    end
+
+    it 'stops, naming the clash, when the recipe makes a tool listed in forging_tools' do
+      settings.forging_tools = ['ball-peen hammer', 'tongs']
+      recipe.merge!('name' => 'a metal ball-peen hammer', 'noun' => 'hammer')
+      instance = build_with_forge_outcomes('steel ball-peen hammer')
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(1)
+      expect(instance).not_to have_received(:stamp_item)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /steel ball-peen hammer in hand is named like one of your forging_tools/)
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not finish/)
+    end
+
+    it 'does not take an unrelated held item for the finished one' do
+      instance = build_with_forge_outcomes('steel starfish')
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(1)
+    end
+
+    it 'stops the remaining enhancements and disposal when an enhancement run fails' do
+      instance = build_with_forge_outcomes('steel morning star', nil)
+
+      run_smith(instance)
+
+      expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper])
+      expect(instance).to have_received(:stamp_item)
+      expect(DRCT).not_to have_received(:dispose)
+    end
+
+    it 'finds the finished item in the left hand too' do
+      instance = build_with_forge_outcomes(nil)
+      allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+        next unless name == 'forge'
+
+        forge_runs << args
+        $left_hand = 'steel morning star'
+      end
+
+      run_smith(instance)
+
+      expect(forge_runs.size).to eq(3)
+    end
+  end
 end
