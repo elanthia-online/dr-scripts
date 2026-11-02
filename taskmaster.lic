@@ -1,6 +1,4 @@
 =begin
-version: 2026.11.02
-
   YAML SETTINGS(all optional but the first)
   task_loot_bag: bagname
   task_no_repair: true/false # skip repairing tools entirely
@@ -24,6 +22,9 @@ version: 2026.11.02
 =end
 
 class TaskMaster
+  # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
+  VERSION = '2026.11.02'
+
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
   # (stock-name cotton in base-crafting.yaml).
@@ -158,6 +159,7 @@ class TaskMaster
   # @raise [SystemExit] after the one-shot modes, marathon and finish, or
   #   from run_tasks
   def run(args = parse_args(ARG_DEFINITIONS))
+    DRC.message("taskmaster version #{VERSION}")
     shift_to_task_hometown
     @npc = args.npc
     @marathon = args.marathon

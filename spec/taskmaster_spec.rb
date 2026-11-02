@@ -371,7 +371,7 @@ RSpec.describe TaskMaster do
       allow(tm).to receive(:tailor_item) { |*task| events << [:tailor, *task] }
       allow(DRCT).to receive(:dispose) { |item, room| events << [:dispose, item, room] }
       allow(tm).to receive(:_respond) { |text| events << [:respond, text] }
-      allow(DRC).to receive(:message) { |text| events << [:message, text] }
+      allow(DRC).to receive(:message) { |text| events << [:message, text] unless text.start_with?("taskmaster version ") } # the version banner has its own example
       begin
         tm.send(:initialize)
         tm.run
@@ -1714,6 +1714,19 @@ RSpec.describe TaskMaster do
       it 'strips the LOOK prefix from a keeper whose description has no leading article' do
         sort(filtered(task_junk_list: ['dye']), '3 haledroth shards')
         expect(DRC).to have_received(:message).with('Found a keeper: 3 haledroth shards')
+      end
+    end
+
+    describe '#run version banner' do
+      it 'prints the version (bold, via DRC.message) before anything else' do
+        tm = build
+        order = []
+        allow(DRC).to receive(:message) { |text| order << text }
+        allow(tm).to receive(:shift_to_task_hometown) { order << :hometown }
+        allow(tm).to receive(:find_npc)
+        expect { tm.run(OpenStruct.new(npc: 'zasele', find: true)) }.to raise_error(SystemExit)
+        expect(order.first).to eq("taskmaster version #{described_class::VERSION}")
+        expect(described_class::VERSION).to match(/\A\d{4}\.\d{2}\.\d{2}\z/)
       end
     end
 
