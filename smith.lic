@@ -2,95 +2,123 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#smith
 =end
 
+# Makes one blacksmithing, weaponsmithing or armorsmithing item from start to
+# finish, wrapped around forge.lic.
+#
+# smith buys what the recipe needs (parts, and the ingot with 'buy'), gets the
+# character to a workplace, restocks oil, then runs forge.lic for the item and
+# once more for each enhancement. It stamps the item if asked, then keeps a
+# bought bulk ingot's leftover or disposes of a smaller remainder. After a
+# failed forge run it stops: the remaining steps would act on an item that was
+# never made.
+#
+# With use_private_forge, forge.lic walks to and rents the private forge itself.
+# smith only finds a public anvil, and only when that setting is off.
+#
+# Entry points are #initialize and #smith. The step methods stay public so
+# the spec can drive each one on its own; only setup is private.
+#
+# @example Make a steel morning star, then temper and balance it
+#   ;smith steel "metal morning star" temper balance
+# @example Buy a steel ingot that fits, then come back and forge where you stood
+#   ;smith steel "metal awl pike" buy here
 class Smith
+  # Recipe types smith can make.
+  SMITHING_TYPES = /blacksmithing|weaponsmithing|armorsmithing/i
+
+  # Enhancements forge.lic can apply, in the order smith runs them.
+  ENHANCEMENTS = %w[temper hone balance lighten reinforce].freeze
+
+  # The extra part a reinforce run needs.
+  REINFORCE_PART = 'leather strip'
+
+  # Copper to carry for parts and oil when not buying an ingot.
+  PARTS_COPPER = 3000
+
   # Ingots this size and larger are sold at the town's bulk materials shop
   # (bingots-room), not the stock shop. Shard's Supply Stand lists only the
   # small sizes (tiny, huge, massive); its Bulk Materials lists immense (50),
   # gigantic (100) and colossal (200), numbered as in base-crafting's stock.
   BULK_INGOT_VOLUME = 50
 
-  def initialize
-    arg_definitions = [
-      [
-        { name: 'material', regex: /\w+/, description: 'Metal type of the ingot' },
-        { name: 'item_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
-        { name: 'stamp', regex: /^stamp/i, optional: true, description: 'To stamp completed items' },
-        { name: 'here', regex: /^here/i, optional: true, description: 'Force it to forge in the room you are currently in, useful for private forge rentals or forge wands' },
-        { name: 'temper', regex: /^temper/i, optional: true, description: 'Tempers crafted item, boost durability' },
-        { name: 'hone', regex: /^hone/i, optional: true, description: 'Hones crafted item(weapon only), reducing weight and impact' },
-        { name: 'balance', regex: /^balance/i, optional: true, description: 'Balance crafted item (weapon only), increasing balance at the cost of suitability' },
-        { name: 'lighten', regex: /^lighten/i, optional: true, description: 'Lightens crafted armor or shield, reducing weight only' },
-        { name: 'reinforce', regex: /^reinforce/i, optional: true, description: 'Improves some absorption/protection stats at the cost of increased weight and hinderance' },
-        { name: 'buy', regex: /^buy/i, optional: true, description: 'Used to purchase the ingot' }
-      ]
+  ARG_DEFINITIONS = [
+    [
+      { name: 'material', regex: /\w+/, description: 'Metal type of the ingot' },
+      { name: 'item_name', display: 'recipe name', regex: /^[a-z\s\-']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
+      { name: 'stamp', regex: /^stamp/i, optional: true, description: 'To stamp completed items' },
+      { name: 'here', regex: /^here/i, optional: true, description: 'Force it to forge in the room you are currently in, useful for private forge rentals or forge wands' },
+      { name: 'temper', regex: /^temper/i, optional: true, description: 'Tempers crafted item, boost durability' },
+      { name: 'hone', regex: /^hone/i, optional: true, description: 'Hones crafted item(weapon only), reducing weight and impact' },
+      { name: 'balance', regex: /^balance/i, optional: true, description: 'Balance crafted item (weapon only), increasing balance at the cost of suitability' },
+      { name: 'lighten', regex: /^lighten/i, optional: true, description: 'Lightens crafted armor or shield, reducing weight only' },
+      { name: 'reinforce', regex: /^reinforce/i, optional: true, description: 'Improves some absorption/protection stats at the cost of increased weight and hinderance' },
+      { name: 'buy', regex: /^buy/i, optional: true, description: 'Used to purchase the ingot' }
     ]
+  ].freeze
 
-    args = parse_args(arg_definitions)
+  def initialize
+    args = parse_args(ARG_DEFINITIONS)
+    load_settings
+    exit_unless_private_forge_exists
 
-    @settings = get_settings
-    @hometown = DRCC.crafting_hometown(@settings)
-    @bag = @settings.crafting_container
-    @bag_items = @settings.crafting_items_in_container
-    @belt = @settings.forging_belt
-    discipline = get_data('crafting')['blacksmithing'][@hometown]
-    @container = get_settings.crafting_container
-    recipes = get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /blacksmithing|weaponsmithing|armorsmithing/i }
-    recipe = DRCC.recipe_lookup(recipes, args.item_name)
-    # Private forge setting - defaults to false
-    @use_private_forge = DRCC.use_private_forge?(@settings)
-
-    if @use_private_forge && !DRCC.private_forge_room(@hometown)
-      Lich::Messaging.msg('bold', "smith: use_private_forge is enabled, but '#{@hometown}' has no private forge.")
-      Lich::Messaging.msg('bold', "smith: Towns with private forges: #{DRCC.towns_with_private_forge.join(', ')}")
-      Lich::Messaging.msg('bold', "smith: Either set use_private_forge: false, or change hometown/force_crafting_town.")
-      exit
-    end
+    recipe = find_recipe(args.item_name)
     return unless recipe
 
-    DRCM.ensure_copper_on_hand(3000, @settings, @hometown) unless args.here
-
-    parts = recipe['part'] || []
-    parts << "leather strip" if args.reinforce # adds part to the list for reinforce
-    smith(args.material, discipline, recipe, parts, args.buy, args.stamp, args.temper, args.hone, args.balance, args.lighten, args.reinforce, args.here)
+    smith(args, recipe)
   end
 
-  def smith(material, discipline, recipe, parts, buy, stamp, temper, hone, balance, lighten, reinforce, stay)
-    if buy
-      ingot = ingot_to_buy(material, recipe['volume'], discipline)
+  # Make the item: buy, get to a workplace, forge, enhance, clean up.
+  #
+  # @param args [OpenStruct] parsed arguments (see ARG_DEFINITIONS)
+  # @param recipe [Hash] the base-recipes entry
+  # @return [void]
+  def smith(args, recipe)
+    parts = parts_for(recipe, args)
+    ingot = nil
+    if args.buy
+      ingot = ingot_to_buy(args.material, recipe['volume'])
       return unless ingot
-      return if ingot_already_carried?(material)
-
-      # 'here': come back to this room after shopping.
-      return_room = Room.current.id if stay
-      if stay && !return_room
-        Lich::Messaging.msg('bold', "smith: 'buy' with 'here' needs a known room to come back to. Buy the ingot first, then run smith with 'here'.")
-        return
-      end
-
-      DRCM.ensure_copper_on_hand(DRCC.crafting_cost(recipe, @hometown, parts, 1, ingot), @settings, @hometown)
+      return if ingot_already_carried?(args.material)
     end
+    if ingot && args.here
+      return_room = Room.current.id
+      return unless return_room_known?(return_room)
+    end
+    fund_run(recipe, parts, ingot, args.here)
 
     # Come back after a failed purchase too: 'here' means forge where you stood.
-    bought = (stay || buy_parts(parts)) && (!ingot || buy_ingot(discipline, ingot))
+    bought = (args.here || buy_parts(parts)) && (!ingot || buy_ingot(ingot))
     DRCT.walk_to(return_room) if return_room
     return unless bought
 
-    # With use_private_forge, forge.lic walks to and rents the private forge
-    # itself on every run, so smith only looks for a public anvil.
-    DRCC.find_anvil(@hometown) unless stay || @use_private_forge
-    DRCC.check_consumables('oil', discipline['finisher-room'], discipline['finisher-number'], @bag, @bag_items, @belt)
+    go_to_workplace(args.here)
+    restock_oil
     DRC.wait_for_script_to_complete('buff', ['smith'])
+    return unless craft(args, recipe)
+
+    handle_leftover(recipe, ingot) if ingot
+  end
+
+  # Run forge.lic for the item, stamp it if asked, then run it for each
+  # enhancement. Stops at the first run that doesn't finish the item.
+  #
+  # @param args [OpenStruct] parsed arguments
+  # @param recipe [Hash] the base-recipes entry
+  # @return [Boolean] true when every forge run finished the item
+  def craft(args, recipe)
+    noun = recipe['noun']
     # 'here': forge.lic neither restocks consumables nor walks to the private forge.
-    stay_args = stay ? %w[skip here] : []
-    return unless forge_finished?(recipe['noun'], [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun'], *stay_args])
+    stay_args = args.here ? %w[skip here] : []
+    return false unless forge_finished?(noun, [recipe['type'], recipe['chapter'], recipe['name'], args.material, noun, *stay_args])
 
-    stamp_item(recipe['noun']) if stamp
-    enhanced = [temper, hone, balance, lighten, reinforce].compact.all? do |enhancement|
-      forge_finished?(recipe['noun'], [enhancement, recipe['noun'], *stay_args])
-    end
-    return unless enhanced
+    stamp_item(noun) if args.stamp
+    enhancements(args).all? { |enhancement| forge_finished?(noun, [enhancement, noun, *stay_args]) }
+  end
 
-    handle_leftover(discipline, recipe, ingot) if ingot
+  # @param args [OpenStruct] parsed arguments
+  # @return [Array<String>] the enhancements asked for, in ENHANCEMENTS order
+  def enhancements(args)
+    ENHANCEMENTS.select { |enhancement| args[enhancement] }
   end
 
   # Run forge.lic and report whether it finished the item.
@@ -112,7 +140,7 @@ class Smith
   # passes no stamp, buy or enhancement, so only the message is wrong.
   #
   # @param noun [String] the recipe's item noun
-  # @param args [Array<String, nil>] forge.lic arguments
+  # @param args [Array<String, Integer>] forge.lic arguments (the recipe chapter is an Integer)
   # @return [Boolean] true when the finished item is in hand
   def forge_finished?(noun, args)
     DRC.wait_for_script_to_complete('forge', args)
@@ -150,6 +178,29 @@ class Smith
     (@settings.forging_tools || []).any? do |tool|
       held =~ /\b#{tool.split.map { |word| Regexp.escape(word) }.join('\b.*\b')}\b/i
     end
+  end
+
+  # The recipe's parts, plus a leather strip for reinforce.
+  #
+  # @param recipe [Hash] the base-recipes entry
+  # @param args [OpenStruct] parsed arguments
+  # @return [Array<String>] part names (may repeat)
+  def parts_for(recipe, args)
+    (recipe['part'] || []) + (args.reinforce ? [REINFORCE_PART] : [])
+  end
+
+  # Carry enough coin for this run before buying anything.
+  #
+  # @param recipe [Hash] the base-recipes entry
+  # @param parts [Array<String>] part names
+  # @param ingot [Hash, nil] the stock entry to buy, or nil
+  # @param here [String, nil] the 'here' argument
+  # @return [void]
+  def fund_run(recipe, parts, ingot, here)
+    return if here && !ingot
+
+    copper = ingot ? [PARTS_COPPER, DRCC.crafting_cost(recipe, @hometown, parts, 1, ingot)].max : PARTS_COPPER
+    DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
   end
 
   # Buy the recipe's parts, skipping any already in the crafting container.
@@ -205,12 +256,11 @@ class Smith
   #
   # @param material [String] metal name as typed (e.g. "steel")
   # @param volume [Integer] the recipe's volume
-  # @param discipline [Hash] the town's blacksmithing data
   # @return [Hash, nil] the base-crafting stock entry, or nil (with a message)
   #   when that metal isn't sold or no size is large enough
-  def ingot_to_buy(material, volume, discipline)
+  def ingot_to_buy(material, volume)
     sizes = get_data('crafting')['stock'].values.select do |stock|
-      stock['stock-name'] == material && (stock['stock-volume'] < BULK_INGOT_VOLUME || discipline['bingots-room'])
+      stock['stock-name'] == material && (stock['stock-volume'] < BULK_INGOT_VOLUME || @discipline['bingots-room'])
     end
     if sizes.empty?
       Lich::Messaging.msg('bold', "smith: #{material} ingots aren't sold here, so 'buy' can't be used for #{material}.")
@@ -238,17 +288,32 @@ class Smith
     true
   end
 
-  # @param discipline [Hash] the town's blacksmithing data
+  # 'buy' with 'here' walks to the shop, so smith needs the room to come back to.
+  #
+  # @param room [Integer, nil] the current room id
+  # @return [Boolean] false (with a message) when the room is unknown
+  def return_room_known?(room)
+    return true if room
+
+    Lich::Messaging.msg('bold', "smith: 'buy' with 'here' needs a known room to come back to. Buy the ingot first, then run smith with 'here'.")
+    false
+  end
+
   # @param ingot [Hash] the stock entry to order
   # @return [Boolean] false when the purchase failed
-  def buy_ingot(discipline, ingot)
-    shop = ingot['stock-volume'] >= BULK_INGOT_VOLUME ? discipline['bingots-room'] : discipline['stock-room']
-    DRCT.order_item(shop, ingot['stock-number'])
+  def buy_ingot(ingot)
+    DRCT.order_item(ingot_shop(ingot), ingot['stock-number'])
     return false unless bought?("#{ingot['stock-name']} ingot")
 
     DRCC.stow_crafting_item('ingot', @bag, @belt)
     DRCI.stow_hands
     true
+  end
+
+  # @param ingot [Hash] a stock entry
+  # @return [Integer] the room of the shop that sells it
+  def ingot_shop(ingot)
+    ingot['stock-volume'] >= BULK_INGOT_VOLUME ? @discipline['bingots-room'] : @discipline['stock-room']
   end
 
   # Whether a purchase left the item in hand; says so when it didn't.
@@ -262,6 +327,27 @@ class Smith
     false
   end
 
+  # Get to a public anvil, unless forging here or in the private forge
+  # (forge.lic walks to and rents that itself on every run).
+  #
+  # @param here [String, nil] the 'here' argument
+  # @return [void]
+  def go_to_workplace(here)
+    DRCC.find_anvil(@hometown) unless here || @use_private_forge
+  end
+
+  # Top up the oil flask from the town's finisher shop. forge.lic leaves oil
+  # to smith while smith is running.
+  #
+  # @return [void]
+  def restock_oil
+    DRCC.check_consumables('oil', @discipline['finisher-room'], @discipline['finisher-number'], @bag, @bag_items, @belt)
+  end
+
+  # Put the maker's mark on the finished item.
+  #
+  # @param noun [String] the recipe's item noun
+  # @return [void]
   def stamp_item(noun)
     DRCC.get_crafting_item('stamp', @bag, @bag_items, @belt)
     # The maker's mark belongs on the object right after its initial creation.
@@ -280,11 +366,10 @@ class Smith
   # buy every run, such as craft.lic's Forging training. If the disposal
   # fails and the remainder is still carried, smith says so.
   #
-  # @param discipline [Hash] the town's blacksmithing data
   # @param recipe [Hash] the base-recipes entry
   # @param ingot [Hash] the stock entry that was bought
   # @return [void]
-  def handle_leftover(discipline, recipe, ingot)
+  def handle_leftover(recipe, ingot)
     leftover = ingot['stock-volume'] - recipe['volume']
     return unless leftover.positive?
 
@@ -294,10 +379,44 @@ class Smith
     end
 
     name = "#{ingot['stock-name']} ingot"
-    return if DRCT.dispose(name, discipline['trash-room'], @settings.worn_trashcan, @settings.worn_trashcan_verb)
+    return if DRCT.dispose(name, @discipline['trash-room'], @settings.worn_trashcan, @settings.worn_trashcan_verb)
     return unless DRCI.exists?(name)
 
     Lich::Messaging.msg('bold', "smith: Could not dispose of the leftover #{name}, so the next 'buy' of #{ingot['stock-name']} will refuse. Run smith without 'buy' to forge from it, or get rid of it by hand.")
+  end
+
+  private
+
+  # @return [void]
+  def load_settings
+    @settings = get_settings
+    @hometown = DRCC.crafting_hometown(@settings)
+    @discipline = get_data('crafting')['blacksmithing'][@hometown]
+    @bag = @settings.crafting_container
+    @bag_items = @settings.crafting_items_in_container
+    @belt = @settings.forging_belt
+    @use_private_forge = DRCC.use_private_forge?(@settings)
+  end
+
+  # Stop early, before buying anything, when use_private_forge is on in a
+  # town without a private forge.
+  #
+  # @return [void]
+  def exit_unless_private_forge_exists
+    return unless @use_private_forge
+    return if DRCC.private_forge_room(@hometown)
+
+    Lich::Messaging.msg('bold', "smith: use_private_forge is enabled, but '#{@hometown}' has no private forge.")
+    Lich::Messaging.msg('bold', "smith: Towns with private forges: #{DRCC.towns_with_private_forge.join(', ')}")
+    Lich::Messaging.msg('bold', "smith: Either set use_private_forge: false, or change hometown/force_crafting_town.")
+    exit
+  end
+
+  # @param item_name [String] the recipe name as typed
+  # @return [Hash, nil] the recipe, or nil when none matches (DRCC says so)
+  def find_recipe(item_name)
+    recipes = get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ SMITHING_TYPES }
+    DRCC.recipe_lookup(recipes, item_name)
   end
 end
 

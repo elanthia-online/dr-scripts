@@ -22,6 +22,7 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@hometown, 'Shard')
       instance.instance_variable_set(:@settings, settings)
       instance.instance_variable_set(:@use_private_forge, use_private_forge)
+      instance.instance_variable_set(:@discipline, discipline)
       allow(instance).to receive(:buy_parts).and_return(true)
       allow(DRCC).to receive(:find_anvil)
       allow(DRCC).to receive(:go_to_private_forge)
@@ -30,7 +31,7 @@ RSpec.describe Smith do
     end
 
     def run_smith(instance, stay: false)
-      instance.smith('bronze', discipline, recipe, [], nil, nil, nil, nil, nil, nil, nil, stay)
+      instance.smith(OpenStruct.new(material: 'bronze', here: stay ? 'here' : nil), recipe)
     end
 
     it 'leaves the private forge walk and rental to forge.lic' do
@@ -69,7 +70,7 @@ RSpec.describe Smith do
   describe '#smith after forge.lic exits' do
     let(:settings) { OpenStruct.new }
     let(:discipline) { { 'stock-volume' => 100, 'finisher-room' => 1, 'finisher-number' => 2, 'trash-room' => 9, 'bingots-room' => 17_119 } }
-    let(:recipe) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star' } }
+    let(:recipe) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star', 'part' => ['haft'] } }
     let(:forge_runs) { [] }
 
     before do
@@ -84,6 +85,7 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@hometown, 'Shard')
       instance.instance_variable_set(:@settings, settings)
       instance.instance_variable_set(:@use_private_forge, false)
+      instance.instance_variable_set(:@discipline, discipline)
       $test_data[:crafting] = { 'stock' => { 'steel50' => { 'stock-volume' => 50, 'stock-number' => 13, 'stock-name' => 'steel' } } }
       allow(instance).to receive(:buy_parts).and_return(true)
       allow(instance).to receive(:buy_ingot).and_return(true)
@@ -99,8 +101,8 @@ RSpec.describe Smith do
       instance
     end
 
-    def run_smith(instance, parts: ['haft'], buy: true, stamp: true, temper: 'temper', balance: 'balance')
-      instance.smith('steel', discipline, recipe, parts, buy, stamp, temper, nil, balance, nil, nil, nil)
+    def run_smith(instance)
+      instance.smith(OpenStruct.new(material: 'steel', buy: 'buy', stamp: 'stamp', temper: 'temper', balance: 'balance'), recipe)
     end
 
     it 'stamps, enhances and reports the leftover ingot when every forge run finishes the item' do
@@ -194,7 +196,7 @@ RSpec.describe Smith do
     it "tells every forge run to skip restocking and stay in the room with 'here'" do
       instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
 
-      instance.smith('steel', discipline, recipe, [], nil, nil, 'temper', nil, 'balance', nil, nil, 'here')
+      instance.smith(OpenStruct.new(material: 'steel', temper: 'temper', balance: 'balance', here: 'here'), recipe)
 
       expect(forge_runs).to all(include('skip', 'here'))
       expect(forge_runs.size).to eq(3)
@@ -333,7 +335,7 @@ RSpec.describe Smith do
     let(:stock) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__))['stock'] }
     let(:settings) { OpenStruct.new(workorders_materials: { 'metal_type' => 'bronze' }) }
     let(:discipline) { { 'stock-room' => 4434, 'bingots-room' => 17_119, 'finisher-room' => 1, 'finisher-number' => 2, 'trash-room' => 9611 } }
-    let(:morning_star) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star' } }
+    let(:morning_star) { { 'volume' => 11, 'type' => 'weaponsmithing', 'chapter' => 5, 'name' => 'a metal morning star', 'noun' => 'star', 'part' => ['haft'] } }
 
     before do
       $test_data[:crafting] = { 'stock' => stock }
@@ -350,38 +352,40 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@settings, settings)
       instance.instance_variable_set(:@use_private_forge, false)
       instance.instance_variable_set(:@bag, 'duffel bag')
+      instance.instance_variable_set(:@discipline, discipline)
       instance
     end
 
-    def smith_with_buy(instance, material: 'steel', recipe: morning_star, parts: ['haft'], here: nil)
-      instance.smith(material, discipline, recipe, parts, 'buy', nil, nil, nil, nil, nil, nil, here)
+    def smith_with_buy(instance, material: 'steel', recipe: morning_star, here: nil)
+      instance.smith(OpenStruct.new(material: material, buy: 'buy', here: here), recipe)
     end
 
     describe '#ingot_to_buy' do
       it 'picks the smallest ingot of the typed metal that holds the recipe' do
-        expect(build.ingot_to_buy('steel', 11, discipline)).to include('stock-name' => 'steel', 'stock-volume' => 50)
+        expect(build.ingot_to_buy('steel', 11)).to include('stock-name' => 'steel', 'stock-volume' => 50)
       end
 
       it 'takes an ingot whose volume equals the recipe volume' do
-        expect(build.ingot_to_buy('steel', 10, discipline)).to include('stock-volume' => 10)
+        expect(build.ingot_to_buy('steel', 10)).to include('stock-volume' => 10)
       end
 
       it 'refuses, naming the largest size, when no ingot is large enough' do
-        expect(build.ingot_to_buy('steel', 250, discipline)).to be_nil
+        expect(build.ingot_to_buy('steel', 250)).to be_nil
         expect(Lich::Messaging).to have_received(:msg).with('bold', /largest steel ingot sold holds 200 volume; this recipe needs 250/)
       end
 
       it "refuses a metal the shop doesn't sell" do
-        expect(build.ingot_to_buy('tyrium', 15, discipline)).to be_nil
+        expect(build.ingot_to_buy('tyrium', 15)).to be_nil
         expect(Lich::Messaging).to have_received(:msg).with('bold', /tyrium ingots aren't sold here/)
       end
 
       it 'offers only the stock shop sizes in a town without a bulk shop' do
-        no_bulk_shop = discipline.except('bingots-room')
+        instance = build
+        instance.instance_variable_set(:@discipline, discipline.except('bingots-room'))
 
-        expect(build.ingot_to_buy('steel', 10, no_bulk_shop)).to include('stock-volume' => 10)
-        expect(build.ingot_to_buy('steel', 11, no_bulk_shop)).to be_nil
-        expect(build.ingot_to_buy('iron', 11, no_bulk_shop)).to be_nil
+        expect(instance.ingot_to_buy('steel', 10)).to include('stock-volume' => 10)
+        expect(instance.ingot_to_buy('steel', 11)).to be_nil
+        expect(instance.ingot_to_buy('iron', 11)).to be_nil
       end
     end
 
@@ -442,7 +446,7 @@ RSpec.describe Smith do
       end
 
       it 'disposes of a stock-shop remainder, so craft.lic can buy again on the next cycle' do
-        2.times { smith_with_buy(build, material: 'bronze', recipe: cup, parts: []) }
+        2.times { smith_with_buy(build, material: 'bronze', recipe: cup) }
 
         expect(DRCT).to have_received(:order_item).with(4434, 11).twice
         expect(DRCT).to have_received(:dispose).with('bronze ingot', 9611, nil, nil).twice
@@ -450,7 +454,7 @@ RSpec.describe Smith do
       end
 
       it 'keeps and reports the remainder of a bulk ingot' do
-        smith_with_buy(build, parts: [])
+        smith_with_buy(build, recipe: morning_star.except('part'))
 
         expect(DRCT).to have_received(:order_item).with(17_119, 13)
         expect(DRCT).not_to have_received(:dispose)
@@ -463,7 +467,7 @@ RSpec.describe Smith do
       it 'says so when the remainder could not be disposed of and is still carried' do
         allow(DRCT).to receive(:dispose).and_return(false)
 
-        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup)
 
         expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not dispose of the leftover bronze ingot.*next 'buy' of bronze will refuse/)
       end
@@ -471,7 +475,7 @@ RSpec.describe Smith do
       it 'stays quiet when a failed disposal left no ingot behind' do
         allow(DRCT).to receive(:dispose) { |item, *| carried.delete(item) && nil }
 
-        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup)
 
         expect(DRCI).to have_received(:exists?).with('bronze ingot').twice
         expect(Lich::Messaging).not_to have_received(:msg).with('bold', /Could not dispose/)
@@ -480,13 +484,13 @@ RSpec.describe Smith do
       it "doesn't look for the ingot again after a disposal that worked" do
         allow(DRCT).to receive(:dispose).and_return(true)
 
-        smith_with_buy(build, material: 'bronze', recipe: cup, parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup)
 
         expect(DRCI).to have_received(:exists?).with('bronze ingot').once
       end
 
       it 'disposes of nothing when the recipe uses the whole ingot' do
-        smith_with_buy(build, material: 'bronze', recipe: cup.merge('volume' => 5), parts: [])
+        smith_with_buy(build, material: 'bronze', recipe: cup.merge('volume' => 5))
 
         expect(DRCT).not_to have_received(:dispose)
       end
