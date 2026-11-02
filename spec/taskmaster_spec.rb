@@ -1378,8 +1378,8 @@ RSpec.describe TaskMaster do
     end
 
     describe '#zasele leftover stock' do
-      def tailor(worn_trashcan:)
-        tm = build(worn_trashcan: worn_trashcan, settings: { outfitting_tools: ['scissors'] })
+      def tailor(worn_trashcan:, bin_leftover_stock: true)
+        tm = build(worn_trashcan: worn_trashcan, bin_leftover_stock: bin_leftover_stock, settings: { outfitting_tools: ['scissors'] })
         allow(tm).to receive(:buy_stackables)
         allow(tm).to receive(:tailor_item)
         allow(tm).to receive(:repair)
@@ -1388,8 +1388,12 @@ RSpec.describe TaskMaster do
         tm
       end
 
-      it 'skips the walk to the bin room when a trash can is worn (the stock is binned after the hand-in)' do
+      it 'skips the walk to the bin room when opted in with a worn trash can (the stock is binned after the hand-in)' do
         expect(tailor(worn_trashcan: 'bucket')).not_to have_received(:trash)
+      end
+
+      it 'still walks leftover stock to the bin room when not opted in, even with a worn trash can' do
+        expect(tailor(worn_trashcan: 'bucket', bin_leftover_stock: nil)).to have_received(:trash).with('rope', 'cloth', 'burlap')
       end
 
       it 'still walks leftover stock to the bin room without a worn trash can' do
@@ -1714,7 +1718,19 @@ RSpec.describe TaskMaster do
       end
 
       def binner(**ivars)
-        build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', **ivars)
+        build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', bin_leftover_stock: true, **ivars)
+      end
+
+      it 'is off by default: base.yaml declares task_bin_leftover_stock false' do
+        expect(base_yaml).to include('task_bin_leftover_stock' => false)
+      end
+
+      [nil, false].each do |setting|
+        it "sends nothing when task_bin_leftover_stock is #{setting.inspect}, even with a worn trash can" do
+          world({ 'burlap cloth' => 3 })
+          expect(binner(bin_leftover_stock: setting).bin_task_stock).to eq(0)
+          expect(sent).to be_empty
+        end
       end
 
       it "bins every piece of Zasele's stock from the crafting bag, then taps the trash can twice" do

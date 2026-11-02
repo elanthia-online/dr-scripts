@@ -3034,6 +3034,11 @@ task_slack_keepers: false
 # Setting for taskmaster - Put a keeper's item in task_loot_bag and bin its empty sack, instead of
 # keeping the whole sack. Falls back to keeping the sack if any step fails.
 task_unpack_keepers: false
+# Setting for taskmaster - After each Zasele task is handed in, bin her leftover stock and the offcuts
+# (burlap cloth, rat leather, wool yarn) from the crafting bag into worn_trashcan. Needs worn_trashcan;
+# with it, the walk to the bin room for leftover stock is skipped. Bins your own pieces of those stocks
+# in the crafting bag too.
+task_bin_leftover_stock: false
 
 # Setting for taskmaster - boosts to use. task: BOOST TASK when a task is on cooldown
 # (task_use_boost: true also turns this on). haste: keep BOOST HASTE running between tasks.

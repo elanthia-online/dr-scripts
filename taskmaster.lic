@@ -11,6 +11,7 @@
   task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
+  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan)
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
@@ -23,7 +24,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.1'
+  VERSION = '2026.11.03.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -77,6 +78,7 @@ class TaskMaster
     @bag = @settings.crafting_container
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
+    @bin_leftover_stock = @settings.task_bin_leftover_stock
     @bag_items = @settings.crafting_items_in_container
     @lootbag = @settings.task_loot_bag || 'backpack'
     @gem = @settings.gem_pouch_adjective
@@ -706,9 +708,9 @@ class TaskMaster
     end
     tailor_item(item, count, base, type)
     repair(toolset, @settings.outfitting_belt)
-    # With a worn trash can, leftover stock goes in it after the hand-in
-    # (bin_task_stock), so there is no walk to the bin room now.
-    trash(item, base, type) unless @worn_trashcan
+    # When bin_task_stock will bin the leftover stock after the hand-in,
+    # there is no walk to the bin room now.
+    trash(item, base, type) unless bins_task_stock?
   end
 
   # Taskmasters wander, but between turn-ins they are usually back in the
@@ -1283,15 +1285,24 @@ class TaskMaster
   # Pieces bin_task_stock bins per stock at most, so the loop always ends.
   TASK_STOCK_BIN_CAP = 100
 
-  # After a Zasele task is handed in, bins every piece of her stock in the
-  # crafting bag into the worn trash can, then uses the trash can's verb
-  # twice. Without a worn trash can it bins nothing, so nothing is ever
-  # dropped, and trash keeps taking leftover stock to the bin room. A piece
-  # the trash can refuses goes back in the bag and ends that stock's loop.
+  # Whether bin_task_stock bins after the hand-in: only when the player opted
+  # in with task_bin_leftover_stock, for Zasele's tasks, with a worn trash can.
+  #
+  # @return [Boolean]
+  def bins_task_stock?
+    @bin_leftover_stock && @npc == 'zasele' && @worn_trashcan ? true : false
+  end
+
+  # With task_bin_leftover_stock, after a Zasele task is handed in, bins
+  # every piece of her stock in the crafting bag into the worn trash can,
+  # then uses the trash can's verb twice. Without the setting or a worn trash
+  # can it bins nothing, so nothing is ever dropped, and trash keeps taking
+  # leftover stock to the bin room. A piece the trash can refuses goes back
+  # in the bag and ends that stock's loop.
   #
   # @return [Integer] pieces binned
   def bin_task_stock
-    return 0 unless @npc == 'zasele' && @worn_trashcan
+    return 0 unless bins_task_stock?
 
     binned = TASK_STOCK_BASES.sum { |base| bin_stock("#{@stackmap[base].first} #{base}", base) }
     return binned unless binned.positive?
