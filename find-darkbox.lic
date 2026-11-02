@@ -70,6 +70,10 @@ class FindDarkbox
     @loot_container = settings.hollow_eve_loot_container
     @worn_trashcan = settings.worn_trashcan
     @worn_trashcan_verb = settings.worn_trashcan_verb
+    # Whether the last play was refused and the bank or heal-remedy has been
+    # tried since; a paid play clears them.
+    @restocked = false
+    @healed = false
   end
 
   # Finds the Darkbox, plays it until a stop condition, then walks to
@@ -118,7 +122,9 @@ class FindDarkbox
   end
 
   # Plays until a stop condition. Exits the script when there is no Darkbox,
-  # the bank stops lending or a prize cannot be put away.
+  # the bank cannot help or a prize cannot be put away. A refusal that the
+  # bank or heal-remedy just failed to fix ends the run instead of repeating
+  # them.
   #
   # @return [void]
   def play_until_done
@@ -132,9 +138,17 @@ class FindDarkbox
       break if @stop_on_wounded && Flags['darkbox-wounded']
 
       play
-      restock_kronars if Flags['darkbox-no-money']
-      break if blocked_by_wounds? && !heal_wounds?
+      if Flags['darkbox-no-money']
+        restock_kronars
+        next
+      end
+      @restocked = false
+      if blocked_by_wounds?
+        break unless heal_wounds?
 
+        next
+      end
+      @healed = false
       handle_prizes
       waitrt?
     end
@@ -154,16 +168,24 @@ class FindDarkbox
   end
 
   # Takes {WITHDRAWAL} from the bank and walks back. Exits the script when the
-  # bank will not lend.
+  # bank gives nothing, or when the play after the last withdrawal was still
+  # refused for money (such as a withdrawal in another currency).
   #
   # @return [void]
   def restock_kronars
-    DRC.message('*** You are out of money. Heading to bank to get more! ***')
-    DRCT.walk_to(BANK_ROOM)
-    case DRC.bput("withdraw #{WITHDRAWAL}", 'we are not lending money at this time', 'The clerk counts out')
-    when 'we are not lending money at this time'
+    if @restocked
+      DRC.message('*** Still short of Kronars after visiting the bank. ***')
       exit
     end
+    DRC.message('*** You are out of money. Heading to bank to get more! ***')
+    DRCT.walk_to(BANK_ROOM)
+    reply = DRC.bput("withdraw #{WITHDRAWAL}", 'The clerk counts out', 'we are not lending money at this time',
+                     "You don't have that much money", 'have an account')
+    unless reply == 'The clerk counts out'
+      DRC.message("*** The bank did not hand over #{WITHDRAWAL}. ***")
+      exit
+    end
+    @restocked = true
     fput('balance')
     DRCT.walk_to(UserVars.last_darkbox)
   end
@@ -173,17 +195,24 @@ class FindDarkbox
     Flags['darkbox-too-hurt']
   end
 
-  # Treats wounds with heal-remedy when he_use_herbs_remedies is set.
+  # Treats wounds with heal-remedy when he_use_herbs_remedies is set. Gives up
+  # when the play after the last treatment was still refused.
   #
   # @return [Boolean] true to play on, false to stop
   def heal_wounds?
     return false unless @use_herbs_remedies
+
+    if @healed
+      DRC.message('*** Still too wounded to play after heal-remedy! Seek out an Empath! ***')
+      return false
+    end
 
     DRC.wait_for_script_to_complete('heal-remedy', @override ? %w[quick override] : ['quick'])
     if reget(3, '^What were')
       DRC.message('*** Out of herbs or remedies! Seek out more or an Empath! ***')
       return false
     end
+    @healed = true
     pause HERB_PAUSE
     true
   end
