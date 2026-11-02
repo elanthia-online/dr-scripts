@@ -21,7 +21,6 @@ RSpec.describe Smith do
       instance.instance_variable_set(:@use_private_forge, use_private_forge)
       allow(instance).to receive(:buy_parts)
       allow(instance).to receive(:check_and_renew_forge_rental)
-      allow(instance).to receive(:dispose_parts)
       allow(DRCC).to receive(:find_anvil)
       allow(DRCC).to receive(:go_to_private_forge).and_return(true)
       instance
@@ -105,7 +104,7 @@ RSpec.describe Smith do
       instance.smith('steel', discipline, recipe, parts, buy, stamp, temper, nil, balance, nil, nil, nil)
     end
 
-    it 'stamps, enhances and disposes when every forge run finishes the item' do
+    it 'stamps, enhances and disposes of the scrap ingot when every forge run finishes the item' do
       instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
 
       run_smith(instance)
@@ -113,7 +112,14 @@ RSpec.describe Smith do
       expect(forge_runs.map(&:first)).to eq(%w[weaponsmithing temper balance])
       expect(instance).to have_received(:stamp_item).with('star')
       expect(DRCT).to have_received(:dispose).with('steel ingot', 9)
-      expect(DRCT).to have_received(:dispose).with('haft', 9)
+    end
+
+    it 'never trashes parts: forge.lic uses them up, and a leftover is kept for the next run' do
+      instance = build_with_forge_outcomes('steel morning star', 'steel morning star', 'steel morning star')
+
+      run_smith(instance)
+
+      expect(DRCT).not_to have_received(:dispose).with('haft', anything)
     end
 
     it 'stops after a failed main run: no stamp, no enhancement runs, nothing trashed' do
@@ -190,6 +196,106 @@ RSpec.describe Smith do
       run_smith(instance)
 
       expect(forge_runs.size).to eq(3)
+    end
+  end
+
+  # smith used to buy every part on every run and trash parts at the end.
+  # Across 193 such disposals in Saelia's and Kurtus' logs, 187 found nothing
+  # (forge.lic had used the part) and the other 4 trashed a usable part: a
+  # spare from an earlier failed run, or a hilt from a pack that wasn't the
+  # crafting container. Now a part already in the crafting container is used.
+  describe '#buy_parts' do
+    let(:crafting_data) do
+      {
+        'recipe_parts' => {
+          'short cord'    => { 'Shard' => { 'part-room' => 4436, 'part-number' => nil } },
+          'small padding' => { 'Shard' => { 'part-room' => 4436, 'part-number' => 7 } },
+          'haft'          => { 'Shard' => { 'part-room' => 4436, 'part-number' => nil } }
+        }
+      }
+    end
+
+    before do
+      $test_data[:crafting] = crafting_data
+      allow(DRCT).to receive(:buy_item)
+      allow(DRCT).to receive(:order_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+    end
+
+    def build_carrying(*bag_items)
+      instance = Smith.allocate
+      instance.instance_variable_set(:@hometown, 'Shard')
+      instance.instance_variable_set(:@bag, 'duffel bag')
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(bag_items)
+      instance
+    end
+
+    it 'buys every part when the crafting container holds none' do
+      instance = build_carrying('steel ingot', 'flask of oil')
+
+      instance.buy_parts(['short cord', 'haft'])
+
+      expect(DRCT).to have_received(:buy_item).with(4436, 'short cord')
+      expect(DRCT).to have_received(:buy_item).with(4436, 'haft')
+    end
+
+    it 'uses a part already in the crafting container, matched by adjective and noun like the game' do
+      instance = build_carrying('short leather cord', 'simple oak haft')
+
+      instance.buy_parts(['short cord', 'haft'])
+
+      expect(DRCT).not_to have_received(:buy_item)
+    end
+
+    it 'does not take a long cord for a short cord' do
+      instance = build_carrying('long leather cord')
+
+      instance.buy_parts(['short cord'])
+
+      expect(DRCT).to have_received(:buy_item).with(4436, 'short cord')
+    end
+
+    it 'buys only the shortfall when a recipe needs the same part twice' do
+      instance = build_carrying('small cloth padding')
+
+      instance.buy_parts(['small padding', 'small padding'])
+
+      expect(DRCT).to have_received(:order_item).with(4436, 7).once
+    end
+
+    it 'does not take a crafted short-hafted halberd for a haft, or a bone-hilted dagger for a hilt' do
+      instance = build_carrying('steel short-hafted halberd', 'bone-hilted dagger')
+
+      instance.buy_parts(%w[haft])
+
+      expect(DRCT).to have_received(:buy_item).with(4436, 'haft')
+    end
+
+    # forge.lic asks for "another finished wooden hilt", so an unfinished
+    # piece left in the bag is not a part it can use.
+    it 'does not count an unfinished part as one already carried' do
+      instance = build_carrying('unfinished simple oak haft')
+
+      instance.buy_parts(%w[haft])
+
+      expect(DRCT).to have_received(:buy_item).with(4436, 'haft')
+    end
+
+    it 'buys everything when the container cannot be listed (get_item_list returns nil)' do
+      instance = build_carrying
+      allow(DRCI).to receive(:get_item_list).and_return(nil)
+
+      instance.buy_parts(['small padding', 'small padding'])
+
+      expect(DRCT).to have_received(:order_item).with(4436, 7).twice
+    end
+
+    it 'buys everything when the container is empty' do
+      instance = build_carrying
+
+      instance.buy_parts(['small padding', 'small padding'])
+
+      expect(DRCT).to have_received(:order_item).with(4436, 7).twice
     end
   end
 end
