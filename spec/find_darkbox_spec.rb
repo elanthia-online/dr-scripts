@@ -43,6 +43,8 @@ RSpec.describe FindDarkbox do
   let(:loot) { [] }
   # Server lines that arrive while heal-remedy runs.
   let(:during_heal) { [] }
+  # Blocks registered with before_dying, which Lich runs when the script ends.
+  let(:cleanups) { [] }
 
   let(:paid_line) { 'You count out 200 Kronars and drop the coins into a slot in the side of the Darkbox where they vanish without a sound.' }
   let(:peer_line) { 'Peering into the Darkbox to spot a shiny bauble to grab or a writhing creature to avoid, you see neither.  So you plunge your hand into the darkness and hope for the best....' }
@@ -74,6 +76,7 @@ RSpec.describe FindDarkbox do
   def darkbox
     @darkbox ||= described_class.new(settings, override: override).tap do |instance|
       allow(instance).to receive(:pause)
+      allow(instance).to receive(:before_dying) { |&cleanup| cleanups << cleanup }
       allow(instance).to receive(:fput) do |command|
         sent << command
         next unless command == 'play darkbox'
@@ -244,11 +247,31 @@ RSpec.describe FindDarkbox do
       expect(DRC).to have_received(:message).with('*** Darkbox not found in any of the rooms! ***')
     end
 
-    it 'removes the flags it added' do
-      plays << found_nothing
+    it 'removes its flags when it finishes' do
+      plays << [gone_line]
       run_darkbox
-      described_class.delete_flags
+      cleanups.each(&:call)
       expect(Flags.matchers.keys).not_to include(*described_class::FLAGS.keys)
+    end
+
+    # Lich only runs before_dying blocks registered before the script ends,
+    # so one registered after the play loop never ran for an exit or a kill
+    # and the matchers stayed live for the rest of the session.
+    it 'removes its flags when it exits for want of a Darkbox' do
+      plays << [no_darkbox_line]
+      expect(run_darkbox).to eq(:exited)
+      cleanups.each(&:call)
+      expect(Flags.matchers.keys).not_to include(*described_class::FLAGS.keys)
+    end
+
+    it 'arranges to remove its flags before adding them' do
+      allow(Flags).to receive(:add).and_wrap_original do |original, *args|
+        raise 'flag added before cleanup was registered' if cleanups.empty?
+
+        original.call(*args)
+      end
+      plays << found_nothing
+      expect(run_darkbox).to eq(:played_on)
     end
   end
 
