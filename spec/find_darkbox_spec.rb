@@ -25,6 +25,8 @@ RSpec.describe 'find-darkbox.lic' do
   let(:plays) { [] }
   # Server lines that arrive while heal-remedy runs.
   let(:during_heal) { [] }
+  # What lands in the right hand per `play darkbox`, in order (nil: nothing).
+  let(:loot) { [] }
 
   let(:gone_line) { 'Without warning, the Darkbox simply vanishes!' }
   let(:no_money_line) { "You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing." }
@@ -56,6 +58,7 @@ RSpec.describe 'find-darkbox.lic' do
       raise end_of_run if plays.empty?
 
       plays.shift.each { |line| receive_line(line) }
+      $right_hand = loot.shift
     end
   end
 
@@ -159,6 +162,49 @@ RSpec.describe 'find-darkbox.lic' do
       plays << []
       run_script
       expect(script).to have_received(:pause).with(20)
+    end
+  end
+
+  # The hand names below are what DRC.right_hand returned in a real session:
+  # the game's short name, first adjective and noun.
+  describe 'with an item in hand after a play' do
+    before do
+      $test_settings.hollow_eve_junk = %w[peach coin cambrinth\ peach]
+      allow(DRCI).to receive(:dispose_trash) { $right_hand = nil }
+      allow(DRCI).to receive(:put_away_item?) do
+        $right_hand = nil
+        true
+      end
+    end
+
+    def play_into_hand(item)
+      plays << []
+      loot << item
+    end
+
+    it 'stores a pearl whose colour is a junk word' do
+      play_into_hand('peach pearl')
+      run_script
+      expect(DRCI).to have_received(:put_away_item?).with('peach pearl', 'sack')
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'trashes an item whose noun is a junk word' do
+      play_into_hand('fuzzy peach')
+      run_script
+      expect(DRCI).to have_received(:dispose_trash).with('fuzzy peach', nil, nil)
+    end
+
+    it 'trashes an item matching a two-word junk entry' do
+      play_into_hand('cambrinth peach')
+      run_script
+      expect(DRCI).to have_received(:dispose_trash).with('cambrinth peach', nil, nil)
+    end
+
+    it 'stores an item whose noun only starts with a junk word' do
+      play_into_hand('copper coinpurse')
+      run_script
+      expect(DRCI).to have_received(:put_away_item?).with('copper coinpurse', 'sack')
     end
   end
 
