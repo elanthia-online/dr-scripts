@@ -1580,6 +1580,88 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #work -- re-threading the sewing needles
+  # ===========================================================================
+  describe '#work re-threading' do
+    let(:needs_thread) { 'The needles need to have thread put on them before they can be used for sewing' }
+    let(:out_of_material) { 'You need a larger amount of material to continue crafting' }
+    let(:needles) { OpenStruct.new(name: 'sewing needles', noun: 'needles', id: '63049908') }
+    let(:thread) { OpenStruct.new(name: 'cotton thread', noun: 'thread', id: '63116961') }
+    let(:sent) { [] }
+
+    # Feeds the replies in order (as bput returns them: the matched text)
+    # and records each command sent.
+    # The last reply exits #work through the out-of-material branch.
+    # Running out of replies raises, so a regression fails instead of
+    # looping forever.
+    def run_work(*replies)
+      allow(DRC).to receive(:bput) do |command, *|
+        sent << command
+        raise 'too many bput calls' if replies.empty?
+
+        replies.shift
+      end
+      expect { sew.send(:work, 'push my rucksack with my sewing needles') }.to raise_error(SystemExit)
+    end
+
+    before(:each) do
+      sew.instance_variable_set(:@cube, nil)
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:magic_cleanup)
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(Lich::Messaging).to receive(:msg)
+      allow(GameObj).to receive(:right_hand).and_return(needles)
+      allow(sew).to receive(:swap_tool) do |tool, *|
+        allow(GameObj).to receive(:right_hand).and_return(thread) if tool == 'cotton thread'
+      end
+    end
+
+    it 'threads the needles it was using by id, not by noun' do
+      run_work(needs_thread, 'You carefully thread some cotton thread', out_of_material)
+
+      expect(sent).to include('put my thread on #63049908')
+      expect(sent).not_to include('put thread on my sewing needles')
+    end
+
+    it 'reads the needles id before swap_tool puts the thread in hand' do
+      run_work(needs_thread, out_of_material)
+
+      expect(sent[1]).to eq('put my thread on #63049908')
+      expect(sent[1]).not_to include('63116961')
+    end
+
+    it 'gets the cotton thread, skipping the restock exit' do
+      run_work(needs_thread, out_of_material)
+
+      expect(sew).to have_received(:swap_tool).with('cotton thread', true)
+    end
+
+    it 'goes back to the needles after threading' do
+      run_work(needs_thread, 'You carefully thread some cotton thread', out_of_material)
+
+      expect(sew).to have_received(:swap_tool).with('sewing needles')
+      expect(sent[2]).to eq('push my rucksack with my sewing needles')
+    end
+
+    it 'treats "already threaded" as ready to sew instead of retrying the put' do
+      run_work(needs_thread, 'is already threaded with', out_of_material)
+
+      expect(sent).to eq(['push my rucksack with my sewing needles', 'put my thread on #63049908', 'push my rucksack with my sewing needles'])
+    end
+
+    it 'exits with a message when the needles have no id' do
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'Empty', noun: 'Empty', id: nil))
+
+      run_work(needs_thread)
+
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'sew: Could not identify the sewing needles to thread. Cannot continue crafting.')
+      expect(sew).to have_received(:magic_cleanup)
+      expect(sew).not_to have_received(:swap_tool)
+      expect(sent).to eq(['push my rucksack with my sewing needles'])
+    end
+  end
+
+  # ===========================================================================
   # Edge cases and integration-level scenarios
   # ===========================================================================
   describe 'finish default for resume' do
