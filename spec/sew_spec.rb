@@ -1088,6 +1088,87 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #clear_hands -- a new item starts with empty hands
+  # ===========================================================================
+  describe '#clear_hands' do
+    before(:each) do
+      allow(DRCC).to receive(:stow_crafting_item)
+      sew.instance_variable_set(:@noun, 'rope')
+      sew.instance_variable_set(:@recipe_name, 'reinforced rope')
+      $right_hand = nil
+      $left_hand = nil
+    end
+
+    it 'stows a finished item left in hand by an earlier run, even with the same noun' do
+      $left_hand = 'burlap reinforced rope'
+
+      sew.send(:clear_hands)
+
+      expect(DRCC).to have_received(:stow_crafting_item).with('burlap reinforced rope', 'duffel bag', nil)
+    end
+
+    it 'stows both hands, right first' do
+      $right_hand = 'clockwork scissors'
+      $left_hand = 'burlap reinforced rope'
+
+      sew.send(:clear_hands)
+
+      expect(DRCC).to have_received(:stow_crafting_item).with('clockwork scissors', 'duffel bag', nil).ordered
+      expect(DRCC).to have_received(:stow_crafting_item).with('burlap reinforced rope', 'duffel bag', nil).ordered
+    end
+
+    it 'does nothing with empty hands' do
+      sew.send(:clear_hands)
+
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it 'passes the belt so belt tools are tied back on' do
+      belt = { 'name' => "tailor's toolbelt", 'items' => ['scissors'] }
+      sew.instance_variable_set(:@belt, belt)
+      $right_hand = 'clockwork scissors'
+
+      sew.send(:clear_hands)
+
+      expect(DRCC).to have_received(:stow_crafting_item).with('clockwork scissors', 'duffel bag', belt)
+    end
+
+    context 'for an enhancement' do
+      before(:each) do
+        sew.instance_variable_set(:@noun, 'shirt')
+        sew.instance_variable_set(:@recipe_name, 'tailored armor sealing')
+      end
+
+      it 'keeps the item being enhanced' do
+        $left_hand = 'quilted cloth shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'keeps a dotted noun once dots become spaces' do
+        sew.instance_variable_set(:@noun, 'cloth.shirt')
+        $left_hand = 'quilted cloth shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'still stows anything else' do
+        $right_hand = 'sealing wax'
+        $left_hand = 'quilted cloth shirt'
+
+        sew.send(:clear_hands)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('sealing wax', 'duffel bag', nil)
+        expect(DRCC).not_to have_received(:stow_crafting_item).with('quilted cloth shirt', anything, anything)
+      end
+    end
+  end
+
+  # ===========================================================================
   # #prep -- recipe/instruction lookup and material setup
   # ===========================================================================
   describe '#prep' do
@@ -1109,6 +1190,13 @@ RSpec.describe Sew do
       sew.instance_variable_set(:@chapter, 1)
       sew.instance_variable_set(:@cloth, Sew::CLOTH)
       sew.instance_variable_set(:@cube, nil)
+    end
+
+    it 'clears its hands before anything else' do
+      expect(sew).to receive(:clear_hands).ordered
+      expect(DRCA).to receive(:crafting_magic_routine).ordered
+
+      sew.send(:prep)
     end
 
     it 'always calls crafting_magic_routine first' do

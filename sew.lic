@@ -131,7 +131,20 @@ class Sew
     Lich::Messaging.msg('plain', "Items at feet: #{atfeet.join(', ')}") if atfeet&.any?
   end
 
+  # A new item starts with empty hands. Anything still held, such as the
+  # item a previous run finished with 'hold', blocks every later get.
+  # Enhancements work on the held item, so that one stays.
+  def clear_hands
+    keep = @noun.tr('.', ' ') if @recipe_name.include?('tailored armor')
+    [DRC.right_hand, DRC.left_hand].each do |item|
+      next if item.nil? || (keep && item.include?(keep))
+
+      DRCC.stow_crafting_item(item, @bag, @belt)
+    end
+  end
+
   def prep
+    clear_hands
     DRCA.crafting_magic_routine(@settings)
     if @instructions
       DRCC.get_crafting_item("#{@noun} instructions", @bag, @bag_items, @belt)
