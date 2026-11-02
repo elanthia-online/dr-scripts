@@ -10,6 +10,7 @@
   task_keep_list: list of items to keep. See default in base.yaml
   task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
+  task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
@@ -21,6 +22,9 @@
 =end
 
 class TaskMaster
+  # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
+  VERSION = '2026.11.03'
+
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
   # (stock-name cotton in base-crafting.yaml).
@@ -155,6 +159,7 @@ class TaskMaster
   # @raise [SystemExit] after the one-shot modes, marathon and finish, or
   #   from run_tasks
   def run(args = parse_args(ARG_DEFINITIONS))
+    DRC.message("taskmaster version #{VERSION}")
     shift_to_task_hometown
     @npc = args.npc
     @marathon = args.marathon
@@ -388,6 +393,7 @@ class TaskMaster
     end
     @slack_keepers = @settings.task_slack_keepers
     register_slackbot(@settings.slack_username) if @slack_keepers
+    @unpack_keepers = @settings.task_unpack_keepers
   end
 
   # An unreadable or empty look is never a keeper, so a failed LOOK cannot
@@ -1331,7 +1337,7 @@ class TaskMaster
       result = result.sub(/In the woven sack you see (?:(?:a|an|some) )?/, '').sub(/\.$/, '')
       DRC.message("Found a keeper: #{result}")
       send_slackbot_message("Found a keeper: #{result}") if @slack_keepers
-      DRCI.put_away_item?('sack', @lootbag)
+      DRCI.put_away_item?('sack', @lootbag) unless @unpack_keepers && unpack_keeper?(result)
     else
       DRC.message("Nothing special: #{result}")
       DRCI.dispose_trash('sack', @worn_trashcan, @worn_trashcan_verb)
@@ -1339,6 +1345,83 @@ class TaskMaster
     result.sub!('In the woven sack you see', '')
     DRC.log_window(result, "Task Master", true, true)
     remember_sack(result)
+  end
+
+  # Replies used to take a keeper out of its sack (Hollow Eve 2026 logs).
+  UNPACK_GET_SUCCESS = /^You get /
+  UNPACK_NEED_FREE_HAND = /^You need a free hand/
+  UNPACK_GET_FAILURES = [/^What were you referring to/, /^I could not find/].freeze
+  SACK_EMPTY = /^There's nothing inside/
+  SACK_NOT_EMPTY = /^Inside .*, you see:/
+  # Seconds to wait for another script to free a hand before the one retry.
+  UNPACK_FREE_HAND_WAIT = 20
+
+  # Moves a keeper out of its reward sack into the loot bag and bins the
+  # empty sack (task_unpack_keepers). Every sack seen held a single item whose
+  # description ends in its noun ("a large tyrium bar"), so the item is taken
+  # by that noun from the sack's own id; the id the game gives it in hand is
+  # then used for the put. The sack is only binned once INVENTORY shows it
+  # empty, so nothing is ever thrown away unseen, and it is binned by its id.
+  #
+  # @param description [String] the sack contents, LOOK prefix stripped
+  # @return [Boolean] true when the item is in the loot bag and the sack is
+  #   binned; false leaves the sack in hand (with whatever is still in it,
+  #   or empty when it could not be binned) for the caller to keep as before
+  def unpack_keeper?(description)
+    sack_id = held_id('sack')
+    noun = description.to_s.split.last
+    return false unless sack_id && noun
+
+    item_id = take_from_sack(noun, sack_id)
+    return false unless item_id
+
+    unless DRCI.put_away_item?("##{item_id}", @lootbag)
+      DRC.bput("put ##{item_id} in ##{sack_id}", 'You put', 'What were you referring to')
+      return false
+    end
+    return false unless DRC.bput("inventory ##{sack_id}", SACK_EMPTY, SACK_NOT_EMPTY).match?(SACK_EMPTY)
+
+    return false unless DRCI.dispose_trash("##{sack_id}", @worn_trashcan, @worn_trashcan_verb)
+
+    true
+  end
+
+  # Gets the item by noun from the sack with that id, retrying once when
+  # another script is holding the free hand.
+  #
+  # @param noun [String]
+  # @param sack_id [String]
+  # @return [String, nil] the id of the item now in hand, or nil
+  def take_from_sack(noun, sack_id)
+    2.times do |attempt|
+      case DRC.bput("get #{noun} from ##{sack_id}", UNPACK_GET_SUCCESS, UNPACK_NEED_FREE_HAND, *UNPACK_GET_FAILURES)
+      when UNPACK_GET_SUCCESS
+        return held_id(noun, except: sack_id)
+      when UNPACK_NEED_FREE_HAND
+        break if attempt.positive?
+
+        wait_for_free_hand
+      else
+        break
+      end
+    end
+    nil
+  end
+
+  # @param noun [String]
+  # @param except [String, nil] an id to skip (the sack, while it is held)
+  # @return [String, nil] the id of a held item with this noun
+  def held_id(noun, except: nil)
+    [GameObj.right_hand, GameObj.left_hand]
+      .find { |obj| obj&.noun == noun && obj.id && obj.id != except }
+      &.id
+  end
+
+  # Waits (bounded) until a hand is free.
+  # @return [void]
+  def wait_for_free_hand
+    deadline = Time.now + UNPACK_FREE_HAND_WAIT
+    pause 1 while DRC.left_hand && DRC.right_hand && Time.now < deadline
   end
 
   # Sack history for ;taskmaster loot_history. UserVars persists, so the list
