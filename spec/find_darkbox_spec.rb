@@ -295,6 +295,34 @@ RSpec.describe FindDarkbox do
       expect(run_darkbox).to eq(:exited)
       expect(walks).to eq([16_315])
     end
+
+    # Any other reply, or none before bput gives up, used to count as a
+    # withdrawal: back to the Darkbox, refused again, back to the bank.
+    ["You don't have that much money in your account.", 'You must have an account to do that.', nil].each do |reply|
+      it "stops the script when the bank answers #{reply.inspect}" do
+        allow(DRC).to receive(:bput).and_return(reply)
+        plays << [no_money_line]
+        expect(run_darkbox).to eq(:exited)
+        expect(walks).to eq([16_315])
+        expect(DRC).to have_received(:message).with('*** The bank did not hand over 3 platinum. ***')
+      end
+    end
+
+    it 'stops the script when the play after a withdrawal is still refused' do
+      plays << [no_money_line]
+      plays << [no_money_line]
+      expect(run_darkbox).to eq(:exited)
+      expect(walks).to eq([16_315, 1])
+      expect(DRC).to have_received(:message).with('*** Still short of Kronars after visiting the bank. ***')
+    end
+
+    it 'goes to the bank again once a paid play has come between' do
+      plays << [no_money_line]
+      plays << found_nothing
+      plays << [no_money_line]
+      expect(run_darkbox).to eq(:played_on)
+      expect(walks).to eq([16_315, 1, 16_315, 1])
+    end
   end
 
   describe 'wounds' do
@@ -337,6 +365,24 @@ RSpec.describe FindDarkbox do
       plays << [wounds_line] + Array.new(12) { |i| "Mallory#{i} drops some coins into the Darkbox and reaches inside it." }
       run_darkbox
       expect(DRC).to have_received(:wait_for_script_to_complete).with('heal-remedy', ['quick'])
+    end
+
+    # heal-remedy can treat some wounds and not others; the old loop ran it
+    # and paused 65 seconds forever.
+    it 'stops playing when the play after heal-remedy is still refused for wounds' do
+      plays << [wounds_line]
+      plays << [wounds_line]
+      expect(run_darkbox).to eq(:finished)
+      expect(DRC).to have_received(:wait_for_script_to_complete).once
+      expect(DRC).to have_received(:message).with('*** Still too wounded to play after heal-remedy! Seek out an Empath! ***')
+    end
+
+    it 'runs heal-remedy again once a paid play has come between' do
+      plays << [wounds_line]
+      plays << found_nothing
+      plays << [wounds_line]
+      expect(run_darkbox).to eq(:played_on)
+      expect(DRC).to have_received(:wait_for_script_to_complete).twice
     end
 
     context 'with override' do
