@@ -36,7 +36,8 @@ class FindDarkbox
 
   # Flags this script registers, by name.
   FLAGS = {
-    'darkbox-drop'     => "#{LINE_START}Your .* falls to the ground",
+    # A prize the hissing creature knocks out of a crushed hand.
+    'darkbox-drop'     => /#{LINE_START}Your (?<item>.+) falls to (?:your feet|the ground)/,
     'darkbox-gone'     => "#{LINE_START}Without warning, the Darkbox simply vanishes",
     'darkbox-wounded'  => "#{LINE_START}Your injury increases the difficulty of the game, but you press on",
     'darkbox-no-money' => /#{LINE_START}You try to play the Darkbox, but realize you don't have the 200 Kronars required.  How depressing./
@@ -77,6 +78,7 @@ class FindDarkbox
     UserVars.last_darkbox = Room.current.id
     FLAGS.each { |name, pattern| Flags.add(name, pattern) }
     play_until_done
+    pick_up_dropped_prize # The game will not let you walk away from it.
     DRCT.walk_to(EXIT_ROOM)
   end
 
@@ -118,7 +120,7 @@ class FindDarkbox
         UserVars.last_darkbox = nil
         break
       end
-      Flags.reset('darkbox-drop')
+      pick_up_dropped_prize
       fput('stand') unless checkstanding
       break if @stop_on_wounded && Flags['darkbox-wounded']
 
@@ -177,6 +179,22 @@ class FindDarkbox
     end
     pause HERB_PAUSE
     true
+  end
+
+  # Picks up and handles a prize a crushed hand dropped. The drop can come
+  # after the hands were checked, even after roundtime, so this runs before
+  # every play.
+  #
+  # @return [void]
+  def pick_up_dropped_prize
+    return unless (drop = Flags['darkbox-drop'])
+
+    Flags.reset('darkbox-drop')
+    if DRCI.lift?(drop[:item])
+      handle_prizes
+    else
+      DRC.message("*** Could not pick up the #{drop[:item]} you dropped. ***")
+    end
   end
 
   # Throws away or puts away whatever is in either hand.

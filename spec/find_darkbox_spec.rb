@@ -430,15 +430,71 @@ RSpec.describe FindDarkbox do
         end
       end
     end
+  end
 
-    # Characterises current behaviour, fixed later in this series.
-    it 'leaves a prize the crushed hand dropped on the floor' do
-      plays << found('some jadice flowers') + [crushed_line, 'That hurt!', 'Roundtime: 15 sec.', 'Your jadice flowers falls to your feet.']
-      run_darkbox
-      expect(DRCI).not_to have_received(:dispose_trash)
-      expect(DRCI).not_to have_received(:put_away_item?)
+  # Log line 1090: the creature crushed the hand holding some jadice flowers
+  # and they fell after roundtime, once the hands had been checked. The script
+  # never picked them up, and the game then refused to let the character walk
+  # away from them.
+  describe 'a prize the crushed hand drops' do
+    let(:dropped_flowers) { found('some jadice flowers') + [crushed_line, 'That hurt!', 'Roundtime: 15 sec.', 'Your jadice flowers falls to your feet.'] }
+
+    before do
+      settings.hollow_eve_junk = ['flowers']
+      allow(DRCI).to receive(:lift?) do
+        $right_hand = 'jadice flowers'
+        true
+      end
     end
 
+    it 'is picked up and handled before the next play' do
+      plays << dropped_flowers
+      plays << found_nothing
+      run_darkbox
+      expect(DRCI).to have_received(:lift?).with('jadice flowers').ordered
+      expect(DRCI).to have_received(:dispose_trash).with('jadice flowers', nil, nil).ordered
+      expect(play_count).to eq(3)
+    end
+
+    it 'is picked up when the drop line comes in behind a tag' do
+      plays << found('some jadice flowers') + ['<pushBold/>Your jadice flowers falls to your feet.']
+      run_darkbox
+      expect(DRCI).to have_received(:lift?).with('jadice flowers')
+    end
+
+    it 'is picked up before walking away when the Darkbox vanishes' do
+      allow(DRCI).to receive(:lift?) do
+        expect(walks).to be_empty
+        $right_hand = 'jadice flowers'
+        true
+      end
+      plays << dropped_flowers + [gone_line]
+      expect(run_darkbox).to eq(:finished)
+      expect(DRCI).to have_received(:lift?).once
+      expect(walks).to eq([16_150])
+    end
+
+    it 'is reported and play goes on when it cannot be picked up' do
+      allow(DRCI).to receive(:lift?).and_return(false)
+      plays << dropped_flowers
+      expect(run_darkbox).to eq(:played_on)
+      expect(DRC).to have_received(:message).with('*** Could not pick up the jadice flowers you dropped. ***')
+    end
+
+    it 'is not looked for when another player drops theirs' do
+      plays << found_nothing + ["Mallory's cambrinth viper falls to her feet."]
+      run_darkbox
+      expect(DRCI).not_to have_received(:lift?)
+    end
+
+    it 'is not looked for when a player only says the words' do
+      plays << found_nothing + player_lines('Your jadice flowers falls to your feet.')
+      run_darkbox
+      expect(DRCI).not_to have_received(:lift?)
+    end
+  end
+
+  describe 'held items' do
     # Characterises current behaviour, fixed later in this series.
     it 'handles an item held before the first play as a prize' do
       $left_hand = 'spider-shaped ocarina'
