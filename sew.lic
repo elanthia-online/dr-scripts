@@ -194,6 +194,7 @@ class Sew
       swap_tool('scissors')
       @home_tool = 'sewing needles'
       @home_command = "push my #{@noun} with my needles"
+      @offcut = 'cloth'
       "cut my #{@mat_type} cloth with my scissors"
     else # any leather products
       DRCC.get_crafting_item("#{@mat_type} leather", @bag, @bag_items, @belt)
@@ -201,6 +202,7 @@ class Sew
       swap_tool('scissors')
       @home_tool = 'sewing needles'
       @home_command = "push my #{@noun} with my needles"
+      @offcut = 'leather'
       "cut my #{@mat_type} leather with my scissors"
     end
   end
@@ -217,8 +219,12 @@ class Sew
     end
   end
 
+  # Cutting cloth or leather leaves the excess at your feet, and prep sets
+  # @offcut to its noun. Lift it by that noun so it goes back to the
+  # crafting bag: DRCI.lift? sends nothing without one, and 'stow feet'
+  # puts the offcut in the default stow container instead.
   def lift_or_stow_feet
-    if DRCI.lift?
+    if @offcut && DRCI.lift?(@offcut)
       right = DRC.right_hand
       left = DRC.left_hand
       DRCC.stow_crafting_item(right, @bag, @belt) if right && !right.include?(@noun.tr('.', ' '))

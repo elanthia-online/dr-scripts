@@ -537,6 +537,82 @@ RSpec.describe Sew do
   # #lift_or_stow_feet -- handling items at feet with dot notation
   # ===========================================================================
   describe '#lift_or_stow_feet' do
+    before do
+      sew.instance_variable_set(:@offcut, 'cloth')
+    end
+
+    # Like lich-5's DRCI.lift?: no item means no command and false, and
+    # 'lift <noun>' succeeds only when that noun is at your feet.
+    def stub_lift_with_at_feet(*nouns)
+      allow(DRCI).to receive(:lift?) do |item = nil, *_|
+        !item.nil? && nouns.include?(item)
+      end
+    end
+
+    context 'when the cut left cloth at your feet' do
+      before do
+        stub_lift_with_at_feet('cloth')
+        $right_hand = 'burlap cloth'
+        $left_hand = 'small rucksack'
+      end
+
+      it 'lifts the offcut by its noun' do
+        allow(DRCC).to receive(:stow_crafting_item)
+        expect(DRCI).to receive(:lift?).with('cloth')
+
+        sew.send(:lift_or_stow_feet)
+      end
+
+      it 'puts the offcut in the crafting bag, not the default stow container' do
+        expect(DRCC).to receive(:stow_crafting_item).with('burlap cloth', 'duffel bag', nil)
+        expect(DRC).not_to receive(:bput).with('stow feet', anything, anything)
+
+        sew.send(:lift_or_stow_feet)
+      end
+    end
+
+    context 'when the cut left leather at your feet' do
+      before do
+        sew.instance_variable_set(:@offcut, 'leather')
+        stub_lift_with_at_feet('leather')
+        $right_hand = 'deer leather'
+        $left_hand = nil
+      end
+
+      it 'lifts the leather and puts it in the crafting bag' do
+        expect(DRCC).to receive(:stow_crafting_item).with('deer leather', 'duffel bag', nil)
+        expect(DRC).not_to receive(:bput).with('stow feet', anything, anything)
+
+        sew.send(:lift_or_stow_feet)
+      end
+    end
+
+    context 'when the lift fails' do
+      before do
+        stub_lift_with_at_feet
+      end
+
+      it 'falls back to stow feet' do
+        expect(DRC).to receive(:bput).with('stow feet', 'You put', 'Stow what')
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        sew.send(:lift_or_stow_feet)
+      end
+    end
+
+    context 'when nothing was cut (knitting, enhancements, resume)' do
+      before do
+        sew.instance_variable_set(:@offcut, nil)
+      end
+
+      it 'sends no lift and falls back to stow feet' do
+        expect(DRCI).not_to receive(:lift?)
+        expect(DRC).to receive(:bput).with('stow feet', 'You put', 'Stow what')
+
+        sew.send(:lift_or_stow_feet)
+      end
+    end
+
     context 'when items at feet and lift succeeds' do
       before do
         allow(DRCI).to receive(:lift?).and_return(true)
@@ -1364,6 +1440,12 @@ RSpec.describe Sew do
 
         expect(sew.instance_variable_get(:@home_command)).to eq('knit my needles')
       end
+
+      it 'leaves @offcut unset, since knitting cuts nothing' do
+        sew.send(:prep)
+
+        expect(sew.instance_variable_get(:@offcut)).to be_nil
+      end
     end
 
     context 'knitting via chapter 5' do
@@ -1450,6 +1532,12 @@ RSpec.describe Sew do
 
         expect(sew.instance_variable_get(:@home_tool)).to eq('scissors')
       end
+
+      it 'leaves @offcut unset, since no stock is cut' do
+        sew.send(:prep)
+
+        expect(sew.instance_variable_get(:@offcut)).to be_nil
+      end
     end
 
     context 'cloth products' do
@@ -1495,6 +1583,12 @@ RSpec.describe Sew do
 
         expect(sew.instance_variable_get(:@home_command)).to eq('push my rucksack with my needles')
       end
+
+      it 'sets @offcut to cloth, the noun of the excess the cut leaves at your feet' do
+        sew.send(:prep)
+
+        expect(sew.instance_variable_get(:@offcut)).to eq('cloth')
+      end
     end
 
     context 'leather products' do
@@ -1527,6 +1621,12 @@ RSpec.describe Sew do
         sew.send(:prep)
 
         expect(sew.instance_variable_get(:@home_tool)).to eq('sewing needles')
+      end
+
+      it 'sets @offcut to leather, the noun of the excess the cut leaves at your feet' do
+        sew.send(:prep)
+
+        expect(sew.instance_variable_get(:@offcut)).to eq('leather')
       end
     end
 
