@@ -247,6 +247,11 @@ RSpec.describe FindDarkbox do
       expect(DRC).to have_received(:message).with('*** Darkbox not found in any of the rooms! ***')
     end
 
+    it 'stops the script when many lines from the crowd follow the no-song reply' do
+      plays << [no_darkbox_line] + Array.new(6) { |i| "Mallory#{i} drops some coins into the Darkbox and reaches inside it." }
+      expect(run_darkbox).to eq(:exited)
+    end
+
     it 'removes its flags when it finishes' do
       plays << [gone_line]
       run_darkbox
@@ -317,6 +322,21 @@ RSpec.describe FindDarkbox do
       expect(run_darkbox).to eq(:played_on)
       expect(DRC).to have_received(:wait_for_script_to_complete).with('heal-remedy', ['quick'])
       expect(darkbox).to have_received(:pause).with(65)
+    end
+
+    # The reply used to be looked for in the last 10 lines, which could still
+    # hold the previous play's refusal.
+    it 'does not run heal-remedy again for the previous play\'s refusal' do
+      plays << [wounds_line]
+      plays << found_nothing
+      run_darkbox
+      expect(DRC).to have_received(:wait_for_script_to_complete).once
+    end
+
+    it 'runs heal-remedy when many lines from the crowd follow the refusal' do
+      plays << [wounds_line] + Array.new(12) { |i| "Mallory#{i} drops some coins into the Darkbox and reaches inside it." }
+      run_darkbox
+      expect(DRC).to have_received(:wait_for_script_to_complete).with('heal-remedy', ['quick'])
     end
 
     context 'with override' do
