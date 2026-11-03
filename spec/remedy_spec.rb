@@ -8396,8 +8396,8 @@ RSpec.describe 'Remedy::LocalStudyInstructions (layer 20)' do
     end
 
     it 'reports not holding at once, with no 15 s timeout, on "You must be holding the instructions to study them."' do
-      # A real study reply, but from an enchanting log (enchant.lic matches it), not from the remedy fixtures.
-      game.fallback(study, ReplayGame.code('You must be holding the instructions to study them.', from: 'enchant.lic STUDY_INSTRUCTIONS_NOT_HOLDING'))
+      # A real study reply, but from an enchanting log (enchant.lic in #7891 matches it), not from the remedy fixtures.
+      game.fallback(study, ReplayGame.code('You must be holding the instructions to study them.', from: 'enchant.lic STUDY_INSTRUCTIONS_NOT_HOLDING in #7891'))
       result = study_liniment
       expect(result.studied?).to be(false)
       expect(instructions_stows.size).to eq(1)
