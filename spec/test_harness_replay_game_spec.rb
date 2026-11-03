@@ -192,6 +192,23 @@ RSpec.describe 'test harness replay support' do
       expect(Flags['replay-done'].regexp).to eq(/final touches/)
     end
 
+    it 'sets a flag on a line that came with no command, sending nothing and taking no time (#unprompted)' do
+      Flags.add('replay-done', /Applying the final touches/)
+      game.unprompted(ReplayGame.log('26:6742'))
+      expect(Flags['replay-done']).to be_a(MatchData)
+      expect([game.sent, game.clock, game.flag_sets]).to eq([[], 0, [%w[replay-done 26:6742]]])
+    end
+
+    it 'drops an unprompted line at the next command, as bput clears what came before it (DRC:198)' do
+      game.unprompted(ReplayGame.log('26:6742'))
+      game.script('mix my heavy cauldron with my mixing stick', ReplayGame.log('26:6740'))
+      expect(DRC.bput('mix my heavy cauldron with my mixing stick', 'Applying', 'Roundtime')).to eq('Roundtime')
+    end
+
+    it 'refuses an unprompted line that is not cited' do
+      expect { game.unprompted('You struggle to recall.') }.to raise_error(ArgumentError, /ReplayGame.log or ReplayGame.code/)
+    end
+
     it 'leaves a flag false when no line matches it' do
       Flags.add('replay-water', /You need another splash of water/)
       game.script('mix my heavy cauldron with my mixing stick', *final_mix_reply)
