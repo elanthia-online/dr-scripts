@@ -690,6 +690,32 @@ RSpec.describe Enchant do
   # handle_complete_flag
   # ---------------------------------------------------------------------------
 
+  describe '#get_burin_unless_done' do
+    let(:instance) { build_instance }
+
+    before(:each) { instance.send(:setup_flags) }
+
+    it 'fetches the burin for the scribing the imbue leads to' do
+      expect(DRCC).to receive(:get_crafting_item).with('burin', 'backpack', ['burin'], 'toolbelt')
+
+      instance.send(:get_burin_unless_done)
+    end
+
+    it 'leaves the burin alone when the imbue finished the item' do
+      Flags['enchant-complete'] = true
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:get_burin_unless_done)
+    end
+
+    it 'leaves the burin alone after a backlash' do
+      Flags['imbue-backlash'] = true
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:get_burin_unless_done)
+    end
+  end
+
   describe '#take_product' do
     it 'lifts the product off the floor and sends nothing else' do
       instance = build_instance(item: 'rock')
@@ -1240,7 +1266,7 @@ RSpec.describe Enchant, 'whole runs' do
   # The end every run that finishes shares: the brazier and whatever else is
   # held go back to the bag, the fount comes off the floor into the bag, and
   # the product comes off the floor into hand for the caller.
-  def tidy_up(item, held: %w[brazier burin], fount: true)
+  def tidy_up(item, held: %w[brazier], fount: true)
     held.each { |tool| game.call('DRCC.stow_crafting_item', tool, bag, nil, takes: tool) }
     if fount
       game.call('DRCI.lift?', 'fount', gives: { from_feet: 'fount' })
@@ -1249,14 +1275,12 @@ RSpec.describe Enchant, 'whole runs' do
     game.call('DRCI.lift?', item, gives: { from_feet: item })
   end
 
-  # The rod imbue that finishes the item, then the burin enchant fetches
-  # before it notices the item is done.
+  # The rod imbue that finishes the item.
   def final_rod_imbue(item, lines, holding_burin: true)
     game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin') if holding_burin
     game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
     game.command("wave imbuement rod at #{item} on my brazier", lines)
     game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-    game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
   end
 
   context 'a spongestone from the artificing book (log 1, the first item)' do
@@ -1299,11 +1323,9 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      # Done: put the tools away, take the fount off the floor, and end
+      # Done: put the brazier away, take the fount off the floor, and end
       # holding the rock.
       game.call('DRCC.stow_crafting_item', 'brazier', bag, nil, takes: 'brazier')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.lift?', 'fount', gives: { from_feet: 'fount' })
       game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
       game.call('DRCI.lift?', 'rock', gives: { from_feet: 'rock' })
@@ -1395,8 +1417,7 @@ RSpec.describe Enchant, 'whole runs' do
       game.command("wave imbuement rod at rock on enchanter's brazier", ENCHANT_LOG[:imbue_completes_rock])
       # With no brazier held the rod is in the right hand; it is put away all the same.
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      tidy_up('rock', held: ['burin'])
+      tidy_up('rock', held: [])
     end
 
     it 'works on the public brazier and ends holding the rock' do
@@ -1423,7 +1444,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.command('touch my armguard', ['Warm vapor swirls around your head in a misty halo of thoughts.'])
       game.call('DRCA.cast_spell?', imbue_spell.merge('cast' => 'cast rock on my brazier'), $test_settings,
                 lines: ENCHANT_LOG[:imbue_completes_rock])
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('rock')
     end
 
@@ -1453,7 +1473,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.command('wave imbuement rod at loop on my brazier',
                    ENCHANT_LOG[:imbue_completes_rock].map { |line| line.sub('collect the rock', 'collect the loop') })
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('loop')
     end
 
@@ -1477,7 +1496,6 @@ RSpec.describe Enchant, 'whole runs' do
                    ENCHANT_LOG[:imbue_completes_rock].reject { |line| line.include?('collect the fount') }
                                                      .map { |line| line.sub('collect the rock', 'collect the fount') })
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('fount', fount: false)
     end
 
@@ -1523,7 +1541,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('rock')
       game.call('DRCC.get_crafting_item', 'stamp', bag, [], nil, gives: 'stamp')
       # Code-derived reply: no stamping in the logs.
@@ -1559,7 +1576,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.command('wave imbuement rod at totem on my brazier',
                    ENCHANT_LOG[:imbue_completes_rock].map { |line| line.sub('collect the rock', 'collect the totem') })
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('totem')
     end
 
@@ -1587,7 +1603,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('rock')
     end
 
@@ -1612,9 +1627,7 @@ RSpec.describe Enchant, 'whole runs' do
       game.command('wave imbuement rod at rock on my brazier',
                    ['Suddenly the streams slip through your grasp and cascade violently against each other!', 'Roundtime: 10 sec.'])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       game.call('DRCC.stow_crafting_item', 'brazier', bag, nil, takes: 'brazier')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       # After a backlash nothing was put at our feet: the lifts find nothing
       # and fall back to GETs.
       game.call('DRCI.lift?', 'fount', returns: false)
@@ -1644,7 +1657,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock_fount_used_up])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       # No fount came back, so none is fetched: a GET of a fount that is gone
       # would stop the script before the rock is picked up.
       tidy_up('rock', fount: false)
@@ -1901,7 +1913,7 @@ RSpec.describe Enchant, 'whole runs' do
       game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_blurs])
       game.command('meditate fount on my brazier', ENCHANT_LOG[:meditate_wants_imbue])
       final_rod_imbue('rock', ENCHANT_LOG[:imbue_completes_rock])
-      tidy_up('rock', held: %w[burin brazier])
+      tidy_up('rock', held: %w[brazier])
     end
 
     it 'puts the rod and burin away from the right hand and ends holding the rock' do
@@ -1926,7 +1938,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       tidy_up('rock')
 
       run_script(resume: 'resume', noun: 'rock')
