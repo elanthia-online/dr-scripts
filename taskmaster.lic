@@ -19,7 +19,8 @@
   task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
   task_rock_room: 793 # room where Dorhum's spongestone tasks forage rocks (none can be had on Andreshlew)
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
-  ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones ##
+  ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
+  ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
    ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
