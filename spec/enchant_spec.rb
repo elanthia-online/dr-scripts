@@ -94,7 +94,7 @@ ENCHANT_LOG = {
                          "The spell's energies settle upon the rock and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more.",
                          'You collect the fount and place it at your feet.',
                          'You collect the rock and place it at your feet.'],
-  # The fount's last use: only the rock comes back (log 1, the fifth item).
+  # The fount's last use: only the rock comes back (log 1, the eighth and last item).
   imbue_completes_rock_fount_used_up: ['The spell is channeled through the fount hanging above, and down into the rock.  With expert precision you rapidly direct each stream into place around the rock.',
                                        'Roundtime: 16 sec.',
                                        "The spell's energies settle upon the rock and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more.",
