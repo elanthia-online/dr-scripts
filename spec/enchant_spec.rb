@@ -26,6 +26,15 @@ ENCHANT_SPEC_FLAG_LINES = {
 # wand). Keys name the moment in the run; values are the lines in order,
 # blank lines kept, as the game sent them after the command.
 ENCHANT_LOG = {
+  study_instructions_again: ['The delicate nature of the instructions will cause them to wear out with use.',
+                             '',
+                             '[These instructions have only 9 uses remaining.  Study them again to proceed.]'],
+  study_spongestone_instructions: ['You scan the spongestone instructions with a glance and completely understand all facets of the design.',
+                                   'You now feel ready to begin the crafting process.',
+                                   'Roundtime: 7 sec.'],
+  study_wand_instructions: ['You scan the wand instructions with a glance and completely understand all facets of the design.',
+                            'You now feel ready to begin the crafting process.',
+                            'Roundtime: 6 sec.'],
   get_rock: ['You get a rock from inside your duffel bag.'],
   get_wand: ['You get a redwood wand from inside your duffel bag.'],
   put_glance: ['You glance down at the smoking brazier and reconsider if you wish to begin enchanting.',
@@ -713,6 +722,88 @@ RSpec.describe Enchant do
       expect(DRCC).not_to receive(:get_crafting_item)
 
       instance.send(:get_burin_unless_done)
+    end
+  end
+
+  describe '#study_instructions' do
+    let(:instance) { build_instance }
+    let(:name) { 'spongestone instructions' }
+
+    before(:each) do
+      allow(DRCC).to receive(:get_crafting_item).and_return(true)
+      allow(DRCC).to receive(:stow_crafting_item)
+    end
+
+    it "uses lich-5's DRCC.study_instructions when the installed Lich has it" do
+      result = Struct.new(:studied?).new(true)
+      allow(DRCC).to receive(:study_instructions).with(name, 'backpack', ['burin'], 'toolbelt', true).and_return(result)
+      expect(DRC).not_to receive(:bput)
+
+      expect(instance.send(:study_instructions, name)).to be(true)
+    end
+
+    it 'studies twice when the first study asks for another, then puts them back' do
+      allow(DRC).to receive(:bput).and_return('These instructions have only 9 uses remaining.  Study them again', 'Roundtime')
+
+      expect(instance.send(:study_instructions, name)).to be(true)
+
+      expect(DRC).to have_received(:bput).with("study my #{name}", any_args).twice
+      expect(DRCC).to have_received(:stow_crafting_item).with(name, 'backpack', 'toolbelt')
+    end
+
+    it 'does not put back instructions the game threw away' do
+      allow(DRC).to receive(:bput) do
+        Flags[Enchant::STUDY_INSTRUCTIONS_TOSSED_FLAG] = true
+        'Roundtime'
+      end
+
+      expect(instance.send(:study_instructions, name)).to be(true)
+
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it 'counts a completed study after "1 uses" as the last, and keeps nothing' do
+      allow(DRC).to receive(:bput).and_return('These instructions have only 1 uses remaining.  Study them again', 'Roundtime')
+
+      expect(instance.send(:study_instructions, name)).to be(true)
+
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it 'fails when the instructions are not in hand (log 1)' do
+      allow(DRC).to receive(:bput).and_return('You must be holding the instructions')
+
+      expect(instance.send(:study_instructions, name)).to be(false)
+    end
+
+    it 'fails without studying when the instructions cannot be fetched' do
+      allow(DRCC).to receive(:get_crafting_item).with(name, 'backpack', ['burin'], 'toolbelt', true).and_return(false)
+      expect(DRC).not_to receive(:bput)
+
+      expect(instance.send(:study_instructions, name)).to be(false)
+    end
+
+    it "asks for another study only on the game's line, not a player's" do
+      expect('[These instructions have only 9 uses remaining.  Study them again to proceed.]').to match(Enchant::STUDY_INSTRUCTIONS_AGAIN)
+      player_lines('These instructions have only 1 uses remaining.  Study them again to proceed.').each do |line|
+        expect(line).not_to match(Enchant::STUDY_INSTRUCTIONS_AGAIN)
+      end
+    end
+
+    it 'fails after three studies that only ever ask for another' do
+      allow(DRC).to receive(:bput).and_return('Study them again')
+
+      expect(instance.send(:study_instructions, name)).to be(false)
+
+      expect(DRC).to have_received(:bput).exactly(3).times
+    end
+
+    it 'removes its flag however it ends' do
+      allow(DRC).to receive(:bput).and_raise(StandardError, 'connection lost')
+
+      expect { instance.send(:study_instructions, name) }.to raise_error(StandardError)
+
+      expect(Flags.matchers).not_to have_key(Enchant::STUDY_INSTRUCTIONS_TOSSED_FLAG)
     end
   end
 
@@ -1966,6 +2057,98 @@ RSpec.describe Enchant, 'whole runs' do
 
       expect_transcript_done
       expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'a spongestone from Dorhum\'s instructions (log 1, the second item)' do
+    before(:each) do
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'spongestone instructions', bag, [], nil, true, gives: 'spongestone instructions')
+      game.command('study my spongestone instructions', ENCHANT_LOG[:study_instructions_again])
+      game.command('study my spongestone instructions', ENCHANT_LOG[:study_spongestone_instructions])
+      game.call('DRCC.stow_crafting_item', 'spongestone instructions', bag, nil, takes: 'spongestone instructions')
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: 'brazier')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
+      game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
+      game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_wants_decay])
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'decay sigil', gives: 'decay sigil')
+      game.command('study my decay sigil', ENCHANT_LOG[:study_sigil], takes: 'decay sigil')
+      game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_blurs])
+      game.command('meditate fount on my brazier', ENCHANT_LOG[:meditate_wants_imbue])
+      final_rod_imbue('rock', ENCHANT_LOG[:imbue_completes_rock])
+      tidy_up('rock')
+    end
+
+    it 'studies the instructions instead of the book and ends holding the rock' do
+      run_script(instructions: 'instructions', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'a virga wand from Dorhum\'s instructions (log 2), the base item named apart' do
+    before(:each) do
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'virga wand instructions', bag, [], nil, true, gives: 'virga wand instructions')
+      game.command('study my virga wand instructions', ENCHANT_LOG[:study_instructions_again])
+      game.command('study my virga wand instructions', ENCHANT_LOG[:study_wand_instructions])
+      game.call('DRCC.stow_crafting_item', 'virga wand instructions', bag, nil, takes: 'virga wand instructions')
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: 'brazier')
+      game.command("get my wand from my #{bag}", ENCHANT_LOG[:get_wand], gives: 'redwood wand')
+      game.command('put my wand on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my wand on my brazier', ENCHANT_LOG[:put_wand], takes: 'wand')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at wand on my brazier', ENCHANT_LOG[:wave_fount_wand], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at wand on my brazier', ENCHANT_LOG[:imbue_wants_induction])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'induction sigil', gives: 'induction sigil')
+      game.command('study my induction sigil', ENCHANT_LOG[:study_sigil], takes: 'induction sigil')
+      game.command('trace wand on my brazier', ENCHANT_LOG[:trace_wand])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe wand on my brazier with my burin', ENCHANT_LOG[:scribe_wand_wants_imbue])
+      final_rod_imbue('wand', ENCHANT_LOG[:imbue_completes_wand])
+      tidy_up('wand')
+    end
+
+    it 'studies the virga wand instructions and ends holding the wand' do
+      run_script(instructions: 'instructions', recipe: 'virga wand', noun: 'wand', base_noun: 'wand')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['wand', nil])
+    end
+  end
+
+  context 'when the instructions cannot be studied' do
+    it 'stops before touching the brazier' do
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'spongestone instructions', bag, [], nil, true, returns: false)
+
+      expect { run_script(instructions: 'instructions', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: Could not study the spongestone instructions.'])
     end
   end
 end
