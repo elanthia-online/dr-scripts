@@ -1204,6 +1204,55 @@ RSpec.describe TaskMaster do
         events
       end
 
+      describe 'a task from another taskmaster' do
+        # The journal as the game prints it (Fidon, 2026-11).
+        let(:zasele_journal) do
+          'While visiting Andreshlew for the Hollow Eve festivities, Zasele has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  ' \
+            'In particular, she wanted you to craft a coil of reinforced cloth rope and indicated that 3 would suffice.  So far, you have returned 0 to her.'
+        end
+
+        it 'reads the item, the count and the taskmaster off the full journal line' do
+          tm = reader
+          game('task' => zasele_journal)
+
+          expect(tm.read_task).to eq(['rope', 3])
+          expect(tm.instance_variable_get(:@task_giver)).to eq('zasele')
+        end
+
+        it "stops on Zasele's task when started for Dorhum, before handing anything in, saying how to finish or cancel it" do
+          tm = reader(npc: 'dorhum')
+          game('task' => zasele_journal)
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(tm.instance_variable_get(:@npc)).to eq('dorhum')
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Zasele, not Dorhum. Finish it with ;taskmaster zasele, or cancel it with ASK ZASELE FOR TASK CANCEL (taskmasters then refuse you for about ten minutes).')
+        end
+
+        it "stops on a task from a taskmaster it doesn't do, saying to finish it by hand" do
+          tm = reader(npc: 'zasele')
+          game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Nezhiri, not Zasele. Nezhiri is not a taskmaster this script does, so finish it yourself, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes).')
+        end
+
+        it 'keeps the taskmaster it was started for when the journal names none' do
+          tm = reader(npc: 'zasele')
+          game('task' => journal('a coil of reinforced cloth rope', 3))
+
+          tm.read_task
+          tm.check_task_giver
+
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+        end
+      end
+
       describe 'asking for replacement instructions' do
         it 'asks once when the carried set is used up, and remembers it for this task' do
           events = resume(owed: 3, uses: nil)
