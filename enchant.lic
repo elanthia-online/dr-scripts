@@ -143,9 +143,12 @@ class Enchant
     ]
   ].freeze
 
-  # Local copy of lich-5 DRCC.study_instructions (not yet in a lich-5
-  # release). Remove these constants and local_study_instructions once one
-  # ships it: study_instructions already prefers DRCC's.
+  # Local copy of lich-5 DRCC.study_instructions (lich-5 #2246, merged
+  # 2026-11-03, in no release yet; v5.23.0 lacks it). Remove these constants
+  # and local_study_instructions once a release ships it:
+  # study_instructions already prefers DRCC's. Same commands and toss rule;
+  # this copy also anchors "Study them again" against speech, which #2246
+  # does not.
   #
   # The first study of instructions that wear out asks for a second one,
   # with the uses left (log 1: "[These instructions have only 9 uses
@@ -156,6 +159,7 @@ class Enchant
   STUDY_INSTRUCTIONS_DONE = /^Roundtime/.freeze
   STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/.freeze
   # Log 1 has the second: "You must be holding the instructions to study them."
+  # (#2246 takes both too.)
   STUDY_INSTRUCTIONS_NOT_HOLDING = [/^But you're not holding/, /^You must be holding the instructions/].freeze
   # Sent after the roundtime of the study that used the last use.
   STUDY_INSTRUCTIONS_TOSSED = /^(?:<[^>]*>|\s)*The instructions have grown so smudged and faded from use that you can no longer make them out/.freeze
