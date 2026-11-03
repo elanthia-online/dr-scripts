@@ -24,7 +24,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.3'
+  VERSION = '2026.11.03.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -854,14 +854,16 @@ class TaskMaster
   # Hands in finished items already in the bag and returns how many are still
   # owed, or 0 once the task is complete (its reward sack sorted and the task
   # closed out by task_handed_in). A give that misses a wandering taskmaster is
-  # retried (give_item); anything she won't take goes back in the bag and stops
-  # the hand-in.
+  # retried (give_item). A reply bput did not know is given again, as in
+  # complete_task; after MAX_UNKNOWN_GIVE_REPLIES of them in a row the item
+  # goes back in the bag and the hand-in stops.
   #
   # @param item [String] item noun
   # @param owed [Integer] how many are owed before the hand-in
   # @return [Integer] how many are still owed, 0 once the task is done
   # @raise [SystemExit] from give_item after repeated misses
   def turn_in_banked(item, owed)
+    unknown_replies = 0
     loop do
       case give_item(item)
       when nil
@@ -873,7 +875,11 @@ class TaskMaster
         return 0
       when TURN_IN_MORE_NEEDED
         owed = Regexp.last_match(1).to_i
+        unknown_replies = 0
       else
+        unknown_replies += 1
+        next if unknown_replies < MAX_UNKNOWN_GIVE_REPLIES
+
         DRCC.stow_crafting_item(item, @bag, nil)
         break
       end
@@ -1251,16 +1257,49 @@ class TaskMaster
   # @param item [String] item noun
   # @param _count [Integer] unused
   # @return [void]
-  # @raise [SystemExit] when the items run out first, or from give_item
+  # @raise [SystemExit] when the items run out first, when the taskmaster
+  #   will not take one (refused_hand_in), or from give_item
   def complete_task(item, _count)
+    unknown_replies = 0
     loop do
       reply = give_item(item)
       exit unless reply
       break if reply =~ /hands you a/
+
+      if reply =~ TURN_IN_MORE_NEEDED
+        unknown_replies = 0
+        next
+      end
+      # A reply bput did not know may be a lagged acceptance or a passing
+      # refusal: give again (the item still in hand, or the next one if it
+      # was taken) before calling it a refusal.
+      unknown_replies += 1
+      refused_hand_in(item, reply) if unknown_replies >= MAX_UNKNOWN_GIVE_REPLIES
     end
     sort_sack(item)
     fput('dump junk')
     task_handed_in(item)
+  end
+
+  # Hand-in replies in a row that were neither the reward sack nor "N more
+  # are needed" before complete_task stops. Zasele has taken a rope on the
+  # fifth give after four "Don't be silly." replies (a fleet log,
+  # 2026-11-03), so a few unknown replies are not yet a refusal.
+  MAX_UNKNOWN_GIVE_REPLIES = 5
+
+  # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
+  # times in a row: a refusal, or replies bput did not know. The item is
+  # still in hand, so it goes back in the bag and the run stops rather than
+  # handing the same item over for good.
+  #
+  # @param item [String] item noun
+  # @param reply [String] what bput matched ('' when nothing)
+  # @return [void]
+  # @raise [SystemExit] always
+  def refused_hand_in(item, reply)
+    DRCC.stow_crafting_item(item, @bag, nil)
+    DRC.message("#{@npc.capitalize} did not take the #{item}#{reply.empty? ? '' : " (#{reply})"}. Stopping.")
+    exit
   end
 
   # The task is done: its instructions can go, and the next task may ask for
