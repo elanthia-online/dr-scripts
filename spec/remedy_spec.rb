@@ -1817,8 +1817,9 @@ RSpec.describe Remedy do
     end
 
     describe 'gathering the herb' do
-      # flipped by layer 11 (count only what is held)
-      it 'CURRENT (H04): takes "You must be holding both" (25:18266) as 25 pieces after counting 21 (25:12538)' do
+      # layer 11 (count only what is held): the commands are today's; the 21
+      # pieces are no longer taken for 25
+      it 'H04: says it gathered only 21 pieces when "You must be holding both" (25:18266) ends the gathering, and crafts with them' do
         inventory['dried nemoih'] = 'seasilk apron'
         game.script('count my nemoih', log('25:12538'))
         game.script('combine my nemoih', log('25:18266'))
@@ -1828,41 +1829,62 @@ RSpec.describe Remedy do
         expect(run_remedy(short_unguent)).to eq(:exited)
         expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih',
                                  herb_put_command('nemoih', 'large mortar'), first_crush, 'get my unguent from my large mortar'])
+        expect(remedy_messages).to eq(['Remedy: gathered only 21 pieces of nemoih (a remedy takes 25); crafting with what is in hand.'])
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
 
-      # flipped by layer 11. Assumption (unverified, H05): with two
-      # stacks in hand `count` counts the one picked up first. The third count
-      # is 25:104726 with the number changed to the merged 10 + 10.
-      it 'CURRENT (H05): counts a merged stack again, ending at 40 counted with 22 held (stacks of 10, 10 and 2)' do
-        2.times { commons.inventory << ReplayCommons::Item.new('dried nemoih', toolbag) }
+      # layer 11 (a deliberate change: one extra
+      # count in the combine path only). Assumption (unverified,
+      # H05): with two stacks in hand `count` counts the one picked up first,
+      # so today the 10 + 10 + 20 = 40 counted ended the gathering with 22
+      # held and the remedy was crafted short. A count after each merge reads
+      # the one merged stack. The counts of a merged stack (20, 22, 32) are
+      # 25:104726 with the number changed.
+      it 'H05: counts the merged stack once more after each merge in the bags and gathers on to 32 held (stacks of 10, 10, 2 and 10)' do
+        3.times { commons.inventory << ReplayCommons::Item.new('dried nemoih', toolbag) }
         merged = ->(_replay) { commons.release('nemoih') }
+        merged_count = ->(pieces) { code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack (H05 assumption)') }
         game.script('count my nemoih', log('25:104726'))
         game.script('combine my nemoih', log('25:104590'))
         game.script('count my nemoih', log('25:104726'))
         game.script('combine my nemoih', log('25:11425'), after: merged)
-        game.script('count my nemoih', code('You count out 20 pieces of material there.', from: '25:104726, count changed (H05 assumption)'))
+        game.script('count my nemoih', merged_count.call(20))
+        game.script('count my nemoih', merged_count.call(20))
         game.script('combine my nemoih', log('25:11425'), after: merged)
+        game.script('count my nemoih', merged_count.call(22))
+        game.script('count my nemoih', merged_count.call(22))
+        game.script('combine my nemoih', log('25:11425'), after: merged)
+        game.script('count my nemoih', merged_count.call(32))
         game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'), after: ->(_game) { commons.release('nemoih') })
         game.script(first_crush, log('26:11333'))
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.first(7)).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih',
-                                          'count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')])
+        expect(game.sent.first(12)).to eq(['count my nemoih', 'combine my nemoih',
+                                           'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                           'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                           'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                           herb_put_command('nemoih', 'large mortar')])
+        expect(remedy_messages).to be_empty
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
 
       context 'on lich-5 v5_21' do
         let(:lich5) { :v5_21 }
         let(:inventory) { logged_tools.merge(logged_supplies) }
 
-        # flipped by layer 11 (bounded gathering)
-        it 'CURRENT (H26): counts and combines forever when the bag says it has the herb but the get brings nothing' do
+        # layer 11 (bounded gathering): the first get is read from the hands,
+        # looked at again for STOP_LOOKS (30 s) seconds before the stop
+        it 'H26: stops after looking at the hands for 30 s, sending nothing, when the bag says it has the herb but the get brings nothing, the mortar picked up again' do
           game.fallback('count my nemoih', log('25:13762')) # analog: the not-found reply to a tap
-          expect(run_remedy(short_unguent) { allow(DRCI).to receive(:exists?).and_return(true) }).to eq(:looped)
-          expect(game.sent.uniq).to eq(['count my nemoih', 'combine my nemoih'])
+          expect(run_remedy(short_unguent) { allow(DRCI).to receive(:exists?).and_return(true) }).to eq(:exited)
+          expect(game.sent).to be_empty
+          expect(remedy_messages).to eq(['Remedy: could not get nemoih. Stopping.'])
+          expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
         end
       end
 
-      # flipped by layer 11 (the leftover goes to herb_container, then the bag)
+      # Kept by layer 11: the plain stow succeeds today (the
+      # stack goes to the STOW container), so the gathering keeps its commands.
       it 'CURRENT (H27): puts the smaller of two stacks away with a plain stow, not into herb_container' do
         settings[:herb_container] = 'smokewood basket'
         inventory['dried nemoih'] = 'smokewood basket'
@@ -1883,21 +1905,47 @@ RSpec.describe Remedy do
       # the herb in hand and answers true. Assumption: the put left part of
       # the stack in hand (in the logs every put took the whole stack).
       #
+      # @param container [String, nil] the one container that refuses the
+      #   herb; nil for every container
       # @return [void]
-      def keep_the_leftover_in_hand
+      def keep_the_leftover_in_hand(container = nil)
         allow(DRCC).to receive(:stow_crafting_item) do |*args|
-          args.first == 'nemoih' ? true : commons.stow_crafting_item(*args)
+          refused = args.first == 'nemoih' && (container.nil? || args[1] == container)
+          refused || commons.stow_crafting_item(*args)
         end
       end
 
-      # flipped by layer 11 (the leftover stow is checked)
-      it 'CURRENT (D12): on lich-5 current, the pestle get finds no free hand and DRCC stops with herb and mortar in hand' do
+      # layer 11 (the leftover stow is checked)
+      it 'D12: stops before the pestle get when the herb left after the put stays in hand, the mortar picked up beside it' do
         game.script('count my nemoih', log('25:33679'))
         game.script('combine my nemoih', log('25:104590'))
         game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'))
         expect(run_remedy(short_unguent) { keep_the_leftover_in_hand }).to eq(:exited)
-        expect(commons.messages).to include('DRCC: No free hand to get: rounded pestle')
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')])
+        expect(remedy_messages).to eq(['Remedy: could not put away the nemoih left in hand after the put, and crafting needs that hand. Stopping.'])
+        expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
+        expect(commons.calls).not_to include(include('rounded pestle'))
         expect([commons.location_of('nemoih'), commons.location_of('diamondique large mortar')]).to contain_exactly('left', 'right')
+      end
+
+      # layer 11: herb_container first, then the crafting bag (26:32077 is
+      # herb_container's reply here)
+      it 'puts the herb left after the put into the crafting bag when herb_container leaves it in hand, and crafts on to the product' do
+        settings[:herb_container] = 'smokewood basket'
+        inventory['dried nemoih'] = 'smokewood basket'
+        game.script('count my nemoih', log('25:33679'))
+        game.script('combine my nemoih', log('25:104590'))
+        game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'))
+        game.script(first_crush, log('26:11333'))
+        script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+        expect(run_remedy(short_unguent) { keep_the_leftover_in_hand('smokewood basket') }).to eq(:exited)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
+                                 first_crush, 'get my unguent from my large mortar'])
+        expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', 'smokewood basket', settings[:alchemy_belt]).once.ordered
+        expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, settings[:alchemy_belt]).once.ordered
+        expect(commons.location_of('dried nemoih')).to eq(toolbag)
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        expect(remedy_messages).to be_empty
       end
     end
 
@@ -2479,6 +2527,96 @@ RSpec.describe Remedy do
             expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
           end
         end
+      end
+    end
+  end
+
+  describe 'gathering the herb by what is held (layer 11)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+    let(:first_crush) { 'crush my nemoih with my rounded pestle' }
+    let(:herb_put) { herb_put_command('nemoih', 'large mortar') }
+    let(:short_run_tail) { [first_crush, 'get my unguent from my large mortar'] } # 26:11333, 26:11389
+
+    # Scripts the herb put (26:10749, after which the game holds the herb),
+    # the first crush (26:11333) and the product taken out (26:11389).
+    #
+    # @return [void]
+    def script_put_and_craft
+      game.script(herb_put, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+      game.script(first_crush, log('26:11333'))
+      script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+    end
+
+    # Two stacks in the toolbag. Model assumption, as in the contract's
+    # 21 + 75: the count with both in hand reads the stack just got, so the
+    # 10 cannot be the 21 held. Today's commands plus one count after the
+    # merge (H05, a deliberate change): it reads the merged 31
+    # (25:104726 with the number changed).
+    it 'tops up the 21 held (25:12538) with a second stack of 10 (25:104726), counting the merged stack once after the merge (25:11425)' do
+      commons.inventory << ReplayCommons::Item.new('dried nemoih', toolbag)
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      game.script('count my nemoih', log('25:104726'))
+      game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+      game.script('count my nemoih', code('You count out 31 pieces of material there.', from: '25:104726, count changed to the merged stack'))
+      script_put_and_craft
+      expect(run_remedy(short_unguent)).to eq(:exited)
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                               herb_put, *short_run_tail])
+      expect(remedy_messages).to be_empty
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+    end
+
+    # Code-derived timing, as layer 09's LATE_GET_LOOKS: no get in the logs
+    # timed out. The herb get's bput gives up, current lich-5 returns
+    # DRCI.in_hands? (false) without exiting (480bdee3
+    # common-crafting.rb:531-532), and the herb reaches a hand 3, 16 or 30 s
+    # later. Today the `count my nemoih` sent at once waited behind it, so
+    # the late "You get" came first and the run crafted on however late it
+    # was; remedy now looks at the hands for STOP_LOOKS (30 s), which with
+    # the get's own 15 s bput is three 15 s silences.
+    [3, 16, 30].each do |late|
+      it "crafts on with the commands of today when the first herb get is answered #{late} s late (25:33679, 25:104590)" do
+        game.script('count my nemoih', log('25:33679'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_put_and_craft
+        outcome = run_remedy(short_unguent) do
+          arrives = nil
+          allow(DRCC).to receive(:get_crafting_item) do |*args|
+            next commons.get_crafting_item(*args) unless args.first == 'nemoih' && arrives.nil?
+
+            arrives = game.clock + late
+            false
+          end
+          allow(DRCI).to receive(:in_hands?) do |item|
+            if arrives && game.clock >= arrives && commons.location_of('dried nemoih') == toolbag
+              commons.inventory.delete_if { |owned| owned.name == 'dried nemoih' }
+              commons.hold('dried nemoih')
+            end
+            commons.in_hands?(item)
+          end
+        end
+        expect(outcome).to eq(:exited)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put, *short_run_tail])
+        expect(remedy_messages).to be_empty
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      end
+    end
+
+    context 'with a larger send budget' do
+      let(:game) { ReplayGame.new(send_budget: 200) }
+
+      # Every count and combine goes unanswered (15 s bput timeouts); the bag
+      # always says it has the herb and the one stack stays in hand.
+      it 'gets the herb 25 times at most (MAX_FETCHES) when no count or combine is answered, then says so and crafts with what is in hand' do
+        script_put_and_craft
+        expect(run_remedy(short_unguent) { allow(DRCI).to receive(:exists?).and_return(true) }).to eq(:exited)
+        herb_gets = commons.calls.select { |call| call.first == 'DRCC.get_crafting_item' && call[1] == 'nemoih' }
+        expect(herb_gets.size).to eq(25)
+        expect(game.sent.count('combine my nemoih')).to eq(25)
+        expect(game.sent.last(3)).to eq([herb_put, *short_run_tail])
+        expect(remedy_messages).to eq(['Remedy: could not count the nemoih gathered (a remedy takes 25); crafting with what is in hand.'])
       end
     end
   end
@@ -3203,6 +3341,66 @@ RSpec.describe 'Remedy order, tools and inventory' do
         inventory.stow('rounded pestle')
         expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, toolstrap)
       end
+
+      describe 'the leftover stow after the vessel put (layer 11)' do
+        it 'puts the herb in the herb_container and answers true at once when the hand is then free of it' do
+          allow(DRCI).to receive(:in_hands?).with('nemoih').and_return(false)
+          expect(inventory.stow_leftover('nemoih')).to be(true)
+          expect(DRCC).to have_received(:stow_crafting_item).once
+          expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', 'smokewood basket', toolstrap)
+          expect(game.clock).to eq(0)
+        end
+
+        # The late reply is code-derived, as for a get (LATE_GET_LOOKS): no
+        # put in the logs timed out. Today the run went on after such a stow,
+        # however late its reply: the next command waited behind it. The
+        # looks after the first stow last STOP_LOOKS (30 s), so with the
+        # stow's own 15 s bput three silences pass.
+        [3, 16, 30].each do |late|
+          it "answers true with the one stow when the herb leaves the hand #{late} s after the herb_container stow, a reply that came late" do
+            allow(DRCI).to receive(:in_hands?).with('nemoih') { game.clock < late }
+            expect(inventory.stow_leftover('nemoih')).to be(true)
+            expect(DRCC).to have_received(:stow_crafting_item).once
+            expect(game.clock).to eq(late)
+          end
+        end
+
+        it 'looks for 30 s (STOP_LOOKS), twice the bput wait, after the herb_container stow' do
+          expect(Remedy::Inventory::STOP_LOOKS).to eq(2 * Remedy::Inventory::LATE_GET_LOOKS)
+          expect(Remedy::Inventory::STOP_LOOKS).to eq(30)
+        end
+
+        it 'puts the herb in the crafting container only after looking for 30 s while the herb_container left it in hand (26:32077), and answers true when that frees the hand' do
+          bags = []
+          allow(DRCC).to receive(:stow_crafting_item) { |_name, bag, _belt| bags << bag && true }
+          allow(DRCI).to receive(:in_hands?).with('nemoih') { !bags.include?(toolbag) }
+          expect(inventory.stow_leftover('nemoih')).to be(true)
+          expect(bags).to eq(['smokewood basket', toolbag])
+          expect(game.clock).to eq(Remedy::Inventory::STOP_LOOKS)
+        end
+
+        it 'puts the herb in the crafting container when it leaves the hand only 31 s after the herb_container stow, one look too late' do
+          bags = []
+          allow(DRCC).to receive(:stow_crafting_item) { |_name, bag, _belt| bags << bag && true }
+          allow(DRCI).to receive(:in_hands?).with('nemoih') { game.clock < 31 }
+          expect(inventory.stow_leftover('nemoih')).to be(true)
+          expect(bags).to eq(['smokewood basket', toolbag])
+          expect(game.clock).to eq(31)
+        end
+
+        it 'answers false when the crafting container leaves the herb in hand too, after looking for 30 s after the first stow and 15 s after the second' do
+          allow(DRCI).to receive(:in_hands?).with('nemoih').and_return(true)
+          expect(inventory.stow_leftover('nemoih')).to be(false)
+          expect(DRCC).to have_received(:stow_crafting_item).twice
+          expect(game.clock).to eq(Remedy::Inventory::STOP_LOOKS + Remedy::Inventory::LATE_GET_LOOKS)
+        end
+
+        it 'reads the hand by the last word of a herb of several words, the noun the put matched' do
+          allow(DRCI).to receive(:in_hands?).with('flower').and_return(false)
+          expect(inventory.with_herbs(['dried flower', 'na']).stow_leftover('dried flower')).to be(true)
+          expect(DRCC).to have_received(:stow_crafting_item).with('dried flower', 'smokewood basket', toolstrap)
+        end
+      end
     end
 
     it 'gets a herb found in neither container from wherever DRCC finds it, and says so with UNROUTED' do
@@ -3238,6 +3436,35 @@ RSpec.describe 'Remedy order, tools and inventory' do
     it 'stows herb1 in the crafting container when no herb_container is set' do
       inventory.stow('nemoih')
       expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, toolstrap)
+    end
+
+    # layer 11: with no herb_container the first stow already went to the
+    # crafting container, so it is not tried again
+    it 'answers false after one stow, and 30 s of looking (STOP_LOOKS), when no herb_container is set and the herb stays in hand' do
+      allow(DRCI).to receive(:in_hands?).with('nemoih').and_return(true)
+      expect(inventory.stow_leftover('nemoih')).to be(false)
+      expect(DRCC).to have_received(:stow_crafting_item).once
+      expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, toolstrap)
+      expect(game.clock).to eq(Remedy::Inventory::STOP_LOOKS)
+    end
+
+    # Code-derived, as for a get (LATE_GET_LOOKS): a stow answered after
+    # DRC.bput gave up still takes the herb, and today the run went on
+    # however late the reply came.
+    [3, 16, 30].each do |late|
+      it "answers true when no herb_container is set and the herb leaves the hand #{late} s after the stow, a reply that came late" do
+        allow(DRCI).to receive(:in_hands?).with('nemoih') { game.clock < late }
+        expect(inventory.stow_leftover('nemoih')).to be(true)
+        expect(DRCC).to have_received(:stow_crafting_item).once
+        expect(game.clock).to eq(late)
+      end
+    end
+
+    it 'answers false when no herb_container is set and the herb leaves the hand only 31 s after the stow, one look too late' do
+      allow(DRCI).to receive(:in_hands?).with('nemoih') { game.clock < 31 }
+      expect(inventory.stow_leftover('nemoih')).to be(false)
+      expect(DRCC).to have_received(:stow_crafting_item).once
+      expect(game.clock).to eq(Remedy::Inventory::STOP_LOOKS)
     end
 
     it 'hands an empty hand (nil) to DRCC to stow, as the stow by hand always has' do
@@ -4040,31 +4267,527 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
 
   describe 'Remedy::HerbGatherer' do
     let(:herb_container) { 'smokewood basket' }
+    let(:basket) { 'smokewood basket' }
+    let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => basket }) }
+    let(:gatherer) { Remedy::HerbGatherer.new(inventory) }
+    let(:messages) { [] }
+    let(:put) { 'put nemoih in my large mortar' }
 
-    before { allow(DRCI).to receive(:exists?).with('nemoih', 'smokewood basket').and_return(true) }
+    # The hands and the commons are ReplayCommons' model, so each check of
+    # the hands reads what the gets and stows did.
+    before do
+      commons.install(self)
+      allow(DRC).to receive(:beep)
+      allow(DRC).to receive(:message) { |text| messages << text }
+    end
+
+    # Scripts the herb put (26:10749); the game takes the stack in hand.
+    #
+    # @return [void]
+    def script_put
+      game.script(put, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+    end
+
+    # Scripts a second stack in a bag: the first count, the combine with
+    # one stack in hand (25:104590), the second count and the combine.
+    #
+    # @param first [String] the cite of the first count
+    # @param second [String] the cite of the second count
+    # @param combine [ReplayGame::Line] the reply to the second combine
+    # @param bag [String] where the second stack is
+    # @return [void]
+    def script_two_stacks(first:, second:, combine:, bag: basket)
+      commons.inventory << ReplayCommons::Item.new('dried nemoih', bag)
+      game.script('count my nemoih', log(first))
+      game.script('combine my nemoih', log('25:104590'))
+      game.script('count my nemoih', log(second))
+      game.script('combine my nemoih', combine)
+    end
+
+    # @return [Array<Array>] the DRCC.stow_crafting_item calls, as [name, bag]
+    def stows
+      commons.calls.select { |call| call.first == 'DRCC.stow_crafting_item' }.map { |call| call[1, 2] }
+    end
 
     it 'gathers a stack of 25 from the herb_container (25:33679), puts it in the lowered mortar and picks the mortar up' do
       game.script('count my nemoih', log('25:33679'))
       game.script('combine my nemoih', log('25:104590'))
-      game.script('put nemoih in my large mortar', log('26:10749'))
-      Remedy::HerbGatherer.new(inventory).gather('nemoih', 'large mortar')
-      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put nemoih in my large mortar'])
-      expect(calls.map { |call| call[0, 2] }).to eq([[:get, 'large mortar'], [:lower, 'large mortar'], [:get, 'nemoih'],
-                                                     [:stow, 'nemoih'], [:get, 'large mortar']])
+      script_put
+      gatherer.gather('nemoih', 'large mortar')
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+      expect(commons.moves).to eq(['large mortar: grass toolstrap -> hand', 'large mortar: hand -> ground',
+                                   "dried nemoih: #{basket} -> hand", 'dried nemoih: hand -> game', 'large mortar: ground -> hand'])
+      expect(stows).to eq([['nemoih', basket]])
+      expect(messages).to be_empty
     end
 
-    it 'gets another stack after 21 (25:12538), and puts away the stack that is not full (21, keeping the 75 of 25:8678) when the combine makes too large a stack (25:30006)' do
-      game.script('count my nemoih', log('25:12538'))
-      game.script('combine my nemoih', log('25:104590'))
-      game.script('count my nemoih', log('25:8678'))
-      game.script('combine my nemoih', log('25:30006'))
+    # As remedy always has (CURRENT H27, kept on purpose): the
+    # stack beside the 75 goes to DRCI.put_away_item? with no container,
+    # which sends `stow my first nemoih`, even with herb_container set.
+    # ReplayCommons finds no item by its place in hand ("first nemoih"), so
+    # the put-back moves nothing here; the leftover stow after the put then
+    # puts the other stack away.
+    it 'gets another stack after 21 (25:12538), and puts the first back with the plain stow when the second counts 75 (25:8678) after too large a combine (25:30006)' do
+      script_two_stacks(first: '25:12538', second: '25:8678', combine: log('25:30006'))
       game.script('count my first nemoih', log('25:12538'))
       game.script('count my second nemoih', log('25:8678'))
-      game.script('put nemoih in my large mortar', log('26:10749'))
-      Remedy::HerbGatherer.new(inventory).gather('nemoih', 'large mortar')
-      expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', 'put nemoih in my large mortar'])
-      expect(calls).to include([:put_away_item?, 'first nemoih'])
-      expect(calls).not_to include([:put_away_item?, 'second nemoih'])
+      script_put
+      gatherer.gather('nemoih', 'large mortar')
+      expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', put])
+      expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
+      expect(stows.map(&:first)).not_to include('first nemoih')
+      expect(messages).to be_empty
+    end
+
+    it 'puts the second stack back with the plain stow when the first counts 75 (25:8678, then 21, 25:12538)' do
+      script_two_stacks(first: '25:12538', second: '25:8678', combine: log('25:30006'))
+      game.script('count my first nemoih', log('25:8678'))
+      game.script('count my second nemoih', log('25:12538'))
+      script_put
+      gatherer.gather('nemoih', 'large mortar')
+      expect(commons.calls).to include(['DRCI.put_away_item?', 'second nemoih', nil])
+      expect(commons.calls).not_to include(['DRCI.put_away_item?', 'first nemoih', nil])
+    end
+
+    # As remedy always has: the rule is the first count of 75, whatever the
+    # second count says (here "I could not find what you were referring
+    # to.", 25:13762).
+    it 'puts the second stack back when the first counts 75 (25:8678) even when the second count finds none (25:13762)' do
+      script_two_stacks(first: '25:12538', second: '25:8678', combine: log('25:30006'))
+      game.script('count my first nemoih', log('25:8678'))
+      game.script('count my second nemoih', log('25:13762'))
+      script_put
+      gatherer.gather('nemoih', 'large mortar')
+      expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', put])
+      expect(commons.calls).to include(['DRCI.put_away_item?', 'second nemoih', nil])
+      expect(messages).to be_empty
+    end
+
+    # As remedy always has: with neither stack at 75 the
+    # put-back is not tried, and the count so far (21 + 75 = 96) ends the
+    # gathering. The ordinal counts are 21 (25:12538) and 10 (25:104726).
+    it 'puts no stack back after too large a combine (25:30006) when neither stack counts 75' do
+      script_two_stacks(first: '25:12538', second: '25:8678', combine: log('25:30006'))
+      game.script('count my first nemoih', log('25:12538'))
+      game.script('count my second nemoih', log('25:104726'))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih',
+                               'count my first nemoih', 'count my second nemoih', put])
+      expect(stows.map(&:first)).to eq(['nemoih'])
+      expect(commons.calls.map(&:first)).not_to include('DRCI.put_away_item?')
+    end
+
+    context 'with no herb_container' do
+      let(:herb_container) { nil }
+      let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => toolbag }) }
+
+      # The contract's 21 + 75 ('tops up a stack of 21 ...'): remedy has
+      # always put the stack beside the 75 back with DRCI.put_away_item? and
+      # no container, which sends `stow my first nemoih` (lich-5
+      # common-items.rb put_away_item_unsafe?), not a put into the toolbag.
+      it 'puts the first stack back with the plain stow remedy has always sent when the second counts 75 (25:12538, 25:8678, 25:30006)' do
+        script_two_stacks(first: '25:12538', second: '25:8678', combine: log('25:30006'), bag: toolbag)
+        game.script('count my first nemoih', log('25:12538'))
+        game.script('count my second nemoih', log('25:8678'))
+        script_put
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih',
+                                 'count my first nemoih', 'count my second nemoih', put])
+        expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
+        expect(stows.map(&:first)).not_to include('first nemoih')
+      end
+    end
+
+    # @param pieces [Integer] the pieces of the merged stack
+    # @return [ReplayGame::Line] 25:104726 with the number changed
+    def merged_stack_count(pieces)
+      code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack')
+    end
+
+    # H05 (a deliberate change): today
+    # the 21 + 21 = 42 summed was sent with no count after the merge. One
+    # more count reads the merged stack and is the count that ends the
+    # gathering.
+    it 'counts the merged stack once after a merge in the bags (21 and 21, 25:12538, then the merged 42)' do
+      script_two_stacks(first: '25:12538', second: '25:12538', combine: log('25:11425'))
+      game.script('count my nemoih', merged_stack_count(42))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+      expect(messages).to be_empty
+    end
+
+    # H05 under its assumption: the count with two stacks in hand
+    # reads the stack picked up first. Stacks of 10 (25:104726), 2 and 21:
+    # the second count reads the 10 again, the merge holds 12, and the count
+    # before the third merge reads that 12. Today's sums (20, then 32)
+    # counted the 10 twice; the counts after the merges (12, then 33) are
+    # what is held.
+    it 'goes by the count of each merged stack, not the sum, and gets another stack when it is short (10, 10 again, merged 12, 12 again, merged 33)' do
+      allow(DRCI).to receive(:exists?).and_return(true)
+      script_two_stacks(first: '25:104726', second: '25:104726', combine: log('25:11425'))
+      game.script('count my nemoih', merged_stack_count(12))
+      game.script('count my nemoih', merged_stack_count(12))
+      game.script('combine my nemoih', log('25:11425'))
+      game.script('count my nemoih', merged_stack_count(33))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                               'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+      expect(messages).to be_empty
+    end
+
+    # As remedy always has: a round that does not merge
+    # goes by the sum of every count, even after a merge set the count so
+    # far. Under H05's assumption the count before the third combine reads
+    # the merged 12 again (code-derived), and that combine is too large
+    # (25:30006; the counts by place, 21 and 10, put nothing back). Today's
+    # 10 + 10 + 12 = 32 ends the gathering, and so does this one, with
+    # today's commands and the one count after the merge (H05); the merged
+    # 12 + 12 = 24 would have fetched again.
+    it 'goes by the sum of every count after too large a combine (25:30006) that follows a merge in the bags (25:11425), as today (10, 10, merged 12, 12 again)' do
+      allow(DRCI).to receive(:exists?).and_return(true)
+      script_two_stacks(first: '25:104726', second: '25:104726', combine: log('25:11425'))
+      game.script('count my nemoih', merged_stack_count(12))
+      game.script('count my nemoih', merged_stack_count(12))
+      game.script('combine my nemoih', log('25:30006'))
+      game.script('count my first nemoih', log('25:12538'))
+      game.script('count my second nemoih', log('25:104726'))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                               'count my nemoih', 'combine my nemoih', 'count my first nemoih', 'count my second nemoih', put])
+      expect(messages).to be_empty
+    end
+
+    # Whichever stack the count before the merge read, 25 (25:33679) is a
+    # handful by itself, so the gathering ends with today's commands.
+    it 'sends no count after the merge when the count before it reads a handful by itself (10, 25:104726, then 25, 25:33679)' do
+      script_two_stacks(first: '25:104726', second: '25:33679', combine: log('25:11425'))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', put])
+      expect(messages).to be_empty
+    end
+
+    # A count after the merge that holds no number ("I could not find what
+    # you were referring to.", 25:13762, analog) leaves the sum as today:
+    # 21 + 10 = 31 ends the gathering.
+    it 'goes by the sum, as today, when the count after the merge holds no number (21 and 10, then 25:13762)' do
+      script_two_stacks(first: '25:12538', second: '25:104726', combine: log('25:11425'))
+      game.script('count my nemoih', log('25:13762'))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+      expect(messages).to be_empty
+    end
+
+    # The same with no reply at all (bput gives up and returns '').
+    it 'goes by the sum, as today, when the count after the merge goes unanswered (21 and 10)' do
+      script_two_stacks(first: '25:12538', second: '25:104726', combine: log('25:11425'))
+      script_put
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+      expect(messages).to be_empty
+    end
+
+    describe 'a herb found outside both bags' do
+      let(:apron) { 'seasilk apron' }
+      let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => apron }) }
+
+      # Scripts the first count and, per later get, the fput `stow my
+      # nemoih` (not read; the analog reply 25:13762, as in the contract's
+      # 'tops up a stack of 21 found outside both bags'), the combine and
+      # the count after it. Each later stack waits in the apron.
+      #
+      # @param first [ReplayGame::Line] the reply to the first count
+      # @param rounds [Array<Array(ReplayGame::Line, ReplayGame::Line)>] the
+      #   combine's and the count's replies of each later get
+      # @return [void]
+      def script_outside(first, rounds)
+        game.script('count my nemoih', first)
+        rounds.each do |combine, count|
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', apron)
+          game.script('stow my nemoih', log('25:13762'))
+          game.script('combine my nemoih', combine, after: ->(_game) { combine.text.start_with?('You combine') && commons.release('nemoih') })
+          game.script('count my nemoih', count)
+        end
+      end
+
+      # @param pieces [Integer] the pieces of the merged stack
+      # @return [ReplayGame::Line] 25:104726 with the number changed
+      def merged_count(pieces)
+        code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack')
+      end
+
+      # layer 11: today the 10 + 20 = 30 counted ends the gathering with 20
+      # in hand. The count after a merge reads the one merged stack.
+      it 'goes by the count after a merge (25:11425), not the sum with the count before it, and gets another stack (10, 20, 30)' do
+        script_outside(log('25:104726'), [[log('25:11425'), merged_count(20)], [log('25:11425'), merged_count(30)]])
+        script_put
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'stow my nemoih', 'combine my nemoih', 'count my nemoih', put])
+        expect(messages).to be_empty
+      end
+
+      # As remedy always has: after "too large" the one
+      # count is added (21 + 75), and the stacks are not counted by place.
+      it 'adds the one count after too large a combine (25:30006) to the count so far (21, 25:12538, and 75, 25:8678), as today' do
+        script_outside(log('25:12538'), [[log('25:30006'), log('25:8678')]])
+        script_put
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih', 'count my nemoih', put])
+        expect(game.sent).not_to include('count my first nemoih')
+      end
+
+      # As remedy always has: a round that does not merge
+      # goes by the sum of every count, even after a merge replaced the count
+      # so far. Here `count` reads the stack taken back out of the vessel
+      # (code-derived: the logs do not show which of two stacks it reads),
+      # the 12 the merge counted: today's 10 + 12 + 12 = 34 ends the
+      # gathering, and so does this one. The merged 12 + 12 = 24 would have
+      # fetched again.
+      it 'goes by the sum of every count after too large a combine (25:30006) that follows a merge (25:11425), as today (10, 12, 12)' do
+        script_outside(log('25:104726'), [[log('25:11425'), merged_count(12)], [log('25:30006'), merged_count(12)]])
+        script_put
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'stow my nemoih', 'combine my nemoih', 'count my nemoih', put])
+        expect(messages).to be_empty
+      end
+
+      # layer 11 (H04): today "You must be holding both" set the
+      # count to 25. The commands are today's.
+      it 'ends at the count held when the combine finds one stack (25:18266), sending no count after it, and says so' do
+        game.script('count my nemoih', log('25:12538'))
+        game.script('stow my nemoih', log('25:13762'))
+        game.script('combine my nemoih', log('25:18266'))
+        script_put
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih', put])
+        expect(messages).to eq(['Remedy: gathered only 21 pieces of nemoih (a remedy takes 25); crafting with what is in hand.'])
+      end
+    end
+
+    it 'ends the gathering when the combine after a get finds one stack in hand (25:104590), and says how few pieces it holds' do
+      allow(DRCI).to receive(:exists?).and_return(true)
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      script_put
+      gatherer.gather('nemoih', 'large mortar')
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', put])
+      expect(messages).to eq(['Remedy: gathered only 21 pieces of nemoih (a remedy takes 25); crafting with what is in hand.'])
+    end
+
+    describe 'the herb left in hand after the put' do
+      # The put took part of the stack (assumption: every logged put took
+      # all of it). lich-5 counts herb_container's "That stack of herbs is
+      # too large to add more to." (26:32077) as stowed (F3): the model's
+      # stow there leaves the herb in hand.
+      #
+      # @param bags [Array<String>] the containers that refuse the herb
+      # @return [void]
+      def refuse_the_leftover_in(*bags)
+        allow(DRCC).to receive(:stow_crafting_item) do |name, bag, belt|
+          (name == 'nemoih' && bags.include?(bag)) || commons.stow_crafting_item(name, bag, belt)
+        end
+      end
+
+      before do
+        game.script('count my nemoih', log('25:33679'))
+        game.script('combine my nemoih', log('25:104590'))
+        game.script(put, log('26:10749'))
+      end
+
+      it 'puts it in the crafting container when the herb_container leaves it in hand, and picks the mortar up' do
+        refuse_the_leftover_in(basket)
+        gatherer.gather('nemoih', 'large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', basket, toolstrap).once.ordered
+        expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, toolstrap).once.ordered
+        expect(commons.location_of('dried nemoih')).to eq(toolbag)
+        expect(commons.location_of('large mortar')).to eq('right').or eq('left')
+        expect(messages).to be_empty
+      end
+
+      it 'stops with a Remedy line, the mortar picked up beside the herb, when the crafting container leaves it in hand too' do
+        refuse_the_leftover_in(basket, toolbag)
+        expect { gatherer.gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: could not put away the nemoih left in hand after the put, and crafting needs that hand. Stopping.'])
+        expect([commons.location_of('nemoih'), commons.location_of('large mortar')]).to contain_exactly('left', 'right')
+      end
+
+      context 'with no herb_container' do
+        let(:herb_container) { nil }
+
+        before { commons.inventory.find { |item| item.name == 'dried nemoih' }.location = toolbag }
+
+        it 'stops after the one stow in the crafting container, which the herb went to first' do
+          refuse_the_leftover_in(toolbag)
+          expect { gatherer.gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
+          expect(messages).to eq(['Remedy: could not put away the nemoih left in hand after the put, and crafting needs that hand. Stopping.'])
+        end
+      end
+    end
+
+    # Code-derived timing, as layer 09's LATE_GET_LOOKS: no get or put in
+    # the logs timed out. A get or stow whose bput gave up still moves the
+    # herb when its reply comes, here 3, 16 or 30 s later; today remedy's
+    # next command waited behind it, so the late one came first and the run
+    # went on however late it was. The gathering looks at the hands for
+    # STOP_LOOKS (30 s) before it stops: with the bput's own 15 s, the three
+    # silences of the lag floor.
+    describe 'a herb get or stow answered late' do
+      # The first `nemoih` get returns false (current lich-5 returns
+      # DRCI.in_hands?, 480bdee3 common-crafting.rb:531-532) and the stack
+      # reaches a hand +late+ seconds later.
+      #
+      # @param late [Integer] the seconds after the get's bput gave up
+      # @return [void]
+      def answer_the_first_herb_get_late(late = 3)
+        arrives = nil
+        allow(DRCC).to receive(:get_crafting_item) do |*args|
+          next commons.get_crafting_item(*args) unless args.first == 'nemoih' && arrives.nil?
+
+          arrives = game.clock + late
+          false
+        end
+        allow(DRCI).to receive(:in_hands?) do |item|
+          if arrives && game.clock >= arrives && (stack = commons.inventory.find { |owned| owned.name == 'dried nemoih' })
+            commons.inventory.delete(stack)
+            commons.hold(stack.name)
+          end
+          commons.in_hands?(item)
+        end
+      end
+
+      [3, 16, 30].each do |late|
+        it "gathers from the herb_container with the commands of today when the first get is answered #{late} s late (25:33679)" do
+          answer_the_first_herb_get_late(late)
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:104590'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+          expect(game.clock).to be >= late
+          expect(messages).to be_empty
+          expect(commons.location_of('large mortar')).to eq('right').or eq('left')
+        end
+      end
+
+      it 'stops, sending nothing, when the first get is answered 31 s late, after the last of its 30 s of looks' do
+        answer_the_first_herb_get_late(31)
+        expect { gatherer.gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(game.sent).to be_empty
+        expect(game.clock).to eq(Remedy::Inventory::STOP_LOOKS)
+        expect(messages).to eq(['Remedy: could not get nemoih. Stopping.'])
+      end
+
+      context 'with the herb outside both bags' do
+        let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => 'seasilk apron' }) }
+
+        [3, 30].each do |late|
+          it "gathers with the commands of today when the first get is answered #{late} s late (25:33679)" do
+            answer_the_first_herb_get_late(late)
+            game.script('count my nemoih', log('25:33679'))
+            script_put
+            expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+            expect(game.sent).to eq(['count my nemoih', put])
+            expect(messages).to be_empty
+          end
+        end
+      end
+
+      context 'with no herb_container, the put leaving part of the stack in hand' do
+        let(:herb_container) { nil }
+        let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => toolbag }) }
+
+        # The leftover stow's reply comes +late+ seconds after its bput gave
+        # up: the herb leaves the hand then. Assumption: the put left part
+        # of the stack in hand (in the logs every put took the whole stack).
+        #
+        # @param late [Integer] the seconds after the stow returned
+        # @return [void]
+        def answer_the_leftover_stow_late(late)
+          leaves = nil
+          allow(DRCC).to receive(:stow_crafting_item) do |name, bag, belt|
+            next commons.stow_crafting_item(name, bag, belt) unless name == 'nemoih'
+
+            leaves = game.clock + late
+            true
+          end
+          allow(DRCI).to receive(:in_hands?) do |item|
+            commons.release('nemoih') if leaves && game.clock >= leaves
+            commons.in_hands?(item)
+          end
+        end
+
+        before do
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:104590'))
+          game.script(put, log('26:10749'))
+        end
+
+        [3, 16, 30].each do |late|
+          it "picks the mortar up and goes on, with the one stow, when the stow of the herb left after the put is answered #{late} s late" do
+            answer_the_leftover_stow_late(late)
+            expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+            expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
+            expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+            expect(messages).to be_empty
+            expect(commons.location_of('large mortar')).to eq('right').or eq('left')
+          end
+        end
+
+        it 'stops, the mortar picked up, when the stow of the herb left after the put is answered 31 s late, after the last of its 30 s of looks' do
+          answer_the_leftover_stow_late(31)
+          expect { gatherer.gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
+          expect(messages).to eq(['Remedy: could not put away the nemoih left in hand after the put, and crafting needs that hand. Stopping.'])
+        end
+      end
+
+      context 'with herb_container, the put leaving part of the stack in hand' do
+        # As above, with the herb_container stow answered late: the
+        # crafting container is not tried while the looks last.
+        it 'sends no stow to the crafting container when the herb_container stow of the herb left after the put is answered 30 s late' do
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:104590'))
+          game.script(put, log('26:10749'))
+          leaves = nil
+          allow(DRCC).to receive(:stow_crafting_item) do |name, bag, belt|
+            next commons.stow_crafting_item(name, bag, belt) unless name == 'nemoih'
+
+            leaves = game.clock + 30
+            true
+          end
+          allow(DRCI).to receive(:in_hands?) do |item|
+            commons.release('nemoih') if leaves && game.clock >= leaves
+            commons.in_hands?(item)
+          end
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
+          expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', basket, anything)
+          expect(messages).to be_empty
+        end
+      end
+    end
+
+    context 'on lich-5 v5_21, where a missing herb does not stop the script' do
+      let(:commons) { ReplayCommons.new(game: game, lich5: :v5_21, inventory: { 'large mortar' => 'grass toolstrap' }) }
+
+      it 'stops at the first get that leaves no herb in hand, sending nothing, after 30 s of looks, with the mortar picked up again' do
+        allow(DRCI).to receive(:exists?).and_return(true)
+        expect { gatherer.gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(game.sent).to be_empty
+        expect(game.clock).to eq(Remedy::Inventory::STOP_LOOKS)
+        expect(messages).to eq(['Remedy: could not get nemoih. Stopping.'])
+        expect(commons.location_of('large mortar')).to eq('right')
+      end
     end
   end
 

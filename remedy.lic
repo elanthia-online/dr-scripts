@@ -587,8 +587,9 @@ class Remedy
   #
   # {#fetch?} and {#fetch!} are the guarded gets: they work the same on every
   # lich-5 release. {#get} and {#get_tool} are the plain gets remedy has
-  # always made, for the paths a later layer changes (the liquids, the herb
-  # gathering, the remed book).
+  # always made: the liquids, the remed book (a later layer changes it), and
+  # the herb gathering, which reads the hands after them ({#got?}) so its
+  # gets keep their arguments.
   #
   # @api private
   class Inventory
@@ -609,9 +610,30 @@ class Remedy
     # answered up to 15 s late still crafts on. The cost is paid only when
     # the item is not in hand, before a stop.
     #
-    # @note No get in the logs timed out (the one bput timeout, 26:68670, is
-    #   a cast), so the late reply is code-derived, not seen.
+    # A put answered late is the same the other way round: the item leaves
+    # the hand after DRC.bput gave up, and the run went on. {#released?}
+    # looks for as long before the herb gathering calls a leftover stuck.
+    #
+    # @note No get or put in the logs timed out (the one bput timeout,
+    #   26:68670, is a cast), so the late reply is code-derived, not seen.
     LATE_GET_LOOKS = 15
+
+    # How many times the herb gathering looks at the hands before a stop
+    # remedy never used to make: after the first herb get ({#got?}) and
+    # after the herb_container stow of the leftover ({#stow_leftover}).
+    #
+    # Today those gets and stows are plain: on a reply later than DRC.bput's
+    # 15 s, remedy sent its next command, and the game, which answers
+    # commands in order, answered the late one first, so the run went on
+    # however late the reply came. A stop there must not come sooner than
+    # the lag floor of three 15 s silences for the same
+    # command: the command's own bput waits one, and these looks wait the
+    # other two, so a reply up to 30 s after its bput gave up still goes on
+    # with today's commands. The cost is paid only before such a stop.
+    #
+    # @note code-derived, as {LATE_GET_LOOKS}: no get or put in the logs
+    #   timed out.
+    STOP_LOOKS = 2 * LATE_GET_LOOKS
 
     # @return [String] crafting_container
     attr_reader :bag
@@ -695,20 +717,29 @@ class Remedy
     end
 
     # Whether a get brought the item: a hand holds it now, or does within
-    # {LATE_GET_LOOKS} seconds, looked at once a second, so a reply that came
-    # after DRC.bput gave up still counts.
+    # +looks+ seconds, looked at once a second, so a reply that came after
+    # DRC.bput gave up still counts.
     #
     # @param name [String] the name the item was asked for by
+    # @param looks [Integer] the looks after the first ({LATE_GET_LOOKS} by
+    #   default; {STOP_LOOKS} before a stop remedy never used to make)
     # @return [Boolean] true as soon as a hand holds it ({#held?}); false
-    #   after {LATE_GET_LOOKS} looks find it in neither hand
-    def got?(name)
-      return true if held?(name)
+    #   after +looks+ looks find it in neither hand
+    def got?(name, looks: LATE_GET_LOOKS)
+      within_late_looks(looks) { held?(name) }
+    end
 
-      LATE_GET_LOOKS.times do
-        pause 1
-        return true if held?(name)
-      end
-      false
+    # Whether a put took the item out of the hands: neither hand holds it
+    # now, or neither does within +looks+ seconds, looked at once a second,
+    # so a put answered after DRC.bput gave up still counts.
+    #
+    # @param name [String] the name the item was put away by
+    # @param looks [Integer] the looks after the first ({LATE_GET_LOOKS} by
+    #   default; {STOP_LOOKS} before a stop remedy never used to make)
+    # @return [Boolean] true as soon as no hand holds it ({#held?}); false
+    #   after +looks+ looks still find it in hand
+    def released?(name, looks: LATE_GET_LOOKS)
+      within_late_looks(looks) { !held?(name) }
     end
 
     # Gets an item as {#fetch?} does, and stops remedy when it is not in
@@ -740,17 +771,45 @@ class Remedy
       DRCI.in_hands?(name.split.last)
     end
 
-    # Puts an item away: a herb in herb_container when one is set, anything
-    # else in the crafting container or on the alchemy belt.
+    # Puts an item away: a herb as {#stow_herb} does, anything else in the
+    # crafting container or on the alchemy belt.
     #
     # @param name [String, nil] the item (a hand's contents; nil when empty)
     # @return [void]
     def stow(name)
-      if herb?(name) && @herb_container
-        DRCC.stow_crafting_item(name, @herb_container, @belt) # try to put herbs in herb container first
-      else
-        stow_tool(name)
-      end
+      herb?(name) ? stow_herb(name) : stow_tool(name)
+    end
+
+    # Puts a herb stack away: in herb_container when one is set, otherwise
+    # in the crafting container.
+    #
+    # @param name [String] the herb, as the order names herb1 or herb2
+    # @return [void]
+    def stow_herb(name)
+      DRCC.stow_crafting_item(name, @herb_container || @bag, @belt)
+    end
+
+    # Puts away the herb left in hand after the vessel put: in
+    # herb_container, then, when the hand still holds it, in the crafting
+    # container.
+    #
+    # The hand is read because lich-5 counts "That stack of herbs is too
+    # large to add more to." (26:32077), the reply of a container whose
+    # stack is full, as a stow that worked (F3). It is read as
+    # {#released?} does, for {STOP_LOOKS} seconds after the first stow, so a
+    # stow answered up to 30 s late is not taken for a stuck herb (today's
+    # one stow went on however late its reply), and the crafting container
+    # is tried only when the herb stays.
+    #
+    # @param herb [String] herb1
+    # @return [Boolean] whether the hands are free of the herb afterwards
+    def stow_leftover(herb)
+      stow_herb(herb)
+      return true if released?(herb, looks: STOP_LOOKS)
+      return false unless @herb_container
+
+      stow_tool(herb)
+      released?(herb)
     end
 
     # Gets an item with no herb routing: from the belt when it is one of
@@ -818,6 +877,23 @@ class Remedy
     # @return [Boolean]
     def herb?(name)
       @herbs.include?(name)
+    end
+
+    # Asks a question of the hands now and then once a second for +looks+
+    # seconds, until it answers yes ({#got?}, {#released?}).
+    #
+    # @param looks [Integer] the looks after the first
+    # @yieldreturn [Boolean] the answer the hands give now
+    # @return [Boolean] true as soon as the block does; false after +looks+
+    #   looks
+    def within_late_looks(looks)
+      return true if yield
+
+      looks.times do
+        pause 1
+        return true if yield
+      end
+      false
     end
   end
 
@@ -1020,29 +1096,84 @@ class Remedy
   end
 
   # Gathers herb1 into the lowered vessel: gets stacks and combines them
-  # until at least {HANDFUL} pieces are counted, puts the stack in, and
-  # picks the vessel up again.
+  # until the counts reach {HANDFUL} pieces, puts the stack in, puts away
+  # what is left and picks the vessel up again.
   #
-  # The algorithm is the one remedy has always used, including its known
-  # faults (CURRENT H04, H05, H26, H27, D12, flipped by layer 11). The vessel
-  # gets before and after the gathering are guarded; the herb gets and the
-  # vessel moves inside it stay as they were until layer 11 rewrites it.
+  # A gathering sends the commands remedy has always sent for it:
+  # every count read after a get from herb_container or
+  # the crafting container is added to the count so far, and after a
+  # combine too large ("That stack of herbs is too large to add more to.",
+  # 25:30006) both stacks are counted and one is put back only when the
+  # other counts {FULL_STACK}. What changes is where that went wrong or
+  # never ended:
+  # - after a later get, a combine that finds one stack in hand ("You must
+  #   be holding both substances to combine them.", 25:18266) means the get
+  #   added nothing, so gathering ends at the count before it; outside the
+  #   bags that reply used to be taken for 25 pieces (H04), in the
+  #   bags the one stack's count used to be added again;
+  # - outside the bags the count after a merge ("You combine the stacks of
+  #   herbs together.", 25:11425) reads the one merged stack, so it replaces
+  #   the count so far instead of being added to it;
+  # - in the bags, after a merge, one more count reads the one merged stack
+  #   and replaces the count so far (H05), unless the count before
+  #   the merge already read a handful by itself;
+  # - in or outside the bags, a round whose combine does not merge goes by
+  #   the sum of every count, as remedy has always done, so it ends where it
+  #   ends today, even after a merge replaced the count so far;
+  # - at most {MAX_FETCHES} gets (H26).
   #
+  # The stack put back beside a full one still goes to the plain stow remedy
+  # has always sent, with or without herb_container (CURRENT H27): that
+  # gathering works today, so A5 keeps its commands.
+  #
+  # Short of a handful, remedy says so and crafts with what it holds, as it
+  # always has; the game decides ("requires more pieces" stops remedy,
+  # {CraftLoop::MORE_PIECES}). A first get that leaves no herb in hand, or a
+  # leftover that neither herb_container nor the crafting container takes,
+  # stops remedy with the vessel picked up again. Those checks read the
+  # hands (DRCI.in_hands?), which sends nothing, and look again for
+  # {Inventory::STOP_LOOKS} seconds ({Inventory#got?},
+  # {Inventory#released?}), so a get or stow answered up to 30 s after its
+  # bput gave up (three 15 s silences, the bput's
+  # own included) goes on as it always has.
+  #
+  # @note H05: with two stacks in hand the logs do not show which
+  #   one `count` reads. If it reads the stack picked up first, adding it to
+  #   the count so far counts a merged stack twice and remedy crafts with
+  #   fewer than {HANDFUL} pieces. So after a merge in the bags
+  #   ({#add_from_bag}) remedy counts the one merged stack once more and
+  #   goes by that count, whichever stack the count before the merge read
+  #   (a deliberate change: one extra `count my
+  #   <herb>` in the combine path only).
   # @api private
   class HerbGatherer
     # The pieces of herb a remedy takes.
     HANDFUL = 25
 
-    # The largest stack of herbs the game makes: "That stack of herbs is too
-    # large to add more to." (26:32077) comes after a combine reaches it.
+    # The largest stack of herbs the game makes: after "That stack of herbs
+    # is too large to add more to." (25:30006) the count read a full stack,
+    # "You count out 75 pieces of material there." (25:30012).
     FULL_STACK = 75
 
+    # The most stacks one gathering gets. Every get whose count is answered
+    # adds at least one piece, so {HANDFUL} gets reach a handful whenever
+    # each does, and a get that adds nothing ends the gathering by itself
+    # (the combine finds one stack). The bound only stops gets whose counts
+    # and combines go unanswered; without it, a herb the bag lists but the
+    # get never brings was counted and combined forever (H26).
+    MAX_FETCHES = HANDFUL
+
+    # The text bput returns for "You combine the stacks of herbs together."
+    # (25:11425): the two stacks are one.
+    MERGED = 'You combine'
+
     # The text bput returns for "You must be holding both substances to
-    # combine them." (25:18266), which the gathering takes as enough.
+    # combine them." (25:18266): one stack in hand. After the first get that
+    # is expected; after a later one, the get added nothing.
     HOLDING_BOTH = 'You must be holding both'
 
     # The end of the text bput returns for "That stack of herbs is too large
-    # to add more to." (26:32077).
+    # to add more to." (25:30006).
     TOO_LARGE = 'too large to add'
 
     # @param inventory [Inventory] routes herb1 as a herb
@@ -1050,84 +1181,185 @@ class Remedy
       @inventory = inventory
     end
 
-    # Gets the vessel, lowers it, gathers the herb, puts the herb in and
-    # picks the vessel up again.
+    # Gets the vessel, lowers it, gathers the herb, puts the herb in, puts
+    # away what is left of it and picks the vessel up again.
     #
     # @param herb [String] herb1
     # @param vessel [String] the alchemy_tools entry
     # @return [void]
     # @raise [SystemExit] when the vessel cannot be got or picked up again
-    #   ({Inventory#fetch!}), or when DRCC.get_crafting_item stops the script
+    #   ({Inventory#fetch!}), when the first get leaves no herb in hand, when
+    #   the herb left after the put cannot be put away, or when
+    #   DRCC.get_crafting_item stops the script
     def gather(herb, vessel)
       @inventory.fetch!(vessel)
       @inventory.lower(vessel)
-      count = 0
-      while count < HANDFUL
-        if @inventory.get(herb) == Inventory::UNROUTED
-          count = gather_outside_bags(herb, vessel)
-        else
-          count += count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
-          put_away_smaller_stack(herb) if DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES).end_with?(TOO_LARGE)
-        end
-      end
+      report_short(herb, collect(herb, vessel))
       put_in(herb, vessel)
       @inventory.pick_up(vessel)
     end
 
     private
 
-    # The number a count reply starts with ("You count out 75 pieces of
-    # material there.", 25:8678); 0 when the reply has none.
+    # Gets stacks from herb_container or the crafting container, counting
+    # and combining them, until gathering ends (see the class comment). A
+    # stack found in neither goes on by {#gather_outside_bags}.
     #
-    # @param command [String] the count
-    # @param patterns [Array<Regexp>] its replies
-    # @return [Integer]
-    def count_of(command, patterns)
-      DRC.bput(command, *patterns).scan(/\d+/).first.to_i
+    # Two tallies are kept, as outside the bags: the sum of every count,
+    # which remedy has always gone by, and the count so far, which a merge
+    # sets to the merged stack's count ({#add_from_bag}).
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry, lowered
+    # @return [Integer, nil] the pieces counted, nil when the game gave no
+    #   count
+    # @raise [SystemExit] when the first get leaves no herb in hand, or when
+    #   DRCC.get_crafting_item stops the script
+    def collect(herb, vessel)
+      counted = summed = nil
+      MAX_FETCHES.times do |fetch|
+        routed = @inventory.get(herb) != Inventory::UNROUTED
+        empty_handed(herb, vessel) if fetch.zero? && !@inventory.got?(herb, looks: Inventory::STOP_LOOKS)
+        return gather_outside_bags(herb, vessel, fetch + 1) unless routed
+
+        count = count_held(herb)
+        reply = combine(herb)
+        return counted if fetch.positive? && reply == HOLDING_BOTH
+
+        summed = sum(summed, count)
+        counted = add_from_bag(herb, reply, count, summed)
+        return counted if handful?(counted)
+      end
+      counted
+    end
+
+    # The count so far after a get from a bag, its count and its combine.
+    #
+    # After a merge ({MERGED}) it is the merged stack's count
+    # ({#count_merged}). After any other reply (too large, one stack, or
+    # none) it is the sum of every count, as remedy has always gone by, so
+    # such a round ends where it ends today; after a combine too large, one
+    # stack is put back first ({#put_back_beside_full}). Adding the count to
+    # a count a merge set would count the merged stack twice whenever
+    # `count` reads it again (H05's assumption).
+    #
+    # @param herb [String] herb1
+    # @param reply [String] the combine's reply ({#combine})
+    # @param count [Integer, nil] the count read before the combine
+    # @param summed [Integer, nil] the sum of every count, this one included
+    # @return [Integer, nil] the pieces counted (nil when no count was
+    #   answered)
+    def add_from_bag(herb, reply, count, summed)
+      return count_merged(herb, count, summed) if reply.end_with?(MERGED)
+
+      put_back_beside_full(herb) if reply.end_with?(TOO_LARGE)
+      summed
+    end
+
+    # The pieces held after a merge in the bags ({MERGED}). With two stacks
+    # in hand the count before the merge may have read either one
+    # (H05), so the sum with the count so far can count the merged stack
+    # twice. One more `count my <herb>` reads the one stack now in hand and
+    # replaces the sum.
+    #
+    # That count is not sent when the count before the merge read a handful
+    # by itself: whichever stack it read, the merged one holds at least as
+    # many, and the gathering ends on the sum as it always has.
+    #
+    # @param herb [String] herb1
+    # @param count [Integer, nil] the count read before the merge
+    # @param summed [Integer, nil] the sum of every count, that one included
+    # @return [Integer, nil] the count of the merged stack; the sum of every
+    #   count, as before, when that count is not sent or holds no number
+    # @note code-derived (unverified): no log shows a count after a merge in
+    #   the bags; the count's replies are those of every `count my <herb>`
+    #   (25:12538).
+    def count_merged(herb, count, summed)
+      return summed if handful?(count)
+
+      count_held(herb) || summed
     end
 
     # Gathers a herb DRCC found outside herb_container and the crafting
-    # container: counts the stack in hand, then, until {HANDFUL} is counted,
-    # puts it in the vessel, stows what is left, gets another stack and
-    # takes the first one back out to combine them.
+    # container: counts the stack in hand, then, until gathering ends, puts
+    # it in the vessel, stows what is left, gets another stack, takes the
+    # first one back out to combine them ({#add_from_elsewhere}) and counts.
     #
-    # Gets the herb with DRCI so that the vessel, put away first, is not
-    # where it comes from, and the game does not answer "You are already
-    # holding that."
+    # Two tallies are kept. The sum of every count is the one remedy has
+    # always gone by. After a merge ({MERGED}) the count reads the one
+    # merged stack, which holds the pieces counted before it, so that count
+    # replaces the count so far. After any other reply (too large, or none)
+    # the count goes on the sum of every count, as before, so a round that
+    # does not merge ends where it ends today: adding it to a count a merge
+    # replaced would count the stack taken back out of the vessel, already
+    # in the merged count, a second time when `count` reads that stack.
     #
     # @param herb [String] herb1
-    # @param vessel [String] the alchemy_tools entry
-    # @return [Integer] the pieces counted; {HANDFUL} when the combine says
-    #   both stacks must be held
+    # @param vessel [String] the alchemy_tools entry, lowered
+    # @param fetches [Integer] the gets already made
+    # @return [Integer, nil] the pieces counted, nil when the game gave no
+    #   count
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
-    def gather_outside_bags(herb, vessel)
-      count = count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
-      while count < HANDFUL
-        DRCI.put_away_item?(herb, vessel)
-        fput("stow my #{herb}") # in case there are extra
-        @inventory.get(vessel)
-        @inventory.stow(vessel)
-        DRCI.get_item?(herb)
-        @inventory.get(vessel)
-        @inventory.lower(vessel)
-        DRCI.get_item?(herb, vessel)
-        if DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES) == HOLDING_BOTH
-          count = HANDFUL # ends both loops
-        else
-          count += count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
-        end
+    # @note code-derived (unverified): with two stacks in hand the logs do
+    #   not show which one `count` reads (H05), nor which one the
+    #   put into the vessel takes.
+    def gather_outside_bags(herb, vessel, fetches)
+      counted = summed = count_held(herb)
+      (MAX_FETCHES - fetches).times do
+        return counted if handful?(counted)
+
+        reply = add_from_elsewhere(herb, vessel)
+        return counted if reply == HOLDING_BOTH
+
+        count = count_held(herb)
+        summed = sum(summed, count)
+        counted = reply.end_with?(MERGED) ? count : summed
       end
-      count
+      counted
     end
 
-    # After a combine that made a stack too large, puts away the stack in
-    # hand that is NOT full, keeping the full one: the second stack when the
-    # first counts {FULL_STACK}, the first stack when the second does. Puts
-    # nothing away when neither stack counts {FULL_STACK}.
+    # Gets another stack from wherever DRCI finds it and combines it with
+    # the one held.
+    #
+    # The held stack goes into the vessel and the vessel is put away first,
+    # so that the get does not take the herb from the vessel and the game
+    # does not answer "You are already holding that."; the first stack is
+    # then taken back out of the lowered vessel.
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry, lowered
+    # @return [String] the combine's reply ({#combine}): {HOLDING_BOTH}
+    #   means the get added nothing, and gathering is over
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @note code-derived (unverified): no log shows this sequence. `stow my
+    #   <herb>` is kept as remedy has always sent it ("in case there are
+    #   extra"), so a gathering that works today sends the same commands.
+    def add_from_elsewhere(herb, vessel)
+      DRCI.put_away_item?(herb, vessel)
+      fput("stow my #{herb}")
+      @inventory.get(vessel)
+      @inventory.stow(vessel)
+      DRCI.get_item?(herb)
+      @inventory.get(vessel)
+      @inventory.lower(vessel)
+      DRCI.get_item?(herb, vessel)
+      combine(herb)
+    end
+
+    # After a combine that would make too large a stack, counts both stacks
+    # and puts back the one beside a full stack ({FULL_STACK}): the second
+    # when the first is full, else the first when the second is. Puts
+    # nothing back when neither count is full, as remedy always has.
+    #
+    # The stack is named by its place in hand ("first nemoih", the form of
+    # `put my second clubm in rugu`, 25:29951 -> 25:29952) and put away
+    # with the plain stow remedy has always sent: DRCI.put_away_item? with
+    # no container sends `stow my <name>`, with or without herb_container
+    # (CURRENT H27, kept on purpose).
     #
     # @param herb [String] herb1
     # @return [void]
-    def put_away_smaller_stack(herb)
+    def put_back_beside_full(herb)
       first = count_of("count my first #{herb}", Patterns::FIRST_STACK_COUNT_REPLIES)
       second = count_of("count my second #{herb}", Patterns::SECOND_STACK_COUNT_REPLIES)
       if first == FULL_STACK
@@ -1137,24 +1369,107 @@ class Remedy
       end
     end
 
+    # @param counted [Integer, nil] the pieces counted so far
+    # @param count [Integer, nil] a new count
+    # @return [Integer, nil] their sum, a missing count adding nothing; nil
+    #   when neither holds a number
+    def sum(counted, count)
+      return counted if count.nil?
+
+      (counted || 0) + count
+    end
+
+    # @param herb [String] herb1
+    # @return [Integer, nil] the count of the herb in hand (25:12538), nil
+    #   when the reply holds no number
+    def count_held(herb)
+      count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
+    end
+
+    # The number a count reply starts with ("You count out 75 pieces of
+    # material there.", 25:8678).
+    #
+    # @param command [String] the count
+    # @param patterns [Array<Regexp>] its replies
+    # @return [Integer, nil] nil when the reply holds no number (no reply, or
+    #   "I could not find what you were referring to.", 25:13762)
+    def count_of(command, patterns)
+      DRC.bput(command, *patterns)[/\d+/]&.to_i
+    end
+
+    # @param herb [String] herb1
+    # @return [String] the combine's reply (bput's text; '' on no reply)
+    def combine(herb)
+      DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES)
+    end
+
+    # @param counted [Integer, nil] the pieces counted
+    # @return [Boolean] whether they are at least {HANDFUL}
+    def handful?(counted)
+      !counted.nil? && counted >= HANDFUL
+    end
+
+    # Stops remedy when the first get left no herb in hand: picks the vessel
+    # up again, so the stop leaves it in hand like every other stop.
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry, lowered
+    # @return [void] never returns
+    # @raise [SystemExit] always
+    def empty_handed(herb, vessel)
+      @inventory.pick_up(vessel)
+      Remedy.stop("could not get #{herb}.")
+    end
+
+    # Says so when gathering ended short of a handful; remedy crafts on with
+    # what it holds.
+    #
+    # @param herb [String] herb1
+    # @param counted [Integer, nil] the pieces counted
+    # @return [void]
+    def report_short(herb, counted)
+      return if handful?(counted)
+
+      found = counted ? "gathered only #{counted} pieces of #{herb}" : "could not count the #{herb} gathered"
+      DRC.message("Remedy: #{found} (a remedy takes #{HANDFUL}); crafting with what is in hand.")
+    end
+
     # Puts the herb in the vessel; tilts the vessel out first when it
-    # already holds something. Stows what is left of the herb.
+    # already holds something. Puts away what is left of the herb.
     #
     # @param herb [String] herb1
     # @param vessel [String] the alchemy_tools entry
     # @return [void]
+    # @raise [SystemExit] when the herb left cannot be put away
+    #   ({#put_away_leftover})
     # @note The put has no "my" before the herb (CURRENT H32, changed in
     #   layer 15).
     def put_in(herb, vessel)
       case DRC.bput("put #{herb} in my #{vessel}", *Patterns::HERB_PUT_REPLIES)
       when 'You put', /can only hold\z/, /You vigorously rub\z/
-        @inventory.stow(herb) # for a herb of more than 25 pieces
+        put_away_leftover(herb, vessel)
       when /already has something\z/, 'You realize the'
         DRC.bput("tilt my #{vessel}", *Patterns::TILT_REPLIES)
         DRC.bput("tilt my #{vessel}", *Patterns::TILT_AGAIN_REPLIES)
         DRC.bput("put #{herb} in my #{vessel}", *Patterns::HERB_PUT_AGAIN_REPLIES)
-        @inventory.stow(herb) # for a herb of more than 25 pieces
+        put_away_leftover(herb, vessel)
       end
+    end
+
+    # Puts away the herb left in hand after the put ({Inventory#stow_leftover}),
+    # for a stack of more than the vessel took. When the hands still hold it,
+    # crafting would find no free hand for the stirrer (D12), so
+    # remedy picks the vessel up and stops.
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry, lowered
+    # @return [void]
+    # @raise [SystemExit] when the herb is still in hand
+    def put_away_leftover(herb, vessel)
+      return if @inventory.stow_leftover(herb)
+
+      @inventory.pick_up(vessel)
+      Remedy.stop("could not put away the #{herb} left in hand after the put, and crafting needs that hand.")
     end
   end
 
