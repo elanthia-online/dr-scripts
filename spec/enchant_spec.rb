@@ -632,6 +632,26 @@ RSpec.describe Enchant do
   # handle_complete_flag
   # ---------------------------------------------------------------------------
 
+  describe '#take_product' do
+    it 'lifts the product off the floor and sends nothing else' do
+      instance = build_instance(item: 'rock')
+      expect(DRCI).to receive(:lift?).with('rock').and_return(true)
+      expect(DRCI).not_to receive(:get_item?)
+      expect(DRCC).not_to receive(:stow_crafting_item)
+
+      instance.send(:take_product)
+    end
+
+    it 'gets the product when there is nothing to lift' do
+      instance = build_instance(item: 'rock')
+      allow(DRCI).to receive(:lift?).with('rock').and_return(false)
+      expect(DRCI).to receive(:get_item?).with('rock').and_return(true)
+      expect(DRCC).not_to receive(:stow_crafting_item)
+
+      expect(instance.send(:take_product)).to be(true)
+    end
+  end
+
   describe '#handle_complete_flag' do
     it 'outputs completion message and calls cleanup' do
       instance = build_instance
@@ -1061,7 +1081,7 @@ RSpec.describe Enchant, 'whole runs' do
     %i[get_crafting_item stow_crafting_item find_recipe2].each do |name|
       allow(DRCC).to receive(name) { |*args| game.commons("DRCC.#{name}", *args) }
     end
-    %i[get_item? dispose_trash].each do |name|
+    %i[get_item? lift? dispose_trash].each do |name|
       allow(DRCI).to receive(name) { |*args| game.commons("DRCI.#{name}", *args) }
     end
     allow(DRCA).to receive(:cast_spell?) { |*args| game.commons('DRCA.cast_spell?', *args) }
@@ -1091,17 +1111,15 @@ RSpec.describe Enchant, 'whole runs' do
   end
 
   # The end every run that finishes shares: the brazier and whatever else is
-  # held go back to the bag, the fount comes off the floor, and the product is
-  # taken up, bagged and taken out again so it is in hand for the caller.
+  # held go back to the bag, the fount comes off the floor into the bag, and
+  # the product comes off the floor into hand for the caller.
   def tidy_up(item, held: %w[brazier burin], fount: true)
     held.each { |tool| game.call('DRCC.stow_crafting_item', tool, bag, nil, takes: tool) }
     if fount
-      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: { from_feet: 'fount' })
+      game.call('DRCI.lift?', 'fount', gives: { from_feet: 'fount' })
       game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
     end
-    game.call('DRCI.get_item?', item, gives: { from_feet: item })
-    game.call('DRCC.stow_crafting_item', item, bag, nil, takes: item)
-    game.call('DRCI.get_item?', item, gives: item)
+    game.call('DRCI.lift?', item, gives: { from_feet: item })
   end
 
   # The rod imbue that finishes the item, then the burin enchant fetches
@@ -1159,11 +1177,9 @@ RSpec.describe Enchant, 'whole runs' do
       # holding the rock.
       game.call('DRCC.stow_crafting_item', 'brazier', bag, nil, takes: 'brazier')
       game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
-      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: { from_feet: 'fount' })
+      game.call('DRCI.lift?', 'fount', gives: { from_feet: 'fount' })
       game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
-      game.call('DRCI.get_item?', 'rock', gives: { from_feet: 'rock' })
-      game.call('DRCC.stow_crafting_item', 'rock', bag, nil, takes: 'rock')
-      game.call('DRCI.get_item?', 'rock', gives: 'rock')
+      game.call('DRCI.lift?', 'rock', gives: { from_feet: 'rock' })
     end
 
     it 'sends every command in order and ends holding the rock' do
@@ -1178,6 +1194,18 @@ RSpec.describe Enchant, 'whole runs' do
       run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
 
       expect(game.messages).to include('Enchant: Enchanting complete!')
+    end
+
+    it 'never puts the finished rock in the bag, where the unworked rocks are' do
+      stowed = []
+      allow(DRCC).to receive(:stow_crafting_item) do |*args|
+        stowed << args.first
+        game.commons('DRCC.stow_crafting_item', *args)
+      end
+
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect(stowed).not_to include('rock')
     end
 
     it 'removes every flag it added' do
@@ -1459,8 +1487,12 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
       game.call('DRCC.stow_crafting_item', 'brazier', bag, nil, takes: 'brazier')
       game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      # After a backlash nothing was put at our feet: the lifts find nothing
+      # and fall back to GETs.
+      game.call('DRCI.lift?', 'fount', returns: false)
       game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
       game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
+      game.call('DRCI.lift?', 'rock', returns: false)
       game.call('DRCI.get_item?', 'rock', returns: false)
       game.call('DRC.wait_for_script_to_complete', 'safe-room', ['force'])
     end
