@@ -132,7 +132,9 @@ class EnchantSpecGame
   end
 
   # A commons call, with what it returns and what it does to the hands.
-  # `gives: :from_feet` picks the named item up off the floor.
+  # `gives: { from_feet: item }` picks the item up off the floor, and
+  # `gives: { left: item }` puts it in the left hand. A give with both hands
+  # full fails, as the game's "You need a free hand" would.
   def call(name, *args, returns: true, gives: nil, takes: nil, lines: [])
     @steps << Step.new(kind: :call, name: name, args: args, returns: returns, gives: gives, takes: takes, lines: lines)
   end
@@ -180,10 +182,16 @@ class EnchantSpecGame
     give = step.gives
     return unless give
 
+    if give.is_a?(Hash) && give[:left]
+      $left_hand = give[:left]
+      return
+    end
     if give.is_a?(Hash) && give[:from_feet]
       @feet.delete_at(@feet.index(give[:from_feet]) || @feet.size)
       give = give[:from_feet]
     end
+    raise "no free hand for #{give.inspect}: the hands hold #{hands.inspect}" if $right_hand && $left_hand
+
     $right_hand.nil? ? ($right_hand = give) : ($left_hand = give)
   end
 
@@ -1313,9 +1321,10 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       # A short enchant that finishes on its first imbue (log lines, shorter run).
       game.command("wave imbuement rod at rock on enchanter's brazier", ENCHANT_LOG[:imbue_completes_rock])
-      # The rod went to the right hand, so the left-hand check leaves it held.
+      # With no brazier held the rod is in the right hand; it is put away all the same.
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
       game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      tidy_up('rock', held: ['imbuement rod', 'burin'])
+      tidy_up('rock', held: ['burin'])
     end
 
     it 'works on the public brazier and ends holding the rock' do
@@ -1783,6 +1792,51 @@ RSpec.describe Enchant, 'whole runs' do
 
       expect_transcript_done
       expect(game.hands).to eq(['wand', nil])
+    end
+  end
+
+  context 'with the brazier held in the left hand' do
+    before(:each) do
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'artificing book', bag, [], nil, gives: 'artificing book')
+      game.call('DRCC.find_recipe2', '1', 'spongestone')
+      game.call('DRCC.stow_crafting_item', 'book', bag, nil, takes: 'book')
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: { left: 'brazier' })
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
+      # The rod is in the right hand. Left in hand, it would leave no hand
+      # free for the burin.
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
+      game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
+      game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_merging])
+      # The burin is in the right hand too; it goes back before the loop.
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCC.get_crafting_item', 'augmenting loop', bag, [], nil, gives: 'augmenting loop')
+      game.command('push rock on my brazier with my augmenting loop', ENCHANT_LOG[:push_rock])
+      game.call('DRCC.stow_crafting_item', 'augmenting loop', bag, nil, takes: 'augmenting loop')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_blurs])
+      game.command('meditate fount on my brazier', ENCHANT_LOG[:meditate_wants_imbue])
+      final_rod_imbue('rock', ENCHANT_LOG[:imbue_completes_rock])
+      tidy_up('rock', held: %w[burin brazier])
+    end
+
+    it 'puts the rod and burin away from the right hand and ends holding the rock' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
     end
   end
 end

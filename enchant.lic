@@ -374,7 +374,7 @@ class Enchant
   def wave_imbue_wand
     tries = 0
     while true
-      get_tool(@imbue_wand) unless held_in_left_hand?(@imbue_wand)
+      get_tool(@imbue_wand) unless DRCI.in_hands?(@imbue_wand)
 
       result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier_ref}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
       break unless IMBUE_WAND_FAILED.match?(result)
@@ -384,7 +384,7 @@ class Enchant
       Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
     end
 
-    stow_tool(@imbue_wand) if held_in_left_hand?(@imbue_wand)
+    stow_tool(@imbue_wand) if DRCI.in_hands?(@imbue_wand)
   end
 
   def clean_brazier
@@ -463,7 +463,7 @@ class Enchant
 
   def handle_push_flag
     Flags.reset('enchant-push')
-    stow_tool(@burin) if held_in_left_hand?('burin')
+    stow_tool(@burin) if DRCI.in_hands?(@burin)
     get_tool(@loop)
     brazier_step("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     stow_tool(@loop)
@@ -472,7 +472,7 @@ class Enchant
 
   def handle_imbue_flag
     Flags.reset('enchant-imbue')
-    stow_tool(@burin) if held_in_left_hand?('burin')
+    stow_tool(@burin) if DRCI.in_hands?(@burin)
     imbue
     get_tool(@burin)
   end
@@ -560,10 +560,6 @@ class Enchant
   def stow_held_items
     stow_tool(DRC.right_hand) if DRC.right_hand
     stow_tool(DRC.left_hand) if DRC.left_hand
-  end
-
-  def held_in_left_hand?(noun)
-    DRC.left_hand.to_s.include?(noun)
   end
 end
 
