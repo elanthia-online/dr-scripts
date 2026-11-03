@@ -3,7 +3,8 @@
 =end
 
 # Makes one remedy from data/base-recipes.yaml by name: forages and prepares
-# the herbs it lacks, then runs remedy.lic.
+# the herbs it lacks, then runs remedy.lic, in its instructions form for a
+# recipe made from instructions and its book form for every other.
 class CreateRemedies
   # Reads the arguments, finds the recipe, gets the herbs and runs remedy.lic.
   #
@@ -50,12 +51,7 @@ class CreateRemedies
     # Get tools?
     get_store_tools("get") if tools
     # Craft call section
-    if recipe['herb2'].nil?
-      herb2_needed = 'na'
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], herb1, herb2_needed, catalyst, recipe['container'], recipe['noun']])
-    else
-      DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], herb1, recipe['herb2'], catalyst, recipe['container'], recipe['noun']])
-    end
+    DRC.wait_for_script_to_complete('remedy', remedy_args(recipe, herb1, catalyst))
     # Lich gives no exit status: the product in hand is remedy's success
     # signal (remedy.lic header).
     unless DRCI.in_hands?(recipe['noun'])
@@ -65,6 +61,30 @@ class CreateRemedies
     end
     # Store tools?
     get_store_tools("store") if tools
+  end
+
+  # The arguments remedy.lic is run with for a recipe.
+  #
+  # A recipe marked `instructions: true` (data/base-recipes.yaml) is made
+  # from stand-alone "<noun> instructions", not the crafting book, and has no
+  # chapter, so it goes through remedy's instructions form,
+  # `instructions <herb1> <catalyst> <container> <noun>` (remedy.lic
+  # INSTRUCTIONS_FORM). Every other recipe gets the 8-argument book form, as
+  # it always has, with herb2 'na' when the recipe has none.
+  #
+  # @param recipe [Hash] the base-recipes.yaml entry
+  # @param herb1 [String] the first herb, the prepared flower name for a red
+  #   or blue flower recipe
+  # @param catalyst [String] the catalyst
+  # @return [Array<String, Integer, nil>] the list for
+  #   DRC.wait_for_script_to_complete
+  # @note The instructions form takes no herb2: every instructions recipe has
+  #   one herb (spec/base_recipes_remedies_spec.rb checks the data).
+  def remedy_args(recipe, herb1, catalyst)
+    return ['instructions', herb1, catalyst, recipe['container'], recipe['noun']] if recipe['instructions']
+
+    herb2 = recipe['herb2'].nil? ? 'na' : recipe['herb2']
+    ['remedies', recipe['chapter'], recipe['name'], herb1, herb2, catalyst, recipe['container'], recipe['noun']]
   end
 
   # Forages 25 of a herb and prepares it with alchemy.lic, by its
