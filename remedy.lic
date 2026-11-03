@@ -24,9 +24,11 @@
 # finished remedy is left in hand, the tools and the vessel are put away and
 # the script ends. The product in hand is the success signal; each caller
 # checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
-# When the game stops answering a crafting command, or the remedy is not
-# done after 100 crafting commands, remedy prints a bold "Remedy:" line and
-# exits with no product.
+# remedy prints a bold "Remedy:" line and exits with no product when the
+# game refuses the herb ("You need a more suitable type of herb", or more
+# pieces of it), when the studied instructions fade before crafting begins,
+# when the game stops answering a crafting command, or when the remedy is
+# not done after 100 crafting commands.
 #
 # == Settings read
 # crafting_container, crafting_items_in_container, alchemy_belt,
@@ -182,12 +184,16 @@ class Remedy
     #   completed remedy in every logged case;
     # - "That craftable requires more pieces of that plant to begin",
     #   code-derived (unverified), in no log;
+    # - "You need a more suitable type of herb if you want to craft that."
+    #   (25:50933), the whole reply to `crush my georin with my pestle`
+    #   (25:50932): the game refuses the herb;
     # - "Roundtime: 7 sec." (25:10825): the step is done, craft on.
     CRAFT_REPLIES = [/^Applying the final touches/i,
                      /^[^"]*?Interesting thought really... but no./i,
                      /^[^"]*?you just can't mix/i,
                      /^[^"]*?Try as you might/i,
                      /^[^"]*?That craftable requires more pieces of that plant to begin/i,
+                     /^[^"]*?You need a more suitable type of herb/i,
                      /^[^"]*?Roundtime:/i].freeze
 
     # Replies to adding water or alcohol: "You toss the alcohol into the
@@ -204,9 +210,37 @@ class Remedy
     # mixture." (25:11081) or Roundtime.
     INGREDIENT_PUT_REPLIES = [/Roundtime/i, /You vigorously/i].freeze
 
-    # The reply to a step (push with the sieve, turn, smell): "Roundtime: 8
-    # sec." (26:10935).
-    STEP_REPLIES = [/Roundtime/i].freeze
+    # The game's refusal of a step it does not need now: "The sieve doesn't
+    # appear suitable for working on some unfinished yelith tonic."
+    # (26:24873) and "The cauldron doesn't appear suitable for working on
+    # some unfinished yelith tonic." (26:25113). No Roundtime follows it.
+    STEP_UNSUITABLE = [/^[^"]*?doesn't appear suitable for working on/i].freeze
+
+    # Replies to a step (push with the sieve, turn, smell):
+    # - "Roundtime: 8 sec." (26:10935): the step is done;
+    # - {STEP_UNSUITABLE}: the game refused the step;
+    # - a need cue alone, the game's refusal of a step while it waits for an
+    #   ingredient: "You need another catalyst material ..." (26:39150), the
+    #   whole reply to `push my curative with my turtle-shaped sieve`
+    #   (26:39148). Its Flag is set as the line arrives, so the next pass adds
+    #   the ingredient.
+    # In the logs a need cue answers a push, turn or smell 50 times alone and
+    # 22 times after the step's Roundtime line, never before it, so bput
+    # still returns on the Roundtime of a step that was done.
+    STEP_REPLIES = [/Roundtime/i, *STEP_UNSUITABLE, *NEED_WATER, *NEED_ALCOHOL, *NEED_CATALYST, *NEED_HERB].freeze
+
+    # "You struggle to recall the crafting instructions you last studied as
+    # they fade from your mind." (25:37919, 25:51002). It answers no command:
+    # the game sends it three minutes after a study when crafting has not
+    # begun (25:37919 at 12:49:16 after the study 25:37860 at 12:46:16;
+    # 25:51002 at 02:33:06 after the study 25:50890 at 02:30:06).
+    #
+    # @note What the game answers to a crafting command once the
+    #   instructions have faded is in no log: in both logged cases no
+    #   crafting command followed the fade. Nor does any log show whether a
+    #   new study cancels the fade of an earlier one. Both are open game
+    #   checks ({CraftLoop#run}).
+    INSTRUCTIONS_FADED = [/#{NO_QUOTE}You struggle to recall the crafting instructions/i].freeze
 
     # Replies to `release spell`: "You let your concentration lapse and feel
     # the spell's energies dissipate." (25:52773), "You aren't preparing a
@@ -249,6 +283,15 @@ class Remedy
     'remedy-turn'     => Patterns::NEED_TURN,
     'remedy-smell'    => Patterns::NEED_SMELL
   }.freeze
+
+  # The Flag {Patterns::INSTRUCTIONS_FADED} sets. It asks for no step, so it
+  # is not in {FLAGS}: the crafting loop reads it only before crafting has
+  # begun ({CraftLoop#run}).
+  FADED_FLAG = 'remedy-forgot'
+
+  # Every Flag remedy registers and deletes: the cues of {FLAGS}, in their
+  # order, then {FADED_FLAG}.
+  REGISTERED_FLAGS = FLAGS.merge(FADED_FLAG => Patterns::INSTRUCTIONS_FADED).freeze
 
   # Product nouns the help lists. ArgParser tries a definition's regex before
   # its options, so any word is accepted as the noun.
@@ -1045,8 +1088,10 @@ class Remedy
   # It replaces the method that called itself once a pass, whose stack ran
   # out after about 10,846 passes (H01). Two bounds end a run the
   # game no longer moves forward: {MAX_SILENT_REPLIES} (the game stopped
-  # answering the command: H01/H02, D06) and {MAX_CRAFT_STEPS} (the remedy
-  # never gets done).
+  # answering the command: H01, D06) and {MAX_CRAFT_STEPS} (the remedy
+  # never gets done). A refused herb ({UNSUITABLE_HERB}, {MORE_PIECES}: H02,
+  # D08) and instructions that faded before crafting began ({FADED_FLAG})
+  # end it at once.
   #
   # @api private
   class CraftLoop
@@ -1095,12 +1140,21 @@ class Remedy
     ALREADY_FINISHED = [/Interesting thought really... but no.\z/, /you just can't mix\z/, /Try as you might\z/].freeze
 
     # The end of the text bput returns for "That craftable requires more
-    # pieces of that plant to begin".
+    # pieces of that plant to begin": the herb in the vessel is too little
+    # to begin the remedy.
     #
-    # @note code-derived (unverified): in no log. Taken as done today, so
-    #   the vessel is put away with no product (CURRENT D08, flipped by
-    #   layer 08).
+    # @note code-derived (unverified): in no log; kept from remedy.lic:290 at
+    #   03f11b54, which took it as done.
     MORE_PIECES = /That craftable requires more pieces of that plant to begin\z/
+
+    # The end of the text bput returns for "You need a more suitable type of
+    # herb if you want to craft that." (25:50933): the game refuses the herb
+    # in the vessel. A resend leaves the same herb in the vessel.
+    #
+    # @note What a resend draws is in no log: after 25:50933 the logged
+    #   character sent no crafting command (the next crafting line is the
+    #   fade, 25:51002).
+    UNSUITABLE_HERB = /You need a more suitable type of herb\z/
 
     # The end of the text bput returns for "Roundtime: 7 sec." (25:10825).
     ROUNDTIME = /Roundtime:\z/
@@ -1123,36 +1177,56 @@ class Remedy
       @command = nil
     end
 
-    # Crafts until the game says the remedy is done, or a bound is reached.
+    # Crafts until the game says the remedy is done, refuses it, or a bound
+    # is reached.
     #
     # Every pass waits out roundtime and runs the magic routine once, then
-    # does its work.
+    # does its work. Crafting has begun once the game answers a crafting
+    # command with Roundtime or asks for an ingredient or a step (each cue
+    # names "an unfinished" remedy, e.g. 26:39150). Until then, after a
+    # study, each pass checks {FADED_FLAG} before it sends.
     #
     # @param command [String] the first crafting command
-    # @return [Symbol] :done when the remedy is done; :unanswered when more
-    #   than {MAX_SILENT_REPLIES} commands in a row went unanswered;
-    #   :too_long after {MAX_CRAFT_STEPS} crafting commands
+    # @param studied [Boolean] the recipe was studied for this run (the book
+    #   form), and {FADED_FLAG} was reset after the study; false in the
+    #   continue form, which studies nothing
+    # @return [Symbol] :done when the remedy is done; :unsuitable_herb or
+    #   :more_pieces when the game refused the herb; :faded when the studied
+    #   instructions faded before crafting began; :unanswered when more than
+    #   {MAX_SILENT_REPLIES} commands in a row went unanswered; :too_long
+    #   after {MAX_CRAFT_STEPS} crafting commands
     # @raise [SystemExit] when a handler's get stops the script
-    def run(command)
+    # @note code-derived (unverified): that a crafting command fails once
+    #   the instructions have faded ({Patterns::INSTRUCTIONS_FADED}). The
+    #   stop comes before the command is sent, so remedy never sees the
+    #   game's answer; and should an earlier study's fade arrive after this
+    #   run's study, remedy cannot tell it from this study's. Both are open
+    #   game checks: if the game still takes the command, the stop would
+    #   end a run that crafts today.
+    def run(command, studied: false)
       @command = command
       sends = 0
       silent = 0
+      begun = false
       loop do
         waitrt?
         @magic.routine
         if (flag = @handlers.pending)
           @handlers.run(flag)
           silent = 0
+          begun = true
           next
         end
+        return :faded if studied && !begun && Flags[FADED_FLAG]
 
-        case classify(DRC.bput(@command, *Patterns::CRAFT_REPLIES))
-        when :done, :refused
-          return :done
+        case (reply = classify(DRC.bput(@command, *Patterns::CRAFT_REPLIES)))
+        when :done, :unsuitable_herb, :more_pieces
+          return reply
         when :progress
           waitrt?
           @command = @tools.next_command(@noun)
           silent = 0
+          begun = true
         when :silent
           # A cue in the reply is an answer: the next pass handles it.
           silent += 1 unless @handlers.pending
@@ -1168,13 +1242,14 @@ class Remedy
     # What a crafting command's reply means.
     #
     # @param reply [String] the text bput returned for {Patterns::CRAFT_REPLIES}
-    # @return [Symbol] :done (finished now or before), :refused (more
-    #   pieces), :progress (Roundtime) or :silent (no reply: '' after
-    #   bput's 15 s)
+    # @return [Symbol] :done (finished now or before), :unsuitable_herb or
+    #   :more_pieces (the herb refused), :progress (Roundtime) or :silent (no
+    #   reply: '' after bput's 15 s)
     def classify(reply)
       case reply
       when FINAL_TOUCHES, *ALREADY_FINISHED then :done
-      when MORE_PIECES then :refused
+      when UNSUITABLE_HERB then :unsuitable_herb
+      when MORE_PIECES then :more_pieces
       when ROUNDTIME then :progress
       else :silent
       end
@@ -1209,7 +1284,7 @@ class Remedy
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
     # @note The product get is not checked, and the stows go by hand, so in
     #   the continue form with the vessel in the left hand the vessel is put
-    #   away first (CURRENT D08, H14, flipped by layers 08 and 12).
+    #   away first (D09, CURRENT H14, both fixed by layer 12).
     def finish
       waitrt?
       @inventory.stow(DRC.left_hand)
@@ -1265,12 +1340,12 @@ class Remedy
     end
   end
 
-  # Deletes every remedy Flag. Registered with before_dying by {#run}, so it
-  # runs however the script ends.
+  # Deletes every remedy Flag ({REGISTERED_FLAGS}). Registered with
+  # before_dying by {#run}, so it runs however the script ends.
   #
   # @return [void]
   def self.delete_flags
-    FLAGS.each_key { |name| Flags.delete(name) }
+    REGISTERED_FLAGS.each_key { |name| Flags.delete(name) }
   end
 
   # Takes the settings and the parsed arguments. Sends nothing to the game.
@@ -1295,7 +1370,7 @@ class Remedy
   def run
     before_dying { Remedy.delete_flags }
     @stock = get_data('crafting')['remedies'][@settings.hometown]
-    FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
+    REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
 
     @tools = Tools.resolve(@settings, @order)
 
@@ -1336,9 +1411,12 @@ class Remedy
 
   # Opens the recipe, gathers the herb into the vessel, then crafts.
   #
+  # {FADED_FLAG} is reset once the recipe is studied, so only a fade of
+  # these instructions can stop the crafting, not one of a study before.
+  #
   # @return [void]
-  # @raise [SystemExit] when the remedy is finished, or a commons helper
-  #   stops the script
+  # @raise [SystemExit] when the remedy is finished, or when remedy or a
+  #   commons helper stops the script
   # @note The remed book is got and stowed with no belt: remedy has never
   #   passed alchemy_belt for it.
   def create_item
@@ -1354,6 +1432,7 @@ class Remedy
       DRCC.find_recipe2(@order.chapter, @order.recipe_name)
       @inventory.stow_tool(REMED_BOOK, belt: nil)
     end
+    Flags.reset(FADED_FLAG)
 
     DRC.bput("touch my #{@cube}", *Patterns::CUBE_TOUCH_REPLIES) if @cube
 
@@ -1366,21 +1445,30 @@ class Remedy
     HerbGatherer.new(@inventory).gather(@order.herb1, @tools.container)
     @inventory.get(@tools.stirrer)
 
-    craft(@tools.first_command(@order.herb1))
+    craft(@tools.first_command(@order.herb1), studied: true)
   end
 
   # Runs the crafting loop from the first command; when the remedy is done,
-  # takes it out, releases magic and exits. When the loop gives up, stops
-  # with a Remedy line saying why.
+  # takes it out, releases magic and exits. When the game refuses the herb,
+  # the instructions fade or the loop gives up, stops with a Remedy line
+  # saying why.
   #
   # @param command [String] the first crafting command
+  # @param studied [Boolean] the recipe was studied for this run (see
+  #   {CraftLoop#run})
   # @return [void] never returns
-  # @raise [SystemExit] when the remedy is finished, when the loop gives up,
-  #   or when a commons helper stops the script
-  def craft(command)
+  # @raise [SystemExit] when the remedy is finished, when remedy stops, or
+  #   when a commons helper stops the script
+  def craft(command, studied: false)
     handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol)
     craft_loop = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic)
-    case craft_loop.run(command)
+    case craft_loop.run(command, studied: studied)
+    when :unsuitable_herb
+      stop("the game wants a more suitable type of herb than #{herb_in_vessel}: it refused #{craft_loop.command.inspect}.")
+    when :more_pieces
+      stop("the #{@order.noun} needs more pieces of #{herb_in_vessel} to begin: the game refused #{craft_loop.command.inspect}.")
+    when :faded
+      stop("the instructions for #{@order.recipe_name} faded from memory before crafting began; run remedy again to study them.")
     when :unanswered
       stop("the game did not answer #{craft_loop.command.inspect} #{CraftLoop::MAX_SILENT_REPLIES + 1} times in a row.")
     when :too_long
@@ -1390,6 +1478,14 @@ class Remedy
     Finisher.new(inventory: @inventory, tools: @tools, noun: @order.noun, mark: @settings.mark_crafted_goods).finish
     @magic.release
     exit
+  end
+
+  # The herb a refusal names: herb1, or in the continue form, which is not
+  # told the herb, the herb in the vessel.
+  #
+  # @return [String]
+  def herb_in_vessel
+    @order.herb1 || "the herb in the #{@tools.container}"
   end
 
   # Stops the script: beeps, prints a bold "Remedy: <why> Stopping." line

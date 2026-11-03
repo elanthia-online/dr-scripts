@@ -1547,15 +1547,17 @@ RSpec.describe Remedy do
     let(:first_crush) { 'crush my nemoih with my rounded pestle' }
 
     describe 'the crafting loop' do
-      # flipped by layer 08 (stop on the refusal); layer 07 bounded the loop (H01)
-      it 'CURRENT (H02): stops on "You need a more suitable type of herb" (25:50933) only after the fourth unanswered crush, 60 s on' do
+      # layer 08: the refusal stops the run (25:50933 is the whole reply to
+      # the crush 25:50932)
+      it 'H02: stops after the one crush that "You need a more suitable type of herb" (25:50933) refuses, naming the herb' do
         game.override(first_crush, log('25:50933'), times: nil)
         script_short_unguent
-        expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush] * 4)
-        expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command '#{first_crush}' (1 lines seen)"] * 4)
-        expect(game.trace.select { |event| event.kind == :stall }.sum(&:label)).to eq(60)
-        expect(remedy_messages).to eq(["Remedy: the game did not answer #{first_crush.inspect} 4 times in a row. Stopping."])
+        expect(run_remedy(short_unguent) { allow(DRC).to receive(:beep) }).to eq(:exited)
+        expect(DRC).to have_received(:beep).once
+        expect(game.sent.drop(3)).to eq([first_crush])
+        expect(game.diagnostics).to be_empty
+        expect(game.trace.select { |event| event.kind == :stall }).to be_empty
+        expect(remedy_messages).to eq(["Remedy: the game wants a more suitable type of herb than nemoih: it refused #{first_crush.inspect}. Stopping."])
         expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
       end
 
@@ -1586,27 +1588,35 @@ RSpec.describe Remedy do
         end
       end
 
-      # flipped by layer 08 (MORE_PIECES stops) and layer 12 (the product get is checked)
-      it 'CURRENT (D08): finishes on "requires more pieces of that plant" and puts the mortar away with no product and no message' do
+      # layer 08: MORE_PIECES stops the run, so no product get is sent and
+      # layer 12 has no product get to check here. Only the end state that
+      # stays is pinned: what happens to the stirrer on a stop belongs to
+      # the before_dying cleanup (layer 12).
+      it 'D08: stops on "requires more pieces of that plant" with a Remedy line and no product get, the mortar still in hand' do
         game.override(first_crush, code('That craftable requires more pieces of that plant to begin.', from: 'R:290'))
         game.override('get my unguent from my large mortar', log('26:39162')) # analog: the not-found reply to a get
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, 'get my unguent from my large mortar'])
+        expect(game.sent.drop(3)).to eq([first_crush])
         expect(commons.location_of('unguent')).to be_nil
-        expect(commons.location_of('diamondique large mortar')).to eq(toolstrap)
-        expect(remedy_messages).to be_empty
+        expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+        expect(remedy_messages).to eq(["Remedy: the unguent needs more pieces of nemoih to begin: the game refused #{first_crush.inspect}. Stopping."])
       end
 
-      # flipped by layer 08 (STEP_UNSUITABLE ends the handler's wait)
-      it 'CURRENT (D11): turns again when the clumps cue repeats after the turn, and waits out 15 s on the refusal (26:25113)' do
+      # layer 08: STEP_UNSUITABLE ends the handler's wait. The second turn
+      # stays: a cue in a step's own reply is kept for the next pass (the
+      # Handlers unit specs), and remedy cannot tell a repeated cue from a
+      # new one.
+      it "D11: turns again when the clumps cue repeats after the turn, and the game's refusal (26:25113) ends the wait at once" do
         script_general_elixir(replace: { 6084 => [log('26:6086'), log('26:6088'), log('26:6031')] }, inject: { 6249 => [log('26:25113')] })
         settings[:mark_crafted_goods] = true
         inventory['crushed belradi'] = toolbag
         expect(run_remedy(workorders_call('a general elixir', 6, 'belradi', 'bowl', 'elixir', catalyst: 'pewter ingot'))).to eq(:exited)
         first_turn = game.sent.index('turn my heavy cauldron')
-        expect(game.sent[first_turn, 2]).to eq(['turn my heavy cauldron', 'turn my heavy cauldron'])
-        expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command 'turn my heavy cauldron' (1 lines seen)"])
+        expect(game.sent[first_turn, 3]).to eq(['turn my heavy cauldron', 'turn my heavy cauldron', 'mix my heavy cauldron with my mixing stick'])
+        expect(game.diagnostics).to be_empty
+        expect(game.trace.select { |event| event.kind == :stall }).to be_empty
+        expect(commons.location_of('belradi elixir')).to eq('left').or eq('right')
       end
     end
 
@@ -2129,6 +2139,151 @@ RSpec.describe Remedy do
       end
     end
   end
+
+  # Layer 08: the game's refusals end the run at once, and
+  # instructions that faded before crafting began stop it before the first
+  # crafting command. The success runs above are unchanged.
+  describe 'refusals and faded instructions (layer 08)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+    let(:gathered) { ['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')] }
+    let(:first_crush) { 'crush my nemoih with my rounded pestle' }
+    let(:next_crush) { 'crush my unguent with my rounded pestle' }
+    let(:faded_message) { 'Remedy: the instructions for some head unguent faded from memory before crafting began; run remedy again to study them. Stopping.' }
+
+    # A game line as another player's speech shows it: the text follows a
+    # double quote, which NO_QUOTE and the ^[^"]*? patterns refuse.
+    #
+    # @param line [ReplayGame::Line] the game's line
+    # @return [ReplayGame::Line]
+    def spoken(line)
+      code(%(<preset id='speech'>Mallory says</preset>, "#{line.text}"), from: "#{line.cite} as player speech (Remedy::NO_QUOTE)")
+    end
+
+    describe 'instructions that fade (25:37919, 25:51002)' do
+      %w[25:37919 25:51002].each do |cite|
+        it "stops before the first crush when #{cite} arrives while the herb is gathered, the mortar and pestle in hand" do
+          script_short_unguent(put_lines: [log('26:10749'), log(cite)])
+          expect(run_remedy(short_unguent) { allow(DRC).to receive(:beep) }).to eq(:exited)
+          expect(game.sent).to eq(gathered)
+          expect(DRC).to have_received(:beep).once
+          expect(remedy_messages).to eq([faded_message])
+          expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+          expect(commons.location_of('rounded pestle')).to eq('left').or eq('right')
+        end
+      end
+
+      it 'stops when the fade comes behind an XML tag, a form of the game line NO_QUOTE allows' do
+        tagged = code("<pushBold/>#{log('25:37919').text}", from: '25:37919 behind an XML tag (Remedy::NO_QUOTE)')
+        script_short_unguent(put_lines: [log('26:10749'), tagged])
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent).to eq(gathered)
+        expect(remedy_messages).to eq([faded_message])
+      end
+
+      it 'crafts on when another player says the fade line' do
+        script_short_unguent(put_lines: [log('26:10749'), spoken(log('25:37919'))])
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent).to eq([*gathered, first_crush, 'get my unguent from my large mortar'])
+        expect(remedy_messages).to be_empty
+      end
+
+      it 'crafts on when the fade of an earlier study arrives before this run studies the recipe' do
+        script_short_unguent
+        outcome = run_remedy(short_unguent) do
+          allow(DRCC).to receive(:find_recipe2) do |*args|
+            game.unprompted(log('25:37919'))
+            commons.find_recipe2(*args)
+          end
+        end
+        expect(outcome).to eq(:exited)
+        expect(game.sent).to eq([*gathered, first_crush, 'get my unguent from my large mortar'])
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        expect(remedy_messages).to be_empty
+      end
+
+      it 'crafts on to the end when the fade arrives after the first crush drew Roundtime (25:10825)' do
+        script_short_unguent(first_crush: [log('25:10825'), log('25:37919')])
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar'])
+        expect(remedy_messages).to be_empty
+      end
+
+      context 'in the continue form, which studies nothing (26:11130-11396)' do
+        let(:inventory) { logged_tools.except('diamondique large mortar').merge(logged_supplies) }
+
+        before do
+          $right_hand = 'diamondique large mortar'
+          transcript('2026-10-26_10483').script(game, commands: /\Aanalyze my unguent\z|#{mortar_craft_commands.source}/, from: 11130)
+          alias_remedy_wording(vessel: 'large mortar', noun: 'unguent')
+          script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+        end
+
+        it 'analyses and crafts to the end although the fade arrived as it started' do
+          outcome = run_remedy(typed('continue na "pewter ingot" mortar unguent')) do
+            allow(DRC).to receive(:wait_for_script_to_complete) { game.unprompted(log('25:37919')) }
+          end
+          expect(outcome).to eq(:exited)
+          expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([next_crush] * 7),
+                                   'get my unguent from my large mortar'])
+          expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+          expect(remedy_messages).to be_empty
+        end
+      end
+    end
+
+    describe 'a refused herb' do
+      it 'crafts on when another player says "You need a more suitable type of herb" (25:50933) before the Roundtime' do
+        script_short_unguent(first_crush: [spoken(log('25:50933')), log('25:10825')])
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar'])
+        expect(remedy_messages).to be_empty
+      end
+
+      it 'names the herb in the vessel when the continue form, which is not told the herb, is refused' do
+        inventory.delete('diamondique large mortar')
+        $right_hand = 'diamondique large mortar'
+        game.script('analyze my unguent', log('25:50933')) # analog: the refusal answered a crush (25:50932)
+        expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(game.sent).to eq(['analyze my unguent'])
+        expect(remedy_messages).to eq(['Remedy: the game wants a more suitable type of herb than the herb in the large mortar: it refused "analyze my unguent". Stopping.'])
+      end
+    end
+
+    describe 'a refused step (D04, D11)' do
+      # The first crush draws the particulate cue (25:11149) and Roundtime
+      # (25:10825), so remedy pushes with the sieve next.
+      let(:sieve_cue_crush) { [log('25:11149'), log('25:10825')] }
+
+      it 'adds the catalyst at once when the push is refused with the catalyst cue alone (26:39150-39152), with no 15 s wait' do
+        script_short_unguent(first_crush: sieve_cue_crush)
+        # analog: the whole reply to `push my curative with my turtle-shaped sieve` (26:39148)
+        game.override('push my unguent with my sieve', log('26:39150'), log('26:39152'))
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', 'put my pewter ingot in my large mortar',
+                                         next_crush, 'get my unguent from my large mortar'])
+        expect(game.diagnostics).to be_empty
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      end
+
+      it 'crafts on at once when the game says the sieve "doesn\'t appear suitable" (26:24873)' do
+        script_short_unguent(first_crush: sieve_cue_crush)
+        game.override('push my unguent with my sieve', log('26:24873')) # the reply to `push my tonic with my sieve` (26:24872)
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar'])
+        expect(game.diagnostics).to be_empty
+        expect(tool_locations).to eq(logged_tools)
+      end
+
+      it 'still waits for a step reply when another player says "doesn\'t appear suitable" before the Roundtime' do
+        script_short_unguent(first_crush: sieve_cue_crush)
+        game.override('push my unguent with my sieve', spoken(log('26:24873')), log('26:10935'))
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar'])
+        expect(game.diagnostics).to be_empty
+      end
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -2234,12 +2389,46 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
     end
   end
 
+  describe 'Remedy::REGISTERED_FLAGS' do
+    it 'registers the cues of Remedy::FLAGS, in their order, then the faded-instructions Flag' do
+      expect(Remedy::REGISTERED_FLAGS.keys).to eq([*Remedy::FLAGS.keys, 'remedy-forgot'])
+      expect(Remedy::FADED_FLAG).to eq('remedy-forgot')
+    end
+
+    %w[25:37919 25:51002].each do |cite|
+      it "sets remedy-forgot, and no other remedy Flag, on the game's line #{cite}" do
+        expect(flags_set_by(Remedy::REGISTERED_FLAGS, log(cite).text)).to eq(['remedy-forgot'])
+      end
+    end
+
+    it 'sets remedy-forgot on no other real line of the fixtures' do
+      lines = every_fixture_line.reject { |line| %w[25:37919 25:51002].include?(line.cite) }
+      expect(lines.select { |line| flags_set_by(Remedy::REGISTERED_FLAGS, line.text).include?('remedy-forgot') }.map(&:label)).to be_empty
+    end
+
+    it 'ignores 25:37919 when another player says it' do
+      # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
+      spoof = ReplayGame.code(%(<preset id='speech'>Mallory says</preset>, "#{log('25:37919').text}"), from: 'player speech form (Remedy::NO_QUOTE)')
+      expect(flags_set_by(Remedy::REGISTERED_FLAGS, spoof.text)).to be_empty
+    end
+
+    it 'is frozen' do
+      expect(Remedy::REGISTERED_FLAGS).to be_frozen
+    end
+  end
+
   describe 'Remedy.delete_flags' do
     it 'deletes every remedy Flag and leaves the Flags of other scripts alone' do
       Flags.add('workorders-done', /You hand/i)
       Remedy::FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
       Remedy.delete_flags
       expect(Flags.matchers.keys).to eq(['workorders-done'])
+    end
+
+    it 'deletes the faded-instructions Flag too' do
+      Remedy::REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
+      Remedy.delete_flags
+      expect(Flags.matchers).to be_empty
     end
 
     it 'does nothing when no remedy Flag is registered, as on a run stopped by parse_args' do
@@ -2306,6 +2495,48 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       spoof = ReplayGame.code(%(Mallory says, "You combine the stacks of herbs together."), from: 'player speech form (Remedy::NO_QUOTE)')
       game.script('combine my nemoih', spoof, log('26:32077'))
       expect(DRC.bput('combine my nemoih', *Remedy::Patterns::COMBINE_REPLIES)).to eq('That stack of herbs is too large to add')
+    end
+
+    it 'CRAFT_REPLIES: returns the refusal "You need a more suitable type of herb" for the crush it answered (25:50933)' do
+      game.install(self)
+      game.script('crush my georin with my rounded pestle', log('25:50933'))
+      expect(DRC.bput('crush my georin with my rounded pestle', *Remedy::Patterns::CRAFT_REPLIES)).to eq('You need a more suitable type of herb')
+    end
+
+    [['push my tonic with my sieve', '26:24873', "The sieve doesn't appear suitable for working on"],
+     ['turn my heavy cauldron', '26:25113', "The cauldron doesn't appear suitable for working on"],
+     ['push my curative with my sieve', '26:39150', 'You need another catalyst material'],
+     ['push my tonic with my sieve', '26:24636', 'You need another splash of water'],
+     ['turn my large mortar', '26:21642', 'You need another splash of alcohol']].each do |command, cite, text|
+      it "STEP_REPLIES: returns #{text.inspect} at once for #{command.inspect} refused by #{cite}" do
+        game.install(self)
+        game.script(command, log(cite))
+        expect(DRC.bput(command, *Remedy::Patterns::STEP_REPLIES)).to eq(text)
+        expect(game.clock).to eq(0)
+      end
+    end
+
+    it 'STEP_REPLIES: returns "You need another prepared herb" at once for a smell refused with the herb cue alone' do
+      game.install(self)
+      # code-derived (remedy.lic:51): no "prepared herb" cue is in either log.
+      herb_cue = ReplayGame.code('You need another prepared herb to continue crafting some unfinished nemoih unguent.', from: 'R:51 /You need another prepared herb/')
+      game.script('smell my unguent', herb_cue)
+      expect(DRC.bput('smell my unguent', *Remedy::Patterns::STEP_REPLIES)).to eq('You need another prepared herb')
+      expect(game.clock).to eq(0)
+    end
+
+    it 'STEP_REPLIES: still returns the Roundtime of a done step when a need cue follows it (the order of 26:6310-6313)' do
+      game.install(self)
+      game.script('push my unguent with my sieve', log('26:10935'), log('26:39150'))
+      expect(DRC.bput('push my unguent with my sieve', *Remedy::Patterns::STEP_REPLIES)).to eq('Roundtime')
+    end
+
+    it 'STEP_REPLIES: skips another player saying the refusal, then reads the Roundtime (26:10935)' do
+      game.install(self)
+      # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
+      spoof = ReplayGame.code(%(Mallory says, "#{log('26:24873').text}"), from: 'player speech form (Remedy::NO_QUOTE)')
+      game.script('push my unguent with my sieve', spoof, log('26:10935'))
+      expect(DRC.bput('push my unguent with my sieve', *Remedy::Patterns::STEP_REPLIES)).to eq('Roundtime')
     end
 
     it 'freezes every pattern list, so no caller can change what remedy reads' do
@@ -2446,7 +2677,7 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       # alchemy_tools lists no mortar: run stops in its first check.
       expect { Remedy.new(settings, args).run }.to raise_error(SystemExit)
       expect(state_at_hook).to eq(flags: [], sent: [])
-      expect(Flags.matchers.keys).to eq(Remedy::FLAGS.keys)
+      expect(Flags.matchers.keys).to eq(Remedy::REGISTERED_FLAGS.keys)
       expect(messages.first).to eq('*** some head unguent needs a mortar, and your alchemy_tools setting lists none. ***')
       exit_hooks.each(&:call)
       expect(Flags.matchers).to be_empty
@@ -2933,6 +3164,29 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(Flags['remedy-turn']).to be_a(MatchData)
     end
 
+    [['remedy-turn', 'turn my large mortar', '26:25113'],
+     ['remedy-smell', 'smell my unguent', '26:25113'],
+     ['remedy-sieve', 'push my unguent with my sieve', '26:24873']].each do |flag, command, cite|
+      it "returns at once when the game refuses #{command.inspect} as not suitable (#{cite})" do
+        # 26:25113 answered a turn of a cauldron; for the mortar and the
+        # smell it is an analog.
+        game.script(command, log(cite))
+        handlers_for.run(flag)
+        expect(game.sent).to eq([command])
+        expect([game.clock, game.diagnostics]).to eq([0, []])
+      end
+    end
+
+    it 'returns at once from a push refused with the catalyst cue alone (26:39150-39152), the catalyst Flag set and the stirrer back' do
+      add_remedy_flags
+      game.script('push my unguent with my sieve', log('26:39150'), log('26:39152'))
+      handlers = handlers_for
+      handlers.run('remedy-sieve')
+      expect([game.clock, game.diagnostics]).to eq([0, []])
+      expect(handlers.pending).to eq('remedy-catalyst')
+      expect(calls.select { |call| call.first == :get }.map { |call| call[1] }).to eq(['sieve', 'rounded pestle'])
+    end
+
     it 'refuses a Flag it has no method for' do
       expect { handlers_for.run('remedy-done') }.to raise_error(KeyError)
     end
@@ -3059,10 +3313,68 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       end
     end
 
-    # flipped by layer 08 (MORE_PIECES stops)
-    it 'CURRENT (D08): is done on "requires more pieces of that plant", as if the remedy were finished' do
+    # layer 08 (D08): MORE_PIECES is a refusal, not a finished remedy
+    it 'ends as :more_pieces on "requires more pieces of that plant", after that one command' do
       game.script(first_crush, code('That craftable requires more pieces of that plant to begin.', from: 'R:290'))
-      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(craft_loop.run(first_crush)).to eq(:more_pieces)
+      expect(game.sent).to eq([first_crush])
+    end
+
+    it 'ends as :unsuitable_herb on "You need a more suitable type of herb" (25:50933), after that one command' do
+      game.script(first_crush, log('25:50933'))
+      loop_under_test = craft_loop
+      expect(loop_under_test.run(first_crush)).to eq(:unsuitable_herb)
+      expect(game.sent).to eq([first_crush])
+      expect(loop_under_test.command).to eq(first_crush)
+      expect(game.clock).to eq(0)
+    end
+
+    it 'ends as :unsuitable_herb when the refusal answers a later crush, naming that crush' do
+      game.script(first_crush, log('25:10825'))
+      game.script(next_crush, log('25:50933')) # analog: the refusal answered a first crush (25:50932)
+      loop_under_test = craft_loop
+      expect(loop_under_test.run(first_crush)).to eq(:unsuitable_herb)
+      expect(loop_under_test.command).to eq(next_crush)
+    end
+
+    context 'when the instructions fade (25:37919)' do
+      before { Remedy::REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) } }
+
+      it 'ends as :faded, sending nothing, after a study when the fade came before the first command' do
+        game.unprompted(log('25:37919'))
+        expect(craft_loop.run(first_crush, studied: true)).to eq(:faded)
+        expect(game.sent).to be_empty
+      end
+
+      it 'ignores the fade when nothing was studied for this run (the continue form)' do
+        game.unprompted(log('25:37919'))
+        game.script(first_crush, log('26:11333'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush])
+      end
+
+      it 'crafts on when the fade comes after a crafting command drew Roundtime (25:10825)' do
+        game.script(first_crush, log('26:11057'), log('25:10825'), log('25:37919'))
+        game.script(next_crush, log('26:11333'))
+        expect(craft_loop.run(first_crush, studied: true)).to eq(:done)
+        expect(game.sent).to eq([first_crush, next_crush])
+      end
+
+      it 'crafts on when the fade comes with a cue for the unfinished remedy (26:39150), which it answers first' do
+        # The crush refused with the catalyst cue alone (26:39150-39152,
+        # analog: the reply to a push), then the fade.
+        game.script(first_crush, log('26:39150'), log('26:39152'), log('25:37919'))
+        game.script('put my pewter ingot in my large mortar', log('26:11117'))
+        game.script(first_crush, log('26:11333'))
+        expect(craft_loop.run(first_crush, studied: true)).to eq(:done)
+        expect(game.sent).to eq([first_crush, 'put my pewter ingot in my large mortar', first_crush])
+      end
+
+      it 'ends as :faded before a resend when the fade came during an unanswered first command' do
+        game.script(first_crush, log('25:37919'))
+        expect(craft_loop.run(first_crush, studied: true)).to eq(:faded)
+        expect(game.sent).to eq([first_crush])
+      end
     end
 
     it 'sends the same command again when the game does not answer it' do

@@ -291,6 +291,21 @@ class ReplayGame
     self
   end
 
+  # Lines the game sends with no command before them, e.g. "You struggle to
+  # recall the crafting instructions ..." three minutes after a study
+  # (25:37919). Flags see each line as it arrives; like any reply line, it
+  # waits to be read until the next command's `clear` (DRC:198) drops it.
+  # Nothing is sent and the clock does not move.
+  #
+  # @param lines [Array<Line>] the lines, in arrival order
+  # @return [ReplayGame] self
+  # @raise [ArgumentError] when a line is not a {Line}
+  def unprompted(*lines)
+    check_lines(lines)
+    lines.each { |line| arrive(line) }
+    self
+  end
+
   # Lets a command the script words differently use the replies scripted for
   # the logged wording (e.g. remedy's `put alcohol in my heavy cauldron` for
   # the log's `pour part alcohol in my heavy cauldron`).
@@ -473,10 +488,18 @@ class ReplayGame
   def rule(matcher, lines, times, after)
     raise ArgumentError, "a reply matcher is a String or Regexp, not #{matcher.inspect}" unless matcher.is_a?(String) || matcher.is_a?(Regexp)
 
+    check_lines(lines)
+    Rule.new(matcher, lines.dup.freeze, times, 0, after)
+  end
+
+  # Refuses game lines that are not cited.
+  #
+  # @param lines [Array<Object>]
+  # @return [void]
+  # @raise [ArgumentError] when a line is not a {Line}
+  def check_lines(lines)
     bare = lines.reject { |line| line.is_a?(Line) }
     raise ArgumentError, "reply lines must be ReplayGame.log or ReplayGame.code, not #{bare.inspect}" unless bare.empty?
-
-    Rule.new(matcher, lines.dup.freeze, times, 0, after)
   end
 
   # Sends one command: counts it against the budget, finds its reply and
