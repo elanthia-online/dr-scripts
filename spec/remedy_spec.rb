@@ -2348,3 +2348,322 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
     end
   end
 end
+
+# Layer 04: the request, the vessel and stirrer, and the gets
+# and stows, tested as units. The commands these objects build are the ones
+# the contract groups above pin from the logs (the crush of 26:10750's run,
+# the mix of 26:5915's run); the gets and stows are the DRCC/DRCI calls
+# remedy.lic:148-171 at 03f11b54 made.
+RSpec.describe 'Remedy order, tools and inventory' do
+  # Lich evals the whole script again on every run and keeps the constants
+  # an earlier run defined (lich-5 lib/common/script.rb:17-27, 169-174, 209;
+  # no remove_const), and callers run remedy many times in one session:
+  # workorders.lic:816-820 at 03f11b54 once per remedy ordered,
+  # create_remedies.lic:47/49 once per recipe. load_lic_class evals the class
+  # once per process, so this example evals it twice itself, in a module of
+  # its own, leaving the Remedy the other examples use untouched.
+  describe 'a second run in the same Lich session' do
+    let(:session) { Module.new }
+
+    # Evals remedy.lic's class body inside session, as one run of the script
+    # does.
+    #
+    # @return [void]
+    def run_class_body
+      lines = File.readlines(lic_path('remedy.lic'))
+      range = lic_definition_range(lines, 'class', 'Remedy', 'remedy.lic')
+      session.module_eval(lines[range].join, lic_path('remedy.lic'), range.begin + 1)
+    end
+
+    around do |example|
+      verbose = $VERBOSE
+      $VERBOSE = nil # the second run re-assigns every constant, which only warns
+      example.run
+    ensure
+      $VERBOSE = verbose
+    end
+
+    it 'loads the class body again without an error (a superclass mismatch would stop every run after the first)' do
+      run_class_body
+      expect { run_class_body }.not_to raise_error
+    end
+
+    it 'keeps Order and Tools Data classes with their own constants and methods after the second run' do
+      2.times { run_class_body }
+      tools = session::Remedy::Tools.new(container: 'large mortar', stirrer: 'rounded pestle', verb: 'crush')
+      expect(session::Remedy::Order.ancestors).to include(Data)
+      expect(session::Remedy::Tools::MORTAR).to eq(/mort/)
+      expect(session::Remedy.const_defined?(:MORTAR, false)).to be(false)
+      expect(tools.first_command('nemoih')).to eq('crush my nemoih with my rounded pestle')
+    end
+  end
+
+  let(:toolbag) { "botanist's toolbag" }
+  let(:toolstrap) { { 'name' => 'grass toolstrap', 'items' => ['heavy cauldron', 'mixing stick', 'large mortar', 'rounded pestle'] } }
+  let(:bag_items) { ['alcohol', 'water', 'pewter ingot', 'remed book'] }
+  let(:logged_tools) { ['heavy cauldron', 'mixing stick', 'turtle-shaped sieve', 'large mortar', 'rounded pestle'] }
+  let(:game) { ReplayGame.new }
+  let(:messages) { [] }
+
+  # The arguments a caller's list reaches remedy with, as Lich splits them
+  # and parse_args matches them.
+  #
+  # @param args [Array<Object>] the caller's DRC.wait_for_script_to_complete list
+  # @return [OpenStruct] parse_args' result
+  def parsed_call(args)
+    ArgParserModel.parse(Remedy::ARG_DEFINITIONS, ArgParserModel.caller_vars(args).drop(1))
+  end
+
+  # The arguments a typed `;remedy ...` reaches remedy with.
+  #
+  # @param line [String] the arguments as typed
+  # @return [OpenStruct] parse_args' result
+  def parsed_typed(line)
+    ArgParserModel.parse(Remedy::ARG_DEFINITIONS, ArgParserModel.script_vars(line).drop(1))
+  end
+
+  # @param container [String] the vessel word
+  # @param recipe_name [String, nil]
+  # @return [Remedy::Order] a book-form order for some head unguent
+  def order_for(container, recipe_name: 'some head unguent')
+    Remedy::Order.new(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: recipe_name, herb1: 'nemoih',
+                      herb2: 'na', catalyst: 'pewter ingot', container_request: container, noun: 'unguent')
+  end
+
+  describe 'Remedy::Order.from_args' do
+    it 'reads every field of the workorders.lic:818 call for some head unguent (base-recipes.yaml:8520)' do
+      order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
+      expect(order.to_h).to eq(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih',
+                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent')
+      expect(order).not_to be_continue
+    end
+
+    it 'reads a two-herb recipe, some blister cream (base-recipes.yaml:8295), with both herbs as the caller gave them' do
+      order = Remedy::Order.from_args(parsed_call(['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'coal nugget', 'mortar', 'cream']))
+      expect(order.herbs).to eq(['red flower', 'nemoih'])
+      expect(order.catalyst).to eq('coal nugget')
+    end
+
+    ['na', 'none', 'not used'].each do |herb2|
+      it "keeps herb2 #{herb2.inspect} exactly as typed (normalising it is layer 09's change)" do
+        quoted = herb2.include?(' ') ? %("#{herb2}") : herb2
+        order = Remedy::Order.from_args(parsed_typed(%(remedies 3 "some head unguent" nemoih #{quoted} "pewter ingot" mortar unguent)))
+        expect(order.herb2).to eq(herb2)
+        expect(order.herbs).to eq(['nemoih', herb2])
+      end
+    end
+
+    it 'keeps the vessel word as given, a prefix such as mort included, for Tools.resolve to look up' do
+      order = Remedy::Order.from_args(parsed_typed('remedies 3 "Some Head Unguent" Nemoih none "Pewter Ingot" mort Unguent'))
+      expect(order.container_request).to eq('mort')
+      expect(order.recipe_name).to eq('some head unguent')
+    end
+
+    it 'reads the continue form as :continue, with no book type, chapter, recipe name or herb1' do
+      order = Remedy::Order.from_args(parsed_typed('continue none "pewter ingot" mortar unguent'))
+      expect(order).to be_continue
+      expect(order.to_h).to eq(mode: :continue, book_type: nil, chapter: nil, recipe_name: nil, herb1: nil,
+                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent')
+      expect(order.herbs).to eq([nil, 'none'])
+    end
+
+    it 'is immutable: swapping herb1 makes a new order and leaves the one parsed alone' do
+      parsed = order_for('mortar')
+      swapped = parsed.with(herb1: 'dried flower')
+      expect(parsed).to be_frozen
+      expect(parsed.herb1).to eq('nemoih')
+      expect(swapped.herbs).to eq(['dried flower', 'na'])
+    end
+  end
+
+  describe 'Remedy::Tools.resolve' do
+    before do
+      game.install(self)
+      allow(DRC).to receive(:message) { |text| messages << text }
+    end
+
+    # @param tools [Array<String>, nil] alchemy_tools
+    # @return [OpenStruct]
+    def settings_with(tools)
+      OpenStruct.new(alchemy_tools: tools)
+    end
+
+    it 'takes the large mortar, the rounded pestle and crush for a recipe asking for a mortar' do
+      tools = Remedy::Tools.resolve(settings_with(logged_tools), order_for('mortar'))
+      expect(tools.to_h).to eq(container: 'large mortar', stirrer: 'rounded pestle', verb: 'crush')
+      expect(tools).to be_mortar
+    end
+
+    it 'finds the large mortar from the prefix mort' do
+      expect(Remedy::Tools.resolve(settings_with(logged_tools), order_for('mort')).container).to eq('large mortar')
+    end
+
+    it 'takes the heavy cauldron, the mixing stick and mix for a recipe asking for a bowl, though a pestle is listed' do
+      tools = Remedy::Tools.resolve(settings_with(logged_tools), order_for('bowl'))
+      expect(tools.to_h).to eq(container: 'heavy cauldron', stirrer: 'mixing stick', verb: 'mix')
+      expect(tools).not_to be_mortar
+    end
+
+    it 'takes the first bowl-like entry, a ceramic bowl, when it comes before any cauldron' do
+      tools = Remedy::Tools.resolve(settings_with(['rustic mortar', 'ceramic bowl', 'iron cauldron']), order_for('bowl'))
+      expect(tools.container).to eq('ceramic bowl')
+    end
+
+    it 'names the stirrer pestle when alchemy_tools lists a mortar but no pestle' do
+      tools = Remedy::Tools.resolve(settings_with(['rustic mortar', 'mesh sieve']), order_for('mortar'))
+      expect(tools.stirrer).to eq('pestle')
+    end
+
+    it 'stops with both messages, and sends nothing, when alchemy_tools lists no such vessel' do
+      expect { Remedy::Tools.resolve(settings_with(['rustic mortar', 'rustic pestle']), order_for('bowl')) }.to raise_error(SystemExit)
+      expect(messages).to eq(['*** some head unguent needs a bowl, and your alchemy_tools setting lists none. ***',
+                              '*** Add your bowl to alchemy_tools, then run this again. ***'])
+      expect(game.sent).to be_empty
+    end
+
+    it 'stops the same way when alchemy_tools is not set at all' do
+      expect { Remedy::Tools.resolve(settings_with(nil), order_for('mortar')) }.to raise_error(SystemExit)
+      expect(messages.first).to eq('*** some head unguent needs a mortar, and your alchemy_tools setting lists none. ***')
+    end
+
+    it 'keeps the blank recipe name of the continue form in the stop message, as before' do
+      expect { Remedy::Tools.resolve(settings_with([]), order_for('mortar', recipe_name: nil)) }.to raise_error(SystemExit)
+      expect(messages.first).to eq('***  needs a mortar, and your alchemy_tools setting lists none. ***')
+    end
+
+    it 'CURRENT (H12): matches the vessel word anywhere and unescaped, so r takes the heavy cauldron (layer 15 escapes it)' do
+      # flipped by layer 15 (escaped, still a prefix match).
+      expect(Remedy::Tools.resolve(settings_with(logged_tools), order_for('r')).container).to eq('heavy cauldron')
+    end
+  end
+
+  describe 'Remedy::Tools crafting commands' do
+    let(:mortar) { Remedy::Tools.new(container: 'large mortar', stirrer: 'rounded pestle', verb: 'crush') }
+    let(:cauldron) { Remedy::Tools.new(container: 'heavy cauldron', stirrer: 'mixing stick', verb: 'mix') }
+
+    it 'crushes the herb first, then the product, in a mortar (the C02 run, 26:10747-11396)' do
+      expect(mortar.first_command('nemoih')).to eq('crush my nemoih with my rounded pestle')
+      expect(mortar.next_command('unguent')).to eq('crush my unguent with my rounded pestle')
+    end
+
+    it 'mixes the vessel itself, first and after, in a cauldron (the C01 run, 26:5896-6801)' do
+      expect(cauldron.first_command('belradi')).to eq('mix my heavy cauldron with my mixing stick')
+      expect(cauldron.next_command('elixir')).to eq('mix my heavy cauldron with my mixing stick')
+    end
+
+    it 'treats any vessel whose name holds mort as a mortar, as remedy always has' do
+      rustic = Remedy::Tools.new(container: 'rustic mortar', stirrer: 'rustic pestle', verb: 'crush')
+      expect(rustic).to be_mortar
+      expect(rustic.first_command('aevaes')).to eq('crush my aevaes with my rustic pestle')
+    end
+  end
+
+  describe 'Remedy::Inventory' do
+    let(:herb_container) { nil }
+    let(:settings) do
+      OpenStruct.new(crafting_container: toolbag, crafting_items_in_container: bag_items, alchemy_belt: toolstrap,
+                     herb_container: herb_container)
+    end
+    let(:inventory) { Remedy::Inventory.new(settings, herbs: %w[nemoih na]) }
+
+    before do
+      game.install(self)
+      allow(DRCC).to receive(:get_crafting_item).and_return(true)
+      allow(DRCC).to receive(:stow_crafting_item).and_return(true)
+      allow(DRCI).to receive(:exists?).and_return(false)
+      allow(DRCI).to receive(:lower_item?).and_return(true)
+    end
+
+    it 'sends nothing and asks nothing when built' do
+      inventory
+      expect(game.sent).to be_empty
+      expect(DRCI).not_to have_received(:exists?)
+    end
+
+    context 'with a herb_container' do
+      let(:herb_container) { 'smokewood basket' }
+
+      it 'gets herb1 from the herb_container when it holds some, asking for that herb only' do
+        allow(DRCI).to receive(:exists?).with('nemoih', 'smokewood basket').and_return(true)
+        expect(inventory.get('nemoih')).to be(true)
+        expect(DRCC).to have_received(:get_crafting_item).with('nemoih', 'smokewood basket', ['nemoih'], toolstrap)
+      end
+
+      it 'gets herb1 from the crafting container when only it holds some' do
+        allow(DRCI).to receive(:exists?).with('nemoih', toolbag).and_return(true)
+        inventory.get('nemoih')
+        expect(DRCC).to have_received(:get_crafting_item).with('nemoih', toolbag, ['nemoih'], toolstrap)
+      end
+
+      it 'stows herb1 in the herb_container' do
+        inventory.stow('nemoih')
+        expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', 'smokewood basket', toolstrap)
+      end
+
+      it 'stows anything else in the crafting container, by way of the belt' do
+        inventory.stow('rounded pestle')
+        expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, toolstrap)
+      end
+    end
+
+    it 'gets a herb found in neither container from wherever DRCC finds it, and says so with UNROUTED' do
+      expect(inventory.get('nemoih')).to eq(Remedy::Inventory::UNROUTED)
+      expect(Remedy::Inventory::UNROUTED).to eq('none')
+      expect(DRCI).to have_received(:exists?).with('nemoih', toolbag)
+      expect(DRCC).to have_received(:get_crafting_item).with('nemoih', toolbag, bag_items, toolstrap)
+    end
+
+    it 'never asks where a tool is: it gets it from the belt or the crafting container' do
+      expect(inventory.get('rounded pestle')).to eq('none')
+      expect(DRCI).not_to have_received(:exists?)
+      expect(DRCC).to have_received(:get_crafting_item).with('rounded pestle', toolbag, bag_items, toolstrap)
+    end
+
+    it 'routes herb2 as given, even na, as remedy always has' do
+      inventory.get('na')
+      expect(DRCI).to have_received(:exists?).with('na', toolbag)
+    end
+
+    it 'picks the lowered vessel up with no bag items, so DRCC looks on the ground' do
+      expect(inventory.pick_up('large mortar')).to be(true)
+      expect(DRCC).to have_received(:get_crafting_item).with('large mortar', toolbag, nil, toolstrap)
+    end
+
+    it 'lowers the vessel with DRCI.lower_item?' do
+      inventory.lower('large mortar')
+      expect(DRCI).to have_received(:lower_item?).with('large mortar')
+    end
+
+    it 'stows herb1 in the crafting container when no herb_container is set' do
+      inventory.stow('nemoih')
+      expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, toolstrap)
+    end
+
+    it 'hands an empty hand (nil) to DRCC to stow, as the stow by hand always has' do
+      inventory.stow(nil)
+      expect(DRCC).to have_received(:stow_crafting_item).with(nil, toolbag, toolstrap)
+    end
+
+    it 'gets and stows the remed book with no belt, as remedy always has (H08, layer 15)' do
+      inventory.get_tool(Remedy::REMED_BOOK, belt: nil)
+      inventory.stow_tool(Remedy::REMED_BOOK, belt: nil)
+      expect(DRCC).to have_received(:get_crafting_item).with('remed book', toolbag, bag_items, nil)
+      expect(DRCC).to have_received(:stow_crafting_item).with('remed book', toolbag, nil)
+    end
+
+    it 'routes the swapped herb1 as a herb, and no longer the one asked for, after with_herbs' do
+      swapped = inventory.with_herbs(['dried flower', 'na'])
+      swapped.get('dried flower')
+      swapped.get('red flower')
+      expect(DRCI).to have_received(:exists?).with('dried flower', toolbag)
+      expect(DRCI).not_to have_received(:exists?).with('red flower', anything)
+      expect(swapped.bag).to eq(toolbag)
+    end
+
+    it 'leaves the original inventory routing the old names after with_herbs' do
+      inventory.with_herbs(['dried flower', 'na'])
+      inventory.get('dried flower')
+      expect(DRCI).not_to have_received(:exists?)
+    end
+  end
+end
