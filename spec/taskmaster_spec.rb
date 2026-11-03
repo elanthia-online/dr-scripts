@@ -1275,6 +1275,18 @@ RSpec.describe TaskMaster do
             .with('You are on a task for Nezhiri, not Zasele. Nezhiri is not a taskmaster this script does, so finish it yourself, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes).')
         end
 
+        it "without task_cancel_foreign_tasks, stops on a task from a taskmaster it doesn't do, cancelling nothing" do
+          tm = reader(npc: 'zasele')
+          game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
+          expect(tm).not_to receive(:cancel_task)
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Nezhiri, which taskmaster does not do. Finish or cancel it first, or set task_cancel_foreign_tasks.')
+        end
+
         it 'keeps the taskmaster it was started for when the journal names none' do
           tm = reader(npc: 'zasele')
           game('task' => journal('a coil of reinforced cloth rope', 3))
@@ -2477,8 +2489,9 @@ RSpec.describe TaskMaster do
       let(:cancelled) { 'Researcher Dorhum says, "Very well, I see that you no longer wish to assist me."' }
       let(:no_task) { 'Researcher Dorhum looks at you and says, "You do not currently have a task."' }
 
-      def foreign_dorhum_run
-        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+      def foreign_dorhum_run(cancel: true)
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', cancel_foreign_tasks: cancel)
+        allow(tm).to receive(:pause)
         tm.instance_variable_set(:@asked_npc, 'zasele')
         tm.instance_variable_set(:@task_item, 'bauble')
         allow(tm).to receive(:find_npc)
@@ -2545,6 +2558,33 @@ RSpec.describe TaskMaster do
         expect(tm).to receive(:cancel_task).with('dorhum', 'bauble', /Can't find burin/)
 
         expect { tm.ensure_tools(['burin'], 'enchanting') }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+      end
+
+      it 'waits out the ten-minute cooldown a cancel brings before going back to its own taskmaster' do
+        tm = foreign_dorhum_run
+        allow(tm).to receive(:cancel_task)
+
+        expect { tm.abandon_foreign_task('Reason.') }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+
+        expect(tm).to have_received(:pause).with(600)
+        expect(DRC).to have_received(:message).with('Waiting 10 minutes: after a cancel, taskmasters call you unreliable for about that long.')
+      end
+
+      it 'cancels nothing without task_cancel_foreign_tasks: an unknown item pauses, as for its own taskmaster' do
+        tm = foreign_dorhum_run(cancel: nil)
+        expect(tm).not_to receive(:cancel_task)
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.hand_in_noun('bauble') }.to raise_error(SystemExit)
+      end
+
+      it 'cancels nothing without task_cancel_foreign_tasks: a missing tool stops' do
+        tm = foreign_dorhum_run(cancel: false)
+        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+        expect(tm).not_to receive(:cancel_task)
+
+        expect { tm.ensure_tools(['burin'], 'enchanting') }.to raise_error(SystemExit)
       end
 
       it "returns from finish mode after a cancel, so the run carries on asking its own taskmaster" do

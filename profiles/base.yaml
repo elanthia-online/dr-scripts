@@ -3060,6 +3060,11 @@ task_rock_room: 793
 # Setting for taskmaster - room where Dorhum's glow shell tasks forage shells, one per FORAGE SHELL
 # (793, The Crossing, Town Green Southeast, has both shells and rocks).
 task_shell_room: 793
+# Setting for taskmaster - when a run finds another taskmaster's task open that it cannot finish
+# (a taskmaster it does not do, an item it cannot make, a missing tool), cancel it with
+# ASK <taskmaster> FOR TASK CANCEL, wait out the 10-minute "unreliable" cooldown a cancel brings,
+# then carry on with this run's taskmaster. Off: stop (or pause, for an unknown item) instead.
+task_cancel_foreign_tasks: false
 
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
