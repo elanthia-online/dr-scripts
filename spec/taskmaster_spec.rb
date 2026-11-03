@@ -2449,21 +2449,39 @@ RSpec.describe TaskMaster do
         expect(DRCC).to have_received(:stow_crafting_item).with('sigil-scroll', 'duffel bag', nil).exactly(16).times
       end
 
-      it 'counts the scrolls already in the crafting bag' do
-        allow(DRCI).to receive(:count_items_in_container).with('congruence sigil-scroll', 'duffel bag').and_return(3)
-        allow(DRCI).to receive(:count_items_in_container).with('decay sigil-scroll', 'duffel bag').and_return(11)
+      # RUMMAGE's list, as the game words it ("... and see some sepia pins,
+      # some sepia pins and some sepia pins.").
+      def rummaged(*names)
+        return 'You rummage through a heavy silk duffel bag looking for something similar to "sigil-scroll" but there is nothing in there like that.' if names.empty?
+
+        listed = names.map { |name| "an intricate #{name}" }
+        "You rummage through a heavy silk duffel bag looking for something similar to \"sigil-scroll\" and see #{listed[0..-2].join(', ')}#{listed.size > 1 ? ' and ' : ''}#{listed.last}."
+      end
+
+      it 'counts the scrolls already in the crafting bag, with one RUMMAGE for every sigil' do
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged(*Array.new(3, 'congruence sigil-scroll'), *Array.new(11, 'decay sigil-scroll')))
 
         dorhum.buy_sigils(%w[congruence decay], 8)
 
         expect(orders.tally).to eq({ [14_753, 3] => 5 })
+        expect(DRC).to have_received(:bput).with('rummage /C sigil-scroll in my duffel bag', any_args).once
       end
 
-      it 'carries enough copper for the scrolls, the next fee and repairs' do
-        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+      it 'counts one scroll, the last in the list, and none when the bag has none' do
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged('decay sigil-scroll'))
+        dorhum.buy_sigils(%w[decay], 2)
+        expect(orders.tally).to eq({ [14_753, 10] => 1 })
 
+        orders.clear
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged)
+        dorhum.buy_sigils(%w[decay], 2)
+        expect(orders.tally).to eq({ [14_753, 10] => 2 })
+      end
+
+      it 'carries enough copper for the scrolls, a new fount, the next fee and repairs' do
         dorhum.buy_sigils(%w[induction], 6)
 
-        expect(DRCM).to have_received(:ensure_copper_on_hand).with(6 * 625 + 7500, anything, 'Crossing')
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(6 * 625 + 312 + 7500, anything, 'Crossing')
       end
 
       it 'buys two per item of a sigil the instructions list twice' do
@@ -2791,8 +2809,30 @@ RSpec.describe TaskMaster do
 
         tm.dorhum('spongestone', 8, %w[congruence decay])
 
-        expect(steps).to eq([[:sigils, %w[congruence decay], 8], [:rocks, 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil],
+        expect(steps).to eq([[:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
                              :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
+      end
+
+      it "stops before buying anything when task_loot_bag already holds the task's noun" do
+        tm = dorhum
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a smooth rock, a rock marble deed and a rock.')
+        expect(tm).not_to receive(:buy_sigils)
+
+        expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('backpack already holds 2 rocks before this task has made any: left from another task, turned down by Dorhum, or your own. ' \
+                                                    'The hand-in would give those first. Move them out of backpack, then start again.')
+      end
+
+      it 'carries on when task_loot_bag holds none, and does not count a "rock marble deed"' do
+        tm = dorhum
+        %i[buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock marble deed.')
+
+        expect { tm.dorhum('spongestone', 5, %w[congruence decay]) }.not_to raise_error
+
+        expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 5)
       end
 
       it 'buys wands for a virga wand task' do

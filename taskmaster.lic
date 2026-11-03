@@ -758,8 +758,8 @@ class TaskMaster
     /^(?:<[^>]*>|[^"<])*?With enchanting complete/i
   )
 
-  # Works one of Dorhum's enchanting tasks: buys the sigil-scrolls, gets the
-  # base items, makes sure the fount has a use for every item, then enchants
+  # Works one of Dorhum's enchanting tasks: buys the sigil-scrolls, makes
+  # sure the fount has a use for every item, gets the base items, then enchants
   # each item with enchant's instructions mode and puts it in task_loot_bag
   # for the hand-in, and finally deals with the enchanting tools.
   #
@@ -771,9 +771,11 @@ class TaskMaster
   def dorhum(item, count, sigils, _base = nil, _type = nil)
     check_loot_bag
     recipe = dorhum_recipe(item)
+    check_loot_bag_clear(recipe[:noun])
     buy_sigils(sigils, count)
-    send(recipe[:base], count)
+    # Next door to the sigil-scrolls, before the walk to the base items.
     DRCC.fount(artificing_info['tool-room'], 1, artificing_info['fount'], count, @bag, @bag_items, @settings.enchanting_belt)
+    send(recipe[:base], count)
     go_to_enchanting_room
     enchant_items(item, recipe[:noun], count)
     repair(@settings.enchanting_tools, @settings.enchanting_belt)
@@ -817,6 +819,51 @@ class TaskMaster
 
     noun = hand_in_noun(item)
     DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
+  end
+
+  # A rough fragile mana fount from the enchanting tools, should DRCC.fount
+  # need a new one: "You can purchase a rough fragile mana fount for 312
+  # Kronars." (2026-11-03).
+  FOUNT_PRICE = 312
+
+  # RUMMAGE /C in a container, whose reply lists what is like the word:
+  # "You rummage through a heavy silk duffel bag looking for something
+  # similar to "pins" and see some sepia pins, some sepia pins and some sepia
+  # pins."
+  #
+  # @param container [String]
+  # @param word [String]
+  # @return [String] the reply
+  def rummage(container, word)
+    DRC.bput("rummage /C #{word} in my #{container}", /^You rummage .*/, /That would accomplish nothing/)
+  end
+
+  # How many items a RUMMAGE reply lists whose name ends in `name`: a "rock"
+  # but not a "rock marble deed" (a Dorhum reward) or the quoted word.
+  #
+  # @param contents [String] a rummage reply
+  # @param name [String] e.g. 'rock', 'decay sigil-scroll'
+  # @return [Integer]
+  def count_listed(contents, name)
+    contents.to_s.scan(/ #{Regexp.escape(name)}(?=,| and |\.)/).size
+  end
+
+  # The hand-in gives whatever item of the task's noun it finds in
+  # task_loot_bag first. One there before this task has made any is not this
+  # task's: left from another task (a spongestone and a splashstone are both
+  # rocks), turned down by Dorhum, or the player's own. So the run stops
+  # before buying anything rather than hand those in. A resume has already
+  # handed in the finished items it found by then.
+  #
+  # @param noun [String] the finished items' noun
+  # @return [void]
+  # @raise [SystemExit] when task_loot_bag holds any
+  def check_loot_bag_clear(noun)
+    held = count_listed(rummage(@lootbag, noun), noun)
+    return if held.zero?
+
+    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} before this task has made any: left from another task, turned down by Dorhum, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.")
+    exit
   end
 
   # Dorhum's finished items keep their base item's noun, so they must wait
@@ -877,12 +924,13 @@ class TaskMaster
   # @return [void]
   def buy_sigils(sigils, count)
     needs = sigils.tally.transform_values { |per_item| per_item * count }
+    carried = rummage(@bag, 'sigil-scroll')
     needs.each_key do |sigil|
       pause_for_unknown_item("No #{sigil} sigil-scroll in the crafting data.") unless @stockdata["#{sigil} sigil-scroll"]
-      needs[sigil] -= DRCI.count_items_in_container("#{sigil} sigil-scroll", @bag)
+      needs[sigil] -= count_listed(carried, "#{sigil} sigil-scroll")
     end
     cost = needs.sum { |sigil, needed| [needed, 0].max * @stockdata["#{sigil} sigil-scroll"]['stock-value'] }
-    DRCM.ensure_copper_on_hand(cost + 7500, @settings, "Crossing") # 5 gold for the next task, 2500 for repairs
+    DRCM.ensure_copper_on_hand(cost + FOUNT_PRICE + 7500, @settings, "Crossing") # a fount if it is used up, 5 gold for the next task, 2500 for repairs
     needs.each do |sigil, needed|
       needed.times do
         DRCT.order_item(artificing_info['stock-room'], @stockdata["#{sigil} sigil-scroll"]['stock-number'])
