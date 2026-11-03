@@ -1219,38 +1219,27 @@ RSpec.describe TaskMaster do
           expect(tm.instance_variable_get(:@task_giver)).to eq('zasele')
         end
 
-        it "finishes Zasele's task as hers when started for Dorhum" do
+        it "stops on Zasele's task when started for Dorhum, before handing anything in, saying how to finish or cancel it" do
           tm = reader(npc: 'dorhum')
           game('task' => zasele_journal)
-          allow(tm).to receive(:reconcile_hands)
-          allow(tm).to receive(:turn_in_banked) { exit }
+          expect(tm).not_to receive(:turn_in_banked)
 
           expect { tm.resume_task }.to raise_error(SystemExit)
 
-          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
-          expect(DRC).to have_received(:message).with('You are on a task for Zasele, not Dorhum; finishing that one first.')
+          expect(tm.instance_variable_get(:@npc)).to eq('dorhum')
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Zasele, not Dorhum. Finish it with ;taskmaster zasele, or cancel it with ASK ZASELE FOR TASK CANCEL (taskmasters then refuse you for about ten minutes).')
         end
 
-        it "runs Zasele's hand check again after switching to her task, for an unfinished piece left in hand" do
-          tm = reader(npc: 'dorhum')
-          game('task' => zasele_journal)
-          npc_at_check = nil
-          allow(tm).to receive(:reconcile_hands) { npc_at_check = tm.instance_variable_get(:@npc) }
-
-          tm.read_task
-          tm.follow_task_giver
-
-          expect(npc_at_check).to eq('zasele')
-        end
-
-        it "stops on a task from a taskmaster it doesn't do, before handing anything in" do
+        it "stops on a task from a taskmaster it doesn't do, saying to finish it by hand" do
           tm = reader(npc: 'zasele')
           game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
           expect(tm).not_to receive(:turn_in_banked)
 
           expect { tm.resume_task }.to raise_error(SystemExit)
 
-          expect(DRC).to have_received(:message).with("You are on a task for Nezhiri, which taskmaster does not do. Finish or decline it first.")
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Nezhiri, not Zasele. Nezhiri is not a taskmaster this script does, so finish it yourself, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes).')
         end
 
         it 'keeps the taskmaster it was started for when the journal names none' do
@@ -1258,7 +1247,7 @@ RSpec.describe TaskMaster do
           game('task' => journal('a coil of reinforced cloth rope', 3))
 
           tm.read_task
-          tm.follow_task_giver
+          tm.check_task_giver
 
           expect(tm.instance_variable_get(:@npc)).to eq('zasele')
         end

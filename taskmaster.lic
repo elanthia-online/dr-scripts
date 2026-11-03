@@ -1263,7 +1263,7 @@ class TaskMaster
       DRC.message("You are not on a task with #{@npc}.")
       exit
     end
-    follow_task_giver
+    check_task_giver
     set_aside_held_base(item)
     owed = turn_in_banked(item, owed)
     exit if owed.zero?
@@ -1282,26 +1282,28 @@ class TaskMaster
     exit
   end
 
-  # The task in progress may be another taskmaster's (";taskmaster dorhum"
-  # while on one of Zasele's tasks, say): it is finished as theirs, since
-  # its items, instructions and hand-in are theirs. A task from a taskmaster
-  # this script does not work for stops the run.
+  # The task in progress may be another taskmaster's (";taskmaster zasele"
+  # while on one of Dorhum's tasks, say). A run never works another
+  # taskmaster's task: its items, tools and hand-in are theirs, and a
+  # character set up for one craft may not be for another. So it says whose
+  # task it is and how to clear it, and stops.
   #
   # @return [void]
-  # @raise [SystemExit] when the journal names a taskmaster not in TASKMASTERS
-  def follow_task_giver
+  # @raise [SystemExit] when the journal names another taskmaster
+  def check_task_giver
     giver = @task_giver
     return if giver.nil? || giver == @npc
 
-    unless TASKMASTERS.include?(giver)
-      DRC.message("You are on a task for #{giver.capitalize}, which taskmaster does not do. Finish or decline it first.")
-      exit
-    end
-    DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}; finishing that one first.")
-    @npc = giver
-    # The start's hand check ran for the other taskmaster: Zasele's finishes
-    # an unfinished piece left in hand, so it runs again for the new one.
-    reconcile_hands
+    DRC.message(another_taskmasters_task_message(giver))
+    exit
+  end
+
+  # @param giver [String] the taskmaster the journal names
+  # @return [String] whose task it is, and how to finish or cancel it
+  def another_taskmasters_task_message(giver)
+    name = giver.capitalize
+    finish = TASKMASTERS.include?(giver) ? "Finish it with ;taskmaster #{giver}" : "#{name} is not a taskmaster this script does, so finish it yourself"
+    "You are on a task for #{name}, not #{@npc.capitalize}. #{finish}, or cancel it with ASK #{giver.upcase} FOR TASK CANCEL (taskmasters then refuse you for about ten minutes)."
   end
 
   # Hands in finished items already in the bag and returns how many are still
