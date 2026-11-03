@@ -6,6 +6,7 @@ require 'yaml'
 require_relative 'spec_helper'
 
 load_lic_class('remedy.lic', 'Remedy')
+load_lic_class('buff.lic', 'Waggle')
 
 # remedy.lic, characterised from its entry point against real log lines.
 #
@@ -51,8 +52,8 @@ load_lic_class('remedy.lic', 'Remedy')
 #   today; the layer named in its comment flips it (layer N is the Nth
 #   commit of this change);
 # - or the layer makes a deliberate behaviour change and says so in its
-#   comment (the no-product stop of the callers, the herb put wording,
-#   the opt-in stamp repair, the restock in the crafting town).
+#   comment (the no-product stop of the callers, the herb put by id, the
+#   opt-in stamp repair, the restock in the crafting town).
 RSpec.describe Remedy do
   let(:toolbag) { "botanist's toolbag" }
   let(:toolstrap) { 'grass toolstrap' }
@@ -102,8 +103,13 @@ RSpec.describe Remedy do
   let(:expected_tool_locations) { logged_tools }
   let(:lich5) { :current }
   let(:orders) { {} }
+  # Full item name => the game id GameObj shows for it in a hand. The logs
+  # carry no ids, so the contract's runs give none (remedy then puts the
+  # herb in by name, as it always has); an example that gives one uses a
+  # made-up id (code-derived).
+  let(:item_ids) { {} }
   let(:game) { ReplayGame.new }
-  let(:commons) { ReplayCommons.new(game: game, lich5: lich5, inventory: inventory, orders: orders) }
+  let(:commons) { ReplayCommons.new(game: game, lich5: lich5, inventory: inventory, orders: orders, ids: item_ids) }
   let(:remedies_data) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['remedies'] }
   let(:remedy_messages) { [] }
   let(:exit_hooks) { [] }
@@ -172,15 +178,21 @@ RSpec.describe Remedy do
   end
 
   # The command remedy puts the gathered herb into the vessel with
-  # (remedy.lic:247). CURRENT (H32) wording, without "my": layer 15 changes
-  # this one line, on purpose ("put my <herb> in my
-  # <vessel>", the form of 26:30995).
+  # (remedy.lic:247). Layer 15 changed this one line on
+  # purpose, so the put names the stack gathered and no other item of
+  # its noun: when the herb stack in hand has a game id (#item_ids), remedy
+  # sends "put #<id> in my <vessel>"; when it has none, as in every run of
+  # the logs, it sends what it always has, "put <herb> in my <vessel>"
+  # (remedy.lic:247 at 03f11b54).
   #
   # @param herb [String] herb1 as remedy has it
   # @param vessel [String] the alchemy_tools entry
   # @return [String]
+  # @note Reads #item_ids, not commons: building commons here would fix its
+  #   inventory before an example has finished changing it.
   def herb_put_command(herb, vessel)
-    "put #{herb} in my #{vessel}"
+    id = ReplayCommons.id_in(item_ids, herb)
+    id ? "put ##{id} in my #{vessel}" : "put #{herb} in my #{vessel}"
   end
 
   # Scripts a stack of 25 found in the toolbag: the count (25:33679, analog:
@@ -2011,43 +2023,63 @@ RSpec.describe Remedy do
         expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2', 'DRCI.exists?')
       end
 
-      # flipped by layer 15 (the container word is escaped)
-      it 'CURRENT (H12): raises RegexpError for the container "mortar("' do
-        expect { run_remedy(typed('remedies 3 "some head unguent" nemoih na "pewter ingot" "mortar(" unguent')) }.to raise_error(RegexpError)
+      # layer 15: the container word is escaped
+      it 'H12: stops with the alchemy_tools message for the container "mortar(", before any command, where it raised RegexpError' do
+        expect(run_remedy(typed('remedies 3 "some head unguent" nemoih na "pewter ingot" "mortar(" unguent'))).to eq(:exited)
+        expect(remedy_messages).to eq(['*** some head unguent needs a mortar(, and your alchemy_tools setting lists none. ***',
+                                       '*** Add your mortar( to alchemy_tools, then run this again. ***'])
+        expect(game.sent).to be_empty
       end
 
-      # flipped by layer 15 (word-prefix match; "mort"
-      # still finds "large mortar", pinned above)
-      it 'CURRENT (H12): takes the first tool holding the container word anywhere: "r" takes the heavy cauldron' do
+      # layer 15: a word-prefix match ("mort" still finds
+      # "large mortar", pinned in C14 and below)
+      it 'H12: takes the first tool with a word starting with the container word: "r" takes the rounded pestle, no longer the heavy cauldron' do
         run_remedy(typed('remedies 3 "some head unguent" nemoih na "pewter ingot" r unguent'))
-        expect(commons.moves).to include("heavy cauldron: #{toolstrap} -> hand")
+        expect(commons.moves).to include("rounded pestle: #{toolstrap} -> hand")
+        expect(commons.moves).not_to include("heavy cauldron: #{toolstrap} -> hand")
       end
 
-      # flipped by layer 15 (buff only with a remedy waggle set)
-      it 'CURRENT (H21): runs ;buff remedy with no waggle_sets setting' do
+      # layer 15: buff only with a remedy waggle set (buff.lic:37-42 exits
+      # without one)
+      it 'H21: does not run ;buff remedy with no waggle_sets setting, and crafts as before' do
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.calls.map(&:first)).not_to include('DRC.wait_for_script_to_complete')
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      end
+
+      # layer 15: the book uses alchemy_belt, with a guarded get
+      it 'H08: gets the remed book with alchemy_belt and skip_exit, and stows it with alchemy_belt' do
         script_short_unguent
         run_remedy(short_unguent)
-        expect(commons.calls).to include(['DRC.wait_for_script_to_complete', 'buff', ['remedy']])
+        expect(commons.calls).to include(['DRCC.get_crafting_item', 'remed book', toolbag, logged_settings[:crafting_items_in_container], logged_settings[:alchemy_belt], true],
+                                         ['DRCC.stow_crafting_item', 'remed book', toolbag, logged_settings[:alchemy_belt]])
       end
 
-      # flipped by layer 15 (the book uses alchemy_belt)
-      it 'CURRENT (H08): gets and stows the remed book with no belt' do
-        script_short_unguent
-        run_remedy(short_unguent)
-        expect(commons.calls).to include(['DRCC.get_crafting_item', 'remed book', toolbag, logged_settings[:crafting_items_in_container], nil, false],
-                                         ['DRCC.stow_crafting_item', 'remed book', toolbag, nil])
-      end
-
-      # flipped by layer 15 (warn at 175 and above)
-      it 'CURRENT (H33): gives no book warning above 175 ranks' do
+      # layer 15: warn at 175 and above
+      it 'H33: gives the book warning above 175 ranks' do
         DRSkill._set_rank('Alchemy', 180)
         script_short_unguent
         run_remedy(short_unguent)
-        expect(displayed_messages.grep(/journeyman or master book/)).to be_empty
+        expect(displayed_messages.grep(/journeyman or master book/)).to eq(['*** You will need to upgrade to a journeyman or master book before 176 ranks! ***'])
       end
 
-      # flipped by layer 15
-      it 'CURRENT (H32): puts the herb in without "my": "put nemoih in my large mortar"' do
+      # layer 15 (a deliberate change):
+      # the herb goes in by the id of the stack in hand. The id is made up
+      # (code-derived): the logs carry no ids.
+      context 'with a game id on the herb stack in hand' do
+        let(:item_ids) { { 'dried nemoih' => '41782305' } }
+
+        it 'H32: puts the herb in by the id of the stack in hand: "put #41782305 in my large mortar"' do
+          script_short_unguent
+          run_remedy(short_unguent)
+          expect(game.sent[2]).to eq('put #41782305 in my large mortar')
+        end
+      end
+
+      # layer 15: with no id (every run of the logs) the command is the one
+      # remedy has always sent
+      it 'H32: with no id on the herb stack in hand, puts the herb in as before: "put nemoih in my large mortar"' do
         script_short_unguent
         run_remedy(short_unguent)
         expect(game.sent[2]).to eq('put nemoih in my large mortar')
@@ -2321,11 +2353,15 @@ RSpec.describe Remedy do
           script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         end
 
+        # ;buff remedy is where the fade is injected, so the character has a
+        # remedy waggle set (layer 15 runs buff only then)
         it 'analyses and crafts to the end although the fade arrived as it started' do
+          settings[:waggle_sets] = { 'remedy' => {} }
           outcome = run_remedy(typed('continue na "pewter ingot" mortar unguent')) do
             allow(DRC).to receive(:wait_for_script_to_complete) { game.unprompted(log('25:37919')) }
           end
           expect(outcome).to eq(:exited)
+          expect(DRC).to have_received(:wait_for_script_to_complete).with('buff', ['remedy'])
           expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([next_crush] * 7),
                                    'get my unguent from my large mortar'])
           expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
@@ -2509,39 +2545,31 @@ RSpec.describe Remedy do
         end
       end
 
-      context 'on lich-5 v5_21, where a missing item does not stop the script' do
-        let(:lich5) { :v5_21 }
-
-        it 'stops before the study when the remed book is nowhere' do
-          inventory.delete('remed book')
-          script_short_unguent
-          expect(run_remedy(short_unguent)).to eq(:exited)
-          expect(remedy_messages).to eq(['Remedy: could not get remed book. Stopping.'])
-          expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
-          expect(game.sent).to be_empty
-        end
-
-        it 'looks at the hands for the 15 s of a late reply before it stops on the missing remed book' do
-          inventory.delete('remed book')
-          script_short_unguent
-          expect(run_remedy(short_unguent)).to eq(:exited)
-          expect(game.clock).to eq(0.2 + Remedy::Inventory::LATE_GET_LOOKS) # the pause after the stows, then a look a second
-          expect(remedy_messages).to eq(['Remedy: could not get remed book. Stopping.'])
-        end
-      end
-
-      %i[current v5_22].each do |release|
+      # layer 15: the book get is guarded
+      # and passes alchemy_belt, so a missing book stops the same way on
+      # every release; on current and v5_22 DRCC stopped the script itself
+      # before.
+      ReplayCommons::LICH5_RELEASES.each do |release|
         context "on lich-5 #{release}" do
           let(:lich5) { release }
 
-          # The book get keeps its four arguments until layer 15 (CURRENT H08).
-          it 'leaves a missing remed book to DRCC, which stops the script as before' do
+          it 'stops with a Remedy line before the study when the remed book is nowhere' do
             inventory.delete('remed book')
             script_short_unguent
             expect(run_remedy(short_unguent)).to eq(:exited)
-            expect(commons.messages).to eq(['DRCC: You seem to be missing: remed book', ReplayCommons::STOP_MESSAGE])
-            expect(remedy_messages).to be_empty
+            expect(remedy_messages).to eq(['Remedy: could not get remed book. Stopping.'])
+            expect(commons.messages).not_to include(ReplayCommons::STOP_MESSAGE)
+            expect(commons.calls).to include(['DRCC.get_crafting_item', 'remed book', toolbag, logged_settings[:crafting_items_in_container], logged_settings[:alchemy_belt], true])
             expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
+            expect(game.sent).to be_empty
+          end
+
+          it 'looks at the hands for the 15 s of a late reply before it stops on the missing remed book' do
+            inventory.delete('remed book')
+            script_short_unguent
+            expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(game.clock).to eq(0.2 + Remedy::Inventory::LATE_GET_LOOKS) # the pause after the stows, then a look a second
+            expect(remedy_messages).to eq(['Remedy: could not get remed book. Stopping.'])
           end
         end
       end
@@ -2910,8 +2938,10 @@ RSpec.describe Remedy do
           expect(stow_at).not_to be_nil
         end
 
-        it 'releases with fput after DRCC.get_crafting_item stops the script (no remed book, lich-5 :current)' do
-          inventory.delete('remed book')
+        # layer 15 guards the book get, so the herb get of the gathering,
+        # still a plain get (A5), is the DRCC stop here
+        it 'releases with fput after DRCC.get_crafting_item stops the script (no nemoih anywhere, lich-5 :current)' do
+          inventory.delete('dried nemoih')
           script_releases
           expect(run_remedy(short_unguent)).to eq(:exited)
           expect(commons.messages.last).to eq(ReplayCommons::STOP_MESSAGE)
@@ -2952,9 +2982,10 @@ RSpec.describe Remedy do
         context "with crafting_training_spells #{unset.inspect}" do
           let(:settings) { logged_settings.merge(mark_crafted_goods: false, crafting_training_spells: unset) }
 
-          it 'sends nothing from the before_dying cleanup after a DRCC stop' do
-            inventory.delete('remed book')
+          it 'sends nothing from the before_dying cleanup after a DRCC stop (no nemoih anywhere)' do
+            inventory.delete('dried nemoih')
             expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(commons.messages.last).to eq(ReplayCommons::STOP_MESSAGE)
             expect(run_exit_hooks).to be_empty
             expect(remedy_flags).to be_empty
           end
@@ -3272,6 +3303,295 @@ RSpec.describe Remedy do
       end
     end
   end
+
+  # Layer 15: the vessel word is escaped and
+  # kept a prefix, ;buff remedy runs only when buff.lic would cast
+  # something, the remed book uses alchemy_belt, the book warning is
+  # printed from 175 ranks up, and the herb goes in by the id of the stack
+  # in hand when it has one.
+  describe 'the tools, the book, buff and the herb put (layer 15)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+
+    # @return [Boolean] whether remedy ran ;buff remedy
+    def ran_buff?
+      commons.calls.include?(['DRC.wait_for_script_to_complete', 'buff', ['remedy']])
+    end
+
+    describe ';buff remedy (H21)' do
+      # A remedy waggle set as the wiki's Waggle-Sets page shapes them: spell
+      # name => settings (buff_spec's sets have the same shape).
+      let(:remedy_set) { { 'Gauge Flow' => { 'abbrev' => 'gaf', 'mana' => 5 } } }
+
+      # Runs buff.lic's Waggle with the arguments remedy gives it, ['remedy'],
+      # and the given waggle_sets.
+      #
+      # @param sets [Object] waggle_sets
+      # @return [Symbol] :exited when buff.lic stops before casting, :cast
+      #   when it reaches DRCA.do_buffs
+      def buff_outcome(sets)
+        $test_settings = OpenStruct.new(waggle_sets: sets)
+        $parsed_args = { 'spells' => 'remedy' }
+        allow(DRCA).to receive(:do_buffs)
+        Waggle.new
+        expect(DRCA).to have_received(:do_buffs).with(anything, 'remedy')
+        :cast
+      rescue SystemExit
+        :exited
+      end
+
+      it 'runs ;buff remedy with a remedy waggle set, before the crafting magic and the remed book' do
+        settings[:waggle_sets] = { 'remedy' => remedy_set }
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        names = commons.calls.map(&:first)
+        expect(ran_buff?).to be(true)
+        expect(names.index('DRC.wait_for_script_to_complete')).to be < names.index('DRCA.crafting_magic_routine')
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      end
+
+      it 'runs ;buff remedy in the continue form with a remedy waggle set, and not without one' do
+        inventory.delete('diamondique large mortar')
+        $right_hand = 'diamondique large mortar'
+        game.script('analyze my unguent', log('26:11132'), log('26:11146'))
+        game.script('crush my unguent with my rounded pestle', log('26:11333'))
+        script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+        settings[:waggle_sets] = { 'default' => remedy_set }
+        expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(ran_buff?).to be(false)
+        expect(game.sent.first).to eq('analyze my unguent')
+      end
+
+      # Every waggle_sets shape buff.lic can be given, run through buff.lic
+      # itself: remedy skips ;buff remedy exactly when buff.lic would print
+      # "No waggle set found for name: remedy" and exit (buff.lic:37-42).
+      # nil, the profiles/base.yaml default, is left to the C13 example:
+      # buff.lic reads nil['remedy'] as nil only under Lich's NilClass patch
+      # (lich-5 lib/common/class_exts/nilclass.rb:9-11), which the suite does
+      # not load.
+      [['no sets at all ({})', {}, :exited],
+       ['other sets only', { 'default' => { 'Bless' => {} } }, :exited],
+       ['a remedy key with no set (nil)', { 'remedy' => nil }, :exited],
+       ['a remedy key set to false', { 'remedy' => false }, :exited],
+       ['an empty remedy set ({})', { 'remedy' => {} }, :cast],
+       ['a remedy set of spells', { 'remedy' => { 'Gauge Flow' => { 'abbrev' => 'gaf' } } }, :cast],
+       ['a remedy set as a list (barbarian or thief)', { 'remedy' => ['Khri Focus'] }, :cast]].each do |what, sets, outcome|
+        it "#{outcome == :cast ? 'runs' : 'skips'} ;buff remedy for waggle_sets with #{what}, as buff.lic #{outcome == :cast ? 'casts' : 'exits'}" do
+          expect(buff_outcome(sets)).to eq(outcome)
+          settings[:waggle_sets] = sets
+          script_short_unguent
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(ran_buff?).to eq(outcome == :cast)
+          expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        end
+      end
+
+      it 'runs ;buff remedy, as before, when waggle_sets is not a Hash, whatever buff.lic makes of it' do
+        settings[:waggle_sets] = ['remedy']
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(ran_buff?).to be(true)
+      end
+    end
+
+    describe 'the remed book on alchemy_belt (H08)' do
+      let(:belt_with_book) { { 'name' => toolstrap, 'items' => [*logged_settings[:alchemy_belt]['items'], 'remed book'] } }
+
+      it 'ties the remed book back to alchemy_belt when the belt lists it, where it used to go into the crafting bag' do
+        settings[:alchemy_belt] = belt_with_book
+        inventory['remed book'] = toolstrap
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.moves.first(2)).to eq(["remed book: #{toolstrap} -> hand", "remed book: hand -> #{toolstrap}"])
+        expect(commons.calls).to include(['DRCC.get_crafting_item', 'remed book', toolbag, logged_settings[:crafting_items_in_container], belt_with_book, true])
+      end
+
+      it 'still takes the remed book from the crafting bag and puts it back there when the belt does not list it' do
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.moves.first(2)).to eq(["remed book: #{toolbag} -> hand", "remed book: hand -> #{toolbag}"])
+      end
+
+      it 'takes the remed book out and puts it back with no alchemy_belt set, as before' do
+        settings[:alchemy_belt] = nil
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.calls).to include(['DRCC.get_crafting_item', 'remed book', toolbag, logged_settings[:crafting_items_in_container], nil, true],
+                                         ['DRCC.stow_crafting_item', 'remed book', toolbag, nil])
+        expect(commons.moves.first(2)).to eq(["remed book: #{toolbag} -> hand", "remed book: hand -> #{toolbag}"])
+      end
+
+      it 'never takes out the remed book with a master_crafting_book, whatever alchemy_belt lists' do
+        settings[:alchemy_belt] = belt_with_book
+        settings[:master_crafting_book] = 'jadeleaf-bound book'
+        script_short_unguent
+        run_remedy(short_unguent)
+        expect(commons.calls.select { |call| call[1] == 'remed book' }).to be_empty
+      end
+    end
+
+    describe 'the book warning (H33)' do
+      # @return [Array<String>] the book warnings printed
+      def book_warnings
+        displayed_messages.grep(/journeyman or master book/)
+      end
+
+      it 'gives no warning at 174 ranks' do
+        DRSkill._set_rank('Alchemy', 174)
+        script_short_unguent
+        run_remedy(short_unguent)
+        expect(book_warnings).to be_empty
+      end
+
+      [175, 176, 250, 1750].each do |rank|
+        it "warns once at #{rank} ranks with the remed book" do
+          DRSkill._set_rank('Alchemy', rank)
+          script_short_unguent
+          run_remedy(short_unguent)
+          expect(book_warnings).to eq(['*** You will need to upgrade to a journeyman or master book before 176 ranks! ***'])
+        end
+      end
+
+      it 'gives no warning above 175 ranks with a master_crafting_book' do
+        DRSkill._set_rank('Alchemy', 400)
+        settings[:master_crafting_book] = 'jadeleaf-bound book'
+        script_short_unguent
+        run_remedy(short_unguent)
+        expect(book_warnings).to be_empty
+      end
+    end
+
+    # The ids are made up (code-derived): the logs carry no ids. Every reply
+    # is a real one, as cited.
+    describe 'the herb put by the id of the stack in hand (H32)' do
+      let(:item_ids) { { 'dried nemoih' => '41782305' } }
+
+      it 'puts the herb in by its id, and by its id again after tilting a vessel that was not empty' do
+        game.script('count my nemoih', log('25:33679')) # analog: the reply to `count clubm in smoke bask`, 25:33677
+        game.script('combine my nemoih', log('25:104590')) # analog: the reply to `combine`, 25:104589
+        game.script('put #41782305 in my large mortar', code('Your large mortar already has something in it.', from: 'R:247 /already has something/'))
+        game.script('put #41782305 in my large mortar', log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+        run_remedy(short_unguent)
+        expect(game.sent.first(6)).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
+                                          'tilt my large mortar', 'tilt my large mortar', 'put #41782305 in my large mortar'])
+      end
+
+      # "What were you referring to?" (26:39194) is the game's answer to
+      # `put my pewter ingot in my heavy cauldron` (26:39192) with no ingot
+      # in hand. Here it stands for the game refusing an id it no longer
+      # knows, a stale id (code-derived: no log sends the id form).
+      describe 'when the game refuses the id' do
+        it 'puts the herb in by name once, the old command, and crafts to the end as the old put would' do
+          script_short_unguent
+          game.override('put #41782305 in my large mortar', log('26:39194'))
+          game.script('put nemoih in my large mortar', log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
+                                   'put nemoih in my large mortar',
+                                   'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar']) # 26:11333, 26:11389
+          expect(remedy_messages).to be_empty
+          expect(commons.moves).to include('dried nemoih: hand -> game')
+          expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        end
+
+        it 'puts the herb in by name once after the tilt when the id is refused there' do
+          game.script('count my nemoih', log('25:33679')) # analog: the reply to `count clubm in smoke bask`, 25:33677
+          game.script('combine my nemoih', log('25:104590')) # analog: the reply to `combine`, 25:104589
+          game.script('put #41782305 in my large mortar', code('Your large mortar already has something in it.', from: 'R:247 /already has something/'))
+          game.script('put #41782305 in my large mortar', log('26:39194'))
+          game.script('put nemoih in my large mortar', log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+          run_remedy(short_unguent)
+          expect(game.sent.first(7)).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
+                                            'tilt my large mortar', 'tilt my large mortar', 'put #41782305 in my large mortar',
+                                            'put nemoih in my large mortar'])
+          expect(commons.moves).to include('dried nemoih: hand -> game')
+        end
+
+        it 'sends the name put only once, though the game refuses it too, and stops as the old put alone would' do
+          game.script('count my nemoih', log('25:33679')) # analog, as above
+          game.script('combine my nemoih', log('25:104590')) # analog, as above
+          game.script('put #41782305 in my large mortar', log('26:39194'))
+          game.script('put nemoih in my large mortar', log('26:39194'))
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(game.sent.grep(/\Aput /)).to eq(['put #41782305 in my large mortar', 'put nemoih in my large mortar'])
+          expect($left_hand.to_s + $right_hand.to_s).to include('dried nemoih')
+        end
+      end
+
+      # bput gives up on a put the game has not answered; the game may yet
+      # take the stack, so a second put by name could take a same-noun item
+      # (H32). Nothing is resent, as with the old put alone.
+      it 'does not resend the put by name when the id put goes unanswered' do
+        game.script('count my nemoih', log('25:33679')) # analog, as above
+        game.script('combine my nemoih', log('25:104590')) # analog, as above
+        game.script('put #41782305 in my large mortar')
+        run_remedy(short_unguent)
+        expect(game.sent.grep(/\Aput /)).to eq(['put #41782305 in my large mortar'])
+      end
+
+      it 'puts a swapped herb1 in by the id of the prepared stack: "put #52210117 in my large mortar"' do
+        inventory['dried flower'] = toolbag
+        item_ids['dried flower'] = '52210117'
+        game.script('count my dried flower', log('25:33679')) # analog, as above
+        game.script('combine my dried flower', log('25:104590')) # analog, as above
+        run_remedy(called_with(['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'pewter ingot', 'mortar', 'cream']))
+        expect(game.sent).to include('put #52210117 in my large mortar')
+        expect(game.sent.grep(/\Aput (my )?dried flower/)).to be_empty
+      end
+
+      it 'puts a swapped herb1 with no id in by its prepared name, as before: "put dried flower in my large mortar"' do
+        inventory['dried flower'] = toolbag
+        game.script('count my dried flower', log('25:33679')) # analog, as above
+        game.script('combine my dried flower', log('25:104590')) # analog, as above
+        run_remedy(called_with(['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'pewter ingot', 'mortar', 'cream']))
+        expect(game.sent).to include('put dried flower in my large mortar')
+        expect(game.sent.grep(/\Aput #/)).to be_empty
+      end
+
+      # C01 and C02 as in the contract, with an id on the herb stack: the
+      # put is the one command that changes; every other command, every
+      # move and the end state are the log run's.
+      context 'C01 with an id on the crushed belradi (26:5896-6801)' do
+        subject(:outcome) { run_remedy(workorders_call('a general elixir', 6, 'belradi', 'bowl', 'elixir', catalyst: 'pewter ingot')) }
+
+        let(:settings) { logged_settings }
+        let(:item_ids) { { 'crushed belradi' => '41782307' } }
+        let(:inventory) { logged_tools.merge(logged_supplies, 'crushed belradi' => toolbag) }
+        let(:product) { 'belradi elixir' }
+        let(:crafting_commands) { general_elixir_crafting }
+        let(:finishing_commands) { general_elixir_finishing }
+        let(:expected_moves) { general_elixir_moves }
+
+        before { script_general_elixir }
+
+        it_behaves_like 'a success run replayed from the log'
+
+        it 'puts the belradi in by its id, where the log run sent `put my belradi in my heavy cauldron` (26:5897)' do
+          outcome
+          expect(game.sent[2]).to eq('put #41782307 in my heavy cauldron')
+        end
+      end
+
+      context 'C02 with an id on the dried nemoih (26:10747-11396)' do
+        subject(:outcome) { run_remedy(typed('remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent')) }
+
+        let(:settings) { logged_settings }
+        let(:product) { 'nemoih unguent' }
+        let(:crafting_commands) { head_unguent_crafting }
+        let(:finishing_commands) { head_unguent_finishing }
+        let(:expected_moves) { head_unguent_moves }
+
+        before { script_head_unguent }
+
+        it_behaves_like 'a success run replayed from the log'
+
+        it 'puts the nemoih in by its id, where the log run sent `put my nemoih in my large mortar` (26:10748)' do
+          outcome
+          expect(game.sent[2]).to eq('put #41782305 in my large mortar')
+        end
+      end
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -3435,7 +3755,7 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
      [:COMBINE_REPLIES, 'combine my nemoih', '25:11425', 'You combine'],
      [:COMBINE_REPLIES, 'combine my nemoih', '26:32077', 'That stack of herbs is too large to add'],
      [:COMBINE_REPLIES, 'combine my nemoih', '25:18266', 'You must be holding both'],
-     [:HERB_PUT_REPLIES, 'put nemoih in my large mortar', '26:10749', 'You put'],
+     [:HERB_PUT_REPLIES, 'put my nemoih in my large mortar', '26:10749', 'You put'],
      [:CRAFT_REPLIES, 'crush my unguent with my rounded pestle', '25:10825', 'Roundtime:'],
      [:CRAFT_REPLIES, 'crush my unguent with my rounded pestle', '26:6742', 'Applying the final touches'],
      [:CRAFT_REPLIES, 'crush my unguent with my rounded pestle', '25:11264', 'Interesting thought really... but no.'],
@@ -3909,29 +4229,42 @@ RSpec.describe 'Remedy order, tools and inventory' do
       OpenStruct.new(alchemy_tools: tools)
     end
 
+    # Tools.resolve for a request that must find a vessel. A stop fails the
+    # example instead of ending rspec (an unguarded exit ends the run with
+    # status 0).
+    #
+    # @param tools [Array<String>] alchemy_tools
+    # @param order [Remedy::Order] the request
+    # @return [Remedy::Tools]
+    def resolved(tools, order)
+      result = nil
+      expect { result = Remedy::Tools.resolve(settings_with(tools), order) }.not_to raise_error
+      result
+    end
+
     it 'takes the large mortar, the rounded pestle and crush for a recipe asking for a mortar' do
-      tools = Remedy::Tools.resolve(settings_with(logged_tools), order_for('mortar'))
+      tools = resolved(logged_tools, order_for('mortar'))
       expect(tools.to_h).to eq(container: 'large mortar', stirrer: 'rounded pestle', verb: 'crush')
       expect(tools).to be_mortar
     end
 
     it 'finds the large mortar from the prefix mort' do
-      expect(Remedy::Tools.resolve(settings_with(logged_tools), order_for('mort')).container).to eq('large mortar')
+      expect(resolved(logged_tools, order_for('mort')).container).to eq('large mortar')
     end
 
     it 'takes the heavy cauldron, the mixing stick and mix for a recipe asking for a bowl, though a pestle is listed' do
-      tools = Remedy::Tools.resolve(settings_with(logged_tools), order_for('bowl'))
+      tools = resolved(logged_tools, order_for('bowl'))
       expect(tools.to_h).to eq(container: 'heavy cauldron', stirrer: 'mixing stick', verb: 'mix')
       expect(tools).not_to be_mortar
     end
 
     it 'takes the first bowl-like entry, a ceramic bowl, when it comes before any cauldron' do
-      tools = Remedy::Tools.resolve(settings_with(['rustic mortar', 'ceramic bowl', 'iron cauldron']), order_for('bowl'))
+      tools = resolved(['rustic mortar', 'ceramic bowl', 'iron cauldron'], order_for('bowl'))
       expect(tools.container).to eq('ceramic bowl')
     end
 
     it 'names the stirrer pestle when alchemy_tools lists a mortar but no pestle' do
-      tools = Remedy::Tools.resolve(settings_with(['rustic mortar', 'mesh sieve']), order_for('mortar'))
+      tools = resolved(['rustic mortar', 'mesh sieve'], order_for('mortar'))
       expect(tools.stirrer).to eq('pestle')
     end
 
@@ -3952,9 +4285,53 @@ RSpec.describe 'Remedy order, tools and inventory' do
       expect(messages.first).to eq('***  needs a mortar, and your alchemy_tools setting lists none. ***')
     end
 
-    it 'CURRENT (H12): matches the vessel word anywhere and unescaped, so r takes the heavy cauldron (layer 15 escapes it)' do
-      # flipped by layer 15 (escaped, still a prefix match).
-      expect(Remedy::Tools.resolve(settings_with(logged_tools), order_for('r')).container).to eq('heavy cauldron')
+    # Layer 15 (H12): the word is escaped and
+    # matched at the start of a word of the entry, with no boundary after it.
+    describe 'the vessel word, escaped and matched at the start of a word (H12, layer 15)' do
+      it 'H12: takes the first entry with a word starting with r, the rounded pestle, where r used to take the heavy cauldron' do
+        expect(resolved(logged_tools, order_for('r')).container).to eq('rounded pestle')
+      end
+
+      it 'stops with the alchemy_tools message, not RegexpError, for mortar(' do
+        expect { Remedy::Tools.resolve(settings_with(logged_tools), order_for('mortar(')) }.to raise_error(SystemExit)
+        expect(messages).to eq(['*** some head unguent needs a mortar(, and your alchemy_tools setting lists none. ***',
+                                '*** Add your mortar( to alchemy_tools, then run this again. ***'])
+      end
+
+      ['mort.*', 'mortar|cauldron', '[lm]', '.', 'mortar\\'].each do |word|
+        it "reads #{word.inspect} as plain text, which no entry holds, and stops" do
+          expect { Remedy::Tools.resolve(settings_with(logged_tools), order_for(word)) }.to raise_error(SystemExit)
+          expect(messages.first).to eq("*** some head unguent needs a #{word}, and your alchemy_tools setting lists none. ***")
+        end
+      end
+
+      it 'no longer finds an entry by letters inside a word: ortar finds no mortar' do
+        expect { Remedy::Tools.resolve(settings_with(logged_tools), order_for('ortar')) }.to raise_error(SystemExit)
+      end
+
+      [['mort', 'large mortar'], ['mortar', 'large mortar'], ['large', 'large mortar'], ['large mortar', 'large mortar'],
+       ['heavy cauldron', 'heavy cauldron'], ['caul', 'heavy cauldron'], ['shaped', 'turtle-shaped sieve'],
+       ['turtle-shaped', 'turtle-shaped sieve'], ['pestle', 'rounded pestle']].each do |word, entry|
+        it "still finds the #{entry} from #{word.inspect}, the start of a word of it" do
+          expect(resolved(logged_tools, order_for(word)).container).to eq(entry)
+        end
+      end
+
+      it 'still finds a rustic mortar from a recipe asking for a mortar' do
+        expect(resolved(['rustic mortar', 'rustic pestle'], order_for('mortar')).to_h)
+          .to eq(container: 'rustic mortar', stirrer: 'rustic pestle', verb: 'crush')
+      end
+
+      it 'finds the same entry as the old rule for every container a base-recipes remedy asks for' do
+        recipes = YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes']
+        words = recipes.select { |recipe| recipe['type'] == 'remedies' }.map { |recipe| recipe['container'] }.uniq
+        expect(words).to contain_exactly('mortar', 'bowl')
+        tool_lists = [logged_tools, ['rustic mortar', 'rustic pestle', 'ceramic bowl'], ['iron cauldron', 'stone mortar', 'pestle']]
+        tool_lists.product(words).each do |tools, word|
+          old_rule = word =~ /bowl/ ? /cauldron|bowl/ : /#{word}/
+          expect(resolved(tools, order_for(word)).container).to eq(tools.find { |tool| old_rule =~ tool })
+        end
+      end
     end
   end
 
@@ -4156,11 +4533,13 @@ RSpec.describe 'Remedy order, tools and inventory' do
       expect(DRCC).to have_received(:stow_crafting_item).with(nil, toolbag, toolstrap)
     end
 
-    it 'gets and stows the remed book with no belt, as remedy always has (H08, layer 15)' do
-      inventory.get_tool(Remedy::REMED_BOOK, belt: nil)
-      inventory.stow_tool(Remedy::REMED_BOOK, belt: nil)
-      expect(DRCC).to have_received(:get_crafting_item).with('remed book', toolbag, bag_items, nil)
-      expect(DRCC).to have_received(:stow_crafting_item).with('remed book', toolbag, nil)
+    # layer 15 (H08): the book uses alchemy_belt like every tool
+    it 'gets the remed book guarded, with alchemy_belt and skip_exit, and stows it with alchemy_belt (H08, layer 15)' do
+      allow(DRCI).to receive(:in_hands?).with('book').and_return(true)
+      expect { inventory.fetch!(Remedy::REMED_BOOK) }.not_to raise_error
+      inventory.stow_tool(Remedy::REMED_BOOK)
+      expect(DRCC).to have_received(:get_crafting_item).with('remed book', toolbag, bag_items, toolstrap, true)
+      expect(DRCC).to have_received(:stow_crafting_item).with('remed book', toolbag, toolstrap)
     end
 
     it 'routes the swapped herb1 as a herb, and no longer the one asked for, after with_herbs' do
@@ -4258,6 +4637,49 @@ RSpec.describe 'Remedy order, tools and inventory' do
           inventory.stow_held('pestle')
           expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, nil)
         end
+      end
+    end
+
+    # The ids are made up (code-derived): the logs carry no ids. GameObj
+    # shows a hand's id from the harness's $hand_ids.
+    describe 'held_id, the id of the item a hand holds (layer 15)' do
+      before do
+        allow(DRCI).to receive(:in_left_hand?) { |item| ReplayCommons.matches?($left_hand, item) }
+        allow(DRCI).to receive(:in_right_hand?) { |item| ReplayCommons.matches?($right_hand, item) }
+      end
+
+      it 'answers the id of the hand whose item the name finds, by the last word of the name' do
+        $left_hand = 'rounded pestle'
+        $right_hand = 'dried nemoih'
+        $hand_ids = { 'rounded pestle' => '41782399', 'dried nemoih' => '41782305' }
+        expect(inventory.held_id('nemoih')).to eq('41782305')
+        expect(inventory.held_id('dried nemoih')).to eq('41782305')
+        expect(inventory.held_id('pestle')).to eq('41782399')
+      end
+
+      it 'answers nil when neither hand holds the item, whatever ids the hands carry' do
+        $left_hand = 'rounded pestle'
+        $right_hand = 'mixing stick'
+        $hand_ids = { 'rounded pestle' => '41782399', 'mixing stick' => '41782398' }
+        expect(inventory.held_id('nemoih')).to be_nil
+      end
+
+      it "answers nil when the hand's item has no id" do
+        $right_hand = 'dried nemoih'
+        expect(inventory.held_id('nemoih')).to be_nil
+      end
+
+      it 'answers nil, and does not raise, when GameObj has no hand object yet' do
+        $right_hand = 'dried nemoih'
+        allow(GameObj).to receive_messages(left_hand: nil, right_hand: nil)
+        expect(inventory.held_id('nemoih')).to be_nil
+      end
+
+      it 'sends nothing' do
+        $right_hand = 'dried nemoih'
+        $hand_ids = { 'dried nemoih' => '41782305' }
+        inventory.held_id('nemoih')
+        expect(game.sent).to be_empty
       end
     end
 
@@ -5099,6 +5521,8 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
     let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => basket }) }
     let(:gatherer) { Remedy::HerbGatherer.new(inventory) }
     let(:messages) { [] }
+    # remedy's command with no id on the stack in hand (remedy.lic:247 at
+    # 03f11b54); 26:10748 is the logged put this replies to.
     let(:put) { 'put nemoih in my large mortar' }
 
     # The hands and the commons are ReplayCommons' model, so each check of
@@ -5141,7 +5565,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script('count my nemoih', log('25:33679'))
       game.script('combine my nemoih', log('25:104590'))
       script_put
-      gatherer.gather('nemoih', 'large mortar')
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
       expect(commons.moves).to eq(['large mortar: grass toolstrap -> hand', 'large mortar: hand -> ground',
                                    "dried nemoih: #{basket} -> hand", 'dried nemoih: hand -> game', 'large mortar: ground -> hand'])
@@ -5160,7 +5584,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script('count my first nemoih', log('25:12538'))
       game.script('count my second nemoih', log('25:8678'))
       script_put
-      gatherer.gather('nemoih', 'large mortar')
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', put])
       expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
       expect(stows.map(&:first)).not_to include('first nemoih')
@@ -5172,7 +5596,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script('count my first nemoih', log('25:8678'))
       game.script('count my second nemoih', log('25:12538'))
       script_put
-      gatherer.gather('nemoih', 'large mortar')
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(commons.calls).to include(['DRCI.put_away_item?', 'second nemoih', nil])
       expect(commons.calls).not_to include(['DRCI.put_away_item?', 'first nemoih', nil])
     end
@@ -5185,7 +5609,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script('count my first nemoih', log('25:8678'))
       game.script('count my second nemoih', log('25:13762'))
       script_put
-      gatherer.gather('nemoih', 'large mortar')
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', put])
       expect(commons.calls).to include(['DRCI.put_away_item?', 'second nemoih', nil])
       expect(messages).to be_empty
@@ -5406,9 +5830,106 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script('count my nemoih', log('25:12538'))
       game.script('combine my nemoih', log('25:104590'))
       script_put
-      gatherer.gather('nemoih', 'large mortar')
+      expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', put])
       expect(messages).to eq(['Remedy: gathered only 21 pieces of nemoih (a remedy takes 25); crafting with what is in hand.'])
+    end
+
+    # The ids are made up (code-derived): the logs carry no ids. GameObj
+    # shows the id of a hand's item from the harness's $hand_ids, which
+    # ReplayCommons.new(ids:) fills on install.
+    describe 'the put by the id of the herb stack in hand (H32)' do
+      let(:ids) { { 'dried nemoih' => '41782305' } }
+      let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => basket }, ids: ids) }
+
+      # Scripts a stack of 25 from the bag (25:33679) and the combine with
+      # one stack in hand (25:104590).
+      #
+      # @return [void]
+      def script_stack
+        game.script('count my nemoih', log('25:33679'))
+        game.script('combine my nemoih', log('25:104590'))
+      end
+
+      # Scripts the put by +command+, answered as 26:10749; the game takes
+      # the stack in hand.
+      #
+      # @param command [String] the put remedy is to send
+      # @return [void]
+      def script_put_as(command)
+        game.script(command, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+      end
+
+      it 'puts the stack in by its id: "put #41782305 in my large mortar"' do
+        script_stack
+        script_put_as('put #41782305 in my large mortar')
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar'])
+        expect(commons.moves).to include('dried nemoih: hand -> game')
+      end
+
+      it 'takes the id from the left hand when the herb is there, not from the right hand holding another item with an id' do
+        ids['rounded pestle'] = '41782399'
+        commons.hold('rounded pestle')
+        script_stack
+        script_put_as('put #41782305 in my large mortar')
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent.last).to eq('put #41782305 in my large mortar')
+        expect($right_hand).to eq('rounded pestle')
+      end
+
+      it 'takes the id from the right hand when the herb is there, past a left hand holding another item with an id' do
+        ids['rounded pestle'] = '41782399'
+        $left_hand = 'rounded pestle'
+        script_stack
+        script_put_as('put #41782305 in my large mortar')
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent.last).to eq('put #41782305 in my large mortar')
+        expect($left_hand).to eq('rounded pestle')
+      end
+
+      # 26:39194, "What were you referring to?", stands for the game
+      # refusing a stale id (code-derived: no log sends the id form).
+      it 'puts the stack in by name once, the old command, when the game refuses the id (26:39194)' do
+        script_stack
+        game.script('put #41782305 in my large mortar', log('26:39194'))
+        script_put_as(put)
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar', 'put nemoih in my large mortar'])
+        expect(commons.moves).to include('dried nemoih: hand -> game')
+      end
+
+      it 'listens for the refusal on the id put only: the name put after it waits for the replies it always has' do
+        puts_sent = []
+        allow(DRC).to receive(:bput) do |command, *replies|
+          puts_sent << [command, replies] if command.start_with?('put ')
+          game.bput(command, *replies)
+        end
+        script_stack
+        game.script('put #41782305 in my large mortar', log('26:39194'))
+        script_put_as(put)
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(puts_sent).to eq([['put #41782305 in my large mortar', [*Remedy::Patterns::HERB_PUT_REPLIES, *Remedy::Patterns::NOT_FOUND]],
+                                 ['put nemoih in my large mortar', Remedy::Patterns::HERB_PUT_REPLIES]])
+      end
+
+      it 'puts the herb in by name, as before, when only another held item has an id' do
+        ids.replace('rounded pestle' => '41782399')
+        $left_hand = 'rounded pestle'
+        script_stack
+        script_put_as(put)
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent.last).to eq('put nemoih in my large mortar')
+        expect(game.sent.grep(/#/)).to be_empty
+      end
+
+      it 'puts the herb in by name, as before, when GameObj has no hand object yet (nil before the first hand tag)' do
+        allow(GameObj).to receive_messages(left_hand: nil, right_hand: nil)
+        script_stack
+        script_put_as(put)
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent.last).to eq('put nemoih in my large mortar')
+      end
     end
 
     describe 'the herb left in hand after the put' do
@@ -5433,7 +5954,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
 
       it 'puts it in the crafting container when the herb_container leaves it in hand, and picks the mortar up' do
         refuse_the_leftover_in(basket)
-        gatherer.gather('nemoih', 'large mortar')
+        expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', basket, toolstrap).once.ordered
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, toolstrap).once.ordered
         expect(commons.location_of('dried nemoih')).to eq(toolbag)

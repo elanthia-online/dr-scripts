@@ -441,19 +441,27 @@ module Harness
     end
   end
 
+  # The hands as GameObj shows them: name and noun are the held item's
+  # name ('Empty' when nothing is held), and id is the game's id of the
+  # held item, looked up by that name in $hand_ids (nil when $hand_ids has
+  # no id for it, as for an empty hand). A spec gives held items ids by
+  # setting $hand_ids, `{ full item name => id }`, or through
+  # ReplayCommons.new(ids:).
   class GameObj
+    # @return [OpenStruct] the left hand's name, noun and id
     def self.left_hand
       item = Harness.left_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item })
+      OpenStruct.new({ name: item, noun: item, id: ($hand_ids || {})[Harness.left_hand] })
     end
 
     def self.left_hand=(val)
       Harness.left_hand(val)
     end
 
+    # @return [OpenStruct] the right hand's name, noun and id
     def self.right_hand
       item = Harness.right_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item })
+      OpenStruct.new({ name: item, noun: item, id: ($hand_ids || {})[Harness.right_hand] })
     end
 
     def self.right_hand=(val)
@@ -919,6 +927,8 @@ module Harness
 
     $left_hand = nil
     $right_hand = nil
+    # Held item full name => the game's id GameObj shows for it.
+    $hand_ids = {}
 
     Flags._reset
     DRSpells._reset
