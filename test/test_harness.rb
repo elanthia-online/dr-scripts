@@ -950,6 +950,20 @@ module Harness
     echo(message)
   end
 
+  # Lich's global +debug+ (lich-5 480bdee3 lib/global_defs.rb:446-454, a
+  # top-level def, so a private Object method): it yields or echoes only when
+  # $LICH_DEBUG is set and returns nil otherwise. A script method that names
+  # +debug+ with no local of that name calls this, not a NameError.
+  #
+  # @param args [Array] what to echo or yield
+  # @yield [*args] the debug block, run only when $LICH_DEBUG is set
+  # @return [Object, nil] the block's or echo's value, nil when not debugging
+  private def debug(*args)
+    return unless $LICH_DEBUG
+
+    block_given? ? yield(*args) : echo(*args)
+  end
+
   def displayed_messages
     $displayed_messages
   end

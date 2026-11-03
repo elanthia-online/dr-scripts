@@ -1,0 +1,105 @@
+# frozen_string_literal: true
+
+require 'ostruct'
+require 'yaml'
+
+require_relative 'spec_helper'
+
+load_lic_class('create_remedies.lic', 'CreateRemedies')
+
+RSpec.describe CreateRemedies do
+  let(:create_remedies) { described_class.allocate }
+  let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+  # CODE-DERIVED: no log has a herb tap reply; bput hands back the text the
+  # "You tap" pattern matched (create_remedies.lic:36-48).
+  let(:tapped) { ReplayGame.code('You tap', from: 'create_remedies.lic:45').text }
+  # The hands remedy.lic leaves when it ends.
+  let(:remedy_hands) { [nil, nil] }
+  let(:messages) { [] }
+  # [script name, first two arguments] of each script run, in order.
+  let(:scripts_run) { [] }
+
+  before do
+    $left_hand = nil
+    $right_hand = nil
+    $test_data.recipes = OpenStruct.new(crafting_recipes: recipes)
+    allow(DRC).to receive(:bput).and_return(tapped)
+    allow(DRC).to receive(:message) { |text| messages << text }
+    allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }
+    allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+      scripts_run << [name, args.first(2)]
+      $left_hand, $right_hand = remedy_hands if name == 'remedy'
+    end
+  end
+
+  # Runs create_remedies as `;create_remedies <target>` (or
+  # `;create_remedies <target> tools`), with the herbs on hand.
+  #
+  # @param target [String] the recipe name to search
+  # @param tools [Boolean] whether to pass the tools option
+  # @return [void]
+  def run(target, tools: false)
+    $parsed_args = { target: target }
+    $parsed_args[:tools] = 'tools' if tools
+    create_remedies.send(:initialize)
+  end
+
+  # remedy.lic gives no exit status; the product it leaves in hand is its
+  # success signal.
+  describe 'after remedy' do
+    context 'when remedy leaves the product in hand' do
+      # The product of 26:20289, "You get some hulnik unguent from inside a
+      # diamondique large mortar ...".
+      let(:remedy_hands) { [nil, 'hulnik unguent'] }
+
+      # A guard that fires here would exit; not_to raise_error turns that
+      # into a failure instead of a silent end of the whole run.
+      it 'runs remedy with the arguments of today and ends without a stop' do
+        expect { run('back unguent') }.not_to raise_error
+
+        expect(DRC).to have_received(:wait_for_script_to_complete)
+          .with('remedy', ['remedies', 3, 'some back unguent', 'hulnik', 'na', 'coal nugget', 'mortar', 'unguent'])
+        expect(messages).to be_empty
+      end
+
+      it 'finds the product in the left hand too, with a tool in the right' do
+        remedy_hands.replace(['hulnik unguent', 'pestle'])
+        expect { run('back unguent') }.not_to raise_error
+        expect(messages).to be_empty
+      end
+
+      it 'gets the tools before remedy and stores them after it with `tools`' do
+        expect { run('back unguent', tools: true) }.not_to raise_error
+
+        expect(scripts_run).to eq([['clerk-tools', %w[alchemy get]], ['remedy', ['remedies', 3]], ['clerk-tools', %w[alchemy store]]])
+        expect(messages).to be_empty
+      end
+    end
+
+    context 'when remedy leaves no product in hand' do
+      it 'says so and stops' do
+        expect { run('back unguent') }.to raise_error(SystemExit)
+        expect(messages).to eq(['CreateRemedies: remedy did not leave some back unguent (unguent) in hand. Stopping.'])
+      end
+
+      it 'checks the two-herb call (create_remedies.lic:56), with the swapped flower herb, the same way' do
+        remedy_hands.replace(['diamondique mortar', 'pestle'])
+        expect { run('blister cream') }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete)
+          .with('remedy', ['remedies', 2, 'some blister cream', 'dried flower', 'nemoih', 'coal nugget', 'mortar', 'cream'])
+        expect(messages).to eq(['CreateRemedies: remedy did not leave some blister cream (cream) in hand. Stopping.'])
+      end
+
+      # get_store_tools names `debug`, which is Lich's global there (lich-5
+      # 480bdee3 lib/global_defs.rb:446-454, modelled in the harness), so the
+      # store runs today whatever remedy left; the stop keeps it.
+      it 'still stores the tools before it stops with `tools`' do
+        expect { run('back unguent', tools: true) }.to raise_error(SystemExit)
+
+        expect(scripts_run).to eq([['clerk-tools', %w[alchemy get]], ['remedy', ['remedies', 3]], ['clerk-tools', %w[alchemy store]]])
+        expect(messages).to eq(['CreateRemedies: remedy did not leave some back unguent (unguent) in hand. Stopping.'])
+      end
+    end
+  end
+end

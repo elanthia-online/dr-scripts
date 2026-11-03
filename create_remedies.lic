@@ -2,7 +2,15 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#create_remedies
 =end
 
+# Makes one remedy from data/base-recipes.yaml by name: forages and prepares
+# the herbs it lacks, then runs remedy.lic.
 class CreateRemedies
+  # Reads the arguments, finds the recipe, gets the herbs and runs remedy.lic.
+  #
+  # @return [void]
+  # @raise [SystemExit] when remedy.lic leaves no product in hand (after the
+  #   tool store when `tools` is given), or
+  #   parse_args matches no form
   def initialize
     arg_definitions = [
       [
@@ -48,15 +56,34 @@ class CreateRemedies
     else
       DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], herb1, recipe['herb2'], catalyst, recipe['container'], recipe['noun']])
     end
+    # Lich gives no exit status: the product in hand is remedy's success
+    # signal (remedy.lic header).
+    unless DRCI.in_hands?(recipe['noun'])
+      DRC.message("CreateRemedies: remedy did not leave #{recipe['name']} (#{recipe['noun']}) in hand. Stopping.")
+      get_store_tools("store") if tools
+      exit
+    end
     # Store tools?
     get_store_tools("store") if tools
   end
 
+  # Forages 25 of a herb and prepares it with alchemy.lic.
+  #
+  # @param herb [String] the herb
+  # @return [void]
   def get_prep_herb(herb)
     DRC.wait_for_script_to_complete('alchemy', [herb, 'forage', 25])
     DRC.wait_for_script_to_complete('alchemy', [herb, 'prepare'])
   end
 
+  # Gets or stores the alchemy tools with clerk-tools.lic.
+  #
+  # @param option [String] "get" or "store"
+  # @return [void]
+  # @note `debug` is a local of {#initialize}, not of this method, so here it
+  #   calls Lich's global `debug` (lich-5 480bdee3 lib/global_defs.rb:446-454),
+  #   which echoes only when $LICH_DEBUG is set and otherwise returns nil. The
+  #   script's own debug argument never shows this line; nothing raises.
   def get_store_tools(option)
     DRC.message("Option for tools is: {option}.") if debug
     DRC.wait_for_script_to_complete('clerk-tools', ['alchemy', 'get']) if option == "get"

@@ -128,6 +128,16 @@ class ReplayCommons
       regex = item_regex(requested)
       !full_name.nil? && !regex.nil? && regex.match?(full_name)
     end
+
+    # Model of DRCI.in_hands? (480bdee3 common-items.rb:935-937, :978-998) on
+    # the harness hands ($left_hand, $right_hand), for a spec that stubs only
+    # this helper: allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }.
+    #
+    # @param item [String, nil] the name the caller asks for
+    # @return [Boolean] true when either hand's name matches its short_regex
+    def held?(item)
+      matches?($left_hand, item) || matches?($right_hand, item)
+    end
   end
 
   # @param game [ReplayGame, nil] the replay whose timeline records each call
