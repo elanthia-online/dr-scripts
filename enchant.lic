@@ -471,13 +471,20 @@ class Enchant
   def cleanup(fount: true)
     stow_held_items
     if fount && @item != 'fount'
-      get_tool(@fount)
+      get_tool(@fount) unless DRCI.lift?(@fount)
       stow_tool(@fount)
     end
-    if DRCI.get_item?(@item)
-      stow_tool(@item)
-      DRCI.get_item?(@item)
-    end
+    take_product
+  end
+
+  # The finished enchant puts the product (and the fount) at your feet, and
+  # the product often keeps the base item's noun: a spongestone is still a
+  # rock, a virga wand still a redwood wand. So it is lifted from the floor
+  # and kept in hand for the caller, never put in the bag with the unworked
+  # ones and taken out again. A GET is the fallback when nothing is there to
+  # lift.
+  def take_product
+    DRCI.lift?(@item) || DRCI.get_item?(@item)
   end
 
   private
