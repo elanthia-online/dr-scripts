@@ -1296,12 +1296,25 @@ RSpec.describe TaskMaster do
     end
 
     describe '#turn_in_banked' do
-      it 'puts back an item the taskmaster will not take and stops handing in' do
+      it 'puts back an item the taskmaster will not take, after five tries in a row, and stops handing in' do
         tm = reader
         allow(DRCI).to receive(:get_item?).and_return(true)
+        allow(DRCI).to receive(:in_hands?).and_return(true)
         allow(DRC).to receive(:bput).and_return('Zasele shakes her head.')
         expect(DRCC).to receive(:stow_crafting_item).with('rope', 'duffel bag', nil)
         expect(tm.turn_in_banked('rope', 4)).to eq(4)
+        expect(DRC).to have_received(:bput).with('give my rope to zasele', any_args).exactly(5).times
+      end
+
+      it "gives again through four replies it did not know, as complete_task does, and carries on" do
+        tm = reader
+        allow(DRCC).to receive(:stow_crafting_item)
+        replies = ['', '', '', '', more_needed(2), more_needed(1)]
+        allow(tm).to receive(:give_item) { replies.shift }
+
+        expect(tm.turn_in_banked('rope', 3)).to eq(1)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
       end
 
       context 'when the taskmaster wanders off' do
@@ -1703,7 +1716,8 @@ RSpec.describe TaskMaster do
 
       it 'counts unknown replies in a row only' do
         tm = finisher
-        replies = ['', more_needed(2), '', more_needed(1), sack_handed]
+        # Six in all, but never five in a row.
+        replies = ['', '', '', more_needed(1), '', '', '', sack_handed]
         allow(tm).to receive(:give_item) { replies.shift }
         expect(tm).not_to receive(:refused_hand_in)
 
