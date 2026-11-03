@@ -2311,6 +2311,30 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe '#set_aside_held_base' do
+      it "puts a rock held at a Dorhum resume back with the unworked ones, since nothing says it was finished" do
+        tm = dorhum
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        expect(DRCC).to receive(:stow_crafting_item).with('rock', 'duffel bag', nil)
+
+        tm.set_aside_held_base('spongestone')
+      end
+
+      it 'leaves the hands alone when nothing of the kind is held' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        dorhum.set_aside_held_base('spongestone')
+      end
+
+      it "leaves other taskmasters' resumes alone" do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        build.set_aside_held_base('rope')
+      end
+    end
+
     describe '#check_loot_bag' do
       it 'stops a Dorhum task whose loot bag is the crafting bag, before buying anything' do
         tm = dorhum(lootbag: 'duffel bag')
@@ -2322,6 +2346,10 @@ RSpec.describe TaskMaster do
 
       it 'stops a hand-in from the crafting bag too, as after a resume' do
         expect { dorhum(lootbag: 'Duffel Bag ').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      it 'stops when the two bags differ only by adjective, as PUT would find either' do
+        expect { dorhum(bag: 'sturdy backpack', lootbag: 'backpack').hand_in_bag }.to raise_error(SystemExit)
       end
 
       it 'lets a loot bag of its own through' do
@@ -2560,6 +2588,18 @@ RSpec.describe TaskMaster do
 
         expect(DRCI).to have_received(:put_away_item?).once
         expect(DRC).to have_received(:message).with('enchant did not finish a wand for the wands; stopping.')
+      end
+
+      it 'puts an unworked base item enchant left in hand back in the crafting bag, not the loot bag' do
+        tm = dorhum
+        enchant_runs(false)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
+        allow(DRCI).to receive(:put_away_item?)
+        expect(DRCC).to receive(:stow_crafting_item).with('wand', 'duffel bag', nil)
+
+        expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
+
+        expect(DRCI).not_to have_received(:put_away_item?)
       end
 
       it 'stops when the finished item is not in hand' do

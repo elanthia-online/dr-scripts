@@ -787,6 +787,20 @@ class TaskMaster
     DORHUM_ITEMS[item] || pause_for_unknown_item("taskmaster does not know how to make Dorhum's #{item}s yet.")
   end
 
+  # A resumed Dorhum task may start with a base item in hand, left there when
+  # an earlier run stopped. Nothing says it was finished (a finished one goes
+  # straight to task_loot_bag), so it goes back with the unworked ones rather
+  # than being handed in.
+  #
+  # @param item [String] the task item's noun
+  # @return [void]
+  def set_aside_held_base(item)
+    return unless @npc == 'dorhum'
+
+    noun = hand_in_noun(item)
+    DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
+  end
+
   # Dorhum's finished items keep their base item's noun, so they must wait
   # in a different container from the unworked ones: with task_loot_bag
   # unset (or set to the crafting bag), a GET for the next base item could
@@ -795,9 +809,11 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when task_loot_bag is the crafting bag
   def check_loot_bag
-    return unless @lootbag.to_s.strip.casecmp?(@bag.to_s.strip)
+    # By noun: "put my rock in my backpack" finds a "sturdy backpack" too, so
+    # two names with the same noun may well be the same bag.
+    return unless @lootbag.to_s.split.last.to_s.casecmp?(@bag.to_s.split.last.to_s)
 
-    DRC.message("Dorhum's tasks need task_loot_bag set to a container other than your crafting bag (#{@bag}): his finished items keep the base item's noun (a spongestone is still a rock). Stopping.")
+    DRC.message("Dorhum's tasks need task_loot_bag set to a container other than your crafting bag (#{@bag}), with a different noun: his finished items keep the base item's noun (a spongestone is still a rock). Stopping.")
     exit
   end
 
@@ -934,6 +950,9 @@ class TaskMaster
       Flags.reset(ENCHANTED_FLAG)
       DRC.wait_for_script_to_complete('enchant', ['instructions', item, noun])
       unless Flags[ENCHANTED_FLAG] && DRCI.in_hands?(noun)
+        # An unworked base item enchant left in hand (it stopped before the
+        # brazier) goes back with the others, not to the hand-in.
+        DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
         DRC.message("enchant did not finish a #{noun} for the #{item}s; stopping.")
         exit
       end
@@ -1071,6 +1090,7 @@ class TaskMaster
       DRC.message("You are not on a task with #{@npc}.")
       exit
     end
+    set_aside_held_base(item)
     owed = turn_in_banked(item, owed)
     exit if owed.zero?
 
