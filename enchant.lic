@@ -42,8 +42,9 @@ class Enchant
   PUT_BRAZIER_NEEDS_CLEAN = /^You must first clean/.freeze
   PUT_BRAZIER_GLANCE = /^You glance down/.freeze
   # A PUT that cannot work: the item is not in hand (log 1, "You must be
-  # holding the rocks before doing that."), or no brazier in reach (log 2,
-  # the brazier still in the bag).
+  # holding the rocks before doing that."), or nothing to PUT (log 2: the
+  # wand GET failed for want of a free hand, and "put wand on brazier" got
+  # "What were you referring to?").
   PUT_BRAZIER_FAILURES = [/^You must be holding.*/, /^What were you referring to.*/].freeze
 
   # Get item patterns
