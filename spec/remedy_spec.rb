@@ -4019,6 +4019,395 @@ RSpec.describe Remedy do
       expect(game.sent).to be_empty
     end
   end
+
+  # Layer 20: `;remedy instructions <herb1>
+  # <catalyst> <container> <noun> [herb quantity]` studies loose crafting
+  # instructions, "<noun> instructions", with the local study_instructions
+  # (Remedy::LocalStudyInstructions, a mirror of lich-5's
+  # DRCC.study_instructions, elanthia-online/lich-5#2246) instead of opening a book.
+  #
+  # The run replayed is the marram salve of 25:94367-94890, which the log
+  # made from instructions: its GET (25:94375), its two studies
+  # (25:94394-94396, then 25:94406-94410) and its PUT (25:94420), then the
+  # crafting the contract replays through the book form (25:94433-94890).
+  describe 'instructions remedies with a local study_instructions (layer 20)' do
+    let(:settings) { logged_settings }
+    let(:salve_instructions) { 'marram grass salve instructions' } # 25:94375
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried marram' => toolbag, salve_instructions => toolbag) }
+    let(:salve_line) { typed('instructions marram "pewter ingot" mortar salve') }
+    let(:study) { 'study my salve instructions' } # 25:94392, 25:94404
+    let(:crush) { 'crush my salve with my rounded pestle' }
+    # The salve's crafting, as the contract pins it for the book form
+    # (25:94435-94849).
+    let(:salve_crafting) do
+      ['count my marram',                               # 25:33679 (analog)
+       'combine my marram',                             # 25:104590 (analog)
+       herb_put_command('marram', 'large mortar'),      # 25:94435
+       'crush my marram with my rounded pestle',        # water cue 25:94459
+       'put water in my large mortar',                  # 25:94500
+       crush,                                           # 25:94537
+       crush,                                           # particulate cue 25:94558
+       'push my salve with my sieve',                   # 25:94585
+       crush, crush,                                    # 25:94609, 25:94635
+       crush,                                           # catalyst cue 25:94655
+       'put my pewter ingot in my large mortar',        # 25:94692
+       crush,                                           # colour cue 25:94738
+       'smell my salve',                                # 25:94753
+       crush,                                           # clumps cue 25:94776
+       'turn my large mortar',                          # 25:94795
+       crush,                                           # colour cue 25:94822
+       'smell my salve']                                # Roundtime 25:94847, then final touches 25:94849
+    end
+    let(:salve_finishing) { ['get my salve from my large mortar', 'mark my salve with my stamp', 'count my salve'] } # 25:94883, 25:94888, layer 17's count
+    let(:stopped_message) { 'Remedy: could not study the salve instructions. Stopping.' }
+
+    # Scripts the two studies of 25:94392-94410: "Study them again" with 8
+    # uses left, then the study that ends in Roundtime.
+    #
+    # @return [void]
+    def script_salve_study
+      game.script(study, log('25:94394'), log('25:94396'))
+      game.script(study, log('25:94406'), log('25:94408'), log('25:94410'))
+    end
+
+    # Scripts the salve's herb, crafting and product, as the contract's
+    # book-form salve run does (25:94433-94890): one stack of herb found in
+    # the toolbag, counted, combined with nothing (25:104590, analog) and
+    # put in, after which the game holds it.
+    #
+    # @param put_lines [Array<ReplayGame::Line>] the reply to the herb put
+    # @param count [ReplayGame::Line] the reply to the herb's count: 25
+    #   pieces (25:33679, analog, as #script_one_stack) by default
+    # @return [void]
+    def script_salve_crafting(put_lines: [log('25:94435')], count: log('25:33679'))
+      game.script('count my marram', count)
+      game.script('combine my marram', log('25:104590'))
+      game.script(herb_put_command('marram', 'large mortar'), *put_lines, after: ->(_game) { commons.release('marram') })
+      transcript('2026-10-25_94219').script(game, commands: mortar_craft_commands, skip: [94476, 94671])
+      alias_remedy_wording(vessel: 'large mortar', noun: 'salve', herb: 'marram')
+      script_product('get my salve from my large mortar', log('25:94883'), 'marram salve')
+    end
+
+    # @return [Array<Array>] the commons calls that name the salve instructions
+    def instructions_calls
+      commons.calls.select { |call| call[1] == 'salve instructions' }
+    end
+
+    # @return [Array<Array>] the commons calls that reach for the herb or the
+    #   vessel's place on the ground: the herb gathering
+    def gathering_calls
+      commons.calls.select { |call| call[1].to_s.include?('marram') || call.first == 'DRCI.lower_item?' }
+    end
+
+    %i[current v5_22 v5_21].each do |release|
+      context "on lich-5 #{release}, whose DRCC.get_crafting_item answers #{release == :current ? 'true' : 'nil'} on success" do
+        let(:lich5) { release }
+
+        before do
+          script_salve_study
+          script_salve_crafting
+        end
+
+        it 'studies the salve instructions twice, then crafts the salve with the commands of the book form, byte for byte' do
+          expect(run_remedy(salve_line)).to eq(:exited)
+          expect(game.sent).to eq([study, study, *salve_crafting, *salve_finishing]), game.report
+          expect(game.diagnostics).to be_empty
+        end
+
+        it 'gets the instructions from the toolbag and puts them back there before anything else moves, and opens no book' do
+          run_remedy(salve_line)
+          expect(commons.moves.first(3)).to eq(["#{salve_instructions}: #{toolbag} -> hand", "#{salve_instructions}: hand -> #{toolbag}",
+                                                "diamondique large mortar: #{toolstrap} -> hand"])
+          expect(instructions_calls).to eq([['DRCC.get_crafting_item', 'salve instructions', toolbag, settings[:crafting_items_in_container], settings[:alchemy_belt], true],
+                                            ['DRCI.in_hands?', 'salve instructions'],
+                                            ['DRCC.stow_crafting_item', 'salve instructions', toolbag, settings[:alchemy_belt]]])
+          expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
+          expect(commons.moves.grep(/remed book/)).to be_empty
+        end
+
+        it 'says 7 uses are left (8 before the study, 25:94396), then ends with the salve in hand and every tool back' do
+          expect(run_remedy(salve_line)).to eq(:exited)
+          expect(remedy_messages).to eq(['Remedy: 7 uses left on the salve instructions.', yield_line('marram salve')])
+          expect(commons.location_of('marram salve')).to eq('left').or eq('right')
+          expect(commons.location_of(salve_instructions)).to eq(toolbag)
+          expect(tool_locations).to eq(logged_tools)
+        end
+      end
+    end
+
+    it 'opens no book with master_crafting_book set either' do
+      settings[:master_crafting_book] = 'tome'
+      script_salve_study
+      script_salve_crafting
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
+      expect(game.sent.first(2)).to eq([study, study])
+    end
+
+    it 'gets the instructions by name from crafting_container when crafting_items_in_container lists them' do
+      bag_items = ['alcohol', 'water', 'pewter ingot', 'remed book', 'salve instructions']
+      settings[:crafting_items_in_container] = bag_items
+      script_salve_study
+      script_salve_crafting
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(instructions_calls.first).to eq(['DRCC.get_crafting_item', 'salve instructions', toolbag, bag_items, settings[:alchemy_belt], true])
+    end
+
+    # The lines are the liniment set's last use (25:30338-30352), as an
+    # analog for the salve's: no logged salve set was used up.
+    it 'says the last use tossed the instructions, puts nothing away for them, and crafts on (25:30340, 25:30349, then 25:30352)' do
+      game.script(study, log('25:30338'), log('25:30340'))
+      game.script(study, log('25:30345'), log('25:30347'), log('25:30349'), log('25:30352'), after: ->(_game) { commons.release('salve instructions') })
+      script_salve_crafting
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(game.sent).to eq([study, study, *salve_crafting, *salve_finishing]), game.report
+      expect(commons.calls).not_to include(['DRCC.stow_crafting_item', 'salve instructions', toolbag, settings[:alchemy_belt]])
+      expect(commons.moves.first(2)).to eq(["#{salve_instructions}: #{toolbag} -> hand", "#{salve_instructions}: hand -> game"])
+      expect(remedy_messages).to eq(['Remedy: that was the last use of the salve instructions; they are gone.', yield_line('marram salve')])
+    end
+
+    it 'says "1 use" for one use left, 2 before the study (code-derived count: the game said 1 to 8 in the logs)' do
+      two_left = code('[These instructions have only 2 uses remaining.  Study them again to proceed.]', from: '25:10812 with 2 uses')
+      game.script(study, log('25:94394'), two_left)
+      game.script(study, log('25:94406'), log('25:94408'), log('25:94410'))
+      script_salve_crafting
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(remedy_messages.first).to eq('Remedy: 1 use left on the salve instructions.')
+    end
+
+    it 'says nothing of uses for instructions that do not wear out (the study ends in Roundtime at once, 25:94406-94410)' do
+      game.script(study, log('25:94406'), log('25:94408'), log('25:94410'))
+      script_salve_crafting
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(game.sent.first(2)).to eq([study, 'count my marram'])
+      expect(remedy_messages).to eq([yield_line('marram salve')])
+    end
+
+    %i[current v5_22 v5_21].each do |release|
+      context "with no instructions on hand, on lich-5 #{release}" do
+        let(:lich5) { release }
+        let(:inventory) { logged_tools.merge(logged_supplies, 'dried marram' => toolbag) }
+
+        # The GET of missing instructions gets "What were you referring
+        # to?" (26:60708); ReplayCommons answers it at API level as each
+        # release's DRCC.get_crafting_item does with skip_exit.
+        it 'stops before any study or herb, with only the helper\'s missing line and remedy\'s stop' do
+          expect(run_remedy(salve_line)).to eq(:exited)
+          expect(game.sent).to be_empty
+          expect(gathering_calls).to be_empty
+          expect(commons.messages).to eq(['DRCC: You seem to be missing: salve instructions'])
+          expect(remedy_messages).to eq([stopped_message])
+          exit_hooks.each(&:call)
+          expect(game.sent).to be_empty
+          expect(remedy_flags).to be_empty
+        end
+      end
+    end
+
+    it 'stops after three "Study them again" prompts, the instructions put back, before any herb, beeping for each report' do
+      game.fallback(study, log('25:94394'), log('25:94396'))
+      outcome = run_remedy(salve_line) { allow(DRC).to receive(:beep) }
+      expect(outcome).to eq(:exited)
+      expect(game.sent).to eq([study, study, study])
+      expect(commons.location_of(salve_instructions)).to eq(toolbag)
+      expect(gathering_calls).to be_empty
+      expect(remedy_messages).to eq(['DRCC: Still told to study salve instructions again after 3 studies.', stopped_message])
+      expect(DRC).to have_received(:beep).twice
+    end
+
+    it 'stops when the study goes unanswered, the instructions put back (code-derived: no study timed out in the logs)' do
+      game.script(study)
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(game.sent).to eq([study])
+      expect(commons.location_of(salve_instructions)).to eq(toolbag)
+      expect(remedy_messages).to eq(['DRCC: No reply to studying salve instructions.', stopped_message])
+    end
+
+    it 'stops before the first crush when the instructions fade while the herb is gathered (25:37919), the mortar and pestle in hand' do
+      script_salve_study
+      script_salve_crafting(put_lines: [log('25:94435'), log('25:37919')])
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(game.sent).to eq([study, study, 'count my marram', 'combine my marram', herb_put_command('marram', 'large mortar')])
+      expect(remedy_messages).to eq(['Remedy: 7 uses left on the salve instructions.',
+                                     'Remedy: the salve instructions faded from memory before crafting began; run remedy again to study them. Stopping.'])
+      expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+      expect(commons.location_of('rounded pestle')).to eq('left').or eq('right')
+    end
+
+    # code-derived (R:51 /You need another prepared herb/): no log shows the
+    # line, and every instructions remedy of the logs uses one herb.
+    it 'stops at a second-herb cue (R:51) saying the instructions form takes none, asking for no herb named na' do
+      script_salve_study
+      script_salve_crafting(put_lines: [log('25:94435'),
+                                        code('You need another prepared herb to continue crafting some unfinished marram salve.', from: 'R:51 /You need another prepared herb/')])
+      expect(run_remedy(salve_line)).to eq(:exited)
+      expect(game.sent).to eq([study, study, 'count my marram', 'combine my marram', herb_put_command('marram', 'large mortar')])
+      expect(remedy_messages).to eq(['Remedy: 7 uses left on the salve instructions.',
+                                     'Remedy: the game asks for a second herb, and the instructions form takes none. Stopping.'])
+      expect(commons.calls.select { |_name, item, *| item == 'na' }).to be_empty
+      expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+    end
+
+    it 'crafts on when the fade of an earlier study arrives while these instructions are got, before they are studied' do
+      script_salve_study
+      script_salve_crafting
+      outcome = run_remedy(salve_line) do
+        allow(DRCC).to receive(:get_crafting_item) do |*args|
+          game.unprompted(log('25:37919')) if args.first == 'salve instructions'
+          commons.get_crafting_item(*args)
+        end
+      end
+      expect(outcome).to eq(:exited)
+      expect(game.sent).to eq([study, study, *salve_crafting, *salve_finishing]), game.report
+      expect(commons.location_of('marram salve')).to eq('left').or eq('right')
+    end
+
+    it 'takes a herb quantity, as the book form does: 75 is the herb gathering\'s target, met by one stack of 75 (25:8678)' do
+      targets = []
+      script_salve_study
+      script_salve_crafting(count: log('25:8678'))
+      outcome = run_remedy(typed('instructions marram "pewter ingot" mortar salve 75')) do
+        allow(Remedy::HerbGatherer).to receive(:new).and_wrap_original do |original, *args, **options|
+          targets << options[:minimum]
+          original.call(*args, **options)
+        end
+      end
+      expect(outcome).to eq(:exited)
+      expect(targets).to eq([75])
+      expect(game.sent).to eq([study, study, *salve_crafting, *salve_finishing]), game.report
+    end
+
+    it 'stops on a herb quantity no stack holds before any command, as the book form does' do
+      expect(run_remedy(typed('instructions marram "pewter ingot" mortar salve 76'))).to eq(:exited)
+      expect(game.sent).to be_empty
+      expect(commons.calls).to be_empty
+    end
+
+    it 'leaves the Flag of the local study_instructions deleted by the cleanup, however the run ends' do
+      game.script(study, log('25:94394'), log('25:94396'))
+      outcome = run_remedy(salve_line) do
+        allow(DRC).to receive(:bput).with(study, any_args) do |*args|
+          game.bput(*args)
+          exit if game.sent.size == 2 # a ;kill during the second study
+        end
+      end
+      expect(outcome).to eq(:exited)
+      exit_hooks.each(&:call)
+      expect(remedy_flags).to be_empty
+    end
+
+    describe 'the order an instructions form makes' do
+      # @param line [String] the arguments as typed after `;remedy`
+      # @return [Remedy::Order]
+      def order_from(line)
+        Remedy::Order.from_args(ArgParserModel.parse(Remedy::ARG_DEFINITIONS, typed(line).drop(1)))
+      end
+
+      it 'has no book, chapter or recipe name, and reads herb2 as na' do
+        expect(order_from('instructions marram "pewter ingot" mortar salve').to_h)
+          .to eq(mode: :instructions, book_type: nil, chapter: nil, recipe_name: nil, herb1: 'marram', herb2: 'na',
+                 catalyst: 'pewter ingot', container_request: 'mortar', noun: 'salve', herb_quantity: nil)
+      end
+
+      it 'names the instructions "<noun> instructions" and needs no second herb' do
+        order = order_from('instructions marram "pewter ingot" mortar salve')
+        expect([order.instructions?, order.continue?, order.instructions_name, order.second_herb]).to eq([true, false, 'salve instructions', nil])
+      end
+
+      it 'says the form takes no second herb, not that a herb2 the user never typed names none' do
+        expect(order_from('instructions marram "pewter ingot" mortar salve').no_second_herb).to eq('the instructions form takes none')
+      end
+
+      it 'carries on in the continue form, with herb2 na' do
+        expect(order_from('instructions marram "pewter ingot" mortar salve').continue_command).to eq(';remedy continue na "pewter ingot" mortar salve')
+      end
+
+      it 'leaves the book and continue forms without instructions, their missing second herb worded by the herb2 typed' do
+        book = order_from('remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent')
+        continuing = order_from('continue none "pewter ingot" mortar unguent')
+        expect([book.mode, book.instructions?, book.instructions_name]).to eq([:book, false, nil])
+        expect([continuing.mode, continuing.instructions?, continuing.instructions_name]).to eq([:continue, false, nil])
+        expect([book.no_second_herb, continuing.no_second_herb]).to eq(['herb2 is "na", which names none', 'herb2 is "none", which names none'])
+      end
+    end
+
+    describe 'the recipe source each form studies (Remedy::Recipe)' do
+      # @param line [String] the arguments as typed after `;remedy`
+      # @return [Remedy::Order]
+      def order_from(line)
+        Remedy::Order.from_args(ArgParserModel.parse(Remedy::ARG_DEFINITIONS, typed(line).drop(1)))
+      end
+
+      # @param line [String] the arguments as typed after `;remedy`
+      # @return [Remedy::Recipe::Book, Remedy::Recipe::Instructions]
+      def recipe_for(line)
+        Remedy::Recipe.for(order_from(line), settings: OpenStruct.new(settings), inventory: Remedy::Inventory.new(OpenStruct.new(settings), herbs: []))
+      end
+
+      it 'studies a book for the book form and the instructions for the instructions form, one source class each' do
+        expect(Remedy::Recipe::SOURCES).to eq(book: Remedy::Recipe::Book, instructions: Remedy::Recipe::Instructions)
+        expect(recipe_for('remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent')).to be_a(Remedy::Recipe::Book)
+        expect(recipe_for('instructions marram "pewter ingot" mortar salve')).to be_a(Remedy::Recipe::Instructions)
+      end
+
+      it 'has no source for the continue form, which studies nothing' do
+        expect { recipe_for('continue na "pewter ingot" mortar unguent') }.to raise_error(KeyError)
+      end
+
+      it 'names what faded as remedy always has for a book, and by the instructions\' name for instructions' do
+        expect(recipe_for('remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent').studied_instructions).to eq('the instructions for some head unguent')
+        expect(recipe_for('instructions marram "pewter ingot" mortar salve').studied_instructions).to eq('the salve instructions')
+      end
+
+      it 'sends nothing while it is picked: only #prepare studies' do
+        recipe_for('instructions marram "pewter ingot" mortar salve')
+        recipe_for('remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent')
+        expect(game.sent).to be_empty
+        expect(commons.calls).to be_empty
+      end
+    end
+
+    describe 'how parse_args reads the instructions form' do
+      # @param line [String] the arguments as typed after `;remedy`
+      # @return [OpenStruct, nil] the matched form's fields, nil when the
+      #   ArgParser model prints the help and exits
+      def parse(line)
+        ArgParserModel.parse(Remedy::ARG_DEFINITIONS, typed(line).drop(1))
+      rescue SystemExit
+        nil
+      end
+
+      it 'reads the five arguments, lowercased' do
+        expect(parse('Instructions Marram "Pewter Ingot" Mortar Salve').to_h)
+          .to eq(instructions: 'instructions', herb1: 'marram', catalyst: 'pewter ingot', container: 'mortar', noun: 'salve')
+      end
+
+      it 'reads a herb quantity sixth' do
+        expect(parse('instructions marram "pewter ingot" mortar salve 50').herb_quantity).to eq('50')
+      end
+
+      [
+        'instruction marram "pewter ingot" mortar salve',               # not the whole word
+        'instructionsx marram "pewter ingot" mortar salve',             # more than the word
+        '"salve instructions" marram "pewter ingot" mortar salve',      # the item's name, not the word
+        'instructions marram na "pewter ingot" mortar salve',           # a herb2, as in the book form
+        'instructions marram "pewter ingot" mortar',                    # no noun
+        'instructions marram "pewter ingot" mortar salve 50x'           # a quantity that is no number
+      ].each do |line|
+        it "matches no form for ;remedy #{line}" do
+          expect(parse(line)).to be_nil
+          expect(displayed_messages).to include(ArgParserModel::NO_MATCH_MESSAGE)
+        end
+      end
+
+      it 'is matched by no list the book or continue form matches, so no list matches two forms' do
+        lists = [%w[remedies 3 x nemoih na pewter mortar unguent], %w[continue na pewter mortar unguent], %w[instructions marram pewter mortar salve],
+                 %w[instructions marram pewter mortar salve 50], %w[continue marram pewter mortar salve 50]]
+        counts = lists.map { |list| Remedy::ARG_DEFINITIONS.count { |form| ArgParserModel.check_match(form, list.dup, false) } }
+        expect(counts).to eq([1, 1, 1, 1, 0])
+      end
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -4422,9 +4811,10 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
   end
 
   describe 'Remedy::ARG_DEFINITIONS' do
-    it 'offers the book form, with the optional herb quantity last (layer 19), and the continue form, in that order' do
+    it 'offers the book form, with the optional herb quantity last (layer 19), the continue form and the instructions form (layer 20), in that order' do
       expect(Remedy::ARG_DEFINITIONS.map { |form| form.map { |definition| definition[:name] } })
-        .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun herb_quantity], %w[continue herb2 catalyst container noun]])
+        .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun herb_quantity], %w[continue herb2 catalyst container noun],
+                %w[instructions herb1 catalyst container noun herb_quantity]])
     end
 
     it 'gives both forms the same herb2, catalyst, container and noun definitions' do
@@ -4434,10 +4824,11 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
 
     # Layer 19: the herb quantity is the one optional definition, so every
     # argument list that matched a form before still matches it with the
-    # same fields (the C14 contract).
-    it 'makes only the herb quantity optional, and only in the book form (layer 19)' do
+    # same fields (the C14 contract). Layer 20's instructions form takes it
+    # too, as the book form does.
+    it 'makes only the herb quantity optional, in the book form (layer 19) and the instructions form (layer 20)' do
       optional = Remedy::ARG_DEFINITIONS.map { |form| form.select { |definition| definition[:optional] }.map { |definition| definition[:name] } }
-      expect(optional).to eq([['herb_quantity'], []])
+      expect(optional).to eq([['herb_quantity'], [], ['herb_quantity']])
     end
 
     # Layer 14 (H11): every ASCII character, one at the
@@ -7758,6 +8149,318 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         expect { supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'pewter ingot') }.to raise_error(SystemExit)
         expect(messages).to eq(['Remedy: no water on hand, and no alchemy shop is known in Aesry to buy it from: put water in your crafting_container, or set force_crafting_town to a town with one. Stopping.'])
         expect(calls).to be_empty
+      end
+    end
+  end
+end
+
+# Layer 20: the local copy
+# of lich-5's DRCC.study_instructions (elanthia-online/lich-5#2246),
+# tested as a unit on a ReplayGame and ReplayCommons. Every
+# game line is a real log cite or labelled code-derived. The liniment set
+# of the logs ("shining clubmoss liniment instructions", 25:10795) is the
+# one studied.
+RSpec.describe 'Remedy::LocalStudyInstructions (layer 20)' do
+  let(:toolbag) { "botanist's toolbag" }
+  let(:liniment) { 'shining clubmoss liniment instructions' } # 25:10795
+  let(:name) { 'liniment instructions' }
+  let(:belt) { { 'name' => 'grass toolstrap', 'items' => ['large mortar', 'rounded pestle'] } }
+  let(:bag_items) { ['alcohol', 'water', 'pewter ingot', 'remed book'] }
+  let(:study) { 'study my liniment instructions' } # 25:10808, 25:10819
+  let(:lich5) { :current }
+  let(:inventory) { { liniment => toolbag } }
+  let(:game) { ReplayGame.new }
+  let(:commons) { ReplayCommons.new(game: game, lich5: lich5, inventory: inventory) }
+  let(:messages) { [] }
+  let(:flag) { Remedy::LocalStudyInstructions::STUDY_INSTRUCTIONS_DISCARDED_FLAG }
+
+  before do
+    game.install(self)
+    commons.install(self)
+    allow(DRC).to receive(:message) { |text| messages << text }
+    allow(DRC).to receive(:beep)
+  end
+
+  # @param cite [String] "<log>:<line>"
+  # @return [ReplayGame::Line]
+  def log(cite)
+    ReplayGame.log(cite)
+  end
+
+  # @param text [String]
+  # @param from [String] the code line it comes from
+  # @return [ReplayGame::Line]
+  def code(text, from:)
+    ReplayGame.code(text, from: from)
+  end
+
+  # Studies the liniment instructions as remedy does, with skip_exit.
+  #
+  # @param skip_exit [Boolean]
+  # @return [Remedy::LocalStudyInstructions::StudyInstructionsResult]
+  def study_liniment(skip_exit: true)
+    Remedy::LocalStudyInstructions.study_instructions(name, toolbag, bag_items, belt, skip_exit)
+  end
+
+  # @return [Array<Array>] the stows of the liniment instructions
+  def instructions_stows
+    commons.calls.select { |call| call.first == 'DRCC.stow_crafting_item' && call[1] == name }
+  end
+
+  # Scripts the first study of a set: "The delicate nature ..." and the
+  # prompt with the uses left before this study.
+  #
+  # @param cites [Array<String>] the two lines
+  # @return [void]
+  def script_prompt(*cites)
+    game.script(study, *cites.map { |cite| log(cite) })
+  end
+
+  # Scripts the study that completes: the scan, "ready" and Roundtime
+  # lines of 25:10821-10825.
+  #
+  # @return [void]
+  def script_completed_study
+    game.script(study, log('25:10821'), log('25:10823'), log('25:10825'))
+  end
+
+  # The toss line spoken by another player: it follows a quote, which the
+  # anchored pattern refuses.
+  #
+  # @return [ReplayGame::Line]
+  def spoken_toss
+    code(%(Mallory says, "#{log('25:30352').text}"), from: '25:30352 as player speech (STUDY_INSTRUCTIONS_DISCARDED anchor)')
+  end
+
+  describe 'the API, mirrored from DRCC.study_instructions (lich-5#2246)' do
+    it 'takes (name, bag, bag_items, belt, skip_exit = false), as the helper does' do
+      expect(Remedy::LocalStudyInstructions.method(:study_instructions).parameters)
+        .to eq([%i[req name], %i[req bag], %i[req bag_items], %i[req belt], %i[opt skip_exit]])
+    end
+
+    it 'answers a Data result with the helper\'s members and predicates' do
+      result = Remedy::LocalStudyInstructions::StudyInstructionsResult.new(studied: true, uses_left: 4, discarded: false)
+      expect(Remedy::LocalStudyInstructions::StudyInstructionsResult.members).to eq(%i[studied uses_left discarded])
+      expect(Remedy::LocalStudyInstructions::StudyInstructionsResult.ancestors).to include(Data)
+      expect([result.studied?, result.discarded?, result.uses_left]).to eq([true, false, 4])
+      expect(result).to be_frozen
+    end
+
+    it 'keeps its helpers private, as the helper keeps them off DRCC' do
+      expect(Remedy::LocalStudyInstructions.singleton_class.public_instance_methods(false)).to contain_exactly(:study_instructions)
+    end
+
+    it 'uses its own remedy- Flag, never the helper\'s' do
+      expect(flag).to eq('remedy-instructions-discarded')
+    end
+
+    it 'is a Flag Remedy.delete_flags deletes, for a ;kill that skips the method\'s own delete' do
+      Flags.add(flag, Remedy::LocalStudyInstructions::STUDY_INSTRUCTIONS_DISCARDED)
+      Remedy.delete_flags
+      expect(Flags.matchers).to be_empty
+    end
+
+    it 'loads again in the same Lich session with its result class intact (no superclass mismatch)' do
+      session = Module.new
+      lines = File.readlines(lic_path('remedy.lic'))
+      range = lic_definition_range(lines, 'class', 'Remedy', 'remedy.lic')
+      verbose = $VERBOSE
+      $VERBOSE = nil # the second run re-assigns every constant, which only warns
+      begin
+        2.times { session.module_eval(lines[range].join, lic_path('remedy.lic'), range.begin + 1) }
+      ensure
+        $VERBOSE = verbose
+      end
+      result = session::Remedy::LocalStudyInstructions::StudyInstructionsResult.new(studied: false, uses_left: nil, discarded: true)
+      expect(result.discarded?).to be(true)
+    end
+  end
+
+  describe 'the patterns, against the real lines' do
+    it 'reads the uses count from the prompt, as DRC.bput returns it (25:10812, 25:30340)' do
+      again = Remedy::LocalStudyInstructions::STUDY_INSTRUCTIONS_AGAIN
+      expect(log('25:10812').text[again]).to eq('These instructions have only 5 uses remaining.  Study them again')
+      expect(log('25:10812').text[again][again, :uses]).to eq('5')
+      expect(log('25:30340').text[again, :uses]).to eq('1')
+    end
+
+    it 'catches the toss line (25:30352), behind a tag too, but not another player quoting it' do
+      discarded = Remedy::LocalStudyInstructions::STUDY_INSTRUCTIONS_DISCARDED
+      expect(log('25:30352').text).to match(discarded)
+      expect("<pushBold/>#{log('25:30352').text}").to match(discarded) # code-derived: a tag before the game's line
+      expect(spoken_toss.text).not_to match(discarded)
+    end
+  end
+
+  describe 'a set that wears out' do
+    it 'studies twice by full name, then puts the instructions back: 5 uses before, 4 left (25:10810-10825)' do
+      script_prompt('25:10810', '25:10812')
+      script_completed_study
+      result = study_liniment
+      expect(game.sent).to eq([study, study])
+      expect(result.to_h).to eq(studied: true, uses_left: 4, discarded: false)
+      expect(instructions_stows).to eq([['DRCC.stow_crafting_item', name, toolbag, belt]])
+      expect(commons.location_of(liniment)).to eq(toolbag)
+      expect(messages).to be_empty
+      expect(Flags.matchers).not_to have_key(flag)
+    end
+
+    it 'gets them with skip_exit as asked, and through the belt and bag items it is given' do
+      script_completed_study
+      study_liniment(skip_exit: true)
+      expect(commons.calls.first).to eq(['DRCC.get_crafting_item', name, toolbag, bag_items, belt, true])
+    end
+
+    it 'reports the toss and puts nothing away after the last use (25:30340, 25:30349, then 25:30352)' do
+      script_prompt('25:30338', '25:30340')
+      game.script(study, log('25:30345'), log('25:30347'), log('25:30349'), log('25:30352'), after: ->(_game) { commons.release(name) })
+      result = study_liniment
+      expect(result.to_h).to eq(studied: true, uses_left: 0, discarded: true)
+      expect(instructions_stows).to be_empty
+      expect(Flags.matchers).not_to have_key(flag)
+    end
+
+    it 'counts the last use as a toss when the toss line does not reach the Flag (25:30340, then 25:30345-30349 alone)' do
+      script_prompt('25:30338', '25:30340')
+      game.script(study, log('25:30345'), log('25:30347'), log('25:30349'))
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: 0, discarded: true)
+      expect(instructions_stows).to be_empty
+    end
+
+    it 'counts a toss line behind a tag (code-derived form of 25:30352) as a toss, whatever the count' do
+      script_prompt('25:10810', '25:10812')
+      tagged = code("<pushBold/>#{log('25:30352').text}", from: '25:30352 behind a tag (STUDY_INSTRUCTIONS_DISCARDED anchor)')
+      game.script(study, log('25:10821'), log('25:10823'), log('25:10825'), tagged)
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: 0, discarded: true)
+      expect(instructions_stows).to be_empty
+    end
+
+    it 'puts the instructions back when another player quotes the toss line after a 5-uses study' do
+      script_prompt('25:10810', '25:10812')
+      game.script(study, log('25:10821'), log('25:10823'), log('25:10825'), spoken_toss)
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: 4, discarded: false)
+      expect(instructions_stows.size).to eq(1)
+    end
+
+    it 'keeps the count of an earlier prompt when a later prompt gives none (bare "Study them again", code-derived)' do
+      bare = code('Study them again to proceed.', from: 'forge.lic:993 waits for a bare "Study them again"')
+      script_prompt('25:10810', '25:10812')
+      game.script(study, bare)
+      script_completed_study
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: 4, discarded: false)
+      expect(game.sent).to eq([study] * 3)
+    end
+
+    it 'does not take a toss Flag left set by an earlier call for this one' do
+      Flags.add(flag, /never/)
+      Flags[flag] = true
+      script_prompt('25:10810', '25:10812')
+      script_completed_study
+      expect(study_liniment.discarded?).to be(false)
+    end
+
+    it 'keeps the count when a "1 uses" prompt is followed by silence: not a toss, put back, 1 left' do
+      script_prompt('25:30338', '25:30340')
+      game.script(study)
+      result = study_liniment
+      expect(result.to_h).to eq(studied: false, uses_left: 1, discarded: false)
+      expect(instructions_stows.size).to eq(1)
+      expect(messages).to eq(['DRCC: No reply to studying liniment instructions.'])
+    end
+  end
+
+  describe 'a set that does not wear out' do
+    it 'reports no count when the first study ends in Roundtime (25:10821-10825)' do
+      script_completed_study
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: nil, discarded: false)
+      expect(game.sent).to eq([study])
+    end
+  end
+
+  describe 'a study that never ends in Roundtime' do
+    {
+      'still "Study them again" after three studies (25:10812 each time)' => [['25:10812'], 'DRCC: Still told to study liniment instructions again after 3 studies.'],
+      'not found (26:60708, analog: the reply to the GET)'                => [['26:60708'], 'DRCC: Could not find liniment instructions to study.'],
+      "not holding (25:10805, analog: the reply to `turn my book`)"       => [['25:10805'], 'DRCC: Not holding liniment instructions to study.']
+    }.each do |what, (cites, message)|
+      it "puts the instructions back, then reports #{what}" do
+        game.fallback(study, *cites.map { |cite| log(cite) })
+        result = study_liniment
+        expect(result.studied?).to be(false)
+        expect(result.discarded?).to be(false)
+        expect(instructions_stows.size).to eq(1)
+        expect(commons.location_of(liniment)).to eq(toolbag)
+        expect(messages).to eq([message])
+        expect(DRC).to have_received(:beep).once
+      end
+    end
+
+    it 'sends three studies at most' do
+      game.fallback(study, log('25:10812'))
+      expect(study_liniment.uses_left).to eq(5)
+      expect(game.sent).to eq([study] * 3)
+    end
+
+    it 'stops the script without skip_exit, after the instructions are put back, with the helper\'s stop line' do
+      game.fallback(study, log('26:60708'))
+      expect { study_liniment(skip_exit: false) }.to raise_error(SystemExit)
+      expect(instructions_stows.size).to eq(1)
+      expect(messages).to eq(['DRCC: Could not find liniment instructions to study.',
+                              'DRCC: Cannot continue crafting without required item. Stopping script.'])
+      expect(Flags.matchers).not_to have_key(flag)
+    end
+
+    it 'deletes its Flag when the study is ended from outside (a ;kill or a commons exit)' do
+      allow(DRC).to receive(:bput).with(study, any_args) { exit }
+      expect { study_liniment }.to raise_error(SystemExit)
+      expect(Flags.matchers).not_to have_key(flag)
+    end
+  end
+
+  describe 'getting the instructions' do
+    %i[current v5_22 v5_21].each do |release|
+      context "on lich-5 #{release}" do
+        let(:lich5) { release }
+
+        it 'studies when a hand holds them after the get, whatever the get answered' do
+          script_completed_study
+          expect(study_liniment.studied?).to be(true)
+        end
+
+        context 'with none on hand (the GET gets "What were you referring to?", 26:60708)' do
+          let(:inventory) { {} }
+
+          it 'returns not studied with skip_exit, sending no study and printing nothing of its own' do
+            expect(study_liniment.to_h).to eq(studied: false, uses_left: nil, discarded: false)
+            expect(game.sent).to be_empty
+            expect(instructions_stows).to be_empty
+            expect(messages).to be_empty
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: liniment instructions'])
+            expect(Flags.matchers).to be_empty
+          end
+
+          it 'stops the script without skip_exit' do
+            expect { study_liniment(skip_exit: false) }.to raise_error(SystemExit)
+            expect(game.sent).to be_empty
+          end
+        end
+      end
+    end
+
+    it 'stops with its own line on lich-5 v5.21, whose get returns without stopping on a missing item' do
+      commons = ReplayCommons.new(game: game, lich5: :v5_21, inventory: {}).install(self)
+      expect { study_liniment(skip_exit: false) }.to raise_error(SystemExit)
+      expect(commons.messages.first).to eq('DRCC: You seem to be missing: liniment instructions')
+      expect(messages).to eq(['DRCC: Could not get liniment instructions to study.',
+                              'DRCC: Cannot continue crafting without required item. Stopping script.'])
+    end
+
+    [nil, '', '   '].each do |blank|
+      it "raises ArgumentError for the name #{blank.inspect} before anything is sent or a Flag added" do
+        expect { Remedy::LocalStudyInstructions.study_instructions(blank, toolbag, bag_items, belt, true) }.to raise_error(ArgumentError)
+        expect(commons.calls).to be_empty
+        expect(game.sent).to be_empty
+        expect(Flags.matchers).to be_empty
       end
     end
   end
