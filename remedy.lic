@@ -289,6 +289,329 @@ class Remedy
   # The forms parse_args matches the arguments against.
   ARG_DEFINITIONS = [BOOK_FORM, CONTINUE_FORM].freeze
 
+  # The remed book, got and stowed when master_crafting_book is not set.
+  REMED_BOOK = 'remed book'
+
+  # The request remedy was started with, read from parse_args' result.
+  #
+  # Every value is kept exactly as parse_args gives it (lowercased): herb2 is
+  # whatever was typed, na, none and "not used" included, and the vessel is
+  # the word the caller used, which {Tools.resolve} looks up.
+  #
+  # @!attribute [r] mode
+  #   @return [Symbol] :book for the book form, :continue for the continue
+  #     form
+  # @!attribute [r] book_type
+  #   @return [String, nil] the book type (remedies); nil in the continue
+  #     form
+  # @!attribute [r] chapter
+  #   @return [String, nil] the chapter; nil in the continue form
+  # @!attribute [r] recipe_name
+  #   @return [String, nil] the recipe name; nil in the continue form
+  # @!attribute [r] herb1
+  #   @return [String, nil] the herb gathered into the vessel; nil in the
+  #     continue form
+  # @!attribute [r] herb2
+  #   @return [String] the second herb, as given
+  # @!attribute [r] catalyst
+  #   @return [String] the catalyst
+  # @!attribute [r] container_request
+  #   @return [String] the vessel word the caller gave (mortar, bowl, mort ...)
+  # @!attribute [r] noun
+  #   @return [String] the product noun
+  #
+  # Defined as a constant and reopened below without a superclass: Lich
+  # evals the whole script again on every run in the same session and keeps
+  # its constants, and `class Order < Data.define(...)` makes a new
+  # superclass each time, so a second run would raise "superclass mismatch
+  # for class Order" before sending anything.
+  #
+  # @api private
+  Order = Data.define(:mode, :book_type, :chapter, :recipe_name, :herb1, :herb2, :catalyst, :container_request, :noun)
+
+  class Order
+    # Reads the request from parse_args' result, in either form of
+    # {ARG_DEFINITIONS}. Only the continue form sets `continue`.
+    #
+    # @param args [OpenStruct] parse_args' result
+    # @return [Order]
+    def self.from_args(args)
+      new(mode: args.continue ? :continue : :book,
+          book_type: args.book_type,
+          chapter: args.chapter,
+          recipe_name: args.recipe_name,
+          herb1: args.herb1,
+          herb2: args.herb2,
+          catalyst: args.catalyst,
+          container_request: args.container,
+          noun: args.noun)
+    end
+
+    # Whether this is the continue form, which resumes the remedy in the
+    # vessel in hand.
+    #
+    # @return [Boolean]
+    def continue?
+      mode == :continue
+    end
+
+    # The names {Inventory} gets from and stows in the herb container: herb1
+    # and herb2, as given.
+    #
+    # @return [Array<String, nil>]
+    def herbs
+      [herb1, herb2]
+    end
+  end
+
+  # The vessel and the stirrer a remedy is made with, and the crafting
+  # commands they make. This is the one place that chooses between a mortar
+  # (crush with the pestle) and any other vessel (mix with the mixing stick).
+  #
+  # @!attribute [r] container
+  #   @return [String] the vessel, as alchemy_tools names it
+  # @!attribute [r] stirrer
+  #   @return [String] the pestle for a mortar, the mixing stick otherwise
+  # @!attribute [r] verb
+  #   @return [String] crush for a mortar, mix otherwise
+  #
+  # Defined as a constant and reopened below without a superclass: Lich
+  # evals the whole script again on every run in the same session and keeps
+  # its constants, and `class Tools < Data.define(...)` makes a new
+  # superclass each time, so a second run would raise "superclass mismatch
+  # for class Tools" before sending anything.
+  #
+  # @api private
+  Tools = Data.define(:container, :stirrer, :verb)
+
+  class Tools
+    # A vessel whose name matches is a mortar.
+    MORTAR = /mort/
+
+    # The alchemy_tools entry that matches is the pestle.
+    PESTLE = /pestle/
+
+    # The pestle remedy names when alchemy_tools lists none.
+    DEFAULT_PESTLE = 'pestle'
+
+    # The stirrer for any vessel that is not a mortar.
+    MIXING_STICK = 'mixing stick'
+
+    # The crafting verb with a mortar.
+    CRUSH = 'crush'
+
+    # The crafting verb with any other vessel.
+    MIX = 'mix'
+
+    # A vessel request that matches asks for a bowl...
+    BOWL_REQUEST = /bowl/
+
+    # ... which a cauldron or a bowl in alchemy_tools answers.
+    BOWL_TOOLS = /cauldron|bowl/
+
+    # Finds the vessel and the stirrer in alchemy_tools.
+    #
+    # The vessel is the first alchemy_tools entry the requested word matches
+    # anywhere in its name, so mort finds a large mortar and a recipe's
+    # mortar finds a rustic mortar. A request for a bowl takes a cauldron or
+    # a bowl.
+    #
+    # Stops when the setting lists no match, because the setting is wrong.
+    # Going on with the word the recipe used sends "get my bowl", which takes
+    # whichever bowl the character happens to carry, and a nil sends "get my
+    # " with no item at all.
+    #
+    # @param settings [OpenStruct] the character's settings; reads
+    #   alchemy_tools
+    # @param order [Order] the request
+    # @return [Tools]
+    # @raise [SystemExit] when alchemy_tools lists no match
+    # @note The requested word goes into the Regexp unescaped, as it always
+    #   has (H12).
+    def self.resolve(settings, order)
+      container = find_container(settings.alchemy_tools, order)
+      pestle = settings.alchemy_tools.find { |tool| PESTLE =~ tool } || DEFAULT_PESTLE
+      if MORTAR =~ container
+        new(container: container, stirrer: pestle, verb: CRUSH)
+      else
+        new(container: container, stirrer: MIXING_STICK, verb: MIX)
+      end
+    end
+
+    # The alchemy_tools entry for the requested vessel, or a stop.
+    #
+    # @param tools [Array<String>, nil] alchemy_tools
+    # @param order [Order] the request
+    # @return [String] the alchemy_tools entry
+    # @raise [SystemExit] when alchemy_tools lists no match
+    def self.find_container(tools, order)
+      requested = order.container_request
+      pattern = requested =~ BOWL_REQUEST ? BOWL_TOOLS : /#{requested}/
+      container = tools.to_a.find { |tool| pattern =~ tool }
+      return container if container
+
+      DRC.message("*** #{order.recipe_name} needs a #{requested}, and your alchemy_tools setting lists none. ***")
+      DRC.message("*** Add your #{requested} to alchemy_tools, then run this again. ***")
+      exit
+    end
+    private_class_method :find_container
+
+    # Whether the vessel is a mortar.
+    #
+    # @return [Boolean]
+    def mortar?
+      MORTAR.match?(container)
+    end
+
+    # The first crafting command: a mortar crushes the herb, any other
+    # vessel is mixed.
+    #
+    # @param herb [String] herb1, now in the vessel
+    # @return [String]
+    def first_command(herb)
+      mortar? ? "#{verb} my #{herb} with my #{stirrer}" : "#{verb} my #{container} with my #{stirrer}"
+    end
+
+    # Every later crafting command: a mortar crushes the product, any other
+    # vessel is mixed.
+    #
+    # @param noun [String] the product noun
+    # @return [String]
+    def next_command(noun)
+      mortar? ? "#{verb} my #{noun} with my #{stirrer}" : "#{verb} my #{container} with my #{stirrer}"
+    end
+  end
+
+  # Where remedy's things are kept, and the gets and stows that reach them.
+  #
+  # A herb (herb1 or herb2) comes from herb_container or the crafting
+  # container when one holds it; the vessel comes from the ground after it
+  # was lowered; anything else comes from wherever DRCC.get_crafting_item
+  # finds it (alchemy_belt, then the crafting container). Holds no game
+  # state: it only knows the settings and the herb names.
+  #
+  # @api private
+  class Inventory
+    # What {#get} returns when it got the item without naming a container
+    # (the herb gathering reads it).
+    UNROUTED = 'none'
+
+    # @return [String] crafting_container
+    attr_reader :bag
+
+    # @param settings [OpenStruct] the character's settings; reads
+    #   crafting_container, crafting_items_in_container, alchemy_belt and
+    #   herb_container
+    # @param herbs [Array<String, nil>] the names routed as herbs
+    #   ({Order#herbs})
+    def initialize(settings, herbs:)
+      @settings = settings
+      @herbs = herbs
+      @bag = settings.crafting_container
+      @bag_items = settings.crafting_items_in_container
+      @belt = settings.alchemy_belt
+      @herb_container = settings.herb_container # normal container or special herb container both work
+    end
+
+    # The same inventory with other herb names, after herb1 is swapped.
+    #
+    # @param herbs [Array<String, nil>] the names routed as herbs
+    # @return [Inventory]
+    def with_herbs(herbs)
+      Inventory.new(@settings, herbs: herbs)
+    end
+
+    # Gets an item: a herb from herb_container or the crafting container
+    # when one holds it, the vessel from the ground, anything else from
+    # wherever DRCC.get_crafting_item finds it.
+    #
+    # @param name [String, nil] the item
+    # @param at_feet [Boolean] the item is the vessel, lowered to the ground
+    # @return [String, Object] {UNROUTED} when the item was got without
+    #   naming a container, otherwise DRCC.get_crafting_item's return, which
+    #   differs by lich-5 release
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    #   (lich-5 v5.22.0 and later, on a missing item)
+    def get(name, at_feet: false)
+      # added to check for herbs in special herb container, then check if herbs in crafting container, otherwise get normally
+      # this is to prevent issues getting herbs if someone has less than 25 in the herb container
+      # there are still issues when herbs are in a different container (not the bag or the herb container), script will still run fine
+      if herb?(name) && @herb_container && DRCI.exists?(name, @herb_container)
+        DRCC.get_crafting_item(name, @herb_container, [name], @belt) # Look for herbs in herb_container
+      elsif herb?(name) && DRCI.exists?(name, @bag)
+        DRCC.get_crafting_item(name, @bag, [name], @belt) # Look for herbs in bag
+      elsif at_feet
+        DRCC.get_crafting_item(name, @bag, nil, @belt) # used primarily to get bowl/mortar etc. from at our feet after lowering it.
+      else
+        get_tool(name) # Primarily to get herb without specifying a bag
+        UNROUTED # return specified to handle herbs differently for this option (to prevent a bug)
+      end
+    end
+
+    # Puts an item away: a herb in herb_container when one is set, anything
+    # else in the crafting container or on the alchemy belt.
+    #
+    # @param name [String, nil] the item (a hand's contents; nil when empty)
+    # @return [void]
+    def stow(name)
+      if herb?(name) && @herb_container
+        DRCC.stow_crafting_item(name, @herb_container, @belt) # try to put herbs in herb container first
+      else
+        stow_tool(name)
+      end
+    end
+
+    # Gets an item with no herb routing: from the belt when it is one of
+    # the belt's items, otherwise from the crafting container.
+    #
+    # @param name [String] the item
+    # @param belt [Hash, nil] the belt to look on (alchemy_belt by default)
+    # @return [Object] DRCC.get_crafting_item's return, which differs by
+    #   lich-5 release
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    #   (lich-5 v5.22.0 and later, on a missing item)
+    def get_tool(name, belt: @belt)
+      DRCC.get_crafting_item(name, @bag, @bag_items, belt)
+    end
+
+    # Puts an item away with no herb routing: on the belt when it is one of
+    # the belt's items, otherwise in the crafting container.
+    #
+    # @param name [String, nil] the item
+    # @param belt [Hash, nil] the belt to tie it to (alchemy_belt by default)
+    # @return [void]
+    def stow_tool(name, belt: @belt)
+      DRCC.stow_crafting_item(name, @bag, belt)
+    end
+
+    # Sets the vessel down, so the herb can be gathered into it.
+    #
+    # @param name [String] the vessel
+    # @return [Boolean] DRCI.lower_item?'s answer, which remedy does not read
+    def lower(name)
+      DRCI.lower_item?(name)
+    end
+
+    # Picks the lowered vessel up from the ground.
+    #
+    # @param name [String] the vessel
+    # @return [Object] DRCC.get_crafting_item's return
+    # @raise [SystemExit] as {#get}
+    def pick_up(name)
+      get(name, at_feet: true)
+    end
+
+    private
+
+    # Whether a name is routed as a herb: it equals herb1 or herb2.
+    #
+    # @param name [String, nil]
+    # @return [Boolean]
+    def herb?(name)
+      @herbs.include?(name)
+    end
+  end
+
   # Deletes every remedy Flag. Registered with before_dying by {#run}, so it
   # runs however the script ends.
   #
@@ -304,23 +627,11 @@ class Remedy
   #   {ARG_DEFINITIONS}' forms
   def initialize(settings, args)
     @settings = settings
-    @bag = settings.crafting_container
-    @bag_items = settings.crafting_items_in_container
-    @belt = settings.alchemy_belt
     @training_spells = settings.crafting_training_spells
     @stamp = settings.mark_crafted_goods
     @cube = settings.cube_armor_piece
-    @herb_container = settings.herb_container # normal container or special herb container both work
-
-    @continue = args.continue
-    @book_type = args.book_type
-    @chapter = args.chapter
-    @recipe_name = args.recipe_name
-    @herb1 = args.herb1
-    @herb2 = args.herb2
-    @catalyst = args.catalyst
-    @requested_container = args.container
-    @noun = args.noun
+    @order = Order.from_args(args)
+    @inventory = Inventory.new(settings, herbs: @order.herbs)
   end
 
   # Crafts the remedy, from preparing the supplies through to the product in
@@ -334,23 +645,17 @@ class Remedy
     @stock = get_data('crafting')['remedies'][@settings.hometown]
     FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
 
-    @container = resolve_container(@requested_container)
-    @pestle = @settings.alchemy_tools.find { |tool| /pestle/ =~ tool } || 'pestle'
-    @verb = 'crush'
+    @tools = Tools.resolve(@settings, @order)
 
     find_water_source
     find_alcohol_source
     buy_missing_supplies
     DRC.wait_for_script_to_complete('buff', ['remedy'])
 
-    # used for internal remedies (this section is needed for CONTINUE arg to work)
-    if /mort/ !~ @container
-      @pestle = 'mixing stick'
-      @verb = 'mix'
+    if @order.continue?
+      @inventory.get(@tools.stirrer)
+      work("analyze my #{@order.noun}")
     end
-
-    get_item(@pestle) if @continue
-    work("analyze my #{@noun}") if @continue
 
     create_item
   end
@@ -372,20 +677,20 @@ class Remedy
     @water_verb = 'put' # changed to pour when using a container
     return unless @settings.water_container
 
-    get_item(@settings.water_container)
+    @inventory.get(@settings.water_container)
     if DRC.bput("count water in my #{@settings.water_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
       @water = @settings.water_container
       @water_verb = 'pour'
     else # else (not elsif) needed to rub special container for water before checking again, uses defaults if container doesn't have water
       fput("rub my #{@settings.water_container}")
-      fput("get water from #{@bag}") # added this part just in case water is in another bag, get water doesn't work, and container cannot create water
+      fput("get water from #{@inventory.bag}") # added this part just in case water is in another bag, get water doesn't work, and container cannot create water
       fput("put water in my #{@settings.water_container}")
       if DRC.bput("count water in my #{@settings.water_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
         @water = @settings.water_container
         @water_verb = 'pour'
       end
     end
-    stow_item(@water)
+    @inventory.stow(@water)
   end
 
   # Decides how alcohol goes into the vessel, as {#find_water_source} does
@@ -400,20 +705,20 @@ class Remedy
     @alcohol_verb = 'put' # same as water
     return unless @settings.alcohol_container
 
-    get_item(@settings.alcohol_container)
+    @inventory.get(@settings.alcohol_container)
     if DRC.bput("count alcohol in my #{@settings.alcohol_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
       @alcohol = @settings.alcohol_container
       @alcohol_verb = 'pour'
     else # else (not elsif) needed to rub special container for alcohol before checking again, uses defaults if container doesn't have alcohol
       fput("rub my #{@settings.alcohol_container}")
-      fput("get alcohol from #{@bag}") # added this part just in case alcohol is in another bag, get alcohol doesn't work, and container cannot create alcohol
+      fput("get alcohol from #{@inventory.bag}") # added this part just in case alcohol is in another bag, get alcohol doesn't work, and container cannot create alcohol
       fput("put alcohol in my #{@settings.alcohol_container}")
       if DRC.bput("count alcohol in my #{@settings.alcohol_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
         @alcohol = @settings.alcohol_container
         @alcohol_verb = 'pour'
       end
     end
-    stow_item(@alcohol)
+    @inventory.stow(@alcohol)
   end
 
   # Buys plain water, plain alcohol and a coal nugget catalyst when none is
@@ -427,71 +732,19 @@ class Remedy
     if @alcohol == 'alcohol' && !DRCI.exists?(@alcohol)
       buy_item('alcohol')
     end
-    if ['coal nugget', 'nugget'].include?(@catalyst) && !DRCI.exists?(@catalyst)
+    if ['coal nugget', 'nugget'].include?(@order.catalyst) && !DRCI.exists?(@order.catalyst)
       buy_item('coal')
     end
   end
 
-  # Finds the alchemy_tools entry for the container a recipe asks for, so that a
-  # "rustic mortar" answers a recipe that asks for a "mortar". A cauldron answers
-  # a recipe that asks for a bowl.
+  # Crafts with another herb1 than the one asked for (the dried or crushed
+  # flower), and routes that name as a herb from now on.
   #
-  # Stops when the setting lists no match, because the setting is wrong. Going on
-  # with the word the recipe used sends "get my bowl", which takes whichever bowl
-  # the character happens to carry, and a nil sends "get my " with no item at all.
-  #
-  # @param requested [String, nil] the container argument
-  # @return [String] the alchemy_tools entry
-  # @raise [SystemExit] when alchemy_tools lists no match
-  def resolve_container(requested)
-    pattern = requested =~ /bowl/ ? /cauldron|bowl/ : /#{requested}/
-    container = @settings.alchemy_tools.to_a.find { |tool| pattern =~ tool }
-    return container if container
-
-    DRC.message("*** #{@recipe_name} needs a #{requested}, and your alchemy_tools setting lists none. ***")
-    DRC.message("*** Add your #{requested} to alchemy_tools, then run this again. ***")
-    exit
-  end
-
-  # Gets an item: a herb from herb_container or the crafting container when
-  # one holds it, the vessel from the ground, anything else from wherever
-  # DRCC.get_crafting_item finds it.
-  #
-  # @param name [String] the item
-  # @param at_feet [Boolean] the item is the vessel, lowered to the ground
-  # @return [String, Object] 'none' when the item was got without naming a
-  #   bag (the herb gathering reads it), otherwise DRCC.get_crafting_item's
-  #   return, which differs by lich-5 release
-  # @raise [SystemExit] when DRCC.get_crafting_item stops the script (lich-5
-  #   v5.22.0 and later, on a missing item)
-  def get_item(name, at_feet = false)
-    # added to check for herbs in special herb container, then check if herbs in crafting container, otherwise get normally
-    # this is to prevent issues getting herbs if someone has less than 25 in @herb_container
-    # there are still issues when herbs are in a different container (not @bag or @herb_container), script will still run fine
-
-    if (name == @herb1 || name == @herb2) && @settings.herb_container && DRCI.exists?(name, @herb_container)
-      DRCC.get_crafting_item(name, @herb_container, [name], @belt) # Look for herbs in herb_container
-    elsif (name == @herb1 || name == @herb2) && DRCI.exists?(name, @bag)
-      DRCC.get_crafting_item(name, @bag, [name], @belt) # Look for herbs in bag
-    elsif at_feet
-      DRCC.get_crafting_item(name, @bag, nil, @belt) # This elsif used primarily to get bowl/mortar etc. from at our feet after lowering it.
-    else
-      DRCC.get_crafting_item(name, @bag, @bag_items, @belt) # Primarily to get herb without specifying a bag
-      'none' # return specified to handle herbs differently for this option (to prevent a bug)
-    end
-  end
-
-  # Puts an item away: a herb in herb_container when one is set, anything
-  # else in the crafting container or on the alchemy belt.
-  #
-  # @param name [String, nil] the item (a hand's contents; nil when empty)
+  # @param name [String] the herb to use
   # @return [void]
-  def stow_item(name)
-    if (name == @herb1 || name == @herb2) && @settings.herb_container
-      DRCC.stow_crafting_item(name, @herb_container, @belt) # try to put herbs in herb container first
-    else
-      DRCC.stow_crafting_item(name, @bag, @belt)
-    end
+  def use_herb1(name)
+    @order = @order.with(herb1: name)
+    @inventory = @inventory.with_herbs(@order.herbs)
   end
 
   # Opens the recipe, gathers the herb into the vessel, then starts
@@ -505,85 +758,83 @@ class Remedy
   def create_item
     @count = 0
     DRCA.crafting_magic_routine(@settings)
-    stow_item(DRC.left_hand)
-    stow_item(DRC.right_hand)
+    @inventory.stow(DRC.left_hand)
+    @inventory.stow(DRC.right_hand)
     pause 0.2 # to prevent issues with lag during the stow commands
     if @settings.master_crafting_book
-      DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, @book_type)
+      DRCC.find_recipe2(@order.chapter, @order.recipe_name, @settings.master_crafting_book, @order.book_type)
     else
-      DRCC.get_crafting_item("remed book", @bag, @bag_items, nil)
+      @inventory.get_tool(REMED_BOOK, belt: nil)
       echo('*** You will need to upgrade to a journeyman or master book before 176 ranks! ***') if DRSkill.getrank('Alchemy') == 175
-      DRCC.find_recipe2(@chapter, @recipe_name)
-      DRCC.stow_crafting_item("remed book", @bag, nil)
+      DRCC.find_recipe2(@order.chapter, @order.recipe_name)
+      @inventory.stow_tool(REMED_BOOK, belt: nil)
     end
 
     DRC.bput("touch my #{@cube}", *Patterns::CUBE_TOUCH_REPLIES) if @cube
 
-    if ('red flower').include?(@herb1)
-      @herb1 = 'dried flower' unless DRCI.exists?('red flower')
-    elsif ('blue flower').include?(@herb1)
-      @herb1 = 'crushed flower' unless DRCI.exists?('blue flower')
+    if ('red flower').include?(@order.herb1)
+      use_herb1('dried flower') unless DRCI.exists?('red flower')
+    elsif ('blue flower').include?(@order.herb1)
+      use_herb1('crushed flower') unless DRCI.exists?('blue flower')
     end
-    get_item(@container)
+    herb1 = @order.herb1
+    vessel = @tools.container
+    @inventory.get(vessel)
 
-    DRCI.lower_item?(@container)
+    @inventory.lower(vessel)
 
     # count herb, less than 25 get more herbs, otherwise stow and continue
     # added to handle herb containers, and modified to combine up to 25
     while @count < 25
-      case get_item(@herb1) # returns 'none' to handle getting herbs differently, see comment under when 'none'
-      when 'none'
+      case @inventory.get(herb1) # returns Inventory::UNROUTED to handle getting herbs differently, see comment under that branch
+      when Inventory::UNROUTED
         # this part is to avoid the message "You are already holding that."
-        # in cases where it won't get more herbs, it takes a longer route to get herbs from other bags (not @bag nor @herb_container)
-        @count = DRC.bput("count my #{@herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i
+        # in cases where it won't get more herbs, it takes a longer route to get herbs from other bags (not the crafting container nor herb_container)
+        @count = DRC.bput("count my #{herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i
         while @count < 25
-          DRCI.put_away_item?(@herb1, @container)
-          fput("stow my #{@herb1}") # in case there are extra
-          get_item(@container)
+          DRCI.put_away_item?(herb1, vessel)
+          fput("stow my #{herb1}") # in case there are extra
+          @inventory.get(vessel)
           # stow then get, to prevent getting herbs from container (i.e. mortar)
-          stow_item(@container)
-          DRCI.get_item?(@herb1) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
-          get_item(@container)
-          DRCI.lower_item?(@container)
-          DRCI.get_item?(@herb1, @container) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
-          if DRC.bput("combine my #{@herb1}", *Patterns::COMBINE_REPLIES) == 'You must be holding both'
+          @inventory.stow(vessel)
+          DRCI.get_item?(herb1) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
+          @inventory.get(vessel)
+          @inventory.lower(vessel)
+          DRCI.get_item?(herb1, vessel) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
+          if DRC.bput("combine my #{herb1}", *Patterns::COMBINE_REPLIES) == 'You must be holding both'
             @count = 25 # 25 used to break loops
           else
-            @count += DRC.bput("count my #{@herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i # increment to run again
+            @count += DRC.bput("count my #{herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i # increment to run again
           end
         end
       else
-        @count += DRC.bput("count my #{@herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i
-        if DRC.bput("combine my #{@herb1}", *Patterns::COMBINE_REPLIES).end_with?('too large to add')
-          f_stack = DRC.bput("count my first #{@herb1}", *Patterns::FIRST_STACK_COUNT_REPLIES).scan(/\d+/).first.to_i
-          s_stack = DRC.bput("count my second #{@herb1}", *Patterns::SECOND_STACK_COUNT_REPLIES).scan(/\d+/).first.to_i
+        @count += DRC.bput("count my #{herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i
+        if DRC.bput("combine my #{herb1}", *Patterns::COMBINE_REPLIES).end_with?('too large to add')
+          f_stack = DRC.bput("count my first #{herb1}", *Patterns::FIRST_STACK_COUNT_REPLIES).scan(/\d+/).first.to_i
+          s_stack = DRC.bput("count my second #{herb1}", *Patterns::SECOND_STACK_COUNT_REPLIES).scan(/\d+/).first.to_i
           if f_stack == 75
-            DRCI.put_away_item?("second #{@herb1}")
+            DRCI.put_away_item?("second #{herb1}")
           elsif s_stack == 75
-            DRCI.put_away_item?("first #{@herb1}")
+            DRCI.put_away_item?("first #{herb1}")
           end
         end
       end
     end
 
-    case DRC.bput("put #{@herb1} in my #{@container}", *Patterns::HERB_PUT_REPLIES)
+    case DRC.bput("put #{herb1} in my #{vessel}", *Patterns::HERB_PUT_REPLIES)
     when 'You put', /can only hold\z/, /You vigorously rub\z/
-      stow_item(@herb1) # Added for when the herb is larger than 25 pieces
+      @inventory.stow(herb1) # Added for when the herb is larger than 25 pieces
     when /already has something\z/, 'You realize the'
-      DRC.bput("tilt my #{@container}", *Patterns::TILT_REPLIES)
-      DRC.bput("tilt my #{@container}", *Patterns::TILT_AGAIN_REPLIES)
-      DRC.bput("put #{@herb1} in my #{@container}", *Patterns::HERB_PUT_AGAIN_REPLIES)
-      stow_item(@herb1) # Added for when the herb is larger than 25 pieces
+      DRC.bput("tilt my #{vessel}", *Patterns::TILT_REPLIES)
+      DRC.bput("tilt my #{vessel}", *Patterns::TILT_AGAIN_REPLIES)
+      DRC.bput("put #{herb1} in my #{vessel}", *Patterns::HERB_PUT_AGAIN_REPLIES)
+      @inventory.stow(herb1) # Added for when the herb is larger than 25 pieces
     end
 
-    get_item(@container, true) # pickup off ground, at_feet = true
-    get_item(@pestle)
+    @inventory.pick_up(vessel)
+    @inventory.get(@tools.stirrer)
 
-    if /mort/ =~ @container
-      work("#{@verb} my #{@herb1} with my #{@pestle}")
-    else
-      work("#{@verb} my #{@container} with my #{@pestle}")
-    end
+    work(@tools.first_command(herb1))
   end
 
   # Handles the first Flag that is set, in {FLAGS} order, or sends the
@@ -616,11 +867,7 @@ class Remedy
         finish
       when /Roundtime:\z/
         waitrt?
-        command = if /mort/ =~ @container
-                    "#{@verb} my #{@noun} with my #{@pestle}"
-                  else
-                    "#{@verb} my #{@container} with my #{@pestle}"
-                  end
+        command = @tools.next_command(@order.noun)
       end
     end
     waitrt?
@@ -638,22 +885,22 @@ class Remedy
   #   appear in no log.
   def add_water
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@water)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@water)
     Flags.reset('remedy-water')
-    if DRC.bput("#{@water_verb} #{@water} in my #{@container}", *Patterns::LIQUID_ADD_REPLIES).end_with?('You cannot find a way to add that as an ingredient')
-      stow_item(DRC.left_hand)
+    if DRC.bput("#{@water_verb} #{@water} in my #{@tools.container}", *Patterns::LIQUID_ADD_REPLIES).end_with?('You cannot find a way to add that as an ingredient')
+      @inventory.stow(DRC.left_hand)
       unless DRCI.get_item?("water", @water)
-        get_item('water')
+        @inventory.get('water')
       end
-      unless DRCI.put_away_item?("water", @container)
+      unless DRCI.put_away_item?("water", @tools.container)
         waitrt?
         DRCI.put_away_item?("water", @water)
       end
     end
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@pestle)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@tools.stirrer)
   end
 
   # Adds alcohol when the game asks for it ({Patterns::NEED_ALCOHOL}).
@@ -664,22 +911,22 @@ class Remedy
   # @note code-derived (unverified), as {#add_water}.
   def add_alcohol
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@alcohol)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@alcohol)
     Flags.reset('remedy-alcohol')
-    if DRC.bput("#{@alcohol_verb} #{@alcohol} in my #{@container}", *Patterns::LIQUID_ADD_REPLIES).end_with?('You cannot find a way to add that as an ingredient')
-      stow_item(DRC.left_hand)
+    if DRC.bput("#{@alcohol_verb} #{@alcohol} in my #{@tools.container}", *Patterns::LIQUID_ADD_REPLIES).end_with?('You cannot find a way to add that as an ingredient')
+      @inventory.stow(DRC.left_hand)
       unless DRCI.get_item?("alcohol", @alcohol)
-        get_item('alcohol')
+        @inventory.get('alcohol')
       end
-      unless DRCI.put_away_item?("alcohol", @container)
+      unless DRCI.put_away_item?("alcohol", @tools.container)
         waitrt?
         DRCI.put_away_item?("alcohol", @alcohol)
       end
     end
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@pestle)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@tools.stirrer)
   end
 
   # Adds the catalyst when the game asks for it
@@ -690,13 +937,13 @@ class Remedy
   #   item (lich-5 DRCC.get_crafting_item without skip_exit)
   def add_catalyst
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@catalyst)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@order.catalyst)
     Flags.reset('remedy-catalyst')
-    DRC.bput("put my #{@catalyst} in my #{@container}", *Patterns::INGREDIENT_PUT_REPLIES)
+    DRC.bput("put my #{@order.catalyst} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@pestle)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@tools.stirrer)
   end
 
   # Adds the second herb when the game asks for it ({Patterns::NEED_HERB}).
@@ -707,13 +954,13 @@ class Remedy
   # @note code-derived (unverified): no log shows the cue or this put.
   def add_herb
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@herb2)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@order.herb2)
     Flags.reset('remedy-herb')
-    DRC.bput("put my #{@herb2} in my #{@container}", *Patterns::INGREDIENT_PUT_REPLIES)
+    DRC.bput("put my #{@order.herb2} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@pestle)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@tools.stirrer)
   end
 
   # Pushes the product with the sieve when the game asks for it
@@ -724,13 +971,13 @@ class Remedy
   #   item (lich-5 DRCC.get_crafting_item without skip_exit)
   def sieve
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item('sieve')
+    @inventory.stow(DRC.left_hand)
+    @inventory.get('sieve')
     Flags.reset('remedy-sieve')
-    DRC.bput("push my #{@noun} with my sieve", *Patterns::STEP_REPLIES)
+    DRC.bput("push my #{@order.noun} with my sieve", *Patterns::STEP_REPLIES)
     waitrt?
-    stow_item(DRC.left_hand)
-    get_item(@pestle)
+    @inventory.stow(DRC.left_hand)
+    @inventory.get(@tools.stirrer)
   end
 
   # Turns the vessel when the game asks for it ({Patterns::NEED_TURN}).
@@ -739,7 +986,7 @@ class Remedy
   def turn
     waitrt?
     Flags.reset('remedy-turn')
-    DRC.bput("turn my #{@container}", *Patterns::STEP_REPLIES)
+    DRC.bput("turn my #{@tools.container}", *Patterns::STEP_REPLIES)
     waitrt?
   end
 
@@ -749,7 +996,7 @@ class Remedy
   def smell
     waitrt?
     Flags.reset('remedy-smell')
-    DRC.bput("smell my #{@noun}", *Patterns::STEP_REPLIES)
+    DRC.bput("smell my #{@order.noun}", *Patterns::STEP_REPLIES)
     waitrt?
   end
 
@@ -764,13 +1011,13 @@ class Remedy
     case name
     when 'coal'
       DRCT.order_item(@stock['catalyst-room'], @stock['catalyst_number'])
-      stow_item('coal nugget')
+      @inventory.stow('coal nugget')
     when 'water'
       DRCT.order_item(@stock['stock-room'], @stock['stock-number'])
-      stow_item('water')
+      @inventory.stow('water')
     when 'alcohol'
       DRCT.order_item(@stock['stock-room'], @stock['stock-number-a'])
-      stow_item('alcohol')
+      @inventory.stow('alcohol')
     end
 
     DRCT.walk_to(@settings.alchemy_room)
@@ -795,9 +1042,9 @@ class Remedy
   # @raise [SystemExit] when DRCC.get_crafting_item (called without
   #   skip_exit) stops the script on a missing stamp
   def stamp_item(noun)
-    DRCC.get_crafting_item('stamp', @bag, @bag_items, @belt)
+    @inventory.get_tool('stamp')
     DRC.bput("mark my #{noun} with my stamp", *Patterns::MARK_REPLIES)
-    DRCC.stow_crafting_item('stamp', @bag, @belt)
+    @inventory.stow_tool('stamp')
   end
 
   # Takes the product out of the vessel, puts the tools away, marks the
@@ -807,10 +1054,10 @@ class Remedy
   # @raise [SystemExit] always
   def finish
     waitrt?
-    stow_item(DRC.left_hand)
-    fput("get my #{@noun} from my #{@container}")
-    stow_item(DRC.right_hand)
-    stamp_item(@noun) if @stamp
+    @inventory.stow(DRC.left_hand)
+    fput("get my #{@order.noun} from my #{@tools.container}")
+    @inventory.stow(DRC.right_hand)
+    stamp_item(@order.noun) if @stamp
     magic_cleanup
     exit
   end
