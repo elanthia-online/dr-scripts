@@ -3233,10 +3233,15 @@ class Remedy
     # @note code-derived (unverified) for a study: never seen after one.
     STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/
 
-    # The reply to a book command when the book is not in hand (25:10805).
+    # A study when the game does not see the instructions in hand. "You must
+    # be holding the instructions to study them." is the real reply to
+    # `study instruc` in a 2026-11 enchanting log (enchant.lic matches it
+    # too). "But you're not holding" is the reply to a book command when the
+    # book is not in hand (25:10805).
     #
-    # @note code-derived (unverified) for a study: never seen after one.
-    STUDY_INSTRUCTIONS_NOT_HOLDING = /^But you're not holding/
+    # @note "But you're not holding" is code-derived (unverified) for a
+    #   study: never seen after one.
+    STUDY_INSTRUCTIONS_NOT_HOLDING = /^(?:But you're not holding|You must be holding the instructions)/
 
     # Sent after the Roundtime of the study that used the last use, so
     # DRC.bput has already returned when it arrives and a Flag has to catch
