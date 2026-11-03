@@ -18,7 +18,7 @@
   task_copper_target: 110000
   task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
   task_rock_room: 793 # room where Dorhum's spongestone tasks forage rocks (none can be had on Andreshlew)
-  enchanting_room: <room number> # Dorhum's tasks enchant here, else in task_crafting_room; with neither, where they stand if you carry a brazier, else at a Crossing brazier room
+  enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones ##
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
@@ -928,14 +928,23 @@ class TaskMaster
     end
   end
 
-  # Goes where Dorhum's items are enchanted: enchanting_room, else
-  # task_crafting_room. With neither, stays put when a brazier is carried
-  # (enchanting works anywhere with your own), else finds a free brazier
-  # room in Crossing.
+  # The room set for enchanting during a task: task_crafting_room, the room
+  # every task crafts in, else enchanting_room. Outside tasks, enchanting
+  # (craft, workorders) goes on using enchanting_room; only taskmaster reads
+  # this.
+  #
+  # @return [Integer, String, nil] nil when neither is set
+  def task_enchanting_room
+    @crafting_room || @settings.enchanting_room
+  end
+
+  # Goes where Dorhum's items are enchanted: task_enchanting_room. With
+  # neither room set, stays put when a brazier is carried (enchanting works
+  # anywhere with your own), else finds a free brazier room in Crossing.
   #
   # @return [void]
   def go_to_enchanting_room
-    room = @settings.enchanting_room || @crafting_room
+    room = task_enchanting_room
     return DRCT.walk_to(room) if room
     return if DRCI.exists?(own_brazier)
 

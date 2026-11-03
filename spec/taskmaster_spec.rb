@@ -2541,16 +2541,16 @@ RSpec.describe TaskMaster do
         allow(DRCC).to receive(:find_enchanting_room)
       end
 
-      it 'goes to enchanting_room first' do
+      it 'goes to task_crafting_room first, the room every task crafts in' do
         dorhum(crafting_room: 1111, settings: { enchanting_room: 2222 }).go_to_enchanting_room
 
-        expect(DRCT).to have_received(:walk_to).with(2222)
+        expect(DRCT).to have_received(:walk_to).with(1111)
       end
 
-      it 'goes to task_crafting_room when enchanting_room is unset' do
-        dorhum(crafting_room: 1111).go_to_enchanting_room
+      it 'goes to enchanting_room when task_crafting_room is unset' do
+        dorhum(crafting_room: nil, settings: { enchanting_room: 2222 }).go_to_enchanting_room
 
-        expect(DRCT).to have_received(:walk_to).with(1111)
+        expect(DRCT).to have_received(:walk_to).with(2222)
       end
 
       it 'stays put with a brazier of its own' do
