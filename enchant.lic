@@ -167,7 +167,10 @@ class Enchant
     Flags.add('imbue-failed', /^(?:<[^>]*>|[^"<])*?The streams collide, rending the space before you and disrupting the enchantment/i)
     Flags.add('imbue-backlash', /^(?:<[^>]*>|[^"<])*?Suddenly the streams slip through your grasp and cascade violently against each other/i)
     # The finished enchant hands back a fount that has uses left; one whose
-    # last use went into the item is not returned (no line of its own).
+    # last use went into the item burns away at its wave (log 1: "With its
+    # magic expended, the fount's surface becomes as flimsy as paper.  The
+    # brazier's flame quickly burns it away.") and the completion has no
+    # fount line.
     Flags.add('enchant-fount-returned', /^(?:<[^>]+>)*You collect the fount and place it at your feet/)
   end
 
