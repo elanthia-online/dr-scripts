@@ -2024,3 +2024,327 @@ RSpec.describe Remedy do
     end
   end
 end
+
+# Layer 03: the named patterns, the Flag list and the split of
+# Remedy.new from Remedy#run, tested as units. Only lines remedy already
+# reads correctly are here; every game line is a real log cite.
+RSpec.describe 'Remedy patterns, Flags and entry' do
+  let(:game) { ReplayGame.new }
+
+  # @param cite [String] "<log>:<line>"
+  # @return [ReplayGame::Line]
+  def log(cite)
+    ReplayGame.log(cite)
+  end
+
+  # The remedy Flags a raw game line sets, as DRParser.check_events does
+  # (lich-5 480bdee3 drparser.rb:145-155): a Flag is set when any one of its
+  # patterns matches.
+  #
+  # @param flags [Hash{String => Array<Regexp>}] name => patterns
+  # @param text [String] the raw line
+  # @return [Array<String>] the Flags set, in the list's order
+  def flags_set_by(flags, text)
+    flags.select { |_name, patterns| patterns.any? { |pattern| pattern.match?(text) } }.keys
+  end
+
+  # Every real line the remedy fixtures hold: the cited lines and every reply
+  # line of every transcript.
+  #
+  # @return [Array<ReplayGame::Line>]
+  def every_fixture_line
+    cited = ReplayGame.log_lines.keys.select { |cite| cite.start_with?('25:', '26:') }.map { |cite| log(cite) }
+    transcripts = Dir[File.expand_path('fixtures/remedy/transcripts/*.json', __dir__)].sort
+    replies = transcripts.flat_map { |path| ReplayTranscript.load(path).steps.flat_map(&:lines) }
+    cited + replies
+  end
+
+  describe 'Remedy::FLAGS' do
+    it 'lists the Flags in the order the crafting loop handles them: the ingredients, then the steps' do
+      expect(Remedy::FLAGS.keys).to eq(%w[remedy-water remedy-alcohol remedy-catalyst remedy-herb remedy-sieve remedy-turn remedy-smell])
+    end
+
+    [['25:50210', 'remedy-water'],
+     ['25:10873', 'remedy-alcohol'],
+     ['26:5918', 'remedy-alcohol'],
+     ['25:11049', 'remedy-catalyst'],
+     ['26:39150', 'remedy-catalyst'],
+     ['26:7707', 'remedy-turn'],
+     ['26:6031', 'remedy-turn'],
+     ['25:11004', 'remedy-smell'],
+     ['26:12950', 'remedy-smell'],
+     ['25:11149', 'remedy-sieve'],
+     ['25:11959', 'remedy-sieve']].each do |cite, flag|
+      it "sets #{flag}, and no other remedy Flag, on the game's line #{cite}" do
+        expect(flags_set_by(Remedy::FLAGS, log(cite).text)).to eq([flag])
+      end
+    end
+
+    %w[25:10825 26:5913 26:5920 26:6742 26:11057 26:11117].each do |cite|
+      it "sets no remedy Flag on #{cite}, which asks for nothing" do
+        expect(flags_set_by(Remedy::FLAGS, log(cite).text)).to be_empty
+      end
+    end
+
+    it 'sets the same Flags as the list remedy registered before, on every real line of the fixtures' do
+      no_quote = Remedy::NO_QUOTE
+      # remedy.lic:48-54 at 03f11b54, the Flags.add calls this list replaced;
+      # remedy-smell still has the "you should smell the mixture" pattern that
+      # "smell the mixture" covers.
+      before = {
+        'remedy-water'    => [/#{no_quote}You need another splash of water/i],
+        'remedy-alcohol'  => [/#{no_quote}You need another splash of alcohol/i],
+        'remedy-catalyst' => [/#{no_quote}You need another catalyst material/i],
+        'remedy-herb'     => [/#{no_quote}You need another prepared herb/i],
+        'remedy-turn'     => [/#{no_quote}Clumps of material stick to the sides/i, /#{no_quote}Once finished you notice clumps of material/i],
+        'remedy-smell'    => [/#{no_quote}begins to transition colors/i, /#{no_quote}you should smell the mixture/i, /#{no_quote}smell the mixture/i],
+        'remedy-sieve'    => [/#{no_quote}Upon completion you see some particulate clouding up the mixture./i, /#{no_quote}with a sieve/i]
+      }
+      lines = every_fixture_line
+      # The sweep is not vacuous: real lines set every Flag but remedy-herb,
+      # whose cue is in no log.
+      expect(lines.flat_map { |line| flags_set_by(Remedy::FLAGS, line.text) }.uniq).to match_array(Remedy::FLAGS.keys - ['remedy-herb'])
+      changed = lines.reject { |line| flags_set_by(before, line.text).sort == flags_set_by(Remedy::FLAGS, line.text).sort }
+      expect(changed.map(&:label)).to be_empty
+    end
+
+    it 'still sets remedy-smell on 26:12950, the "you should smell the mixture" line, behind an XML tag' do
+      # code-derived: 26:12950 behind a bold tag, the form NO_QUOTE allows.
+      tagged = ReplayGame.code("<pushBold/>#{log('26:12950').text}", from: '26:12950 behind an XML tag (Remedy::NO_QUOTE)')
+      expect(flags_set_by(Remedy::FLAGS, tagged.text)).to eq(['remedy-smell'])
+    end
+
+    it 'keeps the broader "smell the mixture" pattern, so a wording without "you should" still sets remedy-smell' do
+      # code-derived: remedy.lic:53 at 03f11b54 listed /smell the mixture/
+      # beside /you should smell the mixture/; this keeps the broader one.
+      variant = ReplayGame.code('To avoid a problem you must smell the mixture.', from: 'R:53 /smell the mixture/ at 03f11b54')
+      expect(flags_set_by(Remedy::FLAGS, variant.text)).to eq(['remedy-smell'])
+    end
+
+    it 'ignores 26:12950 when another player says it' do
+      # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
+      spoof = ReplayGame.code(%(<preset id='speech'>Mallory says</preset>, "#{log('26:12950').text}"), from: 'player speech form (Remedy::NO_QUOTE)')
+      expect(flags_set_by(Remedy::FLAGS, spoof.text)).to be_empty
+    end
+  end
+
+  describe 'Remedy.delete_flags' do
+    it 'deletes every remedy Flag and leaves the Flags of other scripts alone' do
+      Flags.add('workorders-done', /You hand/i)
+      Remedy::FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
+      Remedy.delete_flags
+      expect(Flags.matchers.keys).to eq(['workorders-done'])
+    end
+
+    it 'does nothing when no remedy Flag is registered, as on a run stopped by parse_args' do
+      expect { Remedy.delete_flags }.not_to raise_error
+      expect(Flags.matchers).to be_empty
+    end
+  end
+
+  describe 'Remedy::Patterns, as DRC.bput reads the real reply' do
+    [[:VESSEL_COUNT_REPLIES, 'count water in my glass flask', '25:13762', 'I could not find what you were referring to.'],
+     [:HERB_COUNT_REPLIES, 'count my nemoih', '25:8678', 'You count out 75'],
+     [:HERB_COUNT_REPLIES, 'count my nemoih', '25:12538', 'You count out 21'],
+     [:FIRST_STACK_COUNT_REPLIES, 'count my first nemoih', '25:8678', 'You count out 75 pieces'],
+     [:SECOND_STACK_COUNT_REPLIES, 'count my second nemoih', '25:13762', 'I could not find'],
+     [:SECOND_STACK_COUNT_REPLIES, 'count my second nemoih', '25:33679', 'You count out 25 pieces'],
+     [:COMBINE_REPLIES, 'combine my nemoih', '25:11425', 'You combine'],
+     [:COMBINE_REPLIES, 'combine my nemoih', '26:32077', 'That stack of herbs is too large to add'],
+     [:COMBINE_REPLIES, 'combine my nemoih', '25:18266', 'You must be holding both'],
+     [:HERB_PUT_REPLIES, 'put nemoih in my large mortar', '26:10749', 'You put'],
+     [:CRAFT_REPLIES, 'crush my unguent with my rounded pestle', '25:10825', 'Roundtime:'],
+     [:CRAFT_REPLIES, 'crush my unguent with my rounded pestle', '26:6742', 'Applying the final touches'],
+     [:CRAFT_REPLIES, 'crush my unguent with my rounded pestle', '25:11264', 'Interesting thought really... but no.'],
+     [:CRAFT_REPLIES, 'mix my heavy cauldron with my mixing stick', '25:58002', "Try as you might, you just can't mix"],
+     [:LIQUID_ADD_REPLIES, 'put alcohol in my large mortar', '25:10905', 'You toss'],
+     [:INGREDIENT_PUT_REPLIES, 'put my pewter ingot in my large mortar', '25:11081', 'You vigorously'],
+     [:STEP_REPLIES, 'push my unguent with my sieve', '26:10935', 'Roundtime'],
+     [:RELEASE_SPELL_REPLIES, 'release spell', '25:52773', 'You let your concentration lapse'],
+     [:RELEASE_SPELL_REPLIES, 'release spell', '26:92609', "You aren't preparing a spell"],
+     [:RELEASE_MANA_REPLIES, 'release mana', '25:1316', "You aren't harnessing any mana"],
+     [:MARK_REPLIES, 'mark my liniment with my stamp', '25:11294', 'score the surface with the stamp']].each do |name, command, cite, text|
+      it "#{name}: bput returns #{text.inspect} for #{command.inspect} answered by #{cite}" do
+        game.install(self)
+        game.script(command, log(cite))
+        expect(DRC.bput(command, *Remedy::Patterns.const_get(name))).to eq(text)
+        expect(game.diagnostics).to be_empty
+      end
+    end
+
+    it 'names the text bput returns for "I could not find" (25:13762), which the vessel check compares against' do
+      game.install(self)
+      game.script('count alcohol in my glass flask', log('25:13762'))
+      expect(DRC.bput('count alcohol in my glass flask', *Remedy::Patterns::VESSEL_COUNT_REPLIES)).to eq(Remedy::Patterns::NO_SUCH_ITEM_REPLY)
+    end
+
+    it 'CRAFT_REPLIES: returns Roundtime for a crush answered by the crush line 26:11057 and then Roundtime 25:10825' do
+      game.install(self)
+      game.script('crush my unguent with my rounded pestle', log('26:11057'), log('25:10825'))
+      expect(DRC.bput('crush my unguent with my rounded pestle', *Remedy::Patterns::CRAFT_REPLIES)).to eq('Roundtime:')
+    end
+
+    it 'CRAFT_REPLIES: returns Roundtime, not the final-touches line, when Roundtime 26:6740 comes before final touches 26:6742 in one reply' do
+      game.install(self)
+      # The real mix at 07:25:08: "Roundtime: 9 sec." (26:6740), then
+      # "Applying the final touches ..." (26:6742). bput stops at the first
+      # line any pattern matches, so remedy sees Roundtime and crafts one
+      # command more before it sees the remedy is done.
+      game.script('mix my heavy cauldron with my mixing stick', log('26:6740'), log('26:6742'))
+      expect(DRC.bput('mix my heavy cauldron with my mixing stick', *Remedy::Patterns::CRAFT_REPLIES)).to eq('Roundtime:')
+    end
+
+    it 'COMBINE_REPLIES: ignores another player saying "You combine", then reads the game line 26:32077' do
+      game.install(self)
+      # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
+      spoof = ReplayGame.code(%(Mallory says, "You combine the stacks of herbs together."), from: 'player speech form (Remedy::NO_QUOTE)')
+      game.script('combine my nemoih', spoof, log('26:32077'))
+      expect(DRC.bput('combine my nemoih', *Remedy::Patterns::COMBINE_REPLIES)).to eq('That stack of herbs is too large to add')
+    end
+
+    it 'freezes every pattern list, so no caller can change what remedy reads' do
+      lists = Remedy::Patterns.constants.map { |name| Remedy::Patterns.const_get(name) }
+      expect(lists).to all(be_frozen)
+    end
+  end
+
+  describe 'Remedy::Patterns, against the lists remedy gave DRC.bput and Flags.add at 03f11b54' do
+    # A String in a match list is read as /<string>/i: lich-5 DRC.bput
+    # (common.rb:197) and Flags.add (events.rb:27) both convert it
+    # with `item.is_a?(Regexp) ? item : /#{item}/i`.
+    #
+    # @param patterns [Array<String, Regexp>] a match list as remedy wrote it
+    # @return [Array<Regexp>] the list bput or Flags.add matches lines with
+    def as_bput_reads(patterns)
+      patterns.map { |item| item.is_a?(Regexp) ? item : /#{item}/i }
+    end
+
+    # The members of a list that are old patterns, in the list's order.
+    #
+    # @param list [Array<Regexp>] a Remedy pattern list
+    # @param before [Array<Regexp>] the old list, as bput reads it
+    # @return [Array<Regexp>] list's members found in before
+    def old_members(list, before)
+      list.select { |pattern| before.include?(pattern) }
+    end
+
+    # Every old pattern is compared element by element (source, case option
+    # and anchors), so the code-derived members no log exercises are pinned
+    # too: dropping, narrowing or reordering one fails. A fix layer may add
+    # a reply the old list did not wait for; bput reads the lines in order
+    # and, on each line, returns the first pattern that matches
+    # (common.rb:273-276), so an added pattern changes no line an old one
+    # answered unless both match that same line.
+    no_quote = Remedy::NO_QUOTE
+    {
+      'VESSEL_COUNT_REPLIES'       => ['R:74 (and 81, 92, 99)', [/^[^"]*?parts left of the/i, /^[^"]*?part left of the/i, '^I could not find what you were referring to.']],
+      'CUBE_TOUCH_REPLIES'         => ['R:198', [/^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/]],
+      'HERB_COUNT_REPLIES'         => ['R:216 (and 230, 234)', ['^You count out \d+']],
+      'COMBINE_REPLIES'            => ['R:227 (and 235)', [/^[^"]*?You combine/i, /^[^"]*?too large to add/i, '^You must be holding both']],
+      'FIRST_STACK_COUNT_REPLIES'  => ['R:236', ['^You count out \d+ pieces']],
+      'SECOND_STACK_COUNT_REPLIES' => ['R:237', ['^I could not find', '^You count out \d+ pieces']],
+      'HERB_PUT_REPLIES'           => ['R:247', ['^You put', /^[^"]*?already has something/i, /^[^"]*?can only hold/i, '^You realize the', /^[^"]*?You vigorously rub/i]],
+      'TILT_REPLIES'               => ['R:251', ['You grab']],
+      'TILT_AGAIN_REPLIES'         => ['R:252', ['You grab', 'Roundtime']],
+      'HERB_PUT_AGAIN_REPLIES'     => ['R:253', ['You put', 'can only hold']],
+      'CRAFT_REPLIES'              => ['R:285-291', ['^Applying the final touches', /^[^"]*?Interesting thought really... but no./i, /^[^"]*?you just can't mix/i,
+                                                     /^[^"]*?Try as you might/i, /^[^"]*?That craftable requires more pieces of that plant to begin/i, /^[^"]*?Roundtime:/i]],
+      'LIQUID_ADD_REPLIES'         => ['R:313 (and 333)', [/^[^"]*?Roundtime/i, /^[^"]*?You toss/i, /^[^"]*?You cannot find a way to add that as an ingredient/i]],
+      'INGREDIENT_PUT_REPLIES'     => ['R:353 (and 364)', ['Roundtime', 'You vigorously']],
+      'STEP_REPLIES'               => ['R:375 (and 384, 391)', ['Roundtime']],
+      'RELEASE_SPELL_REPLIES'      => ['R:416', ['You let your concentration lapse', "You aren't preparing a spell"]],
+      'RELEASE_MANA_REPLIES'       => ['R:417', ['You release all', "You aren't harnessing any mana"]],
+      'RELEASE_SYMBIOSIS_REPLIES'  => ['R:418', ["But you haven't", 'You release', 'Repeat this command']],
+      'MARK_REPLIES'               => ['R:423', ['carefully hammer the stamp', 'You cannot figure out how to do that', 'too badly damaged', /score the surface with the stamp/]]
+    }.each do |name, (source, before)|
+      it "#{name} keeps the list remedy.lic gave bput at #{source} (03f11b54), element by element, in order" do
+        expected = as_bput_reads(before)
+        expect(old_members(Remedy::Patterns.const_get(name), expected)).to eq(expected)
+      end
+    end
+
+    {
+      'remedy-water'    => ['R:48', [/#{no_quote}You need another splash of water/i]],
+      'remedy-alcohol'  => ['R:49', [/#{no_quote}You need another splash of alcohol/i]],
+      'remedy-catalyst' => ['R:50', [/#{no_quote}You need another catalyst material/i]],
+      'remedy-herb'     => ['R:51', [/#{no_quote}You need another prepared herb/i]],
+      'remedy-turn'     => ['R:52', [/#{no_quote}Clumps of material stick to the sides/i, /#{no_quote}Once finished you notice clumps of material/i]],
+      'remedy-sieve'    => ['R:54', [/#{no_quote}Upon completion you see some particulate clouding up the mixture./i, /#{no_quote}with a sieve/i]]
+    }.each do |flag, (source, before)|
+      it "#{flag} keeps the patterns remedy.lic gave Flags.add at #{source} (03f11b54), element by element" do
+        expected = as_bput_reads(before)
+        expect(old_members(Remedy::FLAGS[flag], expected)).to eq(expected)
+      end
+    end
+
+    it 'remedy-smell keeps R:53 (03f11b54) except "you should smell the mixture", which "smell the mixture" covers' do
+      # R:53 listed begins-to-transition, you-should-smell and smell-the-mixture;
+      # every line the middle one matches, the last one matches too.
+      kept = [/#{Remedy::NO_QUOTE}begins to transition colors/i, /#{Remedy::NO_QUOTE}smell the mixture/i]
+      dropped = /#{Remedy::NO_QUOTE}you should smell the mixture/i
+      expect(old_members(Remedy::FLAGS['remedy-smell'], kept + [dropped])).to eq(kept)
+    end
+  end
+
+  describe 'Remedy::ARG_DEFINITIONS' do
+    it 'offers the book form and the continue form, in that order' do
+      expect(Remedy::ARG_DEFINITIONS.map { |form| form.map { |definition| definition[:name] } })
+        .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun], %w[continue herb2 catalyst container noun]])
+    end
+
+    it 'gives both forms the same herb2, catalyst, container and noun definitions' do
+      book, continuing = Remedy::ARG_DEFINITIONS
+      expect(book.last(4)).to eq(continuing.last(4))
+    end
+
+    it 'is frozen through every form and definition, as lich-5 ArgParser only reads it' do
+      expect(Remedy::ARG_DEFINITIONS).to be_frozen
+      expect(Remedy::ARG_DEFINITIONS).to all(be_frozen)
+      expect(Remedy::ARG_DEFINITIONS.flatten).to all(be_frozen)
+    end
+  end
+
+  describe 'Remedy.new and Remedy#run' do
+    let(:settings) do
+      OpenStruct.new(crafting_container: "botanist's toolbag", crafting_items_in_container: [], alchemy_belt: nil,
+                     alchemy_tools: [], crafting_training_spells: [], hometown: 'Crossing', mark_crafted_goods: false,
+                     cube_armor_piece: nil, herb_container: nil, water_container: nil, alcohol_container: nil)
+    end
+    let(:args) do
+      OpenStruct.new(book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih', herb2: 'na',
+                     catalyst: 'pewter ingot', container: 'mortar', noun: 'unguent')
+    end
+    let(:exit_hooks) { [] }
+    let(:messages) { [] }
+
+    before do
+      game.install(self)
+      $test_data.crafting = { 'remedies' => {} }
+      allow(DRC).to receive(:message) { |text| messages << text }
+    end
+
+    it 'sends nothing, registers no Flag and no before_dying block when built' do
+      allow_any_instance_of(Remedy).to receive(:before_dying) { |_remedy, &block| exit_hooks << block }
+      Remedy.new(settings, args)
+      expect(game.sent).to be_empty
+      expect(Flags.matchers).to be_empty
+      expect(exit_hooks).to be_empty
+    end
+
+    it 'registers its before_dying block first, before any Flag or command, so a stop at the first check still cleans up' do
+      state_at_hook = nil
+      allow_any_instance_of(Remedy).to receive(:before_dying) do |_remedy, &block|
+        state_at_hook = { flags: Flags.matchers.keys, sent: game.sent.dup }
+        exit_hooks << block
+      end
+      # alchemy_tools lists no mortar: run stops in its first check.
+      expect { Remedy.new(settings, args).run }.to raise_error(SystemExit)
+      expect(state_at_hook).to eq(flags: [], sent: [])
+      expect(Flags.matchers.keys).to eq(Remedy::FLAGS.keys)
+      expect(messages.first).to eq('*** some head unguent needs a mortar, and your alchemy_tools setting lists none. ***')
+      exit_hooks.each(&:call)
+      expect(Flags.matchers).to be_empty
+      expect(game.sent).to be_empty
+    end
+  end
+end
