@@ -1075,6 +1075,13 @@ RSpec.describe Enchant do
   # ---------------------------------------------------------------------------
 
   describe '#handle_imbue_resume' do
+    # These are about the fount; the scribing that follows the imbue is
+    # covered by the whole runs.
+    before(:each) do
+      allow_any_instance_of(Enchant).to receive(:scribe)
+      allow(DRCC).to receive(:get_crafting_item).with('burin', any_args)
+    end
+
     # bput returns only the matched text, so these feed the game's look line
     # through model_bput rather than stubbing bput with the whole line.
     [
@@ -1090,7 +1097,7 @@ RSpec.describe Enchant do
         sent = stub_bput_replies(/^look on/ => [[look]])
 
         expect(instance).to receive(:imbue)
-        expect(DRCC).not_to receive(:get_crafting_item)
+        expect(DRCC).not_to receive(:get_crafting_item).with('fount', any_args)
 
         instance.send(:handle_imbue_resume)
         expect(sent).to eq(['look on brazier'])
@@ -1899,6 +1906,52 @@ RSpec.describe Enchant, 'whole runs' do
 
     it 'puts the rod and burin away from the right hand and ends holding the rock' do
       run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'resuming an item that wants an imbue' do
+    before(:each) do
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: 'brazier')
+      # Code-derived replies: no analyze or look on a brazier in the logs.
+      game.command('analyze rock on my brazier', ['You believe it requires the application of an imbue spell to advance the enchanting process.'])
+      game.command('look on my brazier', ['On the brazier you see a rock and a fount.'])
+    end
+
+    it 'finishes the item when the imbue completes it, and ends holding the rock' do
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('rock')
+
+      run_script(resume: 'resume', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+      expect(game.feet).to eq([])
+    end
+
+    it 'scribes on when the imbue asks for more' do
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
+      game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
+      game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_blurs])
+      game.command('meditate fount on my brazier', ENCHANT_LOG[:meditate_wants_imbue])
+      final_rod_imbue('rock', ENCHANT_LOG[:imbue_completes_rock])
+      tidy_up('rock')
+
+      run_script(resume: 'resume', noun: 'rock')
 
       expect_transcript_done
       expect(game.hands).to eq(['rock', nil])
