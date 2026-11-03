@@ -29,8 +29,13 @@
 # pieces of it), when the studied instructions fade before crafting begins,
 # when the game stops answering a crafting command, when the remedy is not
 # done after 100 crafting commands, when a tool, the catalyst or the second
-# herb cannot be got or put in, or when the game asks for a second herb and
-# herb2 is na, none or "not used".
+# herb cannot be got or put in, when the game asks for a second herb and
+# herb2 is na, none or "not used", or when the finished remedy is not in
+# hand after it is taken out of the vessel. A stop leaves the vessel in hand
+# and puts the stirrer away; when the vessel holds a remedy the game has
+# begun and not finished, remedy prints the ;remedy continue line that
+# carries it on. However remedy ends, it releases the magic
+# crafting_training_spells left prepared, when that setting lists a spell.
 #
 # == Settings read
 # crafting_container, crafting_items_in_container, alchemy_belt,
@@ -272,6 +277,15 @@ class Remedy
     #   checks ({CraftLoop#run}).
     INSTRUCTIONS_FADED = [/#{NO_QUOTE}You struggle to recall the crafting instructions/i].freeze
 
+    # The reply to `get my <noun> from my <vessel>` that hands the finished
+    # remedy over: "You get some nemoih unguent from inside a diamondique
+    # large mortar carved with delicate flowers which is on your grass
+    # toolstrap." (26:11389) and "You get a belradi elixir from inside a
+    # heavy cauldron with twisted Dwarven iron handles which is on your grass
+    # toolstrap." (26:6794). Read from the first line fput returns, so it
+    # starts the line; another player's speech or ESP starts with a name.
+    PRODUCT_TAKEN = [/^You get .+ from inside /].freeze
+
     # Replies to `release spell`: "You let your concentration lapse and feel
     # the spell's energies dissipate." (25:52773), "You aren't preparing a
     # spell." (26:92609).
@@ -457,6 +471,18 @@ class Remedy
     def second_herb
       herb2 unless herb2.nil? || NO_SECOND_HERB.include?(herb2)
     end
+
+    # The command that carries on this remedy from the vessel in hand, in
+    # the continue form of {ARG_DEFINITIONS}: `;remedy continue <herb2>
+    # <catalyst> <container> <noun>`, each value as given, in double quotes
+    # when it holds a space (Lich splits the arguments at spaces outside
+    # double quotes).
+    #
+    # @return [String] e.g. `;remedy continue na "pewter ingot" mortar unguent`
+    def continue_command
+      values = [herb2, catalyst, container_request, noun].map { |value| value.to_s.match?(/\s/) ? %("#{value}") : value.to_s }
+      ";remedy continue #{values.join(' ')}"
+    end
   end
 
   # The vessel and the stirrer a remedy is made with, and the crafting
@@ -584,6 +610,10 @@ class Remedy
   # was lowered; anything else comes from wherever DRCC.get_crafting_item
   # finds it (alchemy_belt, then the crafting container). Holds no game
   # state: it only knows the settings and the herb names.
+  #
+  # {#stow_held}, {#stow_beside} and {#stow_vessel} put away a hand chosen
+  # by the name of what it holds, giving the stow the hand's own contents,
+  # as the stows by hand position always have.
   #
   # {#fetch?} and {#fetch!} are the guarded gets: they work the same on every
   # lich-5 release. {#get} and {#get_tool} are the plain gets remedy has
@@ -768,7 +798,69 @@ class Remedy
     # @note An item of the same noun already in the other hand also counts;
     #   remedy then goes on as it always has.
     def held?(name)
-      DRCI.in_hands?(name.split.last)
+      DRCI.in_hands?(noun_of(name))
+    end
+
+    # Puts away what the hand holding an item holds, found by the last word
+    # of the item's name as {#held?} finds it. Nothing is sent when neither
+    # hand holds it.
+    #
+    # The stow is given the hand's own contents, the full name the hand
+    # shows, which is what remedy has always stowed by hand position: so
+    # DRCC.stow_crafting_item ties the item to the belt, or puts it in the
+    # crafting container, exactly as before. Only the
+    # choice of hand changes.
+    #
+    # @param name [String] the name the item was asked for by (the vessel or
+    #   the stirrer, as alchemy_tools names it)
+    # @return [Boolean] whether a hand held the item and it was stowed
+    def stow_held(name)
+      hand = hand_holding(name)
+      return false unless hand
+
+      stow(contents(hand))
+      true
+    end
+
+    # Puts away what the hand that does not hold the vessel holds: the
+    # stirrer, or the item a crafting step used. Which hand holds the vessel
+    # is found by its name ({#stow_held}'s rule); when neither hand shows it,
+    # the left hand is put away, as remedy always has.
+    #
+    # With the vessel in the right hand, as every book-form run has it (it
+    # is picked up into the empty right hand), this is the left hand, so the
+    # stow is the same as before. In the continue form the player may hold
+    # the vessel in the left hand: the stirrer is then in the right, and is
+    # what gets put away, not the vessel with the unfinished remedy in it
+    # (H14).
+    #
+    # @param vessel [String] the vessel, as alchemy_tools names it
+    # @return [void]
+    def stow_beside(vessel)
+      stow(contents(hand_holding(vessel) == :left ? :right : :left))
+    end
+
+    # Puts the vessel away after the product is out: by its name when a hand
+    # shows it ({#stow_held}); when neither hand does, the right hand is put
+    # away, as remedy always has after the product get.
+    #
+    # The vessel can be in neither hand in the continue form: nothing makes
+    # the player hold it, and the product get still works from a vessel tied
+    # on the belt ("You get some nemoih unguent from inside a diamondique
+    # large mortar carved with delicate flowers which is on your grass
+    # toolstrap.", 26:11389; also 26:6794). The stirrer the crafting steps got is then in the right hand
+    # (the get fills the empty right hand, so the product goes to the left),
+    # and the right-hand stow puts it away as before (the
+    # pre-layer-12 Finisher stowed DRC.right_hand here).
+    #
+    # @param vessel [String] the vessel, as alchemy_tools names it
+    # @return [void]
+    # @note code-derived: with the vessel in neither hand and the right hand
+    #   holding the product (both hands empty at the get, e.g. no step got
+    #   the stirrer), the product is put away, exactly as the right-hand stow
+    #   always did. No log shows that case.
+    def stow_vessel(vessel)
+      stow(contents(:right)) unless stow_held(vessel)
     end
 
     # Puts an item away: a herb as {#stow_herb} does, anything else in the
@@ -869,6 +961,39 @@ class Remedy
       return DRCC.get_crafting_item(name, container, items, belt) unless skip_exit
 
       DRCC.get_crafting_item(name, container, items, belt, true)
+    end
+
+    # The last word of an item's name, which the game takes as the start of
+    # the item's noun ({#held?}).
+    #
+    # @param name [String]
+    # @return [String]
+    def noun_of(name)
+      name.split.last
+    end
+
+    # The hand that holds an item, found by the last word of its name with
+    # DRCI.in_left_hand? and DRCI.in_right_hand? (lich-5 common-items.rb, in
+    # every release from v5.20.0: :869/:879 at v5.20.0, :944/:954 at
+    # v5.23.0), the checks DRCI.in_hands? makes for each hand. The left hand
+    # is asked first.
+    #
+    # @param name [String] the name the item was asked for by
+    # @return [Symbol, nil] :left, :right, or nil when neither hand holds it
+    def hand_holding(name)
+      noun = noun_of(name)
+      if DRCI.in_left_hand?(noun)
+        :left
+      elsif DRCI.in_right_hand?(noun)
+        :right
+      end
+    end
+
+    # @param hand [Symbol] :left or :right
+    # @return [String, nil] what the hand holds, as DRC names it (nil when
+    #   empty)
+    def contents(hand)
+      hand == :left ? DRC.left_hand : DRC.right_hand
     end
 
     # Whether a name is routed as a herb: it equals herb1 or herb2.
@@ -1478,8 +1603,8 @@ class Remedy
   #
   # Each method resets its own Flag just before it sends its command, so a
   # cue that comes in the command's own reply is kept for the next pass.
-  # One that brings an ingredient or the sieve puts away the left hand,
-  # gets the item, and gets the stirrer back afterwards. Every get but a
+  # One that brings an ingredient or the sieve puts away the stirrer, gets
+  # the item, and gets the stirrer back afterwards. Every get but a
   # liquid's is guarded ({Inventory#fetch!}); the catalyst and herb2 puts
   # stop remedy when the game finds no such item.
   #
@@ -1619,8 +1744,10 @@ class Remedy
       Remedy.stop("the game found no #{item} to put in the #{@tools.container}.")
     end
 
-    # Puts away the left hand, gets the item, resets the Flag, runs the
-    # block, then puts the item away and gets the stirrer back.
+    # Puts away the stirrer, gets the item, resets the Flag, runs the block,
+    # then puts the item away and gets the stirrer back. Both stows put away
+    # the hand that does not hold the vessel ({Inventory#stow_beside}), so
+    # the vessel stays in hand whichever hand holds it.
     #
     # @param item [String] what the block uses
     # @param flag [String] the Flag being answered
@@ -1632,12 +1759,12 @@ class Remedy
     #   got, or when DRCC.get_crafting_item stops the script
     def with_item(item, flag, guarded: true)
       waitrt?
-      @inventory.stow(DRC.left_hand)
+      @inventory.stow_beside(@tools.container)
       guarded ? @inventory.fetch!(item) : @inventory.get(item)
       Flags.reset(flag)
       yield
       waitrt?
-      @inventory.stow(DRC.left_hand)
+      @inventory.stow_beside(@tools.container)
       @inventory.fetch!(@tools.stirrer)
     end
 
@@ -1732,6 +1859,12 @@ class Remedy
     # The end of the text bput returns for "Roundtime: 7 sec." (25:10825).
     ROUNDTIME = /Roundtime:\z/
 
+    # The outcomes of {#run} that leave a begun remedy unfinished in the
+    # vessel ({#resumable?}): the game stopped answering, or the step bound
+    # was reached. :done, :unsuitable_herb, :more_pieces and :faded leave
+    # nothing to carry on.
+    OUTCOMES_LEFT_UNFINISHED = %i[unanswered too_long].freeze
+
     # The crafting command the loop sends next. After {#run} returns
     # :unanswered it is the command the game did not answer.
     #
@@ -1748,6 +1881,19 @@ class Remedy
       @handlers = handlers
       @magic = magic
       @command = nil
+      @begun = false
+      @outcome = nil
+    end
+
+    # Whether the vessel holds a remedy the game has begun and not finished,
+    # which `;remedy continue` can carry on: crafting has begun ({#run}) and
+    # the loop has not ended on the remedy done or the herb refused. A loop
+    # stopped from inside, by a handler or a commons helper, has no outcome
+    # and counts as unfinished.
+    #
+    # @return [Boolean] false before {#run}
+    def resumable?
+      @begun && (@outcome.nil? || OUTCOMES_LEFT_UNFINISHED.include?(@outcome))
     end
 
     # Crafts until the game says the remedy is done, refuses it, or a bound
@@ -1756,13 +1902,15 @@ class Remedy
     # Every pass waits out roundtime and runs the magic routine once, then
     # does its work. Crafting has begun once the game answers a crafting
     # command with Roundtime or asks for an ingredient or a step (each cue
-    # names "an unfinished" remedy, e.g. 26:39150). Until then, after a
-    # study, each pass checks {FADED_FLAG} before it sends.
+    # names "an unfinished" remedy, e.g. 26:39150); in the continue form it
+    # has begun before the loop starts. Until then, after a study, each pass
+    # checks {FADED_FLAG} before it sends.
     #
     # @param command [String] the first crafting command
     # @param studied [Boolean] the recipe was studied for this run (the book
     #   form), and {FADED_FLAG} was reset after the study; false in the
-    #   continue form, which studies nothing
+    #   continue form, which studies nothing and resumes a remedy already
+    #   begun
     # @return [Symbol] :done when the remedy is done; :unsuitable_herb or
     #   :more_pieces when the game refused the herb; :faded when the studied
     #   instructions faded before crafting began; :unanswered when more than
@@ -1778,19 +1926,29 @@ class Remedy
     #   end a run that crafts today.
     def run(command, studied: false)
       @command = command
+      @begun = !studied
+      @outcome = craft
+    end
+
+    private
+
+    # The passes of {#run}.
+    #
+    # @return [Symbol] as {#run}
+    # @raise [SystemExit] when a handler stops the script ({Handlers#run})
+    def craft
       sends = 0
       silent = 0
-      begun = false
       loop do
         waitrt?
         @magic.routine
         if (flag = @handlers.pending)
           @handlers.run(flag)
           silent = 0
-          begun = true
+          @begun = true
           next
         end
-        return :faded if studied && !begun && Flags[FADED_FLAG]
+        return :faded if !@begun && Flags[FADED_FLAG]
 
         case (reply = classify(DRC.bput(@command, *Patterns::CRAFT_REPLIES)))
         when :done, :unsuitable_herb, :more_pieces
@@ -1799,7 +1957,7 @@ class Remedy
           waitrt?
           @command = @tools.next_command(@noun)
           silent = 0
-          begun = true
+          @begun = true
         when :silent
           # A cue in the reply is an answer: the next pass handles it.
           silent += 1 unless @handlers.pending
@@ -1809,8 +1967,6 @@ class Remedy
         return :too_long if sends >= MAX_CRAFT_STEPS
       end
     end
-
-    private
 
     # What a crafting command's reply means.
     #
@@ -1829,8 +1985,8 @@ class Remedy
     end
   end
 
-  # Takes the finished remedy out of the vessel, puts the tools away and
-  # marks the product. The product stays in hand.
+  # Takes the finished remedy out of the vessel, checks it is in hand, puts
+  # the tools away and marks the product. The product stays in hand.
   #
   # @api private
   class Finisher
@@ -1848,25 +2004,68 @@ class Remedy
       @mark = mark
     end
 
-    # Puts away the left hand, takes the product out of the vessel ("You get
-    # some nemoih unguent from inside your large mortar.", 26:11389), puts
-    # away the right hand, then marks the product when mark_crafted_goods is
-    # set.
+    # Puts away the stirrer ({Inventory#stow_beside}), takes the product out
+    # of the vessel ({Patterns::PRODUCT_TAKEN}, 26:11389), puts the vessel
+    # away by its name, or the right hand when neither hand shows the vessel
+    # ({Inventory#stow_vessel}), then marks the product when
+    # mark_crafted_goods is set.
+    #
+    # The pattern-less fput returns the first line after the get, which is
+    # not always the game's reply: " * Venras joins the adventure."
+    # (25:27826) and "Osrel Meraud  (0%)" (26:27350) each came between a
+    # product get and its "You get ..." reply. So when that line is not the
+    # reply, the hands are looked at for {Inventory::LATE_GET_LOOKS} seconds
+    # ({Inventory#got?}), as for every guarded get.
+    #
+    # When the product is not in hand after the get, remedy stops with the
+    # vessel still in hand and the stirrer put away: the game has said the
+    # remedy is done ({CraftLoop::ALREADY_FINISHED} also answers a vessel
+    # with no remedy in it, H03), and the callers take the product
+    # in hand as the sign it was made (D09). The vessel and the
+    # stirrer go by name, so in the continue form with the vessel in the
+    # left hand the vessel is not put away before the product is out, and
+    # the product is never put away (H14).
     #
     # @return [void]
-    # @raise [SystemExit] only as {Inventory#fetch?} may, on the stamp's get
-    # @note The product get is not checked, and the stows go by hand, so in
-    #   the continue form with the vessel in the left hand the vessel is put
-    #   away first (D09, CURRENT H14, both fixed by layer 12).
+    # @raise [SystemExit] when the product is not in hand after the get
+    #   ({Remedy.stop}), or as {Inventory#fetch?} may, on the stamp's get
+    # @note The vessel is found by the last word of its alchemy_tools name.
+    #   In the continue form it may be in neither hand (still tied on the
+    #   belt: the product get works from there, 26:11389, 26:6794, and the
+    #   crafting commands of the mortar form never name it); the right hand,
+    #   which then holds the stirrer, is put away instead, as before
+    #   ({Inventory#stow_vessel}).
     def finish
       waitrt?
-      @inventory.stow(DRC.left_hand)
-      fput("get my #{@noun} from my #{@tools.container}")
-      @inventory.stow(DRC.right_hand)
+      @inventory.stow_beside(@tools.container)
+      reply = fput("get my #{@noun} from my #{@tools.container}")
+      Remedy.stop("the #{@noun} is not in hand after taking it out of the #{@tools.container}.") unless taken?(reply)
+      @inventory.stow_vessel(@tools.container)
       stamp if @mark
     end
 
     private
+
+    # Whether the product is in hand after its get: the first line fput
+    # returned says it was handed over ({Patterns::PRODUCT_TAKEN}), or a hand
+    # holds the product noun now or within {Inventory::LATE_GET_LOOKS}
+    # seconds ({Inventory#got?}).
+    #
+    # The hands are looked at again because that first line may be an
+    # unrelated one that arrived before the reply (25:27826 between the get
+    # at 25:27825 and its reply at 25:27830; 26:27350 between 26:27349 and
+    # 26:27353). The hands then change only when the reply's own line is
+    # parsed (lich-5 games.rb:1139-1153), after fput has returned
+    # (global_defs.rb:1625-1628).
+    #
+    # @param reply [String, false] the first line fput returned for the get
+    #   (false on a refusal or a timeout)
+    # @return [Boolean] true at once on the reply line or a hand holding the
+    #   product; false only after {Inventory::LATE_GET_LOOKS} looks find it
+    #   in neither hand
+    def taken?(reply)
+      Patterns::PRODUCT_TAKEN.any? { |pattern| pattern.match?(reply.to_s) } || @inventory.got?(@noun)
+    end
 
     # Marks the product with the stamp: "You hold the liniment steady and
     # score the surface with the stamp." (25:11294). When the stamp cannot
@@ -1888,39 +2087,74 @@ class Remedy
   end
 
   # The crafting magic: the commons' routine each crafting pass, and the
-  # release at the end.
+  # release at the end, or when remedy stops.
   #
   # @api private
   class Magic
+    # The commands that let go of what the routine left prepared, in order,
+    # each with the replies {#release} waits for.
+    RELEASES = {
+      'release spell' => Patterns::RELEASE_SPELL_REPLIES,
+      'release mana'  => Patterns::RELEASE_MANA_REPLIES,
+      'release symb'  => Patterns::RELEASE_SYMBIOSIS_REPLIES
+    }.freeze
+
     # @param settings [OpenStruct] the character's settings; the routine
     #   reads them, the release reads crafting_training_spells
     def initialize(settings)
       @settings = settings
       @training_spells = settings.crafting_training_spells
+      @ran = false
+      @released = false
     end
 
     # Runs DRCA.crafting_magic_routine.
     #
     # @return [void]
     def routine
+      @ran = true
       DRCA.crafting_magic_routine(@settings)
     end
 
     # Releases the spell, mana and symbiosis the routine left prepared, when
-    # crafting_training_spells is set.
+    # crafting_training_spells is set; remedy runs it once the product is
+    # out.
     #
     # @return [void]
+    # @note Unchanged from before: the setting's nil default answers
+    #   `empty?` with nil under Lich (its NilClass#method_missing, lich-5
+    #   lib/common/class_exts/nilclass.rb:9-11), so a run that
+    #   finishes with the setting unset still sends the releases.
     def release
       return if @training_spells.empty?
 
-      DRC.bput('release spell', *Patterns::RELEASE_SPELL_REPLIES)
-      DRC.bput('release mana', *Patterns::RELEASE_MANA_REPLIES)
-      DRC.bput('release symb', *Patterns::RELEASE_SYMBIOSIS_REPLIES)
+      @released = true
+      RELEASES.each { |command, replies| DRC.bput(command, *replies) }
+    end
+
+    # Releases the spell, mana and symbiosis from the before_dying cleanup,
+    # when crafting_training_spells lists a spell, {#routine} has run (so
+    # something may be prepared) and {#release} has not: a stop, or a
+    # commons helper's exit, would otherwise leave them prepared
+    # (H15).
+    #
+    # Sends with fput, which waits for no particular reply, as the
+    # before_dying blocks of magic-training.lic:122-124 and
+    # combat-trainer.lic:7092 do. Sends nothing when the setting is unset
+    # (nil, its profiles/base.yaml default) or empty.
+    #
+    # @return [void]
+    def release_on_exit
+      return if !@ran || @released || Array(@training_spells).empty?
+
+      @released = true
+      RELEASES.each_key { |command| fput(command) }
     end
   end
 
-  # Deletes every remedy Flag ({REGISTERED_FLAGS}). Registered with
-  # before_dying by {#run}, so it runs however the script ends.
+  # Deletes every remedy Flag ({REGISTERED_FLAGS}). The before_dying
+  # cleanup {#run} registers ends with it, so it runs however the script
+  # ends.
   #
   # @return [void]
   def self.delete_flags
@@ -1928,9 +2162,11 @@ class Remedy
   end
 
   # Stops the script: beeps, prints a bold "Remedy: <why> Stopping." line
-  # and exits. What is in hand stays there, the vessel with any unfinished
-  # remedy included. The collaborators stop through it too, so every stop
-  # reads the same.
+  # and exits. The vessel stays in hand, with any unfinished remedy in it;
+  # the before_dying cleanup ({#run}) then puts the stirrer away, releases
+  # the crafting magic and, when the remedy can be carried on, prints the
+  # `;remedy continue` line. The collaborators stop through it too, so
+  # every stop reads the same.
   #
   # @param message [String] why remedy stops, as a sentence
   # @return [void] never returns
@@ -1952,16 +2188,21 @@ class Remedy
     @magic = Magic.new(settings)
     @order = Order.from_args(args)
     @inventory = Inventory.new(settings, herbs: @order.herbs)
+    @tools = nil
+    @craft_loop = nil
+    @finished = false
   end
 
   # Crafts the remedy, from preparing the supplies through to the product in
-  # hand, then exits.
+  # hand, then exits. Registers {#cleanup} with before_dying first, so it
+  # runs however the script ends: a finish, a stop, a commons helper's exit
+  # or a ;kill.
   #
   # @return [void]
   # @raise [SystemExit] when the remedy is finished, or when a check or a
   #   commons helper stops the script
   def run
-    before_dying { Remedy.delete_flags }
+    before_dying { cleanup }
     @stock = get_data('crafting')['remedies'][@settings.hometown]
     REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
 
@@ -1981,6 +2222,43 @@ class Remedy
   end
 
   private
+
+  # Leaves things tidy however the script ended. After a stop (the run did
+  # not finish), puts the stirrer away when a hand holds it, so the vessel
+  # stays in hand with any unfinished remedy, and prints
+  # the `;remedy continue` line when the remedy can be carried on
+  # ({CraftLoop#resumable?}). Then releases the crafting magic when
+  # crafting_training_spells is set and the finish did not
+  # ({Magic#release_on_exit}), and deletes the Flags whatever happened
+  # before ({Remedy.delete_flags}).
+  #
+  # @return [void]
+  # @note The stirrer's stow goes through DRCC.stow_crafting_item, which
+  #   reads the reply with DRC.bput, as DRCA.release_cyclics does from the
+  #   before_dying block of combat-trainer.lic:7088-7089. After a normal
+  #   finish nothing is stowed: the stirrer is already away, and the product
+  #   in hand is never touched.
+  def cleanup
+    unless @finished
+      @inventory.stow_held(@tools.stirrer) if @tools
+      report_resumable
+    end
+    @magic.release_on_exit
+  ensure
+    Remedy.delete_flags
+  end
+
+  # Prints how to carry on the unfinished remedy in the vessel, when there
+  # is one ({CraftLoop#resumable?}): "Remedy: the unfinished unguent is in
+  # the large mortar; to carry on with it, run ;remedy continue na \"pewter
+  # ingot\" mortar unguent".
+  #
+  # @return [void]
+  def report_resumable
+    return unless @craft_loop&.resumable?
+
+    DRC.message("Remedy: the unfinished #{@order.noun} is in the #{@tools.container}; to carry on with it, run #{@order.continue_command}")
+  end
 
   # Buys plain water, plain alcohol and a coal nugget catalyst when none is
   # on hand.
@@ -2059,21 +2337,22 @@ class Remedy
   #   when a commons helper stops the script
   def craft(command, studied: false)
     handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol)
-    craft_loop = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic)
-    case craft_loop.run(command, studied: studied)
+    @craft_loop = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic)
+    case @craft_loop.run(command, studied: studied)
     when :unsuitable_herb
-      stop("the game wants a more suitable type of herb than #{herb_in_vessel}: it refused #{craft_loop.command.inspect}.")
+      stop("the game wants a more suitable type of herb than #{herb_in_vessel}: it refused #{@craft_loop.command.inspect}.")
     when :more_pieces
-      stop("the #{@order.noun} needs more pieces of #{herb_in_vessel} to begin: the game refused #{craft_loop.command.inspect}.")
+      stop("the #{@order.noun} needs more pieces of #{herb_in_vessel} to begin: the game refused #{@craft_loop.command.inspect}.")
     when :faded
       stop("the instructions for #{@order.recipe_name} faded from memory before crafting began; run remedy again to study them.")
     when :unanswered
-      stop("the game did not answer #{craft_loop.command.inspect} #{CraftLoop::MAX_SILENT_REPLIES + 1} times in a row.")
+      stop("the game did not answer #{@craft_loop.command.inspect} #{CraftLoop::MAX_SILENT_REPLIES + 1} times in a row.")
     when :too_long
       stop("the #{@order.noun} is not done after #{CraftLoop::MAX_CRAFT_STEPS} crafting commands.")
     end
 
     Finisher.new(inventory: @inventory, tools: @tools, noun: @order.noun, mark: @settings.mark_crafted_goods).finish
+    @finished = true
     @magic.release
     exit
   end

@@ -2043,26 +2043,33 @@ RSpec.describe Remedy do
         expect(game.sent[2]).to eq('put nemoih in my large mortar')
       end
 
-      # flipped by layer 12 (stow by name)
-      it 'CURRENT (H14): in the continue form with the vessel in the left hand, finish puts the vessel away before taking the product out' do
+      # layer 12: the stirrer and the vessel are put away by name
+      it 'H14: in the continue form with the vessel in the left hand, finish puts the pestle away, takes the product out, then puts the vessel away' do
         inventory.delete('diamondique large mortar')
         $left_hand = 'diamondique large mortar'
         game.script('analyze my unguent', log('26:11132'), log('26:11146'))
         game.script('crush my unguent with my rounded pestle', log('26:11333'))
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
-        run_remedy(typed('continue na "pewter ingot" mortar unguent'))
-        expect(commons.moves.last(3)).to eq(["diamondique large mortar: hand -> #{toolstrap}", 'nemoih unguent: game -> hand',
-                                             "rounded pestle: hand -> #{toolstrap}"])
+        expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(commons.moves.last(3)).to eq(["rounded pestle: hand -> #{toolstrap}", 'nemoih unguent: game -> hand',
+                                             "diamondique large mortar: hand -> #{toolstrap}"])
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        expect(remedy_messages).to be_empty
       end
 
-      # flipped by layer 12 (cleanup in before_dying releases magic)
-      it 'CURRENT (H15): its before_dying only deletes Flags, releasing nothing after a DRCC stop' do
+      # layer 12: the before_dying cleanup releases the magic
+      it 'H15: after DRCC.get_crafting_item stops the script (no nemoih), its before_dying releases the spell, mana and symbiosis and deletes the Flags' do
         settings[:crafting_training_spells] = { 'Gauge Flow' => {} }
         inventory.delete('dried nemoih')
+        game.script('release spell', log('25:52773'))
+        game.script('release mana', log('25:1316'))
+        game.script('release symb', code("But you haven't prepared a symbiosis.", from: 'R:418'))
         expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.messages).to eq(['DRCC: You seem to be missing: nemoih', ReplayCommons::STOP_MESSAGE])
         sent = game.sent.dup
         exit_hooks.each(&:call)
-        expect(game.sent).to eq(sent)
+        expect(game.sent).to eq(sent + ['release spell', 'release mana', 'release symb'])
+        expect(game.diagnostics).to be_empty
         expect(remedy_flags).to be_empty
       end
     end
@@ -2617,6 +2624,340 @@ RSpec.describe Remedy do
         expect(game.sent.count('combine my nemoih')).to eq(25)
         expect(game.sent.last(3)).to eq([herb_put, *short_run_tail])
         expect(remedy_messages).to eq(['Remedy: could not count the nemoih gathered (a remedy takes 25); crafting with what is in hand.'])
+      end
+    end
+  end
+
+  # Layer 12: the product taken out is checked,
+  # the stirrer and the vessel are put away by name, and the before_dying
+  # cleanup runs on every exit. The specs capture the before_dying blocks
+  # (run_remedy) and call them as Lich does once the script has ended.
+  describe 'the product, the stows by name and the cleanup on every exit (layer 12)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+    let(:first_crush) { 'crush my nemoih with my rounded pestle' }
+    let(:crush) { 'crush my unguent with my rounded pestle' }
+    let(:spells) { { 'Gauge Flow' => {} } }
+
+    # The replies to the three releases: 25:52773, 25:1316, and the
+    # symbiosis reply as the existing contract example has it (code-derived,
+    # R:418).
+    #
+    # @return [void]
+    def script_releases
+      game.script('release spell', log('25:52773'))
+      game.script('release mana', log('25:1316'))
+      game.script('release symb', code("But you haven't prepared a symbiosis.", from: 'R:418'))
+    end
+
+    # Runs the captured before_dying blocks, as Lich does when the script ends.
+    #
+    # @return [Array<String>] the commands they sent
+    def run_exit_hooks
+      before = game.sent.size
+      exit_hooks.each(&:call)
+      game.sent.drop(before)
+    end
+
+    describe 'the product taken out of the vessel (D09, H03)' do
+      before { allow(DRC).to receive(:beep) }
+
+      # "What were you referring to?" (25:10857), analog: the reply to `put
+      # my clubmoss in my smokewood basket` (25:10855) with no clubmoss in
+      # hand; the same text answered a get at 26:39162.
+      it 'stops, instead of finishing, when the get of the product is answered "What were you referring to?" (25:10857)' do
+        script_short_unguent
+        game.override('get my unguent from my large mortar', log('25:10857'))
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(DRC).to have_received(:beep).once
+        expect(remedy_messages).to eq(['Remedy: the unguent is not in hand after taking it out of the large mortar. Stopping.'])
+        expect(game.sent.last(2)).to eq([first_crush, 'get my unguent from my large mortar'])
+        expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+        expect(commons.location_of('rounded pestle')).to eq(toolstrap)
+        expect(commons.location_of('unguent')).to be_nil
+      end
+
+      it 'sends no mark after that stop, even with mark_crafted_goods set' do
+        settings[:mark_crafted_goods] = true
+        script_short_unguent
+        game.override('get my unguent from my large mortar', log('25:10857'))
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.grep(/\Amark /)).to be_empty
+        expect(commons.calls.map { |call| call[1] }).not_to include('stamp')
+      end
+
+      it 'prints no ;remedy continue line after that stop: the game called the remedy done' do
+        script_short_unguent
+        game.override('get my unguent from my large mortar', log('25:10857'))
+        run_remedy(short_unguent)
+        run_exit_hooks
+        expect(remedy_messages.grep(/continue/)).to be_empty
+        expect(remedy_flags).to be_empty
+      end
+
+      # Real order, timestamped copies: an unrelated line came between a
+      # product get and its reply. 25:27825 `get my liniment from my large
+      # mortar` [10:31:31] -> 25:27826 " * Venras joins the adventure."
+      # [10:31:32] -> 25:27830 "You get a clubmoss liniment from inside ..."
+      # [10:31:32]. 26:27349 `get my unguent from my large mortar` -> 26:27350
+      # "Osrel Meraud  (0%)" -> 26:27353 "You get some aloe unguent from
+      # inside ...", all [10:51:46]. (logged runs; the order is the
+      # server's.) The pattern-less fput returns that first line (lich-5
+      # global_defs.rb:1625-1628), and the hands change only when the reply's
+      # own line is parsed (games.rb:1139-1153): modelled as the hand showing
+      # the unguent one second after the get, the first late look. Today
+      # fput's answer was not read and such a run finished.
+      { '25:27826' => 'a logon notice', '26:27350' => 'a percWindow spell line' }.each do |cite, kind|
+        it "finishes as today, putting the mortar away and marking the unguent, when #{kind} (#{cite}) comes before the product reply (26:11389)" do
+          settings[:mark_crafted_goods] = true
+          script_short_unguent
+          game.script('mark my unguent with my stamp', log('25:11294'))
+          arrives = nil
+          game.override('get my unguent from my large mortar', log(cite), log('26:11389'), after: ->(replay) { arrives = replay.clock + 1 })
+          outcome = run_remedy(short_unguent) do
+            allow(DRCI).to receive(:in_hands?) do |item|
+              commons.hold('nemoih unguent') if arrives && game.clock >= arrives && commons.location_of('nemoih unguent').nil?
+              commons.in_hands?(item)
+            end
+          end
+          expect(outcome).to eq(:exited)
+          expect(remedy_messages).to be_empty
+          expect(game.sent.last(3)).to eq([first_crush, 'get my unguent from my large mortar', 'mark my unguent with my stamp'])
+          expect(commons.location_of('diamondique large mortar')).to eq(toolstrap)
+          expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        end
+      end
+
+      it 'stops only after looking at the hands for LATE_GET_LOOKS seconds when an unrelated line (25:27826) comes first and no unguent ever reaches a hand' do
+        script_short_unguent
+        asked_at = nil
+        stopped_at = nil
+        game.override('get my unguent from my large mortar', log('25:27826'), after: ->(replay) { asked_at = replay.clock })
+        outcome = run_remedy(short_unguent) { allow(DRC).to receive(:beep) { stopped_at = game.clock } }
+        expect(outcome).to eq(:exited)
+        expect(stopped_at - asked_at).to eq(Remedy::Inventory::LATE_GET_LOOKS)
+        expect(remedy_messages).to eq(['Remedy: the unguent is not in hand after taking it out of the large mortar. Stopping.'])
+        expect(game.sent.last(2)).to eq([first_crush, 'get my unguent from my large mortar'])
+        expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+      end
+
+      # H03: "Interesting thought really... but no." (25:11264) also answers
+      # a vessel with nothing to craft; the continue form then used to put
+      # the mortar away and end as if it had made the remedy.
+      it 'stops in the continue form when the analysis is answered "Interesting thought really... but no." (25:11264) and no unguent comes out' do
+        $right_hand = 'diamondique large mortar'
+        inventory.delete('diamondique large mortar')
+        game.script('analyze my unguent', log('25:11264'))
+        game.script('get my unguent from my large mortar', log('25:10857'))
+        expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(game.sent).to eq(['analyze my unguent', 'get my unguent from my large mortar'])
+        expect(remedy_messages).to eq(['Remedy: the unguent is not in hand after taking it out of the large mortar. Stopping.'])
+        expect(commons.location_of('diamondique large mortar')).to eq('right')
+        expect(commons.location_of('rounded pestle')).to eq(toolstrap)
+      end
+    end
+
+    describe 'the stows by name (H14)' do
+      # The contract's continue run (26:11130-11396), with the mortar in the
+      # left hand: the push with the sieve (the froth cue, 26:11136) and the
+      # finish each put the pestle away, never the mortar.
+      it 'sends the contract continue run byte for byte with the mortar in the left hand, and moves the mortar only at the end' do
+        inventory.delete('diamondique large mortar')
+        settings[:mark_crafted_goods] = true
+        $left_hand = 'diamondique large mortar'
+        transcript('2026-10-26_10483').script(game, commands: /\Aanalyze my unguent\z|#{mortar_craft_commands.source}/, from: 11130)
+        alias_remedy_wording(vessel: 'large mortar', noun: 'unguent')
+        script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+        expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([crush] * 7),
+                                 'get my unguent from my large mortar', 'mark my unguent with my stamp'])
+        mortar_moves = commons.moves.grep(/\Adiamondique large mortar:/)
+        expect(mortar_moves).to eq(["diamondique large mortar: hand -> #{toolstrap}"])
+        expect(commons.moves.index(mortar_moves.first)).to be > commons.moves.index('nemoih unguent: game -> hand')
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        expect(tool_locations).to eq(logged_tools)
+      end
+
+      context 'with every tool in the crafting container and no alchemy_belt' do
+        let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_belt: nil) }
+        let(:inventory) { logged_tools.transform_values { toolbag }.merge(logged_supplies, 'dried nemoih' => toolbag) }
+
+        # A6: the stow is given what the hand holds, as before, so
+        # DRCC.stow_crafting_item puts a bag tool back in the bag.
+        it 'gives DRCC.stow_crafting_item the full names the hands show, and puts the pestle and the mortar back in the toolbag' do
+          script_short_unguent
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          stows = commons.calls.select { |call| call.first == 'DRCC.stow_crafting_item' }
+          expect(stows.last(2)).to eq([['DRCC.stow_crafting_item', 'rounded pestle', toolbag, nil],
+                                       ['DRCC.stow_crafting_item', 'diamondique large mortar', toolbag, nil]])
+          expect(commons.location_of('rounded pestle')).to eq(toolbag)
+          expect(commons.location_of('diamondique large mortar')).to eq(toolbag)
+          expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        end
+      end
+
+      # A6: with the belt, the stows tie the tools back, as the contract
+      # runs (C01, C02) pin move by move.
+      it 'gives DRCC.stow_crafting_item the full names the hands show with the belt too, and ties both back on the toolstrap' do
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        stows = commons.calls.select { |call| call.first == 'DRCC.stow_crafting_item' }
+        expect(stows.last(2)).to eq([['DRCC.stow_crafting_item', 'rounded pestle', toolbag, settings[:alchemy_belt]],
+                                     ['DRCC.stow_crafting_item', 'diamondique large mortar', toolbag, settings[:alchemy_belt]]])
+        expect(tool_locations).to eq(logged_tools)
+      end
+
+      # The continue form with the mortar still tied on the
+      # toolstrap. The product get works from there (26:11389 says "which is
+      # on your grass toolstrap"), and analyze and crush never name the
+      # mortar. Before layer 12 the finish put away DRC.right_hand after the
+      # get: the pestle. With the mortar in neither hand that stow is kept.
+      it 'in the continue form with the mortar in neither hand, puts the pestle away after the product get, as before, and leaves the mortar on the toolstrap' do
+        settings[:mark_crafted_goods] = false
+        game.script('analyze my unguent', log('26:11132'), log('26:11146'))
+        game.script('crush my unguent with my rounded pestle', log('26:11333'))
+        script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+        expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(game.sent).to eq(['analyze my unguent', 'crush my unguent with my rounded pestle', 'get my unguent from my large mortar'])
+        expect(commons.moves).to eq(["rounded pestle: #{toolstrap} -> hand", 'nemoih unguent: game -> hand',
+                                     "rounded pestle: hand -> #{toolstrap}"])
+        expect([$left_hand, $right_hand]).to eq(['nemoih unguent', nil])
+        expect(tool_locations).to eq(logged_tools)
+        expect(remedy_messages).to be_empty
+      end
+    end
+
+    describe 'the cleanup on every exit (H15)' do
+      # A run that has begun (Roundtime to the first crush, 25:10825) and
+      # then gets no answer to four crushes in a row: remedy stops with the
+      # mortar and the pestle in hand.
+      #
+      # @return [Symbol] how the run ended
+      def run_unanswered_after_progress
+        script_short_unguent(first_crush: [log('25:10825')])
+        game.override(crush, times: nil)
+        run_remedy(short_unguent) { allow(DRC).to receive(:beep) }
+      end
+
+      it 'after a stop, puts the pestle away by its name in hand and leaves the mortar with the unfinished unguent in hand' do
+        expect(run_unanswered_after_progress).to eq(:exited)
+        expect(remedy_messages).to eq(["Remedy: the game did not answer #{crush.inspect} 4 times in a row. Stopping."])
+        expect(commons.location_of('rounded pestle')).to eq('left').or eq('right')
+        expect(run_exit_hooks).to be_empty
+        expect(commons.calls.last).to eq(['DRCC.stow_crafting_item', 'rounded pestle', toolbag, settings[:alchemy_belt]])
+        expect(commons.location_of('rounded pestle')).to eq(toolstrap)
+        expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+        expect(remedy_flags).to be_empty
+      end
+
+      it 'after a stop once crafting has begun, prints the ;remedy continue line that carries the unguent on' do
+        run_unanswered_after_progress
+        run_exit_hooks
+        expect(remedy_messages.last).to eq('Remedy: the unfinished unguent is in the large mortar; to carry on with it, ' \
+                                           'run ;remedy continue na "pewter ingot" mortar unguent')
+      end
+
+      it 'prints a ;remedy continue line that parses back into the continue form with the same herb2, catalyst, vessel and noun' do
+        run_unanswered_after_progress
+        run_exit_hooks
+        line = remedy_messages.last[/;remedy (.*)\z/, 1]
+        parsed = ArgParserModel.parse(Remedy::ARG_DEFINITIONS, typed(line).drop(1))
+        expect(parsed.to_h).to eq(continue: 'continue', herb2: 'na', catalyst: 'pewter ingot', container: 'mortar', noun: 'unguent')
+      end
+
+      it 'keeps herb2 "not used" and the vessel word mort as given in the ;remedy continue line' do
+        script_short_unguent(first_crush: [log('25:10825')])
+        game.override(crush, times: nil)
+        run_remedy(typed('remedies 3 "some head unguent" nemoih "not used" "pewter ingot" mort unguent')) { allow(DRC).to receive(:beep) }
+        run_exit_hooks
+        expect(remedy_messages.last).to end_with('run ;remedy continue "not used" "pewter ingot" mort unguent')
+      end
+
+      it 'prints no ;remedy continue line after a stop before crafting began (the first crush never answered)' do
+        script_short_unguent(first_crush: [])
+        expect(run_remedy(short_unguent) { allow(DRC).to receive(:beep) }).to eq(:exited)
+        run_exit_hooks
+        expect(remedy_messages).to eq(["Remedy: the game did not answer #{first_crush.inspect} 4 times in a row. Stopping."])
+      end
+
+      it 'prints no ;remedy continue line after the game refused the herb (25:50933)' do
+        game.override(first_crush, log('25:50933'), times: nil)
+        script_short_unguent
+        run_remedy(short_unguent) { allow(DRC).to receive(:beep) }
+        run_exit_hooks
+        expect(remedy_messages.grep(/continue/)).to be_empty
+      end
+
+      context 'with crafting_training_spells set' do
+        let(:settings) { logged_settings.merge(mark_crafted_goods: false, crafting_training_spells: spells) }
+
+        it 'releases the spell, mana and symbiosis with fput after a Remedy stop, after putting the pestle away' do
+          script_releases
+          run_unanswered_after_progress
+          expect(run_exit_hooks).to eq(['release spell', 'release mana', 'release symb'])
+          expect(game.diagnostics.grep(/fput/)).to be_empty
+          stow_at = commons.calls.index(['DRCC.stow_crafting_item', 'rounded pestle', toolbag, settings[:alchemy_belt]])
+          expect(stow_at).not_to be_nil
+        end
+
+        it 'releases with fput after DRCC.get_crafting_item stops the script (no remed book, lich-5 :current)' do
+          inventory.delete('remed book')
+          script_releases
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(commons.messages.last).to eq(ReplayCommons::STOP_MESSAGE)
+          expect(run_exit_hooks).to eq(['release spell', 'release mana', 'release symb'])
+          expect(remedy_flags).to be_empty
+        end
+
+        it 'releases once at the normal end, after the product is out, and the before_dying cleanup sends nothing more' do
+          script_releases
+          script_short_unguent
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(game.sent.last(4)).to eq(['get my unguent from my large mortar', 'release spell', 'release mana', 'release symb'])
+          expect(run_exit_hooks).to be_empty
+          expect(remedy_flags).to be_empty
+        end
+
+        it 'releases with fput when the product is not in hand after its get (the finish never reached its release)' do
+          script_releases
+          script_short_unguent
+          game.override('get my unguent from my large mortar', log('25:10857'))
+          allow(DRC).to receive(:beep)
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(game.sent.last).to eq('get my unguent from my large mortar')
+          expect(run_exit_hooks).to eq(['release spell', 'release mana', 'release symb'])
+        end
+
+        it 'releases only once when the before_dying blocks run twice' do
+          script_releases
+          run_unanswered_after_progress
+          expect(run_exit_hooks).to eq(['release spell', 'release mana', 'release symb'])
+          expect(run_exit_hooks).to be_empty
+        end
+      end
+
+      # A6: nothing is sent when the setting is unset: nil is its
+      # profiles/base.yaml default, [] the contract characters'.
+      [nil, [], {}].each do |unset|
+        context "with crafting_training_spells #{unset.inspect}" do
+          let(:settings) { logged_settings.merge(mark_crafted_goods: false, crafting_training_spells: unset) }
+
+          it 'sends nothing from the before_dying cleanup after a DRCC stop' do
+            inventory.delete('remed book')
+            expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(run_exit_hooks).to be_empty
+            expect(remedy_flags).to be_empty
+          end
+        end
+      end
+
+      it 'releases nothing, with the spells set, when the run stopped before the crafting magic ran (alchemy_tools lists no mortar)' do
+        settings[:alchemy_tools] = ['heavy cauldron']
+        settings[:crafting_training_spells] = spells
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.calls.map(&:first)).not_to include('DRCA.crafting_magic_routine')
+        expect(run_exit_hooks).to be_empty
+        expect(remedy_flags).to be_empty
       end
     end
   end
@@ -3177,6 +3518,26 @@ RSpec.describe 'Remedy order, tools and inventory' do
     end
   end
 
+  describe 'Remedy::Order#continue_command (layer 12)' do
+    {
+      'remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent'       => ';remedy continue na "pewter ingot" mortar unguent',
+      'remedies 3 "some head unguent" nemoih "not used" "pewter ingot" mort unguent' => ';remedy continue "not used" "pewter ingot" mort unguent',
+      'remedies 6 "a general elixir" belradi none coal bowl elixir'                  => ';remedy continue none coal bowl elixir',
+      'continue na "pewter ingot" mortar unguent'                                    => ';remedy continue na "pewter ingot" mortar unguent'
+    }.each do |typed_line, command|
+      it "gives #{command} for ;remedy #{typed_line}" do
+        expect(Remedy::Order.from_args(parsed_typed(typed_line)).continue_command).to eq(command)
+      end
+
+      it "gives a command for ;remedy #{typed_line} that parses back to the same herb2, catalyst, vessel and noun" do
+        order = Remedy::Order.from_args(parsed_typed(typed_line))
+        resumed = Remedy::Order.from_args(parsed_typed(order.continue_command.delete_prefix(';remedy ')))
+        expect(resumed).to be_continue
+        expect(resumed.to_h.slice(:herb2, :catalyst, :container_request, :noun)).to eq(order.to_h.slice(:herb2, :catalyst, :container_request, :noun))
+      end
+    end
+  end
+
   describe 'Remedy::Order#second_herb (layer 09)' do
     ['na', 'none', 'not used'].each do |herb2|
       it "reads herb2 #{herb2.inspect}, as typed, as no second herb, and keeps herb2 and herbs as given" do
@@ -3492,6 +3853,89 @@ RSpec.describe 'Remedy order, tools and inventory' do
       inventory.with_herbs(['dried flower', 'na'])
       inventory.get('dried flower')
       expect(DRCI).not_to have_received(:exists?)
+    end
+
+    # layer 12: the stows by name give DRCC.stow_crafting_item what the hand
+    # holds, as the stows by hand position did
+    describe 'the stows by name (layer 12)' do
+      before do
+        allow(DRCI).to receive(:in_left_hand?) { |item| ReplayCommons.matches?($left_hand, item) }
+        allow(DRCI).to receive(:in_right_hand?) { |item| ReplayCommons.matches?($right_hand, item) }
+      end
+
+      it 'stow_held puts away the hand holding the vessel, by the full name that hand shows' do
+        $left_hand = 'luminescent starshine mixing stick'
+        $right_hand = 'heavy cauldron with twisted Dwarven iron handles'
+        expect(inventory.stow_held('heavy cauldron')).to be(true)
+        expect(DRCC).to have_received(:stow_crafting_item).with('heavy cauldron with twisted Dwarven iron handles', toolbag, toolstrap).once
+      end
+
+      it 'stow_held finds the item by the last word of its name, as the guarded gets do' do
+        $left_hand = 'diamondique large mortar'
+        expect(inventory.stow_held('rustic mortar')).to be(true)
+        expect(DRCI).to have_received(:in_left_hand?).with('mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('diamondique large mortar', toolbag, toolstrap)
+      end
+
+      it 'stow_held sends nothing and answers false when neither hand holds the item' do
+        $left_hand = 'nemoih unguent'
+        expect(inventory.stow_held('rounded pestle')).to be(false)
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'stow_beside puts away the left hand when the vessel is in the right, as remedy always has' do
+        $left_hand = 'rounded pestle'
+        $right_hand = 'diamondique large mortar'
+        inventory.stow_beside('large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, toolstrap).once
+      end
+
+      it 'stow_beside puts away the right hand when the vessel is in the left' do
+        $left_hand = 'diamondique large mortar'
+        $right_hand = 'rounded pestle'
+        inventory.stow_beside('large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, toolstrap).once
+      end
+
+      it 'stow_beside falls back to the left hand when neither hand shows the vessel, as remedy always has' do
+        $left_hand = 'turtle-shaped sieve'
+        $right_hand = 'pewter ingot'
+        inventory.stow_beside('large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('turtle-shaped sieve', toolbag, toolstrap).once
+      end
+
+      it 'stow_beside gives an empty hand (nil) to DRCC.stow_crafting_item, which returns at once, as a stow by hand did' do
+        $right_hand = 'diamondique large mortar'
+        inventory.stow_beside('large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with(nil, toolbag, toolstrap).once
+      end
+
+      it 'stow_vessel puts the vessel away by its name from the left hand, and nothing else' do
+        $left_hand = 'diamondique large mortar'
+        $right_hand = 'nemoih unguent'
+        inventory.stow_vessel('large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('diamondique large mortar', toolbag, toolstrap).once
+        expect(DRCC).not_to have_received(:stow_crafting_item).with('nemoih unguent', anything, anything)
+      end
+
+      # The vessel tied on the belt in the continue form
+      it 'stow_vessel falls back to the right hand when neither hand shows the vessel, as the finish always stowed' do
+        $left_hand = 'nemoih unguent'
+        $right_hand = 'rounded pestle'
+        inventory.stow_vessel('large mortar')
+        expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, toolstrap).once
+        expect(DRCC).not_to have_received(:stow_crafting_item).with('nemoih unguent', anything, anything)
+      end
+
+      context 'with no alchemy_belt' do
+        let(:toolstrap) { nil }
+
+        it 'stow_held gives the full name and no belt, so the tool goes back in the crafting container' do
+          $left_hand = 'rounded pestle'
+          inventory.stow_held('pestle')
+          expect(DRCC).to have_received(:stow_crafting_item).with('rounded pestle', toolbag, nil)
+        end
+      end
     end
 
     describe 'the guarded gets (layer 09)' do
@@ -4131,6 +4575,67 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         game.unprompted(log('25:37919'))
         expect(craft_loop.run(first_crush, studied: true)).to eq(:faded)
         expect(game.sent).to be_empty
+      end
+
+      # layer 12: what the cleanup reads to print the ;remedy continue line
+      describe '#resumable?' do
+        it 'is false before the loop runs' do
+          expect(craft_loop.resumable?).to be(false)
+        end
+
+        it 'is false when the remedy is done (26:11333)' do
+          loop_run = craft_loop
+          game.script(first_crush, log('26:11057'), log('25:10825'))
+          game.script(next_crush, log('26:11333'))
+          loop_run.run(first_crush, studied: true)
+          expect(loop_run.resumable?).to be(false)
+        end
+
+        it 'is false when the game refused the herb (25:50933) before crafting began' do
+          loop_run = craft_loop
+          game.script(first_crush, log('25:50933'))
+          expect(loop_run.run(first_crush, studied: true)).to eq(:unsuitable_herb)
+          expect(loop_run.resumable?).to be(false)
+        end
+
+        it 'is false when the first command of a studied run is never answered (crafting never began)' do
+          loop_run = craft_loop
+          expect(loop_run.run(first_crush, studied: true)).to eq(:unanswered)
+          expect(loop_run.resumable?).to be(false)
+        end
+
+        it 'is true when the game stops answering after a Roundtime (25:10825)' do
+          loop_run = craft_loop
+          game.script(first_crush, log('26:11057'), log('25:10825'))
+          expect(loop_run.run(first_crush, studied: true)).to eq(:unanswered)
+          expect(loop_run.resumable?).to be(true)
+        end
+
+        it 'is true in the continue form, which resumes a remedy already begun, when the analysis is never answered' do
+          loop_run = craft_loop
+          expect(loop_run.run('analyze my unguent')).to eq(:unanswered)
+          expect(loop_run.resumable?).to be(true)
+        end
+
+        it 'is false in the continue form when the analysis is refused (25:50933)' do
+          loop_run = craft_loop
+          game.script('analyze my unguent', log('25:50933'))
+          expect(loop_run.run('analyze my unguent')).to eq(:unsuitable_herb)
+          expect(loop_run.resumable?).to be(false)
+        end
+
+        it 'is true when a handler stops the script mid-run, which leaves no outcome' do
+          add_remedy_flags
+          loop_run = craft_loop
+          allow(DRC).to receive(:beep)
+          allow(DRC).to receive(:message)
+          # The catalyst cue after the crush's Roundtime (26:6313's order),
+          # then the catalyst's get leaves nothing in hand.
+          game.script(first_crush, log('26:11057'), log('25:10825'), log('26:39150'))
+          allow(DRCI).to receive(:in_hands?).with('ingot').and_return(false)
+          expect { loop_run.run(first_crush, studied: true) }.to raise_error(SystemExit)
+          expect(loop_run.resumable?).to be(true)
+        end
       end
 
       it 'ignores the fade when nothing was studied for this run (the continue form)' do
@@ -4793,14 +5298,141 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
 
   describe 'Remedy::Finisher' do
     before do
+      # The vessel in the right hand and the stirrer in the left, as a
+      # book-form run has them; the stows empty the hand they are given.
+      $right_hand = 'diamondique large mortar'
       $left_hand = 'rounded pestle'
-      game.script('get my unguent from my large mortar', log('26:11389'), after: ->(_game) { $right_hand = 'large mortar' })
+      allow(DRCC).to receive(:stow_crafting_item) do |*args|
+        calls << [:stow, *args]
+        $left_hand = nil if $left_hand == args.first
+        $right_hand = nil if $right_hand == args.first
+        true
+      end
+      allow(DRCI).to receive(:in_left_hand?) { |item| ReplayCommons.matches?($left_hand, item) }
+      allow(DRCI).to receive(:in_right_hand?) { |item| ReplayCommons.matches?($right_hand, item) }
+      game.script('get my unguent from my large mortar', log('26:11389'), after: ->(_game) { $left_hand = 'nemoih unguent' })
     end
 
     it 'puts the stirrer away, takes the product out (26:11389) and puts the vessel away, with no stamp when marking is off' do
       Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
       expect(game.sent).to eq(['get my unguent from my large mortar'])
-      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:stow, 'large mortar', toolbag, toolstrap]])
+      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:stow, 'diamondique large mortar', toolbag, toolstrap]])
+      expect([$left_hand, $right_hand]).to eq(['nemoih unguent', nil])
+    end
+
+    # layer 12 (H14): with the vessel in the left hand (the continue form),
+    # the stirrer in the right hand is put away first and the product never
+    it 'puts the stirrer in the right hand away when the vessel is in the left, and never the product' do
+      $left_hand = 'diamondique large mortar'
+      $right_hand = 'rounded pestle'
+      game.override('get my unguent from my large mortar', log('26:11389'), after: ->(_game) { $right_hand = 'nemoih unguent' })
+      Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
+      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:stow, 'diamondique large mortar', toolbag, toolstrap]])
+      expect([$left_hand, $right_hand]).to eq([nil, 'nemoih unguent'])
+    end
+
+    # The vessel tied on the belt (the continue form; the get
+    # from there is 26:11389) and the stirrer in the right hand. Neither
+    # hand shows the vessel, so the right hand is put away after the get,
+    # as the Finisher always did, and the empty left hand before it.
+    it 'puts the right hand (the stirrer) away after the get when neither hand shows the vessel' do
+      $right_hand = 'rounded pestle'
+      $left_hand = nil
+      Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
+      expect(game.sent).to eq(['get my unguent from my large mortar'])
+      expect(calls).to eq([[:stow, nil, toolbag, toolstrap], [:stow, 'rounded pestle', toolbag, toolstrap]])
+      expect([$left_hand, $right_hand]).to eq(['nemoih unguent', nil])
+    end
+
+    # layer 12 (D09, H03): the product get is checked
+    context 'when the product is not in hand after its get' do
+      let(:messages) { [] }
+
+      before do
+        allow(DRC).to receive(:message) { |text| messages << text }
+        allow(DRC).to receive(:beep)
+        allow(DRCI).to receive(:in_hands?).with('unguent').and_return(false)
+      end
+
+      it 'stops with a Remedy line, the vessel still in hand, the stirrer put away, and no mark, after looking at the hands for LATE_GET_LOOKS seconds' do
+        # "What were you referring to?" (25:10857, analog: the reply to
+        # `put my clubmoss in my smokewood basket`, 25:10855, with no
+        # clubmoss in hand).
+        game.override('get my unguent from my large mortar', log('25:10857'))
+        expect { Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: true).finish }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: the unguent is not in hand after taking it out of the large mortar. Stopping.'])
+        expect(game.clock).to eq(Remedy::Inventory::LATE_GET_LOOKS)
+        expect(game.sent).to eq(['get my unguent from my large mortar'])
+        expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap]])
+        expect($right_hand).to eq('diamondique large mortar')
+      end
+
+      it 'stops the same when the game does not answer the get (fput gives up and returns false)' do
+        game.override('get my unguent from my large mortar')
+        expect { Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: the unguent is not in hand after taking it out of the large mortar. Stopping.'])
+        expect(game.clock).to eq(ReplayGame::FPUT_TIMEOUT + Remedy::Inventory::LATE_GET_LOOKS)
+        expect(game.sent).to eq(['get my unguent from my large mortar'])
+        expect($right_hand).to eq('diamondique large mortar')
+      end
+    end
+
+    # layer 12: either sign is enough, so a product whose name in hand the
+    # noun does not find is still taken as made when the game handed it over
+    it "takes the product as made on the game's own line (26:6794) even when the hands do not show the noun" do
+      allow(DRCI).to receive(:in_hands?).with('elixir').and_return(false)
+      game.script('get my elixir from my large mortar', log('26:6794'))
+      expect { Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'elixir', mark: nil).finish }.not_to raise_error
+      expect(calls.last).to eq([:stow, 'diamondique large mortar', toolbag, toolstrap])
+    end
+
+    # layer 12: the first line fput returns may be an unrelated one that came
+    # before the reply (" * Venras joins the adventure.", 25:27826, between
+    # the get at 25:27825 and its reply at 25:27830); the hands decide then.
+    context 'when an unrelated line (25:27826) is the first line after the get' do
+      # @return [void]
+      def finish
+        Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
+      end
+
+      before do
+        allow(DRC).to receive(:message)
+        allow(DRC).to receive(:beep)
+      end
+
+      it 'takes the product as made, with no wait, when a hand already shows it' do
+        allow(DRCI).to receive(:in_hands?).with('unguent') { ReplayCommons.matches?($left_hand, 'unguent') }
+        game.override('get my unguent from my large mortar', log('25:27826'), log('26:11389'), after: ->(_game) { $left_hand = 'nemoih unguent' })
+        expect { finish }.not_to raise_error
+        expect(calls.last).to eq([:stow, 'diamondique large mortar', toolbag, toolstrap])
+        expect(game.clock).to eq(0)
+      end
+
+      it 'takes the product as made when a hand shows it a second later, the first late look' do
+        arrives = nil
+        game.override('get my unguent from my large mortar', log('25:27826'), log('26:11389'), after: ->(replay) { arrives = replay.clock + 1 })
+        allow(DRCI).to receive(:in_hands?).with('unguent') { !arrives.nil? && game.clock >= arrives }
+        expect { finish }.not_to raise_error
+        expect(calls.last).to eq([:stow, 'diamondique large mortar', toolbag, toolstrap])
+        expect(game.clock).to eq(1)
+      end
+
+      it 'stops, with the vessel in hand, after LATE_GET_LOOKS seconds when no hand ever shows it' do
+        allow(DRCI).to receive(:in_hands?).with('unguent').and_return(false)
+        game.override('get my unguent from my large mortar', log('25:27826'))
+        expect { finish }.to raise_error(SystemExit)
+        expect(game.clock).to eq(Remedy::Inventory::LATE_GET_LOOKS)
+        expect($right_hand).to eq('diamondique large mortar')
+      end
+    end
+
+    it 'does not take speech that quotes the product line (a name before "You get") as the product handed over' do
+      allow(DRCI).to receive(:in_hands?).with('unguent').and_return(false)
+      allow(DRC).to receive(:beep)
+      allow(DRC).to receive(:message)
+      quoted = code(%(<preset id='speech'>Mallory says</preset>, "#{log('26:11389').text}"), from: 'player speech form (remedy.lic:55-60, NO_QUOTE) around 26:11389')
+      game.override('get my unguent from my large mortar', quoted)
+      expect { Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish }.to raise_error(SystemExit)
     end
 
     # layer 09: the stamp get is guarded (skip_exit, then the hands)
@@ -4843,6 +5475,57 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
     it 'runs the commons routine with the settings' do
       Remedy::Magic.new(settings).routine
       expect(DRCA).to have_received(:crafting_magic_routine).with(settings)
+    end
+
+    # layer 12 (H15): the release from the before_dying
+    # cleanup
+    describe '#release_on_exit' do
+      context 'with crafting_training_spells' do
+        let(:training_spells) { { 'Gauge Flow' => {} } }
+
+        it 'releases with fput, waiting for no particular reply, once the routine has run' do
+          magic = Remedy::Magic.new(settings)
+          magic.routine
+          magic.release_on_exit
+          expect(game.sent).to eq(['release spell', 'release mana', 'release symb'])
+          expect(DRC).not_to have_received(:bput).with('release spell', any_args)
+        end
+
+        it 'releases nothing when the routine never ran, so nothing can be prepared' do
+          Remedy::Magic.new(settings).release_on_exit
+          expect(game.sent).to be_empty
+        end
+
+        it 'releases nothing more after the release at the end of a finished run' do
+          game.script('release spell', log('25:52773'))
+          game.script('release mana', log('25:1316'))
+          magic = Remedy::Magic.new(settings)
+          magic.routine
+          magic.release
+          magic.release_on_exit
+          expect(game.sent).to eq(['release spell', 'release mana', 'release symb'])
+        end
+
+        it 'releases only once when called twice' do
+          magic = Remedy::Magic.new(settings)
+          magic.routine
+          2.times { magic.release_on_exit }
+          expect(game.sent).to eq(['release spell', 'release mana', 'release symb'])
+        end
+      end
+
+      [nil, [], {}].each do |unset|
+        context "with crafting_training_spells #{unset.inspect}" do
+          let(:training_spells) { unset }
+
+          it 'sends nothing, even after the routine ran' do
+            magic = Remedy::Magic.new(settings)
+            magic.routine
+            magic.release_on_exit
+            expect(game.sent).to be_empty
+          end
+        end
+      end
     end
   end
 end
