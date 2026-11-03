@@ -211,7 +211,10 @@ RSpec.describe Remedy do
   end
 
   # Scripts the fput that takes the product out of the vessel; the game hands
-  # it over.
+  # it over. Also answers the count of the product in hand that every
+  # successful run ends with since layer 17 (a deliberate, always-on
+  # change), with the reply the game gave a count of that noun
+  # ({#product_count_reply}).
   #
   # @param command [String] remedy's `get my <noun> from my <vessel>`
   # @param line [ReplayGame::Line] the game's reply
@@ -219,6 +222,37 @@ RSpec.describe Remedy do
   # @return [void]
   def script_product(command, line, product)
     game.script(command, line, after: ->(_game) { commons.hold(product) })
+    noun = product.split.last
+    game.fallback("count my #{noun}", *product_count_reply(noun))
+  end
+
+  # The game's reply to `count my <noun>` with the finished remedy in hand:
+  # - elixir: C01's own count, 26:6921 (an unrelated line first) and 26:6924
+  #   ("You count out 18 uses remaining.");
+  # - unguent: C02's own count, 26:11468 ("You count out 5 uses
+  #   remaining.");
+  # - salve, and any other noun: 25:11333 ("You count out 12 uses
+  #   remaining.", a liniment's count; analog: no log counts a salve).
+  #
+  # @param noun [String] the product noun
+  # @return [Array<ReplayGame::Line>]
+  def product_count_reply(noun)
+    case noun
+    when 'elixir' then [log('26:6921'), log('26:6924')]
+    when 'unguent' then [log('26:11468')]
+    else [log('25:11333')]
+    end
+  end
+
+  # The line a successful run ends with since layer 17 (a deliberate,
+  # always-on change): the uses the scripted count reports
+  # ({#product_count_reply}) and the product as the hand shows it.
+  #
+  # @param product [String] the product's name in hand
+  # @return [String]
+  def yield_line(product)
+    uses = product_count_reply(product.split.last).last.text[/\d+/]
+    "Remedy: made #{uses} uses of #{product}."
   end
 
   # @return [Hash{String => String}] item => where it is, for every tool
@@ -363,11 +397,12 @@ RSpec.describe Remedy do
      mix]                                             # Roundtime 26:6740, then final touches 26:6742
   end
 
-  # C01's last commands: the product taken out (26:6794) and marked (26:6799).
+  # C01's last commands: the product taken out (26:6794), marked (26:6799)
+  # and counted (26:6924; the count layer 17 added on purpose).
   #
   # @return [Array<String>]
   def general_elixir_finishing
-    ['get my elixir from my heavy cauldron', 'mark my elixir with my stamp']
+    ['get my elixir from my heavy cauldron', 'mark my elixir with my stamp', 'count my elixir']
   end
 
   # Every item C01 moves (ReplayCommons#moves), in order.
@@ -418,11 +453,12 @@ RSpec.describe Remedy do
      crush]                                           # Roundtime 26:11331, then final touches 26:11333
   end
 
-  # C02's last commands: the product taken out (26:11389) and marked (26:11394).
+  # C02's last commands: the product taken out (26:11389), marked (26:11394)
+  # and counted (26:11468; the count layer 17 added on purpose).
   #
   # @return [Array<String>]
   def head_unguent_finishing
-    ['get my unguent from my large mortar', 'mark my unguent with my stamp']
+    ['get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent']
   end
 
   # Every item C02 moves (ReplayCommons#moves), in order.
@@ -620,7 +656,7 @@ RSpec.describe Remedy do
          crush,                                           # colour cue 26:12345
          'smell my unguent']                              # Roundtime 26:12371, then final touches 26:12373
       end
-      let(:finishing_commands) { ['get my unguent from my large mortar', 'mark my unguent with my stamp'] } # 26:12428, 26:12433
+      let(:finishing_commands) { ['get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'] } # 26:12428, 26:12433, layer 17's count
       let(:expected_moves) do
         pestle = 'rounded pestle'
         mortar = 'diamondique large mortar'
@@ -689,7 +725,7 @@ RSpec.describe Remedy do
          crush,                                           # colour cue 25:94822
          'smell my salve']                                # Roundtime 25:94847, then final touches 25:94849
       end
-      let(:finishing_commands) { ['get my salve from my large mortar', 'mark my salve with my stamp'] } # 25:94883, 25:94888
+      let(:finishing_commands) { ['get my salve from my large mortar', 'mark my salve with my stamp', 'count my salve'] } # 25:94883, 25:94888, layer 17's count
       let(:expected_moves) do
         pestle = 'rounded pestle'
         mortar = 'diamondique large mortar'
@@ -754,7 +790,7 @@ RSpec.describe Remedy do
          crush, crush, crush, crush, crush,         # 26:11210 ... 26:11308
          crush]                                     # Roundtime 26:11331, then final touches 26:11333
       end
-      let(:finishing_commands) { ['get my unguent from my large mortar', 'mark my unguent with my stamp'] } # 26:11389, 26:11394
+      let(:finishing_commands) { ['get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'] } # 26:11389, 26:11394, layer 17's count
 
       it 'analyses, answers the froth cue, crushes to the end and marks, byte for byte' do
         expect(outcome).to eq(:exited)
@@ -794,10 +830,11 @@ RSpec.describe Remedy do
         expect(tool_locations).to eq(logged_tools)
       end
 
+      # The one count is the product's, layer 17's yield count.
       it 'reads no book and gathers no herb' do
         outcome
         expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2', 'DRCI.lower_item?')
-        expect(game.sent.grep(/\A(?:count|combine) /)).to be_empty
+        expect(game.sent.grep(/\A(?:count|combine) /)).to eq(['count my unguent'])
       end
     end
   end
@@ -805,7 +842,7 @@ RSpec.describe Remedy do
   describe 'other paths that work today (the contract)' do
     let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
     let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
-    let(:short_run_tail) { ['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'] } # 26:11333, 26:11389
+    let(:short_run_tail) { ['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'] } # 26:11333, 26:11389, layer 17's count
 
     describe 'gathering the herb (each of these keeps its command sequence)' do
       it 'takes a stack of 25 from herb_container and counts, combines and puts it' do
@@ -1015,7 +1052,7 @@ RSpec.describe Remedy do
         expect(run_remedy(short_unguent(herb2: 'jadice'))).to eq(:exited)
         expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
                                  'crush my nemoih with my rounded pestle', 'put my jadice in my large mortar',
-                                 'crush my unguent with my rounded pestle', 'get my unguent from my large mortar'])
+                                 'crush my unguent with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         herb2_calls = commons.calls.select { |name, item, *| name.start_with?('DRCC.') && item.to_s.end_with?('jadice') }
         expect(herb2_calls.map { |call| call.first(4) }).to eq(
           [['DRCC.get_crafting_item', 'jadice', 'smokewood basket', ['jadice']],
@@ -1109,7 +1146,7 @@ RSpec.describe Remedy do
       game.script('release symb', code("But you haven't prepared a symbiosis.", from: 'R:418'))
       script_short_unguent
       expect(run_remedy(short_unguent)).to eq(:exited)
-      expect(game.sent.last(4)).to eq(['get my unguent from my large mortar', 'release spell', 'release mana', 'release symb'])
+      expect(game.sent.last(5)).to eq(['get my unguent from my large mortar', 'count my unguent', 'release spell', 'release mana', 'release symb'])
     end
 
     # remedy.lic:269 and :304 run the routine before and after every pass of
@@ -1134,7 +1171,7 @@ RSpec.describe Remedy do
       crush = '>> crush my unguent with my rounded pestle'
       expect(crafting.map { |index| events[index] }).to eq(['>> crush my nemoih with my rounded pestle', '>> put water in my large mortar', crush, crush])
       expect(crafting.map { |index| events[index - 1] }).to all(eq(magic))
-      expect(game.sent.last(4)).to eq(['get my unguent from my large mortar', 'release spell', 'release mana', 'release symb'])
+      expect(game.sent.last(5)).to eq(['get my unguent from my large mortar', 'count my unguent', 'release spell', 'release mana', 'release symb'])
     end
 
     describe ';buff remedy with a remedy waggle set (buff.lic:37-55 casts it; kept)' do
@@ -1369,13 +1406,13 @@ RSpec.describe Remedy do
             script_short_unguent(put_lines: [log('26:10749'), game_forms(cue.call)[form]])
             run_remedy(short_unguent(herb2: 'jadice'))
             expect(game.sent).to include(step)
-            expect(game.sent.last(2)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+            expect(game.sent.last(3)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
           end
 
           it "#{flag}: ignores #{cite || 'R:51'} in another player's line (form #{form + 1} of 3)" do
             script_short_unguent(put_lines: [log('26:10749'), spoofs(cue.call.text)[form]])
             run_remedy(short_unguent(herb2: 'jadice'))
-            expect(game.sent).to eq([*gathered, 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+            expect(game.sent).to eq([*gathered, 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
           end
         end
       end
@@ -1384,7 +1421,7 @@ RSpec.describe Remedy do
     # The anchored patterns of the herb gathering (remedy.lic:235-237, :247),
     # each with its game line, then the same line as another player's.
     describe 'gathering the herb' do
-      let(:short_run_tail) { ['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'] } # 26:11333, 26:11389
+      let(:short_run_tail) { ['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'] } # 26:11333, 26:11389, layer 17's count
 
       # One stack of 25 (25:33679) from the toolbag, combined with
       # +combine+, put with +put+, and the short run's end.
@@ -1508,7 +1545,7 @@ RSpec.describe Remedy do
             script_short_unguent(first_crush: [spoofs(phrase)[form], log('25:10825')])
             run_remedy(short_unguent)
             expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'crush my unguent with my rounded pestle',
-                                             'get my unguent from my large mortar'])
+                                             'get my unguent from my large mortar', 'count my unguent'])
           end
         end
       end
@@ -1517,7 +1554,7 @@ RSpec.describe Remedy do
         it "finishes on the final-touches line (26:11333) after another player says Roundtime: (form #{form + 1} of 3)" do
           script_short_unguent(first_crush: [spoofs('Roundtime: 3 sec.')[form], log('26:11333')])
           run_remedy(short_unguent)
-          expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+          expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         end
       end
 
@@ -1528,7 +1565,7 @@ RSpec.describe Remedy do
         script_short_unguent(first_crush: [code('[Roundtime: 3 sec]', from: 'spec/remedy_spec.rb:297 at 03f11b54')])
         run_remedy(short_unguent)
         expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'crush my unguent with my rounded pestle',
-                                         'get my unguent from my large mortar'])
+                                         'get my unguent from my large mortar', 'count my unguent'])
       end
     end
 
@@ -1835,7 +1872,7 @@ RSpec.describe Remedy do
         expect(run_remedy(typed('remedies 6 "a general elixir" belradi na "pewter ingot" bowl elixir'))).to eq(:exited)
         expect(game.sent.count('pour moonshine jug in my heavy cauldron')).to eq(2)
         expect(game.sent.count('rub my moonshine jug')).to eq(1)
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('belradi elixir')])
         expect(commons.location_of('belradi elixir')).to eq('left').or eq('right')
       end
     end
@@ -1852,8 +1889,8 @@ RSpec.describe Remedy do
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(short_unguent)).to eq(:exited)
         expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih',
-                                 herb_put_command('nemoih', 'large mortar'), first_crush, 'get my unguent from my large mortar'])
-        expect(remedy_messages).to eq(['Remedy: gathered only 21 pieces of nemoih (a remedy takes 25); crafting with what is in hand.'])
+                                 herb_put_command('nemoih', 'large mortar'), first_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(remedy_messages).to eq(['Remedy: gathered only 21 pieces of nemoih (a remedy takes 25); crafting with what is in hand.', yield_line('nemoih unguent')])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
 
@@ -1888,7 +1925,7 @@ RSpec.describe Remedy do
                                            'count my nemoih', 'combine my nemoih', 'count my nemoih',
                                            'count my nemoih', 'combine my nemoih', 'count my nemoih',
                                            herb_put_command('nemoih', 'large mortar')])
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
 
@@ -1964,12 +2001,12 @@ RSpec.describe Remedy do
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(short_unguent) { keep_the_leftover_in_hand('smokewood basket') }).to eq(:exited)
         expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
-                                 first_crush, 'get my unguent from my large mortar'])
+                                 first_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', 'smokewood basket', settings[:alchemy_belt]).once.ordered
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, settings[:alchemy_belt]).once.ordered
         expect(commons.location_of('dried nemoih')).to eq(toolbag)
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
     end
 
@@ -2007,10 +2044,11 @@ RSpec.describe Remedy do
         game.script('mark my unguent with my stamp', code('Your stamp is too badly damaged to be used.', from: 'R:423 /too badly damaged/'))
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.last(2)).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp'])
+        expect(game.sent.last(3)).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'])
         expect(commons.calls.map(&:first)).not_to include('DRCC.repair_own_tools')
         expect(commons.location_of('Siksrajan applewood-handled stamp')).to eq(toolstrap)
-        expect(remedy_messages).to be_empty
+        # no word of the stamp: the one line is layer 17's yield
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
     end
 
@@ -2107,7 +2145,7 @@ RSpec.describe Remedy do
         expect(commons.moves.last(3)).to eq(["rounded pestle: hand -> #{toolstrap}", 'nemoih unguent: game -> hand',
                                              "diamondique large mortar: hand -> #{toolstrap}"])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
       # layer 12: the before_dying cleanup releases the magic
@@ -2231,11 +2269,13 @@ RSpec.describe Remedy do
         let(:crafting_commands) { send("#{sweep[:prefix]}_crafting") }
         let(:finishing_commands) { send("#{sweep[:prefix]}_finishing") }
         let(:expected_moves) { send("#{sweep[:prefix]}_moves") }
+        let(:product) { sweep[:product] }
 
         # The contract parts of the run, as C15 checks them: the crafting
         # commands first, the finishing commands last, nothing between them
         # (layer 16 flipped the one CURRENT (D05) command the contract allowed
-        # there); the same moves; the product in hand and no Remedy line.
+        # there); the same moves; the product in hand and no Remedy line but
+        # layer 17's yield line.
         #
         # @param sends [Array<String>] the commands sent, resends removed
         # @return [void]
@@ -2244,7 +2284,7 @@ RSpec.describe Remedy do
           expect(sends.last(finishing_commands.size)).to eq(finishing_commands), game.report
           expect(sends.size).to eq(crafting_commands.size + finishing_commands.size)
           expect(commons.moves).to eq(expected_moves)
-          expect(remedy_messages).to be_empty
+          expect(remedy_messages).to eq([yield_line(product)])
         end
 
         it 'has crafting commands to sweep' do
@@ -2331,8 +2371,8 @@ RSpec.describe Remedy do
       it 'crafts on when another player says the fade line' do
         script_short_unguent(put_lines: [log('26:10749'), spoken(log('25:37919'))])
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent).to eq([*gathered, first_crush, 'get my unguent from my large mortar'])
-        expect(remedy_messages).to be_empty
+        expect(game.sent).to eq([*gathered, first_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
       it 'crafts on when the fade of an earlier study arrives before this run studies the recipe' do
@@ -2344,16 +2384,16 @@ RSpec.describe Remedy do
           end
         end
         expect(outcome).to eq(:exited)
-        expect(game.sent).to eq([*gathered, first_crush, 'get my unguent from my large mortar'])
+        expect(game.sent).to eq([*gathered, first_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
       it 'crafts on to the end when the fade arrives after the first crush drew Roundtime (25:10825)' do
         script_short_unguent(first_crush: [log('25:10825'), log('25:37919')])
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar'])
-        expect(remedy_messages).to be_empty
+        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
       context 'in the continue form, which studies nothing (26:11130-11396)' do
@@ -2377,9 +2417,9 @@ RSpec.describe Remedy do
           expect(DRC).to have_received(:wait_for_script_to_complete).with('buff', ['remedy'])
           # 26:11210 ... 26:11308, then Roundtime 26:11331 and the final touches 26:11333
           expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([next_crush] * 6),
-                                   'get my unguent from my large mortar'])
+                                   'get my unguent from my large mortar', 'count my unguent'])
           expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-          expect(remedy_messages).to be_empty
+          expect(remedy_messages).to eq([yield_line('nemoih unguent')])
         end
       end
     end
@@ -2388,8 +2428,8 @@ RSpec.describe Remedy do
       it 'crafts on when another player says "You need a more suitable type of herb" (25:50933) before the Roundtime' do
         script_short_unguent(first_crush: [spoken(log('25:50933')), log('25:10825')])
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar'])
-        expect(remedy_messages).to be_empty
+        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
       it 'names the herb in the vessel when the continue form, which is not told the herb, is refused' do
@@ -2413,7 +2453,7 @@ RSpec.describe Remedy do
         game.override('push my unguent with my sieve', log('26:39150'), log('26:39152'))
         expect(run_remedy(short_unguent)).to eq(:exited)
         expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', 'put my pewter ingot in my large mortar',
-                                         next_crush, 'get my unguent from my large mortar'])
+                                         next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(game.diagnostics).to be_empty
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
@@ -2422,7 +2462,7 @@ RSpec.describe Remedy do
         script_short_unguent(first_crush: sieve_cue_crush)
         game.override('push my unguent with my sieve', log('26:24873')) # the reply to `push my tonic with my sieve` (26:24872)
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar'])
+        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(game.diagnostics).to be_empty
         expect(tool_locations).to eq(logged_tools)
       end
@@ -2431,7 +2471,7 @@ RSpec.describe Remedy do
         script_short_unguent(first_crush: sieve_cue_crush)
         game.override('push my unguent with my sieve', spoken(log('26:24873')), log('26:10935'))
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar'])
+        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(game.diagnostics).to be_empty
       end
     end
@@ -2464,8 +2504,8 @@ RSpec.describe Remedy do
         script_short_unguent(put_lines: [log('26:10749'), herb_cue])
         expect(run_remedy(short_unguent(herb2: 'jadice'))).to eq(:exited)
         expect(commons.calls).to include(['DRCC.get_crafting_item', 'jadice', toolbag, ['jadice'], logged_settings[:alchemy_belt], true])
-        expect(game.sent).to eq([*gathered, 'put my jadice in my large mortar', 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
-        expect(remedy_messages).to be_empty
+        expect(game.sent).to eq([*gathered, 'put my jadice in my large mortar', 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
 
@@ -2548,8 +2588,8 @@ RSpec.describe Remedy do
             script_short_unguent
             allow(DRC).to receive(:beep)
             expect(run_remedy(short_unguent)).to eq(:exited)
-            expect(game.sent.last(2)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
-            expect(remedy_messages).to eq(['Remedy: could not get the stamp; the unguent is left unmarked.'])
+            expect(game.sent.last(3)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
+            expect(remedy_messages).to eq(['Remedy: could not get the stamp; the unguent is left unmarked.', yield_line('nemoih unguent')])
             # Only DRCC's beep before its missing line (v5.21.0 and v5.22.0
             # common-crafting.rb:344, 480bdee3 :517): remedy adds none.
             expect(DRC).to have_received(:beep).once
@@ -2595,7 +2635,7 @@ RSpec.describe Remedy do
     let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
     let(:first_crush) { 'crush my nemoih with my rounded pestle' }
     let(:herb_put) { herb_put_command('nemoih', 'large mortar') }
-    let(:short_run_tail) { [first_crush, 'get my unguent from my large mortar'] } # 26:11333, 26:11389
+    let(:short_run_tail) { [first_crush, 'get my unguent from my large mortar', 'count my unguent'] } # 26:11333, 26:11389, layer 17's count
 
     # Scripts the herb put (26:10749, after which the game holds the herb),
     # the first crush (26:11333) and the product taken out (26:11389).
@@ -2623,7 +2663,7 @@ RSpec.describe Remedy do
       expect(run_remedy(short_unguent)).to eq(:exited)
       expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
                                herb_put, *short_run_tail])
-      expect(remedy_messages).to be_empty
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
     end
 
@@ -2658,7 +2698,7 @@ RSpec.describe Remedy do
         end
         expect(outcome).to eq(:exited)
         expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put, *short_run_tail])
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
     end
@@ -2674,8 +2714,8 @@ RSpec.describe Remedy do
         herb_gets = commons.calls.select { |call| call.first == 'DRCC.get_crafting_item' && call[1] == 'nemoih' }
         expect(herb_gets.size).to eq(25)
         expect(game.sent.count('combine my nemoih')).to eq(25)
-        expect(game.sent.last(3)).to eq([herb_put, *short_run_tail])
-        expect(remedy_messages).to eq(['Remedy: could not count the nemoih gathered (a remedy takes 25); crafting with what is in hand.'])
+        expect(game.sent.last(4)).to eq([herb_put, *short_run_tail])
+        expect(remedy_messages).to eq(['Remedy: could not count the nemoih gathered (a remedy takes 25); crafting with what is in hand.', yield_line('nemoih unguent')])
       end
     end
   end
@@ -2773,8 +2813,8 @@ RSpec.describe Remedy do
             end
           end
           expect(outcome).to eq(:exited)
-          expect(remedy_messages).to be_empty
-          expect(game.sent.last(3)).to eq([first_crush, 'get my unguent from my large mortar', 'mark my unguent with my stamp'])
+          expect(remedy_messages).to eq([yield_line('nemoih unguent')])
+          expect(game.sent.last(4)).to eq([first_crush, 'get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'])
           expect(commons.location_of('diamondique large mortar')).to eq(toolstrap)
           expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
         end
@@ -2823,7 +2863,7 @@ RSpec.describe Remedy do
         expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
         # 26:11210 ... 26:11308, then Roundtime 26:11331 and the final touches 26:11333
         expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([crush] * 6),
-                                 'get my unguent from my large mortar', 'mark my unguent with my stamp'])
+                                 'get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'])
         mortar_moves = commons.moves.grep(/\Adiamondique large mortar:/)
         expect(mortar_moves).to eq(["diamondique large mortar: hand -> #{toolstrap}"])
         expect(commons.moves.index(mortar_moves.first)).to be > commons.moves.index('nemoih unguent: game -> hand')
@@ -2871,12 +2911,12 @@ RSpec.describe Remedy do
         game.script('crush my unguent with my rounded pestle', log('26:11333'))
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
-        expect(game.sent).to eq(['analyze my unguent', 'crush my unguent with my rounded pestle', 'get my unguent from my large mortar'])
+        expect(game.sent).to eq(['analyze my unguent', 'crush my unguent with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         expect(commons.moves).to eq(["rounded pestle: #{toolstrap} -> hand", 'nemoih unguent: game -> hand',
                                      "rounded pestle: hand -> #{toolstrap}"])
         expect([$left_hand, $right_hand]).to eq(['nemoih unguent', nil])
         expect(tool_locations).to eq(logged_tools)
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
     end
 
@@ -2968,7 +3008,7 @@ RSpec.describe Remedy do
           script_releases
           script_short_unguent
           expect(run_remedy(short_unguent)).to eq(:exited)
-          expect(game.sent.last(4)).to eq(['get my unguent from my large mortar', 'release spell', 'release mana', 'release symb'])
+          expect(game.sent.last(5)).to eq(['get my unguent from my large mortar', 'count my unguent', 'release spell', 'release mana', 'release symb'])
           expect(run_exit_hooks).to be_empty
           expect(remedy_flags).to be_empty
         end
@@ -3058,10 +3098,10 @@ RSpec.describe Remedy do
         expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', stock_room, 1], ['DRCT.walk_to', 8859]])
         expect_banked_in(shop_town)
         expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
-                                 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+                                 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         expect(commons.location_of('water')).to eq(toolbag)
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-        expect(remedy_messages).to be_empty
+        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
     end
 
@@ -3071,7 +3111,7 @@ RSpec.describe Remedy do
       expect(run_remedy(short_unguent)).to eq(:exited)
       expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859]])
       expect_banked_in('Crossing')
-      expect(remedy_messages).to be_empty
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
     end
 
     # Before layer 13 this pair withdrew at the Aesry bank, then raised
@@ -3085,7 +3125,7 @@ RSpec.describe Remedy do
       expect_banked_in('Crossing')
       expect(commons.location_of('water')).to eq(toolbag)
       expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-      expect(remedy_messages).to be_empty
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
     end
 
     it 'names both towns when neither force_crafting_town (Aesry) nor hometown (Mer\'Kresh) has an alchemy shop, and stops before the bank' do
@@ -3103,7 +3143,7 @@ RSpec.describe Remedy do
       expect(run_remedy(short_unguent)).to eq(:exited)
       expect(purchase_calls).to be_empty
       expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
-      expect(remedy_messages).to be_empty
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
     end
 
     it 'buys water, alcohol and the coal nugget all in force_crafting_town, walking back after each, as remedy always walked' do
@@ -3152,7 +3192,7 @@ RSpec.describe Remedy do
       script_short_unguent
       expect(run_remedy(short_unguent)).to eq(:exited)
       expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859]])
-      expect(remedy_messages).to eq(['Remedy: could not buy water at the Crossing alchemy shop; crafting on without it.'])
+      expect(remedy_messages).to eq(['Remedy: could not buy water at the Crossing alchemy shop; crafting on without it.', yield_line('nemoih unguent')])
       expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
     end
   end
@@ -3503,8 +3543,8 @@ RSpec.describe Remedy do
           expect(run_remedy(short_unguent)).to eq(:exited)
           expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
                                    'put nemoih in my large mortar',
-                                   'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar']) # 26:11333, 26:11389
-          expect(remedy_messages).to be_empty
+                                   'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent']) # 26:11333, 26:11389, layer 17's count
+          expect(remedy_messages).to eq([yield_line('nemoih unguent')])
           expect(commons.moves).to include('dried nemoih: hand -> game')
           expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
         end
@@ -3813,7 +3853,10 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
      [:RELEASE_SPELL_REPLIES, 'release spell', '25:52773', 'You let your concentration lapse'],
      [:RELEASE_SPELL_REPLIES, 'release spell', '26:92609', "You aren't preparing a spell"],
      [:RELEASE_MANA_REPLIES, 'release mana', '25:1316', "You aren't harnessing any mana"],
-     [:MARK_REPLIES, 'mark my liniment with my stamp', '25:11294', 'score the surface with the stamp']].each do |name, command, cite, text|
+     [:MARK_REPLIES, 'mark my liniment with my stamp', '25:11294', 'score the surface with the stamp'],
+     [:PRODUCT_COUNT_REPLIES, 'count my liniment', '25:11333', 'You count out 12 uses remaining'],
+     [:PRODUCT_COUNT_REPLIES, 'count my unguent', '26:11468', 'You count out 5 uses remaining'],
+     [:PRODUCT_COUNT_REPLIES, 'count my unguent', '25:13762', 'I could not find']].each do |name, command, cite, text|
       it "#{name}: bput returns #{text.inspect} for #{command.inspect} answered by #{cite}" do
         game.install(self)
         game.script(command, log(cite))
@@ -6300,11 +6343,13 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       allow(DRCI).to receive(:in_left_hand?) { |item| ReplayCommons.matches?($left_hand, item) }
       allow(DRCI).to receive(:in_right_hand?) { |item| ReplayCommons.matches?($right_hand, item) }
       game.script('get my unguent from my large mortar', log('26:11389'), after: ->(_game) { $left_hand = 'nemoih unguent' })
+      # layer 17's count of the product in hand: C02's own count (26:11468)
+      game.fallback('count my unguent', log('26:11468'))
     end
 
     it 'puts the stirrer away, takes the product out (26:11389) and puts the vessel away, with no stamp when marking is off' do
       Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
-      expect(game.sent).to eq(['get my unguent from my large mortar'])
+      expect(game.sent).to eq(['get my unguent from my large mortar', 'count my unguent'])
       expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:stow, 'diamondique large mortar', toolbag, toolstrap]])
       expect([$left_hand, $right_hand]).to eq(['nemoih unguent', nil])
     end
@@ -6328,7 +6373,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       $right_hand = 'rounded pestle'
       $left_hand = nil
       Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
-      expect(game.sent).to eq(['get my unguent from my large mortar'])
+      expect(game.sent).to eq(['get my unguent from my large mortar', 'count my unguent'])
       expect(calls).to eq([[:stow, nil, toolbag, toolstrap], [:stow, 'rounded pestle', toolbag, toolstrap]])
       expect([$left_hand, $right_hand]).to eq(['nemoih unguent', nil])
     end
@@ -6428,7 +6473,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
     it 'marks the product (25:11294) with the stamp from the belt or bag, and puts the stamp away' do
       game.script('mark my unguent with my stamp', log('25:11294'))
       Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: true).finish
-      expect(game.sent).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp'])
+      expect(game.sent).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'])
       expect(calls.last(2)).to eq([[:get, 'stamp', toolbag, bag_items, toolstrap, true], [:stow, 'stamp', toolbag, toolstrap]])
     end
 
@@ -6438,9 +6483,128 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       allow(DRC).to receive(:message) { |text| messages << text }
       allow(DRCI).to receive(:in_hands?).with('stamp').and_return(false)
       expect { Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: true).finish }.not_to raise_error
-      expect(game.sent).to eq(['get my unguent from my large mortar'])
-      expect(messages).to eq(['Remedy: could not get the stamp; the unguent is left unmarked.'])
+      expect(game.sent).to eq(['get my unguent from my large mortar', 'count my unguent'])
+      expect(messages).to eq(['Remedy: could not get the stamp; the unguent is left unmarked.', 'Remedy: made 5 uses of nemoih unguent.'])
       expect(calls.last).to eq([:get, 'stamp', toolbag, bag_items, toolstrap, true])
+    end
+
+    # layer 17 (a deliberate, always-on change, flagged in the commit):
+    # every finished run counts the product in hand
+    # once, after the mark and its roundtime, and reports the uses.
+    describe 'the yield count (layer 17)' do
+      let(:messages) { [] }
+      # Every waitrt? the Finisher makes, as the commands sent before it.
+      let(:waits) { [] }
+
+      before do
+        allow(DRC).to receive(:message) { |text| messages << text }
+        allow(DRC).to receive(:beep)
+      end
+
+      # @param noun [String] the product noun
+      # @param mark [Boolean, nil] mark_crafted_goods
+      # @return [Remedy::Finisher] one whose waitrt? calls are recorded in #waits
+      def finisher(noun: 'unguent', mark: nil)
+        finisher = Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: noun, mark: mark)
+        allow(finisher).to receive(:waitrt?) { waits << game.sent.dup }
+        finisher
+      end
+
+      context 'with the clubmoss liniment of 25:11289-11333' do
+        before do
+          game.script('get my liniment from my large mortar', log('25:11289'), after: ->(_game) { $left_hand = 'clubmoss liniment' })
+          game.script('mark my liniment with my stamp', log('25:11294'), log('25:11296'))
+          game.script('count my liniment', log('25:11333'))
+        end
+
+        it 'counts the product once, last, after the mark (25:11294, then "Roundtime: 21 sec." 25:11296)' do
+          finisher(noun: 'liniment', mark: true).finish
+          expect(game.sent).to eq(['get my liniment from my large mortar', 'mark my liniment with my stamp', 'count my liniment'])
+          expect(game.diagnostics).to be_empty
+        end
+
+        it "waits out the mark's roundtime after the mark and before the count" do
+          finisher(noun: 'liniment', mark: true).finish
+          expect(waits.last).to eq(['get my liniment from my large mortar', 'mark my liniment with my stamp'])
+        end
+
+        it 'reports the uses the game counted (25:11333), naming the product as the hand shows it' do
+          finisher(noun: 'liniment', mark: true).finish
+          expect(messages).to eq(['Remedy: made 12 uses of clubmoss liniment.'])
+        end
+
+        it 'leaves the product in hand: nothing is stowed after the count' do
+          finisher(noun: 'liniment', mark: true).finish
+          expect($left_hand).to eq('clubmoss liniment')
+          expect(calls.map { |call| call[1] }).not_to include('clubmoss liniment', 'liniment')
+        end
+      end
+
+      it 'counts with marking off too, waiting for roundtime after the product get' do
+        finisher.finish
+        expect(game.sent).to eq(['get my unguent from my large mortar', 'count my unguent'])
+        expect(waits.last).to eq(['get my unguent from my large mortar'])
+        expect(calls.last).to eq([:stow, 'diamondique large mortar', toolbag, toolstrap])
+        expect(messages).to eq(['Remedy: made 5 uses of nemoih unguent.'])
+      end
+
+      it 'counts after a mark the game refuses ("You cannot figure out how to do that", R:423), and still reports the uses' do
+        game.script('mark my unguent with my stamp', code('You cannot figure out how to do that.', from: 'R:423 /You cannot figure out how to do that/'))
+        finisher(mark: true).finish
+        expect(game.sent.last(2)).to eq(['mark my unguent with my stamp', 'count my unguent'])
+        expect(messages).to eq(['Remedy: made 5 uses of nemoih unguent.'])
+      end
+
+      it 'finishes without a number, and without stopping, when the game does not answer the count' do
+        game.override('count my unguent')
+        expect { finisher.finish }.not_to raise_error
+        expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command 'count my unguent' (0 lines seen)"])
+        expect(messages).to eq(['Remedy: made nemoih unguent; its uses could not be counted.'])
+        expect($left_hand).to eq('nemoih unguent')
+      end
+
+      # "I could not find what you were referring to." (25:13762, analog:
+      # the reply to a count of a liquid the game could not find).
+      it 'finishes without a number, at once, when the game cannot find what to count (25:13762)' do
+        game.override('count my unguent', log('25:13762'))
+        expect { finisher.finish }.not_to raise_error
+        expect(game.diagnostics).to be_empty
+        expect(messages).to eq(['Remedy: made nemoih unguent; its uses could not be counted.'])
+      end
+
+      it "skips an unrelated line before the count's reply (26:6921, then 26:6924, C01's own count)" do
+        game.script('get my elixir from my large mortar', log('26:6794'), after: ->(_game) { $left_hand = 'belradi elixir' })
+        game.override('count my elixir', log('26:6921'), log('26:6924'))
+        finisher(noun: 'elixir').finish
+        expect(messages).to eq(['Remedy: made 18 uses of belradi elixir.'])
+      end
+
+      it "does not read another player's speech quoting a count as the product's count" do
+        # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
+        spoof = code(%(Mallory says, "#{log('25:11333').text}"), from: 'player speech form (Remedy::NO_QUOTE) around 25:11333')
+        game.override('count my unguent', spoof, log('26:11468'))
+        finisher.finish
+        expect(messages).to eq(['Remedy: made 5 uses of nemoih unguent.'])
+      end
+
+      # layer 12: the product handed over on the game's own line (26:6794)
+      # is taken as made even when no hand shows the noun; the count then
+      # names it by its noun.
+      it 'names the product by its noun when no hand shows it' do
+        allow(DRCI).to receive(:in_hands?).with('elixir').and_return(false)
+        game.script('get my elixir from my large mortar', log('26:6794'))
+        game.override('count my elixir', log('26:6921'), log('26:6924'))
+        finisher(noun: 'elixir').finish
+        expect(messages).to eq(['Remedy: made 18 uses of elixir.'])
+      end
+
+      it 'sends no count when the product is not in hand after its get (the stop comes first)' do
+        allow(DRCI).to receive(:in_hands?).with('unguent').and_return(false)
+        game.override('get my unguent from my large mortar', log('25:10857'))
+        expect { finisher(mark: true).finish }.to raise_error(SystemExit)
+        expect(game.sent).to eq(['get my unguent from my large mortar'])
+        expect(messages).to eq(['Remedy: the unguent is not in hand after taking it out of the large mortar. Stopping.'])
+      end
     end
   end
 

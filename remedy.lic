@@ -3,7 +3,8 @@
 =end
 
 # remedy.lic crafts one alchemy remedy (a cream, salve, unguent, elixir and so
-# on) from a recipe, then leaves the product in hand.
+# on) from a recipe, then leaves the product in hand and prints how many
+# uses it holds ("Remedy: made 12 uses of clubmoss liniment.").
 #
 # == Command forms
 # The book form, eight arguments: book type, chapter, recipe name, herb1,
@@ -26,7 +27,8 @@
 # == Callers
 # workorders.lic:831/833, craft.lic:694 and create_remedies.lic:54/56 run the
 # book form with a base-recipes.yaml recipe. Lich gives no exit status: the
-# finished remedy is left in hand, the tools and the vessel are put away and
+# finished remedy is left in hand, the tools and the vessel are put away,
+# the product is counted (`count my <noun>`, after the mark's roundtime) and
 # the script ends. The product in hand is the success signal; each caller
 # checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
 # remedy prints a bold "Remedy:" line and exits with no product when the
@@ -346,6 +348,18 @@ class Remedy
                     /You cannot figure out how to do that/i,
                     /too badly damaged/i,
                     /score the surface with the stamp/].freeze
+
+    # Replies to `count my <noun>` with the finished remedy in hand: "You
+    # count out 12 uses remaining." (25:11333, a clubmoss liniment), 18 for
+    # an elixir (26:6924) and 5 for an unguent (26:11468); or "I could not
+    # find what you were referring to." (25:13762, the game's reply to a
+    # count of an item it cannot find).
+    #
+    # @note code-derived (unverified): the singular "use remaining" is in no
+    #   log; all 84 timestamped product counts in the logs say "uses".
+    #   The "I could not find" reply is real (25:13762) but answered a count
+    #   of a liquid, not of a remedy.
+    PRODUCT_COUNT_REPLIES = [/^You count out \d+ uses? remaining/i, /^I could not find/i].freeze
   end
 
   # Every Flag remedy registers, name => patterns, in the order the crafting
@@ -934,6 +948,18 @@ class Remedy
       return nil unless hand
 
       (hand == :left ? GameObj.left_hand : GameObj.right_hand)&.id
+    end
+
+    # What the hand holding an item shows, the hand found by the last word
+    # of the item's name as {#stow_held} finds it (left hand first): the
+    # full name, e.g. "nemoih unguent" for the noun "unguent".
+    #
+    # @param name [String] the name the item was asked for by
+    # @return [String, nil] the hand's contents, or nil when neither hand
+    #   holds the item
+    def held_name(name)
+      hand = hand_holding(name)
+      hand && contents(hand)
     end
 
     # Puts away what the hand holding an item holds, found by the last word
@@ -1746,8 +1772,8 @@ class Remedy
     # @param herb [String] herb1
     # @return [void]
     def put_back_beside_full(herb)
-      first = count_of("count my first #{herb}", Patterns::FIRST_STACK_COUNT_REPLIES)
-      second = count_of("count my second #{herb}", Patterns::SECOND_STACK_COUNT_REPLIES)
+      first = Remedy.counted("count my first #{herb}", Patterns::FIRST_STACK_COUNT_REPLIES)
+      second = Remedy.counted("count my second #{herb}", Patterns::SECOND_STACK_COUNT_REPLIES)
       if first == FULL_STACK
         DRCI.put_away_item?("second #{herb}")
       elsif second == FULL_STACK
@@ -1769,18 +1795,7 @@ class Remedy
     # @return [Integer, nil] the count of the herb in hand (25:12538), nil
     #   when the reply holds no number
     def count_held(herb)
-      count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
-    end
-
-    # The number a count reply starts with ("You count out 75 pieces of
-    # material there.", 25:8678).
-    #
-    # @param command [String] the count
-    # @param patterns [Array<Regexp>] its replies
-    # @return [Integer, nil] nil when the reply holds no number (no reply, or
-    #   "I could not find what you were referring to.", 25:13762)
-    def count_of(command, patterns)
-      DRC.bput(command, *patterns)[/\d+/]&.to_i
+      Remedy.counted("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
     end
 
     # @param herb [String] herb1
@@ -2325,14 +2340,16 @@ class Remedy
   end
 
   # Takes the finished remedy out of the vessel, checks it is in hand, puts
-  # the tools away and marks the product. The product stays in hand.
+  # the tools away, marks the product and reports how many uses it holds.
+  # The product stays in hand.
   #
   # @api private
   class Finisher
     # The tool that marks the product.
     STAMP = 'stamp'
 
-    # @param inventory [Inventory] the stows and the stamp's get
+    # @param inventory [Inventory] the stows, the stamp's get and the hand
+    #   that holds the product
     # @param tools [Tools] the vessel
     # @param noun [String] the product noun
     # @param mark [Boolean, nil] mark_crafted_goods
@@ -2346,8 +2363,8 @@ class Remedy
     # Puts away the stirrer ({Inventory#stow_beside}), takes the product out
     # of the vessel ({Patterns::PRODUCT_TAKEN}, 26:11389), puts the vessel
     # away by its name, or the right hand when neither hand shows the vessel
-    # ({Inventory#stow_vessel}), then marks the product when
-    # mark_crafted_goods is set.
+    # ({Inventory#stow_vessel}), marks the product when mark_crafted_goods
+    # is set, then counts it and reports the yield ({#report_yield}).
     #
     # The pattern-less fput returns the first line after the get, which is
     # not always the game's reply: " * Venras joins the adventure."
@@ -2368,6 +2385,10 @@ class Remedy
     # @return [void]
     # @raise [SystemExit] when the product is not in hand after the get
     #   ({Remedy.stop}), or as {Inventory#fetch?} may, on the stamp's get
+    # @note The count is one command more than remedy sent before layer 17
+    #   (a deliberate, always-on change). Under workorders it repeats
+    #   the count workorders makes of the bundled remedy (workorders.lic,
+    #   `count my first <noun>`); it changes nothing in hand.
     # @note The vessel is found by the last word of its alchemy_tools name.
     #   In the continue form it may be in neither hand (still tied on the
     #   belt: the product get works from there, 26:11389, 26:6794, and the
@@ -2381,6 +2402,7 @@ class Remedy
       Remedy.stop("the #{@noun} is not in hand after taking it out of the #{@tools.container}.") unless taken?(reply)
       @inventory.stow_vessel(@tools.container)
       stamp if @mark
+      report_yield
     end
 
     private
@@ -2422,6 +2444,28 @@ class Remedy
 
       DRC.bput("mark my #{@noun} with my stamp", *Patterns::MARK_REPLIES)
       @inventory.stow_tool(STAMP)
+    end
+
+    # Counts the product in hand and prints its yield: "Remedy: made 12 uses
+    # of clubmoss liniment." for "You count out 12 uses remaining."
+    # (25:11333). The product is named as the hand holding it shows it
+    # ({Inventory#held_name}), or by its noun when no hand shows it.
+    #
+    # The mark leaves roundtime ("Roundtime: 21 sec.", 25:11296 after the
+    # mark at 25:11294), so the count waits it out first; sent in roundtime
+    # the game would answer "...wait" instead of the count.
+    #
+    # A count with no number in its reply (no reply within bput's timeout,
+    # or "I could not find what you were referring to.") still ends in
+    # success: the product was checked in hand after its get ({#taken?}),
+    # so the message is printed without the number and nothing stops.
+    #
+    # @return [void]
+    def report_yield
+      waitrt?
+      uses = Remedy.counted("count my #{@noun}", Patterns::PRODUCT_COUNT_REPLIES)
+      product = @inventory.held_name(@noun) || @noun
+      DRC.message(uses ? "Remedy: made #{uses} uses of #{product}." : "Remedy: made #{product}; its uses could not be counted.")
     end
   end
 
@@ -2514,6 +2558,20 @@ class Remedy
     DRC.beep
     DRC.message("Remedy: #{message} Stopping.")
     exit
+  end
+
+  # Sends a count and reads the number its reply starts with: "You count
+  # out 75 pieces of material there." (25:8678, a herb) or "You count out
+  # 12 uses remaining." (25:11333, a remedy). The herb gatherer and the
+  # finisher count through it.
+  #
+  # @param command [String] the count, e.g. `count my nemoih`
+  # @param patterns [Array<Regexp>] its replies, for DRC.bput
+  # @return [Integer, nil] the number, or nil when the reply holds none (no
+  #   reply within bput's timeout, or "I could not find what you were
+  #   referring to.", 25:13762)
+  def self.counted(command, patterns)
+    DRC.bput(command, *patterns)[/\d+/]&.to_i
   end
 
   # Takes the settings and the parsed arguments. Sends nothing to the game.
