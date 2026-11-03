@@ -27,8 +27,10 @@
 # remedy prints a bold "Remedy:" line and exits with no product when the
 # game refuses the herb ("You need a more suitable type of herb", or more
 # pieces of it), when the studied instructions fade before crafting begins,
-# when the game stops answering a crafting command, or when the remedy is
-# not done after 100 crafting commands.
+# when the game stops answering a crafting command, when the remedy is not
+# done after 100 crafting commands, when a tool, the catalyst or the second
+# herb cannot be got or put in, or when the game asks for a second herb and
+# herb2 is na, none or "not used".
 #
 # == Settings read
 # crafting_container, crafting_items_in_container, alchemy_belt,
@@ -205,10 +207,22 @@ class Remedy
                           /^[^"]*?You toss/i,
                           /^[^"]*?You cannot find a way to add that as an ingredient/i].freeze
 
+    # "What were you referring to?": the game finds no such item. It
+    # answered `get my pewter ingot from my botanist's toolbag` (26:39160 ->
+    # 26:39162) and `put my pewter ingot in my heavy cauldron` (26:39192 ->
+    # 26:39194) when the character had no pewter ingot. The pattern has no
+    # "?": bput hands back the matched text, {NOT_FOUND_REPLY}.
+    NOT_FOUND = [/^What were you referring to/i].freeze
+
+    # The text bput returns when {NOT_FOUND} matches the real line
+    # (26:39194).
+    NOT_FOUND_REPLY = 'What were you referring to'.freeze
+
     # Replies to `put my <catalyst or herb2> in my <vessel>`: "You vigorously
     # rub the ingot alongside the mortar to scrape some shavings into the
-    # mixture." (25:11081) or Roundtime.
-    INGREDIENT_PUT_REPLIES = [/Roundtime/i, /You vigorously/i].freeze
+    # mixture." (25:11081), Roundtime, or {NOT_FOUND} when no such item is
+    # in hand (26:39194).
+    INGREDIENT_PUT_REPLIES = [/Roundtime/i, /You vigorously/i, *NOT_FOUND].freeze
 
     # The game's refusal of a step it does not need now: "The sieve doesn't
     # appear suitable for working on some unfinished yelith tonic."
@@ -342,7 +356,8 @@ class Remedy
   #
   # Every value is kept exactly as parse_args gives it (lowercased): herb2 is
   # whatever was typed, na, none and "not used" included, and the vessel is
-  # the word the caller used, which {Tools.resolve} looks up.
+  # the word the caller used, which {Tools.resolve} looks up. {#second_herb}
+  # reads herb2 as the herb the game may ask for, nil when there is none.
   #
   # @!attribute [r] mode
   #   @return [Symbol] :book for the book form, :continue for the continue
@@ -376,6 +391,12 @@ class Remedy
   Order = Data.define(:mode, :book_type, :chapter, :recipe_name, :herb1, :herb2, :catalyst, :container_request, :noun)
 
   class Order
+    # The herb2 values that say the recipe has no second herb, as parse_args
+    # lowercases them: na (workorders.lic:821, craft.lic:637,
+    # create_remedies.lic:53), none (the herb2 help text) and "not used"
+    # (the file header's example).
+    NO_SECOND_HERB = ['na', 'none', 'not used'].freeze
+
     # Reads the request from parse_args' result, in either form of
     # {ARG_DEFINITIONS}. Only the continue form sets `continue`.
     #
@@ -404,9 +425,21 @@ class Remedy
     # The names {Inventory} gets from and stows in the herb container: herb1
     # and herb2, as given.
     #
+    # herb2 stays as given here, na included: routing nil as a herb would
+    # send an empty hand to herb_container ({Inventory#stow}), which remedy
+    # has never done in the book form.
+    #
     # @return [Array<String, nil>]
     def herbs
       [herb1, herb2]
+    end
+
+    # The second herb the game may ask for ({Patterns::NEED_HERB}), or nil
+    # when herb2 says there is none ({NO_SECOND_HERB}) or is missing.
+    #
+    # @return [String, nil]
+    def second_herb
+      herb2 unless herb2.nil? || NO_SECOND_HERB.include?(herb2)
     end
   end
 
@@ -536,11 +569,33 @@ class Remedy
   # finds it (alchemy_belt, then the crafting container). Holds no game
   # state: it only knows the settings and the herb names.
   #
+  # {#fetch?} and {#fetch!} are the guarded gets: they work the same on every
+  # lich-5 release. {#get} and {#get_tool} are the plain gets remedy has
+  # always made, for the paths a later layer changes (the liquids, the herb
+  # gathering, the remed book).
+  #
   # @api private
   class Inventory
     # What {#get} returns when it got the item without naming a container
     # (the herb gathering reads it).
     UNROUTED = 'none'
+
+    # How many times {#got?} looks at the hands again, a second apart, for an
+    # item a guarded get did not bring at once: the 15 s DRC.bput waits for a
+    # reply (BPUT_DEFAULT_TIMEOUT, lich-5 common.rb:72).
+    #
+    # A get whose reply comes after DRC.bput gave up still brings the item
+    # (lich-5 480bdee3 common-crafting.rb:430-432: "a late reply may still
+    # deliver it"). The plain get remedy used to make returned on that
+    # timeout without exiting, on every release, and remedy sent its next
+    # command, whose own bput waited another 15 s; the late "You get" came
+    # first, so the run went on. Looking again for as long keeps that: a get
+    # answered up to 15 s late still crafts on. The cost is paid only when
+    # the item is not in hand, before a stop.
+    #
+    # @note No get in the logs timed out (the one bput timeout, 26:68670, is
+    #   a cast), so the late reply is code-derived, not seen.
+    LATE_GET_LOOKS = 15
 
     # @return [String] crafting_container
     attr_reader :bag
@@ -573,25 +628,100 @@ class Remedy
     #
     # @param name [String, nil] the item
     # @param at_feet [Boolean] the item is the vessel, lowered to the ground
+    # @param skip_exit [Boolean] ask DRCC.get_crafting_item to return
+    #   instead of exiting on a missing item ({#fetch?})
     # @return [String, Object] {UNROUTED} when the item was got without
     #   naming a container, otherwise DRCC.get_crafting_item's return, which
     #   differs by lich-5 release
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
-    #   (lich-5 v5.22.0 and later, on a missing item)
-    def get(name, at_feet: false)
+    #   (lich-5 v5.22.0 and later, on a missing item, without skip_exit)
+    def get(name, at_feet: false, skip_exit: false)
       # added to check for herbs in special herb container, then check if herbs in crafting container, otherwise get normally
       # this is to prevent issues getting herbs if someone has less than 25 in the herb container
       # there are still issues when herbs are in a different container (not the bag or the herb container), script will still run fine
       if herb?(name) && @herb_container && DRCI.exists?(name, @herb_container)
-        DRCC.get_crafting_item(name, @herb_container, [name], @belt) # Look for herbs in herb_container
+        crafting_get(name, @herb_container, [name], @belt, skip_exit) # Look for herbs in herb_container
       elsif herb?(name) && DRCI.exists?(name, @bag)
-        DRCC.get_crafting_item(name, @bag, [name], @belt) # Look for herbs in bag
+        crafting_get(name, @bag, [name], @belt, skip_exit) # Look for herbs in bag
       elsif at_feet
-        DRCC.get_crafting_item(name, @bag, nil, @belt) # used primarily to get bowl/mortar etc. from at our feet after lowering it.
+        crafting_get(name, @bag, nil, @belt, skip_exit) # used primarily to get bowl/mortar etc. from at our feet after lowering it.
       else
-        get_tool(name) # Primarily to get herb without specifying a bag
+        get_tool(name, skip_exit: skip_exit) # Primarily to get herb without specifying a bag
         UNROUTED # return specified to handle herbs differently for this option (to prevent a bug)
       end
+    end
+
+    # Gets an item by the routes of {#get} and tells whether it is in hand,
+    # the same way on every lich-5 release.
+    #
+    # DRCC.get_crafting_item's answer differs by release (lich-5
+    # common-crafting.rb at each tag): v5.20.0 to v5.22.0 (:324-363) return
+    # nil on success too; v5.20.0 and v5.21.0 return nil without exiting on
+    # a missing item, v5.22.0 exits; only v5.23.0 and later (:443-498)
+    # return true or false. Every release takes skip_exit as its fifth
+    # parameter. So the get passes skip_exit and the answer comes from the
+    # hands ({#got?}), as forge.lic does after its book get and as the
+    # helper itself does when the game says the item is not there.
+    #
+    # @param name [String] the item: a tool, the catalyst or a herb, never a
+    #   liquid (a liquid's success comes from the reply)
+    # @param at_feet [Boolean] the item is the vessel, lowered to the ground
+    # @return [Boolean] whether a hand holds the item after the get, or
+    #   within {LATE_GET_LOOKS} seconds of it
+    # @raise [SystemExit] only when lich-5 v5.22.0 stops the script after a
+    #   retry: before v5.23.0 the helper retries a get the game called too
+    #   heavy, or an untie wounds hindered, without skip_exit (v5.22.0
+    #   common-crafting.rb:334, :351, :360), and v5.22.0 exits when that
+    #   retry finds nothing
+    def fetch?(name, at_feet: false)
+      get(name, at_feet: at_feet, skip_exit: true)
+      got?(name)
+    end
+
+    # Whether a get brought the item: a hand holds it now, or does within
+    # {LATE_GET_LOOKS} seconds, looked at once a second, so a reply that came
+    # after DRC.bput gave up still counts.
+    #
+    # @param name [String] the name the item was asked for by
+    # @return [Boolean] true as soon as a hand holds it ({#held?}); false
+    #   after {LATE_GET_LOOKS} looks find it in neither hand
+    def got?(name)
+      return true if held?(name)
+
+      LATE_GET_LOOKS.times do
+        pause 1
+        return true if held?(name)
+      end
+      false
+    end
+
+    # Gets an item as {#fetch?} does, and stops remedy when it is not in
+    # hand afterwards: "Remedy: could not get <name>. Stopping."
+    #
+    # @param name [String] the item, as {#fetch?}
+    # @param at_feet [Boolean] the item is the vessel, lowered to the ground
+    # @return [true] when the item is in hand
+    # @raise [SystemExit] when it is not ({Remedy.stop}), or as {#fetch?}
+    def fetch!(name, at_feet: false)
+      fetch?(name, at_feet: at_feet) || Remedy.stop("could not get #{name}.")
+    end
+
+    # Whether a hand holds the item, found by the last word of its name.
+    #
+    # The game takes the last word of `get my <name>` as the start of the
+    # item's noun, and the noun is a word of the name a hand shows, so
+    # DRCI.in_hands? on that word finds every item the get can bring. The
+    # whole name does not: DRCI.in_hands? wants the first word before the
+    # last, and `get remed book from my botanist's toolbag` (26:5825) brings
+    # "a jadeleaf-bound book of master remedies instructions" (26:5832),
+    # where "remed" comes after "book".
+    #
+    # @param name [String] the name the item was asked for by
+    # @return [Boolean]
+    # @note An item of the same noun already in the other hand also counts;
+    #   remedy then goes on as it always has.
+    def held?(name)
+      DRCI.in_hands?(name.split.last)
     end
 
     # Puts an item away: a herb in herb_container when one is set, anything
@@ -612,12 +742,13 @@ class Remedy
     #
     # @param name [String] the item
     # @param belt [Hash, nil] the belt to look on (alchemy_belt by default)
+    # @param skip_exit [Boolean] return instead of exiting on a missing item
     # @return [Object] DRCC.get_crafting_item's return, which differs by
     #   lich-5 release
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
-    #   (lich-5 v5.22.0 and later, on a missing item)
-    def get_tool(name, belt: @belt)
-      DRCC.get_crafting_item(name, @bag, @bag_items, belt)
+    #   (lich-5 v5.22.0 and later, on a missing item, without skip_exit)
+    def get_tool(name, belt: @belt, skip_exit: false)
+      crafting_get(name, @bag, @bag_items, belt, skip_exit)
     end
 
     # Puts an item away with no herb routing: on the belt when it is one of
@@ -638,16 +769,32 @@ class Remedy
       DRCI.lower_item?(name)
     end
 
-    # Picks the lowered vessel up from the ground.
+    # Picks the lowered vessel up from the ground, guarded ({#fetch!}).
     #
     # @param name [String] the vessel
-    # @return [Object] DRCC.get_crafting_item's return
-    # @raise [SystemExit] as {#get}
+    # @return [true] when the vessel is in hand
+    # @raise [SystemExit] when it is not
     def pick_up(name)
-      get(name, at_feet: true)
+      fetch!(name, at_feet: true)
     end
 
     private
+
+    # Calls DRCC.get_crafting_item. A plain get passes the four arguments
+    # remedy has always passed; a guarded one adds skip_exit.
+    #
+    # @param name [String] the item
+    # @param container [String, nil] the container named with it
+    # @param items [Array<String>, nil] the items kept in +container+
+    # @param belt [Hash, nil] the belt to look on
+    # @param skip_exit [Boolean] return instead of exiting on a missing item
+    # @return [Object] DRCC.get_crafting_item's return
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    def crafting_get(name, container, items, belt, skip_exit)
+      return DRCC.get_crafting_item(name, container, items, belt) unless skip_exit
+
+      DRCC.get_crafting_item(name, container, items, belt, true)
+    end
 
     # Whether a name is routed as a herb: it equals herb1 or herb2.
     #
@@ -796,7 +943,9 @@ class Remedy
   # picks the vessel up again.
   #
   # The algorithm is the one remedy has always used, including its known
-  # faults (CURRENT H04, H05, H26, H27, D12, flipped by layer 11).
+  # faults (CURRENT H04, H05, H26, H27, D12, flipped by layer 11). The vessel
+  # gets before and after the gathering are guarded; the herb gets and the
+  # vessel moves inside it stay as they were until layer 11 rewrites it.
   #
   # @api private
   class HerbGatherer
@@ -826,9 +975,10 @@ class Remedy
     # @param herb [String] herb1
     # @param vessel [String] the alchemy_tools entry
     # @return [void]
-    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @raise [SystemExit] when the vessel cannot be got or picked up again
+    #   ({Inventory#fetch!}), or when DRCC.get_crafting_item stops the script
     def gather(herb, vessel)
-      @inventory.get(vessel)
+      @inventory.fetch!(vessel)
       @inventory.lower(vessel)
       count = 0
       while count < HANDFUL
@@ -933,7 +1083,9 @@ class Remedy
   # Each method resets its own Flag just before it sends its command, so a
   # cue that comes in the command's own reply is kept for the next pass.
   # One that brings an ingredient or the sieve puts away the left hand,
-  # gets the item, and gets the stirrer back afterwards.
+  # gets the item, and gets the stirrer back afterwards. Every get but a
+  # liquid's is guarded ({Inventory#fetch!}); the catalyst and herb2 puts
+  # stop remedy when the game finds no such item.
   #
   # @api private
   class Handlers
@@ -977,7 +1129,9 @@ class Remedy
     # @param flag [String] a {TABLE} key
     # @return [void]
     # @raise [KeyError] for a name not in {TABLE}
-    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @raise [SystemExit] when an item cannot be got or put in, when the game
+    #   asks for a second herb the order does not name, or when
+    #   DRCC.get_crafting_item stops the script
     def run(flag)
       send(TABLE.fetch(flag))
     end
@@ -1002,20 +1156,24 @@ class Remedy
     # ingot alongside the mortar ..." (25:11081).
     #
     # @return [void]
+    # @raise [SystemExit] when the catalyst cannot be got or put in
     def add_catalyst
-      with_item(@order.catalyst, 'remedy-catalyst') do
-        DRC.bput("put my #{@order.catalyst} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
-      end
+      with_item(@order.catalyst, 'remedy-catalyst') { put_ingredient(@order.catalyst) }
     end
 
-    # Adds the second herb ({Patterns::NEED_HERB}).
+    # Adds the second herb ({Patterns::NEED_HERB}). Stops, getting nothing,
+    # when herb2 names none ({Order#second_herb}): there is no herb to add,
+    # and asking for one by the name "na" can only fail.
     #
     # @return [void]
+    # @raise [SystemExit] when herb2 names no herb, or when it cannot be got
+    #   or put in
     # @note code-derived (unverified): no log shows the cue or this put.
     def add_herb
-      with_item(@order.herb2, 'remedy-herb') do
-        DRC.bput("put my #{@order.herb2} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
-      end
+      herb = @order.second_herb
+      Remedy.stop("the game asks for a second herb, and herb2 is #{@order.herb2.inspect}, which names none.") unless herb
+
+      with_item(herb, 'remedy-herb') { put_ingredient(herb) }
     end
 
     # Pushes the product with the sieve ({Patterns::NEED_SIEVE}).
@@ -1041,12 +1199,28 @@ class Remedy
       step('remedy-smell') { DRC.bput("smell my #{@order.noun}", *Patterns::STEP_REPLIES) }
     end
 
-    # Gets the liquid's source and adds it ({Liquid#add}).
+    # Gets the liquid's source and adds it ({Liquid#add}). The source's get
+    # is not guarded: the plain liquid's name ("water",
+    # "alcohol") is not proven to be in the name a hand shows, and the
+    # add's reply already says whether it worked.
     #
     # @param liquid [Liquid]
     # @return [void]
     def add_liquid(liquid)
-      with_item(liquid.source, liquid.flag) { liquid.add(@tools.container, @inventory) }
+      with_item(liquid.source, liquid.flag, guarded: false) { liquid.add(@tools.container, @inventory) }
+    end
+
+    # Puts the catalyst or the second herb, in hand, into the vessel.
+    #
+    # @param item [String] the catalyst or herb2
+    # @return [void]
+    # @raise [SystemExit] when the game answers {Patterns::NOT_FOUND}
+    #   (26:39194)
+    def put_ingredient(item)
+      reply = DRC.bput("put my #{item} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
+      return unless reply.start_with?(Patterns::NOT_FOUND_REPLY)
+
+      Remedy.stop("the game found no #{item} to put in the #{@tools.container}.")
     end
 
     # Puts away the left hand, gets the item, resets the Flag, runs the
@@ -1054,18 +1228,21 @@ class Remedy
     #
     # @param item [String] what the block uses
     # @param flag [String] the Flag being answered
+    # @param guarded [Boolean] stop when the item is not in hand after its
+    #   get ({Inventory#fetch!}); false for a liquid's source
     # @yield sends the command
     # @return [void]
-    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
-    def with_item(item, flag)
+    # @raise [SystemExit] when the item (guarded) or the stirrer cannot be
+    #   got, or when DRCC.get_crafting_item stops the script
+    def with_item(item, flag, guarded: true)
       waitrt?
       @inventory.stow(DRC.left_hand)
-      @inventory.get(item)
+      guarded ? @inventory.fetch!(item) : @inventory.get(item)
       Flags.reset(flag)
       yield
       waitrt?
       @inventory.stow(DRC.left_hand)
-      @inventory.get(@tools.stirrer)
+      @inventory.fetch!(@tools.stirrer)
     end
 
     # Resets the Flag and runs the block, which needs no other item.
@@ -1195,7 +1372,7 @@ class Remedy
     #   instructions faded before crafting began; :unanswered when more than
     #   {MAX_SILENT_REPLIES} commands in a row went unanswered; :too_long
     #   after {MAX_CRAFT_STEPS} crafting commands
-    # @raise [SystemExit] when a handler's get stops the script
+    # @raise [SystemExit] when a handler stops the script ({Handlers#run})
     # @note code-derived (unverified): that a crafting command fails once
     #   the instructions have faded ({Patterns::INSTRUCTIONS_FADED}). The
     #   stop comes before the command is sent, so remedy never sees the
@@ -1281,7 +1458,7 @@ class Remedy
     # set.
     #
     # @return [void]
-    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @raise [SystemExit] only as {Inventory#fetch?} may, on the stamp's get
     # @note The product get is not checked, and the stows go by hand, so in
     #   the continue form with the vessel in the left hand the vessel is put
     #   away first (D09, CURRENT H14, both fixed by layer 12).
@@ -1296,13 +1473,19 @@ class Remedy
     private
 
     # Marks the product with the stamp: "You hold the liniment steady and
-    # score the surface with the stamp." (25:11294).
+    # score the surface with the stamp." (25:11294). When the stamp cannot
+    # be got ({Inventory#fetch?}), says so and leaves the product unmarked:
+    # the product is made and in hand, so remedy still finishes.
     #
     # @return [void]
     # @note code-derived (unverified): "too badly damaged" is not acted on
     #   (CURRENT D10, layer 18).
     def stamp
-      @inventory.get_tool(STAMP)
+      unless @inventory.fetch?(STAMP)
+        DRC.message("Remedy: could not get the stamp; the #{@noun} is left unmarked.")
+        return
+      end
+
       DRC.bput("mark my #{@noun} with my stamp", *Patterns::MARK_REPLIES)
       @inventory.stow_tool(STAMP)
     end
@@ -1348,6 +1531,20 @@ class Remedy
     REGISTERED_FLAGS.each_key { |name| Flags.delete(name) }
   end
 
+  # Stops the script: beeps, prints a bold "Remedy: <why> Stopping." line
+  # and exits. What is in hand stays there, the vessel with any unfinished
+  # remedy included. The collaborators stop through it too, so every stop
+  # reads the same.
+  #
+  # @param message [String] why remedy stops, as a sentence
+  # @return [void] never returns
+  # @raise [SystemExit] always
+  def self.stop(message)
+    DRC.beep
+    DRC.message("Remedy: #{message} Stopping.")
+    exit
+  end
+
   # Takes the settings and the parsed arguments. Sends nothing to the game.
   #
   # @param settings [OpenStruct] the character's settings (get_settings)
@@ -1380,7 +1577,7 @@ class Remedy
     DRC.wait_for_script_to_complete('buff', ['remedy'])
 
     if @order.continue?
-      @inventory.get(@tools.stirrer)
+      @inventory.fetch!(@tools.stirrer)
       craft("analyze my #{@order.noun}")
     else
       create_item
@@ -1418,7 +1615,11 @@ class Remedy
   # @raise [SystemExit] when the remedy is finished, or when remedy or a
   #   commons helper stops the script
   # @note The remed book is got and stowed with no belt: remedy has never
-  #   passed alchemy_belt for it.
+  #   passed alchemy_belt for it. Its get passes no skip_exit, as before
+  #   (layer 15 changes this get); a book not in hand afterwards, nor within
+  #   {Inventory::LATE_GET_LOOKS} seconds ({Inventory#got?}), stops remedy,
+  #   which matters on lich-5 v5.21.0 and before, where the get returns
+  #   without exiting.
   def create_item
     @magic.routine
     @inventory.stow(DRC.left_hand)
@@ -1428,6 +1629,7 @@ class Remedy
       DRCC.find_recipe2(@order.chapter, @order.recipe_name, @settings.master_crafting_book, @order.book_type)
     else
       @inventory.get_tool(REMED_BOOK, belt: nil)
+      stop("could not get #{REMED_BOOK}.") unless @inventory.got?(REMED_BOOK)
       echo('*** You will need to upgrade to a journeyman or master book before 176 ranks! ***') if DRSkill.getrank('Alchemy') == 175
       DRCC.find_recipe2(@order.chapter, @order.recipe_name)
       @inventory.stow_tool(REMED_BOOK, belt: nil)
@@ -1443,7 +1645,7 @@ class Remedy
     end
 
     HerbGatherer.new(@inventory).gather(@order.herb1, @tools.container)
-    @inventory.get(@tools.stirrer)
+    @inventory.fetch!(@tools.stirrer)
 
     craft(@tools.first_command(@order.herb1), studied: true)
   end
@@ -1488,17 +1690,13 @@ class Remedy
     @order.herb1 || "the herb in the #{@tools.container}"
   end
 
-  # Stops the script: beeps, prints a bold "Remedy: <why> Stopping." line
-  # and exits. What is in hand stays there, the vessel with any unfinished
-  # remedy included.
+  # Stops the script ({Remedy.stop}).
   #
   # @param message [String] why remedy stops, as a sentence
   # @return [void] never returns
   # @raise [SystemExit] always
   def stop(message)
-    DRC.beep
-    DRC.message("Remedy: #{message} Stopping.")
-    exit
+    Remedy.stop(message)
   end
 
   # Buys a supply from the hometown's alchemy shop (base-crafting.yaml

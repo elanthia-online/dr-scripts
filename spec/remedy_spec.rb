@@ -1638,31 +1638,29 @@ RSpec.describe Remedy do
         run_remedy(workorders_call('a general elixir', 6, 'belradi', 'bowl', 'elixir', catalyst: 'pewter ingot'))
       end
 
-      %i[current v5_22].each do |release|
+      # layer 09 (guarded gets): one clean stop, the same on every release
+      ReplayCommons::LICH5_RELEASES.each do |release|
         context "on lich-5 #{release}" do
           let(:lich5) { release }
 
-          # flipped by layer 09 (guarded gets)
-          it 'CURRENT (D14): is stopped inside DRCC, with no remedy line, the stick put away and the cauldron left in hand' do
+          it 'D14/D02/D15: stops with one Remedy line naming the pewter ingot, before any put, the stick put away and the cauldron in hand' do
+            allow(DRC).to receive(:beep)
             expect(run_without_the_catalyst).to eq(:exited)
-            expect(commons.messages).to eq(['DRCC: You seem to be missing: pewter ingot', ReplayCommons::STOP_MESSAGE])
-            expect(remedy_messages).to be_empty
+            # DRCC's beep before its missing line (v5.21.0 and v5.22.0
+            # common-crafting.rb:344, 480bdee3 :517), then Remedy.stop's.
+            expect(DRC).to have_received(:beep).twice
+            expect(remedy_messages).to eq(['Remedy: could not get pewter ingot. Stopping.'])
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: pewter ingot'])
+            expect(commons.calls).to include(['DRCC.get_crafting_item', 'pewter ingot', toolbag, logged_settings[:crafting_items_in_container],
+                                              logged_settings[:alchemy_belt], true])
             expect(game.sent.last).to eq(mix) # the mix that drew the catalyst cue (26:6313)
+            expect(game.sent).not_to include('put my pewter ingot in my heavy cauldron')
             expect(commons.location_of('heavy cauldron')).to eq('left').or eq('right')
             expect(commons.location_of('luminescent starshine mixing stick')).to eq(toolstrap)
+            expect(exit_hooks).not_to be_empty
+            exit_hooks.each(&:call)
+            expect(remedy_flags).to be_empty
           end
-        end
-      end
-
-      context 'on lich-5 v5_21' do
-        let(:lich5) { :v5_21 }
-
-        # flipped by layer 09 (guarded gets)
-        it 'CURRENT (D02/D15): carries on after the failed get and loops: put, refused mix, get, put ...' do
-          expect(run_without_the_catalyst).to eq(:looped)
-          expect(game.sent.count('put my pewter ingot in my heavy cauldron')).to be > 3
-          expect(commons.messages.uniq).to eq(['DRCC: You seem to be missing: pewter ingot', ReplayCommons::STOP_MESSAGE])
-          expect(remedy_messages).to be_empty
         end
       end
     end
@@ -2284,6 +2282,167 @@ RSpec.describe Remedy do
       end
     end
   end
+
+  describe 'guarded gets and a missing second herb (layer 09)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+    let(:gathered) { ['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')] }
+    # code-derived (R:51 /You need another prepared herb/): no "prepared herb"
+    # line is in either log (both logged characters made one-herb recipes).
+    let(:herb_cue) { code('You need another prepared herb to continue crafting some unfinished nemoih unguent.', from: 'R:51 /You need another prepared herb/') }
+
+    describe 'the second herb the game asks for (H19, H30)' do
+      [%w[na na], %w[none none], ['"not used"', 'not used']].each do |typed_herb2, herb2|
+        it "stops at the cue (R:51) when herb2 is #{herb2.inspect}, asking for no item of that name, the mortar and pestle in hand" do
+          script_short_unguent(put_lines: [log('26:10749'), herb_cue])
+          expect(run_remedy(short_unguent(herb2: typed_herb2)) { allow(DRC).to receive(:beep) }).to eq(:exited)
+          expect(game.sent).to eq(gathered)
+          expect(DRC).to have_received(:beep).once
+          expect(remedy_messages).to eq(["Remedy: the game asks for a second herb, and herb2 is #{herb2.inspect}, which names none. Stopping."])
+          expect(commons.calls.select { |_name, item, *| item == herb2 }).to be_empty
+          expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+          expect(commons.location_of('rounded pestle')).to eq('left').or eq('right')
+        end
+      end
+
+      it 'gets a named second herb (jadice) from the crafting bag with skip_exit, puts it in and crafts on to the product' do
+        inventory['dried jadice'] = toolbag
+        script_short_unguent(put_lines: [log('26:10749'), herb_cue])
+        expect(run_remedy(short_unguent(herb2: 'jadice'))).to eq(:exited)
+        expect(commons.calls).to include(['DRCC.get_crafting_item', 'jadice', toolbag, ['jadice'], logged_settings[:alchemy_belt], true])
+        expect(game.sent).to eq([*gathered, 'put my jadice in my large mortar', 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+        expect(remedy_messages).to be_empty
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      end
+
+      ReplayCommons::LICH5_RELEASES.each do |release|
+        context "on lich-5 #{release}" do
+          let(:lich5) { release }
+
+          it 'stops with a Remedy line, putting nothing in, when the named second herb (jadice) is nowhere' do
+            script_short_unguent(put_lines: [log('26:10749'), herb_cue])
+            expect(run_remedy(short_unguent(herb2: 'jadice'))).to eq(:exited)
+            expect(remedy_messages).to eq(['Remedy: could not get jadice. Stopping.'])
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: jadice'])
+            expect(game.sent).to eq(gathered)
+            expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+          end
+        end
+      end
+    end
+
+    describe 'the catalyst put (D02)' do
+      let(:inventory) { logged_tools.merge(logged_supplies, 'crushed belradi' => toolbag) }
+      let(:put_ingot) { 'put my pewter ingot in my heavy cauldron' }
+
+      ReplayCommons::LICH5_RELEASES.each do |release|
+        context "on lich-5 #{release}" do
+          let(:lich5) { release }
+
+          it 'stops at once when the game finds no pewter ingot to put in (26:39194), with no mix after the put' do
+            script_general_elixir
+            game.override(put_ingot, log('26:39194'))
+            expect(run_remedy(workorders_call('a general elixir', 6, 'belradi', 'bowl', 'elixir', catalyst: 'pewter ingot'))).to eq(:exited)
+            expect(game.sent.last).to eq(put_ingot)
+            expect(game.sent.count(put_ingot)).to eq(1)
+            expect(game.diagnostics).not_to include(a_string_including(put_ingot))
+            expect(remedy_messages).to eq(['Remedy: the game found no pewter ingot to put in the heavy cauldron. Stopping.'])
+            expect(commons.location_of('heavy cauldron')).to eq('left').or eq('right')
+          end
+        end
+      end
+    end
+
+    describe 'a tool, the book or the stamp that is nowhere' do
+      ReplayCommons::LICH5_RELEASES.each do |release|
+        context "on lich-5 #{release}" do
+          let(:lich5) { release }
+
+          it 'stops before the herb is gathered when the mortar is nowhere, sending nothing' do
+            inventory.delete('diamondique large mortar')
+            script_short_unguent
+            expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(game.sent).to be_empty
+            expect(remedy_messages).to eq(['Remedy: could not get large mortar. Stopping.'])
+            expect(commons.calls.map(&:first)).not_to include('DRCI.lower_item?')
+          end
+
+          it 'stops after the herb is gathered, crushing nothing, when the pestle is nowhere' do
+            inventory.delete('rounded pestle')
+            script_short_unguent
+            expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(game.sent).to eq(gathered)
+            expect(remedy_messages).to eq(['Remedy: could not get rounded pestle. Stopping.'])
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: rounded pestle'])
+            expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+          end
+
+          it 'stops before the analysis in the continue form when the pestle is nowhere, sending nothing' do
+            inventory.delete('diamondique large mortar')
+            inventory.delete('rounded pestle')
+            $right_hand = 'diamondique large mortar' # the vessel with the unfinished unguent, as 26:11127
+            expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
+            expect(game.sent).to be_empty
+            expect(remedy_messages).to eq(['Remedy: could not get rounded pestle. Stopping.'])
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: rounded pestle'])
+            expect($right_hand).to eq('diamondique large mortar')
+          end
+
+          it 'finishes with the product in hand, unmarked, and says why, when the stamp is nowhere' do
+            settings[:mark_crafted_goods] = true
+            inventory.delete('Siksrajan applewood-handled stamp')
+            script_short_unguent
+            allow(DRC).to receive(:beep)
+            expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(game.sent.last(2)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+            expect(remedy_messages).to eq(['Remedy: could not get the stamp; the unguent is left unmarked.'])
+            # Only DRCC's beep before its missing line (v5.21.0 and v5.22.0
+            # common-crafting.rb:344, 480bdee3 :517): remedy adds none.
+            expect(DRC).to have_received(:beep).once
+            expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+            expect(commons.location_of('diamondique large mortar')).to eq(toolstrap)
+          end
+        end
+      end
+
+      context 'on lich-5 v5_21, where a missing item does not stop the script' do
+        let(:lich5) { :v5_21 }
+
+        it 'stops before the study when the remed book is nowhere' do
+          inventory.delete('remed book')
+          script_short_unguent
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(remedy_messages).to eq(['Remedy: could not get remed book. Stopping.'])
+          expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
+          expect(game.sent).to be_empty
+        end
+
+        it 'looks at the hands for the 15 s of a late reply before it stops on the missing remed book' do
+          inventory.delete('remed book')
+          script_short_unguent
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(game.clock).to eq(0.2 + Remedy::Inventory::LATE_GET_LOOKS) # the pause after the stows, then a look a second
+          expect(remedy_messages).to eq(['Remedy: could not get remed book. Stopping.'])
+        end
+      end
+
+      %i[current v5_22].each do |release|
+        context "on lich-5 #{release}" do
+          let(:lich5) { release }
+
+          # The book get keeps its four arguments until layer 15 (CURRENT H08).
+          it 'leaves a missing remed book to DRCC, which stops the script as before' do
+            inventory.delete('remed book')
+            script_short_unguent
+            expect(run_remedy(short_unguent)).to eq(:exited)
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: remed book', ReplayCommons::STOP_MESSAGE])
+            expect(remedy_messages).to be_empty
+            expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2')
+          end
+        end
+      end
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -2471,6 +2630,20 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       game.install(self)
       game.script('count alcohol in my glass flask', log('25:13762'))
       expect(DRC.bput('count alcohol in my glass flask', *Remedy::Patterns::VESSEL_COUNT_REPLIES)).to eq(Remedy::Patterns::NO_SUCH_ITEM_REPLY)
+    end
+
+    it 'INGREDIENT_PUT_REPLIES: returns NOT_FOUND_REPLY for a put the game answers "What were you referring to?" (26:39192 -> 26:39194)' do
+      game.install(self)
+      game.script('put my pewter ingot in my heavy cauldron', log('26:39194'))
+      expect(DRC.bput('put my pewter ingot in my heavy cauldron', *Remedy::Patterns::INGREDIENT_PUT_REPLIES)).to eq(Remedy::Patterns::NOT_FOUND_REPLY)
+      expect(game.diagnostics).to be_empty
+    end
+
+    it "INGREDIENT_PUT_REPLIES: ignores \"What were you referring to?\" (26:39194) in another player's speech" do
+      game.install(self)
+      spoken = ReplayGame.code(%(<preset id='speech'>Mallory says</preset>, "#{log('26:39194').text}"), from: '26:39194 as player speech')
+      game.script('put my pewter ingot in my heavy cauldron', spoken)
+      expect(DRC.bput('put my pewter ingot in my heavy cauldron', *Remedy::Patterns::INGREDIENT_PUT_REPLIES)).to eq('')
     end
 
     it 'CRAFT_REPLIES: returns Roundtime for a crush answered by the crush line 26:11057 and then Roundtime 25:10825' do
@@ -2813,6 +2986,42 @@ RSpec.describe 'Remedy order, tools and inventory' do
     end
   end
 
+  describe 'Remedy::Order#second_herb (layer 09)' do
+    ['na', 'none', 'not used'].each do |herb2|
+      it "reads herb2 #{herb2.inspect}, as typed, as no second herb, and keeps herb2 and herbs as given" do
+        quoted = herb2.include?(' ') ? %("#{herb2}") : herb2
+        order = Remedy::Order.from_args(parsed_typed(%(remedies 3 "some head unguent" nemoih #{quoted} "pewter ingot" mortar unguent)))
+        expect(order.second_herb).to be_nil
+        expect(order.herb2).to eq(herb2)
+        expect(order.herbs).to eq(['nemoih', herb2])
+      end
+    end
+
+    it 'reads NA typed in capitals as none too, because Lich lowercases every value' do
+      order = Remedy::Order.from_args(parsed_typed('remedies 3 "some head unguent" nemoih NA "pewter ingot" mortar unguent'))
+      expect(order.second_herb).to be_nil
+    end
+
+    it 'reads the na of the workorders.lic:820 call for some head unguent as none' do
+      order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
+      expect(order.second_herb).to be_nil
+    end
+
+    it 'gives the second herb of a two-herb recipe, some blister cream (base-recipes.yaml:8295)' do
+      order = Remedy::Order.from_args(parsed_call(['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'coal nugget', 'mortar', 'cream']))
+      expect(order.second_herb).to eq('nemoih')
+    end
+
+    it 'takes a missing herb2 as none' do
+      expect(order_for('mortar').with(herb2: nil).second_herb).to be_nil
+    end
+
+    it 'takes only the whole value as none: a herb whose name holds "none" or "na" is a herb' do
+      expect(order_for('mortar').with(herb2: 'nightshade').second_herb).to eq('nightshade')
+      expect(order_for('mortar').with(herb2: 'none such').second_herb).to eq('none such')
+    end
+  end
+
   describe 'Remedy::Tools.resolve' do
     before do
       game.install(self)
@@ -2961,9 +3170,11 @@ RSpec.describe 'Remedy order, tools and inventory' do
       expect(DRCI).to have_received(:exists?).with('na', toolbag)
     end
 
+    # layer 09: the pick-up is guarded, so it passes skip_exit and reads the hands
     it 'picks the lowered vessel up with no bag items, so DRCC looks on the ground' do
+      allow(DRCI).to receive(:in_hands?).with('mortar').and_return(true)
       expect(inventory.pick_up('large mortar')).to be(true)
-      expect(DRCC).to have_received(:get_crafting_item).with('large mortar', toolbag, nil, toolstrap)
+      expect(DRCC).to have_received(:get_crafting_item).with('large mortar', toolbag, nil, toolstrap, true)
     end
 
     it 'lowers the vessel with DRCI.lower_item?' do
@@ -3001,6 +3212,139 @@ RSpec.describe 'Remedy order, tools and inventory' do
       inventory.with_herbs(['dried flower', 'na'])
       inventory.get('dried flower')
       expect(DRCI).not_to have_received(:exists?)
+    end
+
+    describe 'the guarded gets (layer 09)' do
+      before do
+        allow(DRC).to receive(:beep)
+        allow(DRC).to receive(:message) { |text| messages << text }
+      end
+
+      it 'gets a tool with skip_exit and answers from the hands, by the last word of its name' do
+        allow(DRCI).to receive(:in_hands?).with('pestle').and_return(true)
+        expect(inventory.fetch?('rounded pestle')).to be(true)
+        expect(DRCC).to have_received(:get_crafting_item).with('rounded pestle', toolbag, bag_items, toolstrap, true)
+      end
+
+      it 'answers false when the hands do not hold it, whatever DRCC returned' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect(inventory.fetch?('rounded pestle')).to be(false)
+      end
+
+      it 'answers true when the hands hold it, even when DRCC returned nil, as lich-5 v5.20.0 to v5.22.0 do on success' do
+        allow(DRCC).to receive(:get_crafting_item).and_return(nil)
+        allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
+        expect(inventory.fetch?('pewter ingot')).to be(true)
+      end
+
+      it 'gets herb2 from the crafting container with skip_exit when it holds some' do
+        allow(DRCI).to receive(:exists?).with('na', toolbag).and_return(true)
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        inventory.fetch?('na')
+        expect(DRCC).to have_received(:get_crafting_item).with('na', toolbag, ['na'], toolstrap, true)
+      end
+
+      it 'picks the vessel up from the ground with skip_exit' do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        inventory.fetch?('large mortar', at_feet: true)
+        expect(DRCC).to have_received(:get_crafting_item).with('large mortar', toolbag, nil, toolstrap, true)
+      end
+
+      it 'stops with a beep and "Remedy: could not get <name>. Stopping." when the item is not in hand' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect { inventory.fetch!('turtle-shaped sieve') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:beep).once
+        expect(messages).to eq(['Remedy: could not get turtle-shaped sieve. Stopping.'])
+      end
+
+      it 'returns true and says nothing when the item is in hand' do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        expect(inventory.fetch!('turtle-shaped sieve')).to be(true)
+        expect(messages).to be_empty
+      end
+
+      it 'looks at the hands once and waits no time when the get brought the item' do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        inventory.fetch?('turtle-shaped sieve')
+        expect(DRCI).to have_received(:in_hands?).once
+        expect(game.clock).to eq(0)
+      end
+
+      # The late reply is code-derived: no get in the logs timed out. lich-5
+      # says a get reply after DRC.bput's 15 s "may still deliver it"
+      # (480bdee3 common-crafting.rb:430-432); v5.21.0 and v5.22.0 return nil
+      # on that timeout (:339-363, no branch matches '').
+      [nil, false].each do |timed_out|
+        it "carries on with no stop when the item reaches a hand 3 s after a get that returned #{timed_out.inspect}" do
+          allow(DRCC).to receive(:get_crafting_item).and_return(timed_out)
+          allow(DRCI).to receive(:in_hands?) { game.clock >= 3 }
+          got = nil
+          expect { got = inventory.fetch!('pewter ingot') }.not_to raise_error
+          expect(got).to be(true)
+          expect(game.clock).to eq(3)
+          expect(DRCC).to have_received(:get_crafting_item).once
+          expect(messages).to be_empty
+        end
+      end
+
+      it 'stops only after looking a second apart for 15 s, the bput wait, without getting again' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect { inventory.fetch!('pewter ingot') }.to raise_error(SystemExit)
+        expect(Remedy::Inventory::LATE_GET_LOOKS).to eq(15)
+        expect(game.clock).to eq(15)
+        expect(DRCI).to have_received(:in_hands?).exactly(16).times
+        expect(DRCC).to have_received(:get_crafting_item).once
+        expect(game.sent).to be_empty
+        expect(messages).to eq(['Remedy: could not get pewter ingot. Stopping.'])
+      end
+
+      it 'still finds an item that reaches a hand on the last look, at 15 s' do
+        allow(DRCI).to receive(:in_hands?) { game.clock >= 15 }
+        expect(inventory.fetch?('pewter ingot')).to be(true)
+      end
+
+      it 'finds the remed book by its noun: the book the logs got by that name is "a jadeleaf-bound book of master remedies instructions" (26:5825 -> 26:5832)' do
+        $left_hand = 'jadeleaf-bound book of master remedies instructions'
+        allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }
+        expect(inventory.held?(Remedy::REMED_BOOK)).to be(true)
+        # The whole name misses it: "remed" comes after "book" (lich-5 DRCI.in_hands? short_regex).
+        expect(ReplayCommons.held?(Remedy::REMED_BOOK)).to be(false)
+      end
+
+      it 'finds a tool by its noun under the longer name the game gives it (26:5908)' do
+        $right_hand = 'luminescent starshine mixing stick etched with stars'
+        allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }
+        expect(inventory.held?('mixing stick')).to be(true)
+        expect(inventory.held?('rounded pestle')).to be(false)
+      end
+
+      ReplayCommons::LICH5_RELEASES.each do |release|
+        context "with the lich-5 #{release} get" do
+          let(:commons) { ReplayCommons.new(lich5: release, inventory: { 'rounded pestle' => 'grass toolstrap' }) }
+
+          before { commons.install(self) }
+
+          it 'gets an item it has, and says so' do
+            got = nil
+            expect { got = inventory.fetch?('rounded pestle') }.not_to raise_error
+            expect(got).to be(true)
+            expect($right_hand).to eq('rounded pestle')
+          end
+
+          it 'answers false for an item it lacks, never stopping inside DRCC' do
+            got = nil
+            expect { got = inventory.fetch?('pewter ingot') }.not_to raise_error
+            expect(got).to be(false)
+            expect(commons.messages).to eq(['DRCC: You seem to be missing: pewter ingot'])
+          end
+
+          it 'stops with its own line for an item it lacks' do
+            expect { inventory.fetch!('pewter ingot') }.to raise_error(SystemExit)
+            expect(messages).to eq(['Remedy: could not get pewter ingot. Stopping.'])
+            expect(commons.messages).not_to include(ReplayCommons::STOP_MESSAGE)
+          end
+        end
+      end
     end
   end
 end
@@ -3041,6 +3385,9 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
     allow(DRCI).to receive(:lower_item?) { |*args| calls << [:lower, *args] && true }
     allow(DRCI).to receive(:get_item?) { |*args| calls << [:get_item?, *args] && true }
     allow(DRCI).to receive(:put_away_item?) { |*args| calls << [:put_away_item?, *args] && true }
+    # Every guarded get (layer 09) finds its item in hand, as the gets here
+    # always bring it.
+    allow(DRCI).to receive(:in_hands?).and_return(true)
     allow(DRCA).to receive(:crafting_magic_routine)
   end
 
@@ -3106,6 +3453,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(handlers.pending).to eq('remedy-turn')
     end
 
+    # layer 09: the ingot and pestle gets are guarded (skip_exit, then the hands)
     it 'adds the catalyst (25:11049): puts the left hand away, gets the ingot, puts it in, then gets the pestle back' do
       add_remedy_flags
       game_says(log('25:11049'))
@@ -3113,8 +3461,10 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script('put my pewter ingot in my large mortar', log('25:11081'))
       handlers_for.run('remedy-catalyst')
       expect(game.sent.last).to eq('put my pewter ingot in my large mortar')
-      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'pewter ingot', toolbag, bag_items, toolstrap],
-                           [:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'rounded pestle', toolbag, bag_items, toolstrap]])
+      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'pewter ingot', toolbag, bag_items, toolstrap, true],
+                           [:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'rounded pestle', toolbag, bag_items, toolstrap, true]])
+      expect(DRCI).to have_received(:in_hands?).with('ingot').ordered
+      expect(DRCI).to have_received(:in_hands?).with('pestle').ordered
       expect(Flags['remedy-catalyst']).to be(false)
     end
 
@@ -3185,6 +3535,94 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect([game.clock, game.diagnostics]).to eq([0, []])
       expect(handlers.pending).to eq('remedy-catalyst')
       expect(calls.select { |call| call.first == :get }.map { |call| call[1] }).to eq(['sieve', 'rounded pestle'])
+    end
+
+    describe 'guarded gets and the ingredient puts (layer 09)' do
+      let(:messages) { [] }
+      # code-derived (R:51 /You need another prepared herb/): in neither log.
+      let(:herb_cue) { code('You need another prepared herb to continue crafting some unfinished nemoih unguent.', from: 'R:51 /You need another prepared herb/') }
+
+      before do
+        add_remedy_flags
+        allow(DRC).to receive(:beep)
+        allow(DRC).to receive(:message) { |text| messages << text }
+      end
+
+      # @param herb2 [String]
+      # @return [Remedy::Handlers] for an order with that herb2, which the
+      #   inventory routes as a herb
+      def handlers_with_herb2(herb2)
+        Remedy::Handlers.new(order: order.with(herb2: herb2), tools: mortar, inventory: Remedy::Inventory.new(settings, herbs: ['nemoih', herb2]),
+                             water: plain_water, alcohol: plain_alcohol)
+      end
+
+      ['na', 'none', 'not used'].each do |herb2|
+        it "stops at the second-herb cue (R:51) when herb2 is #{herb2.inspect}, getting and sending nothing, the Flag left set" do
+          game_says(herb_cue)
+          expect { handlers_with_herb2(herb2).run('remedy-herb') }.to raise_error(SystemExit)
+          expect(messages).to eq(["Remedy: the game asks for a second herb, and herb2 is #{herb2.inspect}, which names none. Stopping."])
+          expect(DRC).to have_received(:beep).once
+          expect(calls).to be_empty
+          expect(game.sent).to eq(['look'])
+          expect(Flags['remedy-herb']).to be_a(MatchData)
+        end
+      end
+
+      it 'adds a named second herb: a guarded get of jadice, then "put my jadice in my large mortar", then the pestle back' do
+        game_says(herb_cue)
+        expect { handlers_with_herb2('jadice').run('remedy-herb') }.not_to raise_error
+        expect(game.sent.last).to eq('put my jadice in my large mortar')
+        expect(calls).to include([:get, 'jadice', toolbag, bag_items, toolstrap, true], [:get, 'rounded pestle', toolbag, bag_items, toolstrap, true])
+        expect(Flags['remedy-herb']).to be(false)
+      end
+
+      it 'stops before it resets the Flag or sends when the catalyst is not in hand after its get' do
+        allow(DRCI).to receive(:in_hands?) { |item| item != 'ingot' }
+        game_says(log('25:11049'))
+        expect { handlers_for.run('remedy-catalyst') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: could not get pewter ingot. Stopping.'])
+        expect(game.sent).to eq(['look'])
+        expect(Flags['remedy-catalyst']).to be_a(MatchData)
+      end
+
+      it 'stops at once when the put finds no pewter ingot (26:39194), without getting the pestle back' do
+        game.script('put my pewter ingot in my large mortar', log('26:39194'))
+        expect { handlers_for.run('remedy-catalyst') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: the game found no pewter ingot to put in the large mortar. Stopping.'])
+        expect([game.clock, game.diagnostics]).to eq([0, []])
+        expect(calls.map { |call| call[0, 2] }).not_to include([:get, 'rounded pestle'])
+      end
+
+      it 'crafts on when the put gets no reply at all, as remedy always has' do
+        game.script('put my pewter ingot in my large mortar')
+        expect { handlers_for.run('remedy-catalyst') }.not_to raise_error
+        expect(messages).to be_empty
+        expect(calls.last).to eq([:get, 'rounded pestle', toolbag, bag_items, toolstrap, true])
+      end
+
+      it "gets a liquid's source with no guard, never asking the hands for water" do
+        game.script('put water in my large mortar', log('26:10830'))
+        allow(DRCI).to receive(:in_hands?) { |item| item != 'water' }
+        expect { handlers_for.run('remedy-water') }.not_to raise_error
+        expect(calls[1]).to eq([:get, 'water', toolbag, bag_items, toolstrap])
+        expect(DRCI).not_to have_received(:in_hands?).with('water')
+        expect(messages).to be_empty
+      end
+
+      it 'stops before the push when the sieve is not in hand after its get' do
+        allow(DRCI).to receive(:in_hands?) { |item| item != 'sieve' }
+        expect { handlers_for.run('remedy-sieve') }.to raise_error(SystemExit)
+        expect(game.sent).to be_empty
+        expect(messages).to eq(['Remedy: could not get sieve. Stopping.'])
+      end
+
+      it 'stops after the push when the pestle is not in hand again' do
+        allow(DRCI).to receive(:in_hands?) { |item| item != 'pestle' }
+        game.script('push my unguent with my sieve', log('26:10933'), log('26:10935'))
+        expect { handlers_for.run('remedy-sieve') }.to raise_error(SystemExit)
+        expect(game.sent).to eq(['push my unguent with my sieve'])
+        expect(messages).to eq(['Remedy: could not get rounded pestle. Stopping.'])
+      end
     end
 
     it 'refuses a Flag it has no method for' do
@@ -3520,11 +3958,23 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:stow, 'large mortar', toolbag, toolstrap]])
     end
 
+    # layer 09: the stamp get is guarded (skip_exit, then the hands)
     it 'marks the product (25:11294) with the stamp from the belt or bag, and puts the stamp away' do
       game.script('mark my unguent with my stamp', log('25:11294'))
       Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: true).finish
       expect(game.sent).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp'])
-      expect(calls.last(2)).to eq([[:get, 'stamp', toolbag, bag_items, toolstrap], [:stow, 'stamp', toolbag, toolstrap]])
+      expect(calls.last(2)).to eq([[:get, 'stamp', toolbag, bag_items, toolstrap, true], [:stow, 'stamp', toolbag, toolstrap]])
+    end
+
+    # layer 09: the stamp get is guarded; a missing stamp leaves the product unmarked
+    it 'says the product is left unmarked, and sends no mark, when the stamp is not in hand after its get' do
+      messages = []
+      allow(DRC).to receive(:message) { |text| messages << text }
+      allow(DRCI).to receive(:in_hands?).with('stamp').and_return(false)
+      expect { Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: true).finish }.not_to raise_error
+      expect(game.sent).to eq(['get my unguent from my large mortar'])
+      expect(messages).to eq(['Remedy: could not get the stamp; the unguent is left unmarked.'])
+      expect(calls.last).to eq([:get, 'stamp', toolbag, bag_items, toolstrap, true])
     end
   end
 

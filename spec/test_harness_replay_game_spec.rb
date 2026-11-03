@@ -391,6 +391,24 @@ RSpec.describe 'test harness replay support' do
         expect(DRCC.get_crafting_item('pewter ingot', bag, [], belt, true)).to be_nil
       end
 
+      # Every release beeps before the missing line: v5.21.0 and v5.22.0
+      # common-crafting.rb:344, 480bdee3 crafting_item_failed :517.
+      %i[current v5_22 v5_21].each do |release|
+        it "beeps once before the missing line on :#{release}, with skip_exit or not" do
+          allow(DRC).to receive(:beep)
+          commons_for(release)
+          DRCC.get_crafting_item('pewter ingot', bag, [], belt, true)
+          expect(DRC).to have_received(:beep).once
+        end
+      end
+
+      it 'beeps nothing for an item it gets' do
+        allow(DRC).to receive(:beep)
+        commons_for(:current, 'heavy cauldron' => 'grass toolstrap')
+        DRCC.get_crafting_item('cauldron', bag, [], belt)
+        expect(DRC).not_to have_received(:beep)
+      end
+
       it 'never exits on :v5_21: a missing item returns nil and says it stops, but does not' do
         commons = commons_for(:v5_21)
         expect(DRCC.get_crafting_item('pewter ingot', bag, [], belt)).to be_nil
