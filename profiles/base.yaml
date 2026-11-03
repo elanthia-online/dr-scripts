@@ -3054,7 +3054,7 @@ task_copper_target: 110000
 # Empty leaves hometown alone.
 task_hometown:
 
-# Setting for taskmaster - room where Dorhum's spongestone tasks forage rocks, one per FORAGE ROCK
+# Setting for taskmaster - room where Dorhum's spongestone and splashstone tasks forage rocks, one per FORAGE ROCK
 # (793 is The Crossing, Town Green Southeast; rocks cannot be had on Andreshlew).
 task_rock_room: 793
 # Setting for taskmaster - room where Dorhum's glow shell tasks forage shells, one per FORAGE SHELL

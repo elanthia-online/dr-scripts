@@ -2812,6 +2812,44 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # A manual run, 2026-11-04 (Pezamus): the journal, the instructions and
+    # the hand-in of a splashstone task.
+    describe 'splashstones' do
+      it 'reads a splashstone task off the journal' do
+        tm = dorhum
+        game('task' => 'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist his ongoing efforts with the Merelew and others.  ' \
+                       'In particular, he wanted you to craft a splashstone and indicated that 8 would suffice.  So far, you have returned 0 to him.  ' \
+                       'Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Dorhum for another copy.')
+
+        expect(tm.read_task).to eq(['splashstone', 8])
+      end
+
+      it 'reads rarefaction and integration off the splashstone instructions' do
+        tm = dorhum
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(Lich::Util).to receive(:issue_command)
+          .with('read my splashstone instructions', /Instructions for crafting/)
+          .and_return(instructions_read('(1) a foraged rock', '(1) mana fount', '(1) primary sigil (rarefaction)', '(1) secondary sigil (integration)'))
+
+        expect(tm.read_instructions('splashstone', 8)).to eq(['splashstone', 8, %w[rarefaction integration]])
+      end
+
+      it 'hands in a splashstone as the rock it still is, out of the loot bag' do
+        expect([dorhum.hand_in_noun('splashstone'), dorhum.hand_in_bag]).to eq(%w[rock backpack])
+      end
+
+      it 'forages rocks for a splashstone task, then enchants them as rocks' do
+        tm = dorhum
+        %i[ensure_tools buy_sigils go_to_enchanting_room repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:forage_rocks).with(8)
+        expect(tm).to receive(:enchant_items).with('splashstone', 'rock', 8)
+
+        tm.dorhum('splashstone', 8, %w[rarefaction integration])
+      end
+    end
+
     describe '#go_to_enchanting_room' do
       before(:each) do
         allow(DRCT).to receive(:walk_to)
