@@ -698,6 +698,17 @@ RSpec.describe Enchant do
       instance.send(:wave_imbue_wand)
     end
 
+    it 'stows it before tracing a sigil too' do
+      instance = build_instance(burin: 'fine burin')
+      hold_precise_burin
+      Flags['enchant-sigil'] = { type: 'decay' }
+      allow(instance).to receive(:trace_sigil)
+      allow(instance).to receive(:get_tool)
+      expect(instance).to receive(:stow_tool).with('fine burin')
+
+      instance.send(:handle_sigil_flag)
+    end
+
     it 'stows it before the loop push too' do
       instance = build_instance(burin: 'fine burin')
       hold_precise_burin
