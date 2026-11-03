@@ -2667,3 +2667,400 @@ RSpec.describe 'Remedy order, tools and inventory' do
     end
   end
 end
+
+# Layer 05: the crafting loop, the Flag handlers, the liquids,
+# the herb gathering, the finish and the magic, tested as units. The
+# commands are the ones the contract groups above pin from the logs; every
+# game line is a real log cite, or a ReplayGame.code line naming the code it
+# was taken from.
+RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
+  let(:toolbag) { "botanist's toolbag" }
+  let(:toolstrap) { { 'name' => 'grass toolstrap', 'items' => ['heavy cauldron', 'mixing stick', 'large mortar', 'rounded pestle'] } }
+  let(:bag_items) { ['alcohol', 'water', 'pewter ingot', 'remed book'] }
+  let(:herb_container) { nil }
+  let(:training_spells) { [] }
+  let(:settings) do
+    OpenStruct.new(crafting_container: toolbag, crafting_items_in_container: bag_items, alchemy_belt: toolstrap,
+                   herb_container: herb_container, crafting_training_spells: training_spells)
+  end
+  let(:inventory) { Remedy::Inventory.new(settings, herbs: %w[nemoih na]) }
+  let(:mortar) { Remedy::Tools.new(container: 'large mortar', stirrer: 'rounded pestle', verb: 'crush') }
+  let(:cauldron) { Remedy::Tools.new(container: 'heavy cauldron', stirrer: 'mixing stick', verb: 'mix') }
+  let(:order) do
+    Remedy::Order.new(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih',
+                      herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent')
+  end
+  let(:plain_water) { Remedy::Liquid.new(kind: 'water', source: 'water', verb: 'put') }
+  let(:plain_alcohol) { Remedy::Liquid.new(kind: 'alcohol', source: 'alcohol', verb: 'put') }
+  let(:game) { ReplayGame.new }
+  # The commons calls, in order: [method, *arguments].
+  let(:calls) { [] }
+
+  before do
+    game.install(self)
+    allow(DRCC).to receive(:get_crafting_item) { |*args| calls << [:get, *args] && true }
+    allow(DRCC).to receive(:stow_crafting_item) { |*args| calls << [:stow, *args] && true }
+    allow(DRCI).to receive(:exists?).and_return(false)
+    allow(DRCI).to receive(:lower_item?) { |*args| calls << [:lower, *args] && true }
+    allow(DRCI).to receive(:get_item?) { |*args| calls << [:get_item?, *args] && true }
+    allow(DRCI).to receive(:put_away_item?) { |*args| calls << [:put_away_item?, *args] && true }
+    allow(DRCA).to receive(:crafting_magic_routine)
+  end
+
+  # @param cite [String] "<log>:<line>"
+  # @return [ReplayGame::Line]
+  def log(cite)
+    ReplayGame.log(cite)
+  end
+
+  # @param text [String]
+  # @param from [String] the code line it comes from
+  # @return [ReplayGame::Line]
+  def code(text, from:)
+    ReplayGame.code(text, from: from)
+  end
+
+  # Registers the remedy Flags, as Remedy#run does.
+  #
+  # @return [void]
+  def add_remedy_flags
+    Remedy::FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
+  end
+
+  # Lets the game send lines, so the Flags see them as they arrive: the
+  # reply to a `look` remedy never sends, read by a bput that waits for none
+  # of them (it times out; only the Flags matter here).
+  #
+  # @param lines [Array<ReplayGame::Line>]
+  # @return [void]
+  def game_says(*lines)
+    game.script('look', *lines)
+    DRC.bput('look', /\A\z/)
+  end
+
+  # @param water [Remedy::Liquid]
+  # @param alcohol [Remedy::Liquid]
+  # @param tools [Remedy::Tools]
+  # @return [Remedy::Handlers]
+  def handlers_for(water: plain_water, alcohol: plain_alcohol, tools: mortar)
+    Remedy::Handlers.new(order: order, tools: tools, inventory: inventory, water: water, alcohol: alcohol)
+  end
+
+  describe 'Remedy::Handlers' do
+    it 'answers the same Flags as Remedy::FLAGS, in the same order: the ingredients, then the steps' do
+      expect(Remedy::Handlers::TABLE.keys).to eq(Remedy::FLAGS.keys)
+    end
+
+    it 'has a private method behind every Flag of its table' do
+      expect(Remedy::Handlers::TABLE.values).to all(satisfy { |name| Remedy::Handlers.private_method_defined?(name) })
+    end
+
+    it 'has nothing pending while no Flag is set' do
+      add_remedy_flags
+      expect(handlers_for.pending).to be_nil
+    end
+
+    it 'answers the alcohol (26:5918) before the turn (26:6031) when one reply sets both, then the turn' do
+      add_remedy_flags
+      game_says(log('26:6031'), log('26:5918'))
+      handlers = handlers_for
+      expect(handlers.pending).to eq('remedy-alcohol')
+      Flags.reset('remedy-alcohol')
+      expect(handlers.pending).to eq('remedy-turn')
+    end
+
+    it 'adds the catalyst (25:11049): puts the left hand away, gets the ingot, puts it in, then gets the pestle back' do
+      add_remedy_flags
+      game_says(log('25:11049'))
+      $left_hand = 'rounded pestle'
+      game.script('put my pewter ingot in my large mortar', log('25:11081'))
+      handlers_for.run('remedy-catalyst')
+      expect(game.sent.last).to eq('put my pewter ingot in my large mortar')
+      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'pewter ingot', toolbag, bag_items, toolstrap],
+                           [:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'rounded pestle', toolbag, bag_items, toolstrap]])
+      expect(Flags['remedy-catalyst']).to be(false)
+    end
+
+    it 'adds plain water (25:50210) with "put water in", and nothing more when the game takes it (26:10830)' do
+      add_remedy_flags
+      game_says(log('25:50210'))
+      game.script('put water in my large mortar', log('26:10830'))
+      handlers_for.run('remedy-water')
+      expect(game.sent.last).to eq('put water in my large mortar')
+      expect(calls.map(&:first)).to eq(%i[stow get stow get])
+      expect(calls[1][1]).to eq('water')
+      expect(Flags['remedy-water']).to be(false)
+    end
+
+    it 'pours alcohol from its vessel (25:10873) with the vessel in hand' do
+      jug = Remedy::Liquid.new(kind: 'alcohol', source: 'moonshine jug', verb: 'pour')
+      game.script('pour moonshine jug in my heavy cauldron', log('25:10905'))
+      handlers_for(alcohol: jug, tools: cauldron).run('remedy-alcohol')
+      expect(game.sent.last).to eq('pour moonshine jug in my heavy cauldron')
+      expect(calls[1][0, 2]).to eq([:get, 'moonshine jug'])
+    end
+
+    it 'pushes the product with the sieve, then gets the stirrer back' do
+      game.script('push my unguent with my sieve', log('26:10933'), log('26:10935'))
+      handlers_for.run('remedy-sieve')
+      expect(game.sent).to eq(['push my unguent with my sieve'])
+      expect(calls.select { |call| call.first == :get }.map { |call| call[1] }).to eq(['sieve', 'rounded pestle'])
+    end
+
+    it 'turns the vessel and smells the product without getting or stowing anything' do
+      game.script('turn my heavy cauldron', log('26:6086'), log('26:6088'))
+      game.script('smell my unguent', log('26:11034'), log('26:11036'))
+      handlers = handlers_for(tools: cauldron)
+      handlers.run('remedy-turn')
+      handlers.run('remedy-smell')
+      expect(game.sent).to eq(['turn my heavy cauldron', 'smell my unguent'])
+      expect(calls).to be_empty
+    end
+
+    it "resets its Flag before it sends, so a cue in the step's own reply is kept for the next pass" do
+      add_remedy_flags
+      game_says(log('26:7707'))
+      # 26:7707 again as the reply to the turn: an analog (it answered a
+      # crush in the log), the order a repeated cue arrives in (26:6084-6088).
+      game.script('turn my large mortar', log('26:7707'), log('26:10935'))
+      handlers_for.run('remedy-turn')
+      expect(Flags['remedy-turn']).to be_a(MatchData)
+    end
+
+    it 'refuses a Flag it has no method for' do
+      expect { handlers_for.run('remedy-done') }.to raise_error(KeyError)
+    end
+  end
+
+  describe 'Remedy::Liquid.find' do
+    it 'puts plain water when no water_container is set, sending nothing and getting nothing' do
+      water = Remedy::Liquid.find('water', nil, inventory)
+      expect(water.to_h).to eq(kind: 'water', source: 'water', verb: 'put')
+      expect(water).to be_plain
+      expect(water.flag).to eq('remedy-water')
+      expect(game.sent).to be_empty
+      expect(calls).to be_empty
+    end
+
+    it 'pours from a vessel whose count gets no reply, without a rub, and stows the vessel' do
+      water = Remedy::Liquid.find('water', 'glass flask', inventory)
+      expect(water.to_h).to eq(kind: 'water', source: 'glass flask', verb: 'pour')
+      expect(water).not_to be_plain
+      expect(game.sent).to eq(['count water in my glass flask'])
+      expect(calls).to eq([[:get, 'glass flask', toolbag, bag_items, toolstrap], [:stow, 'glass flask', toolbag, toolstrap]])
+    end
+
+    it 'rubs and fills a vessel the first count cannot find (25:13762), and pours from it when the second count gets no reply' do
+      game.script('count alcohol in my moonshine jug', log('25:13762'))
+      alcohol = Remedy::Liquid.find('alcohol', 'moonshine jug', inventory)
+      expect(alcohol.verb).to eq('pour')
+      expect(alcohol.flag).to eq('remedy-alcohol')
+      expect(game.sent).to eq(['count alcohol in my moonshine jug', 'rub my moonshine jug', "get alcohol from #{toolbag}",
+                               'put alcohol in my moonshine jug', 'count alcohol in my moonshine jug'])
+    end
+
+    # flipped by layer 10 (an empty vessel is stowed by name)
+    it 'CURRENT (H07): puts plain water when both counts find nothing (25:13762), and stows "water", leaving the flask in hand' do
+      2.times { game.script('count water in my glass flask', log('25:13762')) }
+      water = Remedy::Liquid.find('water', 'glass flask', inventory)
+      expect(water.to_h).to eq(kind: 'water', source: 'water', verb: 'put')
+      expect(calls.last).to eq([:stow, 'water', toolbag, toolstrap])
+    end
+  end
+
+  describe 'Remedy::Liquid#add' do
+    let(:flask) { Remedy::Liquid.new(kind: 'water', source: 'glass flask', verb: 'pour') }
+    # code-derived: the refusal remedy.lic:313 at 03f11b54 reads; in no log.
+    let(:refusal) { code('You cannot find a way to add that as an ingredient.', from: 'R:313') }
+
+    it 'pours from the vessel and does nothing more when the game takes it (26:10830)' do
+      game.script('pour glass flask in my large mortar', log('26:10830'))
+      flask.add('large mortar', inventory)
+      expect(game.sent).to eq(['pour glass flask in my large mortar'])
+      expect(calls).to be_empty
+    end
+
+    it 'gets the water out of the vessel and puts it in by name when the vessel is refused' do
+      game.script('pour glass flask in my large mortar', refusal)
+      flask.add('large mortar', inventory)
+      expect(calls).to eq([[:stow, nil, toolbag, toolstrap], [:get_item?, 'water', 'glass flask'], [:put_away_item?, 'water', 'large mortar']])
+    end
+
+    it 'puts the water back in the vessel when the crafting vessel will not take it either' do
+      game.script('pour glass flask in my large mortar', refusal)
+      allow(DRCI).to receive(:put_away_item?) { |*args| calls << [:put_away_item?, *args] && args.last == 'glass flask' }
+      flask.add('large mortar', inventory)
+      expect(calls.last(2)).to eq([[:put_away_item?, 'water', 'large mortar'], [:put_away_item?, 'water', 'glass flask']])
+    end
+
+    it 'gets plain water from the crafting container when the vessel has none to give' do
+      game.script('pour glass flask in my large mortar', refusal)
+      allow(DRCI).to receive(:get_item?) { |*args| calls << [:get_item?, *args] && false }
+      flask.add('large mortar', inventory)
+      expect(calls[2]).to eq([:get, 'water', toolbag, bag_items, toolstrap])
+    end
+  end
+
+  describe 'Remedy::CraftLoop' do
+    let(:magic) { Remedy::Magic.new(settings) }
+    let(:first_crush) { 'crush my nemoih with my rounded pestle' }
+    let(:next_crush) { 'crush my unguent with my rounded pestle' }
+
+    # @param tools [Remedy::Tools]
+    # @return [Remedy::CraftLoop]
+    def craft_loop(tools: mortar)
+      Remedy::CraftLoop.new(tools: tools, noun: 'unguent', handlers: handlers_for(tools: tools), magic: magic)
+    end
+
+    it 'has no bound yet: both limits are infinite until layer 07 sets them' do
+      expect([Remedy::CraftLoop::MAX_CRAFT_STEPS, Remedy::CraftLoop::MAX_SILENT_REPLIES]).to eq([Float::INFINITY, Float::INFINITY])
+    end
+
+    it 'crushes the herb, then the product after Roundtime (25:10825), until the final touches (26:11333)' do
+      game.script(first_crush, log('26:11057'), log('25:10825'))
+      game.script(next_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(game.sent).to eq([first_crush, next_crush])
+    end
+
+    it 'runs the magic routine before and after every pass, and not after the pass that finishes' do
+      game.script(first_crush, log('26:11057'), log('25:10825'))
+      game.script(next_crush, log('26:11333'))
+      craft_loop.run(first_crush)
+      expect(DRCA).to have_received(:crafting_magic_routine).with(settings).exactly(3).times
+    end
+
+    [['25:11264', 'crush my unguent with my rounded pestle'],
+     ['26:6773', 'mix my heavy cauldron with my mixing stick'],
+     ['25:58002', 'mix my heavy cauldron with my mixing stick']].each do |cite, command|
+      it "is done when #{command.inspect} is answered by #{cite}, a line that follows a finished remedy" do
+        tools = command.start_with?('mix') ? cauldron : mortar
+        game.script(command, log(cite))
+        expect(craft_loop(tools: tools).run(command)).to eq(:done)
+        expect(game.sent).to eq([command])
+      end
+    end
+
+    # flipped by layer 08 (MORE_PIECES stops)
+    it 'CURRENT (D08): is done on "requires more pieces of that plant", as if the remedy were finished' do
+      game.script(first_crush, code('That craftable requires more pieces of that plant to begin.', from: 'R:290'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+    end
+
+    it 'sends the same command again when the game does not answer it' do
+      game.script(first_crush)
+      game.script(first_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(game.sent).to eq([first_crush, first_crush])
+      expect(game.diagnostics.size).to eq(1)
+    end
+
+    it 'answers a cue that came with a reply before it sends the next crafting command (26:7707 then a turn)' do
+      add_remedy_flags
+      # 26:7707 after the crush's Roundtime: the order of 26:7705-7707.
+      game.script(first_crush, log('26:11057'), log('25:10825'), log('26:7707'))
+      game.script('turn my large mortar', log('26:6086'), log('26:6088'))
+      game.script(next_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(game.sent).to eq([first_crush, 'turn my large mortar', next_crush])
+    end
+
+    it 'gives up as :unanswered once more commands than MAX_SILENT_REPLIES go unanswered in a row' do
+      stub_const('Remedy::CraftLoop::MAX_SILENT_REPLIES', 1)
+      expect(craft_loop.run(first_crush)).to eq(:unanswered)
+      expect(game.sent).to eq([first_crush, first_crush])
+    end
+
+    it 'counts silence afresh after a Roundtime, so one answered command between silences keeps it going' do
+      stub_const('Remedy::CraftLoop::MAX_SILENT_REPLIES', 1)
+      game.script(first_crush)
+      game.script(first_crush, log('25:10825'))
+      game.script(next_crush)
+      game.script(next_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+    end
+
+    it 'gives up as :too_long after more than MAX_CRAFT_STEPS crafting commands, not counting the handled cues' do
+      stub_const('Remedy::CraftLoop::MAX_CRAFT_STEPS', 2)
+      add_remedy_flags
+      game.script(first_crush, log('25:10825'), log('26:7707'))
+      game.script('turn my large mortar', log('26:6088'))
+      game.fallback(next_crush, log('25:10825'))
+      expect(craft_loop.run(first_crush)).to eq(:too_long)
+      expect(game.sent).to eq([first_crush, 'turn my large mortar', next_crush, next_crush])
+    end
+  end
+
+  describe 'Remedy::HerbGatherer' do
+    let(:herb_container) { 'smokewood basket' }
+
+    before { allow(DRCI).to receive(:exists?).with('nemoih', 'smokewood basket').and_return(true) }
+
+    it 'gathers a stack of 25 from the herb_container (25:33679), puts it in the lowered mortar and picks the mortar up' do
+      game.script('count my nemoih', log('25:33679'))
+      game.script('combine my nemoih', log('25:104590'))
+      game.script('put nemoih in my large mortar', log('26:10749'))
+      Remedy::HerbGatherer.new(inventory).gather('nemoih', 'large mortar')
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put nemoih in my large mortar'])
+      expect(calls.map { |call| call[0, 2] }).to eq([[:get, 'large mortar'], [:lower, 'large mortar'], [:get, 'nemoih'],
+                                                     [:stow, 'nemoih'], [:get, 'large mortar']])
+    end
+
+    it 'gets another stack after 21 (25:12538), and puts away the stack that is not full (21, keeping the 75 of 25:8678) when the combine makes too large a stack (25:30006)' do
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      game.script('count my nemoih', log('25:8678'))
+      game.script('combine my nemoih', log('25:30006'))
+      game.script('count my first nemoih', log('25:12538'))
+      game.script('count my second nemoih', log('25:8678'))
+      game.script('put nemoih in my large mortar', log('26:10749'))
+      Remedy::HerbGatherer.new(inventory).gather('nemoih', 'large mortar')
+      expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', 'put nemoih in my large mortar'])
+      expect(calls).to include([:put_away_item?, 'first nemoih'])
+      expect(calls).not_to include([:put_away_item?, 'second nemoih'])
+    end
+  end
+
+  describe 'Remedy::Finisher' do
+    before do
+      $left_hand = 'rounded pestle'
+      game.script('get my unguent from my large mortar', log('26:11389'), after: ->(_game) { $right_hand = 'large mortar' })
+    end
+
+    it 'puts the stirrer away, takes the product out (26:11389) and puts the vessel away, with no stamp when marking is off' do
+      Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: nil).finish
+      expect(game.sent).to eq(['get my unguent from my large mortar'])
+      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:stow, 'large mortar', toolbag, toolstrap]])
+    end
+
+    it 'marks the product (25:11294) with the stamp from the belt or bag, and puts the stamp away' do
+      game.script('mark my unguent with my stamp', log('25:11294'))
+      Remedy::Finisher.new(inventory: inventory, tools: mortar, noun: 'unguent', mark: true).finish
+      expect(game.sent).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp'])
+      expect(calls.last(2)).to eq([[:get, 'stamp', toolbag, bag_items, toolstrap], [:stow, 'stamp', toolbag, toolstrap]])
+    end
+  end
+
+  describe 'Remedy::Magic' do
+    it 'releases nothing when crafting_training_spells is empty' do
+      Remedy::Magic.new(settings).release
+      expect(game.sent).to be_empty
+    end
+
+    context 'with crafting_training_spells' do
+      let(:training_spells) { { 'Gauge Flow' => {} } }
+
+      it 'releases the spell (25:52773), the mana (25:1316) and the symbiosis' do
+        game.script('release spell', log('25:52773'))
+        game.script('release mana', log('25:1316'))
+        Remedy::Magic.new(settings).release
+        expect(game.sent).to eq(['release spell', 'release mana', 'release symb'])
+      end
+    end
+
+    it 'runs the commons routine with the settings' do
+      Remedy::Magic.new(settings).routine
+      expect(DRCA).to have_received(:crafting_magic_routine).with(settings)
+    end
+  end
+end

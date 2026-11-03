@@ -612,6 +612,621 @@ class Remedy
     end
   end
 
+  # Water or alcohol: where it comes from, and the command that adds it to
+  # the vessel.
+  #
+  # With a vessel setting (water_container, alcohol_container) whose count
+  # finds the liquid, or finds it once the vessel is rubbed and filled from
+  # the crafting container, remedy pours from that vessel. Otherwise it puts
+  # the plain liquid ("water", "alcohol") the crafting container holds.
+  #
+  # @!attribute [r] kind
+  #   @return [String] 'water' or 'alcohol'
+  # @!attribute [r] source
+  #   @return [String] the vessel poured from, or the plain liquid (equal to
+  #     {#kind}) put in
+  # @!attribute [r] verb
+  #   @return [String] 'pour' from a vessel, 'put' for the plain liquid
+  #
+  # Defined as a constant and reopened below without a superclass, as
+  # {Order} is, so a second run in the same Lich session does not raise
+  # "superclass mismatch for class Liquid".
+  #
+  # @api private
+  Liquid = Data.define(:kind, :source, :verb)
+
+  class Liquid
+    # The verb for the plain liquid.
+    PUT = 'put'
+
+    # The verb for a vessel that holds the liquid.
+    POUR = 'pour'
+
+    # The end of the reply to the add that means the vessel refused the
+    # liquid (the last of {Patterns::LIQUID_ADD_REPLIES}).
+    #
+    # @note code-derived (unverified): no log shows this reply.
+    REFUSED = 'You cannot find a way to add that as an ingredient'
+
+    # Finds where the liquid comes from, then puts the source away.
+    #
+    # With no vessel setting, sends nothing and answers the plain liquid.
+    # With one, gets the vessel and counts the liquid in it; when the count
+    # finds none, rubs the vessel, gets the liquid from the crafting
+    # container, puts it in the vessel and counts again. Any reply but "I
+    # could not find what you were referring to." (25:13762), a timeout
+    # included, means the vessel holds the liquid (as it always
+    # has).
+    #
+    # @param kind [String] 'water' or 'alcohol'
+    # @param vessel [String, nil] water_container or alcohol_container
+    # @param inventory [Inventory] gets the vessel and stows the source
+    # @return [Liquid]
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @note When both counts find nothing, the plain liquid's name is
+    #   stowed, not the vessel, which stays in hand (CURRENT H07, flipped by
+    #   layer 10).
+    # @note code-derived (unverified): no log shows a liquid vessel, a rub,
+    #   or `get <liquid> from <bag>` / `put <liquid> in my <vessel>` (both
+    #   without "my" before the bag or the liquid).
+    def self.find(kind, vessel, inventory)
+      plain = new(kind: kind, source: kind, verb: PUT)
+      return plain unless vessel
+
+      inventory.get(vessel)
+      found = holds?(kind, vessel) || refill?(kind, vessel, inventory)
+      liquid = found ? new(kind: kind, source: vessel, verb: POUR) : plain
+      inventory.stow(liquid.source)
+      liquid
+    end
+
+    # Whether the vessel's count finds the liquid.
+    #
+    # @param kind [String] the liquid
+    # @param vessel [String] the vessel
+    # @return [Boolean] false only on "I could not find what you were
+    #   referring to." (25:13762)
+    def self.holds?(kind, vessel)
+      DRC.bput("count #{kind} in my #{vessel}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
+    end
+    private_class_method :holds?
+
+    # Rubs the vessel (some make their liquid when rubbed), fills it from
+    # the crafting container, then counts again.
+    #
+    # @param kind [String] the liquid
+    # @param vessel [String] the vessel
+    # @param inventory [Inventory] names the crafting container
+    # @return [Boolean] whether the second count finds the liquid
+    def self.refill?(kind, vessel, inventory)
+      fput("rub my #{vessel}")
+      fput("get #{kind} from #{inventory.bag}") # in case the liquid is in the bag and the vessel cannot make it
+      fput("put #{kind} in my #{vessel}")
+      holds?(kind, vessel)
+    end
+    private_class_method :refill?
+
+    # Whether the source is the plain liquid, which remedy buys when none is
+    # on hand.
+    #
+    # @return [Boolean]
+    def plain?
+      source == kind
+    end
+
+    # The Flag the game's request for this liquid sets ({FLAGS}).
+    #
+    # @return [String] 'remedy-water' or 'remedy-alcohol'
+    def flag
+      "remedy-#{kind}"
+    end
+
+    # Adds the liquid, already in hand, to the vessel: `put water in my
+    # <vessel>` or `pour <vessel> in my <vessel>`. When the vessel refuses
+    # it, gets the liquid out of its source and puts it in by name.
+    #
+    # @param container [String] the crafting vessel
+    # @param inventory [Inventory] stows the hand and gets the plain liquid
+    # @return [void]
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @note code-derived (unverified): the refusal and the recovery after it
+    #   appear in no log. With no vessel the recovery asks for the liquid
+    #   from "water" (`get my water from my water`, CURRENT H18, flipped by
+    #   layer 10).
+    def add(container, inventory)
+      return unless DRC.bput("#{verb} #{source} in my #{container}", *Patterns::LIQUID_ADD_REPLIES).end_with?(REFUSED)
+
+      inventory.stow(DRC.left_hand)
+      inventory.get(kind) unless DRCI.get_item?(kind, source)
+      return if DRCI.put_away_item?(kind, container)
+
+      waitrt?
+      DRCI.put_away_item?(kind, source)
+    end
+  end
+
+  # Gathers herb1 into the lowered vessel: gets stacks and combines them
+  # until at least {HANDFUL} pieces are counted, puts the stack in, and
+  # picks the vessel up again.
+  #
+  # The algorithm is the one remedy has always used, including its known
+  # faults (CURRENT H04, H05, H26, H27, D12, flipped by layer 11).
+  #
+  # @api private
+  class HerbGatherer
+    # The pieces of herb a remedy takes.
+    HANDFUL = 25
+
+    # The largest stack of herbs the game makes: "That stack of herbs is too
+    # large to add more to." (26:32077) comes after a combine reaches it.
+    FULL_STACK = 75
+
+    # The text bput returns for "You must be holding both substances to
+    # combine them." (25:18266), which the gathering takes as enough.
+    HOLDING_BOTH = 'You must be holding both'
+
+    # The end of the text bput returns for "That stack of herbs is too large
+    # to add more to." (26:32077).
+    TOO_LARGE = 'too large to add'
+
+    # @param inventory [Inventory] routes herb1 as a herb
+    def initialize(inventory)
+      @inventory = inventory
+    end
+
+    # Gets the vessel, lowers it, gathers the herb, puts the herb in and
+    # picks the vessel up again.
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry
+    # @return [void]
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    def gather(herb, vessel)
+      @inventory.get(vessel)
+      @inventory.lower(vessel)
+      count = 0
+      while count < HANDFUL
+        if @inventory.get(herb) == Inventory::UNROUTED
+          count = gather_outside_bags(herb, vessel)
+        else
+          count += count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
+          put_away_smaller_stack(herb) if DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES).end_with?(TOO_LARGE)
+        end
+      end
+      put_in(herb, vessel)
+      @inventory.pick_up(vessel)
+    end
+
+    private
+
+    # The number a count reply starts with ("You count out 75 pieces of
+    # material there.", 25:8678); 0 when the reply has none.
+    #
+    # @param command [String] the count
+    # @param patterns [Array<Regexp>] its replies
+    # @return [Integer]
+    def count_of(command, patterns)
+      DRC.bput(command, *patterns).scan(/\d+/).first.to_i
+    end
+
+    # Gathers a herb DRCC found outside herb_container and the crafting
+    # container: counts the stack in hand, then, until {HANDFUL} is counted,
+    # puts it in the vessel, stows what is left, gets another stack and
+    # takes the first one back out to combine them.
+    #
+    # Gets the herb with DRCI so that the vessel, put away first, is not
+    # where it comes from, and the game does not answer "You are already
+    # holding that."
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry
+    # @return [Integer] the pieces counted; {HANDFUL} when the combine says
+    #   both stacks must be held
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    def gather_outside_bags(herb, vessel)
+      count = count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
+      while count < HANDFUL
+        DRCI.put_away_item?(herb, vessel)
+        fput("stow my #{herb}") # in case there are extra
+        @inventory.get(vessel)
+        @inventory.stow(vessel)
+        DRCI.get_item?(herb)
+        @inventory.get(vessel)
+        @inventory.lower(vessel)
+        DRCI.get_item?(herb, vessel)
+        if DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES) == HOLDING_BOTH
+          count = HANDFUL # ends both loops
+        else
+          count += count_of("count my #{herb}", Patterns::HERB_COUNT_REPLIES)
+        end
+      end
+      count
+    end
+
+    # After a combine that made a stack too large, puts away the stack in
+    # hand that is NOT full, keeping the full one: the second stack when the
+    # first counts {FULL_STACK}, the first stack when the second does. Puts
+    # nothing away when neither stack counts {FULL_STACK}.
+    #
+    # @param herb [String] herb1
+    # @return [void]
+    def put_away_smaller_stack(herb)
+      first = count_of("count my first #{herb}", Patterns::FIRST_STACK_COUNT_REPLIES)
+      second = count_of("count my second #{herb}", Patterns::SECOND_STACK_COUNT_REPLIES)
+      if first == FULL_STACK
+        DRCI.put_away_item?("second #{herb}")
+      elsif second == FULL_STACK
+        DRCI.put_away_item?("first #{herb}")
+      end
+    end
+
+    # Puts the herb in the vessel; tilts the vessel out first when it
+    # already holds something. Stows what is left of the herb.
+    #
+    # @param herb [String] herb1
+    # @param vessel [String] the alchemy_tools entry
+    # @return [void]
+    # @note The put has no "my" before the herb (CURRENT H32, changed in
+    #   layer 15).
+    def put_in(herb, vessel)
+      case DRC.bput("put #{herb} in my #{vessel}", *Patterns::HERB_PUT_REPLIES)
+      when 'You put', /can only hold\z/, /You vigorously rub\z/
+        @inventory.stow(herb) # for a herb of more than 25 pieces
+      when /already has something\z/, 'You realize the'
+        DRC.bput("tilt my #{vessel}", *Patterns::TILT_REPLIES)
+        DRC.bput("tilt my #{vessel}", *Patterns::TILT_AGAIN_REPLIES)
+        DRC.bput("put #{herb} in my #{vessel}", *Patterns::HERB_PUT_AGAIN_REPLIES)
+        @inventory.stow(herb) # for a herb of more than 25 pieces
+      end
+    end
+  end
+
+  # What remedy does when the game asks for an ingredient or a step: one
+  # private method per {FLAGS} entry, run through {TABLE}.
+  #
+  # Each method resets its own Flag just before it sends its command, so a
+  # cue that comes in the command's own reply is kept for the next pass.
+  # One that brings an ingredient or the sieve puts away the left hand,
+  # gets the item, and gets the stirrer back afterwards.
+  #
+  # @api private
+  class Handlers
+    # Flag => the method that answers it, in {FLAGS} order: ingredients
+    # before steps.
+    TABLE = {
+      'remedy-water'    => :add_water,
+      'remedy-alcohol'  => :add_alcohol,
+      'remedy-catalyst' => :add_catalyst,
+      'remedy-herb'     => :add_herb,
+      'remedy-sieve'    => :sieve,
+      'remedy-turn'     => :turn,
+      'remedy-smell'    => :smell
+    }.freeze
+
+    # The tool a sieve step is done with.
+    SIEVE = 'sieve'
+
+    # @param order [Order] names the catalyst, herb2 and the product
+    # @param tools [Tools] the vessel and the stirrer
+    # @param inventory [Inventory] the gets and stows
+    # @param water [Liquid] where water comes from
+    # @param alcohol [Liquid] where alcohol comes from
+    def initialize(order:, tools:, inventory:, water:, alcohol:)
+      @order = order
+      @tools = tools
+      @inventory = inventory
+      @water = water
+      @alcohol = alcohol
+    end
+
+    # The first Flag in {TABLE} order that is set.
+    #
+    # @return [String, nil] the Flag's name; nil when none is set
+    def pending
+      TABLE.each_key.find { |flag| Flags[flag] }
+    end
+
+    # Answers a Flag.
+    #
+    # @param flag [String] a {TABLE} key
+    # @return [void]
+    # @raise [KeyError] for a name not in {TABLE}
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    def run(flag)
+      send(TABLE.fetch(flag))
+    end
+
+    private
+
+    # Adds water ({Patterns::NEED_WATER}).
+    #
+    # @return [void]
+    def add_water
+      add_liquid(@water)
+    end
+
+    # Adds alcohol ({Patterns::NEED_ALCOHOL}).
+    #
+    # @return [void]
+    def add_alcohol
+      add_liquid(@alcohol)
+    end
+
+    # Adds the catalyst ({Patterns::NEED_CATALYST}): "You vigorously rub the
+    # ingot alongside the mortar ..." (25:11081).
+    #
+    # @return [void]
+    def add_catalyst
+      with_item(@order.catalyst, 'remedy-catalyst') do
+        DRC.bput("put my #{@order.catalyst} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
+      end
+    end
+
+    # Adds the second herb ({Patterns::NEED_HERB}).
+    #
+    # @return [void]
+    # @note code-derived (unverified): no log shows the cue or this put.
+    def add_herb
+      with_item(@order.herb2, 'remedy-herb') do
+        DRC.bput("put my #{@order.herb2} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
+      end
+    end
+
+    # Pushes the product with the sieve ({Patterns::NEED_SIEVE}).
+    #
+    # @return [void]
+    def sieve
+      with_item(SIEVE, 'remedy-sieve') do
+        DRC.bput("push my #{@order.noun} with my sieve", *Patterns::STEP_REPLIES)
+      end
+    end
+
+    # Turns the vessel ({Patterns::NEED_TURN}).
+    #
+    # @return [void]
+    def turn
+      step('remedy-turn') { DRC.bput("turn my #{@tools.container}", *Patterns::STEP_REPLIES) }
+    end
+
+    # Smells the product ({Patterns::NEED_SMELL}).
+    #
+    # @return [void]
+    def smell
+      step('remedy-smell') { DRC.bput("smell my #{@order.noun}", *Patterns::STEP_REPLIES) }
+    end
+
+    # Gets the liquid's source and adds it ({Liquid#add}).
+    #
+    # @param liquid [Liquid]
+    # @return [void]
+    def add_liquid(liquid)
+      with_item(liquid.source, liquid.flag) { liquid.add(@tools.container, @inventory) }
+    end
+
+    # Puts away the left hand, gets the item, resets the Flag, runs the
+    # block, then puts the item away and gets the stirrer back.
+    #
+    # @param item [String] what the block uses
+    # @param flag [String] the Flag being answered
+    # @yield sends the command
+    # @return [void]
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    def with_item(item, flag)
+      waitrt?
+      @inventory.stow(DRC.left_hand)
+      @inventory.get(item)
+      Flags.reset(flag)
+      yield
+      waitrt?
+      @inventory.stow(DRC.left_hand)
+      @inventory.get(@tools.stirrer)
+    end
+
+    # Resets the Flag and runs the block, which needs no other item.
+    #
+    # @param flag [String] the Flag being answered
+    # @yield sends the command
+    # @return [void]
+    def step(flag)
+      waitrt?
+      Flags.reset(flag)
+      yield
+      waitrt?
+    end
+  end
+
+  # The crafting loop: each pass answers the first Flag that is set
+  # ({Handlers}), or else sends the crafting command and reads the reply,
+  # until the game says the remedy is done.
+  #
+  # It replaces the method that called itself once a pass, whose stack ran
+  # out after about 10,846 passes (H01). The bounds are not set
+  # yet: a command the game never answers is sent again forever (CURRENT
+  # H01/H02 and D06, bounded by layer 07).
+  #
+  # @api private
+  class CraftLoop
+    # Crafting commands sent before the loop gives up.
+    #
+    # @note Unbounded until layer 07 sets it.
+    MAX_CRAFT_STEPS = Float::INFINITY
+
+    # Crafting commands in a row that may go unanswered before the loop
+    # gives up.
+    #
+    # @note Unbounded until layer 07 sets it.
+    MAX_SILENT_REPLIES = Float::INFINITY
+
+    # The text bput returns for "Applying the final touches, you complete
+    # working on a belradi elixir." (26:6742).
+    FINAL_TOUCHES = 'Applying the final touches'
+
+    # The ends of the texts bput returns for "Interesting thought really...
+    # but no." (25:11264) and "Try as you might, you just can't mix the
+    # tonic." (25:58002): the remedy is already done.
+    ALREADY_FINISHED = [/Interesting thought really... but no.\z/, /you just can't mix\z/, /Try as you might\z/].freeze
+
+    # The end of the text bput returns for "That craftable requires more
+    # pieces of that plant to begin".
+    #
+    # @note code-derived (unverified): in no log. Taken as done today, so
+    #   the vessel is put away with no product (CURRENT D08, flipped by
+    #   layer 08).
+    MORE_PIECES = /That craftable requires more pieces of that plant to begin\z/
+
+    # The end of the text bput returns for "Roundtime: 7 sec." (25:10825).
+    ROUNDTIME = /Roundtime:\z/
+
+    # @param tools [Tools] makes the next crafting command
+    # @param noun [String] the product noun
+    # @param handlers [Handlers] answers the Flags
+    # @param magic [Magic] runs the crafting magic routine
+    def initialize(tools:, noun:, handlers:, magic:)
+      @tools = tools
+      @noun = noun
+      @handlers = handlers
+      @magic = magic
+    end
+
+    # Crafts until the game says the remedy is done.
+    #
+    # Every pass waits out roundtime and runs the magic routine before and
+    # after its work, as remedy always has.
+    #
+    # @param command [String] the first crafting command
+    # @return [Symbol] :done when the remedy is done; :too_long or
+    #   :unanswered when a bound is reached (not before layer 07)
+    # @raise [SystemExit] when a handler's get stops the script
+    def run(command)
+      sends = 0
+      silent = 0
+      loop do
+        waitrt?
+        @magic.routine
+        if (flag = @handlers.pending)
+          @handlers.run(flag)
+        else
+          case classify(DRC.bput(command, *Patterns::CRAFT_REPLIES))
+          when :done, :refused
+            return :done
+          when :progress
+            waitrt?
+            command = @tools.next_command(@noun)
+            silent = 0
+          when :silent
+            silent += 1
+          end
+          sends += 1
+          return :unanswered if silent > MAX_SILENT_REPLIES
+          return :too_long if sends > MAX_CRAFT_STEPS
+        end
+        waitrt?
+        @magic.routine
+      end
+    end
+
+    private
+
+    # What a crafting command's reply means.
+    #
+    # @param reply [String] the text bput returned for {Patterns::CRAFT_REPLIES}
+    # @return [Symbol] :done (finished now or before), :refused (more
+    #   pieces), :progress (Roundtime) or :silent (no reply: '' after
+    #   bput's 15 s)
+    def classify(reply)
+      case reply
+      when FINAL_TOUCHES, *ALREADY_FINISHED then :done
+      when MORE_PIECES then :refused
+      when ROUNDTIME then :progress
+      else :silent
+      end
+    end
+  end
+
+  # Takes the finished remedy out of the vessel, puts the tools away and
+  # marks the product. The product stays in hand.
+  #
+  # @api private
+  class Finisher
+    # The tool that marks the product.
+    STAMP = 'stamp'
+
+    # @param inventory [Inventory] the stows and the stamp's get
+    # @param tools [Tools] the vessel
+    # @param noun [String] the product noun
+    # @param mark [Boolean, nil] mark_crafted_goods
+    def initialize(inventory:, tools:, noun:, mark:)
+      @inventory = inventory
+      @tools = tools
+      @noun = noun
+      @mark = mark
+    end
+
+    # Puts away the left hand, takes the product out of the vessel ("You get
+    # some nemoih unguent from inside your large mortar.", 26:11389), puts
+    # away the right hand, then marks the product when mark_crafted_goods is
+    # set.
+    #
+    # @return [void]
+    # @raise [SystemExit] when DRCC.get_crafting_item stops the script
+    # @note The product get is not checked, and the stows go by hand, so in
+    #   the continue form with the vessel in the left hand the vessel is put
+    #   away first (CURRENT D08, H14, flipped by layers 08 and 12).
+    def finish
+      waitrt?
+      @inventory.stow(DRC.left_hand)
+      fput("get my #{@noun} from my #{@tools.container}")
+      @inventory.stow(DRC.right_hand)
+      stamp if @mark
+    end
+
+    private
+
+    # Marks the product with the stamp: "You hold the liniment steady and
+    # score the surface with the stamp." (25:11294).
+    #
+    # @return [void]
+    # @note code-derived (unverified): "too badly damaged" is not acted on
+    #   (CURRENT D10, layer 18).
+    def stamp
+      @inventory.get_tool(STAMP)
+      DRC.bput("mark my #{@noun} with my stamp", *Patterns::MARK_REPLIES)
+      @inventory.stow_tool(STAMP)
+    end
+  end
+
+  # The crafting magic: the commons' routine each crafting pass, and the
+  # release at the end.
+  #
+  # @api private
+  class Magic
+    # @param settings [OpenStruct] the character's settings; the routine
+    #   reads them, the release reads crafting_training_spells
+    def initialize(settings)
+      @settings = settings
+      @training_spells = settings.crafting_training_spells
+    end
+
+    # Runs DRCA.crafting_magic_routine.
+    #
+    # @return [void]
+    def routine
+      DRCA.crafting_magic_routine(@settings)
+    end
+
+    # Releases the spell, mana and symbiosis the routine left prepared, when
+    # crafting_training_spells is set.
+    #
+    # @return [void]
+    def release
+      return if @training_spells.empty?
+
+      DRC.bput('release spell', *Patterns::RELEASE_SPELL_REPLIES)
+      DRC.bput('release mana', *Patterns::RELEASE_MANA_REPLIES)
+      DRC.bput('release symb', *Patterns::RELEASE_SYMBIOSIS_REPLIES)
+    end
+  end
+
   # Deletes every remedy Flag. Registered with before_dying by {#run}, so it
   # runs however the script ends.
   #
@@ -627,9 +1242,8 @@ class Remedy
   #   {ARG_DEFINITIONS}' forms
   def initialize(settings, args)
     @settings = settings
-    @training_spells = settings.crafting_training_spells
-    @stamp = settings.mark_crafted_goods
     @cube = settings.cube_armor_piece
+    @magic = Magic.new(settings)
     @order = Order.from_args(args)
     @inventory = Inventory.new(settings, herbs: @order.herbs)
   end
@@ -647,94 +1261,29 @@ class Remedy
 
     @tools = Tools.resolve(@settings, @order)
 
-    find_water_source
-    find_alcohol_source
+    @water = Liquid.find('water', @settings.water_container, @inventory)
+    @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
     buy_missing_supplies
     DRC.wait_for_script_to_complete('buff', ['remedy'])
 
     if @order.continue?
       @inventory.get(@tools.stirrer)
-      work("analyze my #{@order.noun}")
+      craft("analyze my #{@order.noun}")
+    else
+      create_item
     end
-
-    create_item
   end
 
   private
-
-  # Decides how water goes into the vessel. With a water_container that
-  # holds water (or makes it when rubbed), remedy pours from it; otherwise it
-  # puts plain water.
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   water_container (lich-5 DRCC.get_crafting_item without skip_exit)
-  # @note code-derived (unverified): no log shows a water vessel, a rub, or
-  #   `get water from <bag>` / `put water in my <vessel>` (both without "my"
-  #   before the bag or the water).
-  def find_water_source
-    @water = 'water' # added for special containers that generate water/alcohol
-    @water_verb = 'put' # changed to pour when using a container
-    return unless @settings.water_container
-
-    @inventory.get(@settings.water_container)
-    if DRC.bput("count water in my #{@settings.water_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
-      @water = @settings.water_container
-      @water_verb = 'pour'
-    else # else (not elsif) needed to rub special container for water before checking again, uses defaults if container doesn't have water
-      fput("rub my #{@settings.water_container}")
-      fput("get water from #{@inventory.bag}") # added this part just in case water is in another bag, get water doesn't work, and container cannot create water
-      fput("put water in my #{@settings.water_container}")
-      if DRC.bput("count water in my #{@settings.water_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
-        @water = @settings.water_container
-        @water_verb = 'pour'
-      end
-    end
-    @inventory.stow(@water)
-  end
-
-  # Decides how alcohol goes into the vessel, as {#find_water_source} does
-  # for water, with alcohol_container.
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   alcohol_container (lich-5 DRCC.get_crafting_item without skip_exit)
-  # @note code-derived (unverified), as {#find_water_source}.
-  def find_alcohol_source
-    @alcohol = 'alcohol' # same as water
-    @alcohol_verb = 'put' # same as water
-    return unless @settings.alcohol_container
-
-    @inventory.get(@settings.alcohol_container)
-    if DRC.bput("count alcohol in my #{@settings.alcohol_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
-      @alcohol = @settings.alcohol_container
-      @alcohol_verb = 'pour'
-    else # else (not elsif) needed to rub special container for alcohol before checking again, uses defaults if container doesn't have alcohol
-      fput("rub my #{@settings.alcohol_container}")
-      fput("get alcohol from #{@inventory.bag}") # added this part just in case alcohol is in another bag, get alcohol doesn't work, and container cannot create alcohol
-      fput("put alcohol in my #{@settings.alcohol_container}")
-      if DRC.bput("count alcohol in my #{@settings.alcohol_container}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
-        @alcohol = @settings.alcohol_container
-        @alcohol_verb = 'pour'
-      end
-    end
-    @inventory.stow(@alcohol)
-  end
 
   # Buys plain water, plain alcohol and a coal nugget catalyst when none is
   # on hand.
   #
   # @return [void]
   def buy_missing_supplies
-    if @water == 'water' && !DRCI.exists?(@water)
-      buy_item('water')
-    end
-    if @alcohol == 'alcohol' && !DRCI.exists?(@alcohol)
-      buy_item('alcohol')
-    end
-    if ['coal nugget', 'nugget'].include?(@order.catalyst) && !DRCI.exists?(@order.catalyst)
-      buy_item('coal')
-    end
+    buy_item('water') if @water.plain? && !DRCI.exists?(@water.source)
+    buy_item('alcohol') if @alcohol.plain? && !DRCI.exists?(@alcohol.source)
+    buy_item('coal') if ['coal nugget', 'nugget'].include?(@order.catalyst) && !DRCI.exists?(@order.catalyst)
   end
 
   # Crafts with another herb1 than the one asked for (the dried or crushed
@@ -747,8 +1296,7 @@ class Remedy
     @inventory = @inventory.with_herbs(@order.herbs)
   end
 
-  # Opens the recipe, gathers the herb into the vessel, then starts
-  # crafting.
+  # Opens the recipe, gathers the herb into the vessel, then crafts.
   #
   # @return [void]
   # @raise [SystemExit] when the remedy is finished, or a commons helper
@@ -756,8 +1304,7 @@ class Remedy
   # @note The remed book is got and stowed with no belt: remedy has never
   #   passed alchemy_belt for it.
   def create_item
-    @count = 0
-    DRCA.crafting_magic_routine(@settings)
+    @magic.routine
     @inventory.stow(DRC.left_hand)
     @inventory.stow(DRC.right_hand)
     pause 0.2 # to prevent issues with lag during the stow commands
@@ -777,227 +1324,29 @@ class Remedy
     elsif ('blue flower').include?(@order.herb1)
       use_herb1('crushed flower') unless DRCI.exists?('blue flower')
     end
-    herb1 = @order.herb1
-    vessel = @tools.container
-    @inventory.get(vessel)
 
-    @inventory.lower(vessel)
-
-    # count herb, less than 25 get more herbs, otherwise stow and continue
-    # added to handle herb containers, and modified to combine up to 25
-    while @count < 25
-      case @inventory.get(herb1) # returns Inventory::UNROUTED to handle getting herbs differently, see comment under that branch
-      when Inventory::UNROUTED
-        # this part is to avoid the message "You are already holding that."
-        # in cases where it won't get more herbs, it takes a longer route to get herbs from other bags (not the crafting container nor herb_container)
-        @count = DRC.bput("count my #{herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i
-        while @count < 25
-          DRCI.put_away_item?(herb1, vessel)
-          fput("stow my #{herb1}") # in case there are extra
-          @inventory.get(vessel)
-          # stow then get, to prevent getting herbs from container (i.e. mortar)
-          @inventory.stow(vessel)
-          DRCI.get_item?(herb1) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
-          @inventory.get(vessel)
-          @inventory.lower(vessel)
-          DRCI.get_item?(herb1, vessel) # Using the DRCI method for some reason I don't understand, but because it used this method in long form before
-          if DRC.bput("combine my #{herb1}", *Patterns::COMBINE_REPLIES) == 'You must be holding both'
-            @count = 25 # 25 used to break loops
-          else
-            @count += DRC.bput("count my #{herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i # increment to run again
-          end
-        end
-      else
-        @count += DRC.bput("count my #{herb1}", *Patterns::HERB_COUNT_REPLIES).scan(/\d+/).first.to_i
-        if DRC.bput("combine my #{herb1}", *Patterns::COMBINE_REPLIES).end_with?('too large to add')
-          f_stack = DRC.bput("count my first #{herb1}", *Patterns::FIRST_STACK_COUNT_REPLIES).scan(/\d+/).first.to_i
-          s_stack = DRC.bput("count my second #{herb1}", *Patterns::SECOND_STACK_COUNT_REPLIES).scan(/\d+/).first.to_i
-          if f_stack == 75
-            DRCI.put_away_item?("second #{herb1}")
-          elsif s_stack == 75
-            DRCI.put_away_item?("first #{herb1}")
-          end
-        end
-      end
-    end
-
-    case DRC.bput("put #{herb1} in my #{vessel}", *Patterns::HERB_PUT_REPLIES)
-    when 'You put', /can only hold\z/, /You vigorously rub\z/
-      @inventory.stow(herb1) # Added for when the herb is larger than 25 pieces
-    when /already has something\z/, 'You realize the'
-      DRC.bput("tilt my #{vessel}", *Patterns::TILT_REPLIES)
-      DRC.bput("tilt my #{vessel}", *Patterns::TILT_AGAIN_REPLIES)
-      DRC.bput("put #{herb1} in my #{vessel}", *Patterns::HERB_PUT_AGAIN_REPLIES)
-      @inventory.stow(herb1) # Added for when the herb is larger than 25 pieces
-    end
-
-    @inventory.pick_up(vessel)
+    HerbGatherer.new(@inventory).gather(@order.herb1, @tools.container)
     @inventory.get(@tools.stirrer)
 
-    work(@tools.first_command(herb1))
+    craft(@tools.first_command(@order.herb1))
   end
 
-  # Handles the first Flag that is set, in {FLAGS} order, or sends the
-  # crafting command; then calls itself with the next crafting command.
+  # Runs the crafting loop from the first command; when the remedy is done,
+  # takes it out, releases magic and exits.
   #
-  # @param command [String] the crafting command to send when no Flag is set
-  # @return [void] never returns normally: it ends in {#finish}
-  # @raise [SystemExit] when the remedy is finished, or when a Flag
-  #   handler's {#get_item} stops the script on a missing item
-  def work(command)
-    waitrt?
-    DRCA.crafting_magic_routine(@settings)
-    if Flags['remedy-water']
-      add_water
-    elsif Flags['remedy-alcohol']
-      add_alcohol
-    elsif Flags['remedy-catalyst']
-      add_catalyst
-    elsif Flags['remedy-herb']
-      add_herb
-    elsif Flags['remedy-sieve']
-      sieve
-    elsif Flags['remedy-turn']
-      turn
-    elsif Flags['remedy-smell']
-      smell
-    else
-      case DRC.bput(command, *Patterns::CRAFT_REPLIES)
-      when 'Applying the final touches', /Interesting thought really... but no.\z/, /you just can't mix\z/, /Try as you might\z/, /That craftable requires more pieces of that plant to begin\z/
-        finish
-      when /Roundtime:\z/
-        waitrt?
-        command = @tools.next_command(@order.noun)
-      end
-    end
-    waitrt?
-    DRCA.crafting_magic_routine(@settings)
-    work(command)
-  end
+  # @param command [String] the first crafting command
+  # @return [void] returns only when the loop gives up (not before layer
+  #   07)
+  # @raise [SystemExit] when the remedy is finished, or a commons helper
+  #   stops the script
+  def craft(command)
+    handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol)
+    outcome = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic).run(command)
+    return unless outcome == :done
 
-  # Adds water when the game asks for it ({Patterns::NEED_WATER}).
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   item (lich-5 DRCC.get_crafting_item without skip_exit)
-  # @note code-derived (unverified): "You cannot find a way to add that as
-  #   an ingredient" and the `get water` / `put water` recovery after it
-  #   appear in no log.
-  def add_water
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@water)
-    Flags.reset('remedy-water')
-    if DRC.bput("#{@water_verb} #{@water} in my #{@tools.container}", *Patterns::LIQUID_ADD_REPLIES).end_with?('You cannot find a way to add that as an ingredient')
-      @inventory.stow(DRC.left_hand)
-      unless DRCI.get_item?("water", @water)
-        @inventory.get('water')
-      end
-      unless DRCI.put_away_item?("water", @tools.container)
-        waitrt?
-        DRCI.put_away_item?("water", @water)
-      end
-    end
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@tools.stirrer)
-  end
-
-  # Adds alcohol when the game asks for it ({Patterns::NEED_ALCOHOL}).
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   item (lich-5 DRCC.get_crafting_item without skip_exit)
-  # @note code-derived (unverified), as {#add_water}.
-  def add_alcohol
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@alcohol)
-    Flags.reset('remedy-alcohol')
-    if DRC.bput("#{@alcohol_verb} #{@alcohol} in my #{@tools.container}", *Patterns::LIQUID_ADD_REPLIES).end_with?('You cannot find a way to add that as an ingredient')
-      @inventory.stow(DRC.left_hand)
-      unless DRCI.get_item?("alcohol", @alcohol)
-        @inventory.get('alcohol')
-      end
-      unless DRCI.put_away_item?("alcohol", @tools.container)
-        waitrt?
-        DRCI.put_away_item?("alcohol", @alcohol)
-      end
-    end
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@tools.stirrer)
-  end
-
-  # Adds the catalyst when the game asks for it
-  # ({Patterns::NEED_CATALYST}).
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   item (lich-5 DRCC.get_crafting_item without skip_exit)
-  def add_catalyst
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@order.catalyst)
-    Flags.reset('remedy-catalyst')
-    DRC.bput("put my #{@order.catalyst} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@tools.stirrer)
-  end
-
-  # Adds the second herb when the game asks for it ({Patterns::NEED_HERB}).
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   item (lich-5 DRCC.get_crafting_item without skip_exit)
-  # @note code-derived (unverified): no log shows the cue or this put.
-  def add_herb
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@order.herb2)
-    Flags.reset('remedy-herb')
-    DRC.bput("put my #{@order.herb2} in my #{@tools.container}", *Patterns::INGREDIENT_PUT_REPLIES)
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@tools.stirrer)
-  end
-
-  # Pushes the product with the sieve when the game asks for it
-  # ({Patterns::NEED_SIEVE}).
-  #
-  # @return [void]
-  # @raise [SystemExit] when {#get_item} stops the script on a missing
-  #   item (lich-5 DRCC.get_crafting_item without skip_exit)
-  def sieve
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get('sieve')
-    Flags.reset('remedy-sieve')
-    DRC.bput("push my #{@order.noun} with my sieve", *Patterns::STEP_REPLIES)
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    @inventory.get(@tools.stirrer)
-  end
-
-  # Turns the vessel when the game asks for it ({Patterns::NEED_TURN}).
-  #
-  # @return [void]
-  def turn
-    waitrt?
-    Flags.reset('remedy-turn')
-    DRC.bput("turn my #{@tools.container}", *Patterns::STEP_REPLIES)
-    waitrt?
-  end
-
-  # Smells the product when the game asks for it ({Patterns::NEED_SMELL}).
-  #
-  # @return [void]
-  def smell
-    waitrt?
-    Flags.reset('remedy-smell')
-    DRC.bput("smell my #{@order.noun}", *Patterns::STEP_REPLIES)
-    waitrt?
+    Finisher.new(inventory: @inventory, tools: @tools, noun: @order.noun, mark: @settings.mark_crafted_goods).finish
+    @magic.release
+    exit
   end
 
   # Buys a supply from the hometown's alchemy shop (base-crafting.yaml
@@ -1021,45 +1370,6 @@ class Remedy
     end
 
     DRCT.walk_to(@settings.alchemy_room)
-  end
-
-  # Releases the spell, mana and symbiosis the crafting magic routine left
-  # prepared, when crafting_training_spells is set.
-  #
-  # @return [void]
-  def magic_cleanup
-    return if @training_spells.empty?
-
-    DRC.bput('release spell', *Patterns::RELEASE_SPELL_REPLIES)
-    DRC.bput('release mana', *Patterns::RELEASE_MANA_REPLIES)
-    DRC.bput('release symb', *Patterns::RELEASE_SYMBIOSIS_REPLIES)
-  end
-
-  # Marks the product with the stamp.
-  #
-  # @param noun [String] the product noun
-  # @return [void]
-  # @raise [SystemExit] when DRCC.get_crafting_item (called without
-  #   skip_exit) stops the script on a missing stamp
-  def stamp_item(noun)
-    @inventory.get_tool('stamp')
-    DRC.bput("mark my #{noun} with my stamp", *Patterns::MARK_REPLIES)
-    @inventory.stow_tool('stamp')
-  end
-
-  # Takes the product out of the vessel, puts the tools away, marks the
-  # product when mark_crafted_goods is set, releases magic and exits.
-  #
-  # @return [void]
-  # @raise [SystemExit] always
-  def finish
-    waitrt?
-    @inventory.stow(DRC.left_hand)
-    fput("get my #{@order.noun} from my #{@tools.container}")
-    @inventory.stow(DRC.right_hand)
-    stamp_item(@order.noun) if @stamp
-    magic_cleanup
-    exit
   end
 end
 
