@@ -962,6 +962,103 @@ RSpec.describe WorkOrders do
   end
 
   # ===========================================================================
+  # #work_order_recipes - which base-recipes a work order may name
+  # ===========================================================================
+  # base-recipes.yaml holds remedies made from stand-alone instructions
+  # (`instructions: true`, no chapter). remedy_items calls remedy.lic with the
+  # 8-argument book form and the recipe's chapter, so a work order must never
+  # pick one, even when a workorder_recipes pattern matches its name.
+  describe '#work_order_recipes' do
+    let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+    let(:instructions_names) { recipes.select { |recipe| recipe['instructions'] }.map { |recipe| recipe['name'] } }
+    let(:disciplines) { %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing tinkering] }
+
+    before do
+      workorders.instance_variable_set(:@recipe_overrides, {})
+      workorders.instance_variable_set(:@carving_type, 'stone')
+    end
+
+    # The recipe names work_order_recipes picks with the given data and
+    # workorder_recipes setting.
+    #
+    # @param discipline [String]
+    # @param data [Array<Hash>] the crafting_recipes get_data hands back
+    # @param overrides [Hash{String => Array<String>}] workorder_recipes
+    # @return [Array<String>]
+    def picked(discipline, data: recipes, overrides: {})
+      $test_data.recipes = OpenStruct.new(crafting_recipes: data)
+      workorders.instance_variable_set(:@recipe_overrides, overrides)
+      workorders.send(:work_order_recipes, discipline).map { |recipe| recipe['name'] }
+    end
+
+    it 'reads the four instructions remedies from base-recipes.yaml, so these examples test something' do
+      expect(instructions_names).to eq(['a clubmoss liniment', 'a woundwort curative', 'a marram salve', 'a flamestalk potion'])
+    end
+
+    it 'never picks an instructions remedy, whatever workorder_recipes pattern matches its name' do
+      [['salve'], ['marram'], ['liniment', 'curative', 'potion'], ['a '], ['.']].each do |patterns|
+        names = picked('remedies', overrides: { 'remedies' => patterns })
+        expect(names & instructions_names).to eq([])
+      end
+    end
+
+    it 'still picks the book remedies a workorder_recipes pattern matches' do
+      expect(picked('remedies', overrides: { 'remedies' => ['salve'] }))
+        .to eq(recipes.select { |recipe| recipe['type'] == 'remedies' && recipe['chapter'] && recipe['name'] =~ /salve/i }.map { |recipe| recipe['name'] })
+      expect(picked('remedies', overrides: { 'remedies' => ['salve'] })).to include('some itch salve', 'some wart salve')
+    end
+
+    it 'picks the work_order recipes of a discipline without workorder_recipes' do
+      expect(picked('remedies')).to include('some blister cream')
+      expect(picked('remedies')).not_to include('some wart salve')
+    end
+
+    # The selection workorders.lic:152-158 made inline at 03f11b54, before
+    # this layer moved it into #work_order_recipes, copied verbatim with the
+    # instance variables as parameters. It is the oracle the extracted code is
+    # held to, on base-recipes.yaml as it was then (without the instructions
+    # recipes).
+    #
+    # @param discipline [String]
+    # @param recipe_overrides [Hash{String => Array<String>}] workorder_recipes
+    # @param carving_type [String] carving_workorder_material_type
+    # @return [Array<String>] the recipe names
+    def picked_at_03f11b54(discipline, recipe_overrides, carving_type)
+      crafting_recipes = recipes.reject { |recipe| recipe['instructions'] }
+      selected = if recipe_overrides[discipline]
+                   crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
+                 else
+                   crafting_recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /#{discipline}/i }
+                 end
+      selected = selected.select { |x| x['material'] == carving_type } if discipline == 'carving'
+      selected.map { |recipe| recipe['name'] }
+    end
+
+    it 'picks for every discipline and pattern what workorders.lic picked before the instructions remedies were added' do
+      overrides_tried = [{}, { 'remedies' => ['salve'] }, { 'remedies' => ['.'] }, disciplines.to_h { |discipline| [discipline, ['a ']] },
+                         disciplines.to_h { |discipline| [discipline, ['.']] }]
+      overrides_tried.each do |overrides|
+        disciplines.each do |discipline|
+          expect(picked(discipline, overrides: overrides)).to eq(picked_at_03f11b54(discipline, overrides, 'stone')), "#{discipline} #{overrides}"
+        end
+      end
+    end
+
+    it 'keeps a workorder_recipes pattern to its own discipline, though it matches names of others' do
+      everything = { 'remedies' => ['.'] }
+      expect(picked('remedies', overrides: everything)).to eq(recipes.select { |recipe| recipe['type'] == 'remedies' && !recipe['instructions'] }.map { |recipe| recipe['name'] })
+      expect(picked('shaping', overrides: { 'shaping' => ['salve'] })).to be_empty
+    end
+
+    it 'keeps only the carving_workorder_material_type material for carving' do
+      names = picked('carving', overrides: {})
+      stone = recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /carving/i && recipe['material'] == 'stone' }
+      expect(names).to eq(stone.map { |recipe| recipe['name'] })
+      expect(names).not_to be_empty
+    end
+  end
+
+  # ===========================================================================
   # #find_recipe - pure calculation method
   # ===========================================================================
   describe '#find_recipe' do

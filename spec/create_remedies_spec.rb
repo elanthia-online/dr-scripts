@@ -10,6 +10,7 @@ load_lic_class('create_remedies.lic', 'CreateRemedies')
 RSpec.describe CreateRemedies do
   let(:create_remedies) { described_class.allocate }
   let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+  let(:ingredients) { YAML.load_file(File.expand_path('../data/base-ingredients.yaml', __dir__))['ingredients'] }
   # CODE-DERIVED: no log has a herb tap reply; bput hands back the text the
   # "You tap" pattern matched (create_remedies.lic:36-48).
   let(:tapped) { ReplayGame.code('You tap', from: 'create_remedies.lic:45').text }
@@ -23,6 +24,7 @@ RSpec.describe CreateRemedies do
     $left_hand = nil
     $right_hand = nil
     $test_data.recipes = OpenStruct.new(crafting_recipes: recipes)
+    $test_data.ingredients = OpenStruct.new(ingredients: ingredients)
     allow(DRC).to receive(:bput).and_return(tapped)
     allow(DRC).to receive(:message) { |text| messages << text }
     allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }
@@ -100,6 +102,111 @@ RSpec.describe CreateRemedies do
         expect(scripts_run).to eq([['clerk-tools', %w[alchemy get]], ['remedy', ['remedies', 3]], ['clerk-tools', %w[alchemy store]]])
         expect(messages).to eq(['CreateRemedies: remedy did not leave some back unguent (unguent) in hand. Stopping.'])
       end
+    end
+  end
+
+  # An instructions recipe names herb1 as the prepared herb, "dried clubmoss",
+  # because the raw herb answers to the same noun: `put shining clubmoss in
+  # greenhouse` (25:16300) -> "You put your clubmoss ..." (25:16301), and
+  # `put woundwort ...` (26:29225) put away the marsh woundwort just foraged
+  # (26:29210, 26:29226). So the tap asks for the prepared herb by that name,
+  # and with none on hand alchemy.lic forages and prepares the raw herb.
+  describe 'the herb a recipe is tapped, foraged and prepared by' do
+    # [script name, all arguments] of each script run.
+    let(:runs) { [] }
+    # The game's reply to a tap of nothing on hand (25:13762, to
+    # `tap sack in rugu`).
+    let(:not_found) { ReplayGame.log('25:13762').text }
+
+    before do
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args| runs << [name, args] }
+    end
+
+    it 'taps the prepared herb of an instructions recipe by its full name, not by the noun the raw herb shares' do
+      expect { run('liniment') }.to raise_error(SystemExit)
+
+      expect(DRC).to have_received(:bput).with('tap first dried clubmoss', 'You tap', 'What were', 'I could not')
+      expect(runs.map(&:first)).to eq(['remedy'])
+    end
+
+    {
+      'liniment'   => 'shining clubmoss',
+      'curative'   => 'marsh woundwort',
+      'marram'     => 'marram grass',
+      'flamestalk' => 'ashen flamestalk'
+    }.each do |target, raw_herb|
+      it "forages and prepares #{raw_herb} for `#{target}` when no prepared herb is on hand" do
+        allow(DRC).to receive(:bput).and_return(not_found)
+        expect { run(target) }.to raise_error(SystemExit)
+
+        expect(runs.first(2)).to eq([['alchemy', [raw_herb, 'forage', 25]], ['alchemy', [raw_herb, 'prepare']]])
+      end
+    end
+
+    it 'still forages and prepares a book recipe herb as the recipe names it' do
+      allow(DRC).to receive(:bput).and_return(not_found)
+      expect { run('back unguent') }.to raise_error(SystemExit)
+
+      expect(runs).to eq([['alchemy', ['hulnik', 'forage', 25]], ['alchemy', %w[hulnik prepare]],
+                          ['remedy', ['remedies', 3, 'some back unguent', 'hulnik', 'na', 'coal nugget', 'mortar', 'unguent']]])
+    end
+
+    it 'passes every herb of every book recipe to alchemy.lic unchanged, as none is a prepared output' do
+      book_herbs = recipes.reject { |recipe| recipe['instructions'] }.flat_map { |recipe| recipe.values_at('herb1', 'herb2', 'herb3') }.compact.uniq
+      expect(book_herbs).to include('nemoih', 'red flower', 'blue flower')
+      expect(book_herbs.reject { |herb| create_remedies.forage_name(herb) == herb }).to be_empty
+    end
+
+    it 'gives alchemy.lic the raw herb whose prepared output each instructions herb1 is' do
+      herbs = recipes.select { |recipe| recipe['instructions'] }.map { |recipe| recipe['herb1'] }
+      expect(herbs.map { |herb| create_remedies.forage_name(herb) }).to eq(['shining clubmoss', 'marsh woundwort', 'marram grass', 'ashen flamestalk'])
+    end
+  end
+
+  # base-recipes.yaml now ends its remedies with four made from stand-alone
+  # instructions. create_remedies.lic:31 takes the first
+  # recipe whose name matches the target, so they must come after every
+  # recipe a target found before.
+  describe 'the recipe a target finds' do
+    # [script name, all arguments] of each script run.
+    let(:runs) { [] }
+    let(:before_data) { recipes.reject { |recipe| recipe['instructions'] } }
+
+    before do
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args| runs << [name, args] }
+    end
+
+    # The scripts create_remedies runs for a target, and how it ended.
+    #
+    # @param target [String]
+    # @param data [Array<Hash>] the crafting_recipes get_data hands back
+    # @return [Array] [[script, arguments]..., the error class or :finished]
+    def outcome(target, data)
+      $test_data.recipes = OpenStruct.new(crafting_recipes: data)
+      runs.clear
+      ending = begin
+        run(target)
+        :finished
+      rescue SystemExit, StandardError => e
+        e.class
+      end
+      runs.dup << ending
+    end
+
+    # The herbs are on hand and remedy leaves nothing in hand, so the only
+    # script is remedy and the run ends in the no-product stop.
+    it 'still sends `salve` and `potion` to the first book recipe of that name, with the 8-argument call' do
+      expect(outcome('salve', recipes))
+        .to eq([['remedy', ['remedies', 2, 'some itch salve', 'dried flower', 'jadice', 'coal nugget', 'mortar', 'salve']], SystemExit])
+      expect(outcome('potion', recipes))
+        .to eq([['remedy', ['remedies', 2, 'some hangover potion', 'crushed flower', 'ojhenik', 'coal nugget', 'bowl', 'potion']], SystemExit])
+    end
+
+    it 'runs the same scripts with the same arguments as before for every full name and every word of every recipe name' do
+      targets = (before_data.map { |recipe| recipe['name'] } + before_data.flat_map { |recipe| recipe['name'].scan(/\w+/) }).uniq
+      expect(targets.size).to be > 1000
+      changed = targets.reject { |target| outcome(target, recipes) == outcome(target, before_data) }
+      expect(changed).to be_empty
     end
   end
 end

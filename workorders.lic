@@ -149,13 +149,7 @@ class WorkOrders
     # Tinkering uses the Engineering guild (shaping) NPC and logbook
     info = crafting_data['shaping'][@hometown] if discipline == 'tinkering'
 
-    recipes = if @recipe_overrides[discipline]
-                get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && @recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
-              else
-                get_data('recipes').crafting_recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /#{discipline}/i }
-              end
-
-    recipes = recipes.select { |x| x['material'] == @carving_type } if discipline == 'carving'
+    recipes = work_order_recipes(discipline)
 
     unless info
       Lich::Messaging.msg('bold', "WorkOrders: No crafting settings found for discipline: #{discipline}")
@@ -462,6 +456,27 @@ class WorkOrders
     unless DRCI.put_away_item?('ticket')
       Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow repair ticket')
     end
+  end
+
+  # The base-recipes.yaml recipes a work order for the discipline may name:
+  # those whose name matches one of the user's workorder_recipes patterns for
+  # it, or else every recipe marked work_order. Carving keeps only the
+  # carving_workorder_material_type material. Recipes made from stand-alone
+  # instructions (`instructions: true`) are never chosen: they have no book
+  # chapter, and remedy_items calls remedy.lic with the 8-argument book form.
+  #
+  # @param discipline [String] the work order discipline, e.g. 'remedies'
+  # @return [Array<Hash>] the recipes, in base-recipes.yaml order
+  def work_order_recipes(discipline)
+    book_recipes = get_data('recipes').crafting_recipes.reject { |recipe| recipe['instructions'] }
+    recipes = if @recipe_overrides[discipline]
+                book_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && @recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
+              else
+                book_recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /#{discipline}/i }
+              end
+    return recipes unless discipline == 'carving'
+
+    recipes.select { |x| x['material'] == @carving_type }
   end
 
   def find_recipe(materials_info, recipe, quantity)
