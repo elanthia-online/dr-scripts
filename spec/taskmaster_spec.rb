@@ -106,6 +106,21 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe 'task_bin_leftover_stock' do
+      # The binning specs set @bin_leftover_stock directly, so this pins the
+      # setting name initialize reads: a misspelt name would silently leave
+      # the feature off.
+      [true, false, nil].each do |value|
+        it "is read from the settings when built (#{value.inspect})" do
+          tm = described_class.allocate
+          allow(tm).to receive(:get_settings).and_return(OpenStruct.new(task_bin_leftover_stock: value))
+          allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
+          tm.send(:initialize)
+          expect(tm.instance_variable_get(:@bin_leftover_stock)).to eq(value)
+        end
+      end
+    end
+
     describe '#configure_boosts' do
       def boosted(settings = {})
         build(settings: settings).tap { |tm| tm.send(:configure_boosts) }
@@ -1723,6 +1738,15 @@ RSpec.describe TaskMaster do
 
       it 'is off by default: base.yaml declares task_bin_leftover_stock false' do
         expect(base_yaml).to include('task_bin_leftover_stock' => false)
+      end
+
+      # Marathon restocks once and check_stock reuses the carried stack for
+      # every task; binning it after each hand-in would force a full restock
+      # (up to 100 yards of cloth and leather, 400 of yarn) every time.
+      it "keeps a marathon's carried restock stack, even with the setting on" do
+        world({ 'burlap cloth' => 1, 'rat leather' => 1, 'wool yarn' => 1 })
+        expect(binner(marathon: true).bin_task_stock).to eq(0)
+        expect(sent).to be_empty
       end
 
       [nil, false].each do |setting|

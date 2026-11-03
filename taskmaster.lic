@@ -11,7 +11,7 @@
   task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
-  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan)
+  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks)
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
@@ -24,7 +24,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.2'
+  VERSION = '2026.11.03.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1286,11 +1286,13 @@ class TaskMaster
   TASK_STOCK_BIN_CAP = 100
 
   # Whether bin_task_stock bins after the hand-in: only when the player opted
-  # in with task_bin_leftover_stock, for Zasele's tasks, with a worn trash can.
+  # in with task_bin_leftover_stock, for Zasele's tasks, with a worn trash can,
+  # and never in marathon, whose restock stack is carried from task to task
+  # (check_stock reuses it), so binning it would force a full restock each time.
   #
   # @return [Boolean]
   def bins_task_stock?
-    @bin_leftover_stock && @npc == 'zasele' && @worn_trashcan ? true : false
+    @bin_leftover_stock && @npc == 'zasele' && @worn_trashcan && !@marathon ? true : false
   end
 
   # With task_bin_leftover_stock, after a Zasele task is handed in, bins
