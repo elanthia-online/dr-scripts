@@ -420,6 +420,18 @@ RSpec.describe Enchant do
       instance.send(:empty_brazier)
     end
 
+    it 'takes every item when the game lists three or more' do
+      instance = build_instance
+      allow(DRC).to receive(:bput).and_return('On the brass brazier you see a rock, a fount and a totem.')
+      allow(DRCC).to receive(:stow_crafting_item)
+
+      %w[rock fount totem].each do |noun|
+        expect(DRCI).to receive(:get_item?).with(noun, 'brazier').and_return(true)
+      end
+
+      instance.send(:empty_brazier)
+    end
+
     it 'handles nothing on brazier' do
       instance = build_instance
 
@@ -957,6 +969,21 @@ RSpec.describe Enchant do
       allow(instance).to receive(:place_item_on_brazier)
       expect(instance).to receive(:clean_brazier)
       expect(instance).to receive(:empty_brazier)
+
+      instance.send(:study_recipe)
+    end
+  end
+
+  describe '#study_recipe with an enchanting belt' do
+    it 'unties the artificing book from the enchanting belt and ties it back' do
+      belt = { 'name' => 'toolbelt', 'items' => ['artificing book', 'burin'] }
+      instance = build_instance(belt: belt, chapter: '1', recipe: 'spongestone')
+      allow(DRC).to receive(:bput).and_return('You get a rock from inside your backpack.', 'With a flick, you pop open the lid.')
+
+      expect(DRCC).to receive(:get_crafting_item).with('artificing book', 'backpack', ['burin'], belt).ordered
+      expect(DRCC).to receive(:find_recipe2).with('1', 'spongestone').ordered
+      expect(DRCC).to receive(:stow_crafting_item).with('book', 'backpack', belt).ordered
+      allow(DRCC).to receive(:get_crafting_item).with('brazier', anything, anything, anything)
 
       instance.send(:study_recipe)
     end

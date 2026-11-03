@@ -277,9 +277,9 @@ class Enchant
     if @settings.master_crafting_book
       DRCC.find_recipe2(@chapter, @recipe, @settings.master_crafting_book, BOOK_TYPE)
     else
-      DRCC.get_crafting_item("#{BOOK_TYPE} book", @bag, @bag_items, @forging_belt)
+      DRCC.get_crafting_item("#{BOOK_TYPE} book", @bag, @bag_items, @belt)
       DRCC.find_recipe2(@chapter, @recipe)
-      DRCC.stow_crafting_item("book", @bag, @forging_belt)
+      DRCC.stow_crafting_item("book", @bag, @belt)
     end
     get_tool(@brazier) if @use_own_brazier
 
@@ -404,7 +404,8 @@ class Enchant
     match = BRAZIER_CONTENTS_PATTERN.match(result)
     return unless match
 
-    match[:items].split(' and ').each do |item|
+    # "a rock, a fount and a totem": commas and the last "and" both separate.
+    DRC.list_to_array(match[:items]).each do |item|
       item_noun = item.split.last
       unless DRCI.get_item?(item_noun, @brazier)
         Lich::Messaging.msg("bold", "Enchant: Failed to get #{item_noun} from #{@brazier}.")
