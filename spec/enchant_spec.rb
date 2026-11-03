@@ -9,16 +9,17 @@ load_lic_class('enchant.lic', 'Enchant')
 # The game's own lines (from real logs where we have them) set each flag;
 # the same words in another player's ESP, speech or whisper do not.
 ENCHANT_SPEC_FLAG_LINES = {
-  'enchant-focus'    => ["The totem's material struggles to accept the sigil scribing."],
-  'enchant-meditate' => ['The traced sigil pattern blurs before your eyes, making it difficult to follow.'],
-  'enchant-imbue'    => ['Once finished you sense an imbue spell will be required to continue enchanting.'],
-  'enchant-push'     => ["You notice many of the scribed sigils are slowly merging back into the totem's surface."],
-  'enchant-sigil'    => ['You need another paradox secondary sigil to continue the enchanting process.  You believe you can STUDY the sigil and then TRACE it on the unfinished item to prepare it for continued scribing.'],
-  'enchant-complete' => ["The spell's energies settle upon the totem and seal off the streams of mana.  With the enchanting process completed, you believe it is safe to collect your things once more.",
-                         'With the enchantment complete, you collect your things.',
-                         'With enchanting complete, you collect your things.'],
-  'imbue-failed'     => ['The streams collide, rending the space before you and disrupting the enchantment.'],
-  'imbue-backlash'   => ['Suddenly the streams slip through your grasp and cascade violently against each other!']
+  'enchant-focus'          => ["The totem's material struggles to accept the sigil scribing."],
+  'enchant-meditate'       => ['The traced sigil pattern blurs before your eyes, making it difficult to follow.'],
+  'enchant-imbue'          => ['Once finished you sense an imbue spell will be required to continue enchanting.'],
+  'enchant-push'           => ["You notice many of the scribed sigils are slowly merging back into the totem's surface."],
+  'enchant-sigil'          => ['You need another paradox secondary sigil to continue the enchanting process.  You believe you can STUDY the sigil and then TRACE it on the unfinished item to prepare it for continued scribing.'],
+  'enchant-complete'       => ["The spell's energies settle upon the totem and seal off the streams of mana.  With the enchanting process completed, you believe it is safe to collect your things once more.",
+                               'With the enchantment complete, you collect your things.',
+                               'With enchanting complete, you collect your things.'],
+  'imbue-failed'           => ['The streams collide, rending the space before you and disrupting the enchantment.'],
+  'imbue-backlash'         => ['Suddenly the streams slip through your grasp and cascade violently against each other!'],
+  'enchant-fount-returned' => ['You collect the fount and place it at your feet.']
 }.freeze
 
 # Game lines copied from two Dorhum task runs (2026-11, spongestone and virga
@@ -341,19 +342,16 @@ RSpec.describe Enchant do
   # ---------------------------------------------------------------------------
 
   describe '#setup_flags' do
-    it 'calls Flags.add for all required flags' do
-      instance = build_instance
+    it 'registers a matcher for every flag in FLAG_NAMES, and no other' do
+      build_instance.send(:setup_flags)
 
-      expect(Flags).to receive(:add).with('enchant-focus', anything)
-      expect(Flags).to receive(:add).with('enchant-meditate', anything)
-      expect(Flags).to receive(:add).with('enchant-imbue', anything)
-      expect(Flags).to receive(:add).with('enchant-push', anything)
-      expect(Flags).to receive(:add).with('enchant-sigil', anything)
-      expect(Flags).to receive(:add).with('enchant-complete', anything, anything, anything, anything)
-      expect(Flags).to receive(:add).with('imbue-failed', anything)
-      expect(Flags).to receive(:add).with('imbue-backlash', anything)
+      expect(Flags.matchers.keys).to match_array(Enchant::FLAG_NAMES)
+    end
 
-      instance.send(:setup_flags)
+    it 'gives enchant-complete its four completion lines' do
+      build_instance.send(:setup_flags)
+
+      expect(Flags.matchers['enchant-complete'].size).to eq(4)
     end
   end
 
@@ -637,9 +635,42 @@ RSpec.describe Enchant do
   describe '#handle_complete_flag' do
     it 'outputs completion message and calls cleanup' do
       instance = build_instance
+      Flags['enchant-fount-returned'] = true
 
       expect(Lich::Messaging).to receive(:msg).with('plain', 'Enchant: Enchanting complete!')
-      expect(instance).to receive(:cleanup)
+      expect(instance).to receive(:cleanup).with(fount: true)
+
+      instance.send(:handle_complete_flag)
+    end
+
+    it 'leaves the fount out of the cleanup when the game did not hand it back' do
+      instance = build_instance(fount_on_item: true)
+      allow(Lich::Messaging).to receive(:msg)
+
+      expect(instance).to receive(:cleanup).with(fount: false)
+
+      instance.send(:handle_complete_flag)
+
+      expect(Lich::Messaging).to have_received(:msg).with('plain', 'Enchant: The fount was used up and is gone.')
+    end
+
+    it 'says nothing of a used-up fount when the item needed none and it went back in the bag' do
+      instance = build_instance(fount_on_item: false)
+      allow(Lich::Messaging).to receive(:msg)
+
+      expect(instance).to receive(:cleanup).with(fount: false)
+
+      instance.send(:handle_complete_flag)
+
+      expect(Lich::Messaging).not_to have_received(:msg).with('plain', /used up/)
+    end
+
+    it 'expects no fount back from a fount it just made' do
+      instance = build_instance(item: 'fount')
+      allow(Lich::Messaging).to receive(:msg)
+
+      expect(Lich::Messaging).not_to receive(:msg).with('plain', /used up/)
+      expect(instance).to receive(:cleanup).with(fount: true)
 
       instance.send(:handle_complete_flag)
     end
@@ -1439,6 +1470,38 @@ RSpec.describe Enchant, 'whole runs' do
 
       expect_transcript_done
       expect(game.messages).to include('Enchant: Imbue backlash occurred! Cleaning up and heading to safe room.')
+    end
+  end
+
+  context "when the fount's last use goes into the rock (log 1, the fifth item)" do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock_fount_used_up])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      # No fount came back, so none is fetched: a GET of a fount that is gone
+      # would stop the script before the rock is picked up.
+      tidy_up('rock', fount: false)
+    end
+
+    it 'leaves the fount alone and still ends holding the rock' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+      expect(game.feet).to eq([])
+    end
+
+    it 'says the fount is used up' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect(game.messages).to include('Enchant: The fount was used up and is gone.')
     end
   end
 end

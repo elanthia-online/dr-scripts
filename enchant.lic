@@ -80,6 +80,7 @@ class Enchant
   FLAG_NAMES = %w[
     enchant-focus enchant-imbue enchant-meditate enchant-push
     enchant-sigil enchant-complete imbue-failed imbue-backlash
+    enchant-fount-returned
   ].freeze
 
   # What the game asks for next, as the flag it set and the step that
@@ -165,6 +166,12 @@ class Enchant
               /^You collect the \w+ and place it at your feet/)
     Flags.add('imbue-failed', /^(?:<[^>]*>|[^"<])*?The streams collide, rending the space before you and disrupting the enchantment/i)
     Flags.add('imbue-backlash', /^(?:<[^>]*>|[^"<])*?Suddenly the streams slip through your grasp and cascade violently against each other/i)
+    # The finished enchant hands back a fount that has uses left; one whose
+    # last use went into the item burns away at its wave (log 1: "With its
+    # magic expended, the fount's surface becomes as flimsy as paper.  The
+    # brazier's flame quickly burns it away.") and the completion has no
+    # fount line.
+    Flags.add('enchant-fount-returned', /^(?:<[^>]+>)*You collect the fount and place it at your feet/)
   end
 
   def cleanup_flags
@@ -198,7 +205,11 @@ class Enchant
   end
 
   def handle_imbue_resume
-    wave_fount unless fount_on_brazier?
+    if fount_on_brazier?
+      @fount_on_item = true
+    else
+      wave_fount
+    end
     imbue
   end
 
@@ -234,7 +245,8 @@ class Enchant
   def wave_fount
     get_tool(@fount)
     wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
-    stow_tool(@fount) if WAVE_FOUNT_NOT_NEEDED.match?(wave_result)
+    @fount_on_item = !WAVE_FOUNT_NOT_NEEDED.match?(wave_result)
+    stow_tool(@fount) unless @fount_on_item
   end
 
   def study_recipe
@@ -440,8 +452,11 @@ class Enchant
 
   def handle_complete_flag
     Lich::Messaging.msg("plain", "Enchant: Enchanting complete!")
+    fount_returned = @item == 'fount' || Flags['enchant-fount-returned'] ? true : false
+    # A fount the item did not need went back in the bag at the wave.
+    Lich::Messaging.msg("plain", "Enchant: The #{@fount} was used up and is gone.") if @fount_on_item && !fount_returned
     stow_held_items
-    cleanup
+    cleanup(fount: fount_returned)
     stamp_item(@item) if @stamp
   end
 
@@ -451,9 +466,11 @@ class Enchant
     stow_tool('stamp')
   end
 
-  def cleanup
+  # Puts the tools away and takes the product. fount: false skips the fount,
+  # for an enchant that used up its last use.
+  def cleanup(fount: true)
     stow_held_items
-    unless @item == 'fount'
+    if fount && @item != 'fount'
       get_tool(@fount)
       stow_tool(@fount)
     end
