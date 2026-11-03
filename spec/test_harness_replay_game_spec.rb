@@ -736,6 +736,20 @@ RSpec.describe 'test harness replay support' do
       expect(game.sent).to eq([mix, mix])
     end
 
+    it 'injects one silent reply for an empty inject: the step after it is answered on the resend' do
+      transcript.script(game, commands: /\Amix /, skip: [6731], inject: { 6736 => [] })
+      expect(DRC.bput(mix, 'Roundtime:')).to eq('')
+      expect(DRC.bput(mix, 'Roundtime:')).to eq('Roundtime:')
+    end
+
+    it 'injects a list of replies in turn: two silences, a real "...wait" (25:11582), then the logged reply' do
+      transcript.script(game, commands: /\Amix /, skip: [6731], inject: { 6736 => [[], [], [ReplayGame.log('25:11582')]] })
+      expect(Array.new(2) { DRC.bput(mix, 'Roundtime:') }).to eq(['', ''])
+      expect(DRC.bput(mix, 'Roundtime:')).to eq('Roundtime:')
+      expect(game.sent).to eq([mix] * 4)
+      expect(game.diagnostics.size).to eq(2)
+    end
+
     it 'replaces the reply of a step' do
       transcript.script(game, commands: /\Amix /, replace: { 6736 => [ReplayGame.log('26:6773')] })
       expect(DRC.bput(mix, 'Roundtime:', /^[^"]*?Try as you might/i)).to eq('Try as you might')

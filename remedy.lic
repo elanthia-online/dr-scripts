@@ -24,6 +24,9 @@
 # finished remedy is left in hand, the tools and the vessel are put away and
 # the script ends. The product in hand is the success signal; each caller
 # checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
+# When the game stops answering a crafting command, or the remedy is not
+# done after 100 crafting commands, remedy prints a bold "Remedy:" line and
+# exits with no product.
 #
 # == Settings read
 # crafting_container, crafting_items_in_container, alchemy_belt,
@@ -1040,22 +1043,47 @@ class Remedy
   # until the game says the remedy is done.
   #
   # It replaces the method that called itself once a pass, whose stack ran
-  # out after about 10,846 passes (H01). The bounds are not set
-  # yet: a command the game never answers is sent again forever (CURRENT
-  # H01/H02 and D06, bounded by layer 07).
+  # out after about 10,846 passes (H01). Two bounds end a run the
+  # game no longer moves forward: {MAX_SILENT_REPLIES} (the game stopped
+  # answering the command: H01/H02, D06) and {MAX_CRAFT_STEPS} (the remedy
+  # never gets done).
   #
   # @api private
   class CraftLoop
-    # Crafting commands sent before the loop gives up.
+    # Crafting commands sent, all told, before the loop gives up on a remedy
+    # that is never done.
     #
-    # @note Unbounded until layer 07 sets it.
-    MAX_CRAFT_STEPS = Float::INFINITY
+    # The 77 finished runs of the logs sent at most 17 crafting commands
+    # (crush or mix) and 23 sends of every kind (a tally of both logs). No
+    # log shows a recipe with a second herb, whose ingredient step is a
+    # handler and not counted here; 100 leaves room for it, for resends
+    # after silence and for the slowest recipe, while still ending a run
+    # that would never finish.
+    #
+    # It is the only bound on a loop in which every command is answered
+    # but the remedy never moves forward, since an answer counts the
+    # silence afresh ({MAX_SILENT_REPLIES}): a Roundtime alone, or a need
+    # cue whose handler sends its step without learning that it failed.
+    # An empty liquid vessel is such a loop while the pour's reply goes
+    # unread (D02/D03): each crush draws the alcohol cue alone
+    # (as 25:10873), each pour gets "Pour what?" (26:22405), and the loop
+    # ends here after 100 crushes and 99 pours, about 50 minutes when each
+    # cue-only reply is a 15 s stall (D04). The stop then names
+    # the step count, not the missing liquid.
+    MAX_CRAFT_STEPS = 100
 
     # Crafting commands in a row that may go unanswered before the loop
-    # gives up.
+    # gives up; the next one unanswered ends it.
     #
-    # @note Unbounded until layer 07 sets it.
-    MAX_SILENT_REPLIES = Float::INFINITY
+    # An unanswered command is a bput that matched nothing for 15 s and
+    # brought no cue either. A Roundtime, a cue or a handled step counts the
+    # silence afresh. In the logs the game's first line answered 2,231 of
+    # the 2,235 crush and mix commands within 1 s, and the slowest within
+    # 3 s ("Crush what?", 25:109873-109875); no crafting command ever timed
+    # out (the logs' one bput timeout, 26:68670, is a cast). So 3 silences
+    # in a row, 45 s with no reply, is a game that stopped answering, not
+    # lag; the fourth ends the run after 60 s.
+    MAX_SILENT_REPLIES = 3
 
     # The text bput returns for "Applying the final touches, you complete
     # working on a belradi elixir." (26:6742).
@@ -1077,6 +1105,12 @@ class Remedy
     # The end of the text bput returns for "Roundtime: 7 sec." (25:10825).
     ROUNDTIME = /Roundtime:\z/
 
+    # The crafting command the loop sends next. After {#run} returns
+    # :unanswered it is the command the game did not answer.
+    #
+    # @return [String, nil] nil before {#run}
+    attr_reader :command
+
     # @param tools [Tools] makes the next crafting command
     # @param noun [String] the product noun
     # @param handlers [Handlers] answers the Flags
@@ -1086,18 +1120,21 @@ class Remedy
       @noun = noun
       @handlers = handlers
       @magic = magic
+      @command = nil
     end
 
-    # Crafts until the game says the remedy is done.
+    # Crafts until the game says the remedy is done, or a bound is reached.
     #
-    # Every pass waits out roundtime and runs the magic routine before and
-    # after its work, as remedy always has.
+    # Every pass waits out roundtime and runs the magic routine once, then
+    # does its work.
     #
     # @param command [String] the first crafting command
-    # @return [Symbol] :done when the remedy is done; :too_long or
-    #   :unanswered when a bound is reached (not before layer 07)
+    # @return [Symbol] :done when the remedy is done; :unanswered when more
+    #   than {MAX_SILENT_REPLIES} commands in a row went unanswered;
+    #   :too_long after {MAX_CRAFT_STEPS} crafting commands
     # @raise [SystemExit] when a handler's get stops the script
     def run(command)
+      @command = command
       sends = 0
       silent = 0
       loop do
@@ -1105,23 +1142,24 @@ class Remedy
         @magic.routine
         if (flag = @handlers.pending)
           @handlers.run(flag)
-        else
-          case classify(DRC.bput(command, *Patterns::CRAFT_REPLIES))
-          when :done, :refused
-            return :done
-          when :progress
-            waitrt?
-            command = @tools.next_command(@noun)
-            silent = 0
-          when :silent
-            silent += 1
-          end
-          sends += 1
-          return :unanswered if silent > MAX_SILENT_REPLIES
-          return :too_long if sends > MAX_CRAFT_STEPS
+          silent = 0
+          next
         end
-        waitrt?
-        @magic.routine
+
+        case classify(DRC.bput(@command, *Patterns::CRAFT_REPLIES))
+        when :done, :refused
+          return :done
+        when :progress
+          waitrt?
+          @command = @tools.next_command(@noun)
+          silent = 0
+        when :silent
+          # A cue in the reply is an answer: the next pass handles it.
+          silent += 1 unless @handlers.pending
+        end
+        sends += 1
+        return :unanswered if silent > MAX_SILENT_REPLIES
+        return :too_long if sends >= MAX_CRAFT_STEPS
       end
     end
 
@@ -1332,20 +1370,38 @@ class Remedy
   end
 
   # Runs the crafting loop from the first command; when the remedy is done,
-  # takes it out, releases magic and exits.
+  # takes it out, releases magic and exits. When the loop gives up, stops
+  # with a Remedy line saying why.
   #
   # @param command [String] the first crafting command
-  # @return [void] returns only when the loop gives up (not before layer
-  #   07)
-  # @raise [SystemExit] when the remedy is finished, or a commons helper
-  #   stops the script
+  # @return [void] never returns
+  # @raise [SystemExit] when the remedy is finished, when the loop gives up,
+  #   or when a commons helper stops the script
   def craft(command)
     handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol)
-    outcome = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic).run(command)
-    return unless outcome == :done
+    craft_loop = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic)
+    case craft_loop.run(command)
+    when :unanswered
+      stop("the game did not answer #{craft_loop.command.inspect} #{CraftLoop::MAX_SILENT_REPLIES + 1} times in a row.")
+    when :too_long
+      stop("the #{@order.noun} is not done after #{CraftLoop::MAX_CRAFT_STEPS} crafting commands.")
+    end
 
     Finisher.new(inventory: @inventory, tools: @tools, noun: @order.noun, mark: @settings.mark_crafted_goods).finish
     @magic.release
+    exit
+  end
+
+  # Stops the script: beeps, prints a bold "Remedy: <why> Stopping." line
+  # and exits. What is in hand stays there, the vessel with any unfinished
+  # remedy included.
+  #
+  # @param message [String] why remedy stops, as a sentence
+  # @return [void] never returns
+  # @raise [SystemExit] always
+  def stop(message)
+    DRC.beep
+    DRC.message("Remedy: #{message} Stopping.")
     exit
   end
 
