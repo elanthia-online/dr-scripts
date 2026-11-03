@@ -5,7 +5,8 @@ require 'tempfile'
 
 # Self-tests of the replay support in test/: ReplayGame (a game played from
 # real log lines), ReplayCommons (an API-level model of the commons helpers),
-# ArgParserModel (lich-5's ArgParser) and spec_helper's run_lic_entry. Each
+# ArgParserModel (lich-5's ArgParser), ReplayTranscript (a real run's replies
+# from a transcript fixture) and spec_helper's run_lic_entry. Each
 # example names the lich-5 line (at 480bdee3) the model imitates, so a script
 # spec built on them tests the script, not the model.
 #
@@ -379,6 +380,29 @@ RSpec.describe 'test harness replay support' do
         expect(commons.messages).to eq(['DRCC: You seem to be missing: pewter ingot', ReplayCommons::STOP_MESSAGE])
       end
 
+      it 'takes a second one from the bag when bag_items lists the name, even with one in hand (common-crafting.rb:455-456)' do
+        commons = commons_for(:current)
+        2.times { commons.inventory << ReplayCommons::Item.new('dried nemoih', bag) }
+        expect(DRCC.get_crafting_item('nemoih', bag, ['nemoih'], belt)).to be(true)
+        expect(DRCC.get_crafting_item('nemoih', bag, ['nemoih'], belt)).to be(true)
+        expect([$right_hand, $left_hand, commons.location_of('nemoih')]).to eq(['dried nemoih', 'dried nemoih', 'right'])
+        expect(commons.inventory).to be_empty
+      end
+
+      it 'counts one in hand as got when the bag holds no other' do
+        commons = commons_for(:current)
+        $right_hand = 'dried nemoih'
+        expect(DRCC.get_crafting_item('nemoih', bag, ['nemoih'], belt)).to be(true)
+        expect([$left_hand, commons.moves]).to eq([nil, []])
+      end
+
+      it 'takes only the item it finds when two owned items are equal' do
+        commons = commons_for(:current, 'dried nemoih' => bag)
+        commons.inventory << ReplayCommons::Item.new('dried nemoih', bag)
+        DRCC.get_crafting_item('nemoih', bag, [], belt)
+        expect(commons.inventory).to eq([ReplayCommons::Item.new('dried nemoih', bag)])
+      end
+
       it 'looks only in the bag when bag_items lists the name' do
         commons_for(:current, 'pewter ingot' => 'leather satchel')
         expect(DRCC.get_crafting_item('pewter ingot', bag, ['pewter ingot'], belt, true)).to be(false)
@@ -493,6 +517,49 @@ RSpec.describe 'test harness replay support' do
       expect(commons.release('stick')).to eq('mixing stick')
       expect(commons.release('stick')).to be_nil
     end
+
+    describe '#moves' do
+      it 'records each item a helper moves by its full name, whatever name it was asked by' do
+        commons = commons_for(:current, 'luminescent starshine mixing stick' => 'grass toolstrap', 'nemoih' => bag)
+        DRCC.get_crafting_item('mixing stick', bag, [], belt)
+        DRCI.get_item?('nemoih', bag)
+        DRCI.put_away_item?('nemoih', 'large mortar')
+        DRCC.stow_crafting_item($right_hand, bag, belt)
+        expect(commons.moves).to eq(['luminescent starshine mixing stick: grass toolstrap -> hand', "nemoih: #{bag} -> hand",
+                                     'nemoih: hand -> large mortar', 'luminescent starshine mixing stick: hand -> grass toolstrap'])
+      end
+
+      it 'records lowering, a plain stow, an order and the game handing over or taking an item' do
+        commons = ReplayCommons.new(game: game, orders: { 1 => 'water' }).install(self)
+        DRCT.order_item(8862, 1)
+        DRCI.put_away_item?('water')
+        commons.hold('large mortar')
+        DRCI.lower_item?('mortar')
+        commons.hold('nemoih unguent')
+        commons.release('unguent')
+        expect(commons.moves).to eq(['water: shop -> hand', 'water: hand -> stowed', 'large mortar: game -> hand',
+                                     'large mortar: hand -> ground', 'nemoih unguent: game -> hand', 'nemoih unguent: hand -> game'])
+      end
+
+      it 'records nothing for a failed or empty-handed call' do
+        commons = commons_for(:v5_21)
+        DRCC.get_crafting_item('pewter ingot', bag, [], belt)
+        DRCC.stow_crafting_item(nil, bag, belt)
+        DRCC.stow_crafting_item('stamp', bag, belt)
+        DRCI.put_away_item?('stamp')
+        DRCI.lower_item?('stamp')
+        commons.release('stamp')
+        expect(commons.moves).to be_empty
+      end
+
+      it 'records no order when both hands are full' do
+        commons = ReplayCommons.new(game: game, orders: { 1 => 'water' }).install(self)
+        $right_hand = 'heavy cauldron'
+        $left_hand = 'luminescent starshine mixing stick'
+        DRCT.order_item(8862, 1)
+        expect(commons.moves).to be_empty
+      end
+    end
   end
 
   describe ArgParserModel do
@@ -510,6 +577,33 @@ RSpec.describe 'test harness replay support' do
           { name: 'noun', regex: /\w+/i, variable: true, description: 'Product.' }
         ]
       ]
+    end
+
+    describe '.script_vars (Script#initialize, script.rb:1837-1843)' do
+      it 'keeps the whole string first, then each argument with its double quotes removed' do
+        expect(ArgParserModel.script_vars('remedies 2 "blister cream" "red flower" nemoih'))
+          .to eq(['remedies 2 "blister cream" "red flower" nemoih', 'remedies', '2', 'blister cream', 'red flower', 'nemoih'])
+      end
+
+      it 'keeps a quoted part inside a word, and an escaped quote as a quote' do
+        expect(ArgParserModel.script_vars('a"b c"d \\"x').drop(1)).to eq(['ab cd', '"x'])
+      end
+
+      it 'gives nothing for an empty string and drops repeated spaces' do
+        expect(ArgParserModel.script_vars('')).to eq([])
+        expect(ArgParserModel.script_vars('a  b').drop(1)).to eq(%w[a b])
+      end
+    end
+
+    describe '.caller_vars (DRC.wait_for_script_to_complete, common.rb:339, and start_script)' do
+      it 'quotes an argument holding whitespace and turns others into strings' do
+        expect(ArgParserModel.caller_vars(['remedies', 6, 'a general elixir', 'belradi']))
+          .to eq(['remedies 6 "a general elixir" belradi', 'remedies', '6', 'a general elixir', 'belradi'])
+      end
+
+      it 'loses a nil or empty argument, shifting the ones after it' do
+        expect(ArgParserModel.caller_vars(['remedies', nil, 'tea', '']).drop(1)).to eq(%w[remedies tea])
+      end
     end
 
     it 'matches required arguments in order and downcases every value (arg_parser.rb:96-101)' do
@@ -588,6 +682,69 @@ RSpec.describe 'test harness replay support' do
       $script_vars = ['nonsense']
       args = parse_args(forms)
       expect([args.noun, args.flex]).to eq(%w[Cream test])
+    end
+  end
+
+  describe ReplayTranscript do
+    let(:transcript) { ReplayTranscript.load('spec/fixtures/replay_game/transcript.json') }
+    let(:mix) { 'mix my heavy cauldron with my mixing stick' }
+
+    def transcript_file(content)
+      file = Tempfile.new(['transcript', '.json'])
+      file.write(JSON.generate(content))
+      file.close
+      (@tempfiles ||= []) << file # keeps the file from being unlinked by GC
+      file.path
+    end
+
+    it 'reads each logged command with its reply lines, cited <log>:<line>' do
+      step = transcript.step(6736)
+      expect([step.command, step.user, step.lines.map(&:label)]).to eq([mix, false, %w[26:6738 26:6740 26:6742]])
+      expect(step.lines.last.text).to eq(ReplayGame.log('26:6742').text)
+    end
+
+    it 'refuses a step line that names no command' do
+      expect { transcript.step(6737) }.to raise_error(ArgumentError, /no command at line 6737/)
+    end
+
+    it 'refuses a reply line whose text differs from the same cite in a log_lines.json fixture' do
+      path = transcript_file('run' => 'x', 'log' => '26', 'source' => 'test', 'steps' => [
+                               { 'cmd' => 'mix', 'line' => 6736, 'user' => false, 'responses' => [{ 'text' => 'Roundtime: 1 sec.', 'line' => 6740 }] }
+                             ])
+      expect { ReplayTranscript.load(path) }.to raise_error(ArgumentError, /26:6740 reads "Roundtime: 1 sec\.", but a log_lines.json fixture has "Roundtime: 9 sec\."/)
+    end
+
+    it 'scripts the selected steps in log order, one reply per send' do
+      transcript.script(game, commands: /\Amix /)
+      expect(DRC.bput(mix, 'Roundtime:')).to eq('Roundtime:')
+      expect(DRC.bput(mix, /^[^"]*?Try as you might/i)).to eq('Try as you might')
+      expect(DRC.bput(mix, 'Roundtime:')).to eq('')
+    end
+
+    it 'leaves out skipped steps and steps before from:' do
+      expect(transcript.script(game, commands: /\A(?:mix|untie) /, skip: [6736]).map(&:line)).to eq([6731, 6770])
+      expect(transcript.script(ReplayGame.new, commands: /\A(?:mix|untie) /, from: 6736).map(&:line)).to eq([6736, 6770])
+    end
+
+    it 'refuses a skip line that names no step' do
+      expect { transcript.script(game, commands: /\Amix /, skip: [1]) }.to raise_error(ArgumentError, /no command at line 1/)
+    end
+
+    it 'injects an extra reply before a step, so the resend after a real "...wait" (25:11582) gets the logged reply' do
+      transcript.script(game, commands: /\Amix /, inject: { 6736 => [ReplayGame.log('25:11582')] })
+      expect(DRC.bput(mix, 'Roundtime:')).to eq('Roundtime:')
+      expect(game.sent).to eq([mix, mix])
+    end
+
+    it 'replaces the reply of a step' do
+      transcript.script(game, commands: /\Amix /, replace: { 6736 => [ReplayGame.log('26:6773')] })
+      expect(DRC.bput(mix, 'Roundtime:', /^[^"]*?Try as you might/i)).to eq('Try as you might')
+    end
+
+    it 'refuses an inject or replace line that is not a scripted step' do
+      expect { transcript.script(game, commands: /\Amix /, inject: { 6731 => [] }) }.to raise_error(ArgumentError, /6731 is not a scripted step/)
+      expect { transcript.script(game, commands: /\Amix /, skip: [6770], replace: { 6770 => [] }) }
+        .to raise_error(ArgumentError, /6770 is not a scripted step/)
     end
   end
 

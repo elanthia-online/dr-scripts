@@ -1691,7 +1691,9 @@ end
 
 # Replay support (see each file's header): a model of lich-5's ArgParser for
 # parse_args, a game played from real log lines that answers DRC.bput and
-# fput, and an API-level model of the commons helpers a crafting script calls.
+# fput, an API-level model of the commons helpers a crafting script calls,
+# and transcript fixtures that script a replay from a real run.
 require_relative 'arg_parser_model'
 require_relative 'replay_game'
 require_relative 'replay_commons'
+require_relative 'replay_transcript'

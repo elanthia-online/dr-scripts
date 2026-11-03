@@ -1,0 +1,694 @@
+{
+  "run": "2026-10-26_10483",
+  "log": "26",
+  "from": 10747,
+  "to": 11396,
+  "recipe": "some head unguent (chapter 3, page 9): nemoih, large mortar, rounded pestle, marked",
+  "source": "the 2026-10-26 game log, lines 10747-11396, timestamped copies with the timestamp removed; each reply line attributed to the command it answers (FIFO plus verb signature) by a transcript exporter, ambient lines dropped",
+  "steps": [
+    {
+      "cmd": "put my nemoih in my large mortar",
+      "line": 10747,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your nemoih in your large mortar.",
+          "line": 10749
+        }
+      ]
+    },
+    {
+      "cmd": "put my nemoih in my smokewood basket",
+      "line": 10752,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 10754
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rounded pestle from my grass toolstrap",
+      "line": 10757,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 10759
+        }
+      ]
+    },
+    {
+      "cmd": "crush my nemoih with my pestle",
+      "line": 10762,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 10764
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 10766
+        },
+        {
+          "text": "You need another splash of water to continue crafting some unfinished nemoih unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 10769
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 10771
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 10793,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another splash of water to continue crafting some unfinished nemoih unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 10796
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 10798
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 10810,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 10820
+        }
+      ]
+    },
+    {
+      "cmd": "get my water from my botanist's toolbag",
+      "line": 10823,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some water from inside your botanist's toolbag.",
+          "line": 10825
+        }
+      ]
+    },
+    {
+      "cmd": "pour part water in my large mortar",
+      "line": 10828,
+      "user": false,
+      "responses": [
+        {
+          "text": "You toss the water into the mortar and mix it in thoroughly.",
+          "line": 10830
+        }
+      ]
+    },
+    {
+      "cmd": "put my water in my botanist's toolbag",
+      "line": 10833,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your water in your botanist's toolbag.",
+          "line": 10835
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 10838,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 10843
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my unguent",
+      "line": 10846,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the nemoih unguent and smile knowingly to yourself (6/6).",
+          "line": 10848
+        },
+        {
+          "text": "When crafting is complete this will be a type of external head wound remedy.",
+          "line": 10850
+        },
+        {
+          "text": "You do not see anything that would prevent preparing the unguent further.",
+          "line": 10852
+        },
+        {
+          "text": "From the progress so far, it looks like the unguent is masterfully-crafted (13/13).",
+          "line": 10854
+        },
+        {
+          "text": "The unguent is a somewhat challenging piece to make (6/12).",
+          "line": 10856
+        },
+        {
+          "text": "You estimate that it is one-tenth done.",
+          "line": 10858
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 10860
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 10866,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 10868
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 10870
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 10890,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 10892
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 10895
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 10897
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 10921,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 10923
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 10926,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 10928
+        }
+      ]
+    },
+    {
+      "cmd": "push my unguent with my turtle-shaped sieve",
+      "line": 10931,
+      "user": false,
+      "responses": [
+        {
+          "text": "You slowly filter some unfinished nemoih unguent through your sieve and toss away the accumulated debris.",
+          "line": 10933
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 10935
+        }
+      ]
+    },
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 10955,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 10957
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 10960,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 10962
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 10980,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 10982
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 10984
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11006,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 11008
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 11011
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 11013
+        }
+      ]
+    },
+    {
+      "cmd": "smell my unguent",
+      "line": 11032,
+      "user": false,
+      "responses": [
+        {
+          "text": "You sniff the mortar and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to grind it with slow strokes.",
+          "line": 11034
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 11036
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11055,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 11057
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 11060
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 11062
+        },
+        {
+          "text": "You need another catalyst material to continue crafting some unfinished nemoih unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 11065
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 11067
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 11086,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 11089
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 11092,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 11094
+        }
+      ]
+    },
+    {
+      "cmd": "push my unguent with my turtle-shaped sieve",
+      "line": 11097,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another catalyst material to continue crafting some unfinished nemoih unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 11100
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 11102
+        }
+      ]
+    },
+    {
+      "cmd": "tie my sieve to my grass toolstrap",
+      "line": 11105,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 11107
+        }
+      ]
+    },
+    {
+      "cmd": "get my pewter ingot from my botanist's toolbag",
+      "line": 11110,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get a pewter ingot from inside your botanist's toolbag.",
+          "line": 11112
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my large mortar",
+      "line": 11115,
+      "user": false,
+      "responses": [
+        {
+          "text": "You vigorously rub the ingot alongside the mortar to scrape some shavings into the mixture.",
+          "line": 11117
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my botanist's toolbag",
+      "line": 11120,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your ingot in your botanist's toolbag.",
+          "line": 11122
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rounded pestle from my grass toolstrap",
+      "line": 11125,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 11127
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my unguent",
+      "line": 11130,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the nemoih unguent and smile knowingly to yourself (6/6).",
+          "line": 11132
+        },
+        {
+          "text": "When crafting is complete this will be a type of external head wound remedy.",
+          "line": 11134
+        },
+        {
+          "text": "A thick froth coats the mixture.  To avoid having this affect the preparation you should push the unguent with a sieve to skim off the material.",
+          "line": 11136
+        },
+        {
+          "text": "From the progress so far, it looks like the unguent is masterfully-crafted (13/13).",
+          "line": 11138
+        },
+        {
+          "text": "The unguent is a somewhat challenging piece to make (6/12).",
+          "line": 11140
+        },
+        {
+          "text": "You estimate that it is half done.",
+          "line": 11142
+        },
+        {
+          "text": "When finished the unguent has a potential for great potency (8/9) and exceptional efficacy (8/9).  It may also be very soluble (8/9) and extremely toxic (8/9).",
+          "line": 11144
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 11146
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 11163,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 11165
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 11168,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 11170
+        }
+      ]
+    },
+    {
+      "cmd": "push my unguent with my turtle-shaped sieve",
+      "line": 11173,
+      "user": false,
+      "responses": [
+        {
+          "text": "You slowly filter some unfinished nemoih unguent through your sieve and toss away the accumulated debris.",
+          "line": 11175
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 11177
+        }
+      ]
+    },
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 11196,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 11198
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 11201,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 11203
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11206,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 11208
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 11210
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11232,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 11234
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 11236
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11255,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 11257
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 11259
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11278,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 11280
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 11282
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11304,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 11306
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 11308
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11327,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished nemoih unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 11329
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 11331
+        },
+        {
+          "text": "Applying the final touches, you complete working on some nemoih unguent.",
+          "line": 11333
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11366,
+      "user": false,
+      "responses": [
+        {
+          "text": "Interesting thought really... but no.",
+          "line": 11368
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 11371,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 11373
+        }
+      ]
+    },
+    {
+      "cmd": "tie my large mortar to my grass toolstrap",
+      "line": 11376,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a diamondique large mortar carved with delicate flowers to a strap on your grass toolstrap.",
+          "line": 11379
+        }
+      ]
+    },
+    {
+      "cmd": "untie my applewood stamp from my grass toolstrap",
+      "line": 11382,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a Siksrajan applewood-handled stamp with a jadeleaf-wrapped grip from the straps of your grass toolstrap.",
+          "line": 11384
+        }
+      ]
+    },
+    {
+      "cmd": "get my unguent from my large mortar",
+      "line": 11387,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some nemoih unguent from inside a diamondique large mortar carved with delicate flowers which is on your grass toolstrap.",
+          "line": 11389
+        }
+      ]
+    },
+    {
+      "cmd": "mark my unguent with my applewood stamp",
+      "line": 11392,
+      "user": false,
+      "responses": [
+        {
+          "text": "You hold the unguent steady and score the surface with the stamp.",
+          "line": 11394
+        },
+        {
+          "text": "Roundtime: 21 sec.",
+          "line": 11396
+        }
+      ]
+    }
+  ]
+}

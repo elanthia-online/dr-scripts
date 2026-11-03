@@ -1,0 +1,710 @@
+{
+  "run": "2026-10-26_5598",
+  "log": "26",
+  "from": 5896,
+  "to": 6801,
+  "recipe": "a general elixir (chapter 6, page 10): belradi, heavy cauldron, mixing stick, marked",
+  "source": "the 2026-10-26 game log, lines 5896-6801, timestamped copies with the timestamp removed; each reply line attributed to the command it answers (FIFO plus verb signature) by a transcript exporter, ambient lines dropped",
+  "steps": [
+    {
+      "cmd": "put my belradi in my heavy cauldron",
+      "line": 5896,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your belradi in your heavy cauldron.",
+          "line": 5898
+        }
+      ]
+    },
+    {
+      "cmd": "put my belradi in my smokewood basket",
+      "line": 5901,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 5903
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 5906,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+          "line": 5908
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 5911,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 5913
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 5915
+        },
+        {
+          "text": "You need another splash of alcohol to continue crafting an unfinished belradi elixir.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 5918
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 5920
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 5948,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another splash of alcohol to continue crafting an unfinished belradi elixir.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 5951
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 5953
+        }
+      ]
+    },
+    {
+      "cmd": "tie my stick to my grass toolstrap",
+      "line": 5956,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a luminescent starshine mixing stick etched with stars to a strap on your grass toolstrap.",
+          "line": 5958
+        }
+      ]
+    },
+    {
+      "cmd": "get my alcohol from my botanist's toolbag",
+      "line": 5974,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some grain alcohol from inside your botanist's toolbag.",
+          "line": 5987
+        }
+      ]
+    },
+    {
+      "cmd": "pour part alcohol in my heavy cauldron",
+      "line": 5990,
+      "user": false,
+      "responses": [
+        {
+          "text": "You toss the alcohol into the cauldron and mix it in thoroughly.",
+          "line": 5995
+        }
+      ]
+    },
+    {
+      "cmd": "put my alcohol in my botanist's toolbag",
+      "line": 5998,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your alcohol in your botanist's toolbag.",
+          "line": 6000
+        }
+      ]
+    },
+    {
+      "cmd": "untie mixing stick from my grass toolstrap",
+      "line": 6003,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+          "line": 6005
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my elixir",
+      "line": 6008,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the belradi elixir and smile knowingly to yourself (6/6).",
+          "line": 6010
+        },
+        {
+          "text": "When crafting is complete this will be a type of internal general scar remedy.",
+          "line": 6012
+        },
+        {
+          "text": "You do not see anything that would prevent preparing the elixir further.",
+          "line": 6014
+        },
+        {
+          "text": "From the progress so far, it looks like the elixir is masterfully-crafted (13/13).",
+          "line": 6016
+        },
+        {
+          "text": "The elixir is a difficult piece to make (10/12).",
+          "line": 6018
+        },
+        {
+          "text": "You estimate that it is one-tenth done.",
+          "line": 6020
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 6022
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6026,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 6028
+        },
+        {
+          "text": "Once finished you notice clumps of material forming on the edge of the cauldron.",
+          "line": 6031
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 6033
+        }
+      ]
+    },
+    {
+      "cmd": "turn my heavy cauldron",
+      "line": 6084,
+      "user": false,
+      "responses": [
+        {
+          "text": "You spin your cauldron about while scraping the elixir off the sides.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6086
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 6088
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6116,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6118
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 6120
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6125,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 6151
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 6153
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6158,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 6160
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 6162
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6213,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 6215
+        },
+        {
+          "text": "Once finished you notice clumps of material forming on the edge of the cauldron.",
+          "line": 6218
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 6220
+        }
+      ]
+    },
+    {
+      "cmd": "turn my heavy cauldron",
+      "line": 6249,
+      "user": false,
+      "responses": [
+        {
+          "text": "You spin your cauldron about while scraping the elixir off the sides.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 6251
+        },
+        {
+          "text": "Roundtime: 17 sec.",
+          "line": 6253
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6305,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6308
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 6310
+        },
+        {
+          "text": "You need another catalyst material to continue crafting an unfinished belradi elixir.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 6313
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 6315
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6346,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another catalyst material to continue crafting an unfinished belradi elixir.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 6349
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 6351
+        }
+      ]
+    },
+    {
+      "cmd": "tie my stick to my grass toolstrap",
+      "line": 6354,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a luminescent starshine mixing stick etched with stars to a strap on your grass toolstrap.",
+          "line": 6356
+        }
+      ]
+    },
+    {
+      "cmd": "get my pewter ingot from my botanist's toolbag",
+      "line": 6359,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get a pewter ingot from inside your botanist's toolbag.",
+          "line": 6362
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my heavy cauldron",
+      "line": 6365,
+      "user": false,
+      "responses": [
+        {
+          "text": "You vigorously rub the ingot alongside the cauldron to scrape some shavings into the mixture.",
+          "line": 6367
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my botanist's toolbag",
+      "line": 6370,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your ingot in your botanist's toolbag.",
+          "line": 6372
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 6375,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+          "line": 6377
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my elixir",
+      "line": 6380,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the belradi elixir and smile knowingly to yourself (6/6).",
+          "line": 6382
+        },
+        {
+          "text": "When crafting is complete this will be a type of internal general scar remedy.",
+          "line": 6384
+        },
+        {
+          "text": "The elixir's composition looks accurate and ready for continued preparation.",
+          "line": 6386
+        },
+        {
+          "text": "From the progress so far, it looks like the elixir is masterfully-crafted (13/13).",
+          "line": 6388
+        },
+        {
+          "text": "The elixir is a difficult piece to make (10/12).",
+          "line": 6390
+        },
+        {
+          "text": "You estimate that it is half done.",
+          "line": 6392
+        },
+        {
+          "text": "When finished the elixir has a potential for great potency (8/9) and exceptional efficacy (8/9).  It may also be very soluble (8/9) and extremely toxic (8/9).",
+          "line": 6394
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 6396
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6423,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6425
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 6427
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6458,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 6460
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 6462
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6491,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6493
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 6495
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6523,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 6525
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 6528
+        },
+        {
+          "text": "Roundtime: 12 sec.",
+          "line": 6530
+        }
+      ]
+    },
+    {
+      "cmd": "tie my stick to my grass toolstrap",
+      "line": 6562,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a luminescent starshine mixing stick etched with stars to a strap on your grass toolstrap.",
+          "line": 6564
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 6567,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 6569
+        }
+      ]
+    },
+    {
+      "cmd": "push my elixir with my turtle-shaped sieve",
+      "line": 6572,
+      "user": false,
+      "responses": [
+        {
+          "text": "You filter an unfinished belradi elixir through your sieve and toss away the accumulated debris.",
+          "line": 6574
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 6576
+        },
+        {
+          "text": "Your thoughts continue to flow freely, connecting both the abstract and the practical.",
+          "line": 6608
+        }
+      ]
+    },
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 6634,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 6636
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 6639,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+          "line": 6641
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6644,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 6646
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 6649
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 6651
+        }
+      ]
+    },
+    {
+      "cmd": "tie my stick to my grass toolstrap",
+      "line": 6659,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a luminescent starshine mixing stick etched with stars to a strap on your grass toolstrap.",
+          "line": 6685
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 6688,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 6690
+        }
+      ]
+    },
+    {
+      "cmd": "push my elixir with my turtle-shaped sieve",
+      "line": 6693,
+      "user": false,
+      "responses": [
+        {
+          "text": "You filter an unfinished belradi elixir through your sieve and toss away the accumulated debris.",
+          "line": 6695
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 6697
+        }
+      ]
+    },
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 6726,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 6728
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 6731,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+          "line": 6733
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6736,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6738
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 6740
+        },
+        {
+          "text": "Applying the final touches, you complete working on a belradi elixir.",
+          "line": 6742
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6770,
+      "user": false,
+      "responses": [
+        {
+          "text": "Try as you might, you just can't mix the elixir.",
+          "line": 6773
+        }
+      ]
+    },
+    {
+      "cmd": "tie my stick to my grass toolstrap",
+      "line": 6776,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a luminescent starshine mixing stick etched with stars to a strap on your grass toolstrap.",
+          "line": 6778
+        }
+      ]
+    },
+    {
+      "cmd": "tie my heavy cauldron to my grass toolstrap",
+      "line": 6781,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a heavy cauldron with twisted Dwarven iron handles to a strap on your grass toolstrap.",
+          "line": 6783
+        }
+      ]
+    },
+    {
+      "cmd": "untie my applewood stamp from my grass toolstrap",
+      "line": 6786,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a Siksrajan applewood-handled stamp with a jadeleaf-wrapped grip from the straps of your grass toolstrap.",
+          "line": 6788
+        }
+      ]
+    },
+    {
+      "cmd": "get my elixir from my heavy cauldron",
+      "line": 6791,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get a belradi elixir from inside a heavy cauldron with twisted Dwarven iron handles which is on your grass toolstrap.",
+          "line": 6794
+        }
+      ]
+    },
+    {
+      "cmd": "mark my elixir with my applewood stamp",
+      "line": 6797,
+      "user": false,
+      "responses": [
+        {
+          "text": "You hold the elixir steady and score the surface with the stamp.",
+          "line": 6799
+        },
+        {
+          "text": "Roundtime: 21 sec.",
+          "line": 6801
+        }
+      ]
+    }
+  ]
+}

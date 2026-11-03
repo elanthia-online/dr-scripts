@@ -36,7 +36,37 @@ module ArgParserModel
   # Message when several forms match (AP:38).
   MULTIPLE_MATCH_MESSAGE = '***INVALID ARGUMENTS MATCH MULTIPLE PATTERNS***'
 
+  # One argument of a script's argument string, as Lich's Script#initialize
+  # splits it (lib/common/script.rb:1842 at 480bdee3): a run of characters
+  # that may hold a double-quoted part with spaces, or a run without spaces.
+  SCRIPT_ARGUMENT = /[^\s"]*(?<!\\)"(?:\\"|[^"])+(?<!\\)"[^\s]*|(?:\\"|[^"\s])+/
+
   module_function
+
+  # The `variable` a script sees when started with an argument string, as
+  # typed (`;remedy remedies 2 "blister cream" ...`) or as start_script joins
+  # an argument list (lib/global_defs.rb:22-26): [0] the whole string, [1..]
+  # each argument with its double quotes removed (lib/common/script.rb:1837-1843).
+  #
+  # @param line [String] the argument string
+  # @return [Array<String>] empty for an empty string
+  def script_vars(line)
+    return [] if line.empty?
+
+    [line, *line.scan(SCRIPT_ARGUMENT).map { |arg| arg.gsub(/(?<!\\)"/, '').gsub('\\"', '"') }]
+  end
+
+  # The `variable` a script sees when another script runs it with
+  # DRC.wait_for_script_to_complete(name, args): each argument holding
+  # whitespace is wrapped in double quotes (lib/dragonrealms/commons/common.rb:339),
+  # the list is joined with spaces (start_script), and the string is split
+  # again ({.script_vars}). A nil or blank argument therefore disappears.
+  #
+  # @param args [Array<Object>] the caller's argument list (Integers, nil ...)
+  # @return [Array<String>]
+  def caller_vars(args)
+    script_vars(args.map { |arg| arg.to_s =~ /\s/ ? "\"#{arg}\"" : arg }.join(' '))
+  end
 
   # Matches arguments against a script's argument forms.
   #
