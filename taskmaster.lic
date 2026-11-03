@@ -19,6 +19,7 @@
   task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
+  task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -29,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.13'
+  VERSION = '2026.11.04.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -101,6 +102,7 @@ class TaskMaster
     @task_hometown = @settings.task_hometown
     @rock_room = @settings.task_rock_room || DEFAULT_ROCK_ROOM
     @shell_room = @settings.task_shell_room || DEFAULT_SHELL_ROOM
+    @cancel_foreign_tasks = @settings.task_cancel_foreign_tasks
 
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
@@ -166,8 +168,9 @@ class TaskMaster
   # @param args [OpenStruct] parsed arguments (npc, finish, find, tools,
   #   repeat, reset_output, pickup, cycle, marathon, loot_history)
   # @return [void]
-  # @raise [SystemExit] after the one-shot modes, marathon and finish, or
-  #   from run_tasks
+  # @raise [SystemExit] after the one-shot modes, marathon, and finish (which
+  #   goes on to run_tasks instead when it cancelled another taskmaster's
+  #   task), or from run_tasks
   def run(args = parse_args(ARG_DEFINITIONS))
     DRC.message("taskmaster version #{VERSION}")
     shift_to_task_hometown
@@ -223,13 +226,15 @@ class TaskMaster
     exit
   end
 
-  # resume_task exits once the task is handed in.
+  # resume_task exits once the task is handed in. When the task was another
+  # taskmaster's and had to be cancelled, this returns and the run carries
+  # on asking its own taskmaster for a task.
   #
   # @return [void]
   # @raise [SystemExit] from resume_task
   def finish_task_in_progress
     reconcile_hands
-    resume_task
+    catch(FOREIGN_TASK_CANCELLED) { resume_task }
   end
 
   # Copper, haste and the before scripts, run ahead of asking for each task.
@@ -1370,6 +1375,7 @@ class TaskMaster
 
     @task_giver = match[1]&.downcase
     item = match[2].split.last
+    @task_item = item
     remaining = [match[3].to_i - match[4].to_i, 0].max
     DRC.message("Making #{remaining} #{item}s")
     return item, remaining
@@ -1415,8 +1421,11 @@ class TaskMaster
   # in the rest.
   #
   # @return [void]
-  # @raise [SystemExit] always: when not on a task, when the banked items
-  #   finish it, or after the last item is handed in
+  # @raise [SystemExit] when not on a task, when the banked items finish it,
+  #   or after the last item is handed in
+  # @raise [UncaughtThrowError] never: with task_cancel_foreign_tasks, a
+  #   task for another taskmaster is cancelled and FOREIGN_TASK_CANCELLED
+  #   thrown, caught in get_task and finish_task_in_progress
   def resume_task
     @dispose, @remainder = [false, false]
     item, owed = read_task
@@ -1447,15 +1456,21 @@ class TaskMaster
   # while on one of Dorhum's tasks, say). A run never works another
   # taskmaster's task: its items, tools and hand-in are theirs, and a
   # character set up for one craft may not be for another. So it says whose
-  # task it is and how to clear it, and stops.
+  # task it is and how to clear it, and stops. With task_cancel_foreign_tasks
+  # it cancels that task instead, waits out the cooldown a cancel brings,
+  # and goes back to asking its own taskmaster.
   #
   # @return [void]
-  # @raise [SystemExit] when the journal names another taskmaster
+  # @raise [SystemExit] when the journal names another taskmaster and
+  #   task_cancel_foreign_tasks is off
+  # @raise [UncaughtThrowError] never: with task_cancel_foreign_tasks, throws
+  #   FOREIGN_TASK_CANCELLED, caught in get_task and finish_task_in_progress
   def check_task_giver
     giver = @task_giver
     return if giver.nil? || giver == @npc
 
-    DRC.message(another_taskmasters_task_message(giver))
+    cancel_foreign_task(giver) if @cancel_foreign_tasks
+    DRC.message("#{another_taskmasters_task_message(giver)} Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.")
     exit
   end
 
@@ -1465,6 +1480,86 @@ class TaskMaster
     name = giver.capitalize
     finish = TASKMASTERS.include?(giver) ? "Finish it with ;taskmaster #{giver}" : "#{name} is not a taskmaster this script does, so finish it yourself"
     "You are on a task for #{name}, not #{@npc.capitalize}. #{finish}, or cancel it with ASK #{giver.upcase} FOR TASK CANCEL (taskmasters then refuse you for about ten minutes)."
+  end
+
+  # A taskmaster's refusal after a task was cancelled, sent as two lines:
+  # "Word has traveled.  You are unreliable.  Perhaps I'll give" /
+  # "you a chance a little later." (Zasele, 2026-11-03), so the older
+  # one-line "give you a chance a little later" never matched it.
+  TASK_UNRELIABLE = /You are unreliable/
+  # Unknown replies in a row to ASK FOR TASK before get_task stops.
+  MAX_UNKNOWN_TASK_REPLIES = 3
+
+  # Thrown (and caught in get_task and finish_task_in_progress) once another
+  # taskmaster's task has been cancelled, so the run goes back to asking its
+  # own taskmaster.
+  FOREIGN_TASK_CANCELLED = :taskmaster_foreign_task_cancelled
+  # The taskmaster's replies to ASK <taskmaster> FOR TASK CANCEL (Dorhum,
+  # 2026-11-03): the first asks to confirm within fifteen seconds, the second
+  # cancels, and with no task there is nothing to cancel. They are speech
+  # ('Researcher Dorhum says, "Very well, I see that you no longer wish to
+  # assist me."'), so cancel_reply matches them only after the taskmaster's
+  # name; a player saying the words does not count.
+  TASK_CANCEL_CONFIRM = 'ask me again within fifteen seconds'
+  TASK_CANCELLED = 'I see that you no longer wish to assist me'
+  TASK_CANCEL_NONE = 'You do not currently have a task'
+  # How long taskmasters call you unreliable after a cancel: about ten
+  # minutes, the figure players go by, and what Mahtra's log shows (cancel
+  # 18:45:30, refused until 18:54:47, offered a task at 18:56:00).
+  CANCEL_COOLDOWN_SECONDS = 600
+
+  # Cancels another taskmaster's task (task_cancel_foreign_tasks), waits out
+  # the cooldown a cancel brings, and sends the run back to asking its own
+  # taskmaster.
+  #
+  # @param giver [String] the taskmaster whose task it is
+  # @return [void]
+  # @raise [UncaughtThrowError] never: throws FOREIGN_TASK_CANCELLED, caught
+  #   in get_task and finish_task_in_progress
+  # @raise [SystemExit] when the cancel does not go through
+  def cancel_foreign_task(giver)
+    cancel_task(giver, @task_item)
+    DRC.message("Waiting #{CANCEL_COOLDOWN_SECONDS / 60} minutes: after a cancel, taskmasters call you unreliable for about that long.")
+    pause CANCEL_COOLDOWN_SECONDS
+    throw FOREIGN_TASK_CANCELLED
+  end
+
+  # Cancels the task with ASK <giver> FOR TASK CANCEL, asked twice as the
+  # game wants, then throws its instructions away and clears its
+  # replacement record.
+  #
+  # @param giver [String] the taskmaster whose task it is
+  # @param item [String, nil] the task item's noun, for the instructions
+  # @return [void]
+  # @raise [SystemExit] when the cancel does not go through
+  def cancel_task(giver, item)
+    DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it (task_cancel_foreign_tasks).")
+    DRCI.stow_hands
+    find_npc(@rooms, giver)
+    confirm, cancelled, none = [TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCEL_NONE].map { |text| cancel_reply(giver, text) }
+    asks = 0
+    reply = ''
+    while asks < 2
+      asks += 1
+      reply = DRC.bput("ask #{giver} for task cancel", confirm, cancelled, none)
+      break unless reply.match?(confirm)
+    end
+    unless reply.match?(cancelled) || reply.match?(none)
+      DRC.message("Could not cancel #{giver.capitalize}'s task#{reply.empty? ? '' : " (#{reply})"}. Stopping.")
+      exit
+    end
+    DRCT.dispose("#{item} instructions", nil, @worn_trashcan, @worn_trashcan_verb) if item
+    forget_replacement(giver)
+  end
+
+  # @param giver [String] the taskmaster
+  # @param text [String] one of the TASK_CANCEL_* replies
+  # @return [Regexp] the reply, said by the taskmaster: the line starts with
+  #   its name (after a title such as "Researcher"), then "says," or "looks
+  #   at you and says," before the quote, as every logged reply does. So
+  #   "Mallory looks at Researcher Dorhum and says, ..." does not count.
+  def cancel_reply(giver, text)
+    /^(?:[\w'-]+ )?#{Regexp.escape(giver)} (?:looks at you and )?says, "[^"]*#{Regexp.escape(text)}/i
   end
 
   # Hands in finished items already in the bag and returns how many are still
@@ -1589,23 +1684,30 @@ class TaskMaster
   end
 
   # Asks the taskmaster for a task until one is offered, waiting out
-  # cooldowns, and returns what finish reads from it. An ongoing task is
-  # resumed instead, and nil comes back when the reply matches nothing.
+  # cooldowns (including the one after a cancelled task), and returns what
+  # finish reads from it. An ongoing task is resumed instead; another
+  # taskmaster's that had to be cancelled sends the loop round to ask again.
   # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
   # inside it and return nil, where the old recursion let it propagate.
   #
-  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String), nil]
-  #   what {#finish} returns, or nil
-  # @raise [SystemExit] from finish (not on a task) or resume_task
+  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String)]
+  #   what {#finish} returns
+  # @raise [SystemExit] from finish (not on a task) or resume_task, or after
+  #   MAX_UNKNOWN_TASK_REPLIES replies in a row it does not know
   def get_task
+    unknown_replies = 0
     while true
       find_npc(@rooms, @npc)
-      case DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+      reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, /^To whom are you speaking/)
+      unknown_replies = 0 unless reply.empty?
+      case reply
       when /if you agree to (his|her) terms/, /To whom are you speaking/
         next
       when /You are already on a task/
-        return resume_task
-      when /utterly ignoring you/, /give you a chance a little later/
+        catch(FOREIGN_TASK_CANCELLED) { return resume_task }
+        # Another taskmaster's task, cancelled: ask our own taskmaster again.
+        next
+      when /utterly ignoring you/, /give you a chance a little later/, TASK_UNRELIABLE
         DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
       when /you must wait before I can give you a task/
@@ -1621,7 +1723,15 @@ class TaskMaster
         forget_replacement
         return finish
       else
-        return nil
+        # No reply bput knows: nothing to work on. Returning would send the
+        # run on with no task (a crash in the worker); ask again after a
+        # wait, and stop after MAX_UNKNOWN_TASK_REPLIES in a row.
+        unknown_replies += 1
+        if unknown_replies >= MAX_UNKNOWN_TASK_REPLIES
+          DRC.message("No answer #{@npc.capitalize} gives that taskmaster knows, #{MAX_UNKNOWN_TASK_REPLIES} times in a row. Stopping.")
+          exit
+        end
+        pause @cooldown_poll
       end
     end
   end
@@ -2077,8 +2187,8 @@ class TaskMaster
   # Clears the record of a replacement request for this taskmaster's task.
   #
   # @return [void]
-  def forget_replacement
-    UserVars.taskmaster_replacements&.delete(@npc)
+  def forget_replacement(npc = @npc)
+    UserVars.taskmaster_replacements&.delete(npc)
   end
 
   # Deals with worn tools after a task: stows them with task_no_repair,
