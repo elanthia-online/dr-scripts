@@ -30,20 +30,30 @@
 # when the game stops answering a crafting command, when the remedy is not
 # done after 100 crafting commands, when a tool, the catalyst or the second
 # herb cannot be got or put in, when the game asks for a second herb and
-# herb2 is na, none or "not used", or when the finished remedy is not in
-# hand after it is taken out of the vessel. A stop leaves the vessel in hand
-# and puts the stirrer away; when the vessel holds a remedy the game has
-# begun and not finished, remedy prints the ;remedy continue line that
-# carries it on. However remedy ends, it releases the magic
-# crafting_training_spells left prepared, when that setting lists a spell.
+# herb2 is na, none or "not used", when the finished remedy is not in hand
+# after it is taken out of the vessel, or when water, alcohol or a coal
+# nugget must be bought and base-crafting.yaml knows no alchemy shop in the
+# crafting town or hometown. A stop leaves the vessel in hand and puts the
+# stirrer away; when the vessel holds a remedy the game has begun and not
+# finished, remedy prints the ;remedy continue line that carries it on.
+# However remedy ends, it releases the magic crafting_training_spells left
+# prepared, when that setting lists a spell.
 #
 # == Settings read
 # crafting_container, crafting_items_in_container, alchemy_belt,
 # alchemy_tools, herb_container, water_container, alcohol_container,
 # master_crafting_book, mark_crafted_goods, cube_armor_piece,
-# crafting_training_spells, hometown and alchemy_room. The commons it calls
-# read more (DRCA.crafting_magic_routine, DRCM.get_money_from_bank), and
-# ;buff remedy reads waggle_sets['remedy'].
+# crafting_training_spells, hometown, force_crafting_town and alchemy_room.
+# The commons it calls read more (DRCA.crafting_magic_routine,
+# DRCM.get_money_from_bank), and ;buff remedy reads waggle_sets['remedy'].
+#
+# == Buying supplies
+# With no water, alcohol or coal nugget catalyst on hand, remedy buys it at
+# the alchemy shop of the crafting town (force_crafting_town, otherwise
+# hometown; hometown's shop when base-crafting.yaml has none for the
+# crafting town), with coins from that town's bank, then walks to
+# alchemy_room, or back to the room it was started in when alchemy_room is
+# not set.
 
 # Crafts one alchemy remedy from a recipe book, or resumes one in progress.
 #
@@ -1220,6 +1230,134 @@ class Remedy
     end
   end
 
+  # Buys the plain water, the plain alcohol and the coal nugget catalyst
+  # remedy has none of, at the alchemy shop of the crafting town, then walks
+  # back to where the crafting happens.
+  #
+  # The shop is the crafting town's (DRCC.crafting_hometown: force_crafting_town
+  # when set, otherwise hometown), the town every other crafting script
+  # works and banks in (forge.lic:412, smith.lic:393, craft.lic:16 with
+  # craft.lic:213). Before layer 13 remedy always bought in hometown, which
+  # sent a character whose force_crafting_town is another town to its
+  # hometown's shop and bank (H09). When base-crafting.yaml has
+  # no remedies shop for the crafting town, hometown's shop is used, as it
+  # always was, so a run that buys today still buys; when neither town has
+  # one, a purchase stops remedy with a Remedy line instead of the
+  # NoMethodError it raised before. Nothing is bought, and nothing stops,
+  # when every supply is on hand.
+  #
+  # After each purchase remedy walks to alchemy_room, or, when that is not
+  # set, back to the room remedy was started in (before layer 13 it called
+  # DRCT.walk_to(nil), which stays in the shop: H29).
+  #
+  # @api private
+  class Supplies
+    # The coins withdrawn before each purchase, as remedy always has.
+    WITHDRAWAL = '5 silver'
+
+    # The catalyst names remedy buys a coal nugget for.
+    COAL = ['coal nugget', 'nugget'].freeze
+
+    # What each supply is ordered as: the base-crafting.yaml remedies keys
+    # (base-crafting.yaml:1388-1416, Crossing) of the room it is ordered in
+    # and of its menu number, and the name it is stowed and looked for by.
+    ORDERS = {
+      'water'   => { room: 'stock-room', number: 'stock-number', item: 'water' }.freeze,
+      'alcohol' => { room: 'stock-room', number: 'stock-number-a', item: 'alcohol' }.freeze,
+      'coal'    => { room: 'catalyst-room', number: 'catalyst_number', item: 'coal nugget' }.freeze
+    }.freeze
+
+    # The town whose alchemy shop remedy buys in: the crafting town when
+    # base-crafting.yaml has a remedies shop for it, otherwise hometown when
+    # it has one.
+    #
+    # @param settings [OpenStruct] reads force_crafting_town and hometown
+    # @param remedies [Hash{String => Hash}] base-crafting.yaml's remedies
+    #   data, by town
+    # @return [String, nil] the town, or nil when neither has a shop
+    def self.shop_town(settings, remedies)
+      [DRCC.crafting_hometown(settings), settings.hometown].find { |town| remedies[town] }
+    end
+
+    # Takes what the purchases need. Sends nothing to the game.
+    #
+    # @param settings [OpenStruct] the character's settings; reads
+    #   force_crafting_town and hometown here, and the bank helper reads more
+    # @param remedies [Hash{String => Hash}] base-crafting.yaml's remedies
+    #   data, by town
+    # @param inventory [Inventory] stows what is bought
+    # @param return_room [Integer, String, nil] where to walk after a
+    #   purchase: alchemy_room, or the room remedy was started in
+    def initialize(settings:, remedies:, inventory:, return_room:)
+      @settings = settings
+      @crafting_town = DRCC.crafting_hometown(settings)
+      @town = self.class.shop_town(settings, remedies)
+      @stock = @town && remedies[@town]
+      @inventory = inventory
+      @return_room = return_room
+    end
+
+    # Buys plain water, plain alcohol and a coal nugget catalyst when none is
+    # on hand.
+    #
+    # @param water [Liquid] the water source ({Liquid.find})
+    # @param alcohol [Liquid] the alcohol source ({Liquid.find})
+    # @param catalyst [String] the catalyst the recipe names
+    # @return [void]
+    # @raise [SystemExit] when a purchase is needed and no town has a shop
+    #   ({#buy})
+    # @note Water and alcohol are bought whenever they are plain and missing,
+    #   whether or not the recipe uses them, as before (H20, a
+    #   follow-up): remedy is not told the recipe's liquid.
+    def buy_missing(water:, alcohol:, catalyst:)
+      buy('water') if water.plain? && !DRCI.exists?(water.source)
+      buy('alcohol') if alcohol.plain? && !DRCI.exists?(alcohol.source)
+      buy('coal') if COAL.include?(catalyst) && !DRCI.exists?(catalyst)
+    end
+
+    private
+
+    # Withdraws coins at the shop town's bank, orders the supply, puts it
+    # away, checks it is on hand and walks back ({Supplies}).
+    #
+    # @param supply [String] a key of {ORDERS}
+    # @return [void]
+    # @raise [SystemExit] when no town has a shop ({#stop_no_shop})
+    # @note A purchase that leaves nothing on hand (the bank had no coins
+    #   for it, or the walk failed) is reported and remedy carries on, as it
+    #   always has: the recipe may not use that supply (H20), and
+    #   one that does stops at the guarded get of it.
+    def buy(supply)
+      order = ORDERS[supply]
+      stop_no_shop(order[:item]) unless @stock
+
+      DRCM.get_money_from_bank(WITHDRAWAL, @settings, @town)
+      DRCT.order_item(@stock[order[:room]], @stock[order[:number]])
+      @inventory.stow(order[:item])
+      report_not_bought(order[:item]) unless DRCI.exists?(order[:item])
+      DRCT.walk_to(@return_room)
+    end
+
+    # Prints that the purchase left nothing on hand.
+    #
+    # @param item [String] what was ordered
+    # @return [void]
+    def report_not_bought(item)
+      DRC.message("Remedy: could not buy #{item} at the #{@town} alchemy shop; crafting on without it.")
+    end
+
+    # Stops remedy: a supply is missing and base-crafting.yaml has no
+    # alchemy shop for the crafting town or hometown (Aesry, for one).
+    #
+    # @param item [String] the missing supply
+    # @return [void] never returns
+    # @raise [SystemExit] always ({Remedy.stop})
+    def stop_no_shop(item)
+      towns = [@crafting_town, @settings.hometown].uniq.join(' or ')
+      Remedy.stop("no #{item} on hand, and no alchemy shop is known in #{towns} to buy it from: put #{item} in your crafting_container, or set force_crafting_town to a town with one.")
+    end
+  end
+
   # Gathers herb1 into the lowered vessel: gets stacks and combines them
   # until the counts reach {HANDFUL} pieces, puts the stack in, puts away
   # what is left and picks the vessel up again.
@@ -2203,14 +2341,17 @@ class Remedy
   #   commons helper stops the script
   def run
     before_dying { cleanup }
-    @stock = get_data('crafting')['remedies'][@settings.hometown]
+    # The room remedy was started in is read before anything moves the
+    # character, so a purchase can walk back to it.
+    supplies = Supplies.new(settings: @settings, remedies: get_data('crafting')['remedies'], inventory: @inventory,
+                            return_room: @settings.alchemy_room || Room.current&.id)
     REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
 
     @tools = Tools.resolve(@settings, @order)
 
     @water = Liquid.find('water', @settings.water_container, @inventory)
     @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
-    buy_missing_supplies
+    supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst)
     DRC.wait_for_script_to_complete('buff', ['remedy'])
 
     if @order.continue?
@@ -2258,16 +2399,6 @@ class Remedy
     return unless @craft_loop&.resumable?
 
     DRC.message("Remedy: the unfinished #{@order.noun} is in the #{@tools.container}; to carry on with it, run #{@order.continue_command}")
-  end
-
-  # Buys plain water, plain alcohol and a coal nugget catalyst when none is
-  # on hand.
-  #
-  # @return [void]
-  def buy_missing_supplies
-    buy_item('water') if @water.plain? && !DRCI.exists?(@water.source)
-    buy_item('alcohol') if @alcohol.plain? && !DRCI.exists?(@alcohol.source)
-    buy_item('coal') if ['coal nugget', 'nugget'].include?(@order.catalyst) && !DRCI.exists?(@order.catalyst)
   end
 
   # Crafts with another herb1 than the one asked for (the dried or crushed
@@ -2372,29 +2503,6 @@ class Remedy
   # @raise [SystemExit] always
   def stop(message)
     Remedy.stop(message)
-  end
-
-  # Buys a supply from the hometown's alchemy shop (base-crafting.yaml
-  # remedies), then walks to alchemy_room.
-  #
-  # @param name [String] 'water', 'alcohol' or 'coal'
-  # @return [void]
-  def buy_item(name)
-    DRCM.get_money_from_bank('5 silver', @settings)
-
-    case name
-    when 'coal'
-      DRCT.order_item(@stock['catalyst-room'], @stock['catalyst_number'])
-      @inventory.stow('coal nugget')
-    when 'water'
-      DRCT.order_item(@stock['stock-room'], @stock['stock-number'])
-      @inventory.stow('water')
-    when 'alcohol'
-      DRCT.order_item(@stock['stock-room'], @stock['stock-number-a'])
-      @inventory.stow('alcohol')
-    end
-
-    DRCT.walk_to(@settings.alchemy_room)
   end
 end
 

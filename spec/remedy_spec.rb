@@ -69,6 +69,7 @@ RSpec.describe Remedy do
       alchemy_tools: ['heavy cauldron', 'mixing stick', 'turtle-shaped sieve', 'large mortar', 'rounded pestle'],
       crafting_training_spells: [],
       hometown: 'Crossing',
+      force_crafting_town: nil,
       mark_crafted_goods: true,
       cube_armor_piece: nil,
       herb_container: nil,
@@ -1953,19 +1954,25 @@ RSpec.describe Remedy do
       let(:inventory) { logged_tools.merge(logged_supplies.except('water'), 'dried nemoih' => toolbag) }
       let(:orders) { { 1 => 'water' } }
 
-      # flipped by layer 13 (restock in the crafting town)
-      it 'CURRENT (H09): buys in the hometown (Shard stock-room 19288) although force_crafting_town is Crossing' do
+      # layer 13 (restock in the crafting town)
+      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml:1401), not in the Shard hometown' do
         settings.merge!(hometown: 'Shard', force_crafting_town: 'Crossing')
         script_short_unguent
-        run_remedy(short_unguent)
-        expect(commons.calls).to include(['DRCT.order_item', 19288, 1])
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.calls).to include(['DRCT.order_item', 8862, 1])
+        expect(commons.calls).not_to include(['DRCT.order_item', 19288, 1])
+        expect(DRCM).to have_received(:get_money_from_bank).with('5 silver', anything, 'Crossing')
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
 
-      # flipped by layer 13
-      it 'CURRENT (H09): raises NoMethodError for a hometown with no remedies data (Aesry)' do
+      # layer 13
+      it 'H09: stops with a Remedy line, buying nothing, for a hometown with no remedies data (Aesry)' do
         settings[:hometown] = 'Aesry'
         script_short_unguent
-        expect { run_remedy(short_unguent) }.to raise_error(NoMethodError)
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(remedy_messages).to eq(['Remedy: no water on hand, and no alchemy shop is known in Aesry to buy it from: put water in your crafting_container, or set force_crafting_town to a town with one. Stopping.'])
+        expect(commons.calls.map(&:first)).not_to include('DRCM.get_money_from_bank', 'DRCT.order_item', 'DRCT.walk_to')
+        expect(game.sent).to be_empty
       end
     end
 
@@ -2959,6 +2966,145 @@ RSpec.describe Remedy do
         expect(run_exit_hooks).to be_empty
         expect(remedy_flags).to be_empty
       end
+    end
+  end
+
+  # Layer 13 (a deliberate behaviour change): water, alcohol and
+  # the coal nugget are bought at the alchemy shop of the crafting town
+  # (force_crafting_town, otherwise hometown), with coins from that town's
+  # bank, and remedy walks back to alchemy_room or, when that is not set, to
+  # the room it was started in. The shop rooms and order numbers are
+  # base-crafting.yaml's remedies data (Crossing :1388-1416, Shard :1460-1484).
+  describe 'buying supplies in the crafting town and walking back (layer 13)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: 8859) }
+    let(:inventory) { logged_tools.merge(logged_supplies.except('water'), 'dried nemoih' => toolbag) }
+    let(:orders) { { 1 => 'water' } }
+
+    # @return [Array<Array>] the bank and travel calls, in order
+    def purchase_calls
+      commons.calls.select { |name, *| name.start_with?('DRCM.', 'DRCT.') }
+    end
+
+    # Expects every withdrawal to be in +town+: DRCM.get_money_from_bank's
+    # third argument (lich-5 common-money.rb:140, hometown).
+    #
+    # @param town [String]
+    # @param times [Integer] the withdrawals made
+    # @return [void]
+    def expect_banked_in(town, times: 1)
+      expect(DRCM).to have_received(:get_money_from_bank).exactly(times).times
+      expect(DRCM).to have_received(:get_money_from_bank).with('5 silver', anything, town).exactly(times).times
+    end
+
+    {
+      { hometown: 'Shard', force_crafting_town: 'Crossing' }    => ['Crossing', 8862],
+      { hometown: 'Crossing', force_crafting_town: 'Shard' }    => ['Shard', 19_288],
+      { hometown: 'Shard', force_crafting_town: nil }           => ['Shard', 19_288],
+      { hometown: 'Crossing', force_crafting_town: 'Crossing' } => ['Crossing', 8862]
+    }.each do |towns, (shop_town, stock_room)|
+      it "buys the water in #{shop_town} (stock-room #{stock_room}) with #{towns.inspect}, banks there, walks back and crafts as before" do
+        settings.merge!(towns)
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', stock_room, 1], ['DRCT.walk_to', 8859]])
+        expect_banked_in(shop_town)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
+                                 'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar'])
+        expect(commons.location_of('water')).to eq(toolbag)
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        expect(remedy_messages).to be_empty
+      end
+    end
+
+    it 'buys in hometown, as it always has, when force_crafting_town has no alchemy shop in base-crafting.yaml (Aesry)' do
+      settings.merge!(hometown: 'Crossing', force_crafting_town: 'Aesry')
+      script_short_unguent
+      expect(run_remedy(short_unguent)).to eq(:exited)
+      expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859]])
+      expect_banked_in('Crossing')
+      expect(remedy_messages).to be_empty
+    end
+
+    # Before layer 13 this pair withdrew at the Aesry bank, then raised
+    # NoMethodError on @stock['stock-room'] (no Aesry remedies data in
+    # base-crafting.yaml), so no Aesry-hometown character could buy at all.
+    it 'buys in force_crafting_town (Crossing) and crafts when hometown (Aesry) has no alchemy shop, where it used to crash' do
+      settings.merge!(hometown: 'Aesry', force_crafting_town: 'Crossing')
+      script_short_unguent
+      expect(run_remedy(short_unguent)).to eq(:exited)
+      expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859]])
+      expect_banked_in('Crossing')
+      expect(commons.location_of('water')).to eq(toolbag)
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      expect(remedy_messages).to be_empty
+    end
+
+    it 'names both towns when neither force_crafting_town (Aesry) nor hometown (Mer\'Kresh) has an alchemy shop, and stops before the bank' do
+      settings.merge!(hometown: "Mer'Kresh", force_crafting_town: 'Aesry')
+      expect(run_remedy(short_unguent)).to eq(:exited)
+      expect(remedy_messages).to eq(["Remedy: no water on hand, and no alchemy shop is known in Aesry or Mer'Kresh to buy it from: put water in your crafting_container, or set force_crafting_town to a town with one. Stopping."])
+      expect(purchase_calls).to be_empty
+      expect(game.sent).to be_empty
+    end
+
+    it 'crafts as before, buying nothing and saying nothing, with an Aesry hometown when every supply is on hand' do
+      inventory['water'] = toolbag
+      settings[:hometown] = 'Aesry'
+      script_short_unguent
+      expect(run_remedy(short_unguent)).to eq(:exited)
+      expect(purchase_calls).to be_empty
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      expect(remedy_messages).to be_empty
+    end
+
+    it 'buys water, alcohol and the coal nugget all in force_crafting_town, walking back after each, as remedy always walked' do
+      inventory.delete('grain alcohol')
+      orders.merge!(2 => 'alcohol')
+      settings.merge!(hometown: 'Shard', force_crafting_town: 'Crossing')
+      script_short_unguent
+      expect(run_remedy(typed('remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent'))).to eq(:exited)
+      expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859],
+                                    ['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 2], ['DRCT.walk_to', 8859],
+                                    ['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8775, 2], ['DRCT.walk_to', 8859]])
+      expect_banked_in('Crossing', times: 3)
+    end
+
+    context 'when alchemy_room is not set' do
+      let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: nil) }
+
+      it 'walks back to the room remedy was started in, read before the walk to the shop' do
+        # Room ids from base-crafting.yaml:1392-1397 (Crossing npc-rooms): the
+        # character starts in 8863; Room.current would answer the shop room
+        # 8862 if it were read again after the order.
+        allow(Room).to receive(:current).and_return(instance_double(Map, id: 8863), instance_double(Map, id: 8862))
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8863]])
+        expect(Room).to have_received(:current).once
+      end
+
+      it 'asks walk_to for no room, as before, when the map does not know the room remedy was started in' do
+        allow(Room).to receive(:current).and_return(nil)
+        script_short_unguent
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(purchase_calls.last).to eq(['DRCT.walk_to', nil])
+      end
+    end
+
+    it 'never reads the start room when alchemy_room is set' do
+      allow(Room).to receive(:current)
+      script_short_unguent
+      run_remedy(short_unguent)
+      expect(Room).not_to have_received(:current)
+    end
+
+    it 'says so and crafts on when the purchase leaves no water on hand: this recipe never asks for water' do
+      orders.clear
+      script_short_unguent
+      expect(run_remedy(short_unguent)).to eq(:exited)
+      expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859]])
+      expect(remedy_messages).to eq(['Remedy: could not buy water at the Crossing alchemy shop; crafting on without it.'])
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
     end
   end
 end
@@ -5525,6 +5671,103 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
             expect(game.sent).to be_empty
           end
         end
+      end
+    end
+  end
+
+  # Layer 13: the shop town and the purchase, as units, against
+  # base-crafting.yaml's real remedies data.
+  describe 'Remedy::Supplies' do
+    let(:remedies) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['remedies'] }
+
+    describe '.shop_town' do
+      # @param hometown [String]
+      # @param force [String, nil] force_crafting_town
+      # @return [String, nil]
+      def shop_town(hometown, force)
+        Remedy::Supplies.shop_town(OpenStruct.new(hometown: hometown, force_crafting_town: force), remedies)
+      end
+
+      it 'is the crafting town for every town base-crafting.yaml has a remedies shop for, whatever the hometown' do
+        remedies.each_key do |town|
+          expect(shop_town('Aesry', town)).to eq(town)
+          expect(shop_town('Crossing', town)).to eq(town)
+        end
+      end
+
+      it 'is the hometown when force_crafting_town is not set' do
+        expect(shop_town('Shard', nil)).to eq('Shard')
+      end
+
+      it "falls back to the hometown when force_crafting_town has no remedies shop (Aesry, Shadow's Reach, Mer'Kresh)" do
+        ['Aesry', "Shadow's Reach", "Mer'Kresh"].each { |town| expect(shop_town('Riverhaven', town)).to eq('Riverhaven') }
+      end
+
+      it 'is nil when neither town has a remedies shop, or the settings name none' do
+        expect(shop_town('Aesry', nil)).to be_nil
+        expect(shop_town('Aesry', "Mer'Kresh")).to be_nil
+        expect(shop_town(nil, nil)).to be_nil
+      end
+    end
+
+    describe '#buy_missing' do
+      let(:town_settings) { OpenStruct.new(crafting_container: toolbag, crafting_items_in_container: bag_items, alchemy_belt: toolstrap, hometown: 'Shard', force_crafting_town: 'Riverhaven') }
+      let(:supplies) { Remedy::Supplies.new(settings: town_settings, remedies: remedies, inventory: Remedy::Inventory.new(town_settings, herbs: %w[nemoih na]), return_room: 4321) }
+      let(:messages) { [] }
+
+      before do
+        allow(DRCM).to receive(:get_money_from_bank) { |*args| calls << [:bank, args[0], args[2]] && true }
+        allow(DRCT).to receive(:order_item) { |*args| calls << [:order, *args] }
+        allow(DRCT).to receive(:walk_to) { |*args| calls << [:walk, *args] && true }
+        allow(DRC).to receive(:message) { |text| messages << text }
+      end
+
+      it 'buys nothing, and sends nothing, when the water, the alcohol and the catalyst are on hand' do
+        allow(DRCI).to receive(:exists?).and_return(true)
+        supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'coal nugget')
+        expect(calls).to be_empty
+        expect(game.sent).to be_empty
+      end
+
+      it 'never buys for a liquid poured from a vessel, nor for a catalyst other than coal' do
+        poured = Remedy::Liquid.new(kind: 'water', source: 'moonshine jug', verb: 'pour')
+        supplies.buy_missing(water: poured, alcohol: Remedy::Liquid.new(kind: 'alcohol', source: 'flask', verb: 'pour'), catalyst: 'pewter ingot')
+        expect(calls).to be_empty
+      end
+
+      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml:1450)' do
+        allow(DRCI).to receive(:exists?) { |item, *| item != 'nugget' }
+        supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'nugget')
+        expect(calls).to eq([[:bank, '5 silver', 'Riverhaven'], [:order, 8785, 2], [:stow, 'coal nugget', toolbag, toolstrap], [:walk, 4321]])
+      end
+
+      it 'checks the purchase by the name it was stowed by, after the stow, and says nothing when it is on hand' do
+        ordered = false
+        allow(DRCT).to receive(:order_item) { |*args| calls << [:order, *args] && (ordered = true) && nil }
+        allow(DRCI).to receive(:exists?) do |item, *|
+          calls << [:exists?, item]
+          item != 'coal nugget' || ordered
+        end
+        supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'coal nugget')
+        expect(calls).to eq([[:exists?, 'water'], [:exists?, 'alcohol'], [:exists?, 'coal nugget'],
+                             [:bank, '5 silver', 'Riverhaven'], [:order, 8785, 2], [:stow, 'coal nugget', toolbag, toolstrap],
+                             [:exists?, 'coal nugget'], [:walk, 4321]])
+        expect(messages).to be_empty
+      end
+
+      it 'reports each purchase that leaves nothing on hand, and buys on' do
+        supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'pewter ingot')
+        expect(calls.map(&:first)).to eq(%i[bank order stow walk bank order stow walk])
+        expect(messages).to eq(['Remedy: could not buy water at the Riverhaven alchemy shop; crafting on without it.',
+                                'Remedy: could not buy alcohol at the Riverhaven alchemy shop; crafting on without it.'])
+      end
+
+      it 'stops at the first missing supply when no town has a shop, before the bank' do
+        town_settings.hometown = 'Aesry'
+        town_settings.force_crafting_town = nil
+        expect { supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'pewter ingot') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: no water on hand, and no alchemy shop is known in Aesry to buy it from: put water in your crafting_container, or set force_crafting_town to a town with one. Stopping.'])
+        expect(calls).to be_empty
       end
     end
   end
