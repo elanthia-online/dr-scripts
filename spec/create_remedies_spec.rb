@@ -6,14 +6,17 @@ require 'yaml'
 require_relative 'spec_helper'
 
 load_lic_class('create_remedies.lic', 'CreateRemedies')
+# Only its argument forms and Order are read, to show the list create_remedies
+# sends reaches the form it is meant for.
+load_lic_class('remedy.lic', 'Remedy')
 
 RSpec.describe CreateRemedies do
   let(:create_remedies) { described_class.allocate }
   let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
   let(:ingredients) { YAML.load_file(File.expand_path('../data/base-ingredients.yaml', __dir__))['ingredients'] }
   # CODE-DERIVED: no log has a herb tap reply; bput hands back the text the
-  # "You tap" pattern matched (create_remedies.lic:36-48).
-  let(:tapped) { ReplayGame.code('You tap', from: 'create_remedies.lic:45').text }
+  # "You tap" pattern matched (create_remedies.lic:38/43/47/50).
+  let(:tapped) { ReplayGame.code('You tap', from: 'create_remedies.lic:38/43/47/50').text }
   # The hands remedy.lic leaves when it ends.
   let(:remedy_hands) { [nil, nil] }
   let(:messages) { [] }
@@ -35,14 +38,17 @@ RSpec.describe CreateRemedies do
   end
 
   # Runs create_remedies as `;create_remedies <target>` (or
-  # `;create_remedies <target> tools`), with the herbs on hand.
+  # `;create_remedies <target> tools`, or with a catalyst last), with the
+  # herbs on hand.
   #
   # @param target [String] the recipe name to search
   # @param tools [Boolean] whether to pass the tools option
+  # @param catalyst [String, nil] the catalyst argument, nil for the default
   # @return [void]
-  def run(target, tools: false)
+  def run(target, tools: false, catalyst: nil)
     $parsed_args = { target: target }
     $parsed_args[:tools] = 'tools' if tools
+    $parsed_args[:catalyst] = catalyst if catalyst
     create_remedies.send(:initialize)
   end
 
@@ -84,7 +90,7 @@ RSpec.describe CreateRemedies do
         expect(messages).to eq(['CreateRemedies: remedy did not leave some back unguent (unguent) in hand. Stopping.'])
       end
 
-      it 'checks the two-herb call (create_remedies.lic:56), with the swapped flower herb, the same way' do
+      it 'checks the two-herb call (create_remedies.lic:54, list from :87), with the swapped flower herb, the same way' do
         remedy_hands.replace(['diamondique mortar', 'pestle'])
         expect { run('blister cream') }.to raise_error(SystemExit)
 
@@ -164,7 +170,7 @@ RSpec.describe CreateRemedies do
   end
 
   # base-recipes.yaml now ends its remedies with four made from stand-alone
-  # instructions. create_remedies.lic:31 takes the first
+  # instructions. create_remedies.lic:32 takes the first
   # recipe whose name matches the target, so they must come after every
   # recipe a target found before.
   describe 'the recipe a target finds' do
@@ -207,6 +213,174 @@ RSpec.describe CreateRemedies do
       expect(targets.size).to be > 1000
       changed = targets.reject { |target| outcome(target, recipes) == outcome(target, before_data) }
       expect(changed).to be_empty
+    end
+  end
+
+  # Layer 22: a recipe marked `instructions: true` has no chapter
+  # and is made from "<noun> instructions", so create_remedies runs remedy in
+  # its instructions form; every other recipe keeps the 8-argument call.
+  describe 'the form remedy is run in' do
+    # [script name, all arguments] of each script run, in order.
+    let(:runs) { [] }
+    let(:instructions_recipes) { recipes.select { |recipe| recipe['instructions'] } }
+    let(:book_recipes) { recipes.select { |recipe| recipe['type'] == 'remedies' && !recipe['instructions'] } }
+    # CODE-DERIVED: no log has a herb tap reply; bput hands back the text the
+    # "I could not" pattern matched when the herb is not on hand
+    # (create_remedies.lic:38/43/47/50).
+    let(:not_tapped) { ReplayGame.code('I could not', from: 'create_remedies.lic:38/43/47/50').text }
+
+    before do
+      allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+        runs << [name, args]
+        $left_hand, $right_hand = remedy_hands if name == 'remedy'
+      end
+    end
+
+    # The arguments of the one remedy run.
+    #
+    # @return [Array] the list create_remedies ran remedy with
+    def remedy_call
+      calls = runs.select { |name, _args| name == 'remedy' }
+      expect(calls.size).to eq(1)
+      calls.first.last
+    end
+
+    # What remedy.lic makes of a caller's list: Lich splits it as it does for
+    # DRC.wait_for_script_to_complete, then remedy's parse_args and Order
+    # read it.
+    #
+    # @param args [Array] the caller's list
+    # @return [Remedy::Order, nil] nil when the list matches no form (remedy
+    #   prints its help and exits), so the example fails instead of ending
+    #   the whole run
+    def remedy_order(args)
+      Remedy::Order.from_args(ArgParserModel.parse(Remedy::ARG_DEFINITIONS, ArgParserModel.caller_vars(args).drop(1)))
+    rescue SystemExit
+      nil
+    end
+
+    context 'with a recipe made from instructions' do
+      # The product of 25:12133, "You get a clubmoss liniment from inside a
+      # diamondique large mortar ...".
+      let(:remedy_hands) { [nil, 'clubmoss liniment'] }
+
+      it 'runs remedy in the instructions form with the default catalyst and ends without a stop' do
+        expect { run('liniment') }.not_to raise_error
+
+        expect(runs).to eq([['remedy', ['instructions', 'dried clubmoss', 'coal nugget', 'mortar', 'liniment']]])
+        expect(messages).to be_empty
+      end
+
+      {
+        'a clubmoss liniment'  => ['instructions', 'dried clubmoss', 'coal nugget', 'mortar', 'liniment'],
+        'a woundwort curative' => ['instructions', 'crushed woundwort', 'coal nugget', 'bowl', 'curative'],
+        'a marram salve'       => ['instructions', 'dried marram', 'coal nugget', 'mortar', 'salve'],
+        'a flamestalk potion'  => ['instructions', 'crushed flamestalk', 'coal nugget', 'bowl', 'potion']
+      }.each do |name, args|
+        # Only the list matters here: with empty hands each run ends in the
+        # no-product stop.
+        it "runs remedy with #{args.inspect} for #{name}" do
+          remedy_hands.replace([nil, nil])
+          expect { run(name) }.to raise_error(SystemExit)
+          expect(remedy_call).to eq(args)
+        end
+      end
+
+      it 'covers every instructions recipe of base-recipes.yaml' do
+        expect(instructions_recipes.map { |recipe| recipe['name'] })
+          .to contain_exactly('a clubmoss liniment', 'a woundwort curative', 'a marram salve', 'a flamestalk potion')
+      end
+
+      it 'passes the catalyst argument on' do
+        expect { run('liniment', catalyst: 'pewter') }.not_to raise_error
+        expect(remedy_call).to eq(['instructions', 'dried clubmoss', 'pewter', 'mortar', 'liniment'])
+      end
+
+      it 'forages and prepares the herb when none is on hand, then runs the instructions form' do
+        allow(DRC).to receive(:bput).and_return(not_tapped)
+        expect { run('liniment') }.not_to raise_error
+
+        expect(DRC).to have_received(:bput).with('tap first dried clubmoss', 'You tap', 'What were', 'I could not')
+        expect(runs).to eq([['alchemy', ['shining clubmoss', 'forage', 25]], ['alchemy', ['shining clubmoss', 'prepare']],
+                            ['remedy', ['instructions', 'dried clubmoss', 'coal nugget', 'mortar', 'liniment']]])
+      end
+
+      it 'gets the tools before remedy and stores them after it with `tools`' do
+        expect { run('liniment', tools: true) }.not_to raise_error
+
+        expect(runs).to eq([['clerk-tools', %w[alchemy get]], ['remedy', ['instructions', 'dried clubmoss', 'coal nugget', 'mortar', 'liniment']],
+                            ['clerk-tools', %w[alchemy store]]])
+      end
+
+      it 'stops, as for a book recipe, when remedy leaves no product in hand' do
+        remedy_hands.replace([nil, nil])
+        expect { run('liniment') }.to raise_error(SystemExit)
+        expect(messages).to eq(['CreateRemedies: remedy did not leave a clubmoss liniment (liniment) in hand. Stopping.'])
+      end
+
+      it "reaches remedy.lic as its instructions form for every instructions recipe, studying \"<noun> instructions\"" do
+        remedy_hands.replace([nil, nil])
+        orders = instructions_recipes.map do |recipe|
+          runs.clear
+          $test_data.recipes = OpenStruct.new(crafting_recipes: [recipe])
+          expect { run(recipe['name']) }.to raise_error(SystemExit)
+          order = remedy_order(remedy_call)
+          next if order.nil?
+
+          [order.mode, order.herb1, order.herb2, order.catalyst, order.container_request, order.noun, order.instructions_name]
+        end
+        expect(orders).to eq([[:instructions, 'dried clubmoss', 'na', 'coal nugget', 'mortar', 'liniment', 'liniment instructions'],
+                              [:instructions, 'crushed woundwort', 'na', 'coal nugget', 'bowl', 'curative', 'curative instructions'],
+                              [:instructions, 'dried marram', 'na', 'coal nugget', 'mortar', 'salve', 'salve instructions'],
+                              [:instructions, 'crushed flamestalk', 'na', 'coal nugget', 'bowl', 'potion', 'potion instructions']])
+      end
+    end
+
+    context 'with a book recipe' do
+      # The 8-argument list of create_remedies.lic:47/49 at 03f11b54: the
+      # flower swap of :27-36 there, herb2 'na' when the recipe has none.
+      #
+      # @param recipe [Hash] a base-recipes.yaml remedy
+      # @param catalyst [String]
+      # @return [Array]
+      def list_at_base(recipe, catalyst)
+        herb1 = { 'red flower' => 'dried flower', 'blue flower' => 'crushed flower' }.fetch(recipe['herb1'], recipe['herb1'])
+        herb2 = recipe['herb2'].nil? ? 'na' : recipe['herb2']
+        ['remedies', recipe['chapter'], recipe['name'], herb1, herb2, catalyst, recipe['container'], recipe['noun']]
+      end
+
+      it 'runs remedy with the 8-argument list of 03f11b54 for every book remedy, with the default and a given catalyst' do
+        expect(book_recipes.size).to eq(64) # 63 chaptered (remedy_spec C14) and some alyssum tea
+        changed = book_recipes.product(['coal nugget', 'pewter ingot']).reject do |recipe, catalyst|
+          runs.clear
+          $test_data.recipes = OpenStruct.new(crafting_recipes: [recipe])
+          expect { run(recipe['name'], catalyst: catalyst == 'coal nugget' ? nil : catalyst) }.to raise_error(SystemExit)
+          remedy_call == list_at_base(recipe, catalyst)
+        end
+        expect(changed).to be_empty
+      end
+
+      it 'still reaches remedy.lic as its book form, not the instructions form' do
+        unguent = book_recipes.find { |recipe| recipe['name'] == 'some back unguent' }
+        $test_data.recipes = OpenStruct.new(crafting_recipes: [unguent])
+        expect { run('back unguent') }.to raise_error(SystemExit)
+        order = remedy_order(remedy_call)
+        expect(order).not_to be_nil
+        expect([order.mode, order.instructions?, order.chapter, order.recipe_name, order.herb2]).to eq([:book, false, '3', 'some back unguent', 'na'])
+      end
+
+      # The red-flower path of create_remedies.lic:36-40: the tap asks for
+      # the prepared flower, the forage for the fresh one, and remedy gets the
+      # prepared name.
+      it 'keeps the red flower path: forages the red flower, then runs remedy with dried flower' do
+        allow(DRC).to receive(:bput).and_return(not_tapped)
+        expect { run('blister cream') }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:bput).with('tap first dried flower', 'You tap', 'What were', 'I could not')
+        expect(runs).to eq([['alchemy', ['red flower', 'forage', 25]], ['alchemy', ['red flower', 'prepare']],
+                            ['alchemy', ['nemoih', 'forage', 25]], ['alchemy', %w[nemoih prepare]],
+                            ['remedy', ['remedies', 2, 'some blister cream', 'dried flower', 'nemoih', 'coal nugget', 'mortar', 'cream']]])
+      end
     end
   end
 end

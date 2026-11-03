@@ -45,8 +45,10 @@
 #   ;remedy instructions marram "pewter ingot" mortar salve
 #
 # == Callers
-# workorders.lic:831/833, craft.lic:694 and create_remedies.lic:54/56 run the
-# book form with a base-recipes.yaml recipe. Lich gives no exit status: the
+# workorders.lic:846/848, craft.lic:694 and create_remedies.lic:54 run the
+# book form with a base-recipes.yaml recipe; create_remedies runs the
+# instructions form instead for a recipe marked `instructions: true`
+# (CreateRemedies#remedy_args). Lich gives no exit status: the
 # finished remedy is left in hand, the tools and the vessel are put away,
 # the product is counted (`count my <noun>`, after the mark's roundtime) and
 # the script ends. The product in hand is the success signal; each caller
@@ -537,7 +539,7 @@ class Remedy
   # flower's name or a part of it (red, blue, ed flower) and the character has
   # none of the fresh one. The order matters: a part of both names (flower,
   # lower, e) takes the red flower's, as remedy always has.
-  # create_remedies.lic:34-42 swaps the whole names itself before it runs
+  # create_remedies.lic:36-45 swaps the whole names itself before it runs
   # remedy.
   FLOWER_SUBSTITUTES = { 'red flower' => 'dried flower', 'blue flower' => 'crushed flower' }.freeze
 
@@ -602,8 +604,8 @@ class Remedy
 
   class Order
     # The herb2 values that say the recipe has no second herb, as parse_args
-    # lowercases them: na (workorders.lic:821, craft.lic:637,
-    # create_remedies.lic:53), none (the herb2 help text) and "not used"
+    # lowercases them: na (workorders.lic:836, craft.lic:637,
+    # create_remedies.lic:86), none (the herb2 help text) and "not used"
     # (the file header's example).
     NO_SECOND_HERB = ['na', 'none', 'not used'].freeze
 
