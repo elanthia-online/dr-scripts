@@ -542,11 +542,12 @@ RSpec.describe TaskMaster do
         expect(start(npc: 'zasele', reset_output: true)).to eq([[:respond, "<clearStream id='Task Master'/>"], :exit])
       end
 
-      it 'loot_history prints each taskmaster\'s sacks and exits' do
+      it 'loot_history prints each taskmaster\'s sacks and exits, Dorhum\'s empty when an older history has none' do
         UserVars.taskmaster_sacks = { 'poltu' => ['a bronze bar.'], 'bradyn' => [], 'zasele' => ['some coral dye.', 'a large haledroth shard.'] }
         expect(start(npc: 'zasele', loot_history: true)).to eq([[:message, 'Sack history for Taskmaster Poltu:'], [:message, 'a bronze bar.'],
                                                                 [:message, 'Sack history for Taskmaster Bradyn:'],
                                                                 [:message, 'Sack history for Taskmaster Zasele:'], [:message, 'some coral dye.'], [:message, 'a large haledroth shard.'],
+                                                                [:message, 'Sack history for Taskmaster Dorhum:'],
                                                                 :exit])
       end
 
@@ -2214,6 +2215,747 @@ RSpec.describe TaskMaster do
         build(npc: 'poltu').remember_sack('a bronze bar.')
         expect(UserVars.taskmaster_sacks).to eq('poltu' => ['a bronze bar.'])
       end
+    end
+  end
+
+  # Dorhum, the enchanting taskmaster (Hollow Eve 2026). Lines come from two
+  # task runs: eight spongestones (log 1) and six virga wands (log 2).
+  describe "Dorhum's enchanting tasks" do
+    let(:sigil_stock) do
+      { 'congruence sigil-scroll' => { 'stock-number' => 3, 'stock-value' => 312 },
+        'decay sigil-scroll'      => { 'stock-number' => 10, 'stock-value' => 1575 },
+        'induction sigil-scroll'  => { 'stock-number' => 1, 'stock-value' => 625 } }
+    end
+
+    def dorhum(settings: {}, **ivars)
+      build(settings: settings, npc: 'dorhum', lootbag: 'backpack', stockdata: sigil_stock, rock_room: 793, **ivars)
+    end
+
+    before(:each) do
+      $test_data.crafting = { 'artificing' => { 'Crossing' => { 'stock-room' => 14_753, 'tool-room' => 14_754, 'fount' => 3 } } }
+    end
+
+    # READ of the instructions as Lich::Util.issue_command returns it: raw
+    # lines from the title to the prompt.
+    def instructions_read(*ingredients)
+      ['<output class="mono"/>', '        -=   Instructions for crafting a spongestone    =-', '', ' A list of ingredients is provided:', '',
+       *ingredients.map { |line| "   #{line}" }, '<output class=""/>', '<prompt time="1">&gt;</prompt>']
+    end
+
+    describe '#read_instructions' do
+      before(:each) { allow(DRCI).to receive(:stow_hands) }
+
+      it 'reads congruence and decay off the spongestone instructions (log 1) and stows them' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command)
+          .with('read my spongestone instructions', /Instructions for crafting/)
+          .and_return(instructions_read('(1) a foraged rock', '(1) mana fount', '(1) primary sigil (congruence)', '(1) secondary sigil (decay)'))
+        expect(DRCC).to receive(:stow_crafting_item).with('spongestone instructions', 'duffel bag', nil)
+
+        expect(tm.read_instructions('spongestone', 8)).to eq(['spongestone', 8, %w[congruence decay]])
+      end
+
+      it 'reads induction off the virga wand instructions (log 2)' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command)
+          .and_return(instructions_read('(1) A finished stone, bone or wood wand or rod', '(1) mana fount', '(1) primary sigil (induction)'))
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('wand', 6)).to eq(['wand', 6, %w[induction]])
+      end
+
+      it 'reads a sigil the game wrapped in tags' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command).and_return(instructions_read('(1) primary sigil (<pushBold/>induction<popBold/>)'))
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('wand', 6).last).to eq(%w[induction])
+      end
+
+      it 'repeats a sigil as many times as the instructions count it' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command).and_return(instructions_read('(2) primary sigils (induction)', '(1) secondary sigil (decay)'))
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('wand', 6).last).to eq(%w[induction induction decay])
+      end
+
+      it 'pauses, then stops, when no sigil can be read off them' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command).and_return([])
+        allow(DRCC).to receive(:stow_crafting_item)
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.read_instructions('spongestone', 8) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/No sigils could be read off the spongestone instructions/)
+      end
+
+      it "leaves the other taskmasters' instructions to the materials line" do
+        tm = build(stockdata: {})
+        expect(Lich::Util).not_to receive(:issue_command)
+        game('read my rope instructions' => 'cloth (8 yards)')
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('rope', 3).values_at(2, 3)).to eq([8, 'cloth'])
+      end
+    end
+
+    describe "Dorhum's task journal" do
+      it 'reads the item and how many are owed (log 3)' do
+        tm = dorhum
+        game('task' => 'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist his ongoing efforts with the Merelew and others.  ' \
+                       'In particular, he wanted you to craft a spongestone and indicated that 6 would suffice.  So far, you have returned 0 to him.  ' \
+                       'Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Dorhum for another copy.')
+
+        expect(tm.read_task).to eq(['spongestone', 6])
+      end
+    end
+
+    describe '#set_aside_held_base' do
+      it "puts a rock held at a Dorhum resume back with the unworked ones, since nothing says it was finished" do
+        tm = dorhum
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        expect(DRCC).to receive(:stow_crafting_item).with('rock', 'duffel bag', nil)
+
+        tm.set_aside_held_base('spongestone')
+      end
+
+      it 'leaves the hands alone when nothing of the kind is held' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        dorhum.set_aside_held_base('spongestone')
+      end
+
+      it "leaves other taskmasters' resumes alone" do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        build.set_aside_held_base('rope')
+      end
+    end
+
+    describe '#check_loot_bag' do
+      it 'stops a Dorhum task whose loot bag is the crafting bag, before buying anything' do
+        tm = dorhum(lootbag: 'duffel bag')
+        expect(tm).not_to receive(:buy_sigils)
+
+        expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/need task_loot_bag \(duffel bag\) to be a container other than your crafting bag \(duffel bag\)/)
+      end
+
+      it 'stops a hand-in from the crafting bag too, as after a resume' do
+        expect { dorhum(lootbag: 'Duffel Bag ').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      it 'stops when the two bags differ only by adjective, as PUT would find either' do
+        expect { dorhum(bag: 'sturdy backpack', lootbag: 'backpack').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      {
+        ['sturdy backpack', 'backpack']         => true,
+        ['pack', 'travel.pack']                 => true,
+        ['duffel bag', 'Duffel Bag']            => true,
+        ['travel.pack', "traveler's.pack"]      => false,
+        ['duffel bag', "traveler's.pack"]       => false,
+        ['leather backpack', 'canvas backpack'] => false
+      }.each do |(crafting, loot), same|
+        it "takes #{crafting.inspect} and #{loot.inspect} for #{same ? 'the same bag' : 'two bags'}" do
+          expect(dorhum.same_container?(crafting, loot)).to be(same)
+        end
+      end
+
+      it 'lets a loot bag of its own through' do
+        expect(dorhum.hand_in_bag).to eq('backpack')
+      end
+    end
+
+    describe 'the hand-in' do
+      it 'hands in a spongestone as the rock it still is, out of the loot bag' do
+        tm = dorhum
+        allow(tm).to receive(:find_npc)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect(DRCI).to receive(:get_item?).with('rock', 'backpack').and_return(true)
+        game('give my rock to dorhum' => 'Dorhum holds up his fingers indicating 7 more are needed.')
+
+        expect(tm.give_item('spongestone')).to match(TaskMaster::TURN_IN_MORE_NEEDED)
+        expect(DRC).to have_received(:bput).with('give my rock to dorhum', any_args)
+      end
+
+      def refusal
+        'Researcher Dorhum examines the rock and shakes his head.  "I don\'t sense any hint of enchantment on this.  What are you trying to pull, Pezamus?"'
+      end
+
+      # The loot bag holds `rocks`; Dorhum turns down the ones whose index is
+      # in `bad` and takes the rest.
+      def handing_in(rocks, bad:)
+        state = { held: nil, gets: 0, gives: 0, accepted: 0 }
+        allow(DRCI).to receive(:in_hands?) { state[:held] }
+        allow(DRCI).to receive(:get_item?) do
+          next false if state[:gets] >= rocks
+
+          state[:gets] += 1
+          state[:held] = state[:gets]
+        end
+        allow(DRCI).to receive(:dispose_trash) { state[:held] = nil; true }
+        game('give my rock to dorhum' => lambda do |*|
+          state[:gives] += 1
+          next refusal if bad.include?(state[:held])
+
+          state[:accepted] += 1
+          state[:held] = nil
+          left = rocks - bad.size - state[:accepted]
+          left.positive? ? more_needed(left) : sack_handed
+        end)
+        state
+      end
+
+      it 'trashes a rock Dorhum sees no enchantment on, without giving it again, and hands in the rest' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:task_handed_in)
+        state = handing_in(3, bad: [2])
+
+        expect { tm.complete_task('spongestone', 2) }.not_to raise_error
+
+        expect(state[:gives]).to eq(3)
+        expect(DRCI).to have_received(:dispose_trash).with('rock', 'bucket', 'tap').once
+        expect(DRC).to have_received(:message).with('Dorhum saw no enchantment on a rock, so it went in the trash.')
+        expect(tm).to have_received(:sort_sack)
+      end
+
+      it 'does the same at a resume, then hands in the rest' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(DRCC).to receive(:stow_crafting_item)
+        state = handing_in(2, bad: [1])
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:task_handed_in)
+
+        expect(tm.turn_in_banked('spongestone', 2)).to eq(0)
+
+        expect(DRCI).to have_received(:dispose_trash).once
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(state[:gives]).to eq(2)
+      end
+
+      it 'puts the rock back and stops when the trash will not take it' do
+        tm = dorhum
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        handing_in(1, bad: [1])
+        allow(DRCI).to receive(:dispose_trash).and_return(false)
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect { tm.complete_task('spongestone', 1) }.to raise_error(SystemExit)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('rock', 'backpack', nil)
+        expect(tm).not_to have_received(:sort_sack)
+      end
+
+      it "takes Dorhum's refusal only from Dorhum, not from a player repeating it" do
+        text = %(I don't sense any hint of enchantment on this.  What are you trying to pull, Pezamus?)
+        expect(%(Researcher Dorhum examines the small brazier and shakes his head.  "#{text}")).to match(TaskMaster::GIVE_NOT_ENCHANTED)
+        expect(%(Mallory says, "#{text}")).not_to match(TaskMaster::GIVE_NOT_ENCHANTED)
+        expect(%(Mallory says, "Researcher Dorhum examines the rock and shakes his head.  "#{text}")).not_to match(TaskMaster::GIVE_NOT_ENCHANTED)
+      end
+
+      it 'hands in a virga wand as a wand' do
+        expect(dorhum.hand_in_noun('wand')).to eq('wand')
+      end
+
+      it 'keeps Zasele\'s items in the crafting bag' do
+        tm = build
+        expect([tm.hand_in_noun('rope'), tm.hand_in_bag]).to eq(['rope', 'duffel bag'])
+      end
+
+      it 'puts a refused rock back in the loot bag, not among the unworked rocks' do
+        tm = dorhum
+        expect(DRCC).to receive(:stow_crafting_item).with('rock', 'backpack', nil)
+
+        expect { tm.refused_hand_in('spongestone', '') }.to raise_error(SystemExit)
+      end
+
+      it 'pauses, then stops, on an item taskmaster does not know' do
+        tm = dorhum
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.hand_in_noun('bauble') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/does not know how to make Dorhum's baubles/)
+      end
+    end
+
+    describe '#buy_sigils' do
+      let(:orders) { [] }
+
+      before(:each) do
+        allow(DRCT).to receive(:order_item) { |room, number| orders << [room, number] }
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCM).to receive(:ensure_copper_on_hand)
+      end
+
+      it 'orders one of each sigil per item from the enchanting supplies, by stock number' do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+
+        dorhum.buy_sigils(%w[congruence decay], 8)
+
+        expect(orders.tally).to eq({ [14_753, 3] => 8, [14_753, 10] => 8 })
+        expect(DRCC).to have_received(:stow_crafting_item).with('sigil-scroll', 'duffel bag', nil).exactly(16).times
+      end
+
+      # RUMMAGE's list, as the game words it ("... and see some sepia pins,
+      # some sepia pins and some sepia pins.").
+      def rummaged(*names)
+        return 'You rummage through a heavy silk duffel bag looking for something similar to "sigil-scroll" but there is nothing in there like that.' if names.empty?
+
+        listed = names.map { |name| "an intricate #{name}" }
+        "You rummage through a heavy silk duffel bag looking for something similar to \"sigil-scroll\" and see #{listed[0..-2].join(', ')}#{listed.size > 1 ? ' and ' : ''}#{listed.last}."
+      end
+
+      it 'counts the scrolls already in the crafting bag, with one RUMMAGE for every sigil' do
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged(*Array.new(3, 'congruence sigil-scroll'), *Array.new(11, 'decay sigil-scroll')))
+
+        dorhum.buy_sigils(%w[congruence decay], 8)
+
+        expect(orders.tally).to eq({ [14_753, 3] => 5 })
+        expect(DRC).to have_received(:bput).with('rummage /C sigil-scroll in my duffel bag', any_args).once
+      end
+
+      it 'counts one scroll, the last in the list, and none when the bag has none' do
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged('decay sigil-scroll'))
+        dorhum.buy_sigils(%w[decay], 2)
+        expect(orders.tally).to eq({ [14_753, 10] => 1 })
+
+        orders.clear
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged)
+        dorhum.buy_sigils(%w[decay], 2)
+        expect(orders.tally).to eq({ [14_753, 10] => 2 })
+      end
+
+      it 'carries enough copper for the scrolls, a new fount, the next fee and repairs' do
+        dorhum.buy_sigils(%w[induction], 6)
+
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(6 * 625 + 312 + 7500, anything, 'Crossing')
+      end
+
+      it 'buys two per item of a sigil the instructions list twice' do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+
+        dorhum.buy_sigils(%w[induction induction], 6)
+
+        expect(orders.tally).to eq({ [14_753, 1] => 12 })
+      end
+
+      it 'pauses, then stops, on a sigil not in the crafting data' do
+        tm = dorhum
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.buy_sigils(%w[mystery], 2) }.to raise_error(SystemExit)
+        expect(orders).to eq([])
+      end
+    end
+
+    describe '#buy_wands' do
+      before(:each) do
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCM).to receive(:ensure_copper_on_hand)
+      end
+
+      it 'buys a wand from the steel crate for each virga wand not covered by the wands carried' do
+        allow(DRCI).to receive(:count_items_in_container).with('wand', 'duffel bag').and_return(2)
+        expect(DRCT).to receive(:buy_item).with(14_753, 'wand').exactly(4).times
+
+        dorhum.buy_wands(6)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil).exactly(4).times
+      end
+
+      it 'buys nothing when enough are carried' do
+        allow(DRCI).to receive(:count_items_in_container).and_return(6)
+        expect(DRCT).not_to receive(:buy_item)
+
+        dorhum.buy_wands(6)
+      end
+    end
+
+    describe '#forage_rocks' do
+      before(:each) do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCT).to receive(:walk_to)
+      end
+
+      it 'forages a rock per item at the rock room and bags each one (log 3)' do
+        allow(DRC).to receive(:forage?).with('rock').and_return(true)
+
+        dorhum.forage_rocks(6)
+
+        expect(DRCT).to have_received(:walk_to).with(793)
+        expect(DRC).to have_received(:forage?).exactly(6).times
+        expect(DRCC).to have_received(:stow_crafting_item).with('rock', 'duffel bag', nil).exactly(6).times
+      end
+
+      it 'forages at task_rock_room when set' do
+        allow(DRC).to receive(:forage?).and_return(true)
+
+        dorhum(rock_room: 14_137).forage_rocks(1)
+
+        expect(DRCT).to have_received(:walk_to).with(14_137)
+      end
+
+      it 'forages only the rocks the crafting bag does not already hold' do
+        allow(DRCI).to receive(:count_items_in_container).with('rock', 'duffel bag').and_return(4)
+        allow(DRC).to receive(:forage?).and_return(true)
+
+        dorhum.forage_rocks(6)
+
+        expect(DRC).to have_received(:forage?).twice
+      end
+
+      it 'goes nowhere when the crafting bag already holds the rocks' do
+        allow(DRCI).to receive(:count_items_in_container).with('rock', 'duffel bag').and_return(6)
+        expect(DRC).not_to receive(:forage?)
+
+        dorhum.forage_rocks(6)
+
+        expect(DRCT).not_to have_received(:walk_to)
+      end
+
+      it 'stops when a forage finds nothing, without bagging a rock it does not have' do
+        allow(DRC).to receive(:forage?).and_return(true, false)
+
+        expect { dorhum.forage_rocks(3) }.to raise_error(SystemExit)
+
+        expect(DRCC).to have_received(:stow_crafting_item).once
+        expect(DRC).to have_received(:message).with('Could not forage a rock at room 793, stopping.')
+      end
+    end
+
+    describe '#go_to_enchanting_room' do
+      before(:each) do
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:find_enchanting_room)
+      end
+
+      it 'goes to task_crafting_room first, the room every task crafts in' do
+        dorhum(crafting_room: 1111, settings: { enchanting_room: 2222 }).go_to_enchanting_room
+
+        expect(DRCT).to have_received(:walk_to).with(1111)
+      end
+
+      it 'goes to enchanting_room when task_crafting_room is unset' do
+        dorhum(crafting_room: nil, settings: { enchanting_room: 2222 }).go_to_enchanting_room
+
+        expect(DRCT).to have_received(:walk_to).with(2222)
+      end
+
+      it 'stays put with a brazier of its own' do
+        allow(DRCI).to receive(:exists?).with('small brazier').and_return(true)
+
+        dorhum(crafting_room: nil, settings: { enchanting_tools: ['small brazier', 'burin'] }).go_to_enchanting_room
+
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRCC).not_to have_received(:find_enchanting_room)
+      end
+
+      it 'finds a brazier room in Crossing without one' do
+        allow(DRCI).to receive(:exists?).and_return(false)
+
+        dorhum(crafting_room: nil).go_to_enchanting_room
+
+        expect(DRCC).to have_received(:find_enchanting_room).with('Crossing')
+      end
+    end
+
+    describe '#enchant_items' do
+      let(:enchanted) { "The spell's energies settle upon the rock and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more." }
+
+      def enchant_runs(*finishes)
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          Flags[TaskMaster::ENCHANTED_FLAG] = finishes.shift ? true : false
+        end
+      end
+
+      it 'enchants each item from the instructions and puts it in the loot bag' do
+        tm = dorhum
+        enchant_runs(true, true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('rock', 'backpack').twice.and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 2)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('enchant', %w[instructions spongestone rock]).twice
+      end
+
+      it 'stops, leaving it alone, when enchant stopped with an unworked wand in hand' do
+        tm = dorhum
+        enchant_runs(true, false)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
+
+        expect(DRCI).to have_received(:put_away_item?).once
+        expect(DRC).to have_received(:message).with('enchant did not finish a wand for the wands; stopping.')
+      end
+
+      it 'puts an unworked base item enchant left in hand back in the crafting bag, not the loot bag' do
+        tm = dorhum
+        enchant_runs(false)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
+        allow(DRCI).to receive(:put_away_item?)
+        expect(DRCC).to receive(:stow_crafting_item).with('wand', 'duffel bag', nil)
+
+        expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
+
+        expect(DRCI).not_to have_received(:put_away_item?)
+      end
+
+      it 'trashes a finished item the loot bag will not take, rather than stow it with the unworked ones, and stops' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        enchant_runs(true, true, true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).with('rock', 'backpack').and_return(false)
+        expect(DRCI).to receive(:dispose_trash).with('rock', 'bucket', 'tap').and_return(true)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        expect { tm.enchant_items('spongestone', 'rock', 3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack, so it went in the trash. Make room in backpack, then start again. Stopping.')
+        expect(DRC).not_to have_received(:message).with('3 spongestones completed')
+      end
+
+      it 'says the item is still in hand when the trash will not take it either' do
+        tm = dorhum
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        allow(DRCI).to receive(:dispose_trash).and_return(false)
+
+        expect { tm.enchant_items('spongestone', 'rock', 1) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack, so it is still in your hand. Make room in backpack, then start again. Stopping.')
+      end
+
+      it 'stops when the finished item is not in hand' do
+        tm = dorhum
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+
+        expect { tm.enchant_items('spongestone', 'rock', 1) }.to raise_error(SystemExit)
+      end
+
+      it "catches the game's completion line, not another player's" do
+        tm = dorhum
+        Flags.add(TaskMaster::ENCHANTED_FLAG, TaskMaster::ENCHANTED)
+        expect(TaskMaster::ENCHANTED).to match(enchanted)
+        expect(TaskMaster::ENCHANTED).not_to match(%(Mallory says, "#{enchanted}"))
+        expect(TaskMaster::ENCHANTED).not_to match(%([General][Mallory] "#{enchanted}"))
+        expect(TaskMaster::ENCHANTED).to match('With the enchantment complete, you collect your things.')
+        expect(TaskMaster::ENCHANTED).to match('With enchanting complete, you collect your things.')
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 1)
+
+        expect(Flags.matchers).not_to have_key(TaskMaster::ENCHANTED_FLAG)
+      end
+    end
+
+    # Mahtra's private forge (task_crafting_room 16936), 2026-11-02/03.
+    describe 'the rental of task_crafting_room' do
+      let(:notice) { '[It will expire Thu Dec  3 20:58:13 ET 2026.]' }
+      let(:extended) { '[Your private forge rental has been extended until Thu Dec  3 00:56:41 ET 2026.]' }
+
+      def enchant_runs(count, warn_on: nil)
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          Flags[TaskMaster::RENTAL_WARNING_FLAG] = true if runs == warn_on
+          Flags[TaskMaster::ENCHANTED_FLAG] = true
+        end
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        count
+      end
+
+      it 'reads the expiry off the notice in US Eastern time, standard time in winter and daylight time in summer' do
+        tm = dorhum
+        winter = TaskMaster::RENTAL_EXPIRES.match(notice)
+        summer = TaskMaster::RENTAL_EXPIRES.match('[It will expire Fri Jul 10 12:00:00 ET 2026.]')
+
+        expect(tm.rental_minutes_left(winter, Time.utc(2026, 12, 4, 1, 48, 13))).to eq(10.0)
+        expect(tm.rental_minutes_left(summer, Time.utc(2026, 7, 10, 15, 50, 0))).to eq(10.0)
+      end
+
+      it "puts the sentry's warning at ten minutes before the notice's time (2026-11-02, the day daylight time ended)" do
+        expires = TaskMaster::RENTAL_EXPIRES.match('[It will expire Sun Nov  1 18:58:13 ET 2026.]')
+
+        expect(dorhum.rental_minutes_left(expires, Time.utc(2026, 11, 1, 23, 48, 17))).to be_between(9.9, 10.0)
+      end
+
+      it 'checks the notice before enchanting and leaves a rental with time on it alone' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        game('read notice' => notice)
+        tm.enchant_items('spongestone', 'rock', enchant_runs(2))
+
+        expect(DRC).to have_received(:bput).with('read notice', any_args).once
+        expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
+      end
+
+      it 'renews before the first item when the rental ends within ten minutes' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 12, 4, 1, 52, 0))
+        game('read notice' => notice, 'mark notice' => extended)
+        tm.enchant_items('spongestone', 'rock', enchant_runs(1))
+
+        expect(DRC).to have_received(:bput).with('mark notice', any_args).once
+      end
+
+      it "renews between items once the sentry's warning has come" do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        order = []
+        game('read notice' => notice, 'mark notice' => ->(*) { order << :mark && extended })
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          order << :enchant
+          Flags[TaskMaster::RENTAL_WARNING_FLAG] = true if order.count(:enchant) == 1
+          Flags[TaskMaster::ENCHANTED_FLAG] = true
+        end
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 3)
+
+        expect(order).to eq(%i[enchant mark enchant enchant])
+      end
+
+      it 'stops before the next item when the rental is not extended' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        game('read notice' => notice, 'mark notice' => '')
+
+        expect { tm.enchant_items('spongestone', 'rock', enchant_runs(3, warn_on: 1)) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+        expect(DRC).to have_received(:message).with('Could not renew the rental of room 16936; stopping before it runs out.')
+      end
+
+      it 'reads no notice and marks nothing where there is no notice, or without task_crafting_room' do
+        unrented = dorhum(crafting_room: 2071)
+        game('read notice' => 'I could not find what you were referring to.')
+        unrented.enchant_items('spongestone', 'rock', enchant_runs(2, warn_on: 1))
+        dorhum.enchant_items('spongestone', 'rock', enchant_runs(1))
+
+        expect(DRC).to have_received(:bput).with('read notice', any_args).once
+        expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
+      end
+
+      it 'takes the warning behind a leading XML tag too' do
+        expect('<pushBold/>[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]').to match(TaskMaster::RENTAL_WARNING)
+      end
+
+      it "takes the sentry's warning, not a player repeating it" do
+        warning = '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]'
+        expect(warning).to match(TaskMaster::RENTAL_WARNING)
+        [%(Mallory says, "#{warning}"), %([General][Mallory] "#{warning}"), %(Mallory whispers, "#{warning}")].each do |line|
+          expect(line).not_to match(TaskMaster::RENTAL_WARNING)
+        end
+      end
+    end
+
+    describe '#dorhum' do
+      it 'buys the sigils, gets the base items, checks the fount, finds a room, enchants, then repairs' do
+        tm = dorhum(settings: { enchanting_tools: %w[brazier burin], enchanting_belt: nil })
+        steps = []
+        allow(tm).to receive(:buy_sigils) { |sigils, count| steps << [:sigils, sigils, count] }
+        allow(tm).to receive(:forage_rocks) { |count| steps << [:rocks, count] }
+        allow(DRCC).to receive(:fount) { |*args| steps << [:fount, *args] }
+        allow(tm).to receive(:go_to_enchanting_room) { steps << :room }
+        allow(tm).to receive(:enchant_items) { |*args| steps << [:enchant, *args] }
+        allow(tm).to receive(:repair) { |*args| steps << [:repair, *args] }
+
+        tm.dorhum('spongestone', 8, %w[congruence decay])
+
+        expect(steps).to eq([[:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
+                             :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
+      end
+
+      it "stops before buying anything when task_loot_bag already holds the task's noun" do
+        tm = dorhum
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a smooth rock, a rock marble deed and a rock.')
+        expect(tm).not_to receive(:buy_sigils)
+
+        expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('backpack already holds 2 rocks that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. ' \
+                                                    'The hand-in would give those first. Move them out of backpack, then start again.')
+      end
+
+      it 'checks the loot bag right after a resume hand-in, before asking for instructions or going to the bank' do
+        tm = dorhum
+        allow(tm).to receive(:read_task).and_return(['spongestone', 3])
+        allow(tm).to receive(:set_aside_held_base)
+        allow(tm).to receive(:turn_in_banked).and_return(3)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock.')
+        expect(tm).not_to receive(:ensure_instructions)
+        expect(tm).not_to receive(:top_up_copper)
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with(/backpack already holds 1 rock that this task has not made or could not hand in/)
+      end
+
+      it 'checks the loot bag once on a resume, not again in dorhum' do
+        tm = dorhum
+        allow(tm).to receive(:read_task).and_return(['spongestone', 3])
+        allow(tm).to receive(:set_aside_held_base)
+        allow(tm).to receive(:turn_in_banked).and_return(3)
+        %i[ensure_instructions refresh_haste top_up_copper buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
+        allow(tm).to receive(:read_instructions).and_return(['spongestone', 3, %w[congruence decay]])
+        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(DRCC).to receive(:fount)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" but there is nothing in there like that.')
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:bput).with('rummage /C rock in my backpack', any_args).once
+        expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 3)
+      end
+
+      it 'carries on when task_loot_bag holds none, and does not count a "rock marble deed"' do
+        tm = dorhum
+        %i[buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock marble deed.')
+
+        expect { tm.dorhum('spongestone', 5, %w[congruence decay]) }.not_to raise_error
+
+        expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 5)
+      end
+
+      it 'buys wands for a virga wand task' do
+        tm = dorhum
+        %i[buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:buy_wands).with(6)
+
+        tm.dorhum('wand', 6, %w[induction])
+      end
+    end
+
+    it 'lists the enchanting tools for ;taskmaster dorhum tools' do
+      expect(TaskMaster::TOOLS['dorhum']).to include('brazier', 'burin', 'augmenting loop')
+    end
+
+    it 'takes dorhum as a taskmaster' do
+      expect(TaskMaster::ARG_DEFINITIONS.first.first[:options]).to include('dorhum')
     end
   end
 end

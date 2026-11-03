@@ -17,6 +17,10 @@
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
   task_copper_target: 110000
   task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
+  task_rock_room: 793 # room where Dorhum's spongestone tasks forage rocks (none can be had on Andreshlew)
+  enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
+  ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
+  ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
    ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
@@ -24,7 +28,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.4'
+  VERSION = '2026.11.03.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -42,6 +46,7 @@ class TaskMaster
     'poltu'   => ['forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
     'bradyn'  => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
     'zasele'  => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'],
+    'dorhum'  => ['brazier', 'burin', 'augmenting loop', 'mana fount', 'imbuement rod (or the Imbue spell)'],
     'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife']
   }.freeze
 
@@ -49,7 +54,7 @@ class TaskMaster
   # of the other modes.
   ARG_DEFINITIONS = [
     [
-      { name: 'npc', options: %w[poltu bradyn zasele], variable: true, description: "Task npc's name, in full" },
+      { name: 'npc', options: %w[poltu bradyn zasele dorhum], variable: true, description: "Task npc's name, in full" },
       { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
       { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
       { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
@@ -93,11 +98,12 @@ class TaskMaster
     configure_copper
     @before_scripts = Array(@settings.task_before_scripts)
     @task_hometown = @settings.task_hometown
+    @rock_room = @settings.task_rock_room || DEFAULT_ROCK_ROOM
 
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
-    UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [] }
+    UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [], 'dorhum' => [] }
   end
 
   # Makes task_hometown the hometown every script in this session sees
@@ -206,9 +212,9 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] always
   def print_loot_history
-    ['poltu', 'bradyn', 'zasele'].each do |npc|
+    ['poltu', 'bradyn', 'zasele', 'dorhum'].each do |npc|
       DRC.message("Sack history for Taskmaster #{npc.capitalize}:")
-      UserVars.taskmaster_sacks[npc].each do |sack|
+      Array(UserVars.taskmaster_sacks[npc]).each do |sack|
         DRC.message(sack)
       end
     end
@@ -713,6 +719,415 @@ class TaskMaster
     trash(item, base, type) unless bins_task_stock?
   end
 
+  # Dorhum's items, keyed by the task item's noun, as far as the Hollow Eve
+  # 2026 runs show them. :noun is the noun the finished item is handed in by,
+  # which is its base item's: a spongestone is made from "a foraged rock" and
+  # is still a rock; a virga wand from "a finished stone, bone or wood wand or
+  # rod" and is still the wand it was made from. :base is the method
+  # that gets the base items. Any other item pauses the script.
+  DORHUM_ITEMS = {
+    'spongestone' => { noun: 'rock', base: :forage_rocks },
+    'wand'        => { noun: 'wand', base: :buy_wands }
+  }.freeze
+
+  # Where Dorhum's spongestone tasks forage rocks unless task_rock_room says
+  # otherwise: The Crossing, Town Green Southeast, where FORAGE ROCK finds one
+  # rock a time ("You manage to find a rock."). On Andreshlew FORAGE gets "You
+  # survey the area and realize that any foraging efforts would be futile."
+  DEFAULT_ROCK_ROOM = 793
+  # The wand on the steel crate in the Crossing enchanting supplies, 125
+  # Kronars. TAP calls it "a redwood wand", but the game knows it only as a
+  # wand: "buy redwood wand" gets "You can't order anything here." and
+  # "tap my redwood wand" finds nothing, while "buy wand" gets "You decide to
+  # purchase the wand, and pay the sales clerk 125 Kronars." (2026-11-03).
+  SUPPLIES_WAND = 'wand'
+  # A sigil on Dorhum's instructions and how many each item takes:
+  # "(1) primary sigil (congruence)". The plural is accepted, though only
+  # (1) has been seen.
+  INSTRUCTION_SIGIL = /\((?<count>\d+)\) (?:primary|secondary) sigils? \((?<sigil>[\w-]+)\)/
+  # The game's lines when an enchant is finished, caught by a Flag to tell a
+  # finished item in hand from an unworked one enchant left there when it
+  # stopped. enchant.lic's enchant-complete flag takes these three and also
+  # "You collect the <item> and place it at your feet", left out here because
+  # it matches the fount's line too. Every item in the Dorhum runs ended with
+  # the first.
+  ENCHANTED_FLAG = 'taskmaster-enchanted'
+  # The completion lines ENCHANTED_FLAG catches.
+  ENCHANTED = Regexp.union(
+    /^(?:<[^>]*>|[^"<])*?With the enchanting process completed, you believe it is safe to collect your things once more/,
+    /^(?:<[^>]*>|[^"<])*?With the enchantment complete/i,
+    /^(?:<[^>]*>|[^"<])*?With enchanting complete/i
+  )
+
+  # Works one of Dorhum's enchanting tasks: buys the sigil-scrolls, makes
+  # sure the fount has a use for every item, gets the base items, then enchants
+  # each item with enchant's instructions mode and puts it in task_loot_bag
+  # for the hand-in, and finally deals with the enchanting tools.
+  #
+  # @param item [String] the task item's noun, e.g. 'spongestone'
+  # @param count [Integer] how many to make
+  # @param sigils [Array<String>] the instructions' sigils, one entry per
+  #   sigil used on each item
+  # @return [void]
+  def dorhum(item, count, sigils, _base = nil, _type = nil)
+    check_loot_bag
+    recipe = dorhum_recipe(item)
+    check_loot_bag_clear(recipe[:noun]) unless @loot_bag_checked
+    buy_sigils(sigils, count)
+    # Next door to the sigil-scrolls, before the walk to the base items.
+    DRCC.fount(artificing_info['tool-room'], 1, artificing_info['fount'], count, @bag, @bag_items, @settings.enchanting_belt)
+    send(recipe[:base], count)
+    go_to_enchanting_room
+    enchant_items(item, recipe[:noun], count)
+    repair(@settings.enchanting_tools, @settings.enchanting_belt)
+  end
+
+  # DORHUM_ITEMS' entry for the item. An item taskmaster does not know how
+  # to make pauses the script with a message, then stops when unpaused.
+  #
+  # @param item [String] the task item's noun
+  # @return [Hash] :noun and :base
+  # @raise [SystemExit] for an unknown item
+  def dorhum_recipe(item)
+    DORHUM_ITEMS[item] || pause_for_unknown_item("taskmaster does not know how to make Dorhum's #{item}s yet.")
+  end
+
+  # Whether two container names may be the same bag: the same noun, and
+  # either a bare noun ("put my rock in my backpack" finds a "sturdy
+  # backpack" too) or an adjective in common. Names may use DR's dot form,
+  # "travel.pack"; "travel.pack" and "traveler's.pack" are two bags.
+  #
+  # @param one [String, nil]
+  # @param other [String, nil]
+  # @return [Boolean]
+  def same_container?(one, other)
+    *one_adjectives, one_noun = one.to_s.downcase.split(/[\s.]+/).reject(&:empty?)
+    *other_adjectives, other_noun = other.to_s.downcase.split(/[\s.]+/).reject(&:empty?)
+    return false unless one_noun && one_noun == other_noun
+
+    one_adjectives.empty? || other_adjectives.empty? || !(one_adjectives & other_adjectives).empty?
+  end
+
+  # A resumed Dorhum task may start with a base item in hand, left there when
+  # an earlier run stopped. Nothing says it was finished (a finished one goes
+  # straight to task_loot_bag), so it goes back with the unworked ones rather
+  # than being handed in.
+  #
+  # @param item [String] the task item's noun
+  # @return [void]
+  def set_aside_held_base(item)
+    return unless @npc == 'dorhum'
+
+    noun = hand_in_noun(item)
+    DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
+  end
+
+  # A rough fragile mana fount from the enchanting tools, should DRCC.fount
+  # need a new one: "You can purchase a rough fragile mana fount for 312
+  # Kronars." (2026-11-03).
+  FOUNT_PRICE = 312
+
+  # RUMMAGE /C in a container, whose reply lists what is like the word:
+  # "You rummage through a heavy silk duffel bag looking for something
+  # similar to "pins" and see some sepia pins, some sepia pins and some sepia
+  # pins."
+  #
+  # @param container [String]
+  # @param word [String]
+  # @return [String] the reply
+  def rummage(container, word)
+    DRC.bput("rummage /C #{word} in my #{container}", /^You rummage .*/, /That would accomplish nothing/)
+  end
+
+  # How many items a RUMMAGE reply lists whose name ends in `name`: a "rock"
+  # but not a "rock marble deed" (a Dorhum reward) or the quoted word.
+  #
+  # @param contents [String] a rummage reply
+  # @param name [String] e.g. 'rock', 'decay sigil-scroll'
+  # @return [Integer]
+  def count_listed(contents, name)
+    contents.to_s.scan(/ #{Regexp.escape(name)}(?=,| and |\.)/).size
+  end
+
+  # The hand-in gives whatever item of the task's noun it finds in
+  # task_loot_bag first. One there before this task has made any is not this
+  # task's: left from another task (a spongestone and a splashstone are both
+  # rocks), not taken at the hand-in, or the player's own. So the run stops
+  # before buying anything rather than hand those in. A resume runs it right
+  # after handing in the finished items it found; dorhum then skips it.
+  #
+  # @param noun [String] the finished items' noun
+  # @return [void]
+  # @raise [SystemExit] when task_loot_bag holds any
+  def check_loot_bag_clear(noun)
+    held = count_listed(rummage(@lootbag, noun), noun)
+    @loot_bag_checked = true
+    return if held.zero?
+
+    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.")
+    exit
+  end
+
+  # Dorhum's finished items keep their base item's noun, so they must wait
+  # in a different container from the unworked ones: with task_loot_bag
+  # the same container as the crafting bag (it is 'backpack' when unset), a
+  # GET for the next base item could take a finished one, and a hand-in an
+  # unworked one. Two names are taken for one container when same_container?
+  # says so.
+  #
+  # @return [void]
+  # @raise [SystemExit] when task_loot_bag is the crafting bag
+  def check_loot_bag
+    return unless same_container?(@lootbag, @bag)
+
+    DRC.message("Dorhum's tasks need task_loot_bag (#{@lootbag}) to be a container other than your crafting bag (#{@bag}): his finished items keep the base item's noun (a spongestone is still a rock). Stopping.")
+    exit
+  end
+
+  # @param reason [String]
+  # @return [void]
+  # @raise [SystemExit] once unpaused
+  def pause_for_unknown_item(reason)
+    DRC.message("#{reason} Pausing; make them yourself, or kill the script. Unpausing stops it.")
+    pause_script
+    exit
+  end
+
+  # The Crossing enchanting society's rooms and stock numbers.
+  #
+  # @return [Hash]
+  def artificing_info
+    get_data('crafting')['artificing']['Crossing']
+  end
+
+  # Reads Dorhum's instructions for their sigils (the read costs no use), then
+  # stows them.
+  #
+  # @param item [String] the task item's noun
+  # @param count [Integer] how many are owed
+  # @return [Array(String, Integer, Array<String>)] item, count and sigils,
+  #   each sigil once per scroll an item takes
+  # @raise [SystemExit] when no sigil can be read off them
+  def read_enchanting_instructions(item, count)
+    lines = Lich::Util.issue_command("read my #{item} instructions", /Instructions for crafting/)
+    sigils = Array(lines).flat_map do |line|
+      line.gsub(/<[^>]+>/, '').scan(INSTRUCTION_SIGIL).flat_map { |count, sigil| [sigil] * count.to_i }
+    end
+    stow_instructions(item)
+    pause_for_unknown_item("No sigils could be read off the #{item} instructions.") if sigils.empty?
+    DRC.message("Each #{item} needs #{sigils.join(' and ')} sigils")
+    return item, count, sigils
+  end
+
+  # Orders the sigil-scrolls the task needs (one per sigil per item, less any
+  # already carried) from the Crossing enchanting supplies, into the crafting
+  # bag.
+  #
+  # @param sigils [Array<String>] one entry per sigil used on each item
+  # @param count [Integer] items to make
+  # @return [void]
+  def buy_sigils(sigils, count)
+    needs = sigils.tally.transform_values { |per_item| per_item * count }
+    carried = rummage(@bag, 'sigil-scroll')
+    needs.each_key do |sigil|
+      pause_for_unknown_item("No #{sigil} sigil-scroll in the crafting data.") unless @stockdata["#{sigil} sigil-scroll"]
+      needs[sigil] -= count_listed(carried, "#{sigil} sigil-scroll")
+    end
+    cost = needs.sum { |sigil, needed| [needed, 0].max * @stockdata["#{sigil} sigil-scroll"]['stock-value'] }
+    DRCM.ensure_copper_on_hand(cost + FOUNT_PRICE + 7500, @settings, "Crossing") # a fount if it is used up, 5 gold for the next task, 2500 for repairs
+    needs.each do |sigil, needed|
+      needed.times do
+        DRCT.order_item(artificing_info['stock-room'], @stockdata["#{sigil} sigil-scroll"]['stock-number'])
+        DRCC.stow_crafting_item('sigil-scroll', @bag, nil)
+      end
+    end
+  end
+
+  # Buys a wand from the steel crate for each virga wand still to make, less
+  # any wands already in the crafting bag. DRCT.buy_item takes the crate's
+  # "You decide to purchase" reply.
+  #
+  # @param count [Integer] items to make
+  # @return [void]
+  # @note Every wand in the crafting bag counts, so an imbue wand kept there
+  #   (rather than a rod) would be taken for an unworked one.
+  def buy_wands(count)
+    needed = count - DRCI.count_items_in_container(SUPPLIES_WAND, @bag)
+    return unless needed.positive?
+
+    DRCM.ensure_copper_on_hand(needed * 125 + 7500, @settings, "Crossing")
+    needed.times do
+      DRCT.buy_item(artificing_info['stock-room'], SUPPLIES_WAND)
+      DRCC.stow_crafting_item(SUPPLIES_WAND, @bag, nil)
+    end
+  end
+
+  # Forages a rock for each spongestone still to make (less any carried) at
+  # task_rock_room, into the crafting bag.
+  #
+  # @param count [Integer] items to make
+  # @return [void]
+  # @raise [SystemExit] when a forage finds nothing
+  def forage_rocks(count)
+    needed = count - DRCI.count_items_in_container('rock', @bag)
+    return unless needed.positive?
+
+    DRCT.walk_to(@rock_room)
+    needed.times do
+      unless DRC.forage?('rock')
+        DRC.message("Could not forage a rock at room #{@rock_room}, stopping.")
+        exit
+      end
+      DRCC.stow_crafting_item('rock', @bag, nil)
+    end
+  end
+
+  # The room set for enchanting during a task: task_crafting_room, the room
+  # every task crafts in, else enchanting_room. Outside tasks, enchanting
+  # (craft, workorders) goes on using enchanting_room; only taskmaster reads
+  # this.
+  #
+  # @return [Integer, String, nil] nil when neither is set
+  def task_enchanting_room
+    @crafting_room || @settings.enchanting_room
+  end
+
+  # Goes where Dorhum's items are enchanted: task_enchanting_room. With
+  # neither room set, stays put when a brazier is carried (enchanting works
+  # anywhere with your own), else finds a free brazier room in Crossing.
+  #
+  # @return [void]
+  def go_to_enchanting_room
+    room = task_enchanting_room
+    return DRCT.walk_to(room) if room
+    return if DRCI.exists?(own_brazier)
+
+    DRCC.find_enchanting_room('Crossing')
+  end
+
+  # The brazier from enchanting_tools, as enchant finds it.
+  #
+  # @return [String]
+  def own_brazier
+    Array(@settings.enchanting_tools).find { |tool| tool =~ /brazier/ } || 'brazier'
+  end
+
+  # A rented room's notice (Mahtra's private forge, task_crafting_room 16936):
+  # "[It will expire Thu Dec  3 20:58:13 ET 2026.]", in US Eastern time.
+  RENTAL_EXPIRES = /^\[It will expire \w+ (?<month>\w+)\s+(?<day>\d+) (?<hour>\d+):(?<min>\d+):(?<sec>\d+) ET (?<year>\d+)\.\]/
+  # READ NOTICE where there is none: the room is not rented.
+  RENTAL_NO_NOTICE = [/^I could not find/, /^What were you referring to/].freeze
+  # The sentry's warning, ten minutes before the rental ends (2026-11-02, with
+  # 18:58:13 ET on the notice): "[You have less than 10 minutes remaining.  If
+  # you wish to renew your rental, simply MARK NOTICE to signal the sentry.]"
+  RENTAL_WARNING = /^(?:<[^>]*>)*\[You have less than 10 minutes remaining\.\s+If you wish to renew your rental/
+  RENTAL_WARNING_FLAG = 'taskmaster-rental-warning'
+  # MARK NOTICE that went through: "[Your private forge rental has been
+  # extended until Thu Dec  3 00:56:41 ET 2026.]" (an hour per mark).
+  RENTAL_EXTENDED = /^\[Your private forge rental has been extended until/
+  # Minutes left on the notice under which the rental is renewed before
+  # enchanting, the margin the sentry's warning gives too.
+  RENTAL_RENEW_MINUTES = 10
+  MONTHS = %w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].freeze
+
+  # Reads the notice of task_crafting_room, if it has one, and renews the
+  # rental when it ends within RENTAL_RENEW_MINUTES, as sew does in a
+  # rented room: when it runs out, the game moves you out and drops on the
+  # ground whatever is not a tool, the item on the brazier too.
+  #
+  # @return [Boolean] whether the room is rented
+  def check_rental
+    reply = DRC.bput('read notice', RENTAL_EXPIRES, *RENTAL_NO_NOTICE)
+    match = RENTAL_EXPIRES.match(reply)
+    return false unless match
+
+    renew_rental if rental_minutes_left(match) < RENTAL_RENEW_MINUTES
+    true
+  end
+
+  # @param match [MatchData] RENTAL_EXPIRES on the notice
+  # @param now [Time]
+  # @return [Float] minutes until the rental ends
+  def rental_minutes_left(match, now = Time.now)
+    month = MONTHS.index(match[:month]) + 1
+    year = match[:year].to_i
+    day = match[:day].to_i
+    expires = Time.new(year, month, day, match[:hour].to_i, match[:min].to_i, match[:sec].to_i, eastern_offset(year, month, day))
+    (expires - now) / 60
+  end
+
+  # US Eastern time's UTC offset on a date: daylight time from the second
+  # Sunday of March to the first Sunday of November.
+  #
+  # @return [String] '-04:00' or '-05:00'
+  def eastern_offset(year, month, day)
+    sunday = ->(mon, nth) { (((7 - Time.utc(year, mon, 1).wday) % 7) + 1) + (7 * (nth - 1)) }
+    daylight = case month
+               when 4..10 then true
+               when 3 then day >= sunday.call(3, 2)
+               when 11 then day < sunday.call(11, 1)
+               else false
+               end
+    daylight ? '-04:00' : '-05:00'
+  end
+
+  # MARK NOTICE, an hour more. A reply other than the extension stops the
+  # run between items, before the rental can end under an enchant.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the rental was not extended
+  def renew_rental
+    Flags.reset(RENTAL_WARNING_FLAG)
+    reply = DRC.bput('mark notice', RENTAL_EXTENDED, /^You don't have enough/, *RENTAL_NO_NOTICE)
+    return if RENTAL_EXTENDED.match?(reply)
+
+    DRC.message("Could not renew the rental of room #{@crafting_room}#{reply.empty? ? '' : " (#{reply})"}; stopping before it runs out.")
+    exit
+  end
+
+  # Enchants each item with `enchant instructions` and puts it in
+  # task_loot_bag. An item the game did not finish (enchant stopped and
+  # said why) stops the task, leaving everything where it is. In a rented
+  # task_crafting_room the rental is checked first and renewed between items
+  # once the sentry warns it is nearly up.
+  #
+  # @param item [String] the task item's noun, naming the instructions
+  # @param noun [String] the finished item's noun (its base item's)
+  # @param count [Integer] items to make
+  # @return [void]
+  # @raise [SystemExit] when an enchant did not finish, a finished item
+  #   would not go in task_loot_bag (it is trashed first), or the rental
+  #   could not be renewed
+  def enchant_items(item, noun, count)
+    Flags.add(ENCHANTED_FLAG, ENCHANTED)
+    Flags.add(RENTAL_WARNING_FLAG, RENTAL_WARNING)
+    rented = @crafting_room ? check_rental : false
+    count.times do
+      renew_rental if rented && Flags[RENTAL_WARNING_FLAG]
+      Flags.reset(ENCHANTED_FLAG)
+      DRC.wait_for_script_to_complete('enchant', ['instructions', item, noun])
+      unless Flags[ENCHANTED_FLAG] && DRCI.in_hands?(noun)
+        # An unworked base item enchant left in hand (it stopped before the
+        # brazier) goes back with the others, not to the hand-in.
+        DRCC.stow_crafting_item(noun, @bag, nil) if DRCI.in_hands?(noun)
+        DRC.message("enchant did not finish a #{noun} for the #{item}s; stopping.")
+        exit
+      end
+      next if DRCI.put_away_item?(noun, @lootbag)
+
+      # Kept, it would end up among the unworked base items on the next
+      # start, so it goes in the trash; the task is short one, which the
+      # next start makes again.
+      where = trash_refused(noun) ? 'it went in the trash' : 'it is still in your hand'
+      DRC.message("The finished #{noun} would not go in #{@lootbag}, so #{where}. Make room in #{@lootbag}, then start again. Stopping.")
+      exit
+    end
+    DRC.message("#{count} #{item}s completed")
+  ensure
+    Flags.delete(ENCHANTED_FLAG)
+    Flags.delete(RENTAL_WARNING_FLAG)
+  end
+
   # Taskmasters wander, but between turn-ins they are usually back in the
   # room they were last seen in. Search from there outwards along the room
   # list, and remember where each one was found. Kept in UserVars because t2
@@ -801,6 +1216,8 @@ class TaskMaster
   # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String)]
   #   item, count, volume per item ('boulder' for stone), base and type
   def read_instructions(item, count)
+    return read_enchanting_instructions(item, count) if @npc == 'dorhum'
+
     case DRC.bput("read my #{item} instructions", INSTRUCTION_MATERIALS)
     when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
       base = Regexp.last_match(1)
@@ -838,8 +1255,13 @@ class TaskMaster
       DRC.message("You are not on a task with #{@npc}.")
       exit
     end
+    set_aside_held_base(item)
     owed = turn_in_banked(item, owed)
     exit if owed.zero?
+
+    # Before new instructions or a bank trip: anything of the task's noun
+    # still in the loot bag now was not taken at the hand-in.
+    check_loot_bag_clear(hand_in_noun(item)) if @npc == 'dorhum'
 
     ensure_instructions(item, owed)
     item, count, volume_per_item, base, type = read_instructions(item, owed)
@@ -876,11 +1298,14 @@ class TaskMaster
       when TURN_IN_MORE_NEEDED
         owed = Regexp.last_match(1).to_i
         unknown_replies = 0
+      when GIVE_NOT_ENCHANTED
+        trash_unenchanted(item, Regexp.last_match(0))
+        unknown_replies = 0
       else
         unknown_replies += 1
         next if unknown_replies < MAX_UNKNOWN_GIVE_REPLIES
 
-        DRCC.stow_crafting_item(item, @bag, nil)
+        DRCC.stow_crafting_item(hand_in_noun(item), hand_in_bag, nil)
         break
       end
     end
@@ -1231,6 +1656,12 @@ class TaskMaster
   # GIVE reply when the taskmaster is not in the room.
   GIVE_MISSED = /What is it you're trying to give/
 
+  # Dorhum turning down an item with no enchantment on it (a manual run,
+  # 2026-11-04: 'Researcher Dorhum examines the small brazier and shakes his
+  # head.  "I don't sense any hint of enchantment on this.  What are you
+  # trying to pull, Pezamus?"'). Giving it again cannot help.
+  GIVE_NOT_ENCHANTED = /^Researcher Dorhum examines [^"]*"I don't sense any hint of enchantment on this/
+
   # Gives one finished item to the taskmaster and returns the reply, or nil when
   # there is none in hand or in the bag. A give that misses her (she wandered
   # off between the get and the give) leaves the item in hand: find her again
@@ -1240,15 +1671,38 @@ class TaskMaster
   # @return [String, nil] the taskmaster's reply, or nil when none is left
   # @raise [SystemExit] after MAX_GIVE_MISSES misses in a row
   def give_item(item)
+    noun = hand_in_noun(item)
     MAX_GIVE_MISSES.times do
       find_npc(@rooms, @npc)
-      return unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
+      return unless DRCI.in_hands?(noun) || DRCI.get_item?(noun, hand_in_bag)
 
-      reply = DRC.bput("give my #{item} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED)
+      reply = DRC.bput("give my #{noun} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED)
       return reply unless reply =~ GIVE_MISSED
     end
-    DRC.message("Could not hand a #{item} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
+    DRC.message("Could not hand a #{noun} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
     exit
+  end
+
+  # The noun a task's finished items are handed in by. Dorhum's keep their
+  # base item's noun (a spongestone is a rock), so it comes from
+  # DORHUM_ITEMS; everyone else's is the task item's own noun.
+  #
+  # @param item [String] the task item's noun
+  # @return [String]
+  def hand_in_noun(item)
+    @npc == 'dorhum' ? dorhum_recipe(item)[:noun] : item
+  end
+
+  # Where finished items wait to be handed in: task_loot_bag for Dorhum's,
+  # so they never mix with the unworked items of the same noun in the
+  # crafting bag; the crafting bag for everyone else's.
+  #
+  # @return [String]
+  def hand_in_bag
+    return @bag unless @npc == 'dorhum'
+
+    check_loot_bag
+    @lootbag
   end
 
   # Hands in every finished item until the taskmaster gives the reward
@@ -1270,6 +1724,11 @@ class TaskMaster
         unknown_replies = 0
         next
       end
+      if reply =~ GIVE_NOT_ENCHANTED
+        trash_unenchanted(item, reply)
+        unknown_replies = 0
+        next
+      end
       # A reply bput did not know may be a lagged acceptance or a passing
       # refusal: give again (the item still in hand, or the next one if it
       # was taken) before calling it a refusal.
@@ -1287,6 +1746,30 @@ class TaskMaster
   # 2026-11-03), so a few unknown replies are not yet a refusal.
   MAX_UNKNOWN_GIVE_REPLIES = 5
 
+  # Puts an item that cannot be used in the trash: a finished Dorhum item
+  # the loot bag would not take, or one Dorhum saw no enchantment on.
+  #
+  # @param noun [String]
+  # @return [Boolean] whether it went in the trash
+  def trash_refused(noun)
+    DRCI.dispose_trash(noun, @worn_trashcan, @worn_trashcan_verb)
+  end
+
+  # Dorhum saw no enchantment on the item handed to him, so it can never be
+  # handed in: it goes in the trash and the hand-in goes on with the next
+  # one. If the trash will not take it, it goes back in the loot bag and the
+  # run stops (refused_hand_in).
+  #
+  # @param item [String] the task item's noun
+  # @param reply [String] Dorhum's refusal
+  # @return [void]
+  # @raise [SystemExit] when it could not be trashed
+  def trash_unenchanted(item, reply)
+    noun = hand_in_noun(item)
+    refused_hand_in(item, reply) unless trash_refused(noun)
+    DRC.message("#{@npc.capitalize} saw no enchantment on a #{noun}, so it went in the trash.")
+  end
+
   # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
   # times in a row: a refusal, or replies bput did not know. The item is
   # still in hand, so it goes back in the bag and the run stops rather than
@@ -1297,8 +1780,9 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] always
   def refused_hand_in(item, reply)
-    DRCC.stow_crafting_item(item, @bag, nil)
-    DRC.message("#{@npc.capitalize} did not take the #{item}#{reply.empty? ? '' : " (#{reply})"}. Stopping.")
+    noun = hand_in_noun(item)
+    DRCC.stow_crafting_item(noun, hand_in_bag, nil)
+    DRC.message("#{@npc.capitalize} did not take the #{noun}#{reply.empty? ? '' : " (#{reply})"}. Stopping.")
     exit
   end
 
@@ -1569,6 +2053,7 @@ before_dying do
   TaskMaster.restore_hometown
   Flags.delete("wrap-up")
   Flags.delete("thieving-fog")
+  Flags.delete(TaskMaster::ENCHANTED_FLAG)
 end
 
 TaskMaster.new.run

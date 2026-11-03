@@ -3060,6 +3060,10 @@ task_copper_target: 110000
 # Empty leaves hometown alone.
 task_hometown:
 
+# Setting for taskmaster - room where Dorhum's spongestone tasks forage rocks, one per FORAGE ROCK
+# (793 is The Crossing, Town Green Southeast; rocks cannot be had on Andreshlew).
+task_rock_room: 793
+
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
 task_before_scripts: []
