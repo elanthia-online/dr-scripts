@@ -268,11 +268,9 @@ RSpec.describe Remedy do
   end
 
   # Log lines of the commands the logged runs sent after the final-touches
-  # line: C01's mix 26:6770 (answered by the refusal 26:6773) and C02's
-  # crush 26:11366 (answered by 26:11368). That one command is the CURRENT
-  # (D05) lag, flipped by layer 16, which the CURRENT (D05) examples pin.
-  # The C15 sweeps leave these steps out: a wait injected into a command
-  # that only exists because of D05 would pin the bug, not the contract.
+  # line (CURRENT D05, flipped by layer 16): C01's mix 26:6770 (answered by
+  # 26:6773) and C02's crush 26:11366 (answered by 26:11368). remedy no
+  # longer sends them, so the C15 and C16 sweeps leave them out.
   #
   # @return [Array<Integer>]
   def self.completion_echo_steps
@@ -536,7 +534,6 @@ RSpec.describe Remedy do
 
       let(:inventory) { logged_tools.merge(logged_supplies, 'crushed belradi' => toolbag) }
       let(:product) { 'belradi elixir' }
-      let(:mix) { 'mix my heavy cauldron with my mixing stick' }
       let(:crafting_commands) { general_elixir_crafting }
       let(:finishing_commands) { general_elixir_finishing }
       let(:expected_moves) { general_elixir_moves }
@@ -545,11 +542,14 @@ RSpec.describe Remedy do
 
       it_behaves_like 'a success run replayed from the log'
 
-      # flipped by layer 16 (completion from the final-touches line)
-      it 'CURRENT (D05): mixes once more after the final-touches line (26:6742) and finishes on the refusal 26:6773' do
+      # layer 16 flipped CURRENT (D05): the log mixed once more (26:6770)
+      # and finished on the refusal 26:6773.
+      it 'takes the product out right after the final-touches line (26:6742): no mix after it, 26:6773 never drawn' do
         outcome
-        expect(game.sent[crafting_commands.size...-finishing_commands.size]).to eq([mix])
-        expect(game.trace.select { |event| event.kind == :line }.map(&:label)).to include('26:6742', '26:6773')
+        expect(game.sent).to eq(crafting_commands + finishing_commands), game.report
+        labels = game.trace.select { |event| event.kind == :line }.map(&:label)
+        expect(labels).to include('26:6740', '26:6742')
+        expect(labels).not_to include('26:6773')
       end
     end
 
@@ -558,7 +558,6 @@ RSpec.describe Remedy do
 
       let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
       let(:product) { 'nemoih unguent' }
-      let(:crush) { 'crush my unguent with my rounded pestle' }
       let(:crafting_commands) { head_unguent_crafting }
       let(:finishing_commands) { head_unguent_finishing }
       let(:expected_moves) { head_unguent_moves }
@@ -567,11 +566,14 @@ RSpec.describe Remedy do
 
       it_behaves_like 'a success run replayed from the log'
 
-      # flipped by layer 16 (completion from the final-touches line)
-      it 'CURRENT (D05): crushes once more after the final-touches line (26:11333) and finishes on 26:11368' do
+      # layer 16 flipped CURRENT (D05): the log crushed once more (26:11366)
+      # and finished on 26:11368.
+      it 'takes the product out right after the final-touches line (26:11333): no crush after it, 26:11368 never drawn' do
         outcome
-        expect(game.sent[crafting_commands.size...-finishing_commands.size]).to eq([crush])
-        expect(game.trace.select { |event| event.kind == :line }.map(&:label)).to include('26:11333', '26:11368')
+        expect(game.sent).to eq(crafting_commands + finishing_commands), game.report
+        labels = game.trace.select { |event| event.kind == :line }.map(&:label)
+        expect(labels).to include('26:11331', '26:11333')
+        expect(labels).not_to include('26:11368')
       end
     end
 
@@ -649,11 +651,14 @@ RSpec.describe Remedy do
 
       it_behaves_like 'a success run replayed from the log'
 
-      # flipped by layer 16 (completion from the final-touches line)
-      it 'CURRENT (D05/H16): crushes once more after the smell that completed it (26:12373) and finishes on 26:12394' do
+      # layer 16 flipped CURRENT (D05/H16): the log crushed once more after
+      # the smell that completed it and finished on 26:12394.
+      it 'takes the product out right after the smell that completed it (26:12371, then 26:12373): no crush after it' do
         outcome
-        expect(game.sent[crafting_commands.size...-finishing_commands.size]).to eq([crush])
-        expect(game.trace.select { |event| event.kind == :line }.map(&:label)).to include('26:12373', '26:12394')
+        expect(game.sent).to eq(crafting_commands + finishing_commands), game.report
+        labels = game.trace.select { |event| event.kind == :line }.map(&:label)
+        expect(labels).to include('26:12371', '26:12373')
+        expect(labels).not_to include('26:12394')
       end
     end
 
@@ -715,11 +720,14 @@ RSpec.describe Remedy do
 
       it_behaves_like 'a success run replayed from the log'
 
-      # flipped by layer 16 (completion from the final-touches line)
-      it 'CURRENT (D05/H16): crushes once more after the smell that completed it (25:94849) and finishes on 25:94863' do
+      # layer 16 flipped CURRENT (D05/H16): the log crushed once more after
+      # the smell that completed it and finished on 25:94863.
+      it 'takes the product out right after the smell that completed it (25:94847, then 25:94849): no crush after it' do
         outcome
-        expect(game.sent[crafting_commands.size...-finishing_commands.size]).to eq([crush])
-        expect(game.trace.select { |event| event.kind == :line }.map(&:label)).to include('25:94849', '25:94863')
+        expect(game.sent).to eq(crafting_commands + finishing_commands), game.report
+        labels = game.trace.select { |event| event.kind == :line }.map(&:label)
+        expect(labels).to include('25:94847', '25:94849')
+        expect(labels).not_to include('25:94863')
       end
     end
 
@@ -770,11 +778,14 @@ RSpec.describe Remedy do
                                      "#{stamp}: #{toolstrap} -> hand", "#{stamp}: hand -> #{toolstrap}"])
       end
 
-      # flipped by layer 16 (completion from the final-touches line)
-      it 'CURRENT (D05): crushes once more after the final-touches line (26:11333) and finishes on 26:11368' do
+      # layer 16 flipped CURRENT (D05): the log crushed once more (26:11366)
+      # and finished on 26:11368.
+      it 'takes the product out right after the final-touches line (26:11333): no crush after it, 26:11368 never drawn' do
         outcome
-        expect(game.sent[crafting_commands.size...-finishing_commands.size]).to eq([crush])
-        expect(game.trace.select { |event| event.kind == :line }.map(&:label)).to include('26:11333', '26:11368')
+        expect(game.sent).to eq(crafting_commands + finishing_commands), game.report
+        labels = game.trace.select { |event| event.kind == :line }.map(&:label)
+        expect(labels).to include('26:11331', '26:11333')
+        expect(labels).not_to include('26:11368')
       end
 
       it 'ends with the unguent in hand and the mortar, pestle, sieve and stamp on the toolstrap' do
@@ -2145,15 +2156,16 @@ RSpec.describe Remedy do
         let(:expected_moves) { send("#{sweep[:prefix]}_moves") }
 
         # The contract parts of the run: the crafting commands first, the
-        # finishing commands last, at most the one CURRENT (D05) command
-        # between them; the same moves; no timeout.
+        # finishing commands last, nothing between them (layer 16 flipped the
+        # one CURRENT (D05) command the contract allowed there); the same
+        # moves; no timeout.
         #
         # @param sends [Array<String>] the commands sent
         # @return [void]
         def expect_the_contract(sends)
           expect(sends.first(crafting_commands.size)).to eq(crafting_commands), game.report
           expect(sends.last(finishing_commands.size)).to eq(finishing_commands), game.report
-          expect(sends.size - crafting_commands.size - finishing_commands.size).to be_between(0, 1)
+          expect(sends.size).to eq(crafting_commands.size + finishing_commands.size)
           expect(commons.moves).to eq(expected_moves)
           expect(game.diagnostics).to be_empty
         end
@@ -2210,7 +2222,8 @@ RSpec.describe Remedy do
       # The crafting commands the loop sends itself (mix or crush); the
       # handlers' steps are not counted by the silence bound.
       steps = ReplayTranscript.load(transcript_path(sweep[:run])).steps.select do |step|
-        sweep[:commands].match?(step.command) && !sweep[:skips].include?(step.line) && step.command.start_with?('mix ', 'crush ')
+        sweep[:commands].match?(step.command) && !sweep[:skips].include?(step.line) && !completion_echo_steps.include?(step.line) &&
+          step.command.start_with?('mix ', 'crush ')
       end
 
       context "over #{sweep[:name]} (#{sweep[:run]})" do
@@ -2220,16 +2233,16 @@ RSpec.describe Remedy do
         let(:expected_moves) { send("#{sweep[:prefix]}_moves") }
 
         # The contract parts of the run, as C15 checks them: the crafting
-        # commands first, the finishing commands last, at most the one
-        # CURRENT (D05) command between them; the same moves; the product in
-        # hand and no Remedy line.
+        # commands first, the finishing commands last, nothing between them
+        # (layer 16 flipped the one CURRENT (D05) command the contract allowed
+        # there); the same moves; the product in hand and no Remedy line.
         #
         # @param sends [Array<String>] the commands sent, resends removed
         # @return [void]
         def expect_the_contract(sends)
           expect(sends.first(crafting_commands.size)).to eq(crafting_commands), game.report
           expect(sends.last(finishing_commands.size)).to eq(finishing_commands), game.report
-          expect(sends.size - crafting_commands.size - finishing_commands.size).to be_between(0, 1)
+          expect(sends.size).to eq(crafting_commands.size + finishing_commands.size)
           expect(commons.moves).to eq(expected_moves)
           expect(remedy_messages).to be_empty
         end
@@ -2362,7 +2375,8 @@ RSpec.describe Remedy do
           end
           expect(outcome).to eq(:exited)
           expect(DRC).to have_received(:wait_for_script_to_complete).with('buff', ['remedy'])
-          expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([next_crush] * 7),
+          # 26:11210 ... 26:11308, then Roundtime 26:11331 and the final touches 26:11333
+          expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([next_crush] * 6),
                                    'get my unguent from my large mortar'])
           expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
           expect(remedy_messages).to be_empty
@@ -2807,7 +2821,8 @@ RSpec.describe Remedy do
         alias_remedy_wording(vessel: 'large mortar', noun: 'unguent')
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(typed('continue na "pewter ingot" mortar unguent'))).to eq(:exited)
-        expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([crush] * 7),
+        # 26:11210 ... 26:11308, then Roundtime 26:11331 and the final touches 26:11333
+        expect(game.sent).to eq(['analyze my unguent', 'push my unguent with my sieve', *([crush] * 6),
                                  'get my unguent from my large mortar', 'mark my unguent with my stamp'])
         mortar_moves = commons.moves.grep(/\Adiamondique large mortar:/)
         expect(mortar_moves).to eq(["diamondique large mortar: hand -> #{toolstrap}"])
@@ -3698,9 +3713,10 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
   end
 
   describe 'Remedy::REGISTERED_FLAGS' do
-    it 'registers the cues of Remedy::FLAGS, in their order, then the faded-instructions Flag' do
-      expect(Remedy::REGISTERED_FLAGS.keys).to eq([*Remedy::FLAGS.keys, 'remedy-forgot'])
+    it 'registers the cues of Remedy::FLAGS, in their order, then the faded-instructions and done Flags' do
+      expect(Remedy::REGISTERED_FLAGS.keys).to eq([*Remedy::FLAGS.keys, 'remedy-forgot', 'remedy-done'])
       expect(Remedy::FADED_FLAG).to eq('remedy-forgot')
+      expect(Remedy::DONE_FLAG).to eq('remedy-done')
     end
 
     %w[25:37919 25:51002].each do |cite|
@@ -3718,6 +3734,37 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
       spoof = ReplayGame.code(%(<preset id='speech'>Mallory says</preset>, "#{log('25:37919').text}"), from: 'player speech form (Remedy::NO_QUOTE)')
       expect(flags_set_by(Remedy::REGISTERED_FLAGS, spoof.text)).to be_empty
+    end
+
+    # layer 16: every final-touches line of the fixtures (25:94849, 26:6742,
+    # 26:11333, 26:12373)
+    final_touches = %w[25:94849 26:6742 26:11333 26:12373]
+    final_touches.each do |cite|
+      it "sets remedy-done, and no other remedy Flag, on the game's line #{cite}" do
+        expect(flags_set_by(Remedy::REGISTERED_FLAGS, log(cite).text)).to eq(['remedy-done'])
+      end
+    end
+
+    it 'sets remedy-done on no other real line of the fixtures, the completion echoes 26:6773 and 26:11368 included' do
+      lines = every_fixture_line.reject { |line| line.text.start_with?('Applying the final touches') }
+      expect(lines.map(&:cite)).to include('26:6773', '26:11368')
+      expect(lines.select { |line| flags_set_by(Remedy::REGISTERED_FLAGS, line.text).include?('remedy-done') }.map(&:label)).to be_empty
+    end
+
+    it 'sets remedy-done on 26:6742 behind an XML tag and after other game text on the same line' do
+      # code-derived: the game forms Remedy::NO_QUOTE allows.
+      tagged = ReplayGame.code("<pushBold/>#{log('26:6742').text}", from: '26:6742 behind an XML tag (Remedy::NO_QUOTE)')
+      joined = ReplayGame.code("#{log('26:11057').text}  #{log('26:6742').text}", from: '26:11057 and 26:6742 on one line (Remedy::NO_QUOTE)')
+      expect([tagged, joined].map { |line| flags_set_by(Remedy::REGISTERED_FLAGS, line.text) }).to eq([['remedy-done'], ['remedy-done']])
+    end
+
+    it 'ignores 26:6742 when another player says, thinks or whispers it' do
+      # code-derived: the speech, ESP and whisper forms other players' lines take (Remedy::NO_QUOTE).
+      text = log('26:6742').text
+      spoofs = [%(<preset id='speech'>Mallory says</preset>, "#{text}"),
+                %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+                %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}")]
+      expect(spoofs.map { |spoof| flags_set_by(Remedy::REGISTERED_FLAGS, spoof) }).to all(be_empty)
     end
 
     it 'is frozen' do
@@ -5512,6 +5559,104 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       game.script(first_crush, log('25:10825'))
       game.script(next_crush, log('26:11333'))
       expect(craft_loop.run(first_crush)).to eq(:done)
+    end
+
+    # Layer 16 (D05, H16): the final-touches
+    # line comes after the Roundtime line of the command that finished the
+    # remedy (26:11329-11333: the crush, "Roundtime: 10 sec.", then "Applying
+    # the final touches", all 07:46:11), so bput returns on the Roundtime and
+    # only the remedy-done Flag sees it.
+    context 'when the final touches come after the Roundtime (layer 16)' do
+      before { Remedy::REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) } }
+
+      it 'is done after the crush that drew them, sending no other crush (the log sent one more, 26:11366)' do
+        # 26:11057 and 25:10825 stand for 26:11329 and 26:11331 (same wording).
+        game.script(first_crush, log('26:11057'), log('25:10825'), log('26:11333'))
+        game.fallback(next_crush, log('26:11368'))
+        loop_run = craft_loop
+        expect(loop_run.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush])
+        expect(loop_run.resumable?).to be(false)
+      end
+
+      it 'is done after a later crush that drew them, and names no other command' do
+        game.script(first_crush, log('26:11057'), log('25:10825'))
+        game.script(next_crush, log('26:11057'), log('25:10825'), log('26:11333'))
+        game.fallback(next_crush, log('26:11368'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush, next_crush])
+      end
+
+      it 'is done after the smell that finished the remedy, with no crush after it (26:12371 then 26:12373)' do
+        # The crush draws the colour cue (25:11004) after its Roundtime; the
+        # smell's reply is 26:12369-12373's order, its sniff and Roundtime
+        # lines in 26:11034's and 26:11036's wording.
+        game.script(first_crush, log('26:11057'), log('25:10825'), log('25:11004'))
+        game.script('smell my unguent', log('26:11034'), log('26:11036'), log('26:12373'))
+        game.fallback(next_crush, log('26:11368'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush, 'smell my unguent'])
+      end
+
+      it 'is done after the mix that drew them in a cauldron (26:6742; the log mixed once more, 26:6770)' do
+        mix = 'mix my heavy cauldron with my mixing stick'
+        # 26:6086 and 26:6088 stand for 26:6738 and 26:6740 (a cauldron reply, then "Roundtime: 9 sec.").
+        game.script(mix, log('26:6086'), log('26:6088'), log('26:6742'))
+        game.fallback(mix, log('26:6773'))
+        expect(craft_loop(tools: cauldron).run(mix)).to eq(:done)
+        expect(game.sent).to eq([mix])
+      end
+
+      it 'still finishes when the final touches come before the Roundtime, on the reply bput reads' do
+        # No remedy line in the logs has this order: 80 of 81 final-touches
+        # lines follow a Roundtime line; the other, 26:45927, ends a pewter
+        # ingot. Built from 26:11333 and 25:10825 swapped.
+        game.script(first_crush, log('26:11057'), log('26:11333'), log('25:10825'))
+        game.fallback(next_crush, log('26:11368'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush])
+      end
+
+      it 'is done, not too long, when the last allowed crafting command draws them after its Roundtime' do
+        stub_const('Remedy::CraftLoop::MAX_CRAFT_STEPS', 2)
+        game.script(first_crush, log('26:11057'), log('25:10825'))
+        game.script(next_crush, log('26:11057'), log('25:10825'), log('26:11333'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush, next_crush])
+      end
+
+      it 'runs the magic routine on the pass that finds the remedy done, as it did before the command it no longer sends' do
+        game.script(first_crush, log('26:11057'), log('25:10825'), log('26:11333'))
+        craft_loop.run(first_crush)
+        expect(DRCA).to have_received(:crafting_magic_routine).with(settings).twice
+      end
+
+      it 'takes the remedy as done before answering a cue that came in the same reply' do
+        # Built: no log line has a cue after a final-touches line. 26:7707
+        # is a real clumps cue (the turn it asks for is never sent).
+        game.script(first_crush, log('26:11057'), log('25:10825'), log('26:11333'), log('26:7707'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush])
+      end
+
+      it 'forgets a final-touches line from before the run: the first command is still sent' do
+        # The Flag set before run, as by a line before this remedy's
+        # crafting began (26:11333, analog).
+        game.unprompted(log('26:11333'))
+        game.script(first_crush, log('26:11057'), log('25:10825'))
+        game.script(next_crush, log('26:11333'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush, next_crush])
+      end
+
+      it 'keeps crafting when another player says the final-touches line after the Roundtime' do
+        # code-derived: the speech form other players' lines take (Remedy::NO_QUOTE).
+        spoof = code(%(<preset id='speech'>Mallory says</preset>, "#{log('26:11333').text}"), from: 'player speech form (Remedy::NO_QUOTE)')
+        game.script(first_crush, log('26:11057'), log('25:10825'), spoof)
+        game.script(next_crush, log('26:11333'))
+        expect(craft_loop.run(first_crush)).to eq(:done)
+        expect(game.sent).to eq([first_crush, next_crush])
+      end
     end
   end
 

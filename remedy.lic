@@ -302,6 +302,16 @@ class Remedy
     #   checks ({CraftLoop#run}).
     INSTRUCTIONS_FADED = [/#{NO_QUOTE}You struggle to recall the crafting instructions/i].freeze
 
+    # "Applying the final touches, you complete working on a belradi
+    # elixir." (26:6742): the remedy is done. The game sends it after the
+    # Roundtime line of the command that finished the remedy, in the same
+    # second (26:6740 then 26:6742, both 07:25:08; 26:12371 then 26:12373
+    # after a smell; 25:94847 then 25:94849), so a bput that returns on
+    # Roundtime never reads it: a Flag catches it ({DONE_FLAG}). In the
+    # logs 80 of the 81 final-touches lines follow a Roundtime line; the
+    # other one, 26:45927, ends a pewter ingot, not a remedy.
+    FINAL_TOUCHES = [/#{NO_QUOTE}Applying the final touches/i].freeze
+
     # The reply to `get my <noun> from my <vessel>` that hands the finished
     # remedy over: "You get some nemoih unguent from inside a diamondique
     # large mortar carved with delicate flowers which is on your grass
@@ -358,9 +368,17 @@ class Remedy
   # begun ({CraftLoop#run}).
   FADED_FLAG = 'remedy-forgot'
 
+  # The Flag {Patterns::FINAL_TOUCHES} sets: the remedy is done. It asks for
+  # no step, so it is not in {FLAGS}: the crafting loop reads it at the top
+  # of every pass ({CraftLoop#run}), so a remedy finished by a crafting
+  # command or by a handler's step (a smell, 26:12371-12373) is taken out
+  # without another crafting command.
+  DONE_FLAG = 'remedy-done'
+
   # Every Flag remedy registers and deletes: the cues of {FLAGS}, in their
-  # order, then {FADED_FLAG}.
-  REGISTERED_FLAGS = FLAGS.merge(FADED_FLAG => Patterns::INSTRUCTIONS_FADED).freeze
+  # order, then {FADED_FLAG} and {DONE_FLAG}.
+  REGISTERED_FLAGS = FLAGS.merge(FADED_FLAG => Patterns::INSTRUCTIONS_FADED,
+                                 DONE_FLAG  => Patterns::FINAL_TOUCHES).freeze
 
   # Product nouns the help lists. ArgParser tries a definition's regex before
   # its options, so any word is accepted as the noun.
@@ -2070,6 +2088,16 @@ class Remedy
   # ({Handlers}), or else sends the crafting command and reads the reply,
   # until the game says the remedy is done.
   #
+  # The game says so with the final-touches line, which comes after the
+  # Roundtime line of the command that finished the remedy (26:6740 then
+  # 26:6742). A bput that returns on Roundtime never reads it, so the loop
+  # used to send the crafting command once more and finish on the game's
+  # "Interesting thought really... but no." (26:11368) or "Try as you might,
+  # you just can't mix" (26:6773) instead (D05, H16).
+  # {DONE_FLAG} catches the line as it arrives, whatever command drew it,
+  # and every pass checks it first; {ALREADY_FINISHED} stays as the
+  # fallback.
+  #
   # It replaces the method that called itself once a pass, whose stack ran
   # out after about 10,846 passes (H01). Two bounds end a run the
   # game no longer moves forward: {MAX_SILENT_REPLIES} (the game stopped
@@ -2116,7 +2144,9 @@ class Remedy
     MAX_SILENT_REPLIES = 3
 
     # The text bput returns for "Applying the final touches, you complete
-    # working on a belradi elixir." (26:6742).
+    # working on a belradi elixir." (26:6742) when it is the first line of a
+    # reply that matches: the line came before any Roundtime line. The same
+    # line after a Roundtime sets {DONE_FLAG} ({Patterns::FINAL_TOUCHES}).
     FINAL_TOUCHES = 'Applying the final touches'
 
     # The ends of the texts bput returns for "Interesting thought really...
@@ -2184,8 +2214,11 @@ class Remedy
     # Crafts until the game says the remedy is done, refuses it, or a bound
     # is reached.
     #
-    # Every pass waits out roundtime and runs the magic routine once, then
-    # does its work. Crafting has begun once the game answers a crafting
+    # Resets {DONE_FLAG} first, so only a final-touches line that arrives
+    # during this run can end it. Every pass waits out roundtime and runs
+    # the magic routine once, as before; then, when {DONE_FLAG} is set, the
+    # remedy is done and nothing more is sent; otherwise the pass does its
+    # work. Crafting has begun once the game answers a crafting
     # command with Roundtime or asks for an ingredient or a step (each cue
     # names "an unfinished" remedy, e.g. 26:39150); in the continue form it
     # has begun before the loop starts. Until then, after a study, each pass
@@ -2196,7 +2229,9 @@ class Remedy
     #   form), and {FADED_FLAG} was reset after the study; false in the
     #   continue form, which studies nothing and resumes a remedy already
     #   begun
-    # @return [Symbol] :done when the remedy is done; :unsuitable_herb or
+    # @return [Symbol] :done when the remedy is done (the final-touches line
+    #   arrived, or the reply was {FINAL_TOUCHES} or {ALREADY_FINISHED});
+    #   :unsuitable_herb or
     #   :more_pieces when the game refused the herb; :faded when the studied
     #   instructions faded before crafting began; :unanswered when more than
     #   {MAX_SILENT_REPLIES} commands in a row went unanswered; :too_long
@@ -2209,9 +2244,16 @@ class Remedy
     #   run's study, remedy cannot tell it from this study's. Both are open
     #   game checks: if the game still takes the command, the stop would
     #   end a run that crafts today.
+    # @note {DONE_FLAG} is read once the command's roundtime is waited out;
+    #   in every logged case the final-touches line came in the same second
+    #   as its Roundtime line (26:6740-6742, 26:11331-11333), well inside a
+    #   roundtime of 7 s or more. Were it to come after the roundtime
+    #   ended, the next pass would send the crafting command once more and
+    #   end on {ALREADY_FINISHED}, as remedy did before.
     def run(command, studied: false)
       @command = command
       @begun = !studied
+      Flags.reset(DONE_FLAG)
       @outcome = craft
     end
 
@@ -2227,6 +2269,7 @@ class Remedy
       loop do
         waitrt?
         @magic.routine
+        return :done if done?
         if (flag = @handlers.pending)
           @handlers.run(flag)
           silent = 0
@@ -2248,9 +2291,20 @@ class Remedy
           silent += 1 unless @handlers.pending
         end
         sends += 1
+        # The final touches came after this command's Roundtime: the next
+        # pass ends as :done, ahead of the bounds.
+        next if done?
         return :unanswered if silent > MAX_SILENT_REPLIES
         return :too_long if sends >= MAX_CRAFT_STEPS
       end
+    end
+
+    # Whether the final-touches line has arrived since {#run} began
+    # ({DONE_FLAG}).
+    #
+    # @return [Boolean]
+    def done?
+      Flags[DONE_FLAG] ? true : false
     end
 
     # What a crafting command's reply means.
