@@ -28,7 +28,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.6'
+  VERSION = '2026.11.03.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1168,7 +1168,13 @@ class TaskMaster
 
   # The task journal entry. "So far, you have returned N" is optional so an
   # entry printed without it still parses as nothing returned.
-  TASK_JOURNAL = /wanted you to craft (.*) and indicated that (\d+) would suffice\.(?:\s+So far, you have returned (\d+))?/
+  # The game names the taskmaster first: "Zasele has asked you to craft some
+  # items ... In particular, she wanted you to craft a reinforced rope and
+  # indicated that 5 would suffice." Groups: taskmaster (when named), item,
+  # how many, how many returned.
+  TASK_JOURNAL = /(?:(\w+) has asked you to craft .*?)?wanted you to craft (.*) and indicated that (\d+) would suffice\.(?:\s+So far, you have returned (\d+))?/
+  # The taskmasters this script works for.
+  TASKMASTERS = %w[poltu bradyn zasele dorhum].freeze
   # TASK reply when not on a task.
   NOT_ON_TASK = /^You are not currently on a task/
   # The materials line of READ INSTRUCTIONS: the stock and its volume, or
@@ -1192,7 +1198,8 @@ class TaskMaster
   end
 
   # Reads the task journal and returns the item noun and how many are still
-  # owed, or nil when not on a task.
+  # owed, or nil when not on a task. Notes the taskmaster the journal names
+  # in @task_giver (nil when it names none).
   #
   # @return [Array(String, Integer), nil] item noun and how many are owed
   def read_task
@@ -1200,8 +1207,9 @@ class TaskMaster
     match = TASK_JOURNAL.match(entry)
     return nil unless match
 
-    item = match[1].split.last
-    remaining = [match[2].to_i - match[3].to_i, 0].max
+    @task_giver = match[1]&.downcase
+    item = match[2].split.last
+    remaining = [match[3].to_i - match[4].to_i, 0].max
     DRC.message("Making #{remaining} #{item}s")
     return item, remaining
   end
@@ -1255,6 +1263,7 @@ class TaskMaster
       DRC.message("You are not on a task with #{@npc}.")
       exit
     end
+    follow_task_giver
     set_aside_held_base(item)
     owed = turn_in_banked(item, owed)
     exit if owed.zero?
@@ -1271,6 +1280,25 @@ class TaskMaster
     send(@npc.to_sym, item, count, volume_per_item, base, type)
     complete_task(item, count)
     exit
+  end
+
+  # The task in progress may be another taskmaster's (";taskmaster dorhum"
+  # while on one of Zasele's tasks, say): it is finished as theirs, since
+  # its items, instructions and hand-in are theirs. A task from a taskmaster
+  # this script does not work for stops the run.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the journal names a taskmaster not in TASKMASTERS
+  def follow_task_giver
+    giver = @task_giver
+    return if giver.nil? || giver == @npc
+
+    unless TASKMASTERS.include?(giver)
+      DRC.message("You are on a task for #{giver.capitalize}, which taskmaster does not do. Finish or decline it first.")
+      exit
+    end
+    DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}; finishing that one first.")
+    @npc = giver
   end
 
   # Hands in finished items already in the bag and returns how many are still

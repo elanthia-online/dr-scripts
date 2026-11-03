@@ -1204,6 +1204,53 @@ RSpec.describe TaskMaster do
         events
       end
 
+      describe 'a task from another taskmaster' do
+        # The journal as the game prints it (Fidon, 2026-11).
+        let(:zasele_journal) do
+          'While visiting Andreshlew for the Hollow Eve festivities, Zasele has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  ' \
+            'In particular, she wanted you to craft a coil of reinforced cloth rope and indicated that 3 would suffice.  So far, you have returned 0 to her.'
+        end
+
+        it 'reads the item, the count and the taskmaster off the full journal line' do
+          tm = reader
+          game('task' => zasele_journal)
+
+          expect(tm.read_task).to eq(['rope', 3])
+          expect(tm.instance_variable_get(:@task_giver)).to eq('zasele')
+        end
+
+        it "finishes Zasele's task as hers when started for Dorhum" do
+          tm = reader(npc: 'dorhum')
+          game('task' => zasele_journal)
+          allow(tm).to receive(:turn_in_banked) { exit }
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+          expect(DRC).to have_received(:message).with('You are on a task for Zasele, not Dorhum; finishing that one first.')
+        end
+
+        it "stops on a task from a taskmaster it doesn't do, before handing anything in" do
+          tm = reader(npc: 'zasele')
+          game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with("You are on a task for Nezhiri, which taskmaster does not do. Finish or decline it first.")
+        end
+
+        it 'keeps the taskmaster it was started for when the journal names none' do
+          tm = reader(npc: 'zasele')
+          game('task' => journal('a coil of reinforced cloth rope', 3))
+
+          tm.read_task
+          tm.follow_task_giver
+
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+        end
+      end
+
       describe 'asking for replacement instructions' do
         it 'asks once when the carried set is used up, and remembers it for this task' do
           events = resume(owed: 3, uses: nil)
