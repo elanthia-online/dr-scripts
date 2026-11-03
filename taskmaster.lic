@@ -1264,9 +1264,9 @@ class TaskMaster
         unknown_replies = 0
         next
       end
-      # A reply bput did not know may be a lagged acceptance: give once more
-      # (the item still in hand, or the next one if it was taken) before
-      # calling it a refusal.
+      # A reply bput did not know may be a lagged acceptance or a passing
+      # refusal: give again (the item still in hand, or the next one if it
+      # was taken) before calling it a refusal.
       unknown_replies += 1
       refused_hand_in(item, reply) if unknown_replies >= MAX_UNKNOWN_GIVE_REPLIES
     end
@@ -1276,13 +1276,15 @@ class TaskMaster
   end
 
   # Hand-in replies in a row that were neither the reward sack nor "N more
-  # are needed" before complete_task stops.
-  MAX_UNKNOWN_GIVE_REPLIES = 2
+  # are needed" before complete_task stops. Zasele has taken a rope on the
+  # fifth give after four "Don't be silly." replies (a fleet log,
+  # 2026-11-03), so a few unknown replies are not yet a refusal.
+  MAX_UNKNOWN_GIVE_REPLIES = 5
 
-  # The taskmaster neither took the item nor asked for more: a refusal, or a
-  # reply bput did not know. The item is still in hand, and giving it again
-  # would only get the same answer, so it goes back in the bag and the run
-  # stops rather than handing the same item over for good.
+  # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
+  # times in a row: a refusal, or replies bput did not know. The item is
+  # still in hand, so it goes back in the bag and the run stops rather than
+  # handing the same item over for good.
   #
   # @param item [String] item noun
   # @param reply [String] what bput matched ('' when nothing)
