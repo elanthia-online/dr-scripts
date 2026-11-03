@@ -28,7 +28,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.8'
+  VERSION = '2026.11.03.9'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -773,6 +773,7 @@ class TaskMaster
     check_loot_bag
     recipe = dorhum_recipe(item)
     check_loot_bag_clear(recipe[:noun]) unless @loot_bag_checked
+    ensure_tools(dorhum_tools, 'enchanting')
     buy_sigils(sigils, count)
     # Next door to the sigil-scrolls, before the walk to the base items.
     DRCC.fount(artificing_info['tool-room'], 1, artificing_info['fount'], count, @bag, @bag_items, @settings.enchanting_belt)
@@ -893,6 +894,69 @@ class TaskMaster
     exit
   end
 
+  # The enchanting tools a Dorhum task needs on hand before anything is
+  # bought: enchanting_tools less the fount (DRCC.fount buys one) and the
+  # brazier (without one, a Crossing brazier room is used).
+  #
+  # @return [Array<String>]
+  def dorhum_tools
+    Array(@settings.enchanting_tools).reject { |tool| tool =~ /fount|brazier/ }
+  end
+
+  # Makes sure the tools are on you before money is spent on a task: any
+  # missing are asked of the society clerk (;clerk-tools <discipline> get),
+  # and any still missing stop the run with their names, rather than buying
+  # supplies and spending an instructions use on an item that cannot be made.
+  # Tools left with Rangu were already collected before the task started.
+  #
+  # @param tools [Array<String>] tool names as in the settings
+  # @param discipline [String] clerk-tools toolset, e.g. 'enchanting'
+  # @return [void]
+  # @raise [SystemExit] when a tool cannot be found
+  def ensure_tools(tools, discipline)
+    missing = missing_tools(tools)
+    return if missing.empty?
+
+    DRC.message("Missing #{missing.join(', ')}; asking the #{discipline} clerk.")
+    DRCI.stow_hands
+    DRC.wait_for_script_to_complete('clerk-tools', [discipline, 'get'])
+    missing = missing_tools(missing)
+    return if missing.empty?
+
+    DRC.message("Can't find #{missing.join(', ')}: not on you, and the #{discipline} clerk didn't have it. Stopping before buying anything.")
+    exit
+  end
+
+  # @param tools [Array<String>]
+  # @return [Array<String>] the tools neither in hand nor anywhere TAP finds them
+  def missing_tools(tools)
+    Array(tools).compact.reject { |tool| DRCI.in_hands?(tool) || DRCI.exists?(tool) }
+  end
+
+  # Carries amount copper (Kronars), from the bank when short, or stops.
+  #
+  # @param amount [Integer]
+  # @return [void]
+  # @raise [SystemExit] when the bank cannot cover it
+  def afford(amount)
+    return if DRCM.ensure_copper_on_hand(amount, @settings, "Crossing")
+
+    DRCI.stow_hands
+    DRC.message("Out of money: #{amount} Kronars (copper) needed and the Crossing bank could not cover it. Stopping before buying anything more.")
+    exit
+  end
+
+  # A purchase that did not go through (not enough coins, or the shop could
+  # not be reached) stops the run before the supplies run short mid-task.
+  #
+  # @param what [String] e.g. 'a decay sigil-scroll'
+  # @raise [SystemExit] always
+  def stop_buying(what)
+    DRCI.stow_hands
+    DRC.message("Could not buy #{what}. Stopping.")
+    exit
+  end
+
   # The Crossing enchanting society's rooms and stock numbers.
   #
   # @return [Hash]
@@ -934,10 +998,11 @@ class TaskMaster
       needs[sigil] -= count_listed(carried, "#{sigil} sigil-scroll")
     end
     cost = needs.sum { |sigil, needed| [needed, 0].max * @stockdata["#{sigil} sigil-scroll"]['stock-value'] }
-    DRCM.ensure_copper_on_hand(cost + FOUNT_PRICE + 7500, @settings, "Crossing") # a fount if it is used up, 5 gold for the next task, 2500 for repairs
+    afford(cost + FOUNT_PRICE + 7500) # a fount if it is used up, 5 gold for the next task, 2500 for repairs
     needs.each do |sigil, needed|
       needed.times do
-        DRCT.order_item(artificing_info['stock-room'], @stockdata["#{sigil} sigil-scroll"]['stock-number'])
+        bought = DRCT.order_item(artificing_info['stock-room'], @stockdata["#{sigil} sigil-scroll"]['stock-number'])
+        stop_buying("a #{sigil} sigil-scroll") if bought.to_s.empty?
         DRCC.stow_crafting_item('sigil-scroll', @bag, nil)
       end
     end
@@ -955,9 +1020,12 @@ class TaskMaster
     needed = count - DRCI.count_items_in_container(SUPPLIES_WAND, @bag)
     return unless needed.positive?
 
-    DRCM.ensure_copper_on_hand(needed * 125 + 7500, @settings, "Crossing")
+    afford(needed * 125 + 7500)
     needed.times do
       DRCT.buy_item(artificing_info['stock-room'], SUPPLIES_WAND)
+      # buy_item returns nothing useful after "You decide to purchase", so
+      # the hand says whether the wand was bought.
+      stop_buying('a wand') unless DRCI.in_hands?(SUPPLIES_WAND)
       DRCC.stow_crafting_item(SUPPLIES_WAND, @bag, nil)
     end
   end
