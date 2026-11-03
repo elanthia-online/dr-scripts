@@ -234,6 +234,10 @@ class Enchant
       wave_fount
     end
     imbue
+    # The imbue may finish the item or lead to more scribing; the scribe
+    # loop answers either, as after the first imbue of a new enchant.
+    get_tool(@burin)
+    scribe
   end
 
   def fount_on_brazier?
