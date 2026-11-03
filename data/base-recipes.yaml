@@ -8923,6 +8923,65 @@ crafting_recipes:
   herb3: pink blossom
   herb3_stock: # Not purchasable at the society
   liquid: water
+  # Not marked instructions: true: remedy.lic takes at most two herbs, and
+  # this tea needs three.
+# Remedies made from stand-alone instructions, not the crafting book:
+# `;remedy instructions <herb> <catalyst> <container> <noun>` studies
+# "<noun> instructions". They stay after every book recipe so a first-match
+# name search (create_remedies.lic) keeps finding the book recipes first, and
+# workorders.lic never selects them (instructions: true). herb1 is the
+# prepared herb remedy.lic gets, its base-ingredients.yaml output, not the
+# bare herb word of the book recipes: shining clubmoss, marsh woundwort and
+# ashen flamestalk answer to the same noun as their prepared herb, so a bare
+# word would also find the raw herb. create_remedies.lic forages and
+# prepares it as the raw herb that output comes from. Products and liquids
+# are from the 2026-10-25/26 logs (spec/base_recipes_remedies_spec.rb).
+- name: a clubmoss liniment
+  noun: liniment
+  volume: 1
+  type: remedies
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  container: mortar
+  herb1: dried clubmoss
+  herb1_stock: # Foraged as shining clubmoss (create_remedies.lic)
+  liquid: alcohol
+- name: a woundwort curative
+  noun: curative
+  volume: 1
+  type: remedies
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  container: bowl
+  herb1: crushed woundwort
+  herb1_stock: # Foraged as marsh woundwort (create_remedies.lic)
+  liquid: water
+- name: a marram salve
+  noun: salve
+  volume: 1
+  type: remedies
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  container: mortar
+  herb1: dried marram
+  herb1_stock: # Foraged as marram grass (create_remedies.lic)
+  liquid: water
+# No logged run: the bowl (potions are mixed in a cauldron) and the water
+# binder come from another crafting script seen in the logs, not from play.
+- name: a flamestalk potion
+  noun: potion
+  volume: 1
+  type: remedies
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  container: bowl
+  herb1: crushed flamestalk
+  herb1_stock: # Foraged as ashen flamestalk (create_remedies.lic)
+  liquid: water
 ####################################
 ##### Enchanting section ends #####
 ####################################

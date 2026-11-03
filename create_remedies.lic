@@ -67,13 +67,15 @@ class CreateRemedies
     get_store_tools("store") if tools
   end
 
-  # Forages 25 of a herb and prepares it with alchemy.lic.
+  # Forages 25 of a herb and prepares it with alchemy.lic, by its
+  # {#forage_name}.
   #
-  # @param herb [String] the herb
+  # @param herb [String] the herb, as the recipe names it
   # @return [void]
   def get_prep_herb(herb)
-    DRC.wait_for_script_to_complete('alchemy', [herb, 'forage', 25])
-    DRC.wait_for_script_to_complete('alchemy', [herb, 'prepare'])
+    ingredient = forage_name(herb)
+    DRC.wait_for_script_to_complete('alchemy', [ingredient, 'forage', 25])
+    DRC.wait_for_script_to_complete('alchemy', [ingredient, 'prepare'])
   end
 
   # Gets or stores the alchemy tools with clerk-tools.lic.
@@ -88,6 +90,21 @@ class CreateRemedies
     DRC.message("Option for tools is: {option}.") if debug
     DRC.wait_for_script_to_complete('clerk-tools', ['alchemy', 'get']) if option == "get"
     DRC.wait_for_script_to_complete('clerk-tools', ['alchemy', 'store']) if option == "store"
+  end
+
+  # The name alchemy.lic is given to find a recipe herb's
+  # data/base-ingredients.yaml entry (`name =~ /<target>/i`, alchemy.lic:35).
+  # A herb the recipe names as a prepared output, such as the "dried
+  # clubmoss" of an instructions recipe, is foraged and prepared as the raw
+  # herb that output comes from, "shining clubmoss". Any other herb (the book
+  # recipes' nemoih, red flower, ...; none of them is an output) is passed on
+  # as it is.
+  #
+  # @param herb [String] the herb, as the recipe names it
+  # @return [String] the raw herb's ingredient name, or herb
+  def forage_name(herb)
+    raw = get_data('ingredients').ingredients.find { |ingredient| ingredient['output'].to_s.strip == herb }
+    raw ? raw['name'] : herb
   end
 end
 CreateRemedies.new
