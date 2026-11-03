@@ -2352,6 +2352,19 @@ RSpec.describe TaskMaster do
         expect { dorhum(bag: 'sturdy backpack', lootbag: 'backpack').hand_in_bag }.to raise_error(SystemExit)
       end
 
+      {
+        ['sturdy backpack', 'backpack']         => true,
+        ['pack', 'travel.pack']                 => true,
+        ['duffel bag', 'Duffel Bag']            => true,
+        ['travel.pack', "traveler's.pack"]      => false,
+        ['duffel bag', "traveler's.pack"]       => false,
+        ['leather backpack', 'canvas backpack'] => false
+      }.each do |(crafting, loot), same|
+        it "takes #{crafting.inspect} and #{loot.inspect} for #{same ? 'the same bag' : 'two bags'}" do
+          expect(dorhum.same_container?(crafting, loot)).to be(same)
+        end
+      end
+
       it 'lets a loot bag of its own through' do
         expect(dorhum.hand_in_bag).to eq('backpack')
       end

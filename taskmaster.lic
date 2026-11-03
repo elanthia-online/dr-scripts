@@ -787,6 +787,22 @@ class TaskMaster
     DORHUM_ITEMS[item] || pause_for_unknown_item("taskmaster does not know how to make Dorhum's #{item}s yet.")
   end
 
+  # Whether two container names may be the same bag: the same noun, and
+  # either a bare noun ("put my rock in my backpack" finds a "sturdy
+  # backpack" too) or an adjective in common. Names may use DR's dot form,
+  # "travel.pack"; "travel.pack" and "traveler's.pack" are two bags.
+  #
+  # @param one [String, nil]
+  # @param other [String, nil]
+  # @return [Boolean]
+  def same_container?(one, other)
+    *one_adjectives, one_noun = one.to_s.downcase.split(/[\s.]+/).reject(&:empty?)
+    *other_adjectives, other_noun = other.to_s.downcase.split(/[\s.]+/).reject(&:empty?)
+    return false unless one_noun && one_noun == other_noun
+
+    one_adjectives.empty? || other_adjectives.empty? || !(one_adjectives & other_adjectives).empty?
+  end
+
   # A resumed Dorhum task may start with a base item in hand, left there when
   # an earlier run stopped. Nothing says it was finished (a finished one goes
   # straight to task_loot_bag), so it goes back with the unworked ones rather
@@ -809,9 +825,7 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when task_loot_bag is the crafting bag
   def check_loot_bag
-    # By noun: "put my rock in my backpack" finds a "sturdy backpack" too, so
-    # two names with the same noun may well be the same bag.
-    return unless @lootbag.to_s.split.last.to_s.casecmp?(@bag.to_s.split.last.to_s)
+    return unless same_container?(@lootbag, @bag)
 
     DRC.message("Dorhum's tasks need task_loot_bag set to a container other than your crafting bag (#{@bag}), with a different noun: his finished items keep the base item's noun (a spongestone is still a rock). Stopping.")
     exit
