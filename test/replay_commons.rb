@@ -441,13 +441,17 @@ class ReplayCommons
     @lich5 == :current ? true : nil
   end
 
-  # A final get_crafting_item failure, answered as {#lich5} dictates.
+  # A final get_crafting_item failure, answered as {#lich5} dictates. Every
+  # release beeps before the bold line (DRC.beep: v5.21.0 and v5.22.0
+  # common-crafting.rb:344, 480bdee3 crafting_item_failed :517), so a spec
+  # counting beeps counts this one too.
   #
   # @param message [String] the bold line
   # @param skip_exit [Boolean]
   # @return [Boolean, nil] false on :current, nil on older releases
   # @raise [SystemExit] without skip_exit on :current and :v5_22
   def crafting_failure(message, skip_exit)
+    DRC.beep
     @messages << message
     if skip_exit
       return @lich5 == :current ? false : nil
