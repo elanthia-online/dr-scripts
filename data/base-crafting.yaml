@@ -249,12 +249,12 @@ stock:
     stock-volume: 1
     stock-number: 3
     stock-name: congruence sigil-scroll
-    stock-value: 625
+    stock-value: 312
   permutation sigil-scroll:
     stock-volume: 1
     stock-number: 4
     stock-name: permutation sigil-scroll
-    stock-value: 312
+    stock-value: 625
   rarefaction sigil-scroll:
     stock-volume: 1
     stock-number: 5
@@ -264,52 +264,52 @@ stock:
     stock-volume: 1
     stock-number: 6
     stock-name: nurture sigil-scroll
-    stock-value: 2475
+    stock-value: 1175
   metamorphosis sigil-scroll:
     stock-volume: 1
     stock-number: 7
     stock-name: metamorphosis sigil-scroll
-    stock-value: 2200
+    stock-value: 1575
   evolution sigil-scroll:
     stock-volume: 1
     stock-number: 8
     stock-name: evolution sigil-scroll
-    stock-value: 1950
+    stock-value: 2650
   paradox sigil-scroll:
     stock-volume: 1
     stock-number: 9
     stock-name: paradox sigil-scroll
-    stock-value: 1375
+    stock-value: 1175
   decay sigil-scroll:
     stock-volume: 1
     stock-number: 10
     stock-name: decay sigil-scroll
-    stock-value: 1100
+    stock-value: 1575
   ascension sigil-scroll:
     stock-volume: 1
     stock-number: 11
     stock-name: ascension sigil-scroll
-    stock-value: 850
+    stock-value: 2650
   integration sigil-scroll:
     stock-volume: 1
     stock-number: 12
     stock-name: integration sigil-scroll
-    stock-value: 1900
+    stock-value: 1175
   unity sigil-scroll:
     stock-volume: 1
     stock-number: 13
     stock-name: unity sigil-scroll
-    stock-value: 1650
+    stock-value: 2275
   clarification sigil-scroll:
     stock-volume: 1
     stock-number: 14
     stock-name: clarification sigil-scroll
-    stock-value: 1375
+    stock-value: 2650
   antipode sigil-scroll:
     stock-volume: 1
     stock-number: 15
     stock-name: antipode sigil-scroll
-    stock-value: 1650
+    stock-value: 1575
   bone totem:
     stock-volume: 1
     stock-number: 16
