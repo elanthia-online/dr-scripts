@@ -2341,7 +2341,7 @@ RSpec.describe TaskMaster do
         expect(tm).not_to receive(:buy_sigils)
 
         expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
-        expect(DRC).to have_received(:message).with(/need task_loot_bag set to a container other than your crafting bag \(duffel bag\)/)
+        expect(DRC).to have_received(:message).with(/need task_loot_bag \(duffel bag\) to be a container other than your crafting bag \(duffel bag\)/)
       end
 
       it 'stops a hand-in from the crafting bag too, as after a resume' do
@@ -2382,19 +2382,76 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:bput).with('give my rock to dorhum', any_args)
       end
 
-      it 'stops at the first "no hint of enchantment" refusal, putting the item back in the loot bag' do
-        refusal = 'Researcher Dorhum examines the rock and shakes his head.  "I don\'t sense any hint of enchantment on this.  ' \
-                  'What are you trying to pull, Pezamus?"'
+      def refusal
+        'Researcher Dorhum examines the rock and shakes his head.  "I don\'t sense any hint of enchantment on this.  What are you trying to pull, Pezamus?"'
+      end
+
+      # The loot bag holds `rocks`; Dorhum turns down the ones whose index is
+      # in `bad` and takes the rest.
+      def handing_in(rocks, bad:)
+        state = { held: nil, gets: 0, gives: 0, accepted: 0 }
+        allow(DRCI).to receive(:in_hands?) { state[:held] }
+        allow(DRCI).to receive(:get_item?) do
+          next false if state[:gets] >= rocks
+
+          state[:gets] += 1
+          state[:held] = state[:gets]
+        end
+        allow(DRCI).to receive(:dispose_trash) { state[:held] = nil; true }
+        game('give my rock to dorhum' => lambda do |*|
+          state[:gives] += 1
+          next refusal if bad.include?(state[:held])
+
+          state[:accepted] += 1
+          state[:held] = nil
+          left = rocks - bad.size - state[:accepted]
+          left.positive? ? more_needed(left) : sack_handed
+        end)
+        state
+      end
+
+      it 'trashes a rock Dorhum sees no enchantment on, without giving it again, and hands in the rest' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:task_handed_in)
+        state = handing_in(3, bad: [2])
+
+        expect { tm.complete_task('spongestone', 2) }.not_to raise_error
+
+        expect(state[:gives]).to eq(3)
+        expect(DRCI).to have_received(:dispose_trash).with('rock', 'bucket', 'tap').once
+        expect(DRC).to have_received(:message).with('Dorhum saw no enchantment on a rock, so it went in the trash.')
+        expect(tm).to have_received(:sort_sack)
+      end
+
+      it 'does the same at a resume, then hands in the rest' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(DRCC).to receive(:stow_crafting_item)
+        state = handing_in(2, bad: [1])
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:task_handed_in)
+
+        expect(tm.turn_in_banked('spongestone', 2)).to eq(0)
+
+        expect(DRCI).to have_received(:dispose_trash).once
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(state[:gives]).to eq(2)
+      end
+
+      it 'puts the rock back and stops when the trash will not take it' do
         tm = dorhum
         allow(tm).to receive(:find_npc)
         allow(tm).to receive(:sort_sack)
-        allow(DRCI).to receive(:in_hands?).and_return(true)
+        handing_in(1, bad: [1])
+        allow(DRCI).to receive(:dispose_trash).and_return(false)
         allow(DRCC).to receive(:stow_crafting_item)
-        game('give my rock to dorhum' => ->(_cmd, *matchers) { matchers.any? { |m| m.is_a?(Regexp) && refusal =~ m } ? refusal : '' })
 
-        expect { tm.complete_task('spongestone', 8) }.to raise_error(SystemExit)
+        expect { tm.complete_task('spongestone', 1) }.to raise_error(SystemExit)
 
-        expect(DRC).to have_received(:bput).with('give my rock to dorhum', any_args).once
         expect(DRCC).to have_received(:stow_crafting_item).with('rock', 'backpack', nil)
         expect(tm).not_to have_received(:sort_sack)
       end
@@ -2657,18 +2714,31 @@ RSpec.describe TaskMaster do
         expect(DRCI).not_to have_received(:put_away_item?)
       end
 
-      it 'stops, with the item still in hand, when the loot bag will not take it' do
-        tm = dorhum
+      it 'trashes a finished item the loot bag will not take, rather than stow it with the unworked ones, and stops' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
         enchant_runs(true, true, true)
         allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
         allow(DRCI).to receive(:put_away_item?).with('rock', 'backpack').and_return(false)
+        expect(DRCI).to receive(:dispose_trash).with('rock', 'bucket', 'tap').and_return(true)
         expect(DRCC).not_to receive(:stow_crafting_item)
 
         expect { tm.enchant_items('spongestone', 'rock', 3) }.to raise_error(SystemExit)
 
         expect(DRC).to have_received(:wait_for_script_to_complete).once
-        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack; it is still in your hand. Stopping.')
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack, so it went in the trash. Make room in backpack, then start again. Stopping.')
         expect(DRC).not_to have_received(:message).with('3 spongestones completed')
+      end
+
+      it 'says the item is still in hand when the trash will not take it either' do
+        tm = dorhum
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        allow(DRCI).to receive(:dispose_trash).and_return(false)
+
+        expect { tm.enchant_items('spongestone', 'rock', 1) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack, so it is still in your hand. Make room in backpack, then start again. Stopping.')
       end
 
       it 'stops when the finished item is not in hand' do
@@ -2787,6 +2857,10 @@ RSpec.describe TaskMaster do
         expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
       end
 
+      it 'takes the warning behind a leading XML tag too' do
+        expect('<pushBold/>[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]').to match(TaskMaster::RENTAL_WARNING)
+      end
+
       it "takes the sentry's warning, not a player repeating it" do
         warning = '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]'
         expect(warning).to match(TaskMaster::RENTAL_WARNING)
@@ -2820,8 +2894,39 @@ RSpec.describe TaskMaster do
 
         expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
 
-        expect(DRC).to have_received(:message).with('backpack already holds 2 rocks before this task has made any: left from another task, turned down by Dorhum, or your own. ' \
+        expect(DRC).to have_received(:message).with('backpack already holds 2 rocks that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. ' \
                                                     'The hand-in would give those first. Move them out of backpack, then start again.')
+      end
+
+      it 'checks the loot bag right after a resume hand-in, before asking for instructions or going to the bank' do
+        tm = dorhum
+        allow(tm).to receive(:read_task).and_return(['spongestone', 3])
+        allow(tm).to receive(:set_aside_held_base)
+        allow(tm).to receive(:turn_in_banked).and_return(3)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock.')
+        expect(tm).not_to receive(:ensure_instructions)
+        expect(tm).not_to receive(:top_up_copper)
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with(/backpack already holds 1 rock that this task has not made or could not hand in/)
+      end
+
+      it 'checks the loot bag once on a resume, not again in dorhum' do
+        tm = dorhum
+        allow(tm).to receive(:read_task).and_return(['spongestone', 3])
+        allow(tm).to receive(:set_aside_held_base)
+        allow(tm).to receive(:turn_in_banked).and_return(3)
+        %i[ensure_instructions refresh_haste top_up_copper buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
+        allow(tm).to receive(:read_instructions).and_return(['spongestone', 3, %w[congruence decay]])
+        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(DRCC).to receive(:fount)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" but there is nothing in there like that.')
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:bput).with('rummage /C rock in my backpack', any_args).once
+        expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 3)
       end
 
       it 'carries on when task_loot_bag holds none, and does not count a "rock marble deed"' do

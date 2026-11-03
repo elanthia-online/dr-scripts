@@ -772,7 +772,7 @@ class TaskMaster
   def dorhum(item, count, sigils, _base = nil, _type = nil)
     check_loot_bag
     recipe = dorhum_recipe(item)
-    check_loot_bag_clear(recipe[:noun])
+    check_loot_bag_clear(recipe[:noun]) unless @loot_bag_checked
     buy_sigils(sigils, count)
     # Next door to the sigil-scrolls, before the walk to the base items.
     DRCC.fount(artificing_info['tool-room'], 1, artificing_info['fount'], count, @bag, @bag_items, @settings.enchanting_belt)
@@ -852,32 +852,35 @@ class TaskMaster
   # The hand-in gives whatever item of the task's noun it finds in
   # task_loot_bag first. One there before this task has made any is not this
   # task's: left from another task (a spongestone and a splashstone are both
-  # rocks), turned down by Dorhum, or the player's own. So the run stops
-  # before buying anything rather than hand those in. A resume has already
-  # handed in the finished items it found by then.
+  # rocks), not taken at the hand-in, or the player's own. So the run stops
+  # before buying anything rather than hand those in. A resume runs it right
+  # after handing in the finished items it found; dorhum then skips it.
   #
   # @param noun [String] the finished items' noun
   # @return [void]
   # @raise [SystemExit] when task_loot_bag holds any
   def check_loot_bag_clear(noun)
     held = count_listed(rummage(@lootbag, noun), noun)
+    @loot_bag_checked = true
     return if held.zero?
 
-    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} before this task has made any: left from another task, turned down by Dorhum, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.")
+    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.")
     exit
   end
 
   # Dorhum's finished items keep their base item's noun, so they must wait
   # in a different container from the unworked ones: with task_loot_bag
-  # unset (or set to the crafting bag), a GET for the next base item could
-  # take a finished one, and a hand-in an unworked one.
+  # the same container as the crafting bag (it is 'backpack' when unset), a
+  # GET for the next base item could take a finished one, and a hand-in an
+  # unworked one. Two names are taken for one container when same_container?
+  # says so.
   #
   # @return [void]
   # @raise [SystemExit] when task_loot_bag is the crafting bag
   def check_loot_bag
     return unless same_container?(@lootbag, @bag)
 
-    DRC.message("Dorhum's tasks need task_loot_bag set to a container other than your crafting bag (#{@bag}), with a different noun: his finished items keep the base item's noun (a spongestone is still a rock). Stopping.")
+    DRC.message("Dorhum's tasks need task_loot_bag (#{@lootbag}) to be a container other than your crafting bag (#{@bag}): his finished items keep the base item's noun (a spongestone is still a rock). Stopping.")
     exit
   end
 
@@ -1017,7 +1020,7 @@ class TaskMaster
   # The sentry's warning, ten minutes before the rental ends (2026-11-02, with
   # 18:58:13 ET on the notice): "[You have less than 10 minutes remaining.  If
   # you wish to renew your rental, simply MARK NOTICE to signal the sentry.]"
-  RENTAL_WARNING = /^\[You have less than 10 minutes remaining\.\s+If you wish to renew your rental/
+  RENTAL_WARNING = /^(?:<[^>]*>)*\[You have less than 10 minutes remaining\.\s+If you wish to renew your rental/
   RENTAL_WARNING_FLAG = 'taskmaster-rental-warning'
   # MARK NOTICE that went through: "[Your private forge rental has been
   # extended until Thu Dec  3 00:56:41 ET 2026.]" (an hour per mark).
@@ -1093,7 +1096,8 @@ class TaskMaster
   # @param count [Integer] items to make
   # @return [void]
   # @raise [SystemExit] when an enchant did not finish, a finished item
-  #   would not go in task_loot_bag, or the rental could not be renewed
+  #   would not go in task_loot_bag (it is trashed first), or the rental
+  #   could not be renewed
   def enchant_items(item, noun, count)
     Flags.add(ENCHANTED_FLAG, ENCHANTED)
     Flags.add(RENTAL_WARNING_FLAG, RENTAL_WARNING)
@@ -1111,8 +1115,11 @@ class TaskMaster
       end
       next if DRCI.put_away_item?(noun, @lootbag)
 
-      # Stowed elsewhere it would mix with the unworked base items.
-      DRC.message("The finished #{noun} would not go in #{@lootbag}; it is still in your hand. Stopping.")
+      # Kept, it would end up among the unworked base items on the next
+      # start, so it goes in the trash; the task is short one, which the
+      # next start makes again.
+      where = trash_refused(noun) ? 'it went in the trash' : 'it is still in your hand'
+      DRC.message("The finished #{noun} would not go in #{@lootbag}, so #{where}. Make room in #{@lootbag}, then start again. Stopping.")
       exit
     end
     DRC.message("#{count} #{item}s completed")
@@ -1252,6 +1259,10 @@ class TaskMaster
     owed = turn_in_banked(item, owed)
     exit if owed.zero?
 
+    # Before new instructions or a bank trip: anything of the task's noun
+    # still in the loot bag now was not taken at the hand-in.
+    check_loot_bag_clear(hand_in_noun(item)) if @npc == 'dorhum'
+
     ensure_instructions(item, owed)
     item, count, volume_per_item, base, type = read_instructions(item, owed)
     refresh_haste
@@ -1286,6 +1297,9 @@ class TaskMaster
         return 0
       when TURN_IN_MORE_NEEDED
         owed = Regexp.last_match(1).to_i
+        unknown_replies = 0
+      when GIVE_NOT_ENCHANTED
+        trash_unenchanted(item, Regexp.last_match(0))
         unknown_replies = 0
       else
         unknown_replies += 1
@@ -1710,7 +1724,11 @@ class TaskMaster
         unknown_replies = 0
         next
       end
-      refused_hand_in(item, reply) if reply =~ GIVE_NOT_ENCHANTED
+      if reply =~ GIVE_NOT_ENCHANTED
+        trash_unenchanted(item, reply)
+        unknown_replies = 0
+        next
+      end
       # A reply bput did not know may be a lagged acceptance or a passing
       # refusal: give again (the item still in hand, or the next one if it
       # was taken) before calling it a refusal.
@@ -1727,6 +1745,30 @@ class TaskMaster
   # fifth give after four "Don't be silly." replies (a fleet log,
   # 2026-11-03), so a few unknown replies are not yet a refusal.
   MAX_UNKNOWN_GIVE_REPLIES = 5
+
+  # Puts an item that cannot be used in the trash: a finished Dorhum item
+  # the loot bag would not take, or one Dorhum saw no enchantment on.
+  #
+  # @param noun [String]
+  # @return [Boolean] whether it went in the trash
+  def trash_refused(noun)
+    DRCI.dispose_trash(noun, @worn_trashcan, @worn_trashcan_verb)
+  end
+
+  # Dorhum saw no enchantment on the item handed to him, so it can never be
+  # handed in: it goes in the trash and the hand-in goes on with the next
+  # one. If the trash will not take it, it goes back in the loot bag and the
+  # run stops (refused_hand_in).
+  #
+  # @param item [String] the task item's noun
+  # @param reply [String] Dorhum's refusal
+  # @return [void]
+  # @raise [SystemExit] when it could not be trashed
+  def trash_unenchanted(item, reply)
+    noun = hand_in_noun(item)
+    refused_hand_in(item, reply) unless trash_refused(noun)
+    DRC.message("#{@npc.capitalize} saw no enchantment on a #{noun}, so it went in the trash.")
+  end
 
   # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
   # times in a row: a refusal, or replies bput did not know. The item is
