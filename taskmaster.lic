@@ -11,6 +11,7 @@
   task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
+  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks)
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
@@ -23,7 +24,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03'
+  VERSION = '2026.11.03.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -77,6 +78,7 @@ class TaskMaster
     @bag = @settings.crafting_container
     @worn_trashcan = @settings.worn_trashcan
     @worn_trashcan_verb = @settings.worn_trashcan_verb
+    @bin_leftover_stock = @settings.task_bin_leftover_stock
     @bag_items = @settings.crafting_items_in_container
     @lootbag = @settings.task_loot_bag || 'backpack'
     @gem = @settings.gem_pouch_adjective
@@ -558,22 +560,39 @@ class TaskMaster
     end
   end
 
+  # Leftover pieces trash throws away at most, so a reply it doesn't expect
+  # (full hands, a timeout) can't keep it walking to the bin forever.
+  TRASH_CAP = 100
+
   # Throws away what a task leaves over: with @remainder set, every leftover
-  # ingot or piece of stock in the crafting bag, then the instructions.
+  # ingot or piece of stock in the crafting bag.
   #
-  # @param item [String] item noun, for the instructions
+  # @param item [String] item noun, unused
   # @param base [String] stock base; ingots go to a different bin
   # @param type [String] metal of leftover ingots
   # @return [void]
   def trash(_item, base, type)
-    if @remainder && base == 'ingot'
-      until /What were you/ =~ DRC.bput("get my #{type} #{base} from my #{@bag}", "You get", "You are already", "You're already", "What were you")
-        DRCT.dispose("#{type} #{base}", 793)
-      end
-    elsif @remainder
-      until /What were you/ =~ DRC.bput("get my #{@stackmap[base].first} #{base} from my #{@bag}", "You get", "You are already", "You're already", "What were you")
-        DRCT.dispose("#{@stackmap[base].first} #{base}", 14886)
-      end
+    return unless @remainder
+
+    if base == 'ingot'
+      dispose_leftovers("#{type} #{base}", 793)
+    else
+      dispose_leftovers("#{@stackmap[base].first} #{base}", 14886)
+    end
+  end
+
+  # Takes each piece of stock out of the crafting bag and disposes of it in
+  # the given room, until the bag has none left or TRASH_CAP pieces are gone.
+  #
+  # @param stock [String] e.g. 'burlap cloth' or 'bronze ingot'
+  # @param room [Integer] room with the bin
+  # @return [void]
+  def dispose_leftovers(stock, room)
+    TRASH_CAP.times do
+      reply = DRC.bput("get my #{stock} from my #{@bag}", "You get", "You are already", "You're already", "What were you")
+      break unless reply =~ /You get|You are already|You're already/
+
+      DRCT.dispose(stock, room)
     end
   end
 
@@ -689,7 +708,9 @@ class TaskMaster
     end
     tailor_item(item, count, base, type)
     repair(toolset, @settings.outfitting_belt)
-    trash(item, base, type)
+    # When bin_task_stock will bin the leftover stock after the hand-in,
+    # there is no walk to the bin room now.
+    trash(item, base, type) unless bins_task_stock?
   end
 
   # Taskmasters wander, but between turn-ins they are usually back in the
@@ -1252,6 +1273,69 @@ class TaskMaster
   def task_handed_in(item)
     DRCT.dispose("#{item} instructions", nil, @worn_trashcan, @worn_trashcan_verb)
     forget_replacement
+    bin_task_stock
+  end
+
+  # Zasele's stock bases. Every task buys fresh stock, so once a task is
+  # handed in, each piece of it left in the crafting bag is surplus: the
+  # offcuts sew puts back in the bag after each cut, and whatever was left of
+  # the purchase.
+  TASK_STOCK_BASES = %w[cloth leather yarn].freeze
+
+  # Pieces bin_task_stock bins per stock at most, so the loop always ends.
+  TASK_STOCK_BIN_CAP = 100
+
+  # Whether bin_task_stock bins after the hand-in: only when the player opted
+  # in with task_bin_leftover_stock, for Zasele's tasks, with a worn trash can,
+  # and never in marathon, whose restock stack is carried from task to task
+  # (check_stock reuses it), so binning it would force a full restock each time.
+  #
+  # @return [Boolean]
+  def bins_task_stock?
+    @bin_leftover_stock && @npc == 'zasele' && @worn_trashcan && !@marathon ? true : false
+  end
+
+  # With task_bin_leftover_stock, after a Zasele task is handed in, bins
+  # every piece of her stock in the crafting bag into the worn trash can,
+  # then uses the trash can's verb twice. Without the setting or a worn trash
+  # can it bins nothing, so nothing is ever dropped, and trash keeps taking
+  # leftover stock to the bin room. A piece the trash can refuses goes back
+  # in the bag and ends that stock's loop.
+  #
+  # @return [Integer] pieces binned
+  def bin_task_stock
+    return 0 unless bins_task_stock?
+
+    binned = TASK_STOCK_BASES.sum { |base| bin_stock("#{@stackmap[base].first} #{base}", base) }
+    return binned unless binned.positive?
+
+    2.times { DRC.bput("#{@worn_trashcan_verb} my #{@worn_trashcan}", /You drum/, /THUD/, /What were you/, /^You /) } if @worn_trashcan_verb
+    DRC.message("Binned #{binned} piece(s) of leftover task stock")
+    binned
+  end
+
+  # Bins the pieces of one stock from the crafting bag, up to
+  # TASK_STOCK_BIN_CAP.
+  #
+  # @param stock [String] e.g. 'burlap cloth'
+  # @param noun [String] the stock's noun, e.g. 'cloth'
+  # @return [Integer] pieces binned
+  def bin_stock(stock, noun)
+    binned = 0
+    TASK_STOCK_BIN_CAP.times do
+      got = DRC.bput("get my #{stock} from my #{@bag}", /^You get/, /^What were you referring to/, /^I could not find/, /^You need a free hand/)
+      break unless got.start_with?('You get')
+
+      put = DRC.bput("put my #{noun} in my #{@worn_trashcan}", /^You drop/, /^You put/, /^What were you/, /won't fit|no room|too full/)
+      unless put.match?(/^You (drop|put)/)
+        # The trash can refused it: put it back rather than leave a hand full.
+        DRC.bput("put my #{noun} in my #{@bag}", /^You put/, /^What were you/)
+        break
+      end
+
+      binned += 1
+    end
+    binned
   end
 
   # Clears the record of a replacement request for this taskmaster's task.
