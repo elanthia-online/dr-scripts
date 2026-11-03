@@ -458,47 +458,82 @@ RSpec.describe Enchant do
   # scribe - the main bug fix (waitrt? before recursive call)
   # ---------------------------------------------------------------------------
 
+  describe '#next_scribe_step' do
+    let(:instance) { build_instance }
+
+    before(:each) { instance.send(:setup_flags) }
+
+    it 'is nil when the game asked for nothing, so the next step is a scribe' do
+      expect(instance.send(:next_scribe_step)).to be_nil
+    end
+
+    {
+      'enchant-sigil'    => :handle_sigil_flag,
+      'enchant-focus'    => :handle_focus_flag,
+      'enchant-meditate' => :handle_meditate_flag,
+      'enchant-push'     => :handle_push_flag,
+      'enchant-imbue'    => :handle_imbue_flag,
+      'imbue-backlash'   => :handle_backlash_flag,
+      'enchant-complete' => :handle_complete_flag
+    }.each do |key, step|
+      it "answers #{key} with #{step}" do
+        Flags[key] = true
+
+        expect(instance.send(:next_scribe_step)).to eq(step)
+      end
+    end
+
+    it 'answers a wanted sigil before a finished enchant' do
+      Flags['enchant-complete'] = true
+      Flags['enchant-sigil'] = true
+
+      expect(instance.send(:next_scribe_step)).to eq(:handle_sigil_flag)
+    end
+
+    it 'answers a backlash before a finished enchant' do
+      Flags['enchant-complete'] = true
+      Flags['imbue-backlash'] = true
+
+      expect(instance.send(:next_scribe_step)).to eq(:handle_backlash_flag)
+    end
+  end
+
   describe '#scribe' do
-    it 'checks enchant-complete flag before scribing again' do
-      instance = build_instance
+    let(:instance) { build_instance }
 
-      allow(Flags).to receive(:[]).with('enchant-sigil').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-focus').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-meditate').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-push').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-imbue').and_return(nil)
-      allow(Flags).to receive(:[]).with('imbue-backlash').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-complete').and_return(true)
+    before(:each) { instance.send(:setup_flags) }
 
+    it 'finishes without scribing when the enchant is already complete' do
+      Flags['enchant-complete'] = true
       expect(instance).to receive(:handle_complete_flag)
       expect(DRC).not_to receive(:bput)
 
       instance.send(:scribe)
     end
 
-    it 'checks enchant-sigil flag and handles it' do
-      instance = build_instance
-
-      allow(Flags).to receive(:[]).with('enchant-sigil').and_return({ type: 'induction ', order: 'primary' })
-
-      expect(instance).to receive(:handle_sigil_flag)
+    it 'stops after a backlash without scribing again' do
+      Flags['imbue-backlash'] = true
+      expect(instance).to receive(:handle_backlash_flag)
+      expect(DRC).not_to receive(:bput)
 
       instance.send(:scribe)
     end
 
-    it 'checks imbue-backlash flag' do
-      instance = build_instance
-
-      allow(Flags).to receive(:[]).with('enchant-sigil').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-focus').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-meditate').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-push').and_return(nil)
-      allow(Flags).to receive(:[]).with('enchant-imbue').and_return(nil)
-      allow(Flags).to receive(:[]).with('imbue-backlash').and_return(true)
-
-      expect(instance).to receive(:handle_backlash_flag)
+    it 'answers what the game asked for, then scribes on until the enchant completes' do
+      Flags['enchant-sigil'] = true
+      allow(instance).to receive(:handle_sigil_flag) { Flags.reset('enchant-sigil') }
+      scribes = 0
+      allow(DRC).to receive(:bput) do |command, *_patterns|
+        scribes += 1 if command == 'scribe totem on brazier with my burin'
+        Flags['enchant-complete'] = true if scribes == 3
+        'Roundtime: 3 sec.'
+      end
+      expect(instance).to receive(:handle_complete_flag)
 
       instance.send(:scribe)
+
+      expect(instance).to have_received(:handle_sigil_flag).once
+      expect(scribes).to eq(3)
     end
 
     {
@@ -511,8 +546,6 @@ RSpec.describe Enchant do
       'enchant-complete' => :handle_complete_flag
     }.each do |key, handler|
       it "keeps scribing through other players' #{key} lines and acts on the game's own" do
-        instance = build_instance
-        instance.send(:setup_flags)
         texts = ENCHANT_SPEC_FLAG_LINES[key].map { |line| line.sub(/\A.*?  (?=With the enchanting)/, '') }
         heard = texts.flat_map { |text| raw_player_lines(text) } + [ENCHANT_SPEC_FLAG_LINES[key].first]
         scribes = 0
@@ -525,10 +558,13 @@ RSpec.describe Enchant do
         end
         allow(instance).to receive(:waitrt?)
         handled_after = nil
-        allow(instance).to receive(handler) { handled_after = scribes }
+        allow(instance).to receive(handler) do
+          handled_after = scribes
+          throw :handled
+        end
         expect(DRC).not_to receive(:wait_for_script_to_complete)
 
-        instance.send(:scribe)
+        catch(:handled) { instance.send(:scribe) }
 
         expect(handled_after).to eq(texts.size * 6 + 1)
       end
@@ -549,7 +585,7 @@ RSpec.describe Enchant do
       expect(DRCC).to receive(:stow_crafting_item).with('burin', 'backpack', 'toolbelt')
       expect(instance).to receive(:trace_sigil).with('induction')
       expect(DRCC).to receive(:get_crafting_item)
-      expect(instance).to receive(:scribe)
+      expect(instance).not_to receive(:scribe)
 
       instance.send(:handle_sigil_flag)
     end
@@ -563,7 +599,6 @@ RSpec.describe Enchant do
       expect(instance).to receive(:trace_sigil).with('congruence')
       allow(DRCC).to receive(:stow_crafting_item)
       allow(DRCC).to receive(:get_crafting_item)
-      allow(instance).to receive(:scribe)
 
       instance.send(:handle_sigil_flag)
     end
@@ -1006,7 +1041,7 @@ RSpec.describe Enchant, 'whole runs' do
   # The script's entry point, as Lich runs it.
   def run_script(**args)
     $parsed_args = OpenStruct.new(args)
-    Enchant.new
+    Enchant.new.run
   end
 
   def expect_transcript_done
