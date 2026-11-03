@@ -632,10 +632,24 @@ RSpec.describe Enchant do
       allow(Flags).to receive(:[]).with('enchant-sigil').and_return({ type: 'induction ', order: 'primary' })
       allow(Flags).to receive(:reset).with('enchant-sigil')
 
+      allow(DRCI).to receive(:in_hands?).with('burin').and_return(true)
       expect(DRCC).to receive(:stow_crafting_item).with('burin', 'backpack', 'toolbelt')
       expect(instance).to receive(:trace_sigil).with('induction')
       expect(DRCC).to receive(:get_crafting_item)
       expect(instance).not_to receive(:scribe)
+
+      instance.send(:handle_sigil_flag)
+    end
+
+    it 'puts away no burin that is not in hand' do
+      instance = build_instance
+      allow(Flags).to receive(:[]).with('enchant-sigil').and_return({ type: 'induction ', order: 'primary' })
+      allow(Flags).to receive(:reset).with('enchant-sigil')
+      allow(DRCI).to receive(:in_hands?).with('burin').and_return(false)
+      allow(instance).to receive(:trace_sigil)
+      allow(DRCC).to receive(:get_crafting_item)
+
+      expect(DRCC).not_to receive(:stow_crafting_item)
 
       instance.send(:handle_sigil_flag)
     end
@@ -682,6 +696,17 @@ RSpec.describe Enchant do
       expect(instance).to receive(:stow_tool).with('slender rod')
 
       instance.send(:wave_imbue_wand)
+    end
+
+    it 'stows it before tracing a sigil too' do
+      instance = build_instance(burin: 'fine burin')
+      hold_precise_burin
+      Flags['enchant-sigil'] = { type: 'decay' }
+      allow(instance).to receive(:trace_sigil)
+      allow(instance).to receive(:get_tool)
+      expect(instance).to receive(:stow_tool).with('fine burin')
+
+      instance.send(:handle_sigil_flag)
     end
 
     it 'stows it before the loop push too' do
@@ -735,6 +760,13 @@ RSpec.describe Enchant do
 
     it 'leaves the burin alone when the imbue finished the item' do
       Flags['enchant-complete'] = true
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      instance.send(:get_burin_unless_done)
+    end
+
+    it 'leaves the burin alone when the imbue asked for a sigil first' do
+      Flags['enchant-sigil'] = { type: 'induction ', order: 'primary' }
       expect(DRCC).not_to receive(:get_crafting_item)
 
       instance.send(:get_burin_unless_done)
@@ -1408,9 +1440,7 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      # The congruence sigil the imbue asked for.
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      # The congruence sigil the imbue asked for: no burin until it is traced.
       game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
       game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
       game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
@@ -1489,8 +1519,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at wand on my brazier', ENCHANT_LOG[:imbue_wants_induction])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'induction sigil', gives: 'induction sigil')
       game.command('study my induction sigil', ENCHANT_LOG[:study_sigil], takes: 'induction sigil')
       game.command('trace wand on my brazier', ENCHANT_LOG[:trace_wand])
@@ -1802,8 +1830,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'congruence sigil', returns: false)
       # Nothing more: scribing on would only get the same request back
       # (log 1: a scribe while a sigil is wanted repeats "You need another").
@@ -1944,8 +1970,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at wand on my brazier', ENCHANT_LOG[:imbue_wants_induction])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'induction sigil', gives: 'induction sigil')
       game.command('study my induction sigil', ENCHANT_LOG[:study_sigil], takes: 'induction sigil')
       game.command('trace wand on my brazier', ENCHANT_LOG[:trace_wand])
@@ -2011,8 +2035,6 @@ RSpec.describe Enchant, 'whole runs' do
       # The rod is in the right hand. Left in hand, it would leave no hand
       # free for the burin.
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
       game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
       game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
@@ -2065,8 +2087,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
       game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
       game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
@@ -2100,8 +2120,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
       game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
       game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
@@ -2143,8 +2161,6 @@ RSpec.describe Enchant, 'whole runs' do
       game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
       game.command('wave imbuement rod at wand on my brazier', ENCHANT_LOG[:imbue_wants_induction])
       game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
-      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
-      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
       game.call('DRCI.get_item?', 'induction sigil', gives: 'induction sigil')
       game.command('study my induction sigil', ENCHANT_LOG[:study_sigil], takes: 'induction sigil')
       game.command('trace wand on my brazier', ENCHANT_LOG[:trace_wand])
