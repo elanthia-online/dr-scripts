@@ -226,6 +226,26 @@ RSpec.describe Remedy do
     game.fallback("count my #{noun}", *product_count_reply(noun))
   end
 
+  # Scripts the unguent's herb put (26:10749, after which the game holds the
+  # herb), the first crush (26:11333) and the product taken out (26:11389).
+  #
+  # @return [void]
+  def script_put_and_craft
+    game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+    game.script('crush my nemoih with my rounded pestle', log('26:11333'))
+    script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
+  end
+
+  # The count of a merged stack of herbs: 25:104726 ("You count out 10
+  # pieces of material there.") with the number changed (code-derived; no
+  # log shows a count after a merge in the bags, H05).
+  #
+  # @param pieces [Integer] the pieces of the merged stack
+  # @return [ReplayGame::Line]
+  def merged_count(pieces)
+    code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack')
+  end
+
   # The game's reply to `count my <noun>` with the finished remedy in hand:
   # - elixir: C01's own count, 26:6921 (an unrelated line first) and 26:6924
   #   ("You count out 18 uses remaining.");
@@ -2640,16 +2660,6 @@ RSpec.describe Remedy do
     let(:herb_put) { herb_put_command('nemoih', 'large mortar') }
     let(:short_run_tail) { [first_crush, 'get my unguent from my large mortar', 'count my unguent'] } # 26:11333, 26:11389, layer 17's count
 
-    # Scripts the herb put (26:10749, after which the game holds the herb),
-    # the first crush (26:11333) and the product taken out (26:11389).
-    #
-    # @return [void]
-    def script_put_and_craft
-      game.script(herb_put, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
-      game.script(first_crush, log('26:11333'))
-      script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
-    end
-
     # Two stacks in the toolbag. Model assumption, as in the contract's
     # 21 + 75: the count with both in hand reads the stack just got, so the
     # 10 cannot be the 21 held. Today's commands plus one count after the
@@ -2711,7 +2721,7 @@ RSpec.describe Remedy do
 
       # Every count and combine goes unanswered (15 s bput timeouts); the bag
       # always says it has the herb and the one stack stays in hand.
-      it 'gets the herb 25 times at most (MAX_FETCHES) when no count or combine is answered, then says so and crafts with what is in hand' do
+      it 'gets the herb 25 times at most (one get per piece of the 25 it gathers to) when no count or combine is answered, then says so and crafts with what is in hand' do
         script_put_and_craft
         expect(run_remedy(short_unguent) { allow(DRCI).to receive(:exists?).and_return(true) }).to eq(:exited)
         herb_gets = commons.calls.select { |call| call.first == 'DRCC.get_crafting_item' && call[1] == 'nemoih' }
@@ -3845,6 +3855,170 @@ RSpec.describe Remedy do
       expect(remedy_messages).to eq([repairing])
     end
   end
+
+  # Layer 19: the book form's optional ninth argument, the herb
+  # quantity. No caller passes it (C14 above stays as it was), so every run
+  # without it gathers to 25 and crafts on short, as before; with it, remedy
+  # gathers to that many pieces and stops short of them before the put.
+  describe 'the minimum herb quantity (layer 19)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+    let(:herb_put) { herb_put_command('nemoih', 'large mortar') }
+    let(:first_crush) { 'crush my nemoih with my rounded pestle' }
+    let(:crafted_tail) { [herb_put, first_crush, 'get my unguent from my large mortar', 'count my unguent'] } # 26:10749, 26:11333, 26:11389, layer 17's count
+    let(:mortar) { 'diamondique large mortar' }
+
+    # ;remedy remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent <quantity>
+    #
+    # @param quantity [String] the ninth argument, as typed
+    # @return [Array<String>] Lich's `variable`
+    def unguent_with(quantity)
+      typed(%(remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent #{quantity}))
+    end
+
+    # Scripts a later stack in the toolbag: its count, then a combine that
+    # merges it (25:11425), after which one stack is in hand, and the count
+    # of the merged stack (the one count after a merge, H05).
+    #
+    # @param count [ReplayGame::Line] the reply to the count with both in hand
+    # @param merged [Integer] the pieces of the merged stack
+    # @return [void]
+    def script_merged_stack(count, merged)
+      commons.inventory << ReplayCommons::Item.new('dried nemoih', toolbag)
+      game.script('count my nemoih', count)
+      game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+      game.script('count my nemoih', merged_count(merged))
+    end
+
+    # Runs the unguent with a herb quantity. DRCI.exists? answers yes, as in
+    # layer 11's examples, so a get after the bags are empty goes to the
+    # bag again and finds the one stack already in hand (the combine then
+    # says one stack, 25:104590).
+    #
+    # @param quantity [String]
+    # @yield more stubs, once the doubles are in place (as #run_remedy's block)
+    # @return [Symbol] as #run_remedy
+    def run_with_quantity(quantity)
+      run_remedy(unguent_with(quantity)) do
+        allow(DRC).to receive(:beep)
+        allow(DRCI).to receive(:exists?).and_return(true)
+        yield if block_given?
+      end
+    end
+
+    # 21 (25:12538) and 25 (25:33679) merge (25:11425) into 46; a third get
+    # finds no stack (25:104590). Without a herb quantity the 25 would end
+    # the gathering on the sum; here the merged stack is counted (46) and
+    # remedy gets once more before it stops.
+    it 'stops before the put with "need 50, have 46" when 21 and 25 merge short of 50 (25:12538, 25:33679, 25:11425)' do
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      script_merged_stack(log('25:33679'), 46)
+      game.script('count my nemoih', merged_count(46))
+      game.script('combine my nemoih', log('25:104590'))
+      expect(run_with_quantity('50')).to eq(:exited)
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                               'count my nemoih', 'combine my nemoih'])
+      expect(remedy_messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 46; nothing was put in the large mortar. Stopping.'])
+      expect(commons.location_of(mortar)).to eq('left').or eq('right')
+      expect(commons.location_of('dried nemoih')).to eq(toolbag)
+    end
+
+    it 'leaves nothing to carry on and sends nothing more from the before_dying cleanup after that stop' do
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      script_merged_stack(log('25:33679'), 46)
+      game.script('count my nemoih', merged_count(46))
+      game.script('combine my nemoih', log('25:104590'))
+      expect(run_with_quantity('50')).to eq(:exited)
+      expect(game.sent).not_to include(herb_put, first_crush)
+      sent = game.sent.dup
+      exit_hooks.each(&:call)
+      expect(game.sent).to eq(sent)
+      expect(remedy_messages.grep(/;remedy continue/)).to be_empty
+      expect(remedy_flags).to be_empty
+    end
+
+    it 'gathers past 25 to the herb quantity: 21 and 25 merge into 46, then 10 more (25:104726) into 56, which goes in' do
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      script_merged_stack(log('25:33679'), 46)
+      script_merged_stack(log('25:104726'), 56)
+      script_put_and_craft
+      expect(run_with_quantity('50')).to eq(:exited)
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                               'count my nemoih', 'combine my nemoih', 'count my nemoih', *crafted_tail])
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+    end
+
+    # The counts sum past 50 (21 + 25 + 46, or 46 +
+    # 30 by place) though no stack holds 50, and the put takes one stack.
+    # The third stack is too large to add (25:30006); the counts by place,
+    # 46 and 30, are 25:104726 with the number changed. The 30 goes back by
+    # place (code-derived: ReplayCommons has no hand for "second nemoih",
+    # so the stow takes a stack from the hand it finds) and the 46 is short.
+    it 'stops before the put with "need 50, have 46" when a third stack of 30 is too large to add to the 46 (25:30006)' do
+      game.script('count my nemoih', log('25:12538'))
+      game.script('combine my nemoih', log('25:104590'))
+      script_merged_stack(log('25:33679'), 46)
+      commons.inventory << ReplayCommons::Item.new('dried nemoih', toolbag)
+      game.script('count my nemoih', merged_count(46))
+      game.script('combine my nemoih', log('25:30006'))
+      game.script('count my first nemoih', merged_count(46))
+      game.script('count my second nemoih', code('You count out 30 pieces of material there.', from: '25:104726, count changed'))
+      result = run_with_quantity('50') do
+        allow(DRCI).to receive(:put_away_item?).with('second nemoih') { !commons.release('nemoih').nil? }
+      end
+      expect(result).to eq(:exited)
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                               'count my nemoih', 'combine my nemoih', 'count my first nemoih', 'count my second nemoih'])
+      expect(game.sent).not_to include(herb_put, first_crush)
+      expect(remedy_messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 46; nothing was put in the large mortar. Stopping.'])
+      expect(commons.location_of(mortar)).to eq('left').or eq('right')
+    end
+
+    it 'crafts with the commands of a run without it when one stack of 75 (25:8678) meets a herb quantity of 75' do
+      game.script('count my nemoih', log('25:8678'))
+      game.script('combine my nemoih', log('25:104590'))
+      script_put_and_craft
+      expect(run_with_quantity('75')).to eq(:exited)
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', *crafted_tail])
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
+    end
+
+    # The same stack of 21 without a herb quantity crafts on with a
+    # message (layer 11's 'ends the gathering when the combine after a get
+    # finds one stack in hand'); an explicit 25 is a minimum.
+    it 'stops short of an explicit 25 with one stack of 21 (25:12538), where a run without it crafts on' do
+      2.times do
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:104590'))
+      end
+      expect(run_with_quantity('25')).to eq(:exited)
+      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih'])
+      expect(remedy_messages).to eq(['Remedy: need 25 pieces of nemoih (the herb quantity), have 21; nothing was put in the large mortar. Stopping.'])
+    end
+
+    %w[76 0 100 075x].each do |quantity|
+      it "never crafts for the ninth argument #{quantity}: a message before any command, or ArgParser's help when it is no number" do
+        expect(run_with_quantity(quantity)).to eq(:exited)
+        expect(game.sent).to be_empty
+        expect(commons.calls).to be_empty
+        if quantity.match?(/\A\d+\z/)
+          expect(remedy_messages).to eq(["Remedy: the herb quantity #{quantity} cannot be gathered; give 1 to 75, the most pieces one stack holds. Stopping."])
+        else
+          expect(displayed_messages).to include(ArgParserModel::NO_MATCH_MESSAGE)
+        end
+      end
+    end
+
+    it 'leaves the continue form without one: a trailing number matches no form, as before, and nothing is sent' do
+      expect(run_remedy(typed('continue na "pewter ingot" mortar unguent 50'))).to eq(:exited)
+      expect(displayed_messages).to include(ArgParserModel::NO_MATCH_MESSAGE)
+      expect(game.sent).to be_empty
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -4248,14 +4422,22 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
   end
 
   describe 'Remedy::ARG_DEFINITIONS' do
-    it 'offers the book form and the continue form, in that order' do
+    it 'offers the book form, with the optional herb quantity last (layer 19), and the continue form, in that order' do
       expect(Remedy::ARG_DEFINITIONS.map { |form| form.map { |definition| definition[:name] } })
-        .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun], %w[continue herb2 catalyst container noun]])
+        .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun herb_quantity], %w[continue herb2 catalyst container noun]])
     end
 
     it 'gives both forms the same herb2, catalyst, container and noun definitions' do
       book, continuing = Remedy::ARG_DEFINITIONS
-      expect(book.last(4)).to eq(continuing.last(4))
+      expect(book.reject { |definition| definition[:optional] }.last(4)).to eq(continuing.last(4))
+    end
+
+    # Layer 19: the herb quantity is the one optional definition, so every
+    # argument list that matched a form before still matches it with the
+    # same fields (the C14 contract).
+    it 'makes only the herb quantity optional, and only in the book form (layer 19)' do
+      optional = Remedy::ARG_DEFINITIONS.map { |form| form.select { |definition| definition[:optional] }.map { |definition| definition[:name] } }
+      expect(optional).to eq([['herb_quantity'], []])
     end
 
     # Layer 14 (H11): every ASCII character, one at the
@@ -4407,7 +4589,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
     it 'reads every field of the workorders.lic:818 call for some head unguent (base-recipes.yaml:8520)' do
       order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
       expect(order.to_h).to eq(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih',
-                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent')
+                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil)
       expect(order).not_to be_continue
     end
 
@@ -4436,7 +4618,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
       order = Remedy::Order.from_args(parsed_typed('continue none "pewter ingot" mortar unguent'))
       expect(order).to be_continue
       expect(order.to_h).to eq(mode: :continue, book_type: nil, chapter: nil, recipe_name: nil, herb1: nil,
-                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent')
+                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil)
       expect(order.herbs).to eq([nil, 'none'])
     end
 
@@ -4446,6 +4628,78 @@ RSpec.describe 'Remedy order, tools and inventory' do
       expect(parsed).to be_frozen
       expect(parsed.herb1).to eq('nemoih')
       expect(swapped.herbs).to eq(['dried flower', 'na'])
+    end
+
+    # Layer 19: the herb quantity, the book form's optional
+    # ninth argument.
+    describe 'the herb quantity (layer 19)' do
+      # Reads an order from parsed arguments. ArgParser and Order.from_args
+      # exit on what they refuse; that exit fails the example here instead
+      # of ending the rspec run.
+      #
+      # @return [Remedy::Order]
+      def order_from
+        order = nil
+        expect { order = Remedy::Order.from_args(yield) }.not_to raise_error
+        order
+      end
+
+      # @param quantity [String] the ninth argument, as typed
+      # @return [Remedy::Order]
+      def unguent_order(quantity)
+        order_from { parsed_typed(%(remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent #{quantity})) }
+      end
+
+      it 'reads a ninth argument of 50 as the Integer 50' do
+        order = unguent_order('50')
+        expect(order.herb_quantity).to eq(50)
+        expect(order.noun).to eq('unguent')
+      end
+
+      it 'leaves it out of the ;remedy continue line, as the continue form takes none' do
+        expect(unguent_order('50').continue_command).to eq(';remedy continue na "pewter ingot" mortar unguent')
+      end
+
+      it 'reads it from a caller list too, as a ninth list item would reach remedy (lich-5 common.rb:339 joins the list)' do
+        order = order_from { parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent', 30]) }
+        expect(order.herb_quantity).to eq(30)
+      end
+
+      %w[1 75 075].each do |quantity|
+        it "accepts #{quantity}, inside 1 to 75" do
+          expect(unguent_order(quantity).herb_quantity).to eq(quantity.to_i)
+        end
+      end
+
+      it 'is nil without a ninth argument, and in the continue form' do
+        expect(unguent_order('').herb_quantity).to be_nil
+        expect(order_from { parsed_typed('continue none "pewter ingot" mortar unguent') }.herb_quantity).to be_nil
+      end
+
+      it 'defaults to nil for an Order built without it' do
+        expect(order_for('mortar').herb_quantity).to be_nil
+      end
+
+      %w[0 76 999].each do |quantity|
+        it "stops with a message for #{quantity}, which no stack holds" do
+          allow(DRC).to receive(:beep)
+          messages = []
+          allow(DRC).to receive(:message) { |text| messages << text }
+          line = %(remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent #{quantity})
+          expect { Remedy::Order.from_args(parsed_typed(line)) }.to raise_error(SystemExit)
+          expect(messages).to eq(["Remedy: the herb quantity #{quantity} cannot be gathered; give 1 to 75, the most pieces one stack holds. Stopping."])
+        end
+      end
+
+      ['50x', '-5', '+5', '5.0'].each do |quantity|
+        it "matches no form for a ninth argument #{quantity}, as before: ArgParser prints the help and exits" do
+          expect { parsed_typed(%(remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent #{quantity})) }.to raise_error(SystemExit)
+        end
+      end
+
+      it 'matches no form with two numbers after the noun' do
+        expect { parsed_typed('remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent 30 40') }.to raise_error(SystemExit)
+      end
     end
   end
 
@@ -5159,6 +5413,16 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
   # @return [ReplayGame::Line]
   def code(text, from:)
     ReplayGame.code(text, from: from)
+  end
+
+  # The count of a merged stack of herbs: 25:104726 ("You count out 10
+  # pieces of material there.") with the number changed (code-derived; no
+  # log shows a count after a merge in the bags, H05).
+  #
+  # @param pieces [Integer] the pieces of the merged stack
+  # @return [ReplayGame::Line]
+  def merged_count(pieces)
+    code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack')
   end
 
   # Registers the remedy Flags, as Remedy#run does.
@@ -6037,19 +6301,13 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       end
     end
 
-    # @param pieces [Integer] the pieces of the merged stack
-    # @return [ReplayGame::Line] 25:104726 with the number changed
-    def merged_stack_count(pieces)
-      code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack')
-    end
-
     # H05 (a deliberate change): today
     # the 21 + 21 = 42 summed was sent with no count after the merge. One
     # more count reads the merged stack and is the count that ends the
     # gathering.
     it 'counts the merged stack once after a merge in the bags (21 and 21, 25:12538, then the merged 42)' do
       script_two_stacks(first: '25:12538', second: '25:12538', combine: log('25:11425'))
-      game.script('count my nemoih', merged_stack_count(42))
+      game.script('count my nemoih', merged_count(42))
       script_put
       expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
@@ -6065,10 +6323,10 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
     it 'goes by the count of each merged stack, not the sum, and gets another stack when it is short (10, 10 again, merged 12, 12 again, merged 33)' do
       allow(DRCI).to receive(:exists?).and_return(true)
       script_two_stacks(first: '25:104726', second: '25:104726', combine: log('25:11425'))
-      game.script('count my nemoih', merged_stack_count(12))
-      game.script('count my nemoih', merged_stack_count(12))
+      game.script('count my nemoih', merged_count(12))
+      game.script('count my nemoih', merged_count(12))
       game.script('combine my nemoih', log('25:11425'))
-      game.script('count my nemoih', merged_stack_count(33))
+      game.script('count my nemoih', merged_count(33))
       script_put
       expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
       expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
@@ -6087,8 +6345,8 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
     it 'goes by the sum of every count after too large a combine (25:30006) that follows a merge in the bags (25:11425), as today (10, 10, merged 12, 12 again)' do
       allow(DRCI).to receive(:exists?).and_return(true)
       script_two_stacks(first: '25:104726', second: '25:104726', combine: log('25:11425'))
-      game.script('count my nemoih', merged_stack_count(12))
-      game.script('count my nemoih', merged_stack_count(12))
+      game.script('count my nemoih', merged_count(12))
+      game.script('count my nemoih', merged_count(12))
       game.script('combine my nemoih', log('25:30006'))
       game.script('count my first nemoih', log('25:12538'))
       game.script('count my second nemoih', log('25:104726'))
@@ -6151,12 +6409,6 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
           game.script('combine my nemoih', combine, after: ->(_game) { combine.text.start_with?('You combine') && commons.release('nemoih') })
           game.script('count my nemoih', count)
         end
-      end
-
-      # @param pieces [Integer] the pieces of the merged stack
-      # @return [ReplayGame::Line] 25:104726 with the number changed
-      def merged_count(pieces)
-        code("You count out #{pieces} pieces of material there.", from: '25:104726, count changed to the merged stack')
       end
 
       # layer 11: today the 10 + 20 = 30 counted ends the gathering with 20
@@ -6315,6 +6567,539 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         script_put_as(put)
         expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
         expect(game.sent.last).to eq('put nemoih in my large mortar')
+      end
+    end
+
+    # Layer 19: a herb quantity is the target the gathering
+    # counts to, and a minimum: short of it nothing goes into the vessel.
+    describe 'a herb quantity (layer 19)' do
+      # @param minimum [Integer] the herb quantity
+      # @return [Remedy::HerbGatherer]
+      def gatherer_for(minimum)
+        Remedy::HerbGatherer.new(inventory, minimum: minimum)
+      end
+
+      # Scripts a later stack in the herb_container that merges (25:11425)
+      # into one stack in hand, and the count of the merged stack.
+      #
+      # @param count [String] the cite of the count with both stacks in hand
+      # @param merged [Integer] the pieces of the merged stack
+      # @return [void]
+      def script_merge(count, merged)
+        commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+        game.script('count my nemoih', log(count))
+        game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+        game.script('count my nemoih', merged_count(merged))
+      end
+
+      # Scripts the first stack of 21 (25:12538), the second of 25
+      # (25:33679) merging into 46, and a third get that brings nothing (the
+      # one stack in hand, 25:104590). DRCI.exists? answers yes, so that get
+      # goes to the herb_container again.
+      #
+      # @return [void]
+      def script_short_of_fifty
+        allow(DRCI).to receive(:exists?).and_return(true)
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_merge('25:33679', 46)
+        game.script('count my nemoih', merged_count(46))
+        game.script('combine my nemoih', log('25:104590'))
+      end
+
+      it 'stops short of 50 at 46 before the put, the herb back in the herb_container and the mortar in hand' do
+        script_short_of_fifty
+        expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'count my nemoih', 'combine my nemoih'])
+        expect(stows).to eq([['nemoih', basket]])
+        expect(commons.location_of('dried nemoih')).to eq(basket)
+        expect(commons.location_of('large mortar')).to eq('left').or eq('right')
+        expect(messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 46; nothing was put in the large mortar. Stopping.'])
+      end
+
+      # The model's stow in either bag leaves the herb in hand, as lich-5
+      # counts "That stack of herbs is too large to add more to." (26:32077)
+      # as stowed (F3).
+      it 'says the herb is still in hand when neither the herb_container nor the crafting container takes it' do
+        script_short_of_fifty
+        allow(DRCC).to receive(:stow_crafting_item) do |name, bag, belt|
+          (name == 'nemoih' && [basket, toolbag].include?(bag)) || commons.stow_crafting_item(name, bag, belt)
+        end
+        expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 46; nothing was put in the large mortar. ' \
+                                'The nemoih could not be put away and is still in hand. Stopping.'])
+        expect([commons.location_of('nemoih'), commons.location_of('large mortar')]).to contain_exactly('left', 'right')
+      end
+
+      # Without a herb quantity the 21 and 10 merged into 31 end the
+      # gathering ('counts the merged stack once after a merge in the
+      # bags'); 40 gets a third stack.
+      it 'gets stacks until 40 is met: 21 and 10 merge into 31, another 10 into 41, then puts the stack in' do
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_merge('25:104726', 31)
+        script_merge('25:104726', 41)
+        script_put
+        expect { gatherer_for(40).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+        expect(messages).to be_empty
+      end
+
+      # The count before a merge reads the target by itself only at the
+      # target: 25 (25:33679) is that for no herb quantity ('sends no count
+      # after the merge ...'), not for 30.
+      it 'counts the merged stack when the count before the merge reads 25 (25:33679) and the herb quantity is 30' do
+        game.script('count my nemoih', log('25:104726'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_merge('25:33679', 35)
+        script_put
+        expect { gatherer_for(30).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+      end
+
+      it 'puts in one stack of 75 (25:8678) for a herb quantity of 75, with the commands of a run without one' do
+        game.script('count my nemoih', log('25:8678'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_put
+        expect { gatherer_for(75).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+        expect(messages).to be_empty
+      end
+
+      it 'puts in one stack of 10 (25:104726) for a herb quantity of 1, after the one get' do
+        game.script('count my nemoih', log('25:104726'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_put
+        expect { gatherer_for(1).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+      end
+
+      # The stop when gathering ended with no count to go by.
+      #
+      # @param minimum [Integer] the herb quantity
+      # @return [String]
+      def uncounted_stop(minimum)
+        "Remedy: need #{minimum} pieces of nemoih (the herb quantity), could not count the nemoih gathered; nothing was put in the large mortar. Stopping."
+      end
+
+      # ReplayCommons finds no stack by its place in hand (its
+      # put_away_item? note), so the put-back would move nothing. The game's
+      # `stow my <place> nemoih` takes that stack out of the hands
+      # (code-derived: no log shows a stow by place). The model has no hand
+      # for "first" or "second", so it takes the stack from the hand
+      # ReplayCommons finds first; the stacks are the same herb.
+      #
+      # @param place [String] "first" or "second"
+      # @return [void]
+      def stow_by_place(place)
+        allow(DRCI).to receive(:put_away_item?).with("#{place} nemoih") do |item|
+          commons.calls << ['DRCI.put_away_item?', item, nil]
+          !commons.release('nemoih').nil?
+        end
+      end
+
+      # Scripts a third stack in the herb_container, after 21 and 25 merged
+      # into 46 (script_short_of_fifty's first two gets): the count with
+      # both stacks in hand, the combine too large (25:30006) and the counts
+      # by place, which never sum to fewer than 76 here.
+      #
+      # @param first [ReplayGame::Line] the reply to `count my first nemoih`
+      # @param second [ReplayGame::Line] the reply to `count my second nemoih`
+      # @return [void]
+      def script_too_large_after_46(first:, second:)
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:104590'))
+        script_merge('25:33679', 46)
+        commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+        game.script('count my nemoih', merged_count(46))
+        game.script('combine my nemoih', log('25:30006'))
+        game.script('count my first nemoih', first)
+        game.script('count my second nemoih', second)
+      end
+
+      # The sum of every count, 21 + 25 + 46 = 92, or
+      # 46 + 30 = 76 by place, passes 50 though no stack holds 50, and the
+      # put would take one stack. The stack with fewer pieces goes back and
+      # the 46 kept is short. The 30 is 25:104726 with the number changed.
+      it 'stops short of 50 at the 46 kept after too large a combine (25:30006) with stacks of 46 and 30, putting the 30 back by place' do
+        script_too_large_after_46(first: merged_count(46), second: code('You count out 30 pieces of material there.', from: '25:104726, count changed'))
+        stow_by_place('second')
+        expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'count my nemoih', 'combine my nemoih', 'count my first nemoih', 'count my second nemoih'])
+        expect(commons.calls).to include(['DRCI.put_away_item?', 'second nemoih', nil])
+        expect(commons.calls).not_to include(['DRCI.put_away_item?', 'first nemoih', nil])
+        expect(messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 46; nothing was put in the large mortar. Stopping.'])
+        expect(commons.location_of('nemoih')).to eq(basket)
+      end
+
+      # A second case: 50 and 30 by place for 75.
+      it 'stops short of 75 at the 50 kept after too large a combine (25:30006) with stacks of 30 and 50, putting the 30 back by place' do
+        script_too_large_after_46(first: code('You count out 30 pieces of material there.', from: '25:104726, count changed'),
+                                  second: code('You count out 50 pieces of material there.', from: '25:104726, count changed'))
+        stow_by_place('first')
+        expect { gatherer_for(75).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
+        expect(game.sent).not_to include(put)
+        expect(messages).to eq(['Remedy: need 75 pieces of nemoih (the herb quantity), have 50; nothing was put in the large mortar. Stopping.'])
+      end
+
+      # The stack brought last can hold the herb quantity by itself: the
+      # 46 goes back and the 60 goes in (60 is 25:104726 with the number
+      # changed).
+      it 'puts in the 60 kept after too large a combine (25:30006) with stacks of 46 and 60, putting the 46 back by place' do
+        script_too_large_after_46(first: merged_count(46), second: code('You count out 60 pieces of material there.', from: '25:104726, count changed'))
+        stow_by_place('first')
+        script_put
+        expect { gatherer_for(50).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent.last(3)).to eq(['count my first nemoih', 'count my second nemoih', put])
+        expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
+        expect(messages).to be_empty
+      end
+
+      # Beside a full stack the put-back is the one a run without a herb
+      # quantity sends ('gets another stack after 21 ... when the second
+      # counts 75'), and the 75 meets 75.
+      it 'puts in the 75 with the commands of a run without one when the second stack counts 75 (25:12538, 25:8678, 25:30006)' do
+        script_two_stacks(first: '25:12538', second: '25:8678', combine: log('25:30006'))
+        game.script('count my first nemoih', log('25:12538'))
+        game.script('count my second nemoih', log('25:8678'))
+        stow_by_place('first')
+        script_put
+        expect { gatherer_for(75).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih',
+                                 'count my first nemoih', 'count my second nemoih', put])
+        expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
+        expect(messages).to be_empty
+      end
+
+      # ReplayCommons' own put-back by place moves nothing, so both stacks
+      # stay in hand: which one the put would take is unknown. Both are put
+      # away before the stop (herb_container, then the crafting container).
+      it 'stops uncounted when both stacks are still in hand after the put-back by place' do
+        script_too_large_after_46(first: merged_count(46), second: log('25:104726'))
+        expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(commons.calls).to include(['DRCI.put_away_item?', 'second nemoih', nil])
+        expect(game.sent).not_to include(put)
+        expect(messages).to eq([uncounted_stop(50)])
+      end
+
+      # "I could not find what you were referring to." (25:13762, analog)
+      # for a count by place: nothing is put back.
+      it 'stops uncounted, putting nothing back, when a count by place holds no number (25:13762)' do
+        script_too_large_after_46(first: merged_count(46), second: log('25:13762'))
+        expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(commons.calls.map(&:first)).not_to include('DRCI.put_away_item?')
+        expect(messages).to eq([uncounted_stop(50)])
+      end
+
+      # Under H05's assumption the count with both
+      # stacks in hand reads the first 21 again (25:12538), so the sum, 42,
+      # counts it twice. The count after the merge (25:11425) goes
+      # unanswered, so the sum is not taken for 40 and remedy gets again;
+      # that get finds the one stack in hand (25:104590).
+      #
+      # @param third_count [Array<ReplayGame::Line>] the reply to the count
+      #   before that combine (none for silence)
+      # @return [void]
+      def script_unanswered_merged_count(*third_count)
+        allow(DRCI).to receive(:exists?).and_return(true)
+        commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:104590'))
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+        game.script('count my nemoih')
+        game.script('count my nemoih', *third_count)
+        game.script('combine my nemoih', log('25:104590'))
+      end
+
+      it 'does not go by the sum when the count after a merge goes unanswered (21, 21 again, 25:11425), and stops when no count reads the merged stack' do
+        script_unanswered_merged_count
+        expect { gatherer_for(40).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'count my nemoih', 'combine my nemoih'])
+        expect(game.sent).not_to include(put)
+        expect(messages).to eq([uncounted_stop(40)])
+      end
+
+      # The count before the combine that finds one stack reads that stack:
+      # the merged 42 (25:104726 with the number changed) meets 40.
+      it 'goes by the count of the one stack the next get finds in hand when the count after a merge went unanswered (merged 42)' do
+        script_unanswered_merged_count(merged_count(42))
+        script_put
+        expect { gatherer_for(40).gather('nemoih', 'large mortar') }.not_to raise_error
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih',
+                                 'count my nemoih', 'combine my nemoih', put])
+        expect(messages).to be_empty
+      end
+
+      # The same count of the one stack, short of the herb quantity: 21
+      # held, 21 counted again (25:12538) and one stack found.
+      it 'stops short at the count of the one stack in hand when the get after it adds nothing (21, then 21 again with 25:104590)' do
+        allow(DRCI).to receive(:exists?).and_return(true)
+        2.times do
+          game.script('count my nemoih', log('25:12538'))
+          game.script('combine my nemoih', log('25:104590'))
+        end
+        expect { gatherer_for(40).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: need 40 pieces of nemoih (the herb quantity), have 21; nothing was put in the large mortar. Stopping.'])
+      end
+
+      # Without a herb quantity a combine with no reply goes by the sum, as
+      # before; with one, what is in hand is unknown (one stack or two).
+      it 'stops uncounted after the second get when its combine goes unanswered (21, 25:12538, then 10, 25:104726)' do
+        game.script('count my nemoih', log('25:12538'))
+        game.script('combine my nemoih', log('25:104590'))
+        commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+        game.script('count my nemoih', log('25:104726'))
+        game.script('combine my nemoih')
+        expect { gatherer_for(30).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih'])
+        expect(game.sent).not_to include(put)
+        expect(messages).to eq([uncounted_stop(30)])
+      end
+
+      context 'with a larger send budget' do
+        let(:game) { ReplayGame.new(send_budget: 200) }
+
+        # The fetch bound: every combine merges (25:11425) and no count is
+        # answered (15 s bput timeouts), so no round meets 30 or ends the
+        # gathering. The herb_container holds a stack for every get.
+        it 'gets the herb 30 times at most for a herb quantity of 30 when every combine merges and no count is answered, then stops before the put' do
+          29.times { commons.inventory << ReplayCommons::Item.new('dried nemoih', basket) }
+          game.fallback('combine my nemoih', log('25:11425'), after: ->(_game) { commons.in_hands?('nemoih') && $left_hand && $right_hand && commons.release('nemoih') })
+          expect { gatherer_for(30).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          herb_gets = commons.calls.select { |call| call.first == 'DRCC.get_crafting_item' && call[1] == 'nemoih' }
+          expect(herb_gets.size).to eq(30)
+          expect(game.sent.count('combine my nemoih')).to eq(30)
+          expect(game.sent).not_to include(put)
+          expect(messages).to eq([uncounted_stop(30)])
+        end
+      end
+
+      # A stack found outside both bags (DRCI.exists? false for the bags)
+      # goes by gather_outside_bags: the fetch bound there is the target
+      # less the gets made, and each later get puts the held stack in the
+      # vessel and takes it back out.
+      describe 'a herb found outside both bags' do
+        let(:apron) { 'seasilk apron' }
+        let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => apron }) }
+
+        # ReplayCommons' get with a stack in hand moves nothing (its
+        # get_crafting_item note); the game's `get my nemoih from my large
+        # mortar` brings the stack put in the vessel back to the free hand
+        # (code-derived: no log shows this sequence).
+        #
+        # @return [void]
+        def take_back_from_the_vessel
+          allow(DRCI).to receive(:get_item?).with('nemoih', 'large mortar') do |item, container|
+            commons.calls << ['DRCI.get_item?', item, container]
+            index = commons.inventory.index { |owned| owned.location == 'large mortar' }
+            commons.hold(commons.inventory.delete_at(index).name) if index
+            !index.nil?
+          end
+        end
+
+        # Scripts the first count and, per later get, the fput `stow my
+        # nemoih` (not read; 25:13762, analog, as layer 11's outside-bags
+        # examples) and the combine's reply. A merge (25:11425) leaves one
+        # stack in hand, and its count follows.
+        #
+        # @param first [ReplayGame::Line] the reply to the first count
+        # @param rounds [Array<Array(ReplayGame::Line, ReplayGame::Line, nil)>]
+        #   the combine's reply of each later get, and the reply to the count
+        #   after it (nil scripts none: the count goes unanswered)
+        # @return [void]
+        def script_outside(first, rounds)
+          game.script('count my nemoih', first)
+          rounds.each do |combine, count|
+            commons.inventory << ReplayCommons::Item.new('dried nemoih', apron)
+            game.script('stow my nemoih', log('25:13762'))
+            merged = combine.text.start_with?('You combine')
+            game.script('combine my nemoih', combine, after: ->(_game) { merged && commons.release('nemoih') })
+            game.script('count my nemoih', count) if count
+          end
+        end
+
+        it 'gets stacks outside the bags until 40 is met: 21 (25:12538), merged 30, merged 41 (25:11425), then puts the stack in' do
+          take_back_from_the_vessel
+          script_outside(log('25:12538'), [[log('25:11425'), merged_count(30)], [log('25:11425'), merged_count(41)]])
+          script_put
+          expect { gatherer_for(40).gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih', 'count my nemoih',
+                                   'stow my nemoih', 'combine my nemoih', 'count my nemoih', put])
+          expect(messages).to be_empty
+        end
+
+        # The fetch bound outside the bags is the target less the gets made:
+        # for 3, two later gets after the first. Every combine merges
+        # (25:11425) and no count after it is answered, so no round meets 3;
+        # a third stack waits in the apron and is never got.
+        it 'gets the herb 3 times at most for a herb quantity of 3, the first get included, then stops uncounted' do
+          take_back_from_the_vessel
+          two = code('You count out 2 pieces of material there.', from: '25:104726, count changed')
+          script_outside(two, Array.new(3) { [log('25:11425'), nil] }) # the counts after the merges: unscripted, so unanswered
+          expect { gatherer_for(3).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent.count('combine my nemoih')).to eq(2)
+          expect(game.sent).not_to include(put)
+          expect(messages).to eq([uncounted_stop(3)])
+        end
+
+        # Outside the bags: today's `count my nemoih`
+        # after too large a combine (25:30006) is not sent; the stacks are
+        # counted by place and the 30 goes back (30 is 25:104726 with the
+        # number changed).
+        it 'stops short of 50 at the 46 kept after too large a combine (25:30006) outside the bags, putting the 30 back by place' do
+          take_back_from_the_vessel
+          script_outside(log('25:12538'), [[log('25:11425'), merged_count(46)], [log('25:30006'), nil]])
+          game.script('count my first nemoih', merged_count(46))
+          game.script('count my second nemoih', code('You count out 30 pieces of material there.', from: '25:104726, count changed'))
+          stow_by_place('second')
+          expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih', 'count my nemoih',
+                                   'stow my nemoih', 'combine my nemoih', 'count my first nemoih', 'count my second nemoih'])
+          expect(messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 46; nothing was put in the large mortar. Stopping.'])
+        end
+
+        # The take-back from the vessel brings nothing (ReplayCommons' own
+        # get, which moves nothing with a stack in hand): one stack in hand,
+        # and the combine says so (25:18266). The 21 is in the mortar, so
+        # the stop does not say nothing was put in.
+        it 'says the herb may still be in the vessel when the stack put in it did not come back out (25:12538, 25:18266)' do
+          script_outside(log('25:12538'), [[log('25:18266'), nil]])
+          expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['count my nemoih', 'stow my nemoih', 'combine my nemoih'])
+          expect(commons.location_of('nemoih')).to eq('large mortar').or eq(basket)
+          expect(commons.inventory.map(&:location)).to include('large mortar')
+          expect(messages).to eq(['Remedy: need 50 pieces of nemoih (the herb quantity), have 21; ' \
+                                  'the nemoih put in the large mortar to get another stack may still be in it. Stopping.'])
+        end
+      end
+
+      # A later get that finds the herb in neither bag
+      # goes on outside the bags with the stack from the herb_container
+      # still in hand. The first stack of 21 (25:12538) comes from the
+      # herb_container; DRCI.exists? is then false for both bags, so the get
+      # names no container. Today's next command is a `count my nemoih` with
+      # two stacks in hand, which can read either one (H05), and
+      # its count was taken for the stack the put takes.
+      describe 'a later get that finds the herb in neither bag' do
+        let(:apron) { 'seasilk apron' }
+
+        # Puts a second stack in the apron, which the plain `get my nemoih`
+        # brings to the free hand. ReplayCommons' plain get with a stack in
+        # hand moves nothing (its get_crafting_item note), so the get the
+        # gatherer makes with the crafting container's items (no herb
+        # routing) is followed by the move (code-derived: no log shows a
+        # get from outside the bags).
+        #
+        # @return [void]
+        def second_stack_from_the_apron
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', apron)
+          allow(DRCC).to receive(:get_crafting_item) do |name, bag, bag_items, belt, skip_exit = false|
+            answer = commons.get_crafting_item(name, bag, bag_items, belt, skip_exit)
+            index = commons.inventory.index { |owned| owned.location == apron }
+            commons.hold(commons.inventory.delete_at(index).name) if name == 'nemoih' && bag_items != [name] && index
+            answer
+          end
+        end
+
+        # Scripts the first stack's count (21, 25:12538), its combine with
+        # one stack in hand (25:104590), and the combine after the plain get.
+        #
+        # @param combine [ReplayGame::Line, nil] the reply to the second
+        #   combine (nil scripts none: it goes unanswered)
+        # @param merges [Boolean] whether that combine leaves one stack
+        # @return [void]
+        def script_plain_get(combine, merges: false)
+          game.script('count my nemoih', log('25:12538'))
+          game.script('combine my nemoih', log('25:104590'))
+          if combine
+            game.script('combine my nemoih', combine, after: ->(_game) { merges && commons.release('nemoih') })
+          else
+            game.script('combine my nemoih')
+          end
+        end
+
+        # The 60 is 25:104726 with the number changed (code-derived).
+        #
+        # @return [ReplayGame::Line]
+        def sixty
+          code('You count out 60 pieces of material there.', from: '25:104726, count changed')
+        end
+
+        it 'puts in the 60 kept after a combine too large (25:30006) with the 21, putting the 21 back by place and sending no count of two stacks' do
+          second_stack_from_the_apron
+          script_plain_get(log('25:30006'))
+          game.script('count my first nemoih', log('25:12538'))
+          game.script('count my second nemoih', sixty)
+          stow_by_place('first')
+          script_put
+          expect { gatherer_for(50).gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'combine my nemoih',
+                                   'count my first nemoih', 'count my second nemoih', put])
+          expect(commons.calls).to include(['DRCI.put_away_item?', 'first nemoih', nil])
+          expect(messages).to be_empty
+        end
+
+        # 21 + 60 = 81 passes 75, but no stack holds 75.
+        it 'stops short of 75 at the 60 kept after a combine too large (25:30006) with the 21, though the two sum to 81' do
+          second_stack_from_the_apron
+          script_plain_get(log('25:30006'))
+          game.script('count my first nemoih', log('25:12538'))
+          game.script('count my second nemoih', sixty)
+          stow_by_place('first')
+          expect { gatherer_for(75).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent.grep(/\Aput /)).to be_empty
+          expect(messages).to eq(['Remedy: need 75 pieces of nemoih (the herb quantity), have 60; nothing was put in the large mortar. Stopping.'])
+        end
+
+        it 'counts the one stack a merge (25:11425) leaves, 31, and puts it in for a herb quantity of 30' do
+          second_stack_from_the_apron
+          script_plain_get(log('25:11425'), merges: true)
+          game.script('count my nemoih', merged_count(31))
+          script_put
+          expect { gatherer_for(30).gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'combine my nemoih', 'count my nemoih', put])
+          expect(messages).to be_empty
+        end
+
+        # The apron holds nothing: the plain get leaves the 21 alone in
+        # hand, and the combine says so (25:104590).
+        it 'ends at the 21 counted when the plain get adds nothing (25:104590), and stops short of 30 with the 21 back in the herb_container' do
+          second_stack_from_the_apron
+          commons.inventory.reject! { |owned| owned.location == apron }
+          script_plain_get(log('25:104590'))
+          expect { gatherer_for(30).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'combine my nemoih'])
+          expect(stows).to eq([['nemoih', basket]])
+          expect(messages).to eq(['Remedy: need 30 pieces of nemoih (the herb quantity), have 21; nothing was put in the large mortar. Stopping.'])
+        end
+
+        it 'stops uncounted when the combine after the plain get goes unanswered, with two stacks in hand' do
+          second_stack_from_the_apron
+          script_plain_get(nil)
+          expect { gatherer_for(50).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'combine my nemoih'])
+          expect(messages).to eq([uncounted_stop(50)])
+        end
+
+        # Without a herb quantity the commands are those remedy has always
+        # sent: the count with two stacks in hand (60 here) ends the
+        # gathering and the put follows.
+        it 'sends the commands of a run before this layer with no herb quantity: a count after the plain get, then the put' do
+          second_stack_from_the_apron
+          game.script('count my nemoih', log('25:12538'))
+          game.script('combine my nemoih', log('25:104590'))
+          game.script('count my nemoih', sixty)
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+          expect(messages).to be_empty
+        end
       end
     end
 
