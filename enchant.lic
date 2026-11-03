@@ -110,8 +110,9 @@ class Enchant
   MAX_UNANSWERED_STEPS = 3
   # Scribing steps (scribes and the answers to the game's requests) one
   # enchant may take before the script stops: a backstop for a game that
-  # keeps answering without ever finishing the item. The Dorhum items took 13
-  # to 19 steps each in three task runs; harder items take more.
+  # keeps answering without ever finishing the item. Replayed, the Dorhum
+  # runs take 12 steps per virga wand and 13 per spongestone; harder items
+  # take more.
   MAX_SCRIBE_STEPS = 150
   # Imbue casts or wand waves before the script stops. DRCA.cast_spell?
   # fails at once on a prep that did not take (low mana, say), so a few
