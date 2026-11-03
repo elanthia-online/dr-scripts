@@ -1086,6 +1086,7 @@ RSpec.describe Enchant, 'whole runs' do
     end
     allow(DRCA).to receive(:cast_spell?) { |*args| game.commons('DRCA.cast_spell?', *args) }
     allow(DRCI).to receive(:exists?) { |item| [*game.hands, 'fount'].compact.any? { |held| held.include?(item) } }
+    allow(DRCI).to receive(:in_hands?) { |item| game.hands.compact.any? { |held| held.include?(item) } }
     allow(Lich::Messaging).to receive(:msg) { |_style, text| game.messages << text }
   end
 
@@ -1571,6 +1572,79 @@ RSpec.describe Enchant, 'whole runs' do
       expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
 
       expect(Flags.matchers.keys & Enchant::FLAG_NAMES).to eq([])
+    end
+  end
+
+  context 'when the rock cannot be fetched or put on the brazier' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+    end
+
+    it 'stops when there is no hand free for the rock (log 1)' do
+      game.command("get my rock from my #{bag}", ['You need a free hand to pick that up.'])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to include('Enchant: Could not get a rock from your duffel bag: You need a free hand to pick that up.')
+    end
+
+    it 'stops when there are no rocks left' do
+      game.command("get my rock from my #{bag}", ['What were you referring to?'])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+    end
+
+    it 'goes on to the PUT when a GET reply is missed but the rock is in hand' do
+      game.command("get my rock from my #{bag}", [], gives: 'rock')
+      game.command('put my rock on my brazier', ['What were you referring to?'])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: Could not put the rock on the brazier: What were you referring to?'])
+    end
+
+    it 'stops when the rock is not in hand for the PUT (log 1)' do
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ['You must be holding the rocks before doing that.'])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to include('Enchant: Could not put the rock on the brazier: You must be holding the rocks before doing that.')
+    end
+
+    it 'stops when no brazier is in reach (log 2)' do
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ['What were you referring to?'])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+    end
+
+    it 'stops when the brazier only ever asks to confirm' do
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      2.times { game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance]) }
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+    end
+
+    it 'stops when no rock is left after cleaning a dangerous brazier' do
+      game.command("get my rock from my #{bag}", ['That is far too dangerous to do with the brazier in this state.'])
+      game.command('clean my brazier', ['You prepare to clean off the brazier.'])
+      game.command('clean my brazier', ['You clean the brazier, and a massive ball of flame jets forward and singes everything nearby!'])
+      game.command('look on my brazier', ['There is nothing on there.'])
+      game.call('DRCI.get_item?', 'rock', bag, returns: false)
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
     end
   end
 end
