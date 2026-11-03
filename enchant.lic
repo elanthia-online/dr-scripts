@@ -376,10 +376,9 @@ class Enchant
   end
 
   def trace_sigil(sigil)
-    unless DRCI.get_item?("#{sigil} sigil")
-      Lich::Messaging.msg("bold", "Enchant: Failed to get #{sigil} sigil.")
-      return
-    end
+    # Without the scroll every scribe only asks for the sigil again.
+    stop_enchant("No #{sigil} sigil-scroll to study; the #{@item} is still on the brazier.") unless DRCI.get_item?("#{sigil} sigil")
+
     DRC.bput("study my #{sigil} sigil", SIGIL_STUDY_SUCCESS)
     waitrt?
     DRC.bput("trace #{@item} on #{@brazier_ref}", SIGIL_TRACE_SUCCESS)
@@ -488,6 +487,13 @@ class Enchant
   end
 
   private
+
+  # Stops the script with a bold reason. Whatever is on the brazier stays
+  # there, so a resume can carry on once the reason is dealt with.
+  def stop_enchant(reason)
+    Lich::Messaging.msg("bold", "Enchant: #{reason}")
+    exit
+  end
 
   # The enchanting_tools entry matching pattern, or default.
   def enchanting_tool(pattern, default)
