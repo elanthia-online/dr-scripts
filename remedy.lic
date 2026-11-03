@@ -8,9 +8,14 @@
 # == Command forms
 # The book form, eight arguments: book type, chapter, recipe name, herb1,
 # herb2, catalyst, vessel, product noun. Wrap a value of several words in
-# double quotes. herb2 is na, none or "not used" when the recipe needs one
-# herb. The vessel is a word of an alchemy_tools entry (mort finds a large
-# mortar; bowl finds a cauldron or a bowl). Lich lowercases every value.
+# double quotes. A recipe name that is not a valid Ruby pattern (an unclosed
+# [ or a trailing \) stops remedy with a message before anything is sent.
+# herb1 red flower or blue flower, or a part of one such as red, blue or
+# flower, is crafted as dried flower or crushed flower when the character has
+# none of the fresh flower. herb2 is na, none or "not used" when the
+# recipe needs one herb. The vessel is a word of an alchemy_tools entry
+# (mort finds a large mortar; bowl finds a cauldron or a bowl). Lich
+# lowercases every value.
 #   ;remedy remedies 2 "blister cream" "red flower" nemoih bar mortar cream
 #   ;remedy remedies 2 "blister cream" nemoih "not used" bar mortar cream
 #
@@ -363,12 +368,21 @@ class Remedy
   # The product noun argument, shared by both forms.
   NOUN_ARG = { name: 'noun', regex: /\w+/i, variable: true, options: NOUN_OPTIONS, description: 'End product' }.freeze
 
+  # The recipe names the book form accepts: letters, whitespace, hyphens and
+  # the six characters ASCII sits between Z and a ([ \ ] ^ _ and the
+  # backtick), as remedy always has (/^[A-z\s\-]+$/i, spelled out here).
+  # DRCC.find_recipe2 puts the name into a Regexp unescaped (lich-5
+  # common-crafting.rb:449), so a closed [c] class or a \s escape still finds
+  # its page. A name that is no valid Regexp is stopped by {Order.from_args}
+  # (H11).
+  RECIPE_NAME = /^[A-Za-z\[\\\]^_`\s-]+$/i
+
   # The book form: `;remedy <book type> <chapter> <recipe name> <herb1>
   # <herb2> <catalyst> <container> <noun>`.
   BOOK_FORM = [
     { name: 'book_type', display: 'book type', options: %w[remedies].freeze, description: 'What alchemy type is this item.' }.freeze,
     { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' }.freeze,
-    { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-]+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' }.freeze,
+    { name: 'recipe_name', display: 'recipe name', regex: RECIPE_NAME, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' }.freeze,
     { name: 'herb1', regex: /\w+/i, variable: true, description: 'Prepared herb, wrap in double quotes if this is multiple words..' }.freeze,
     HERB2_ARG,
     CATALYST_ARG,
@@ -388,6 +402,14 @@ class Remedy
 
   # The forms parse_args matches the arguments against.
   ARG_DEFINITIONS = [BOOK_FORM, CONTINUE_FORM].freeze
+
+  # The prepared flower each fresh flower is crafted with when herb1 is that
+  # flower's name or a part of it (red, blue, ed flower) and the character has
+  # none of the fresh one. The order matters: a part of both names (flower,
+  # lower, e) takes the red flower's, as remedy always has.
+  # create_remedies.lic:34-42 swaps the whole names itself before it runs
+  # remedy.
+  FLOWER_SUBSTITUTES = { 'red flower' => 'dried flower', 'blue flower' => 'crushed flower' }.freeze
 
   # The remed book, got and stowed when master_crafting_book is not set.
   REMED_BOOK = 'remed book'
@@ -438,11 +460,17 @@ class Remedy
     NO_SECOND_HERB = ['na', 'none', 'not used'].freeze
 
     # Reads the request from parse_args' result, in either form of
-    # {ARG_DEFINITIONS}. Only the continue form sets `continue`.
+    # {ARG_DEFINITIONS}. Only the continue form sets `continue`. Stops
+    # before anything is sent when the recipe name is no valid Regexp
+    # ({.recipe_name_error}).
     #
     # @param args [OpenStruct] parse_args' result
     # @return [Order]
+    # @raise [SystemExit] when the recipe name is no valid Regexp
     def self.from_args(args)
+      error = recipe_name_error(args.recipe_name)
+      Remedy.stop("the recipe name #{args.recipe_name} cannot be looked up in the book (#{error}); use letters, spaces and hyphens.") if error
+
       new(mode: args.continue ? :continue : :book,
           book_type: args.book_type,
           chapter: args.chapter,
@@ -452,6 +480,26 @@ class Remedy
           catalyst: args.catalyst,
           container_request: args.container,
           noun: args.noun)
+    end
+
+    # Why DRCC.find_recipe2 would raise on this recipe name, or nil when it
+    # would not. find_recipe2 puts the name into a Regexp unescaped (lich-5
+    # common-crafting.rb:449, and DRC.bput builds /#{name}/i from its
+    # pattern string), so a name such as "some [x" (an unclosed [) or one
+    # ending in \ raised RegexpError there after the book was got and
+    # turned (H11). Every name that compiles is left alone, as
+    # remedy always has: a closed [c] class, a \s escape or a ^ is read as
+    # a pattern by find_recipe2, which can still find the page.
+    #
+    # @param name [String, nil] the recipe name; nil in the continue form
+    # @return [String, nil] the RegexpError message
+    def self.recipe_name_error(name)
+      return nil if name.nil?
+
+      Regexp.new(name)
+      nil
+    rescue RegexpError => e
+      e.message
     end
 
     # Whether this is the continue form, which resumes the remedy in the
@@ -2411,6 +2459,30 @@ class Remedy
     @inventory = @inventory.with_herbs(@order.herbs)
   end
 
+  # Crafts with the prepared flower ({FLOWER_SUBSTITUTES}) when herb1 is a
+  # fresh flower's name or a part of it, the first such flower in
+  # {FLOWER_SUBSTITUTES}, and the character has none of that fresh flower
+  # (DRCI.exists? of its whole name, a tap). This is remedy's old
+  # 'red flower'.include?(herb1) rule, unchanged, so a typed red or blue
+  # crafts with the right prepared flower. Any herb1 that is no part of a
+  # flower name is crafted as given and nothing is sent.
+  #
+  # @return [void]
+  # @note A part of a flower name other than flower is not a noun the game
+  #   knows (DR matches a command noun by the start of the item's noun), so
+  #   with the fresh flower on hand such a herb1 is kept as given and its get
+  #   fails, as it always has.
+  # @note herb1 flower is a part of both names, so it takes the red flower's
+  #   dried flower, even for a blue-flower recipe (H10, left open).
+  #   Gathering it as given would take whichever flower comes first in the
+  #   container (workorders.lic:726-727), the wrong herb for a red-flower
+  #   recipe when a crushed flower comes first, and remedy cannot tell
+  #   which flower the recipe needs.
+  def substitute_flower
+    fresh, prepared = FLOWER_SUBSTITUTES.find { |name, _| name.include?(@order.herb1) }
+    use_herb1(prepared) if fresh && !DRCI.exists?(fresh)
+  end
+
   # Opens the recipe, gathers the herb into the vessel, then crafts.
   #
   # {FADED_FLAG} is reset once the recipe is studied, so only a fade of
@@ -2443,12 +2515,7 @@ class Remedy
 
     DRC.bput("touch my #{@cube}", *Patterns::CUBE_TOUCH_REPLIES) if @cube
 
-    if ('red flower').include?(@order.herb1)
-      use_herb1('dried flower') unless DRCI.exists?('red flower')
-    elsif ('blue flower').include?(@order.herb1)
-      use_herb1('crushed flower') unless DRCI.exists?('blue flower')
-    end
-
+    substitute_flower
     HerbGatherer.new(@inventory).gather(@order.herb1, @tools.container)
     @inventory.fetch!(@tools.stirrer)
 
