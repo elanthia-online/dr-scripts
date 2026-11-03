@@ -236,7 +236,7 @@ class Enchant
     imbue
     # The imbue may finish the item or lead to more scribing; the scribe
     # loop answers either, as after the first imbue of a new enchant.
-    get_tool(@burin)
+    get_burin_unless_done
     scribe
   end
 
@@ -258,7 +258,7 @@ class Enchant
     DRC.bput("touch my #{@cube}", *TOUCH_CUBE_PATTERNS) if @cube
     imbue
 
-    get_tool(@burin)
+    get_burin_unless_done
     scribe
   end
 
@@ -493,7 +493,7 @@ class Enchant
     Flags.reset('enchant-imbue')
     stow_tool(@burin) if burin_in_hand?
     imbue
-    get_tool(@burin)
+    get_burin_unless_done
   end
 
   def handle_backlash_flag
@@ -553,6 +553,12 @@ class Enchant
     stop_enchant("No reply to #{command} #{MAX_UNANSWERED_STEPS} times in a row; the #{@item} is still on the brazier.") if @unanswered_steps >= MAX_UNANSWERED_STEPS
     waitrt?
     result
+  end
+
+  # The burin for the scribing an imbue leads to; not fetched when the
+  # imbue finished the item or backlashed, as only putting it away follows.
+  def get_burin_unless_done
+    get_tool(@burin) unless Flags['enchant-complete'] || Flags['imbue-backlash']
   end
 
   # Stops the script with a bold reason. Whatever is on the brazier stays
