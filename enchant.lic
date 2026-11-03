@@ -374,7 +374,7 @@ class Enchant
   def wave_imbue_wand
     tries = 0
     while true
-      get_tool(@imbue_wand) unless held_in_left_hand?(@imbue_wand)
+      get_tool(@imbue_wand) unless rod_in_hand?
 
       result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier_ref}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
       break unless IMBUE_WAND_FAILED.match?(result)
@@ -384,7 +384,7 @@ class Enchant
       Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
     end
 
-    stow_tool(@imbue_wand) if held_in_left_hand?(@imbue_wand)
+    stow_tool(@imbue_wand) if rod_in_hand?
   end
 
   def clean_brazier
@@ -461,9 +461,23 @@ class Enchant
     brazier_step("meditate fount on #{@brazier_ref}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
   end
 
+  # The hand shows only the burin's last adjective ("precise burin" for a
+  # "fine precise burin"), so a burin setting with another adjective is
+  # found by its noun.
+  def burin_in_hand?
+    DRCI.in_hands?(@burin) || DRCI.in_hands?('burin')
+  end
+
+  # The imbue rod (or wand) in either hand, by its setting or, as with the
+  # burin, by its noun. The base item is on the brazier while it is waved,
+  # so a "wand" imbue tool is not confused with a virga wand.
+  def rod_in_hand?
+    DRCI.in_hands?(@imbue_wand) || DRCI.in_hands?(@imbue_wand.split.last)
+  end
+
   def handle_push_flag
     Flags.reset('enchant-push')
-    stow_tool(@burin) if held_in_left_hand?('burin')
+    stow_tool(@burin) if burin_in_hand?
     get_tool(@loop)
     brazier_step("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     stow_tool(@loop)
@@ -472,7 +486,7 @@ class Enchant
 
   def handle_imbue_flag
     Flags.reset('enchant-imbue')
-    stow_tool(@burin) if held_in_left_hand?('burin')
+    stow_tool(@burin) if burin_in_hand?
     imbue
     get_tool(@burin)
   end
@@ -560,10 +574,6 @@ class Enchant
   def stow_held_items
     stow_tool(DRC.right_hand) if DRC.right_hand
     stow_tool(DRC.left_hand) if DRC.left_hand
-  end
-
-  def held_in_left_hand?(noun)
-    DRC.left_hand.to_s.include?(noun)
   end
 end
 
