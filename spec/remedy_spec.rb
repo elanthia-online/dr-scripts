@@ -2039,16 +2039,19 @@ RSpec.describe Remedy do
     describe 'marking the product (C09)' do
       let(:settings) { logged_settings }
 
-      # flipped by layer 18 (opt-in stamp repair; off by default it says so)
-      it 'CURRENT (D10): ignores "too badly damaged": no repair, no message, the product left unmarked' do
+      # layer 18: the repair is
+      # opt-in; with remedy_repair_stamp unset (its profiles/base.yaml
+      # default is false) remedy sends what it always sent and now says the
+      # stamp needs repair, where it used to say nothing
+      it 'D10: with remedy_repair_stamp off, says the stamp needs repair and leaves the product unmarked, repairing nothing' do
         game.script('mark my unguent with my stamp', code('Your stamp is too badly damaged to be used.', from: 'R:423 /too badly damaged/'))
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
         expect(game.sent.last(3)).to eq(['get my unguent from my large mortar', 'mark my unguent with my stamp', 'count my unguent'])
-        expect(commons.calls.map(&:first)).not_to include('DRCC.repair_own_tools')
+        expect(commons.calls.map(&:first)).not_to include('DRCC.repair_own_tools', 'DRCI.put_away_item?', 'DRCI.get_item?')
         expect(commons.location_of('Siksrajan applewood-handled stamp')).to eq(toolstrap)
-        # no word of the stamp: the one line is layer 17's yield
-        expect(remedy_messages).to eq([yield_line('nemoih unguent')])
+        expect(remedy_messages).to eq(['Remedy: the stamp is too badly damaged to mark the unguent; the unguent is left unmarked. Repair the stamp, or set remedy_repair_stamp: true for remedy to repair it and mark again.',
+                                       yield_line('nemoih unguent')])
       end
     end
 
@@ -3645,6 +3648,201 @@ RSpec.describe Remedy do
           expect(game.sent[2]).to eq('put #41782305 in my large mortar')
         end
       end
+    end
+  end
+
+  # Layer 18 (opt-in): with
+  # remedy_repair_stamp set, a stamp the game calls too badly damaged is
+  # repaired with DRCC.repair_own_tools and the product marked once more.
+  # "Your stamp is too badly damaged to be used." is code-derived (R:423
+  # waits for "too badly damaged"; no log has it). The product's game id is
+  # made up (code-derived): Genie client logs carry no ids.
+  describe 'the stamp repair, opt-in (layer 18)' do
+    let(:settings) { logged_settings.merge(remedy_repair_stamp: true) }
+    let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
+    let(:product_id) { '41782311' }
+    # Only the product has an id, so the herb put stays the logs' command
+    # (#herb_put_command reads #item_ids, which stays empty).
+    let(:commons) do
+      ReplayCommons.new(game: game, lich5: lich5, inventory: inventory, orders: orders, ids: { 'nemoih unguent' => product_id })
+    end
+    let(:blacksmithing_data) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['blacksmithing'] }
+    let(:damaged) { code('Your stamp is too badly damaged to be used.', from: 'R:423 /too badly damaged/') }
+    let(:take_out) { 'get my unguent from my large mortar' }
+    let(:mark) { 'mark my unguent with my stamp' }
+    let(:repairing) { "Remedy: the stamp is too badly damaged to mark the unguent; repairing it, with the unguent in your #{toolbag} meanwhile." }
+
+    # Runs the short head unguent with the real base-crafting.yaml
+    # blacksmithing data beside the remedies data.
+    #
+    # @return [Symbol] as #run_remedy
+    def run_with_repair
+      script_short_unguent
+      run_remedy(short_unguent) { $test_data.crafting['blacksmithing'] = blacksmithing_data }
+    end
+
+    # @return [Array<String>] the names of the commons calls, in order
+    def call_names
+      commons.calls.map(&:first)
+    end
+
+    it 'ships off: profiles/base.yaml sets remedy_repair_stamp to false' do
+      base = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__))
+      expect(base.fetch('remedy_repair_stamp')).to be(false)
+    end
+
+    context 'when the stamp is damaged, then marks after the repair (25:11294)' do
+      before do
+        game.script(mark, damaged)
+        game.script(mark, log('25:11294'))
+      end
+
+      it 'marks once more after the repair, then counts, and ends with the unguent in hand' do
+        expect(run_with_repair).to eq(:exited)
+        expect(game.sent.last(4)).to eq([take_out, mark, mark, 'count my unguent'])
+        expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+        expect(remedy_messages).to eq([repairing, yield_line('nemoih unguent')])
+      end
+
+      it "repairs the stamp with the crafting town's blacksmithing data, the crafting container, its items and alchemy_belt" do
+        run_with_repair
+        expect(commons.calls).to include(['DRCC.repair_own_tools', blacksmithing_data['Crossing'], ['stamp'], toolbag,
+                                          settings[:crafting_items_in_container], settings[:alchemy_belt]])
+        expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', 1500, 'Crossing'])
+      end
+
+      it 'uses force_crafting_town over hometown for the repair data' do
+        settings[:force_crafting_town] = 'Shard'
+        run_with_repair
+        repair = commons.calls.find { |call| call.first == 'DRCC.repair_own_tools' }
+        expect(repair[1]).to eq(blacksmithing_data['Shard'])
+        expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', 1500, 'Shard'])
+      end
+
+      it 'puts the unguent in the crafting container by its id for the repair, and gets it back by the same id' do
+        run_with_repair
+        steps = commons.calls.map(&:first) & ['DRCI.put_away_item?', 'DRCT.walk_to', 'DRCC.repair_own_tools', 'DRCI.get_item?']
+        expect(steps).to eq(['DRCI.put_away_item?', 'DRCT.walk_to', 'DRCC.repair_own_tools', 'DRCI.get_item?'])
+        expect(commons.calls).to include(['DRCI.put_away_item?', "##{product_id}", toolbag], ['DRCI.get_item?', "##{product_id}", nil])
+        expect(commons.moves).to include("nemoih unguent: hand -> #{toolbag}", "nemoih unguent: #{toolbag} -> hand")
+      end
+
+      # Coins first, then the walk back: a bank trip after the walk would
+      # leave the repair to happen at the bank (as 03f11b54 workorders.lic:386-388 does).
+      it 'walks back to the room it repaired in after making sure of coins (Room.current, 1 in the harness)' do
+        run_with_repair
+        repair = call_names.index('DRCC.repair_own_tools')
+        expect(commons.calls[0...repair].last(2)).to eq([['DRCM.ensure_copper_on_hand', 1500, 'Crossing'], ['DRCT.walk_to', 1]])
+      end
+
+      it 'gets back this very unguent, not another of the same noun in the crafting container' do
+        inventory['blister unguent'] = toolbag
+        run_with_repair
+        expect(commons.location_of('blister unguent')).to eq(toolbag)
+        expect([$left_hand, $right_hand]).to include('nemoih unguent')
+      end
+
+      it 'puts the stamp back on the toolstrap' do
+        run_with_repair
+        expect(commons.location_of('Siksrajan applewood-handled stamp')).to eq(toolstrap)
+      end
+    end
+
+    it 'repairs once only: a stamp still damaged after the repair is reported and the product left unmarked' do
+      game.script(mark, damaged)
+      game.script(mark, damaged)
+      expect(run_with_repair).to eq(:exited)
+      expect(game.sent.last(4)).to eq([take_out, mark, mark, 'count my unguent'])
+      expect(call_names.count('DRCC.repair_own_tools')).to eq(1)
+      expect(remedy_messages).to eq([repairing, 'Remedy: the stamp is still too badly damaged after its repair; the unguent is left unmarked.',
+                                     yield_line('nemoih unguent')])
+    end
+
+    it 'repairs nothing on a mark that is not "too badly damaged" (25:11294)' do
+      game.script(mark, log('25:11294'))
+      expect(run_with_repair).to eq(:exited)
+      expect(game.sent.last(3)).to eq([take_out, mark, 'count my unguent'])
+      expect(call_names).not_to include('DRCC.repair_own_tools', 'DRCI.put_away_item?', 'DRCM.ensure_copper_on_hand')
+      expect(remedy_messages).to eq([yield_line('nemoih unguent')])
+    end
+
+    it 'repairs nothing with mark_crafted_goods off: no mark is sent' do
+      settings[:mark_crafted_goods] = false
+      expect(run_with_repair).to eq(:exited)
+      expect(game.sent).not_to include(mark)
+      expect(call_names).not_to include('DRCC.repair_own_tools')
+    end
+
+    it 'says so, and leaves the product unmarked in hand, for a crafting town with no blacksmithing data' do
+      settings[:hometown] = "Hara'jaal"
+      game.script(mark, damaged)
+      expect(run_with_repair).to eq(:exited)
+      expect(game.sent.last(3)).to eq([take_out, mark, 'count my unguent'])
+      expect(call_names).not_to include('DRCC.repair_own_tools', 'DRCI.put_away_item?')
+      expect(remedy_messages).to eq([%(Remedy: the stamp is too badly damaged to mark the unguent, and base-crafting.yaml has no blacksmithing data for "Hara'jaal" to repair it with; the unguent is left unmarked.),
+                                     yield_line('nemoih unguent')])
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+    end
+
+    it 'says so, and puts nothing away, when the unguent in hand shows no id' do
+      game.script(mark, damaged)
+      script_short_unguent
+      outcome = run_remedy(short_unguent) do
+        $test_data.crafting['blacksmithing'] = blacksmithing_data
+        $hand_ids = {} # no hand tag id, as GameObj gives when the tag has none
+      end
+      expect(outcome).to eq(:exited)
+      expect(game.sent.last(3)).to eq([take_out, mark, 'count my unguent'])
+      expect(call_names).not_to include('DRCC.repair_own_tools', 'DRCI.put_away_item?')
+      expect(remedy_messages).to eq(['Remedy: the stamp is too badly damaged to mark the unguent, and the unguent in hand shows no id to put it away by during the repair; the unguent is left unmarked.',
+                                     yield_line('nemoih unguent')])
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+    end
+
+    it 'says so, and repairs nothing, when the unguent does not leave the hand for the crafting container' do
+      game.script(mark, damaged)
+      script_short_unguent
+      outcome = run_remedy(short_unguent) do
+        $test_data.crafting['blacksmithing'] = blacksmithing_data
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+      end
+      expect(outcome).to eq(:exited)
+      expect(call_names).not_to include('DRCC.repair_own_tools', 'DRCI.get_item?')
+      expect(game.clock).to be >= Remedy::Inventory::LATE_GET_LOOKS
+      expect(remedy_messages).to eq([repairing,
+                                     "Remedy: the stamp is too badly damaged to mark the unguent, and the unguent could not be put in your #{toolbag} to free both hands for the repair; the unguent is left unmarked.",
+                                     yield_line('nemoih unguent')])
+    end
+
+    it 'stops, saying where the unguent is, when it cannot be got back after the repair, and the cleanup does not try again' do
+      allow(DRC).to receive(:beep)
+      game.script(mark, damaged)
+      script_short_unguent
+      outcome = run_remedy(short_unguent) do
+        $test_data.crafting['blacksmithing'] = blacksmithing_data
+        allow(DRCI).to receive(:get_item?) { |*args| commons.calls << ['DRCI.get_item?', *args] && false }
+      end
+      expect(outcome).to eq(:exited)
+      exit_hooks.each(&:call)
+      expect(call_names.count('DRCI.get_item?')).to eq(1)
+      expect(remedy_messages).to eq([repairing, "Remedy: the unguent is in your #{toolbag} (##{product_id}): it could not be got back after the stamp repair. Stopping."])
+      expect(game.sent).not_to include('count my unguent')
+      expect(commons.location_of('nemoih unguent')).to eq(toolbag)
+    end
+
+    it "gets the unguent back from the cleanup when a commons helper ends the script during the repair (DRCC's exit on a missing wire brush)" do
+      game.script(mark, damaged)
+      script_short_unguent
+      outcome = run_remedy(short_unguent) do
+        $test_data.crafting['blacksmithing'] = blacksmithing_data
+        allow(DRCC).to receive(:repair_own_tools) { exit }
+      end
+      expect(outcome).to eq(:exited)
+      expect(commons.location_of('nemoih unguent')).to eq(toolbag)
+      exit_hooks.each(&:call)
+      expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
+      expect(commons.calls).to include(['DRCI.get_item?', "##{product_id}", nil])
+      expect(remedy_messages).to eq([repairing])
     end
   end
 end

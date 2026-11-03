@@ -27,6 +27,10 @@
 # installed, GameObj.left_hand.id and GameObj.right_hand.id (the harness's
 # $hand_ids) answer the id of the item a hand holds, by its full name. The
 # ids are made up for a spec (code-derived): Genie client logs carry no ids.
+# A helper given a "#<id>" reference (DRCI.get_item?("#41782305"), as
+# lich-5's item_ref passes it through, 480bdee3 common-items.rb:50-58)
+# finds the item, held or owned, whose full name has that id, and nothing
+# else; the game's own by-id commands do the same.
 #
 # == Not modelled: ordinals
 # An item named by its place, such as "second nemoih" (remedy.lic:239 and
@@ -76,6 +80,10 @@ class ReplayCommons
 
   # The place a {#moves} entry gives for the character's hands.
   HAND = 'hand'
+
+  # A "#<id>" item reference (lich-5 DRCI::ITEM_ID_REF_PATTERN, 480bdee3
+  # common-items.rb:58). Captures the id.
+  ID_REF = /\A#(\d+)\z/
 
   # Where DRCT.order_item takes an ordered item from, in {#moves}.
   SHOP = 'shop'
@@ -201,6 +209,7 @@ class ReplayCommons
       allow(DRCI).to receive(:in_right_hand?) { |*args| commons.in_right_hand?(*args) }
       allow(DRCT).to receive(:order_item) { |*args| commons.order_item(*args) }
       allow(DRCT).to receive(:walk_to) { |*args| commons.walk_to(*args) }
+      allow(DRCM).to receive(:ensure_copper_on_hand) { |*args| commons.ensure_copper_on_hand(*args) }
       allow(DRCM).to receive(:get_money_from_bank) { |*args| commons.get_money_from_bank(*args) }
       allow(DRCA).to receive(:crafting_magic_routine) { |*args| commons.crafting_magic_routine(*args) }
       allow(DRC).to receive(:wait_for_script_to_complete) { |*args| commons.wait_for_script_to_complete(*args) }
@@ -409,7 +418,8 @@ class ReplayCommons
   # Model of DRCI.in_hands? (480bdee3 common-items.rb:935-937, :978-998):
   # either hand's name matches the item's short_regex.
   #
-  # @note Not modelled: the "#<id>" form.
+  # @note Not modelled: lich-5's answer for the "#<id>" form. The model
+  #   answers it as its other helpers find an item by id ({#named?}).
   # @param item [String] the item
   # @return [Boolean]
   def in_hands?(item)
@@ -460,6 +470,18 @@ class ReplayCommons
   # @return [Boolean] true
   def walk_to(room)
     record('DRCT.walk_to', room)
+    true
+  end
+
+  # Model of DRCM.ensure_copper_on_hand: recorded with the amount and the
+  # town (the settings are left out of the record); always succeeds.
+  #
+  # @param amount [Integer] the coppers wanted on hand
+  # @param _settings [Object] the script's settings, unused
+  # @param town [String, nil] the town whose bank and currency are used
+  # @return [Boolean] true
+  def ensure_copper_on_hand(amount, _settings = nil, town = nil)
+    record('DRCM.ensure_copper_on_hand', amount, town)
     true
   end
 
@@ -534,17 +556,31 @@ class ReplayCommons
 
   # An owned item the name finds, in +container+ when given.
   #
-  # @param name [String]
+  # @param name [String] a name, or a "#<id>" reference ({#named?})
   # @param container [String, nil]
   # @return [Item, nil]
   def find_item(name, container = nil)
     @inventory.find do |item|
-      self.class.matches?(item.name, name) && (container.nil? || self.class.matches?(item.location, container))
+      named?(item.name, name) && (container.nil? || self.class.matches?(item.location, container))
     end
   end
 
-  # The hand holding an item: an exact name first, then a name that finds it,
-  # right hand before left.
+  # Whether a requested name finds an item: a "#<id>" reference ({ID_REF})
+  # finds only the item whose full name has that id in the `ids:` table;
+  # any other name finds it as {.matches?} does.
+  #
+  # @param full_name [String, nil] the item's full name
+  # @param requested [String, nil] the name a helper was given
+  # @return [Boolean]
+  def named?(full_name, requested)
+    id = requested.to_s[ID_REF, 1]
+    return self.class.matches?(full_name, requested) unless id
+
+    !full_name.nil? && @ids[full_name] == id
+  end
+
+  # The hand holding an item: an exact name first, then a name that finds it
+  # ({#named?}, so a "#<id>" reference too), right hand before left.
   #
   # @note An ordinal name ("first nemoih") finds no hand (see the class
   #   comment).
@@ -554,8 +590,8 @@ class ReplayCommons
     return nil if name.nil?
     return :right if $right_hand == name
     return :left if $left_hand == name
-    return :right if self.class.matches?($right_hand, name)
-    return :left if self.class.matches?($left_hand, name)
+    return :right if named?($right_hand, name)
+    return :left if named?($left_hand, name)
 
     nil
   end

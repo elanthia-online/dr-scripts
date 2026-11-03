@@ -1202,6 +1202,12 @@ alcohol_container:
 water_container:
 # container used to hold herbs for remedy.lic (optional) Not optional if overriding
 herb_container:
+# remedy.lic, with mark_crafted_goods: when the stamp is too badly damaged to mark a finished remedy,
+# repair it with your own wire brush and oil (as workorders_repair_own_tools does) and mark once more.
+# The repair may walk to the bank, and to the blacksmithing finisher shop of your crafting town to buy
+# oil or a wire brush, then back; the remedy waits in crafting_container meanwhile.
+# Off: the remedy is left unmarked, with a message saying the stamp needs repair.
+remedy_repair_stamp: false
 # override craft.lic training items
 craft_overrides:
 # Settings to change the stock materials purchased by Workorders to fulfill orders.
