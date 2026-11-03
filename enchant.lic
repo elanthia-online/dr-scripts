@@ -680,7 +680,10 @@ class Enchant
     get_burin_unless_done
   end
 
-  # After a backlash: puts everything away and goes to safe-room.
+  # After a backlash: puts everything away and goes to safe-room. No log
+  # has a backlash yet, so where the fount and the item end up is unknown;
+  # cleanup fetches the fount, and when neither the floor nor the bag has
+  # one, DRCC's GET stops the script before safe-room.
   #
   # @return [void]
   def handle_backlash_flag
@@ -734,9 +737,10 @@ class Enchant
   # rock, a virga wand still a redwood wand. So it is lifted from the floor
   # and kept in hand for the caller, never put in the bag with the unworked
   # ones and taken out again. A GET is the fallback when nothing is there to
-  # lift.
+  # lift; it takes the first item of that noun, which may be an unworked one
+  # from the bag.
   #
-  # @return [Boolean] whether the product is in hand
+  # @return [Boolean] whether an item of the product's noun is in hand
   def take_product
     DRCI.lift?(@item) || DRCI.get_item?(@item)
   end
