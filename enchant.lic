@@ -374,7 +374,7 @@ class Enchant
   def wave_imbue_wand
     tries = 0
     while true
-      get_tool(@imbue_wand) unless DRCI.in_hands?(@imbue_wand)
+      get_tool(@imbue_wand) unless rod_in_hand?
 
       result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier_ref}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
       break unless IMBUE_WAND_FAILED.match?(result)
@@ -384,7 +384,7 @@ class Enchant
       Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
     end
 
-    stow_tool(@imbue_wand) if DRCI.in_hands?(@imbue_wand)
+    stow_tool(@imbue_wand) if rod_in_hand?
   end
 
   def clean_brazier
@@ -466,6 +466,13 @@ class Enchant
   # found by its noun.
   def burin_in_hand?
     DRCI.in_hands?(@burin) || DRCI.in_hands?('burin')
+  end
+
+  # The imbue rod (or wand) in either hand, by its setting or, as with the
+  # burin, by its noun. The base item is on the brazier while it is waved,
+  # so a "wand" imbue tool is not confused with a virga wand.
+  def rod_in_hand?
+    DRCI.in_hands?(@imbue_wand) || DRCI.in_hands?(@imbue_wand.split.last)
   end
 
   def handle_push_flag

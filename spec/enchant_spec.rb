@@ -630,6 +630,16 @@ RSpec.describe Enchant do
       instance.send(:handle_imbue_flag)
     end
 
+    it 'finds an imbue rod set up as "slender rod" by its noun, before and after the wave' do
+      instance = build_instance(imbue_wand: 'slender rod')
+      allow(DRCI).to receive(:in_hands?) { |name| ['imbuement rod', 'rod'].include?(name) }
+      allow(DRC).to receive(:bput).and_return('The spell is channeled through the fount hanging above')
+      expect(instance).not_to receive(:get_tool)
+      expect(instance).to receive(:stow_tool).with('slender rod')
+
+      instance.send(:wave_imbue_wand)
+    end
+
     it 'stows it before the loop push too' do
       instance = build_instance(burin: 'fine burin')
       hold_precise_burin
