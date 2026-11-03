@@ -2334,7 +2334,8 @@ RSpec.describe TaskMaster do
     end
 
     before(:each) do
-      $test_data.crafting = { 'artificing' => { 'Crossing' => { 'stock-room' => 14_753, 'tool-room' => 14_754, 'fount' => 3 } } }
+      $test_data.crafting = { 'artificing' => { 'Crossing' => { 'stock-room' => 14_753, 'tool-room' => 14_754, 'fount' => 3,
+                                                                'brazier-rooms' => [14_757, 14_758, 14_759, 14_760] } } }
     end
 
     # READ of the instructions as Lich::Util.issue_command returns it: raw
@@ -2987,7 +2988,7 @@ RSpec.describe TaskMaster do
 
         tm.dorhum('spongestone', 8, %w[congruence decay])
 
-        expect(steps).to eq([[:tools, %w[burin], 'enchanting'], [:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
+        expect(steps).to eq([[:tools, %w[burin rod], 'enchanting'], [:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
                              :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
       end
 
@@ -3035,7 +3036,7 @@ RSpec.describe TaskMaster do
 
       it 'carries on when task_loot_bag holds none, and does not count a "rock marble deed"' do
         tm = dorhum
-        %i[buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        %i[ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
         allow(DRCC).to receive(:fount)
         game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock marble deed.')
 
@@ -3083,9 +3084,28 @@ RSpec.describe TaskMaster do
           .with("Can't find augmenting loop, imbuement rod: not on you, and the enchanting clerk didn't have it. Stopping before buying anything.")
       end
 
-      it 'leaves the fount and brazier out of what a Dorhum task must carry' do
+      it 'leaves the fount and brazier out of what a Dorhum task must carry, and adds the imbue rod enchant falls back to' do
         expect(dorhum(settings: { enchanting_tools: ['small brazier', 'fount', 'burin', 'augmenting loop'] }).dorhum_tools)
-          .to eq(['burin', 'augmenting loop'])
+          .to eq(['burin', 'augmenting loop', 'rod'])
+      end
+
+      it 'needs no rod when an Imbue spell is set up, and uses the rod named in enchanting_tools' do
+        spell = dorhum(settings: { enchanting_tools: %w[burin], waggle_sets: { 'imbue' => { 'Imbue' => { 'mana' => 5 } } } })
+        named = dorhum(settings: { enchanting_tools: ['burin', 'imbuement rod'] })
+
+        expect([spell.dorhum_tools, named.dorhum_tools]).to eq([%w[burin], ['burin', 'imbuement rod']])
+      end
+
+      it 'needs your own brazier when enchanting in a set room that is not a Crossing brazier room' do
+        tm = dorhum(crafting_room: 16_936, settings: { enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(['burin', 'rod', 'small brazier'])
+      end
+
+      it 'needs no brazier of your own in a Crossing brazier room' do
+        tm = dorhum(settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(%w[burin rod])
       end
     end
 
@@ -3112,6 +3132,24 @@ RSpec.describe TaskMaster do
 
         expect(DRCC).to have_received(:stow_crafting_item).once
         expect(DRC).to have_received(:message).with('Could not buy a decay sigil-scroll. Stopping.')
+      end
+
+      it 'waits for the wand to reach a hand after the purchase line' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:buy_item)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(false, false, true)
+
+        dorhum.buy_wands(1)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil)
+      end
+
+      it 'asks the bank for nothing when every sigil-scroll is already carried' do
+        game('rummage /C sigil-scroll in my duffel bag' => "You rummage through a heavy silk duffel bag looking for something similar to \"sigil-scroll\" and see #{Array.new(8, 'an intricate decay sigil-scroll').join(', ')}.")
+        expect(DRCM).not_to receive(:ensure_copper_on_hand)
+        expect(DRCT).not_to receive(:order_item)
+
+        dorhum.buy_sigils(%w[decay], 8)
       end
 
       it 'stops when a wand does not land in hand' do
