@@ -2679,6 +2679,105 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # Mahtra's private forge (task_crafting_room 16936), 2026-11-02/03.
+    describe 'the rental of task_crafting_room' do
+      let(:notice) { '[It will expire Thu Dec  3 20:58:13 ET 2026.]' }
+      let(:extended) { '[Your private forge rental has been extended until Thu Dec  3 00:56:41 ET 2026.]' }
+
+      def enchant_runs(count, warn_on: nil)
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          Flags[TaskMaster::RENTAL_WARNING_FLAG] = true if runs == warn_on
+          Flags[TaskMaster::ENCHANTED_FLAG] = true
+        end
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        count
+      end
+
+      it 'reads the expiry off the notice in US Eastern time, standard time in winter and daylight time in summer' do
+        tm = dorhum
+        winter = TaskMaster::RENTAL_EXPIRES.match(notice)
+        summer = TaskMaster::RENTAL_EXPIRES.match('[It will expire Fri Jul 10 12:00:00 ET 2026.]')
+
+        expect(tm.rental_minutes_left(winter, Time.utc(2026, 12, 4, 1, 48, 13))).to eq(10.0)
+        expect(tm.rental_minutes_left(summer, Time.utc(2026, 7, 10, 15, 50, 0))).to eq(10.0)
+      end
+
+      it "puts the sentry's warning at ten minutes before the notice's time (2026-11-02, the day daylight time ended)" do
+        expires = TaskMaster::RENTAL_EXPIRES.match('[It will expire Sun Nov  1 18:58:13 ET 2026.]')
+
+        expect(dorhum.rental_minutes_left(expires, Time.utc(2026, 11, 1, 23, 48, 17))).to be_between(9.9, 10.0)
+      end
+
+      it 'checks the notice before enchanting and leaves a rental with time on it alone' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        game('read notice' => notice)
+        tm.enchant_items('spongestone', 'rock', enchant_runs(2))
+
+        expect(DRC).to have_received(:bput).with('read notice', any_args).once
+        expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
+      end
+
+      it 'renews before the first item when the rental ends within ten minutes' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 12, 4, 1, 52, 0))
+        game('read notice' => notice, 'mark notice' => extended)
+        tm.enchant_items('spongestone', 'rock', enchant_runs(1))
+
+        expect(DRC).to have_received(:bput).with('mark notice', any_args).once
+      end
+
+      it "renews between items once the sentry's warning has come" do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        order = []
+        game('read notice' => notice, 'mark notice' => ->(*) { order << :mark && extended })
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          order << :enchant
+          Flags[TaskMaster::RENTAL_WARNING_FLAG] = true if order.count(:enchant) == 1
+          Flags[TaskMaster::ENCHANTED_FLAG] = true
+        end
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 3)
+
+        expect(order).to eq(%i[enchant mark enchant enchant])
+      end
+
+      it 'stops before the next item when the rental is not extended' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        game('read notice' => notice, 'mark notice' => '')
+
+        expect { tm.enchant_items('spongestone', 'rock', enchant_runs(3, warn_on: 1)) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+        expect(DRC).to have_received(:message).with('Could not renew the rental of room 16936; stopping before it runs out.')
+      end
+
+      it 'reads no notice and marks nothing where there is no notice, or without task_crafting_room' do
+        unrented = dorhum(crafting_room: 2071)
+        game('read notice' => 'I could not find what you were referring to.')
+        unrented.enchant_items('spongestone', 'rock', enchant_runs(2, warn_on: 1))
+        dorhum.enchant_items('spongestone', 'rock', enchant_runs(1))
+
+        expect(DRC).to have_received(:bput).with('read notice', any_args).once
+        expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
+      end
+
+      it "takes the sentry's warning, not a player repeating it" do
+        warning = '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]'
+        expect(warning).to match(TaskMaster::RENTAL_WARNING)
+        [%(Mallory says, "#{warning}"), %([General][Mallory] "#{warning}"), %(Mallory whispers, "#{warning}")].each do |line|
+          expect(line).not_to match(TaskMaster::RENTAL_WARNING)
+        end
+      end
+    end
+
     describe '#dorhum' do
       it 'buys the sigils, gets the base items, checks the fount, finds a room, enchants, then repairs' do
         tm = dorhum(settings: { enchanting_tools: %w[brazier burin], enchanting_belt: nil })

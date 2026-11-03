@@ -731,8 +731,8 @@ class TaskMaster
 
   # Where Dorhum's spongestone tasks forage rocks unless task_rock_room says
   # otherwise: The Crossing, Town Green Southeast, where FORAGE ROCK finds one
-  # rock a time ("You manage to find a rock."). On Andreshlew "You survey the
-  # area and realize that any collecting efforts would be futile."
+  # rock a time ("You manage to find a rock."). On Andreshlew FORAGE gets "You
+  # survey the area and realize that any foraging efforts would be futile."
   DEFAULT_ROCK_ROOM = 793
   # The wand on the steel crate in the Crossing enchanting supplies, 125
   # Kronars. TAP calls it "a redwood wand", but the game knows it only as a
@@ -746,8 +746,10 @@ class TaskMaster
   INSTRUCTION_SIGIL = /\((?<count>\d+)\) (?:primary|secondary) sigils? \((?<sigil>[\w-]+)\)/
   # The game's lines when an enchant is finished, caught by a Flag to tell a
   # finished item in hand from an unworked one enchant left there when it
-  # stopped. The same completion lines enchant.lic's enchant-complete flag
-  # takes; every item in the Dorhum runs ended with the first.
+  # stopped. enchant.lic's enchant-complete flag takes these three and also
+  # "You collect the <item> and place it at your feet", left out here because
+  # it matches the fount's line too. Every item in the Dorhum runs ended with
+  # the first.
   ENCHANTED_FLAG = 'taskmaster-enchanted'
   # The completion lines ENCHANTED_FLAG catches.
   ENCHANTED = Regexp.union(
@@ -958,19 +960,97 @@ class TaskMaster
     Array(@settings.enchanting_tools).find { |tool| tool =~ /brazier/ } || 'brazier'
   end
 
+  # A rented room's notice (Mahtra's private forge, task_crafting_room 16936):
+  # "[It will expire Thu Dec  3 20:58:13 ET 2026.]", in US Eastern time.
+  RENTAL_EXPIRES = /^\[It will expire \w+ (?<month>\w+)\s+(?<day>\d+) (?<hour>\d+):(?<min>\d+):(?<sec>\d+) ET (?<year>\d+)\.\]/
+  # READ NOTICE where there is none: the room is not rented.
+  RENTAL_NO_NOTICE = [/^I could not find/, /^What were you referring to/].freeze
+  # The sentry's warning, ten minutes before the rental ends (2026-11-02, with
+  # 18:58:13 ET on the notice): "[You have less than 10 minutes remaining.  If
+  # you wish to renew your rental, simply MARK NOTICE to signal the sentry.]"
+  RENTAL_WARNING = /^\[You have less than 10 minutes remaining\.\s+If you wish to renew your rental/
+  RENTAL_WARNING_FLAG = 'taskmaster-rental-warning'
+  # MARK NOTICE that went through: "[Your private forge rental has been
+  # extended until Thu Dec  3 00:56:41 ET 2026.]" (an hour per mark).
+  RENTAL_EXTENDED = /^\[Your private forge rental has been extended until/
+  # Minutes left on the notice under which the rental is renewed before
+  # enchanting, the margin the sentry's warning gives too.
+  RENTAL_RENEW_MINUTES = 10
+  MONTHS = %w[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec].freeze
+
+  # Reads the notice of task_crafting_room, if it has one, and renews the
+  # rental when it ends within RENTAL_RENEW_MINUTES, as sew does in a
+  # rented room: when it runs out, the game moves you out and drops on the
+  # ground whatever is not a tool, the item on the brazier too.
+  #
+  # @return [Boolean] whether the room is rented
+  def check_rental
+    reply = DRC.bput('read notice', RENTAL_EXPIRES, *RENTAL_NO_NOTICE)
+    match = RENTAL_EXPIRES.match(reply)
+    return false unless match
+
+    renew_rental if rental_minutes_left(match) < RENTAL_RENEW_MINUTES
+    true
+  end
+
+  # @param match [MatchData] RENTAL_EXPIRES on the notice
+  # @param now [Time]
+  # @return [Float] minutes until the rental ends
+  def rental_minutes_left(match, now = Time.now)
+    month = MONTHS.index(match[:month]) + 1
+    year = match[:year].to_i
+    day = match[:day].to_i
+    expires = Time.new(year, month, day, match[:hour].to_i, match[:min].to_i, match[:sec].to_i, eastern_offset(year, month, day))
+    (expires - now) / 60
+  end
+
+  # US Eastern time's UTC offset on a date: daylight time from the second
+  # Sunday of March to the first Sunday of November.
+  #
+  # @return [String] '-04:00' or '-05:00'
+  def eastern_offset(year, month, day)
+    sunday = ->(mon, nth) { (((7 - Time.utc(year, mon, 1).wday) % 7) + 1) + (7 * (nth - 1)) }
+    daylight = case month
+               when 4..10 then true
+               when 3 then day >= sunday.call(3, 2)
+               when 11 then day < sunday.call(11, 1)
+               else false
+               end
+    daylight ? '-04:00' : '-05:00'
+  end
+
+  # MARK NOTICE, an hour more. A reply other than the extension stops the
+  # run between items, before the rental can end under an enchant.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the rental was not extended
+  def renew_rental
+    Flags.reset(RENTAL_WARNING_FLAG)
+    reply = DRC.bput('mark notice', RENTAL_EXTENDED, /^You don't have enough/, *RENTAL_NO_NOTICE)
+    return if RENTAL_EXTENDED.match?(reply)
+
+    DRC.message("Could not renew the rental of room #{@crafting_room}#{reply.empty? ? '' : " (#{reply})"}; stopping before it runs out.")
+    exit
+  end
+
   # Enchants each item with `enchant instructions` and puts it in
   # task_loot_bag. An item the game did not finish (enchant stopped and
-  # said why) stops the task, leaving everything where it is.
+  # said why) stops the task, leaving everything where it is. In a rented
+  # task_crafting_room the rental is checked first and renewed between items
+  # once the sentry warns it is nearly up.
   #
   # @param item [String] the task item's noun, naming the instructions
   # @param noun [String] the finished item's noun (its base item's)
   # @param count [Integer] items to make
   # @return [void]
-  # @raise [SystemExit] when an enchant did not finish, or a finished item
-  #   would not go in task_loot_bag
+  # @raise [SystemExit] when an enchant did not finish, a finished item
+  #   would not go in task_loot_bag, or the rental could not be renewed
   def enchant_items(item, noun, count)
     Flags.add(ENCHANTED_FLAG, ENCHANTED)
+    Flags.add(RENTAL_WARNING_FLAG, RENTAL_WARNING)
+    rented = @crafting_room ? check_rental : false
     count.times do
+      renew_rental if rented && Flags[RENTAL_WARNING_FLAG]
       Flags.reset(ENCHANTED_FLAG)
       DRC.wait_for_script_to_complete('enchant', ['instructions', item, noun])
       unless Flags[ENCHANTED_FLAG] && DRCI.in_hands?(noun)
@@ -989,6 +1069,7 @@ class TaskMaster
     DRC.message("#{count} #{item}s completed")
   ensure
     Flags.delete(ENCHANTED_FLAG)
+    Flags.delete(RENTAL_WARNING_FLAG)
   end
 
   # Taskmasters wander, but between turn-ins they are usually back in the
