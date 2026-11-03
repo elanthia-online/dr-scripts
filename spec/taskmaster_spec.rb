@@ -979,6 +979,7 @@ RSpec.describe TaskMaster do
             'You can check your progress with the TASK verb.'
           end
           game('ask zasele for task' => ask, 'accept task' => accept)
+          yield tm if block_given?
           [tm.get_task, events, tm]
         end
 
@@ -1054,6 +1055,19 @@ RSpec.describe TaskMaster do
           result, events, = asking([*Array.new(20_000, wait), offer])
           expect(result).to eq(:accepted)
           expect(events.count([:pause, 7])).to eq(20_000)
+        end
+
+        it "asks its own taskmaster again after cancelling another taskmaster's task" do
+          resumes = 0
+          result, events, = asking([on_task, offer]) do |tm|
+            allow(tm).to receive(:resume_task) do
+              resumes += 1
+              throw TaskMaster::FOREIGN_TASK_CANCELLED
+            end
+          end
+          expect(result).to eq(:accepted)
+          expect(resumes).to eq(1)
+          expect(events).to eq(%i[find ask find ask accept finish])
         end
 
         it 'gives up and returns nil, without asking again, when no reply matches' do
@@ -1235,8 +1249,9 @@ RSpec.describe TaskMaster do
           tm = reader(npc: 'zasele')
           game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
           expect(tm).not_to receive(:turn_in_banked)
+          expect(tm).to receive(:cancel_task).with('nezhiri', 'rope', "taskmaster does not do Nezhiri's tasks.")
 
-          expect { tm.resume_task }.to raise_error(SystemExit)
+          expect { tm.resume_task }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
 
           expect(DRC).to have_received(:message)
             .with('You are on a task for Nezhiri, not Zasele. Nezhiri is not a taskmaster this script does, so finish it yourself, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes).')
@@ -2435,6 +2450,91 @@ RSpec.describe TaskMaster do
         expect(DRCC).not_to receive(:stow_crafting_item)
 
         build.set_aside_held_base('rope')
+      end
+    end
+
+    describe 'cancelling a task the run cannot finish' do
+      # Dorhum's replies, Mahtra 2026-11-03 18:45.
+      let(:confirm) { 'Researcher Dorhum looks at you and says, "You wish to end your current task?  If so, ask me again within fifteen seconds."' }
+      let(:cancelled) { 'Researcher Dorhum says, "Very well, I see that you no longer wish to assist me."' }
+      let(:no_task) { 'Researcher Dorhum looks at you and says, "You do not currently have a task."' }
+
+      def foreign_dorhum_run
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        tm.instance_variable_set(:@asked_npc, 'zasele')
+        tm.instance_variable_set(:@task_item, 'bauble')
+        allow(tm).to receive(:find_npc)
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCT).to receive(:dispose)
+        tm
+      end
+
+      it 'asks twice, as the game wants, then throws the instructions away and clears the replacement record' do
+        tm = foreign_dorhum_run
+        UserVars.taskmaster_replacements = { 'dorhum' => 'bauble' }
+        replies = [confirm, cancelled]
+        game('ask dorhum for task cancel' => ->(*) { replies.shift })
+
+        tm.cancel_task('dorhum', 'bauble', 'Reason.')
+
+        expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).twice
+        expect(DRCT).to have_received(:dispose).with('bauble instructions', nil, 'bucket', 'tap')
+        expect(UserVars.taskmaster_replacements).to eq({})
+        expect(DRC).to have_received(:message).with("Reason. Cancelling Dorhum's task and going back to Zasele.")
+      end
+
+      it 'takes "You do not currently have a task" as done' do
+        tm = foreign_dorhum_run
+        game('ask dorhum for task cancel' => no_task)
+
+        tm.cancel_task('dorhum', 'bauble', 'Reason.')
+
+        expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).once
+      end
+
+      it 'stops when the cancel does not go through, keeping the instructions' do
+        tm = foreign_dorhum_run
+        game('ask dorhum for task cancel' => '')
+
+        expect { tm.cancel_task('dorhum', 'bauble', 'Reason.') }.to raise_error(SystemExit)
+
+        expect(DRCT).not_to have_received(:dispose)
+        expect(DRC).to have_received(:message).with("Could not cancel Dorhum's task. Stopping.")
+      end
+
+      it 'cancels instead of pausing on an item it cannot make, when the task is not its own' do
+        tm = foreign_dorhum_run
+        expect(tm).to receive(:cancel_task).with('dorhum', 'bauble', /does not know how to make Dorhum's baubles/)
+        expect(tm).not_to receive(:pause_script)
+
+        expect { tm.hand_in_noun('bauble') }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+
+        expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+      end
+
+      it "still pauses on an item it cannot make when the task is its own taskmaster's" do
+        tm = dorhum
+        expect(tm).not_to receive(:cancel_task)
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.hand_in_noun('bauble') }.to raise_error(SystemExit)
+      end
+
+      it 'cancels instead of stopping on a missing tool, when the task is not its own' do
+        tm = foreign_dorhum_run
+        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(DRC).to receive(:wait_for_script_to_complete)
+        expect(tm).to receive(:cancel_task).with('dorhum', 'bauble', /Can't find burin/)
+
+        expect { tm.ensure_tools(['burin'], 'enchanting') }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+      end
+
+      it "returns from finish mode after a cancel, so the run carries on asking its own taskmaster" do
+        tm = build
+        allow(tm).to receive(:reconcile_hands)
+        allow(tm).to receive(:resume_task) { throw TaskMaster::FOREIGN_TASK_CANCELLED }
+
+        expect { tm.finish_task_in_progress }.not_to raise_error
       end
     end
 
