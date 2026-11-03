@@ -2783,6 +2783,28 @@ RSpec.describe TaskMaster do
         expect(tm.read_instructions('shell', 5)).to eq(['shell', 5, %w[permutation paradox]])
       end
 
+      # Mahtra, 2026-11-03: t2task's `taskmaster zasele` met this open Dorhum
+      # task ("You are already on a task"), worked it as Zasele's and crashed
+      # in buy_stackables on every relaunch.
+      it "finishes an open glow shell task as Dorhum's when started for Zasele, never as hers" do
+        tm = build(npc: 'zasele', lootbag: 'backpack', stockdata: sigil_stock)
+        allow(tm).to receive(:find_npc)
+        game('task' => 'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist his ongoing efforts with the Merelew and others.  ' \
+                       'In particular, he wanted you to craft a glow shell and indicated that 6 would suffice.  So far, you have returned 0 to him.  ' \
+                       'Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Dorhum for another copy.')
+        allow(tm).to receive(:reconcile_hands)
+        allow(tm).to receive(:turn_in_banked) { |_item, owed| owed }
+        allow(tm).to receive(:ensure_instructions)
+        allow(tm).to receive(:read_instructions).with('shell', 6).and_return(['shell', 6, %w[permutation paradox]])
+        %i[refresh_haste top_up_copper complete_task].each { |step| allow(tm).to receive(step) }
+        expect(tm).not_to receive(:zasele)
+        expect(tm).to receive(:dorhum).with('shell', 6, %w[permutation paradox], nil, nil)
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(tm.instance_variable_get(:@npc)).to eq('dorhum')
+      end
+
       it 'forages shells for a glow shell task' do
         tm = dorhum
         %i[ensure_tools buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
