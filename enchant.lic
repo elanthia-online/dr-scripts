@@ -149,8 +149,9 @@ class Enchant
   #
   # The first study of instructions that wear out asks for a second one,
   # with the uses left (log 1: "[These instructions have only 9 uses
-  # remaining.  Study them again to proceed.]").
-  STUDY_INSTRUCTIONS_AGAIN = /(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/.freeze
+  # remaining.  Study them again to proceed.]"). No quote may come before
+  # it, so a player saying the line does not count.
+  STUDY_INSTRUCTIONS_AGAIN = /^[^"]*?(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/.freeze
   # A completed study ends in roundtime (log 1).
   STUDY_INSTRUCTIONS_DONE = /^Roundtime/.freeze
   STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/.freeze

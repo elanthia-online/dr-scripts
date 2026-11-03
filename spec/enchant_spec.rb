@@ -783,6 +783,13 @@ RSpec.describe Enchant do
       expect(instance.send(:study_instructions, name)).to be(false)
     end
 
+    it "asks for another study only on the game's line, not a player's" do
+      expect('[These instructions have only 9 uses remaining.  Study them again to proceed.]').to match(Enchant::STUDY_INSTRUCTIONS_AGAIN)
+      player_lines('These instructions have only 1 uses remaining.  Study them again to proceed.').each do |line|
+        expect(line).not_to match(Enchant::STUDY_INSTRUCTIONS_AGAIN)
+      end
+    end
+
     it 'fails after three studies that only ever ask for another' do
       allow(DRC).to receive(:bput).and_return('Study them again')
 
