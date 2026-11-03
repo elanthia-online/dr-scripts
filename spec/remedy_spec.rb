@@ -1992,7 +1992,9 @@ RSpec.describe Remedy do
     end
 
     describe 'sharp corners (C13)' do
-      # flipped by layer 14 (the swap needs herb1 to be the whole flower name)
+      # left open by layer 14 (H10): gathering "flower" as given would take
+      # whichever flower comes first in the bag (workorders.lic:726-727), the
+      # wrong herb for a red-flower recipe; see Remedy#substitute_flower
       it 'CURRENT (H10): swaps herb1 "flower" for dried flower' do
         inventory['dried flower'] = toolbag
         game.script('count my dried flower', log('25:33679'))
@@ -2000,12 +2002,13 @@ RSpec.describe Remedy do
         expect(game.sent.first).to eq('count my dried flower')
       end
 
-      # flipped by layer 14 (anchored recipe name); the real find_recipe2
-      # raises RegexpError on it (H11)
-      it 'CURRENT (H11): accepts a recipe name holding "[" and hands it to find_recipe2' do
-        script_short_unguent
-        run_remedy(typed('remedies 3 "some [x" nemoih na "pewter ingot" mortar unguent'))
-        expect(commons.calls).to include(['DRCC.find_recipe2', '3', 'some [x'])
+      # layer 14: a recipe name that is no valid Regexp stops before anything
+      # is sent; the real find_recipe2 raised RegexpError on "[" (H11)
+      it 'H11: stops with a message for a recipe name holding an unclosed "[", before any command or recipe lookup' do
+        expect(run_remedy(typed('remedies 3 "some [x" nemoih na "pewter ingot" mortar unguent'))).to eq(:exited)
+        expect(remedy_messages.first).to start_with('Remedy: the recipe name some [x cannot be looked up in the book (')
+        expect(game.sent).to be_empty
+        expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2', 'DRCI.exists?')
       end
 
       # flipped by layer 15 (the container word is escaped)
@@ -3107,6 +3110,168 @@ RSpec.describe Remedy do
       expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
     end
   end
+
+  describe 'arguments that cannot work and the flower swap (layer 14)' do
+    let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
+
+    describe 'the recipe name (H11)' do
+      # Lich's `variable` for the book form with this recipe name, the
+      # arguments already split, so any character reaches parse_args as it is.
+      #
+      # @param name [String] the recipe name argument
+      # @return [Array<String>] Lich's `variable`
+      def book_vars(name)
+        args = ['remedies', '3', name, 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']
+        [args.join(' '), *args]
+      end
+
+      # Names the old /^[A-z\s\-]+$/i let through that the real find_recipe2
+      # raised RegexpError on (H11): DRC.bput builds /#{name}/i from
+      # its pattern string (lich-5 common.rb:197).
+      {
+        'an unclosed ['           => 'some [x',
+        'a trailing \\'           => 'some head unguent\\',
+        'a \\x with no hex digit' => 'some \\x unguent'
+      }.each do |what, name|
+        it "stops with a message for a recipe name holding #{what}, before any command or recipe lookup" do
+          expect(run_remedy(book_vars(name))).to eq(:exited)
+          expect(remedy_messages).to eq(["Remedy: the recipe name #{name} cannot be looked up in the book (#{Remedy::Order.recipe_name_error(name)}); use letters, spaces and hyphens. Stopping."])
+          expect(game.sent).to be_empty
+          expect(commons.calls.map(&:first)).not_to include('DRCC.find_recipe2', 'DRCI.exists?')
+        end
+      end
+
+      # Names the old rule let through that compile: find_recipe2 reads them
+      # as a pattern, and a closed class or an escape still finds the page
+      # (the index line 25:51087, "Page 10: some chest unguent", matches
+      # /[c]hest unguent/ and /chest\sunguent/). Each reaches find_recipe2 as
+      # before (only input that crashes is refused).
+      ['some [h]ead unguent', 'some head] unguent', 'some\\ head unguent', 'some head\\sunguent', 'some ^head unguent',
+       'some_head unguent', 'some `head unguent', 'some [^x]ead unguent'].each do |name|
+        it "hands the recipe name #{name.inspect} to find_recipe2, as before" do
+          run_remedy(book_vars(name))
+          expect(commons.calls).to include(['DRCC.find_recipe2', '3', name])
+          expect(remedy_messages.grep(/cannot be looked up/)).to be_empty
+        end
+      end
+
+      it 'finds the page of 25:51087 for a closed class and an escape, as the real find_recipe2 reads them' do
+        index = log('25:51087').text
+        ['[c]hest unguent', 'chest\\sunguent', 'ch[e]st unguent'].each do |name|
+          expect(index.split('Page').find { |page| page =~ /#{name}/i }).to start_with(' 10:')
+        end
+      end
+
+      it 'still stops with the help for a recipe name holding a digit or an apostrophe, as before' do
+        ['some head unguent 2', "some head's unguent"].each do |name|
+          expect(run_remedy(book_vars(name))).to eq(:exited)
+        end
+        expect(displayed_messages.count(ArgParserModel::NO_MATCH_MESSAGE)).to eq(2)
+        expect(game.sent).to be_empty
+      end
+
+      # Names the old rule accepted that the game could still find: case,
+      # spacing and hyphens. Each reaches find_recipe2 as parse_args gives it.
+      ['Some Head Unguent', 'some  head unguent', ' some head unguent', 'some head unguent ', "some\thead unguent",
+       'some head-unguent', '-some head unguent'].each do |name|
+        it "hands the recipe name #{name.inspect} to find_recipe2, downcased, as before" do
+          run_remedy(book_vars(name))
+          expect(commons.calls).to include(['DRCC.find_recipe2', '3', name.downcase])
+        end
+      end
+    end
+
+    describe 'the flower swap (H10)' do
+      let(:inventory) { logged_tools.merge(logged_supplies, 'dried flower' => toolbag, 'crushed flower' => toolbag) }
+
+      # The swap's own check, DRCI.exists?(<flower>) with no container
+      # (Inventory's herb lookups name the crafting container).
+      #
+      # @return [Array<String>] the flowers it asked about
+      def flower_taps
+        commons.calls.filter_map { |name, item, container| item if name == 'DRCI.exists?' && container.nil? && item.end_with?(' flower') }
+      end
+
+      # @return [Array<String>] the herbs looked for in the crafting
+      #   container, in order (Inventory#get)
+      def herbs_looked_for
+        commons.calls.filter_map { |name, item, container| item if name == 'DRCI.exists?' && container == toolbag }
+      end
+
+      # The prepared flowers create_remedies.lic:37/42 passes, which were
+      # never swapped.
+      ['dried flower', 'crushed flower'].each do |herb1|
+        it "looks for herb1 #{herb1.inspect} as given, with no tap of a red or blue flower" do
+          game.script("count my #{herb1}", log('25:33679')) # analog: the reply to `count clubm in smoke bask`, 25:33677
+          run_remedy(called_with(['remedies', 2, 'some blister cream', herb1, 'nemoih', 'pewter ingot', 'mortar', 'cream']))
+          expect(herbs_looked_for.first).to eq(herb1)
+          expect(flower_taps).to be_empty
+        end
+      end
+
+      # A part of a flower name the old 'red flower'.include?(herb1) swapped,
+      # and still does: a typed red or blue names no item (DR matches a noun
+      # by its start), so the prepared flower is what makes the run work. A
+      # part of both names (flower, lower, e) takes the red flower's, as
+      # before (H10 left open).
+      {
+        'flower' => ['red flower', 'dried flower'],
+        'red' => ['red flower', 'dried flower'], 'ed flower' => ['red flower', 'dried flower'],
+        'lower' => ['red flower', 'dried flower'], 'e' => ['red flower', 'dried flower'],
+        'blue' => ['blue flower', 'crushed flower'], 'ue flower' => ['blue flower', 'crushed flower']
+      }.each do |herb1, (fresh, prepared)|
+        it "gathers #{prepared} for herb1 #{herb1.inspect}, after one tap of #{fresh}, when the character has none of it" do
+          game.script("count my #{prepared}", log('25:33679')) # analog, as above
+          run_remedy(called_with(['remedies', 2, 'some blister cream', herb1, 'nemoih', 'pewter ingot', 'mortar', 'cream']))
+          expect(flower_taps).to eq([fresh])
+          expect(herbs_looked_for.first).to eq(prepared)
+          expect(game.sent.first).to eq("count my #{prepared}")
+        end
+      end
+
+      # The review case for H10: a red-flower recipe (base-recipes "some
+      # blister cream", herb1 red flower) typed with herb1 flower, a crushed
+      # flower ahead of the dried flower in the bag. The dried flower is what
+      # goes in, as before, not the first flower in the bag.
+      it 'moves the dried flower, not a crushed flower ahead of it, for herb1 "flower" with no red flower, as before' do
+        inventory.delete('dried flower')
+        inventory['dried flower'] = toolbag
+        game.script('count my dried flower', log('25:33679')) # analog, as above
+        game.script('combine my dried flower', log('25:104590')) # analog: the reply to `combine`, 25:104589
+        run_remedy(typed('remedies 2 "some blister cream" flower nemoih "pewter ingot" mortar cream'))
+        expect(inventory.keys.index('crushed flower')).to be < inventory.keys.index('dried flower')
+        expect(game.sent.first(2)).to eq(['count my dried flower', 'combine my dried flower'])
+        expect(commons.moves).to include("dried flower: #{toolbag} -> hand")
+        expect(commons.moves.grep(/crushed flower/)).to be_empty
+      end
+
+      it 'keeps a part of a flower name as given, after one tap, when the character has the fresh flower, as before' do
+        inventory['red flower'] = toolbag
+        run_remedy(called_with(['remedies', 2, 'some blister cream', 'red', 'nemoih', 'pewter ingot', 'mortar', 'cream']))
+        expect(flower_taps).to eq(['red flower'])
+        expect(herbs_looked_for.first).to eq('red')
+      end
+
+      { 'red flower' => 'dried flower', 'blue flower' => 'crushed flower' }.each do |asked, prepared|
+        it "gathers #{asked} itself, after one tap of it, when the character has #{asked} and #{prepared}" do
+          inventory[asked] = toolbag
+          game.script("count my #{asked}", log('25:33679')) # analog, as above
+          run_remedy(called_with(['remedies', 2, 'some blister cream', asked, 'nemoih', 'pewter ingot', 'mortar', 'cream']))
+          expect(flower_taps).to eq([asked])
+          expect(herbs_looked_for.first).to eq(asked)
+          expect(game.sent.first).to eq("count my #{asked}")
+        end
+
+        it "gathers #{prepared} for a typed herb1 #{asked.split.map(&:capitalize).join(' ').inspect}, which Lich lowercases, after one tap of #{asked}" do
+          game.script("count my #{prepared}", log('25:33679')) # analog, as above
+          run_remedy(typed(%(remedies 2 "some blister cream" "#{asked.split.map(&:capitalize).join(' ')}" nemoih "pewter ingot" mortar cream)))
+          expect(flower_taps).to eq([asked])
+          expect(herbs_looked_for.first).to eq(prepared)
+          expect(game.sent.first).to eq("count my #{prepared}")
+        end
+      end
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -3483,6 +3648,18 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
     it 'gives both forms the same herb2, catalyst, container and noun definitions' do
       book, continuing = Remedy::ARG_DEFINITIONS
       expect(book.last(4)).to eq(continuing.last(4))
+    end
+
+    # Layer 14 (H11): every ASCII character, one at the
+    # start, in the middle and at the end of a recipe name, matched through
+    # the ArgParser model's form check (AP:93-128).
+    it 'accepts a recipe name exactly when the old /^[A-z\s\-]+$/i did (layer 14)' do
+      old_rule = /^[A-z\s\-]+$/i
+      names = (0..127).map(&:chr).flat_map { |char| ["#{char}some head unguent", "some head#{char}unguent", "some head unguent#{char}"] }
+      accepted = names.select do |name|
+        ArgParserModel.check_match(Remedy::BOOK_FORM, ['remedies', '3', name, 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent'], false)
+      end
+      expect(accepted).to eq(names.grep(old_rule))
     end
 
     it 'is frozen through every form and definition, as lich-5 ArgParser only reads it' do
