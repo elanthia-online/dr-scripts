@@ -1,0 +1,602 @@
+{
+  "run": "2026-10-25_94219",
+  "log": "25",
+  "from": 94433,
+  "to": 94890,
+  "recipe": "a marram salve (salve instructions): marram, large mortar, rounded pestle, marked",
+  "source": "the 2026-10-25 game log, lines 94433-94890, timestamped copies with the timestamp removed; each reply line attributed to the command it answers (FIFO plus verb signature) by a transcript exporter, ambient lines dropped",
+  "steps": [
+    {
+      "cmd": "put my marram in my large mortar",
+      "line": 94433,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your marram in your large mortar.",
+          "line": 94435
+        }
+      ]
+    },
+    {
+      "cmd": "put my marram in my smokewood basket",
+      "line": 94438,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 94441
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rounded pestle from my grass toolstrap",
+      "line": 94444,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 94446
+        }
+      ]
+    },
+    {
+      "cmd": "crush my marram with my rounded pestle",
+      "line": 94452,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 94454
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 94456
+        },
+        {
+          "text": "You need another splash of water to continue crafting an unfinished marram salve.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 94459
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 94461
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94476,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another splash of water to continue crafting an unfinished marram salve.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 94479
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 94481
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 94484,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 94486
+        }
+      ]
+    },
+    {
+      "cmd": "get my water from my botanist's toolbag",
+      "line": 94492,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some water from inside your botanist's toolbag.",
+          "line": 94494
+        }
+      ]
+    },
+    {
+      "cmd": "pour part water in my large mortar",
+      "line": 94497,
+      "user": false,
+      "responses": [
+        {
+          "text": "You toss the water into the mortar and mix it in thoroughly.",
+          "line": 94500
+        }
+      ]
+    },
+    {
+      "cmd": "put my water in my botanist's toolbag",
+      "line": 94503,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your water in your botanist's toolbag.",
+          "line": 94505
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 94511,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 94513
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my salve",
+      "line": 94516,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the marram salve and smile knowingly to yourself (6/6).",
+          "line": 94518
+        },
+        {
+          "text": "When crafting is complete this will be a type of external general wound remedy.",
+          "line": 94520
+        },
+        {
+          "text": "You do not see anything that would prevent preparing the salve further.",
+          "line": 94522
+        },
+        {
+          "text": "From the progress so far, it looks like the salve is masterfully-crafted (13/13).",
+          "line": 94524
+        },
+        {
+          "text": "The salve is a complicated piece to make (8/12).",
+          "line": 94526
+        },
+        {
+          "text": "You estimate that it is one-tenth done.",
+          "line": 94528
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 94530
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94533,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 94535
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 94537
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94553,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 94555
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 94558
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 94560
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 94573,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 94575
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 94578,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 94580
+        }
+      ]
+    },
+    {
+      "cmd": "push my salve with my turtle-shaped sieve",
+      "line": 94583,
+      "user": false,
+      "responses": [
+        {
+          "text": "You slowly filter an unfinished marram salve through your sieve and toss away the accumulated debris.",
+          "line": 94585
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 94587
+        }
+      ]
+    },
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 94595,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 94597
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 94600,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 94602
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94605,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 94607
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 94609
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94629,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 94633
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 94635
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94648,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 94650
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 94652
+        },
+        {
+          "text": "You need another catalyst material to continue crafting an unfinished marram salve.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 94655
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 94657
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94671,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another catalyst material to continue crafting an unfinished marram salve.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 94674
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 94676
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 94679,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 94681
+        }
+      ]
+    },
+    {
+      "cmd": "get my pewter ingot from my botanist's toolbag",
+      "line": 94684,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get a pewter ingot from inside your botanist's toolbag.",
+          "line": 94686
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my large mortar",
+      "line": 94690,
+      "user": false,
+      "responses": [
+        {
+          "text": "You vigorously rub the ingot alongside the mortar to scrape some shavings into the mixture.",
+          "line": 94692
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my botanist's toolbag",
+      "line": 94695,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your ingot in your botanist's toolbag.",
+          "line": 94698
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rounded pestle from my grass toolstrap",
+      "line": 94701,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 94708
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my salve",
+      "line": 94711,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the marram salve and smile knowingly to yourself (6/6).",
+          "line": 94713
+        },
+        {
+          "text": "When crafting is complete this will be a type of external general wound remedy.",
+          "line": 94715
+        },
+        {
+          "text": "The salve's composition looks accurate and ready for continued preparation.",
+          "line": 94717
+        },
+        {
+          "text": "From the progress so far, it looks like the salve is masterfully-crafted (13/13).",
+          "line": 94719
+        },
+        {
+          "text": "The salve is a complicated piece to make (8/12).",
+          "line": 94721
+        },
+        {
+          "text": "You estimate that it is half done.",
+          "line": 94723
+        },
+        {
+          "text": "When finished the salve has a potential for great potency (8/9) and exceptional efficacy (8/9).  It may also be very soluble (8/9) and extremely toxic (8/9).",
+          "line": 94725
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 94727
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94733,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 94735
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 94738
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 94740
+        }
+      ]
+    },
+    {
+      "cmd": "smell my salve",
+      "line": 94751,
+      "user": false,
+      "responses": [
+        {
+          "text": "You sniff the mortar and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to grind it with slow strokes.",
+          "line": 94753
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 94755
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94771,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 94773
+        },
+        {
+          "text": "Once finished you notice clumps of material forming on the edge of the mortar.",
+          "line": 94776
+        },
+        {
+          "text": "Roundtime: 12 sec.",
+          "line": 94778
+        }
+      ]
+    },
+    {
+      "cmd": "turn my large mortar",
+      "line": 94793,
+      "user": false,
+      "responses": [
+        {
+          "text": "You spin your mortar about while scraping the salve off the sides.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 94795
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 94797
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94817,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush an unfinished marram salve with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 94819
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 94822
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 94824
+        }
+      ]
+    },
+    {
+      "cmd": "smell my salve",
+      "line": 94843,
+      "user": false,
+      "responses": [
+        {
+          "text": "You sniff the mortar and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to grind it with slow strokes.",
+          "line": 94845
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 94847
+        },
+        {
+          "text": "Applying the final touches, you complete working on a marram salve.",
+          "line": 94849
+        }
+      ]
+    },
+    {
+      "cmd": "crush my salve with my rounded pestle",
+      "line": 94861,
+      "user": false,
+      "responses": [
+        {
+          "text": "Interesting thought really... but no.",
+          "line": 94863
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 94866,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 94868
+        }
+      ]
+    },
+    {
+      "cmd": "tie my large mortar to my grass toolstrap",
+      "line": 94871,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a diamondique large mortar carved with delicate flowers to a strap on your grass toolstrap.",
+          "line": 94873
+        }
+      ]
+    },
+    {
+      "cmd": "untie my applewood stamp from my grass toolstrap",
+      "line": 94876,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a Siksrajan applewood-handled stamp with a jadeleaf-wrapped grip from the straps of your grass toolstrap.",
+          "line": 94878
+        }
+      ]
+    },
+    {
+      "cmd": "get my salve from my large mortar",
+      "line": 94881,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get a marram salve from inside a diamondique large mortar carved with delicate flowers which is on your grass toolstrap.",
+          "line": 94883
+        }
+      ]
+    },
+    {
+      "cmd": "mark my salve with my applewood stamp",
+      "line": 94886,
+      "user": false,
+      "responses": [
+        {
+          "text": "You hold the salve steady and score the surface with the stamp.",
+          "line": 94888
+        },
+        {
+          "text": "Roundtime: 21 sec.",
+          "line": 94890
+        }
+      ]
+    }
+  ]
+}

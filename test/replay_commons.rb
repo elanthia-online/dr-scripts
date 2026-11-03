@@ -10,7 +10,9 @@
 #   and DRC.right_hand read), each holding a full item name or nil;
 # - the inventory is a list of items, each a full name and where it is (a
 #   container, the crafting belt, or 'ground').
-# Every call is recorded in {#calls} and, with a game, in its timeline.
+# Every call is recorded in {#calls} and, with a game, in its timeline. Every
+# item a helper moves is recorded in {#moves}, "<full name>: <from> -> <to>",
+# which pins where things went whatever name or hand a script asked by.
 #
 # A helper finds an item the way lich-5 matches a held item: the requested
 # name becomes DRC::Item.from_text(name).short_regex, /\b<first word>.*\b<last
@@ -67,6 +69,17 @@ class ReplayCommons
   # Where DRCI.put_away_item? with no container puts an item.
   STOWED = 'stowed'
 
+  # The place a {#moves} entry gives for the character's hands.
+  HAND = 'hand'
+
+  # Where DRCT.order_item takes an ordered item from, in {#moves}.
+  SHOP = 'shop'
+
+  # Where {#hold} takes an item from and {#release} sends it, in {#moves}:
+  # the game handed it over or took it (a product taken out of a vessel, an
+  # herb put into one).
+  GAME = 'game'
+
   # get_crafting_item's line for a missing item (480bdee3 common-crafting.rb:465).
   MISSING_MESSAGE = 'DRCC: You seem to be missing: %s'
 
@@ -85,6 +98,11 @@ class ReplayCommons
 
   # @return [Array<String>] the bold lines the modelled helpers printed
   attr_reader :messages
+
+  # @return [Array<String>] each item a modelled helper moved, in order, as
+  #   "<full name>: <from> -> <to>" ({HAND}, {GROUND}, {SHOP}, {STOWED}, a
+  #   container or the belt's name)
+  attr_reader :moves
 
   # @return [Symbol] the modelled lich-5 release
   attr_reader :lich5
@@ -127,6 +145,7 @@ class ReplayCommons
     @orders = orders
     @calls = []
     @messages = []
+    @moves = []
   end
 
   # Routes the modelled helpers through `allow`, for the running example.
@@ -155,23 +174,31 @@ class ReplayCommons
   end
 
   # Puts an item in a free hand, as a scenario's starting state or a game
-  # reply's `after:` hook.
+  # reply's `after:` hook. Recorded in {#moves} as coming from {GAME}.
   #
   # @param name [String] the full item name
   # @return [Symbol, nil] the hand (:right or :left), or nil when both are full
   def hold(name)
     hand = free_hand
-    put_in_hand(hand, name) if hand
+    return nil unless hand
+
+    put_in_hand(hand, name)
+    move(name, GAME, HAND)
     hand
   end
 
-  # Empties the hand holding an item, without putting it anywhere.
+  # Empties the hand holding an item, without putting it anywhere (the game
+  # took it). Recorded in {#moves} as going to {GAME}.
   #
   # @param name [String] a name that finds the held item
   # @return [String, nil] the full name released, or nil when not held
   def release(name)
     hand = hand_holding(name)
-    hand && take_from_hand(hand)
+    return nil unless hand
+
+    full_name = take_from_hand(hand)
+    move(full_name, HAND, GAME)
+    full_name
   end
 
   # @param name [String] a name that finds an owned item
@@ -186,15 +213,17 @@ class ReplayCommons
 
   # Model of DRCC.get_crafting_item: puts the item in hand.
   #
-  # Already held: success. Found in the inventory (in +bag+ only, when
-  # +bag_items+ lists the name, as the real `get my <name> from my <bag>`):
-  # moved to a free hand. Missing, or no hand free: a failure, answered as
-  # {#lich5} dictates (see the class comment).
+  # When +bag_items+ lists the name the real helper sends `get my <name>
+  # from my <bag>` (480bdee3 common-crafting.rb:455-456): a matching item in
+  # +bag+ goes to a free hand, even with another already held (a second
+  # stack of an herb). Otherwise an item already held is a success, and an
+  # item found anywhere goes to a free hand. Missing, or no hand free: a
+  # failure, answered as {#lich5} dictates (see the class comment).
   #
-  # @note Unverified: asking for an item already in hand changes nothing here.
-  #   In game, `get my <herb>` with a stack in hand may pick up a second stack
-  #   (remedy.lic:214 mentions "You are already holding that." instead); a
-  #   scenario that needs the second stack adds it with {#hold}.
+  # @note Unverified: a plain `get my <name>` with one already in hand changes
+  #   nothing here. In game it may pick up a second one (remedy.lic:214
+  #   mentions "You are already holding that." instead); a scenario that
+  #   needs the second one adds it with {#hold}.
   # @note With :v5_21 and :v5_22 a full pair of hands returns nil and prints
   #   nothing: those releases have no free-hand pattern (v5.22.0
   #   common-crafting.rb:339), so the real reply would also cost a bput
@@ -208,9 +237,9 @@ class ReplayCommons
   # @raise [SystemExit] on a final failure without skip_exit (:current, :v5_22)
   def get_crafting_item(name, bag, bag_items, belt, skip_exit = false)
     record('DRCC.get_crafting_item', name, bag, bag_items, belt, skip_exit)
-    return got if hand_holding(name)
-
-    item = find_item(name, (bag if bag_items&.include?(name)))
+    from_bag = bag if bag_items&.include?(name)
+    item = find_item(name, from_bag)
+    return got if hand_holding(name) && (from_bag.nil? || item.nil?)
     return crafting_failure(format(MISSING_MESSAGE, name), skip_exit) unless item
 
     hand = free_hand
@@ -220,8 +249,9 @@ class ReplayCommons
       return nil
     end
 
-    @inventory.delete(item)
+    take_from_inventory(item)
     put_in_hand(hand, item.name)
+    move(item.name, item.location, HAND)
     got
   end
 
@@ -240,7 +270,7 @@ class ReplayCommons
     return nil unless name
 
     hand = hand_holding(name)
-    @inventory << Item.new(take_from_hand(hand), belt_holds?(belt, name) ? belt['name'] : bag) if hand
+    stow_from_hand(hand, belt_holds?(belt, name) ? belt['name'] : bag) if hand
     true
   end
 
@@ -277,8 +307,9 @@ class ReplayCommons
     hand = free_hand
     return false unless found && hand
 
-    @inventory.delete(found)
+    take_from_inventory(found)
     put_in_hand(hand, found.name)
+    move(found.name, found.location, HAND)
     true
   end
 
@@ -296,7 +327,7 @@ class ReplayCommons
     hand = hand_holding(item)
     return false unless hand
 
-    @inventory << Item.new(take_from_hand(hand), container || STOWED)
+    stow_from_hand(hand, container || STOWED)
     true
   end
 
@@ -310,7 +341,7 @@ class ReplayCommons
     hand = hand_holding(item)
     return false unless hand
 
-    @inventory << Item.new(take_from_hand(hand), GROUND)
+    stow_from_hand(hand, GROUND)
     true
   end
 
@@ -346,7 +377,10 @@ class ReplayCommons
   # @return [nil]
   def order_item(room, number)
     record('DRCT.order_item', room, number)
-    hold(@orders[number]) if @orders.key?(number)
+    if @orders.key?(number) && (hand = free_hand)
+      put_in_hand(hand, @orders[number])
+      move(@orders[number], SHOP, HAND)
+    end
     nil
   end
 
@@ -458,6 +492,36 @@ class ReplayCommons
     return :left if $left_hand.nil?
 
     nil
+  end
+
+  # Removes one owned item from the inventory. By identity: two stacks of
+  # one herb in one bag are equal Items, and only the one taken may go.
+  #
+  # @param item [Item]
+  # @return [void]
+  def take_from_inventory(item)
+    @inventory.delete_at(@inventory.index { |owned| owned.equal?(item) })
+  end
+
+  # Takes the item out of a hand and puts it somewhere, recording the move.
+  #
+  # @param hand [Symbol] :right or :left
+  # @param location [String] where it goes
+  # @return [void]
+  def stow_from_hand(hand, location)
+    name = take_from_hand(hand)
+    @inventory << Item.new(name, location)
+    move(name, HAND, location)
+  end
+
+  # Records an item moved by a modelled helper.
+  #
+  # @param name [String] the item's full name
+  # @param from [String] where it was
+  # @param to [String] where it went
+  # @return [void]
+  def move(name, from, to)
+    @moves << "#{name}: #{from} -> #{to}"
   end
 
   # @param hand [Symbol] :right or :left
