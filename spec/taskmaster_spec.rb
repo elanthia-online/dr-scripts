@@ -3061,7 +3061,7 @@ RSpec.describe TaskMaster do
         allow(DRCI).to receive(:exists?).and_return(true)
         expect(DRC).not_to receive(:wait_for_script_to_complete)
 
-        tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting')
+        expect { tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting') }.not_to raise_error
       end
 
       it 'gets a missing tool from the society clerk' do
@@ -3070,7 +3070,7 @@ RSpec.describe TaskMaster do
         allow(DRCI).to receive(:exists?) { |tool| on_hand.include?(tool) }
         expect(DRC).to receive(:wait_for_script_to_complete).with('clerk-tools', %w[enchanting get]) { on_hand << 'augmenting loop' }
 
-        tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting')
+        expect { tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting') }.not_to raise_error
       end
 
       it 'stops, naming the tools still missing, before anything is bought' do
@@ -3158,7 +3158,7 @@ RSpec.describe TaskMaster do
         allow(DRCT).to receive(:buy_item)
         allow(DRCI).to receive(:in_hands?).with('wand').and_return(false, false, true)
 
-        dorhum.buy_wands(1)
+        expect { dorhum.buy_wands(1) }.not_to raise_error
 
         expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil)
       end
