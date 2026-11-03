@@ -1735,45 +1735,84 @@ RSpec.describe Remedy do
         end
       end
 
-      # flipped by layer 10 (an empty vessel is stowed by name)
-      it 'CURRENT (H07): after two failed counts, puts away "water" instead of the vessel' do
+      # layer 10 (H07): an empty vessel is stowed by name
+      it 'H07: after two failed counts (25:13762), puts the flask away by name before crafting and adds plain water' do
         game.script('count water in my glass flask', log('25:13762'))
         game.script('count water in my glass flask', log('25:13762'))
-        script_short_unguent
-        run_remedy(short_unguent)
+        script_short_unguent(put_lines: [log('26:10749'), log('25:50210')])
+        expect(run_remedy(short_unguent)).to eq(:exited)
         stows = commons.calls.select { |name, *| name == 'DRCC.stow_crafting_item' }.map { |call| call[1] }
-        expect(stows.first).to eq('water')
-        # The flask stays in hand until create_item puts away whatever the hands hold.
+        expect(stows.first).to eq('glass flask')
         flask_stowed = commons.calls.index { |name, item, *| name == 'DRCC.stow_crafting_item' && item == 'glass flask' }
-        expect(flask_stowed).to be > commons.calls.index(['DRCA.crafting_magic_routine'])
+        expect(flask_stowed).to be < commons.calls.index(['DRCA.crafting_magic_routine'])
+        expect(commons.location_of('glass flask')).to eq(toolbag)
+        expect(game.sent).to include('put water in my large mortar')
+        expect(game.sent).not_to include('pour glass flask in my large mortar')
       end
 
-      # flipped by layer 10 (no `get my water from my water`)
-      it 'CURRENT (H18): with no vessel, the refused-pour fallback asks for water from "water" (remedy.lic:315)' do
+      # layer 10 (H18): no `get my water from my water`
+      it 'H18: with no vessel, the refused-put fallback gets water from the crafting bag (26:10824), never from "water"' do
         settings[:water_container] = nil
         game.script('put water in my large mortar', code('You cannot find a way to add that as an ingredient.', from: 'R:313'))
         script_short_unguent(put_lines: [log('26:10749'), log('25:50210')])
-        run_remedy(short_unguent)
-        expect(commons.calls).to include(['DRCI.get_item?', 'water', 'water'])
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(commons.calls).not_to include(['DRCI.get_item?', 'water', 'water'])
+        water_gets = commons.calls.each_index.select { |at| commons.calls[at][0, 2] == ['DRCC.get_crafting_item', 'water'] }
+        expect(water_gets.size).to eq(2) # the add's own get, then the fallback's
+        expect(commons.calls[water_gets.last]).to eq(['DRCC.get_crafting_item', 'water', toolbag, logged_settings[:crafting_items_in_container],
+                                                      logged_settings[:alchemy_belt], false])
+        expect(commons.calls[water_gets.last + 1]).to eq(['DRCI.put_away_item?', 'water', 'large mortar'])
       end
 
-      # flipped by layer 10 ("Pour what?" refills, then stops)
-      it 'CURRENT (D03): pours from an empty alcohol vessel forever: "Pour what?" (26:22405) counts as added' do
+      # layer 10 (D03): "Pour what?" refills, then stops
+      it 'D03: an empty alcohol vessel answered "Pour what?" (26:22405) is rubbed and refilled once, then remedy stops with no loop' do
         settings.merge!(alcohol_container: 'moonshine jug', water_container: nil)
         inventory['moonshine jug'] = toolbag
         inventory['crushed belradi'] = toolbag
+        allow(DRC).to receive(:beep)
         # The jug's count gets no reply (no vessel count is in the logs), so
         # remedy pours from it (H06, kept by A4). "Pour what?" is the reply
         # to `pour part alcohol in my heavy cauldron` with the jug in hand
         # (26:22403, analog); while the alcohol is owed the game refuses each
         # mix with the cue alone (26:22342, the reply to a mix at 26:22337).
+        # The rub's reply is the jug's (26:22410); the refill does not help.
         refuse_mixes = ->(replay) { replay.override('mix my heavy cauldron with my mixing stick', log('26:22342'), log('26:22344'), times: nil) }
         script_one_stack('belradi', vessel: 'heavy cauldron', put_lines: [log('26:5898')])
         game.script('mix my heavy cauldron with my mixing stick', log('26:5913'), log('26:5915'), log('26:5918'), log('26:5920'))
         game.override('pour moonshine jug in my heavy cauldron', log('26:22405'), times: nil, after: refuse_mixes)
-        expect(run_remedy(typed('remedies 6 "a general elixir" belradi na "pewter ingot" bowl elixir'))).to eq(:looped)
-        expect(game.sent.count('pour moonshine jug in my heavy cauldron')).to be > 3
-        expect(game.sent).not_to include('rub my moonshine jug')
+        game.script('rub my moonshine jug', log('26:22410'))
+        expect(run_remedy(typed('remedies 6 "a general elixir" belradi na "pewter ingot" bowl elixir'))).to eq(:exited)
+        expect(game.sent.count('pour moonshine jug in my heavy cauldron')).to eq(2)
+        expect(game.sent.last(6)).to eq(['pour moonshine jug in my heavy cauldron', 'rub my moonshine jug', "get alcohol from #{toolbag}",
+                                         'put alcohol in my moonshine jug', 'count alcohol in my moonshine jug',
+                                         'pour moonshine jug in my heavy cauldron'])
+        expect(remedy_messages).to eq(["Remedy: the moonshine jug has no alcohol to pour, even after rubbing it and filling it from the #{toolbag}. Stopping."])
+        expect(commons.location_of('moonshine jug')).to eq('left').or eq('right')
+        expect(exit_hooks).not_to be_empty
+        exit_hooks.each(&:call)
+        expect(remedy_flags).to be_empty
+      end
+
+      it 'D03: goes on crafting when the refill gives the jug alcohol to pour (26:7687)' do
+        settings.merge!(alcohol_container: 'moonshine jug', water_container: nil)
+        inventory['moonshine jug'] = toolbag
+        inventory['crushed belradi'] = toolbag
+        # As the example above, but the second pour is taken: "You toss the
+        # alcohol into the cauldron ..." (26:7687, the reply to
+        # `pour part alcohol in my heavy cauldron` at 26:7686, analog).
+        script_one_stack('belradi', vessel: 'heavy cauldron', put_lines: [log('26:5898')])
+        game.script('mix my heavy cauldron with my mixing stick', log('26:5913'), log('26:5915'), log('26:5918'), log('26:5920'))
+        game.script('pour moonshine jug in my heavy cauldron', log('26:22405'))
+        game.script('rub my moonshine jug', log('26:22410'))
+        game.script('pour moonshine jug in my heavy cauldron', log('26:7687'))
+        game.fallback('mix my heavy cauldron with my mixing stick', log('26:6742'))
+        script_product('get my elixir from my heavy cauldron', log('26:6794'), 'belradi elixir')
+        allow(DRC).to receive(:beep)
+        expect(run_remedy(typed('remedies 6 "a general elixir" belradi na "pewter ingot" bowl elixir'))).to eq(:exited)
+        expect(game.sent.count('pour moonshine jug in my heavy cauldron')).to eq(2)
+        expect(game.sent.count('rub my moonshine jug')).to eq(1)
+        expect(remedy_messages).to be_empty
+        expect(commons.location_of('belradi elixir')).to eq('left').or eq('right')
       end
     end
 
@@ -2637,6 +2676,20 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       game.script('put my pewter ingot in my heavy cauldron', log('26:39194'))
       expect(DRC.bput('put my pewter ingot in my heavy cauldron', *Remedy::Patterns::INGREDIENT_PUT_REPLIES)).to eq(Remedy::Patterns::NOT_FOUND_REPLY)
       expect(game.diagnostics).to be_empty
+    end
+
+    it 'LIQUID_ADD_REPLIES: returns POUR_WHAT_REPLY for a pour the game answers "Pour what?" (26:22403 -> 26:22405, analog)' do
+      game.install(self)
+      game.script('pour moonshine jug in my heavy cauldron', log('26:22405'))
+      expect(DRC.bput('pour moonshine jug in my heavy cauldron', *Remedy::Patterns::LIQUID_ADD_REPLIES)).to eq(Remedy::Patterns::POUR_WHAT_REPLY)
+      expect(game.diagnostics).to be_empty
+    end
+
+    it "LIQUID_ADD_REPLIES: ignores \"Pour what?\" (26:22405) in another player's speech, waiting for the real reply" do
+      game.install(self)
+      spoken = ReplayGame.code(%(<preset id='speech'>Mallory says</preset>, "#{log('26:22405').text}"), from: '26:22405 as player speech')
+      game.script('pour moonshine jug in my heavy cauldron', spoken, log('26:7687'))
+      expect(DRC.bput('pour moonshine jug in my heavy cauldron', *Remedy::Patterns::LIQUID_ADD_REPLIES)).to eq('You toss')
     end
 
     it "INGREDIENT_PUT_REPLIES: ignores \"What were you referring to?\" (26:39194) in another player's speech" do
@@ -3657,12 +3710,20 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
                                'put alcohol in my moonshine jug', 'count alcohol in my moonshine jug'])
     end
 
-    # flipped by layer 10 (an empty vessel is stowed by name)
-    it 'CURRENT (H07): puts plain water when both counts find nothing (25:13762), and stows "water", leaving the flask in hand' do
+    # layer 10 (H07): an empty vessel is stowed by name
+    it 'H07: puts plain water when both counts find nothing (25:13762), and stows the flask by name' do
       2.times { game.script('count water in my glass flask', log('25:13762')) }
       water = Remedy::Liquid.find('water', 'glass flask', inventory)
       expect(water.to_h).to eq(kind: 'water', source: 'water', verb: 'put')
-      expect(calls.last).to eq([:stow, 'water', toolbag, toolstrap])
+      expect(water).to be_plain
+      expect(calls).to eq([[:get, 'glass flask', toolbag, bag_items, toolstrap], [:stow, 'glass flask', toolbag, toolstrap]])
+    end
+
+    it 'stows the vessel by name after a refill the second count finds, and pours from it' do
+      game.script('count alcohol in my moonshine jug', log('25:13762'))
+      alcohol = Remedy::Liquid.find('alcohol', 'moonshine jug', inventory)
+      expect(alcohol.to_h).to eq(kind: 'alcohol', source: 'moonshine jug', verb: 'pour')
+      expect(calls.last).to eq([:stow, 'moonshine jug', toolbag, toolstrap])
     end
   end
 
@@ -3696,6 +3757,67 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       allow(DRCI).to receive(:get_item?) { |*args| calls << [:get_item?, *args] && false }
       flask.add('large mortar', inventory)
       expect(calls[2]).to eq([:get, 'water', toolbag, bag_items, toolstrap])
+    end
+
+    # layer 10 (H18): no `get my water from my water`
+    it 'H18: gets refused plain water straight from the crafting container, never from "water"' do
+      plain = Remedy::Liquid.new(kind: 'water', source: 'water', verb: 'put')
+      game.script('put water in my large mortar', refusal)
+      plain.add('large mortar', inventory)
+      expect(calls).to eq([[:stow, nil, toolbag, toolstrap], [:get, 'water', toolbag, bag_items, toolstrap],
+                           [:put_away_item?, 'water', 'large mortar']])
+      expect(calls).not_to include([:get_item?, 'water', 'water'])
+    end
+
+    describe 'from a vessel with nothing to pour ("Pour what?", 26:22405)' do
+      let(:jug) { Remedy::Liquid.new(kind: 'alcohol', source: 'moonshine jug', verb: 'pour') }
+      let(:pour) { 'pour moonshine jug in my heavy cauldron' }
+      let(:refill) { ['rub my moonshine jug', "get alcohol from #{toolbag}", 'put alcohol in my moonshine jug', 'count alcohol in my moonshine jug'] }
+      let(:messages) { [] }
+
+      before do
+        allow(DRC).to receive(:beep)
+        allow(DRC).to receive(:message) { |text| messages << text }
+        game.script(pour, log('26:22405'))
+        game.script('rub my moonshine jug', log('26:22410'))
+      end
+
+      it 'rubs and refills the vessel once, then pours again and goes on when the game takes it (26:7687)' do
+        game.script(pour, log('26:7687'))
+        jug.add('heavy cauldron', inventory)
+        expect(game.sent).to eq([pour, *refill, pour])
+        expect(messages).to be_empty
+      end
+
+      it 'stops, with the vessel named, when the second pour gets "Pour what?" too' do
+        game.script(pour, log('26:22405'))
+        expect { jug.add('heavy cauldron', inventory) }.to raise_error(SystemExit)
+        expect(game.sent).to eq([pour, *refill, pour])
+        expect(messages).to eq(["Remedy: the moonshine jug has no alcohol to pour, even after rubbing it and filling it from the #{toolbag}. Stopping."])
+        expect(DRC).to have_received(:beep).once
+      end
+
+      it 'stops without pouring again when the count after the refill finds nothing (25:13762)' do
+        game.script('count alcohol in my moonshine jug', log('25:13762'))
+        expect { jug.add('heavy cauldron', inventory) }.to raise_error(SystemExit)
+        expect(game.sent).to eq([pour, *refill])
+        expect(messages.size).to eq(1)
+      end
+
+      it 'recovers by name when the second pour is refused, as after a first refusal' do
+        game.script(pour, refusal)
+        jug.add('heavy cauldron', inventory)
+        expect(calls).to eq([[:stow, nil, toolbag, toolstrap], [:get_item?, 'alcohol', 'moonshine jug'], [:put_away_item?, 'alcohol', 'heavy cauldron']])
+        expect(messages).to be_empty
+      end
+    end
+
+    it 'never refills the plain liquid, which is put, not poured, even on a "Pour what?" reply' do
+      plain = Remedy::Liquid.new(kind: 'alcohol', source: 'alcohol', verb: 'put')
+      game.script('put alcohol in my large mortar', log('26:22405')) # analog: the jug pour's reply (26:22403)
+      plain.add('large mortar', inventory)
+      expect(game.sent).to eq(['put alcohol in my large mortar'])
+      expect(calls).to be_empty
     end
   end
 

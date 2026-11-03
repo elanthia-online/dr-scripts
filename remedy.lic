@@ -198,14 +198,30 @@ class Remedy
                      /^[^"]*?You need a more suitable type of herb/i,
                      /^[^"]*?Roundtime:/i].freeze
 
+    # "Pour what?" (26:22405): the game finds nothing to pour. It answered
+    # `pour part alcohol in my heavy cauldron` (26:22403) with an empty
+    # moonshine jug in hand (got at 26:22400), the jug rubbed only after it
+    # (26:22410). The pattern has no "?": bput hands back the matched text,
+    # {POUR_WHAT_REPLY}.
+    #
+    # @note The reply to remedy's own `pour <vessel> in my <vessel>` from an
+    #   empty vessel is in no log; 26:22405 is the closest real line.
+    POUR_WHAT = [/^Pour what/i].freeze
+
+    # The text bput returns when {POUR_WHAT} matches the real line
+    # (26:22405).
+    POUR_WHAT_REPLY = 'Pour what'.freeze
+
     # Replies to adding water or alcohol: "You toss the alcohol into the
-    # mortar and mix it in thoroughly." (25:10905) or Roundtime.
+    # mortar and mix it in thoroughly." (25:10905), Roundtime, or
+    # {POUR_WHAT} when the vessel poured from is empty (26:22405).
     #
     # @note code-derived (unverified): "You cannot find a way to add that as
     #   an ingredient" appears in no log.
     LIQUID_ADD_REPLIES = [/^[^"]*?Roundtime/i,
                           /^[^"]*?You toss/i,
-                          /^[^"]*?You cannot find a way to add that as an ingredient/i].freeze
+                          /^[^"]*?You cannot find a way to add that as an ingredient/i,
+                          *POUR_WHAT].freeze
 
     # "What were you referring to?": the game finds no such item. It
     # answered `get my pewter ingot from my botanist's toolbag` (26:39160 ->
@@ -836,68 +852,64 @@ class Remedy
     POUR = 'pour'
 
     # The end of the reply to the add that means the vessel refused the
-    # liquid (the last of {Patterns::LIQUID_ADD_REPLIES}).
+    # liquid (the third of {Patterns::LIQUID_ADD_REPLIES}).
     #
     # @note code-derived (unverified): no log shows this reply.
     REFUSED = 'You cannot find a way to add that as an ingredient'
 
-    # Finds where the liquid comes from, then puts the source away.
+    # Finds where the liquid comes from, then puts the vessel away.
     #
     # With no vessel setting, sends nothing and answers the plain liquid.
     # With one, gets the vessel and counts the liquid in it; when the count
     # finds none, rubs the vessel, gets the liquid from the crafting
-    # container, puts it in the vessel and counts again. Any reply but "I
-    # could not find what you were referring to." (25:13762), a timeout
-    # included, means the vessel holds the liquid (as it always
-    # has).
+    # container, puts it in the vessel and counts again ({#refill?}). Any
+    # reply but "I could not find what you were referring to." (25:13762),
+    # a timeout included, means the vessel holds the liquid (as it
+    # always has). Either way the vessel is put away by its name,
+    # so an empty one does not stay in hand.
     #
     # @param kind [String] 'water' or 'alcohol'
     # @param vessel [String, nil] water_container or alcohol_container
-    # @param inventory [Inventory] gets the vessel and stows the source
-    # @return [Liquid]
+    # @param inventory [Inventory] gets and stows the vessel
+    # @return [Liquid] pouring from the vessel, or the plain liquid when
+    #   both counts find nothing
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
-    # @note When both counts find nothing, the plain liquid's name is
-    #   stowed, not the vessel, which stays in hand (CURRENT H07, flipped by
-    #   layer 10).
-    # @note code-derived (unverified): no log shows a liquid vessel, a rub,
-    #   or `get <liquid> from <bag>` / `put <liquid> in my <vessel>` (both
-    #   without "my" before the bag or the liquid).
+    # @note code-derived (unverified): no log shows remedy count a liquid
+    #   vessel. The rub's reply is real ("Brushing your fingers along a
+    #   moonshine jug with five painted X's, a brief flash of light emanates
+    #   from inside.", 26:22410, after the jug poured nothing at 26:22405);
+    #   `get <liquid> from <bag>` and `put <liquid> in my <vessel>` (both
+    #   without "my" before the bag or the liquid) are in no log.
     def self.find(kind, vessel, inventory)
       plain = new(kind: kind, source: kind, verb: PUT)
       return plain unless vessel
 
+      poured = new(kind: kind, source: vessel, verb: POUR)
       inventory.get(vessel)
-      found = holds?(kind, vessel) || refill?(kind, vessel, inventory)
-      liquid = found ? new(kind: kind, source: vessel, verb: POUR) : plain
-      inventory.stow(liquid.source)
-      liquid
+      found = poured.holds? || poured.refill?(inventory)
+      inventory.stow(vessel)
+      found ? poured : plain
     end
 
     # Whether the vessel's count finds the liquid.
     #
-    # @param kind [String] the liquid
-    # @param vessel [String] the vessel
     # @return [Boolean] false only on "I could not find what you were
     #   referring to." (25:13762)
-    def self.holds?(kind, vessel)
-      DRC.bput("count #{kind} in my #{vessel}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
+    def holds?
+      DRC.bput("count #{kind} in my #{source}", *Patterns::VESSEL_COUNT_REPLIES) != Patterns::NO_SUCH_ITEM_REPLY
     end
-    private_class_method :holds?
 
-    # Rubs the vessel (some make their liquid when rubbed), fills it from
-    # the crafting container, then counts again.
+    # Rubs the vessel (some make their liquid when rubbed: 26:22410), fills
+    # it from the crafting container, then counts again ({#holds?}).
     #
-    # @param kind [String] the liquid
-    # @param vessel [String] the vessel
     # @param inventory [Inventory] names the crafting container
     # @return [Boolean] whether the second count finds the liquid
-    def self.refill?(kind, vessel, inventory)
-      fput("rub my #{vessel}")
+    def refill?(inventory)
+      fput("rub my #{source}")
       fput("get #{kind} from #{inventory.bag}") # in case the liquid is in the bag and the vessel cannot make it
-      fput("put #{kind} in my #{vessel}")
-      holds?(kind, vessel)
+      fput("put #{kind} in my #{source}")
+      holds?
     end
-    private_class_method :refill?
 
     # Whether the source is the plain liquid, which remedy buys when none is
     # on hand.
@@ -915,22 +927,91 @@ class Remedy
     end
 
     # Adds the liquid, already in hand, to the vessel: `put water in my
-    # <vessel>` or `pour <vessel> in my <vessel>`. When the vessel refuses
-    # it, gets the liquid out of its source and puts it in by name.
+    # <vessel>` or `pour <vessel> in my <vessel>`.
+    #
+    # - "Pour what?" (26:22405): the vessel poured from is empty. Remedy
+    #   refills it once ({#refill?}) and pours again; when the refill finds
+    #   nothing, or the second pour gets "Pour what?" too, remedy stops
+    #   instead of pouring nothing on every request for the liquid
+    #   (D03).
+    # - The crafting vessel refuses the liquid ({REFUSED}): remedy gets the
+    #   liquid out of the vessel poured from (the plain liquid from the
+    #   crafting container) and puts it in by name.
+    #
+    # @param container [String] the crafting vessel
+    # @param inventory [Inventory] stows the hand, gets the plain liquid and
+    #   names the crafting container
+    # @return [void]
+    # @raise [SystemExit] when the vessel poured from stays empty, or when
+    #   DRCC.get_crafting_item stops the script
+    def add(container, inventory)
+      reply = add_to(container)
+      reply = refill_and_add(container, inventory) if empty_vessel?(reply)
+      recover(container, inventory) if reply.end_with?(REFUSED)
+    end
+
+    private
+
+    # Sends the add.
+    #
+    # @param container [String] the crafting vessel
+    # @return [String] bput's matched reply, '' on a timeout
+    def add_to(container)
+      DRC.bput("#{verb} #{source} in my #{container}", *Patterns::LIQUID_ADD_REPLIES)
+    end
+
+    # Whether the reply says the vessel poured from had nothing to pour.
+    #
+    # @param reply [String] the reply to {#add_to}
+    # @return [Boolean] false for the plain liquid, which is not poured
+    def empty_vessel?(reply)
+      !plain? && reply.start_with?(Patterns::POUR_WHAT_REPLY)
+    end
+
+    # Refills the empty vessel poured from and pours once more.
+    #
+    # @param container [String] the crafting vessel
+    # @param inventory [Inventory] names the crafting container
+    # @return [String] the reply to the second pour
+    # @raise [SystemExit] when the refill finds no liquid, or the second
+    #   pour gets "Pour what?" (26:22405) again
+    # @note code-derived (unverified): no log shows a refill while
+    #   crafting; with both hands full the get from the crafting container
+    #   may find no free hand, which leaves the rub to make the liquid.
+    def refill_and_add(container, inventory)
+      stop_empty(inventory) unless refill?(inventory)
+      reply = add_to(container)
+      stop_empty(inventory) if empty_vessel?(reply)
+      reply
+    end
+
+    # Stops remedy: the vessel poured from has nothing to pour.
+    #
+    # @param inventory [Inventory] names the crafting container
+    # @return [void] never returns
+    # @raise [SystemExit] always ({Remedy.stop})
+    def stop_empty(inventory)
+      Remedy.stop("the #{source} has no #{kind} to pour, even after rubbing it and filling it from the #{inventory.bag}.")
+    end
+
+    # Puts the liquid in by name after the crafting vessel refused the add.
+    # The plain liquid comes straight from the crafting container, with the
+    # get every plain add starts with (`get my water from my botanist's
+    # toolbag` -> "You get some water from inside your botanist's toolbag.",
+    # 26:10824 -> 26:10825), not by asking for water from "water" (`get my
+    # water from my water`, H18).
     #
     # @param container [String] the crafting vessel
     # @param inventory [Inventory] stows the hand and gets the plain liquid
     # @return [void]
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
     # @note code-derived (unverified): the refusal and the recovery after it
-    #   appear in no log. With no vessel the recovery asks for the liquid
-    #   from "water" (`get my water from my water`, CURRENT H18, flipped by
-    #   layer 10).
-    def add(container, inventory)
-      return unless DRC.bput("#{verb} #{source} in my #{container}", *Patterns::LIQUID_ADD_REPLIES).end_with?(REFUSED)
-
+    #   appear in no log. When the crafting vessel refuses the plain liquid
+    #   again, it is put back "in" the plain liquid (`put my water in my
+    #   water`), as before.
+    def recover(container, inventory)
       inventory.stow(DRC.left_hand)
-      inventory.get(kind) unless DRCI.get_item?(kind, source)
+      inventory.get(kind) if plain? || !DRCI.get_item?(kind, source)
       return if DRCI.put_away_item?(kind, container)
 
       waitrt?
