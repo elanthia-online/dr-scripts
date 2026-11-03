@@ -726,7 +726,8 @@ class TaskMaster
   # which is its base item's: a spongestone is made from "a foraged rock" and
   # is still a rock; a virga wand from "a finished stone, bone or wood wand or
   # rod" and is still the wand it was made from; a glow shell from "a
-  # foraged shell" (taken to stay a shell like the others; not yet seen). :base is the method
+  # foraged shell" (taken to stay a shell like the others; not yet seen
+  # finished). :base is the method
   # that gets the base items. Any other item pauses the script.
   DORHUM_ITEMS = {
     'spongestone' => { noun: 'rock', base: :forage_rocks },
@@ -740,8 +741,9 @@ class TaskMaster
   # survey the area and realize that any foraging efforts would be futile."
   DEFAULT_ROCK_ROOM = 793
   # Where Dorhum's glow shell tasks forage shells unless task_shell_room says
-  # otherwise. 793 is a first try, not a known shell room: the map tags only
-  # Cape of Storms, Path (712, 713) for shells.
+  # otherwise: FORAGE SHELL finds shells at The Crossing, Town Green
+  # Southeast, as FORAGE ROCK finds rocks there (tested in game, 2026-11-03),
+  # though the map tags only Cape of Storms, Path (712, 713) for shells.
   DEFAULT_SHELL_ROOM = 793
   # The wand on the steel crate in the Crossing enchanting supplies, 125
   # Kronars. TAP calls it "a redwood wand", but the game knows it only as a
