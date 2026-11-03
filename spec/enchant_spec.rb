@@ -4,11 +4,6 @@ require 'ostruct'
 
 require_relative 'spec_helper'
 
-# Minimal stub modules for game interaction
-class EquipmentManager
-  def empty_hands; end
-end
-
 load_lic_class('enchant.lic', 'Enchant')
 
 # The game's own lines (from real logs where we have them) set each flag;
@@ -25,6 +20,199 @@ ENCHANT_SPEC_FLAG_LINES = {
   'imbue-failed'     => ['The streams collide, rending the space before you and disrupting the enchantment.'],
   'imbue-backlash'   => ['Suddenly the streams slip through your grasp and cascade violently against each other!']
 }.freeze
+
+# Game lines copied from two Dorhum task runs (2026-11, spongestone and virga
+# wand). Keys name the moment in the run; values are the lines in order,
+# blank lines kept, as the game sent them after the command.
+ENCHANT_LOG = {
+  get_rock: ['You get a rock from inside your duffel bag.'],
+  get_wand: ['You get a redwood wand from inside your duffel bag.'],
+  put_glance: ['You glance down at the smoking brazier and reconsider if you wish to begin enchanting.',
+               '',
+               "[Putting an item on the brazier begins the enchanting process.  This process can enhance the item, or cause serious damage to it and the enchanter.  Put your item onto the brazier again in the next 30 seconds, to proceed.  You've been warned!]"],
+  put_rock: ["With a flick, you pop open the brazier's lid.  Tiny motes briefly encircle the almond-shaped flame now burning within the brazier.  Carefully you place your rock atop the brazier.",
+             '',
+             'Once finished you sense an imbue spell will be required to continue enchanting.',
+             'Roundtime: 13 sec.',
+             '',
+             "You need another mana fount to continue crafting a rock.  WAVE a functional mana fount at the a rock to align the item with the fount's focusing properties.  Then continue the process with the casting of an imbue spell."],
+  put_wand: ["With a flick, you pop open the brazier's lid.  A tall and strong flame leaps into being within the brazier.  Carefully you place your wand atop the brazier.",
+             '',
+             'Once finished you sense an imbue spell will be required to continue enchanting.',
+             'Roundtime: 13 sec.',
+             '',
+             "You need another mana fount to continue crafting a redwood wand.  WAVE a functional mana fount at the a redwood wand to align the item with the fount's focusing properties.  Then continue the process with the casting of an imbue spell."],
+  wave_fount_rock: ['You slowly wave the fount over and around the rock.  Motes of light rise up from the brazier and encircle your hand.  Satisfied the bonding is complete, you place the fount atop the rock.'],
+  wave_fount_wand: ['You slowly wave the fount over and around the wand.  Motes of light rise up from the brazier and encircle your hand.  Satisfied the bonding is complete, you place the fount atop the wand.'],
+  imbue_wants_congruence: ['The spell is channeled through the fount hanging above, and down into the rock.  Not a single stream avoids your cautious analysis as you conduct them into arrangements.',
+                           'Roundtime: 15 sec.',
+                           '',
+                           'You need another congruence primary sigil to continue the enchanting process.  You believe you can STUDY the sigil and then TRACE it on the unfinished item to prepare it for continued scribing.',
+                           '',
+                           '[Sigils can be added to the artifact to continue crafting.]'],
+  imbue_wants_induction: ['The spell is channeled through the fount hanging above, and down into the wand.  After focusing the streams into ordered groups you then direct them into exacting positions.',
+                          'Roundtime: 7 sec.',
+                          '',
+                          'You need another induction primary sigil to continue the enchanting process.  You believe you can STUDY the sigil and then TRACE it on the unfinished item to prepare it for continued scribing.',
+                          '',
+                          '[Sigils can be added to the artifact to continue crafting.]'],
+  study_sigil: ['You study the sigil-scroll and commit the design to memory.', 'Roundtime: 13 sec.'],
+  trace_rock: ['Recalling the intricacies of the sigil, you trace its form over the rock with your finger and prepare to begin scribing it more permanently with a burin.', 'Roundtime: 1 sec.'],
+  trace_wand: ['Recalling the intricacies of the sigil, you trace its form over the wand with your finger and prepare to begin scribing it more permanently with a burin.', 'Roundtime: 1 sec.'],
+  scribe_rock: ['You lean in towards your rock and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  In and out you weave a decisive tapestry of patterns across the rock with your burin.',
+                'Roundtime: 17 sec.'],
+  scribe_wand: ['You lean in towards your wand and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  Through effortless control of the burin you capture the pattern in razor-sharp detail.',
+                'Roundtime: 17 sec.'],
+  scribe_rock_merging: ["You lean in towards your rock and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  With skilled flourishes of the burin you capture the sigil pattern's precision and complexity.",
+                        '',
+                        "You notice many of the scribed sigils are slowly merging back into the rock's surface.",
+                        'Roundtime: 10 sec.'],
+  scribe_rock_wants_decay: ['You lean in towards your rock and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  Through effortless control of the burin you capture the pattern in razor-sharp detail.',
+                            'Roundtime: 19 sec.',
+                            '',
+                            'You need another decay secondary sigil to continue the enchanting process.  You believe you can STUDY the sigil and then TRACE it on the unfinished item to prepare it for continued scribing.',
+                            '',
+                            '[Sigils can be added to the artifact to continue crafting.]'],
+  scribe_rock_blurs: ['You lean in towards your rock and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  In and out you weave a decisive tapestry of patterns across the rock with your burin.',
+                      '',
+                      'The traced sigil pattern blurs before your eyes, making it difficult to follow.',
+                      'Roundtime: 14 sec.'],
+  scribe_wand_struggles: ["You lean in towards your wand and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  With skilled flourishes of the burin you capture the sigil pattern's precision and complexity.",
+                          "The wand's material struggles to accept the sigil scribing.",
+                          'Roundtime: 17 sec.'],
+  scribe_wand_wants_imbue: ['You lean in towards your wand and begin scribing marks along it with a fey-bone burin wrapped within a lattice of steelsilk knotwork.  With skilled flourishes of the burin you capture the sigil pattern\'s precision and complexity.',
+                            'Once finished you sense an imbue spell will be required to continue enchanting.',
+                            'Roundtime: 13 sec.'],
+  push_rock: ['You wave the loop near the rock to visualize and adjust the disrupted mana streams.  A tall and strong flame leaps into being within the loop.', 'Roundtime: 19 sec.'],
+  focus_wand: ["You adjust the brazier's intensity and peer closely at the wand.  With precise movements you adjust the brightness and trace out your next steps.", 'Roundtime: 19 sec.'],
+  meditate_wants_imbue: ['You lean in close to the fount, close your eyes and calmly meditate.  The fount rings with mellifluous tones that clarify each design in your thoughts.',
+                         '',
+                         'Once finished you sense an imbue spell will be required to continue enchanting.',
+                         'Roundtime: 12 sec.'],
+  imbue_completes_rock: ['The spell is channeled through the fount hanging above, and down into the rock.  Not a single stream avoids your cautious analysis as you conduct them into arrangements.',
+                         'Roundtime: 17 sec.',
+                         "The spell's energies settle upon the rock and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more.",
+                         'You collect the fount and place it at your feet.',
+                         'You collect the rock and place it at your feet.'],
+  # The fount's last use: only the rock comes back (log 1, the eighth and last item).
+  imbue_completes_rock_fount_used_up: ['The spell is channeled through the fount hanging above, and down into the rock.  With expert precision you rapidly direct each stream into place around the rock.',
+                                       'Roundtime: 16 sec.',
+                                       "The spell's energies settle upon the rock and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more.",
+                                       'You collect the rock and place it at your feet.'],
+  imbue_completes_wand: ['The spell is channeled through the fount hanging above, and down into the wand.  Not a single stream avoids your cautious analysis as you conduct them into arrangements.',
+                         'Roundtime: 10 sec.',
+                         "The spell's energies settle upon the wand and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more.",
+                         'You collect the fount and place it at your feet.',
+                         'You collect the wand and place it at your feet.']
+}.freeze
+
+# A scripted game for whole-run specs. The transcript is every command the
+# script sends (with the game's reply lines) and every commons call it makes,
+# in order. Anything sent out of order fails the example, so a passing run
+# pins the exact sequence. Hands follow the transcript's gives:/takes:, and
+# every reply line goes through the registered Flags matchers the way Lich's
+# parser feeds each downstream line.
+class EnchantSpecGame
+  Step = Struct.new(:kind, :name, :args, :lines, :returns, :gives, :takes, keyword_init: true)
+
+  attr_reader :messages, :feet
+
+  def initialize
+    @steps = []
+    @messages = []
+    @feet = []
+    $right_hand = nil
+    $left_hand = nil
+  end
+
+  # A game command and the lines it gets back.
+  def command(text, lines = [], gives: nil, takes: nil)
+    @steps << Step.new(kind: :command, name: text, lines: lines, gives: gives, takes: takes)
+  end
+
+  # A commons call, with what it returns and what it does to the hands.
+  # `gives: :from_feet` picks the named item up off the floor.
+  def call(name, *args, returns: true, gives: nil, takes: nil, lines: [])
+    @steps << Step.new(kind: :call, name: name, args: args, returns: returns, gives: gives, takes: takes, lines: lines)
+  end
+
+  def bput(text, patterns)
+    step = next_step(:command, text, nil)
+    apply_hands(step)
+    deliver(step.lines)
+    regexes = patterns.flatten.map { |p| p.is_a?(Regexp) ? p : /#{p}/i }
+    step.lines.each do |line|
+      regexes.each { |re| (m = line.match(re)) && (return m.to_a.first) }
+    end
+    ''
+  end
+
+  def commons(name, *args)
+    step = next_step(:call, name, args)
+    apply_hands(step)
+    deliver(step.lines)
+    step.returns
+  end
+
+  def remaining
+    @steps.map { |s| s.kind == :command ? s.name : "#{s.name}(#{s.args.map(&:inspect).join(', ')})" }
+  end
+
+  def hands
+    [$right_hand, $left_hand]
+  end
+
+  private
+
+  def next_step(kind, name, args)
+    step = @steps.shift
+    sent = kind == :command ? name : "#{name}(#{args.map(&:inspect).join(', ')})"
+    wanted = step && (step.kind == :command ? step.name : "#{step.name}(#{step.args.map(&:inspect).join(', ')})")
+    raise "unexpected #{sent.inspect}; the transcript wanted #{wanted.inspect}" unless step && step.kind == kind && step.name == name && (args.nil? || step.args == args)
+
+    step
+  end
+
+  def apply_hands(step)
+    Array(step.takes).each { |item| take(item) }
+    @feet.concat(feet_from(step.lines))
+    give = step.gives
+    return unless give
+
+    if give.is_a?(Hash) && give[:from_feet]
+      @feet.delete_at(@feet.index(give[:from_feet]) || @feet.size)
+      give = give[:from_feet]
+    end
+    $right_hand.nil? ? ($right_hand = give) : ($left_hand = give)
+  end
+
+  def take(item)
+    if $right_hand&.include?(item) || item.include?($right_hand.to_s) && $right_hand
+      $right_hand = nil
+    elsif $left_hand&.include?(item) || item.include?($left_hand.to_s) && $left_hand
+      $left_hand = nil
+    else
+      raise "takes #{item.inspect}, but the hands hold #{hands.inspect}"
+    end
+  end
+
+  def feet_from(lines)
+    lines.filter_map { |line| line[/^You collect the (\w+) and place it at your feet/, 1] }
+  end
+
+  def deliver(lines)
+    lines.each do |line|
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+  end
+end
 
 RSpec.describe Enchant do
   before(:each) do
@@ -773,6 +961,449 @@ RSpec.describe Enchant do
         result = model_bput([line, 'On the brass brazier you see a fount.'], [Enchant::BRAZIER_CONTENTS_PATTERN, Enchant::BRAZIER_EMPTY])
         expect(result).to start_with('On the brass brazier you see'), line
       end
+    end
+  end
+end
+
+# Whole runs, from the command line to the product in hand. These pin what
+# enchant does today for its callers (craft.lic and workorders.lic send
+# `chapter recipe noun`, then bundle the product held in hand) and for players
+# (`enchant chapter recipe noun [base_noun]`, `enchant resume noun`). Every
+# command and commons call is in the transcript, in order, with the game's own
+# lines from real runs.
+RSpec.describe Enchant, 'whole runs' do
+  let(:game) { EnchantSpecGame.new }
+  let(:bag) { 'duffel bag' }
+
+  before(:each) do
+    $test_settings = OpenStruct.new(
+      crafting_container: bag,
+      crafting_items_in_container: [],
+      enchanting_belt: nil,
+      enchanting_tools: ['augmenting loop', 'brazier', 'burin', 'imbuement rod', 'fount'],
+      mark_crafted_goods: false,
+      cube_armor_piece: nil,
+      worn_trashcan: 'bucket',
+      worn_trashcan_verb: 'drop',
+      master_crafting_book: nil,
+      waggle_sets: { 'imbue' => {} }
+    )
+    DRRoom.room_objs = []
+    allow(DRC).to receive(:bput) { |text, *patterns| game.bput(text, patterns) }
+    allow(DRC).to receive(:wait_for_script_to_complete) { |*args| game.commons('DRC.wait_for_script_to_complete', *args) }
+    allow_any_instance_of(EquipmentManager).to receive(:empty_hands) { game.commons('EquipmentManager#empty_hands') }
+    %i[get_crafting_item stow_crafting_item find_recipe2].each do |name|
+      allow(DRCC).to receive(name) { |*args| game.commons("DRCC.#{name}", *args) }
+    end
+    %i[get_item? dispose_trash].each do |name|
+      allow(DRCI).to receive(name) { |*args| game.commons("DRCI.#{name}", *args) }
+    end
+    allow(DRCA).to receive(:cast_spell?) { |*args| game.commons('DRCA.cast_spell?', *args) }
+    allow(DRCI).to receive(:exists?) { |item| [*game.hands, 'fount'].compact.any? { |held| held.include?(item) } }
+    allow(Lich::Messaging).to receive(:msg) { |_style, text| game.messages << text }
+  end
+
+  # The script's entry point, as Lich runs it.
+  def run_script(**args)
+    $parsed_args = OpenStruct.new(args)
+    Enchant.new
+  end
+
+  def expect_transcript_done
+    expect(game.remaining).to eq([])
+  end
+
+  # The start every book run shares: empty hands, buffs, the recipe from the
+  # artificing book, then the brazier.
+  def book_start(chapter:, recipe:)
+    game.call('EquipmentManager#empty_hands')
+    game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+    game.call('DRCC.get_crafting_item', 'artificing book', bag, [], nil, gives: 'artificing book')
+    game.call('DRCC.find_recipe2', chapter, recipe)
+    game.call('DRCC.stow_crafting_item', 'book', bag, nil, takes: 'book')
+    game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: 'brazier')
+  end
+
+  # The end every run that finishes shares: the brazier and whatever else is
+  # held go back to the bag, the fount comes off the floor, and the product is
+  # taken up, bagged and taken out again so it is in hand for the caller.
+  def tidy_up(item, held: %w[brazier burin], fount: true)
+    held.each { |tool| game.call('DRCC.stow_crafting_item', tool, bag, nil, takes: tool) }
+    if fount
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: { from_feet: 'fount' })
+      game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
+    end
+    game.call('DRCI.get_item?', item, gives: { from_feet: item })
+    game.call('DRCC.stow_crafting_item', item, bag, nil, takes: item)
+    game.call('DRCI.get_item?', item, gives: item)
+  end
+
+  # The rod imbue that finishes the item, then the burin enchant fetches
+  # before it notices the item is done.
+  def final_rod_imbue(item, lines, holding_burin: true)
+    game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin') if holding_burin
+    game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+    game.command("wave imbuement rod at #{item} on my brazier", lines)
+    game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+    game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+  end
+
+  context 'a spongestone from the artificing book (log 1, the first item)' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      # The congruence sigil the imbue asked for.
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'congruence sigil', gives: 'congruence sigil')
+      game.command('study my congruence sigil', ENCHANT_LOG[:study_sigil], takes: 'congruence sigil')
+      game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_merging])
+      # The merging sigils want the loop.
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCC.get_crafting_item', 'augmenting loop', bag, [], nil, gives: 'augmenting loop')
+      game.command('push rock on my brazier with my augmenting loop', ENCHANT_LOG[:push_rock])
+      game.call('DRCC.stow_crafting_item', 'augmenting loop', bag, nil, takes: 'augmenting loop')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_wants_decay])
+      # The decay sigil.
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'decay sigil', gives: 'decay sigil')
+      game.command('study my decay sigil', ENCHANT_LOG[:study_sigil], takes: 'decay sigil')
+      game.command('trace rock on my brazier', ENCHANT_LOG[:trace_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      4.times { game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock]) }
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_blurs])
+      game.command('meditate fount on my brazier', ENCHANT_LOG[:meditate_wants_imbue])
+      # The imbue the meditation asked for finishes the rock.
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      # Done: put the tools away, take the fount off the floor, and end
+      # holding the rock.
+      game.call('DRCC.stow_crafting_item', 'brazier', bag, nil, takes: 'brazier')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: { from_feet: 'fount' })
+      game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
+      game.call('DRCI.get_item?', 'rock', gives: { from_feet: 'rock' })
+      game.call('DRCC.stow_crafting_item', 'rock', bag, nil, takes: 'rock')
+      game.call('DRCI.get_item?', 'rock', gives: 'rock')
+    end
+
+    it 'sends every command in order and ends holding the rock' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+      expect(game.feet).to eq([])
+    end
+
+    it 'says the enchanting is complete' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect(game.messages).to include('Enchant: Enchanting complete!')
+    end
+
+    it 'removes every flag it added' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect(Flags.matchers.keys & Enchant::FLAG_NAMES).to eq([])
+    end
+  end
+
+  context 'a virga wand from the artificing book (log 2, the third item)' do
+    before(:each) do
+      book_start(chapter: '2', recipe: 'virga wand')
+      game.command("get my wand from my #{bag}", ENCHANT_LOG[:get_wand], gives: 'redwood wand')
+      game.command('put my wand on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my wand on my brazier', ENCHANT_LOG[:put_wand], takes: 'wand')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at wand on my brazier', ENCHANT_LOG[:wave_fount_wand], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at wand on my brazier', ENCHANT_LOG[:imbue_wants_induction])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'induction sigil', gives: 'induction sigil')
+      game.command('study my induction sigil', ENCHANT_LOG[:study_sigil], takes: 'induction sigil')
+      game.command('trace wand on my brazier', ENCHANT_LOG[:trace_wand])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe wand on my brazier with my burin', ENCHANT_LOG[:scribe_wand_struggles])
+      # The struggling material wants a focus; the burin stays in hand.
+      game.command('focus wand on my brazier', ENCHANT_LOG[:focus_wand])
+      game.command('scribe wand on my brazier with my burin', ENCHANT_LOG[:scribe_wand])
+      game.command('scribe wand on my brazier with my burin', ENCHANT_LOG[:scribe_wand_wants_imbue])
+      final_rod_imbue('wand', ENCHANT_LOG[:imbue_completes_wand])
+      tidy_up('wand')
+    end
+
+    it 'sends every command in order and ends holding the wand' do
+      run_script(chapter: '2', recipe: 'virga wand', noun: 'wand')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['wand', nil])
+    end
+  end
+
+  context "at a public enchanter's brazier" do
+    before(:each) do
+      DRRoom.room_objs = ["an enchanter's brazier"]
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'artificing book', bag, [], nil, gives: 'artificing book')
+      game.call('DRCC.find_recipe2', '1', 'spongestone')
+      game.call('DRCC.stow_crafting_item', 'book', bag, nil, takes: 'book')
+      # No brazier of our own to fetch: the room's is used by name, without "my".
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command("put my rock on enchanter's brazier", ENCHANT_LOG[:put_glance])
+      game.command("put my rock on enchanter's brazier", ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command("wave my fount at rock on enchanter's brazier", ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      # A short enchant that finishes on its first imbue (log lines, shorter run).
+      game.command("wave imbuement rod at rock on enchanter's brazier", ENCHANT_LOG[:imbue_completes_rock])
+      # The rod went to the right hand, so the left-hand check leaves it held.
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('rock', held: ['imbuement rod', 'burin'])
+    end
+
+    it 'works on the public brazier and ends holding the rock' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'with an Imbue spell in waggle_sets and an armor cube' do
+    let(:imbue_spell) { { 'abbrev' => 'imbue', 'mana' => 5 } }
+
+    before(:each) do
+      $test_settings.waggle_sets = { 'imbue' => { 'Imbue' => imbue_spell } }
+      $test_settings.cube_armor_piece = 'armguard'
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      # Code-derived reply: no cube touch in the logs.
+      game.command('touch my armguard', ['Warm vapor swirls around your head in a misty halo of thoughts.'])
+      game.call('DRCA.cast_spell?', imbue_spell.merge('cast' => 'cast rock on my brazier'), $test_settings,
+                lines: ENCHANT_LOG[:imbue_completes_rock])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('rock')
+    end
+
+    it 'touches the cube, casts Imbue at the item and ends holding the rock' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'from a master crafting book, with a base item that becomes the product' do
+    before(:each) do
+      $test_settings.master_crafting_book = 'tome'
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.find_recipe2', '4', 'radiant loop', 'tome', 'artificing')
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: 'brazier')
+      # The base item is fetched and placed by its own noun ...
+      game.command("get my pole from my #{bag}", ['You get a short pole from inside your duffel bag.'], gives: 'pole')
+      game.command('put my pole on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my pole on my brazier', ENCHANT_LOG[:put_rock], takes: 'pole')
+      # ... and worked by the product's noun from then on.
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at loop on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at loop on my brazier',
+                   ENCHANT_LOG[:imbue_completes_rock].map { |line| line.sub('collect the rock', 'collect the loop') })
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('loop')
+    end
+
+    it 'reads the master book and ends holding the product' do
+      run_script(chapter: '4', recipe: 'radiant loop', noun: 'loop', base_noun: 'pole')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['loop', nil])
+    end
+  end
+
+  context 'a fount from a small sphere, as workorders asks for it' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'fragile mana fount')
+      game.command("get my small sphere from my #{bag}", ['You get a pine small sphere from inside your duffel bag.'], gives: 'small sphere')
+      game.command('put my small sphere on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my small sphere on my brazier', ENCHANT_LOG[:put_rock], takes: 'small sphere')
+      # The product is a fount, so no fount is waved at it.
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at fount on my brazier',
+                   ENCHANT_LOG[:imbue_completes_rock].reject { |line| line.include?('collect the fount') }
+                                                     .map { |line| line.sub('collect the rock', 'collect the fount') })
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('fount', fount: false)
+    end
+
+    it 'skips the fount steps and ends holding the new fount' do
+      run_script(chapter: '1', recipe: 'fragile mana fount', noun: 'small sphere')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['fount', nil])
+    end
+  end
+
+  context 'resuming an item that is ready for more scribing' do
+    before(:each) do
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil, gives: 'brazier')
+      # Code-derived reply: no analyze in the logs.
+      game.command('analyze rock on my brazier', ['You do not see anything that would prevent scribing additional sigils.'])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.command('scribe rock on my brazier with my burin', ENCHANT_LOG[:scribe_rock_blurs])
+      game.command('meditate fount on my brazier', ENCHANT_LOG[:meditate_wants_imbue])
+      final_rod_imbue('rock', ENCHANT_LOG[:imbue_completes_rock])
+      tidy_up('rock')
+    end
+
+    it 'goes on scribing to the end and ends holding the rock' do
+      run_script(resume: 'resume', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'with mark_crafted_goods set' do
+    before(:each) do
+      $test_settings.mark_crafted_goods = true
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('rock')
+      game.call('DRCC.get_crafting_item', 'stamp', bag, [], nil, gives: 'stamp')
+      # Code-derived reply: no stamping in the logs.
+      game.command('mark my rock with my stamp', ['You carefully hammer the stamp into the rock.'])
+      game.call('DRCC.stow_crafting_item', 'stamp', bag, nil, takes: 'stamp')
+    end
+
+    it 'stamps the product and ends holding it' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'when the base totem is already enchanted' do
+    before(:each) do
+      book_start(chapter: '3', recipe: 'flash trinket')
+      game.command("get my totem from my #{bag}", ['You get a bone totem from inside your duffel bag.'], gives: 'totem')
+      # Code-derived reply. The totem is thrown away and the recipe started over.
+      game.command('put my totem on my brazier', ['The totem is already enchanted.'])
+      game.call('DRCI.dispose_trash', 'totem', 'bucket', 'drop', takes: 'totem')
+      game.call('DRCC.get_crafting_item', 'artificing book', bag, [], nil, gives: 'artificing book')
+      game.call('DRCC.find_recipe2', '3', 'flash trinket')
+      game.call('DRCC.stow_crafting_item', 'book', bag, nil, takes: 'book')
+      game.call('DRCC.get_crafting_item', 'brazier', bag, [], nil)
+      game.command("get my totem from my #{bag}", ['You get a bone totem from inside your duffel bag.'], gives: 'totem')
+      game.command('put my totem on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my totem on my brazier', ENCHANT_LOG[:put_rock], takes: 'totem')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at totem on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at totem on my brazier',
+                   ENCHANT_LOG[:imbue_completes_rock].map { |line| line.sub('collect the rock', 'collect the totem') })
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('totem')
+    end
+
+    it 'throws it away, starts again with the next totem and ends holding the product' do
+      run_script(chapter: '3', recipe: 'flash trinket', noun: 'totem')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['totem', nil])
+    end
+  end
+
+  context 'when the brazier is too dangerous to work at' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+      # Code-derived replies: no brazier cleaning in the logs.
+      game.command("get my rock from my #{bag}", ['That is far too dangerous to do with the brazier in this state.'])
+      game.command('clean my brazier', ['You prepare to clean off the brazier.'])
+      game.command('clean my brazier', ['You clean the brazier, and a massive ball of flame jets forward and singes everything nearby!'])
+      game.command('look on my brazier', ['There is nothing on there.'])
+      game.call('DRCI.get_item?', 'rock', bag, gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_completes_rock])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      tidy_up('rock')
+    end
+
+    it 'cleans the brazier, gets the rock again and goes on' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['rock', nil])
+    end
+  end
+
+  context 'when the imbue backlashes' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      # Code-derived reply: no backlash in the logs.
+      game.command('wave imbuement rod at rock on my brazier',
+                   ['Suddenly the streams slip through your grasp and cascade violently against each other!', 'Roundtime: 10 sec.'])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'brazier', bag, nil, takes: 'brazier')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.call('DRCC.stow_crafting_item', 'fount', bag, nil, takes: 'fount')
+      game.call('DRCI.get_item?', 'rock', returns: false)
+      game.call('DRC.wait_for_script_to_complete', 'safe-room', ['force'])
+    end
+
+    it 'puts the tools away and goes to safe-room' do
+      run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
+
+      expect_transcript_done
+      expect(game.messages).to include('Enchant: Imbue backlash occurred! Cleaning up and heading to safe room.')
     end
   end
 end
