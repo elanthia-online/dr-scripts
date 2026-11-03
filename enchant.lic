@@ -461,9 +461,16 @@ class Enchant
     brazier_step("meditate fount on #{@brazier_ref}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
   end
 
+  # The hand shows only the burin's last adjective ("precise burin" for a
+  # "fine precise burin"), so a burin setting with another adjective is
+  # found by its noun.
+  def burin_in_hand?
+    DRCI.in_hands?(@burin) || DRCI.in_hands?('burin')
+  end
+
   def handle_push_flag
     Flags.reset('enchant-push')
-    stow_tool(@burin) if DRCI.in_hands?(@burin)
+    stow_tool(@burin) if burin_in_hand?
     get_tool(@loop)
     brazier_step("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     stow_tool(@loop)
@@ -472,7 +479,7 @@ class Enchant
 
   def handle_imbue_flag
     Flags.reset('enchant-imbue')
-    stow_tool(@burin) if DRCI.in_hands?(@burin)
+    stow_tool(@burin) if burin_in_hand?
     imbue
     get_tool(@burin)
   end

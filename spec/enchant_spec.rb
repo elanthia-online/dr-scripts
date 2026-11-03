@@ -614,6 +614,34 @@ RSpec.describe Enchant do
   # trace_sigil
   # ---------------------------------------------------------------------------
 
+  describe 'putting the burin away' do
+    # The hand names a "fine precise burin" by its last adjective only.
+    def hold_precise_burin
+      allow(DRCI).to receive(:in_hands?) { |name| ['precise burin', 'burin'].include?(name) }
+    end
+
+    it 'stows a burin set up as "fine burin" before the imbue, though the hand says "precise burin"' do
+      instance = build_instance(burin: 'fine burin')
+      hold_precise_burin
+      allow(instance).to receive(:imbue)
+      allow(instance).to receive(:get_tool)
+      expect(instance).to receive(:stow_tool).with('fine burin')
+
+      instance.send(:handle_imbue_flag)
+    end
+
+    it 'stows it before the loop push too' do
+      instance = build_instance(burin: 'fine burin')
+      hold_precise_burin
+      allow(instance).to receive(:get_tool)
+      allow(instance).to receive(:brazier_step)
+      expect(instance).to receive(:stow_tool).with('fine burin').ordered
+      expect(instance).to receive(:stow_tool).with('aug loop').ordered
+
+      instance.send(:handle_push_flag)
+    end
+  end
+
   describe '#trace_sigil' do
     it 'gets sigil, studies it, and traces on item' do
       instance = build_instance
