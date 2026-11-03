@@ -79,6 +79,18 @@ class Enchant
   # Focus/meditate/push patterns
   FOCUS_IMBUE_NEEDED = /Once finished you sense an imbue spell will be required to continue enchanting/.freeze
 
+  # Replies to a scribe, focus, meditate or push that mean it cannot work:
+  # the tool is not in hand (log 1, "You must be holding the burin to do
+  # that."), or SCRIBE found no brazier to work at (log 2, the brazier still
+  # in the bag). Whole lines, which bput returns and the stop message quotes.
+  STEP_FAILURES = [/^You must be holding the .* to do that.*/, /^You jot down some notes.*/].freeze
+  # Steps in a row with no reply bput knows before the script stops.
+  MAX_UNANSWERED_STEPS = 3
+  # Imbue casts or wand waves before the script stops. DRCA.cast_spell?
+  # fails at once on a prep that did not take (low mana, say), so a few
+  # tries ride out a passing failure; the old code retried without limit.
+  MAX_IMBUE_TRIES = 5
+
   # Stamp patterns
   STAMP_PATTERNS = [
     'carefully hammer the stamp',
@@ -339,15 +351,18 @@ class Enchant
 
   def imbue
     spell = imbue_spell
-    if spell
-      spell['cast'] = "cast #{@item} on #{@brazier_ref}"
-      until DRCA.cast_spell?(spell, @settings)
-        Lich::Messaging.msg("bold", "Enchant: Casting Imbue failed. Retrying.")
-      end
-    else
-      wave_imbue_wand
-    end
+    spell ? cast_imbue(spell) : wave_imbue_wand
     Flags.reset('enchant-imbue')
+  end
+
+  def cast_imbue(spell)
+    spell['cast'] = "cast #{@item} on #{@brazier_ref}"
+    tries = 0
+    until DRCA.cast_spell?(spell, @settings)
+      tries += 1
+      stop_enchant("Imbue failed #{MAX_IMBUE_TRIES} times; the #{@item} is still on the brazier.") if tries >= MAX_IMBUE_TRIES
+      Lich::Messaging.msg("bold", "Enchant: Casting Imbue failed. Retrying.")
+    end
   end
 
   # The Imbue entry of the imbue waggle set, or nil to use the imbue wand.
@@ -357,12 +372,15 @@ class Enchant
   end
 
   def wave_imbue_wand
+    tries = 0
     while true
       get_tool(@imbue_wand) unless held_in_left_hand?(@imbue_wand)
 
       result = DRC.bput("wave #{@imbue_wand} at #{@item} on #{@brazier_ref}", IMBUE_WAND_SUCCESS, IMBUE_WAND_SIGIL_NEEDED, IMBUE_WAND_FAILED)
       break unless IMBUE_WAND_FAILED.match?(result)
 
+      tries += 1
+      stop_enchant("The #{@imbue_wand} failed #{MAX_IMBUE_TRIES} times; the #{@item} is still on the brazier.") if tries >= MAX_IMBUE_TRIES
       Lich::Messaging.msg("bold", "Enchant: Imbue wand failed. Retrying.")
     end
 
@@ -414,8 +432,7 @@ class Enchant
         send(step)
         return if FINAL_STEPS.include?(step)
       else
-        DRC.bput("scribe #{@item} on #{@brazier_ref} with my #{@burin}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
-        waitrt?
+        brazier_step("scribe #{@item} on #{@brazier_ref} with my #{@burin}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
       end
     end
   end
@@ -436,22 +453,19 @@ class Enchant
 
   def handle_focus_flag
     Flags.reset('enchant-focus')
-    DRC.bput("focus #{@item} on #{@brazier_ref}", FOCUS_IMBUE_NEEDED, SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
-    waitrt?
+    brazier_step("focus #{@item} on #{@brazier_ref}", FOCUS_IMBUE_NEEDED, SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
   end
 
   def handle_meditate_flag
     Flags.reset('enchant-meditate')
-    DRC.bput("meditate fount on #{@brazier_ref}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
-    waitrt?
+    brazier_step("meditate fount on #{@brazier_ref}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
   end
 
   def handle_push_flag
     Flags.reset('enchant-push')
     stow_tool(@burin) if held_in_left_hand?('burin')
     get_tool(@loop)
-    DRC.bput("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
-    waitrt?
+    brazier_step("push #{@item} on #{@brazier_ref} with my #{@loop}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
     stow_tool(@loop)
     get_tool(@burin)
   end
@@ -508,6 +522,19 @@ class Enchant
   end
 
   private
+
+  # Sends one scribe, focus, meditate or push and waits out its roundtime.
+  # Stops on a reply that means the step cannot work, and after
+  # MAX_UNANSWERED_STEPS steps in a row that got no reply bput knows, since
+  # the loop would otherwise send them for good.
+  def brazier_step(command, *patterns)
+    result = DRC.bput(command, *patterns, *STEP_FAILURES)
+    stop_enchant("#{result} The #{@item} is still on the brazier.") if STEP_FAILURES.any? { |failure| failure.match?(result) }
+    @unanswered_steps = result.empty? ? @unanswered_steps.to_i + 1 : 0
+    stop_enchant("No reply to #{command} #{MAX_UNANSWERED_STEPS} times in a row; the #{@item} is still on the brazier.") if @unanswered_steps >= MAX_UNANSWERED_STEPS
+    waitrt?
+    result
+  end
 
   # Stops the script with a bold reason. Whatever is on the brazier stays
   # there, so a resume can carry on once the reason is dealt with.
