@@ -628,7 +628,7 @@ class Enchant
     sigil_type = Flags['enchant-sigil'][:type].delete(' ')
     Flags.reset('enchant-sigil')
     sigil_type = 'congruence' if sigil_type == ''
-    stow_tool(@burin)
+    stow_tool(@burin) if DRCI.in_hands?(@burin)
     trace_sigil(sigil_type)
     get_tool(@burin)
   end
@@ -776,11 +776,13 @@ class Enchant
   end
 
   # The burin for the scribing an imbue leads to; not fetched when the
-  # imbue finished the item or backlashed, as only putting it away follows.
+  # imbue finished the item or backlashed, nor when it asked for a sigil
+  # first (the burin would only go straight back while the sigil is
+  # studied and traced).
   #
   # @return [void]
   def get_burin_unless_done
-    get_tool(@burin) unless Flags['enchant-complete'] || Flags['imbue-backlash']
+    get_tool(@burin) unless Flags['enchant-complete'] || Flags['imbue-backlash'] || Flags['enchant-sigil']
   end
 
   # Studies the instructions until the game is ready to craft and puts them
