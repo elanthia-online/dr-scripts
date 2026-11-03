@@ -18,6 +18,7 @@
   task_copper_target: 110000
   task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
   task_rock_room: 793 # room where Dorhum's spongestone tasks forage rocks (none can be had on Andreshlew)
+  task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -28,7 +29,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.12'
+  VERSION = '2026.11.03.13'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -99,6 +100,7 @@ class TaskMaster
     @before_scripts = Array(@settings.task_before_scripts)
     @task_hometown = @settings.task_hometown
     @rock_room = @settings.task_rock_room || DEFAULT_ROCK_ROOM
+    @shell_room = @settings.task_shell_room || DEFAULT_SHELL_ROOM
 
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
@@ -723,11 +725,13 @@ class TaskMaster
   # 2026 runs show them. :noun is the noun the finished item is handed in by,
   # which is its base item's: a spongestone is made from "a foraged rock" and
   # is still a rock; a virga wand from "a finished stone, bone or wood wand or
-  # rod" and is still the wand it was made from. :base is the method
+  # rod" and is still the wand it was made from; a glow shell from "a
+  # foraged shell" (taken to stay a shell like the others; not yet seen). :base is the method
   # that gets the base items. Any other item pauses the script.
   DORHUM_ITEMS = {
     'spongestone' => { noun: 'rock', base: :forage_rocks },
-    'wand'        => { noun: 'wand', base: :buy_wands }
+    'wand'        => { noun: 'wand', base: :buy_wands },
+    'shell'       => { noun: 'shell', base: :forage_shells }
   }.freeze
 
   # Where Dorhum's spongestone tasks forage rocks unless task_rock_room says
@@ -735,6 +739,10 @@ class TaskMaster
   # rock a time ("You manage to find a rock."). On Andreshlew FORAGE gets "You
   # survey the area and realize that any foraging efforts would be futile."
   DEFAULT_ROCK_ROOM = 793
+  # Where Dorhum's glow shell tasks forage shells unless task_shell_room says
+  # otherwise. 793 is a first try, not a known shell room: the map tags only
+  # Cape of Storms, Path (712, 713) for shells.
+  DEFAULT_SHELL_ROOM = 793
   # The wand on the steel crate in the Crossing enchanting supplies, 125
   # Kronars. TAP calls it "a redwood wand", but the game knows it only as a
   # wand: "buy redwood wand" gets "You can't order anything here." and
@@ -1087,23 +1095,44 @@ class TaskMaster
     end
   end
 
-  # Forages a rock for each spongestone still to make (less any carried) at
-  # task_rock_room, into the crafting bag.
+  # A rock for each spongestone still to make, foraged at task_rock_room.
   #
   # @param count [Integer] items to make
   # @return [void]
   # @raise [SystemExit] when a forage finds nothing
   def forage_rocks(count)
-    needed = count - DRCI.count_items_in_container('rock', @bag)
+    forage_base('rock', @rock_room, 'task_rock_room', count)
+  end
+
+  # A shell for each glow shell still to make, foraged at task_shell_room.
+  #
+  # @param count [Integer] items to make
+  # @return [void]
+  # @raise [SystemExit] when a forage finds nothing
+  def forage_shells(count)
+    forage_base('shell', @shell_room, 'task_shell_room', count)
+  end
+
+  # Forages one base item per item still to make (less any carried) in the
+  # room, into the crafting bag.
+  #
+  # @param noun [String] what FORAGE looks for, e.g. 'rock'
+  # @param room [Integer, String] where to forage
+  # @param setting [String] the setting that names the room, for the stop message
+  # @param count [Integer] items to make
+  # @return [void]
+  # @raise [SystemExit] when a forage finds nothing
+  def forage_base(noun, room, setting, count)
+    needed = count - DRCI.count_items_in_container(noun, @bag)
     return unless needed.positive?
 
-    DRCT.walk_to(@rock_room)
+    DRCT.walk_to(room)
     needed.times do
-      unless DRC.forage?('rock')
-        DRC.message("Could not forage a rock at room #{@rock_room}, stopping.")
+      unless DRC.forage?(noun)
+        DRC.message("Could not forage a #{noun} at room #{room}, stopping. Set #{setting} to a room where #{noun}s can be found.")
         exit
       end
-      DRCC.stow_crafting_item('rock', @bag, nil)
+      DRCC.stow_crafting_item(noun, @bag, nil)
     end
   end
 

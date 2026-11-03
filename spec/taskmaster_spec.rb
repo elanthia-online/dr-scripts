@@ -2734,7 +2734,62 @@ RSpec.describe TaskMaster do
         expect { dorhum.forage_rocks(3) }.to raise_error(SystemExit)
 
         expect(DRCC).to have_received(:stow_crafting_item).once
-        expect(DRC).to have_received(:message).with('Could not forage a rock at room 793, stopping.')
+        expect(DRC).to have_received(:message).with('Could not forage a rock at room 793, stopping. Set task_rock_room to a room where rocks can be found.')
+      end
+    end
+
+    describe 'glow shells' do
+      before(:each) do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCT).to receive(:walk_to)
+      end
+
+      it 'hands in a glow shell as a shell, out of the loot bag' do
+        expect([dorhum.hand_in_noun('shell'), dorhum.hand_in_bag]).to eq(%w[shell backpack])
+      end
+
+      it 'forages a shell per item at room 793 by default and bags each one' do
+        allow(DRC).to receive(:forage?).with('shell').and_return(true)
+
+        build(npc: 'dorhum', lootbag: 'backpack', shell_room: TaskMaster::DEFAULT_SHELL_ROOM).forage_shells(5)
+
+        expect(DRCT).to have_received(:walk_to).with(793)
+        expect(DRCC).to have_received(:stow_crafting_item).with('shell', 'duffel bag', nil).exactly(5).times
+      end
+
+      it 'forages at task_shell_room when set' do
+        allow(DRC).to receive(:forage?).and_return(true)
+
+        build(npc: 'dorhum', lootbag: 'backpack', shell_room: 712).forage_shells(1)
+
+        expect(DRCT).to have_received(:walk_to).with(712)
+      end
+
+      it 'stops, naming the setting, when no shell can be foraged there' do
+        allow(DRC).to receive(:forage?).and_return(false)
+
+        expect { build(npc: 'dorhum', lootbag: 'backpack', shell_room: 793).forage_shells(3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('Could not forage a shell at room 793, stopping. Set task_shell_room to a room where shells can be found.')
+      end
+
+      it 'reads permutation and paradox off the glow shell instructions (Mahtra, 2026-11-03)' do
+        tm = dorhum
+        allow(DRCI).to receive(:stow_hands)
+        allow(Lich::Util).to receive(:issue_command)
+          .and_return(instructions_read('(1) a foraged shell', '(1) mana fount', '(1) primary sigil (permutation)', '(1) secondary sigil (paradox)'))
+
+        expect(tm.read_instructions('shell', 5)).to eq(['shell', 5, %w[permutation paradox]])
+      end
+
+      it 'forages shells for a glow shell task' do
+        tm = dorhum
+        %i[ensure_tools buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:forage_shells).with(5)
+
+        tm.dorhum('shell', 5, %w[permutation paradox])
       end
     end
 
