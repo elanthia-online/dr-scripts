@@ -28,7 +28,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.9'
+  VERSION = '2026.11.03.12'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -780,7 +780,7 @@ class TaskMaster
     send(recipe[:base], count)
     go_to_enchanting_room
     enchant_items(item, recipe[:noun], count)
-    repair(@settings.enchanting_tools, @settings.enchanting_belt)
+    repair(dorhum_repair_tools, @settings.enchanting_belt)
   end
 
   # DORHUM_ITEMS' entry for the item. An item taskmaster does not know how
@@ -934,6 +934,15 @@ class TaskMaster
   def imbue_spell?
     waggle_sets = @settings.waggle_sets
     waggle_sets.respond_to?(:dig) && waggle_sets.dig('imbue', 'Imbue') ? true : false
+  end
+
+  # The enchanting tools that go for repair after a Dorhum task: all but the
+  # fount, which wears out by use and which Rangu turns away ("They only
+  # have so many uses and then you must buy another.").
+  #
+  # @return [Array<String>]
+  def dorhum_repair_tools
+    Array(@settings.enchanting_tools).reject { |tool| tool =~ /fount/ }
   end
 
   # Makes sure the tools are on you before money is spent on a task: any

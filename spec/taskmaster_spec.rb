@@ -3045,6 +3045,15 @@ RSpec.describe TaskMaster do
         expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 5)
       end
 
+      it 'sends every enchanting tool but the fount for repair' do
+        tm = dorhum(settings: { enchanting_tools: ['brazier', 'fragile fount', 'burin', 'augmenting loop'], enchanting_belt: nil })
+        %i[ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:repair).with(['brazier', 'burin', 'augmenting loop'], nil)
+
+        tm.dorhum('spongestone', 6, %w[congruence decay])
+      end
+
       it 'buys wands for a virga wand task' do
         tm = dorhum
         %i[ensure_tools buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
