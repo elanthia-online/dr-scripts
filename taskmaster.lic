@@ -896,24 +896,31 @@ class TaskMaster
 
   # The enchanting tools a Dorhum task needs on hand before anything is
   # bought: enchanting_tools less the fount (DRCC.fount buys one); your own
-  # brazier only when enchanting in a set room that is not a Crossing
-  # brazier room (with neither room set, a free brazier room is found); and
-  # the imbue rod enchant falls back to, unless an Imbue spell is in
-  # waggle_sets.
+  # brazier only when enchanting in a set room that is not a public brazier
+  # room (with neither room set, a free brazier room is found); and the
+  # imbue rod enchant falls back to. With an Imbue spell in waggle_sets
+  # enchant casts it and never waves a rod, so no rod is needed then.
   #
   # @return [Array<String>]
   def dorhum_tools
     tools = Array(@settings.enchanting_tools).reject { |tool| tool =~ /fount|brazier/ }
+    tools.reject! { |tool| tool =~ /wand|rod/ } if imbue_spell?
     tools << own_brazier if needs_own_brazier?
     tools << imbue_tool unless imbue_spell? || tools.any? { |tool| tool =~ /wand|rod/ }
     tools
   end
 
   # @return [Boolean] whether the room Dorhum's items are enchanted in may
-  #   have no brazier: a set room that is not one of Crossing's brazier rooms
+  #   have no brazier: a set room that is not one of the towns' public
+  #   brazier rooms (the artificing brazier-rooms in the crafting data)
   def needs_own_brazier?
     room = task_enchanting_room
-    room ? !Array(artificing_info['brazier-rooms']).include?(room.to_i) : false
+    room ? !public_brazier_rooms.include?(room.to_i) : false
+  end
+
+  # @return [Array<Integer>] every town's public brazier rooms
+  def public_brazier_rooms
+    get_data('crafting')['artificing'].values.flat_map { |town| Array(town['brazier-rooms']) }
   end
 
   # The imbue rod (or wand) from enchanting_tools, as enchant finds it.

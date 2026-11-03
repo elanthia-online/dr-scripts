@@ -3108,6 +3108,19 @@ RSpec.describe TaskMaster do
         expect(tm.dorhum_tools).to include('small brazier')
       end
 
+      it "needs no rod when an Imbue spell is set up, even with the rod in enchanting_tools" do
+        tm = dorhum(settings: { enchanting_tools: ['burin', 'imbuement rod'], waggle_sets: { 'imbue' => { 'Imbue' => { 'mana' => 5 } } } })
+
+        expect(tm.dorhum_tools).to eq(%w[burin])
+      end
+
+      it "needs no brazier of your own in another town's public brazier room" do
+        $test_data.crafting['artificing']['Shard'] = { 'brazier-rooms' => [14_777, 14_778] }
+        tm = dorhum(settings: { enchanting_room: 14_777, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(%w[burin rod])
+      end
+
       it 'needs no brazier of your own in a Crossing brazier room' do
         tm = dorhum(settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
 
