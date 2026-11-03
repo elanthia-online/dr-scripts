@@ -747,9 +747,26 @@ module Harness
     # Don't actually sleep, slows down tests.
     # Use Timecop gem to simulate elapsed time.
     # See test_bput as an example.
+    # During a replay (test/replay_game.rb) the pause moves the fake clock.
+    $replay_game&.advance(duration)
   end
 
-  def parse_args(_data, _flex_args = false)
+  # Two modes:
+  # - by default it returns $parsed_args as an OpenStruct (plus flex = 'test'),
+  #   whatever the definitions say;
+  # - with $parse_args_model = true it matches the arguments in $script_vars
+  #   (Lich's `variable`) against the definitions the way lich-5's ArgParser
+  #   does (test/arg_parser_model.rb), including help + exit on a bad call.
+  # reset_data turns the model off and clears $script_vars before each example.
+  #
+  # @param data [Array<Array<Hash>>] the script's argument forms
+  # @param flex_args [Boolean] keep leftover arguments (model only)
+  # @return [OpenStruct] the parsed arguments
+  # @raise [SystemExit] in model mode, when the arguments match no form or
+  #   several, or ask for help
+  def parse_args(data, flex_args = false)
+    return ArgParserModel.parse(data, variable.drop(1), raw: variable.first.to_s, flex: flex_args) if $parse_args_model
+
     args = OpenStruct.new($parsed_args.dup || {})
     args.flex = 'test'
     args
@@ -757,7 +774,7 @@ module Harness
 
   # Mirrors Lich's global variable (Script.current.vars): [0] is the raw
   # argument string, [1..] the arguments as typed, before parse_args downcases
-  # them. Specs set $script_vars.
+  # them. Specs set $script_vars; reset_data clears it before each example.
   def variable
     $script_vars || []
   end
@@ -859,6 +876,13 @@ module Harness
     $test_data = OpenStruct.new
     $test_settings = OpenStruct.new
     $parsed_args = OpenStruct.new
+    # parse_args returns $parsed_args unless an example opts into the
+    # ArgParser model; fput and pause go to a replay only while one is set.
+    # $script_vars (what the model parses, through `variable`) starts empty,
+    # so no example parses the arguments an earlier one left.
+    $parse_args_model = false
+    $script_vars = nil
+    $replay_game = nil
 
     # We use queues because they are thread safe
     # https://ruby-doc.org/core-2.5.5/Queue.html
@@ -968,7 +992,15 @@ module Harness
     $concentration || 100
   end
 
-  def fput(message)
+  # Records the command. During a replay (test/replay_game.rb) the replay
+  # answers it instead, as Lich's fput would.
+  #
+  # @param message [String] the command
+  # @param waitingfor [Array] fput patterns (a replay models none)
+  # @return [Object] the replay's answer (ReplayGame#fput), else the queue
+  def fput(message, *waitingfor)
+    return $replay_game.fput(message, *waitingfor) if $replay_game
+
     sent_messages << message
   end
 
@@ -1656,3 +1688,10 @@ module Harness
     end
   end
 end
+
+# Replay support (see each file's header): a model of lich-5's ArgParser for
+# parse_args, a game played from real log lines that answers DRC.bput and
+# fput, and an API-level model of the commons helpers a crafting script calls.
+require_relative 'arg_parser_model'
+require_relative 'replay_game'
+require_relative 'replay_commons'
