@@ -546,6 +546,29 @@ RSpec.describe Enchant do
       instance.send(:scribe)
     end
 
+    it "stops after #{Enchant::MAX_SCRIBE_STEPS} steps when the game never finishes the item" do
+      allow(DRC).to receive(:bput).and_return('Roundtime: 3 sec.')
+      allow(Lich::Messaging).to receive(:msg)
+
+      expect { instance.send(:scribe) }.to raise_error(SystemExit)
+
+      expect(DRC).to have_received(:bput).exactly(Enchant::MAX_SCRIBE_STEPS).times
+      expect(Lich::Messaging).to have_received(:msg)
+        .with('bold', "Enchant: Still not finished after #{Enchant::MAX_SCRIBE_STEPS} scribing steps; the totem is still on the brazier.")
+    end
+
+    it 'finishes on the last step it allows' do
+      scribes = 0
+      allow(DRC).to receive(:bput) do
+        scribes += 1
+        Flags['enchant-complete'] = true if scribes == Enchant::MAX_SCRIBE_STEPS - 1
+        'Roundtime: 3 sec.'
+      end
+      expect(instance).to receive(:handle_complete_flag)
+
+      instance.send(:scribe)
+    end
+
     it 'answers what the game asked for, then scribes on until the enchant completes' do
       Flags['enchant-sigil'] = true
       allow(instance).to receive(:handle_sigil_flag) { Flags.reset('enchant-sigil') }

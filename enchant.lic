@@ -108,6 +108,12 @@ class Enchant
   STEP_FAILURES = [/^You must be holding the .* to do that.*/, /^You jot down some notes.*/].freeze
   # Steps in a row with no reply bput knows before the script stops.
   MAX_UNANSWERED_STEPS = 3
+  # Scribing steps (scribes and the answers to the game's requests) one
+  # enchant may take before the script stops: a backstop for a game that
+  # keeps answering without ever finishing the item. Replayed, the Dorhum
+  # runs take 12 steps per virga wand and 13 per spongestone; harder items
+  # take more.
+  MAX_SCRIBE_STEPS = 150
   # Imbue casts or wand waves before the script stops. DRCA.cast_spell?
   # fails at once on a prep that did not take (low mana, say), so a few
   # tries ride out a passing failure; the old code retried without limit.
@@ -590,9 +596,12 @@ class Enchant
   # nothing, until the enchant completes or backlashes.
   #
   # @return [void]
-  # @raise [SystemExit] from brazier_step or a step it runs
+  # @raise [SystemExit] from brazier_step or a step it runs, or after
+  #   MAX_SCRIBE_STEPS steps without finishing
   def scribe
-    while true
+    steps = 0
+    while steps < MAX_SCRIBE_STEPS
+      steps += 1
       step = next_scribe_step
       if step
         send(step)
@@ -601,6 +610,7 @@ class Enchant
         brazier_step("scribe #{@item} on #{@brazier_ref} with my #{@burin}", SCRIBE_RT_PATTERN, SCRIBE_SIGIL_NEEDED)
       end
     end
+    stop_enchant("Still not finished after #{MAX_SCRIBE_STEPS} scribing steps; the #{@item} is still on the brazier.")
   end
 
   # The step for the first flag the game set, in SCRIBE_STEPS order.
