@@ -134,8 +134,32 @@ class Enchant
     [
       { name: 'resume', regex: /resume/i },
       { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to resume.' }
+    ],
+    [
+      { name: 'instructions', regex: /^instructions$/i, description: 'Craft from instructions instead of the artificing book.' },
+      { name: 'recipe', display: 'instructions name', regex: /^[A-z\s\-']+$/i, variable: true, description: 'Name on the instructions, wrapped in double quotes if more than one word. Example: "virga wand" for virga wand instructions.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of the finished item, which may be the base item\'s noun. Example: rock for a spongestone.' },
+      { name: 'base_noun', regex: /\w+/i, variable: true, optional: true, description: 'Optional: Noun of the base item, when it differs from the finished item\'s.' }
     ]
   ].freeze
+
+  # Local copy of lich-5 DRCC.study_instructions (not yet in a lich-5
+  # release). Remove these constants and local_study_instructions once one
+  # ships it: study_instructions already prefers DRCC's.
+  #
+  # The first study of instructions that wear out asks for a second one,
+  # with the uses left (log 1: "[These instructions have only 9 uses
+  # remaining.  Study them again to proceed.]").
+  STUDY_INSTRUCTIONS_AGAIN = /(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/.freeze
+  # A completed study ends in roundtime (log 1).
+  STUDY_INSTRUCTIONS_DONE = /^Roundtime/.freeze
+  STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/.freeze
+  # Log 1 has the second: "You must be holding the instructions to study them."
+  STUDY_INSTRUCTIONS_NOT_HOLDING = [/^But you're not holding/, /^You must be holding the instructions/].freeze
+  # Sent after the roundtime of the study that used the last use.
+  STUDY_INSTRUCTIONS_TOSSED = /^(?:<[^>]*>|\s)*The instructions have grown so smudged and faded from use that you can no longer make them out/.freeze
+  STUDY_INSTRUCTIONS_TOSSED_FLAG = 'enchant-instructions-tossed'
+  STUDY_INSTRUCTIONS_MAX_STUDIES = 3
 
   def initialize(settings = get_settings)
     @settings = settings
@@ -166,6 +190,7 @@ class Enchant
     @chapter = args.chapter
     @recipe = args.recipe
     @resume = args.resume
+    @instructions = args.instructions
 
     setup_flags
     run_enchant
@@ -278,7 +303,10 @@ class Enchant
   end
 
   def study_recipe
-    if @settings.master_crafting_book
+    if @instructions
+      name = "#{@recipe} instructions"
+      stop_enchant("Could not study the #{name}.") unless study_instructions(name)
+    elsif @settings.master_crafting_book
       DRCC.find_recipe2(@chapter, @recipe, @settings.master_crafting_book, BOOK_TYPE)
     else
       DRCC.get_crafting_item("#{BOOK_TYPE} book", @bag, @bag_items, @belt)
@@ -559,6 +587,43 @@ class Enchant
   # imbue finished the item or backlashed, as only putting it away follows.
   def get_burin_unless_done
     get_tool(@burin) unless Flags['enchant-complete'] || Flags['imbue-backlash']
+  end
+
+  # Studies the instructions until the game is ready to craft and puts them
+  # back unless the game threw them away. Uses lich-5's DRCC helper when the
+  # installed Lich has it.
+  #
+  # @return [Boolean] true when a study completed
+  def study_instructions(name)
+    return DRCC.study_instructions(name, @bag, @bag_items, @belt, true).studied? if DRCC.respond_to?(:study_instructions)
+
+    local_study_instructions(name)
+  end
+
+  # The local copy of DRCC.study_instructions, for a Lich without it.
+  def local_study_instructions(name)
+    return false unless DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
+
+    begin
+      Flags.add(STUDY_INSTRUCTIONS_TOSSED_FLAG, STUDY_INSTRUCTIONS_TOSSED)
+      uses = nil
+      studies = 0
+      reply = ''
+      while studies < STUDY_INSTRUCTIONS_MAX_STUDIES
+        studies += 1
+        reply = DRC.bput("study my #{name}", STUDY_INSTRUCTIONS_AGAIN, STUDY_INSTRUCTIONS_DONE, STUDY_INSTRUCTIONS_NOT_FOUND, *STUDY_INSTRUCTIONS_NOT_HOLDING)
+        break unless STUDY_INSTRUCTIONS_AGAIN.match?(reply)
+
+        uses = reply[STUDY_INSTRUCTIONS_AGAIN, :uses]&.to_i || uses
+      end
+      waitrt?
+      studied = STUDY_INSTRUCTIONS_DONE.match?(reply)
+      tossed = Flags[STUDY_INSTRUCTIONS_TOSSED_FLAG] || (studied && uses == 1)
+      stow_tool(name) unless tossed
+      studied
+    ensure
+      Flags.delete(STUDY_INSTRUCTIONS_TOSSED_FLAG)
+    end
   end
 
   # Stops the script with a bold reason. Whatever is on the brazier stays
