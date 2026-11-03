@@ -1659,6 +1659,56 @@ RSpec.describe TaskMaster do
         expect(tm).not_to have_received(:sort_sack)
       end
 
+      it 'puts back an item the taskmaster does not take and stops, instead of handing it over again' do
+        tm = finisher
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCC).to receive(:stow_crafting_item)
+        gives = 0
+        game('give my rope to zasele' => lambda do |*|
+          gives += 1
+          raise 'gave the refused rope again' if gives > 3
+
+          gives == 1 ? more_needed(1) : ''
+        end)
+
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+        expect(gives).to eq(3)
+        expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil)
+        expect(DRC).to have_received(:message).with('Zasele did not take the rope. Stopping.')
+        expect(tm).not_to have_received(:sort_sack)
+      end
+
+      it 'gives once more after one reply it did not know, and carries on when that one lands' do
+        tm = finisher
+        replies = [more_needed(1), '', sack_handed]
+        allow(tm).to receive(:give_item) { replies.shift }
+        expect(tm).not_to receive(:refused_hand_in)
+
+        tm.complete_task('rope', 2)
+
+        expect(tm).to have_received(:sort_sack).with('rope')
+      end
+
+      it 'counts unknown replies in a row only' do
+        tm = finisher
+        replies = ['', more_needed(2), '', more_needed(1), sack_handed]
+        allow(tm).to receive(:give_item) { replies.shift }
+        expect(tm).not_to receive(:refused_hand_in)
+
+        tm.complete_task('rope', 3)
+      end
+
+      it 'quotes what the taskmaster said when the reply was one bput knew' do
+        tm = finisher
+        allow(tm).to receive(:give_item).and_return('What is it')
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('Zasele did not take the rope (What is it). Stopping.')
+      end
+
       it 'resets the miss count after a give lands' do
         tm = finisher
         giving([missed_give, missed_give, missed_give, missed_give, more_needed(1), missed_give, missed_give, missed_give, missed_give, sack_handed])
