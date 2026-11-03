@@ -989,7 +989,8 @@ RSpec.describe TaskMaster do
         it 'asks with the same matchers' do
           asking([offer])
           expect(DRC).to have_received(:bput).with('ask zasele for task', /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/,
-                                                   /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+                                                   /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/,
+                                                   TaskMaster::TASK_UNRELIABLE, /^To whom are you speaking/)
           expect(DRC).to have_received(:bput).with('accept task', /You can check your progress with the TASK verb/)
         end
 
@@ -1070,8 +1071,25 @@ RSpec.describe TaskMaster do
           expect(events).to eq(%i[find ask find ask accept finish])
         end
 
-        it 'gives up and returns nil, without asking again, when no reply matches' do
-          expect(asking(['']).first(2)).to eq([nil, %i[find ask]])
+        # Zasele after a cancelled task (Mahtra, 2026-11-03 18:47), two lines.
+        let(:unreliable) { '"Word has traveled.  You are unreliable.  Perhaps I\'ll give' }
+
+        it 'waits the poll interval and asks again when the taskmaster calls you unreliable after a cancel' do
+          expect(asking([unreliable, offer]).first(2)).to eq([:accepted, [:find, :ask, cooldown_message, [:pause, 7], *accepted]])
+        end
+
+        it 'asks again after a reply it does not know, instead of going on with no task' do
+          expect(asking(['', '', offer]).first(2)).to eq([:accepted, [:find, :ask, [:pause, 7], :find, :ask, [:pause, 7], *accepted]])
+        end
+
+        it "stops after #{TaskMaster::MAX_UNKNOWN_TASK_REPLIES} replies in a row it does not know" do
+          nil
+          expect { _, _, _ = asking(Array.new(TaskMaster::MAX_UNKNOWN_TASK_REPLIES, '')) }.to raise_error(SystemExit)
+          expect(DRC).to have_received(:message).with('No answer Zasele gives that taskmaster knows, 3 times in a row. Stopping.')
+        end
+
+        it 'counts unknown replies in a row only' do
+          expect(asking(['', '', wait, '', '', offer]).first).to eq(:accepted)
         end
       end
 

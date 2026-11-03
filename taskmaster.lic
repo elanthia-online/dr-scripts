@@ -1474,6 +1474,14 @@ class TaskMaster
     "You are on a task for #{name}, not #{@npc.capitalize}. #{finish}, or cancel it with ASK #{giver.upcase} FOR TASK CANCEL (taskmasters then refuse you for about ten minutes)."
   end
 
+  # A taskmaster's refusal after a task was cancelled, sent as two lines:
+  # "Word has traveled.  You are unreliable.  Perhaps I'll give" /
+  # "you a chance a little later." (Zasele, 2026-11-03), so the older
+  # one-line "give you a chance a little later" never matched it.
+  TASK_UNRELIABLE = /You are unreliable/
+  # Unknown replies in a row to ASK FOR TASK before get_task stops.
+  MAX_UNKNOWN_TASK_REPLIES = 3
+
   # Thrown (and caught in get_task and finish_task_in_progress) once another
   # taskmaster's task has been cancelled, so the run goes back to asking its
   # own taskmaster.
@@ -1656,25 +1664,30 @@ class TaskMaster
   end
 
   # Asks the taskmaster for a task until one is offered, waiting out
-  # cooldowns, and returns what finish reads from it. An ongoing task is
-  # resumed instead, and nil comes back when the reply matches nothing.
+  # cooldowns (including the one after a cancelled task), and returns what
+  # finish reads from it. An ongoing task is resumed instead; another
+  # taskmaster's that had to be cancelled sends the loop round to ask again.
   # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
   # inside it and return nil, where the old recursion let it propagate.
   #
-  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String), nil]
-  #   what {#finish} returns, or nil
-  # @raise [SystemExit] from finish (not on a task) or resume_task
+  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String)]
+  #   what {#finish} returns
+  # @raise [SystemExit] from finish (not on a task) or resume_task, or after
+  #   MAX_UNKNOWN_TASK_REPLIES replies in a row it does not know
   def get_task
+    unknown_replies = 0
     while true
       find_npc(@rooms, @npc)
-      case DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+      reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, /^To whom are you speaking/)
+      unknown_replies = 0 unless reply.empty?
+      case reply
       when /if you agree to (his|her) terms/, /To whom are you speaking/
         next
       when /You are already on a task/
         catch(FOREIGN_TASK_CANCELLED) { return resume_task }
         # Another taskmaster's task, cancelled: ask our own taskmaster again.
         next
-      when /utterly ignoring you/, /give you a chance a little later/
+      when /utterly ignoring you/, /give you a chance a little later/, TASK_UNRELIABLE
         DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
       when /you must wait before I can give you a task/
@@ -1690,7 +1703,15 @@ class TaskMaster
         forget_replacement
         return finish
       else
-        return nil
+        # No reply bput knows: nothing to work on. Returning would send the
+        # run on with no task (a crash in the worker); ask again after a
+        # wait, and stop after MAX_UNKNOWN_TASK_REPLIES in a row.
+        unknown_replies += 1
+        if unknown_replies >= MAX_UNKNOWN_TASK_REPLIES
+          DRC.message("No answer #{@npc.capitalize} gives that taskmaster knows, #{MAX_UNKNOWN_TASK_REPLIES} times in a row. Stopping.")
+          exit
+        end
+        pause @cooldown_poll
       end
     end
   end
