@@ -41,10 +41,19 @@ class Enchant
   PUT_BRAZIER_SUCCESS = [/^With a flick/, /^You put/].freeze
   PUT_BRAZIER_NEEDS_CLEAN = /^You must first clean/.freeze
   PUT_BRAZIER_GLANCE = /^You glance down/.freeze
+  # A PUT that cannot work: the item is not in hand (log 1, "You must be
+  # holding the rocks before doing that."), or nothing to PUT (log 2: the
+  # wand GET failed for want of a free hand, and "put wand on brazier" got
+  # "What were you referring to?").
+  PUT_BRAZIER_FAILURES = [/^You must be holding.*/, /^What were you referring to.*/].freeze
 
   # Get item patterns
   GET_SUCCESS = /^You get/.freeze
   GET_DANGEROUS = /^[^"]*?That is far too dangerous/i.freeze
+  # A GET that cannot work: no hand free (log 1, holding the fount), or
+  # nothing by that name. They take the whole line, which bput returns and
+  # the stop message quotes.
+  GET_FAILURES = [/^You need a free hand.*/, /^What were you referring to.*/].freeze
 
   # Imbue wand
   IMBUE_WAND_SUCCESS = /^Roundtime/.freeze
@@ -259,22 +268,23 @@ class Enchant
     end
     get_tool(@brazier) if @use_own_brazier
 
-    get_result = DRC.bput("get my #{@baseitem} from my #{@bag}", GET_SUCCESS, GET_DANGEROUS)
+    get_result = DRC.bput("get my #{@baseitem} from my #{@bag}", GET_SUCCESS, GET_DANGEROUS, *GET_FAILURES)
     if GET_DANGEROUS.match?(get_result)
       clean_brazier
       empty_brazier
-      unless DRCI.get_item?(@baseitem, @bag)
-        Lich::Messaging.msg("bold", "Enchant: Failed to get #{@baseitem} from #{@bag}.")
-        return
-      end
+      stop_enchant("Could not get a #{@baseitem} from your #{@bag}.") unless DRCI.get_item?(@baseitem, @bag)
+    elsif !GET_SUCCESS.match?(get_result) && !DRCI.in_hands?(@baseitem)
+      stop_enchant("Could not get a #{@baseitem} from your #{@bag}: #{get_result.empty? ? 'no reply' : get_result}")
     end
 
     place_item_on_brazier
   end
 
+  # The first PUT only asks to confirm; the second places the item.
   def place_item_on_brazier
+    result = ''
     2.times do
-      all_patterns = [PUT_BRAZIER_ALREADY_ENCHANTED, PUT_BRAZIER_GLANCE, PUT_BRAZIER_NEEDS_CLEAN] + PUT_BRAZIER_SUCCESS
+      all_patterns = [PUT_BRAZIER_ALREADY_ENCHANTED, PUT_BRAZIER_GLANCE, PUT_BRAZIER_NEEDS_CLEAN, *PUT_BRAZIER_FAILURES] + PUT_BRAZIER_SUCCESS
       result = put_item_on_brazier(*all_patterns)
 
       if PUT_BRAZIER_ALREADY_ENCHANTED.match?(result)
@@ -288,28 +298,36 @@ class Enchant
       elsif PUT_BRAZIER_NEEDS_CLEAN.match?(result)
         clean_brazier
         empty_brazier
-        unless DRCI.get_item?(@baseitem, @bag)
-          Lich::Messaging.msg("bold", "Enchant: Failed to get #{@baseitem} from #{@bag} after cleaning.")
-          return
-        end
+        stop_enchant("Could not get a #{@baseitem} from your #{@bag} after cleaning the brazier.") unless DRCI.get_item?(@baseitem, @bag)
         place_item_inner
         return
       end
+      break if PUT_BRAZIER_FAILURES.any? { |pattern| pattern.match?(result) }
     end
+    not_placed(result)
   end
 
   def place_item_inner
+    result = ''
     2.times do
-      result = put_item_on_brazier(PUT_BRAZIER_GLANCE, *PUT_BRAZIER_SUCCESS)
+      result = put_item_on_brazier(PUT_BRAZIER_GLANCE, *PUT_BRAZIER_FAILURES, *PUT_BRAZIER_SUCCESS)
       if placed?(result)
         waitrt?
         return
       end
+      break if PUT_BRAZIER_FAILURES.any? { |pattern| pattern.match?(result) }
     end
+    not_placed(result)
   end
 
   def put_item_on_brazier(*patterns)
     DRC.bput("put my #{@baseitem} on #{@brazier_ref}", *patterns)
+  end
+
+  # Nothing goes on with no item on the brazier: every step after this one
+  # would work on nothing and the scribing would never finish.
+  def not_placed(result)
+    stop_enchant("Could not put the #{@baseitem} on the #{@brazier}: #{result.empty? ? 'no reply' : result}")
   end
 
   def placed?(result)
