@@ -28,7 +28,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.7'
+  VERSION = '2026.11.03.8'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1346,23 +1346,42 @@ class TaskMaster
   end
 
   # Leaves the item's instructions in hand, asking the taskmaster for a fresh
-  # set only when none are carried, they are someone else's, or they have fewer
-  # uses than items owed (each item takes one study).
+  # set only when no usable set is carried: none at all, or one with fewer
+  # uses than items owed (each item takes one study). Sets written for
+  # someone else are thrown away on the way, up to MAX_CARRIED_SETS.
   #
   # @param item [String] item noun
   # @param owed [Integer] items still to make, one study each
   # @return [void]
   def ensure_instructions(item, owed)
-    carried = DRCI.get_item?("#{item} instructions", @bag)
-    if carried
-      reply = DRC.bput("read my #{item} instructions", INSTRUCTION_USES, /written by or for someone else/, /What were you referring/)
-      return if reply[INSTRUCTION_USES, 1].to_i >= owed
+    name = "#{item} instructions"
+    sets = 0
+    while sets < MAX_CARRIED_SETS && DRCI.get_item?(name, @bag)
+      sets += 1
+      reply = DRC.bput("read my #{name}", INSTRUCTION_USES, FOREIGN_INSTRUCTIONS, /What were you referring/)
+      if reply.match?(FOREIGN_INSTRUCTIONS)
+        # Never usable, and put back it would be the first set picked up
+        # next time: bin it and look at the next set carried.
+        DRC.message("These #{name} were written for someone else; throwing them away.")
+        next if DRCI.dispose_trash(name, @worn_trashcan, @worn_trashcan_verb)
+      elsif reply[INSTRUCTION_USES, 1].to_i >= owed
+        return
+      end
 
-      # Put the short or unreadable set back so only the new one is in hand.
-      DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+      # Put the short, unreadable or unbinnable set back so only the new one
+      # is in hand.
+      DRCC.stow_crafting_item(name, @bag, nil)
+      break
     end
     request_replacement(item)
   end
+
+  # READ reply for instructions written for another character, which can
+  # never be studied: "They were written by or for someone else."
+  FOREIGN_INSTRUCTIONS = /written by or for someone else/
+  # Instruction sets ensure_instructions looks at before asking for a fresh
+  # one, so binning foreign sets always ends.
+  MAX_CARRIED_SETS = 5
 
   # Asks the taskmaster for a fresh set of instructions, once per task. The
   # request is remembered in UserVars (t2 can start the script once per task),

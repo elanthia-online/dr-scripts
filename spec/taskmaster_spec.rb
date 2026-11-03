@@ -1340,6 +1340,59 @@ RSpec.describe TaskMaster do
         expect(resume(owed: 2, uses: 9, foreign: true)).to include(:asked_for_instructions)
       end
 
+      describe 'sets written for someone else' do
+        let(:foreign) { "You can't read the ink printed on the rope instructions.  They were written by or for someone else." }
+        let(:usable) { 'These instructions appear to be very fragile and will wear out quickly when studied.  They have only 4 uses remaining.' }
+
+        def carrying(replies)
+          tm = reader(worn_trashcan: 'bucket', worn_trashcan_verb: 'drop')
+          allow(DRCI).to receive(:get_item?) { !replies.empty? }
+          game('read my rope instructions' => ->(*) { replies.shift })
+          allow(tm).to receive(:request_replacement)
+          allow(DRCC).to receive(:stow_crafting_item)
+          tm
+        end
+
+        it 'throws a foreign set away instead of putting it back, then asks for a fresh one' do
+          tm = carrying([foreign])
+          expect(DRCI).to receive(:dispose_trash).with('rope instructions', 'bucket', 'drop').and_return(true)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCC).not_to have_received(:stow_crafting_item)
+          expect(tm).to have_received(:request_replacement).with('rope')
+        end
+
+        it 'uses a good set carried behind a foreign one, asking for nothing' do
+          tm = carrying([foreign, usable])
+          allow(DRCI).to receive(:dispose_trash).and_return(true)
+
+          tm.ensure_instructions('rope', 3)
+
+          expect(tm).not_to have_received(:request_replacement)
+        end
+
+        it 'puts a foreign set back when the trash will not take it, and asks once' do
+          tm = carrying([foreign, foreign])
+          allow(DRCI).to receive(:dispose_trash).and_return(false)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCC).to have_received(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).once
+          expect(tm).to have_received(:request_replacement).once
+        end
+
+        it "stops looking after #{TaskMaster::MAX_CARRIED_SETS} sets" do
+          tm = carrying(Array.new(10, foreign))
+          allow(DRCI).to receive(:dispose_trash).and_return(true)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCI).to have_received(:dispose_trash).exactly(TaskMaster::MAX_CARRIED_SETS).times
+          expect(tm).to have_received(:request_replacement).once
+        end
+      end
+
       it 'counts the items still owed after the banked ones are in' do
         expect(resume(owed: 6, target: 8, banked: 1, uses: 6)).to include([:make, 'rope', 5])
       end
