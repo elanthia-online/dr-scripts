@@ -2382,6 +2382,30 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:bput).with('give my rock to dorhum', any_args)
       end
 
+      it 'stops at the first "no hint of enchantment" refusal, putting the item back in the loot bag' do
+        refusal = 'Researcher Dorhum examines the rock and shakes his head.  "I don\'t sense any hint of enchantment on this.  ' \
+                  'What are you trying to pull, Pezamus?"'
+        tm = dorhum
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCC).to receive(:stow_crafting_item)
+        game('give my rock to dorhum' => ->(_cmd, *matchers) { matchers.any? { |m| m.is_a?(Regexp) && refusal =~ m } ? refusal : '' })
+
+        expect { tm.complete_task('spongestone', 8) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:bput).with('give my rock to dorhum', any_args).once
+        expect(DRCC).to have_received(:stow_crafting_item).with('rock', 'backpack', nil)
+        expect(tm).not_to have_received(:sort_sack)
+      end
+
+      it "takes Dorhum's refusal only from Dorhum, not from a player repeating it" do
+        text = %(I don't sense any hint of enchantment on this.  What are you trying to pull, Pezamus?)
+        expect(%(Researcher Dorhum examines the small brazier and shakes his head.  "#{text}")).to match(TaskMaster::GIVE_NOT_ENCHANTED)
+        expect(%(Mallory says, "#{text}")).not_to match(TaskMaster::GIVE_NOT_ENCHANTED)
+        expect(%(Mallory says, "Researcher Dorhum examines the rock and shakes his head.  "#{text}")).not_to match(TaskMaster::GIVE_NOT_ENCHANTED)
+      end
+
       it 'hands in a virga wand as a wand' do
         expect(dorhum.hand_in_noun('wand')).to eq('wand')
       end
@@ -2584,7 +2608,7 @@ RSpec.describe TaskMaster do
         tm = dorhum
         enchant_runs(true, true)
         allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
-        expect(DRCI).to receive(:put_away_item?).with('rock', 'backpack').twice
+        expect(DRCI).to receive(:put_away_item?).with('rock', 'backpack').twice.and_return(true)
 
         tm.enchant_items('spongestone', 'rock', 2)
 
@@ -2595,7 +2619,7 @@ RSpec.describe TaskMaster do
         tm = dorhum
         enchant_runs(true, false)
         allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
-        allow(DRCI).to receive(:put_away_item?)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
 
         expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
 
@@ -2613,6 +2637,20 @@ RSpec.describe TaskMaster do
         expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
 
         expect(DRCI).not_to have_received(:put_away_item?)
+      end
+
+      it 'stops, with the item still in hand, when the loot bag will not take it' do
+        tm = dorhum
+        enchant_runs(true, true, true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).with('rock', 'backpack').and_return(false)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        expect { tm.enchant_items('spongestone', 'rock', 3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack; it is still in your hand. Stopping.')
+        expect(DRC).not_to have_received(:message).with('3 spongestones completed')
       end
 
       it 'stops when the finished item is not in hand' do
@@ -2633,7 +2671,7 @@ RSpec.describe TaskMaster do
         expect(TaskMaster::ENCHANTED).to match('With enchanting complete, you collect your things.')
         enchant_runs(true)
         allow(DRCI).to receive(:in_hands?).and_return(true)
-        allow(DRCI).to receive(:put_away_item?)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
 
         tm.enchant_items('spongestone', 'rock', 1)
 

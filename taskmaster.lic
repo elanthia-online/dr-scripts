@@ -966,7 +966,8 @@ class TaskMaster
   # @param noun [String] the finished item's noun (its base item's)
   # @param count [Integer] items to make
   # @return [void]
-  # @raise [SystemExit] when an enchant did not finish
+  # @raise [SystemExit] when an enchant did not finish, or a finished item
+  #   would not go in task_loot_bag
   def enchant_items(item, noun, count)
     Flags.add(ENCHANTED_FLAG, ENCHANTED)
     count.times do
@@ -979,7 +980,11 @@ class TaskMaster
         DRC.message("enchant did not finish a #{noun} for the #{item}s; stopping.")
         exit
       end
-      DRCI.put_away_item?(noun, @lootbag)
+      next if DRCI.put_away_item?(noun, @lootbag)
+
+      # Stowed elsewhere it would mix with the unworked base items.
+      DRC.message("The finished #{noun} would not go in #{@lootbag}; it is still in your hand. Stopping.")
+      exit
     end
     DRC.message("#{count} #{item}s completed")
   ensure
@@ -1507,6 +1512,12 @@ class TaskMaster
   # GIVE reply when the taskmaster is not in the room.
   GIVE_MISSED = /What is it you're trying to give/
 
+  # Dorhum turning down an item with no enchantment on it (a manual run,
+  # 2026-11-04: 'Researcher Dorhum examines the small brazier and shakes his
+  # head.  "I don't sense any hint of enchantment on this.  What are you
+  # trying to pull, Pezamus?"'). Giving it again cannot help.
+  GIVE_NOT_ENCHANTED = /^Researcher Dorhum examines [^"]*"I don't sense any hint of enchantment on this/
+
   # Gives one finished item to the taskmaster and returns the reply, or nil when
   # there is none in hand or in the bag. A give that misses her (she wandered
   # off between the get and the give) leaves the item in hand: find her again
@@ -1521,7 +1532,7 @@ class TaskMaster
       find_npc(@rooms, @npc)
       return unless DRCI.in_hands?(noun) || DRCI.get_item?(noun, hand_in_bag)
 
-      reply = DRC.bput("give my #{noun} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED)
+      reply = DRC.bput("give my #{noun} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED)
       return reply unless reply =~ GIVE_MISSED
     end
     DRC.message("Could not hand a #{noun} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
@@ -1569,6 +1580,7 @@ class TaskMaster
         unknown_replies = 0
         next
       end
+      refused_hand_in(item, reply) if reply =~ GIVE_NOT_ENCHANTED
       # A reply bput did not know may be a lagged acceptance or a passing
       # refusal: give again (the item still in hand, or the next one if it
       # was taken) before calling it a refusal.
