@@ -3022,7 +3022,7 @@ RSpec.describe TaskMaster do
         allow(tm).to receive(:read_task).and_return(['spongestone', 3])
         allow(tm).to receive(:set_aside_held_base)
         allow(tm).to receive(:turn_in_banked).and_return(3)
-        %i[ensure_instructions refresh_haste top_up_copper buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
+        %i[ensure_instructions refresh_haste top_up_copper ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
         allow(tm).to receive(:read_instructions).and_return(['spongestone', 3, %w[congruence decay]])
         allow(DRCI).to receive(:exists?).and_return(false)
         allow(DRCC).to receive(:fount)
