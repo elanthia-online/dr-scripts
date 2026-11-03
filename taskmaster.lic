@@ -726,10 +726,13 @@ class TaskMaster
   # which is its base item's: a spongestone is made from "a foraged rock" and
   # is still a rock; a virga wand from "a finished stone, bone or wood wand or
   # rod" and is still the wand it was made from; a splashstone from "a
-  # foraged rock" and is still a rock (a manual run, 2026-11-04: "Accepting
-  # your rock"); a glow shell from "a foraged shell" (taken to stay a shell
-  # like the others; not yet seen finished). :base is the method
-  # that gets the base items. Any other item pauses the script.
+  # foraged rock" and is still a rock; a glow shell from "a foraged shell"
+  # and is still that shell (sea, snail, asarwuden... all with the noun
+  # shell). All four were handed in by these nouns in live runs (2026-11-03
+  # and 2026-11-04). Spongestones and splashstones are both rocks, which is
+  # why a task stops when task_loot_bag already holds its noun
+  # (check_loot_bag_clear). :base is the method that gets the base items.
+  # Any other item pauses the script.
   DORHUM_ITEMS = {
     'spongestone' => { noun: 'rock', base: :forage_rocks },
     'splashstone' => { noun: 'rock', base: :forage_rocks },
