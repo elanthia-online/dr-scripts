@@ -749,6 +749,41 @@ RSpec.describe Enchant do
       end
     end
 
+    context 'when every try fails' do
+      it "stops after #{Enchant::MAX_IMBUE_TRIES} failed casts" do
+        instance = build_instance(settings: OpenStruct.new('waggle_sets' => { 'imbue' => { 'Imbue' => { 'mana' => 20 } } }))
+        allow(DRCA).to receive(:cast_spell?).and_return(false)
+        allow(Lich::Messaging).to receive(:msg)
+
+        expect { instance.send(:imbue) }.to raise_error(SystemExit)
+
+        expect(DRCA).to have_received(:cast_spell?).exactly(Enchant::MAX_IMBUE_TRIES).times
+        expect(Lich::Messaging).to have_received(:msg).with('bold', "Enchant: Imbue failed #{Enchant::MAX_IMBUE_TRIES} times; the totem is still on the brazier.")
+      end
+
+      it "stops after #{Enchant::MAX_IMBUE_TRIES} colliding wand waves" do
+        instance = build_instance(settings: OpenStruct.new('waggle_sets' => { 'imbue' => {} }))
+        allow(DRC).to receive(:bput).and_return('The streams collide, rending the space before you and disrupting the enchantment')
+        allow(Lich::Messaging).to receive(:msg)
+
+        expect { instance.send(:imbue) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:bput).exactly(Enchant::MAX_IMBUE_TRIES).times
+        expect(Lich::Messaging).to have_received(:msg).with('bold', "Enchant: The rod failed #{Enchant::MAX_IMBUE_TRIES} times; the totem is still on the brazier.")
+      end
+
+      it 'carries on when the last allowed cast works' do
+        instance = build_instance(settings: OpenStruct.new('waggle_sets' => { 'imbue' => { 'Imbue' => { 'mana' => 20 } } }))
+        failures = Array.new(Enchant::MAX_IMBUE_TRIES - 1, false)
+        allow(DRCA).to receive(:cast_spell?).and_return(*failures, true)
+        allow(Lich::Messaging).to receive(:msg)
+
+        instance.send(:imbue)
+
+        expect(Lich::Messaging).to have_received(:msg).with('bold', 'Enchant: Casting Imbue failed. Retrying.').exactly(failures.size).times
+      end
+    end
+
     context 'with imbue wand' do
       it 'waves wand at item on brazier' do
         instance = build_instance(
@@ -1688,6 +1723,66 @@ RSpec.describe Enchant, 'whole runs' do
 
       expect_transcript_done
       expect(game.messages).to eq(['Enchant: Could not wave the fount at the rock: I do not understand what you mean.'])
+    end
+  end
+
+  context 'when a scribing step cannot work' do
+    before(:each) do
+      book_start(chapter: '2', recipe: 'virga wand')
+      game.command("get my wand from my #{bag}", ENCHANT_LOG[:get_wand], gives: 'redwood wand')
+      game.command('put my wand on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my wand on my brazier', ENCHANT_LOG[:put_wand], takes: 'wand')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at wand on my brazier', ENCHANT_LOG[:wave_fount_wand], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at wand on my brazier', ENCHANT_LOG[:imbue_wants_induction])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'induction sigil', gives: 'induction sigil')
+      game.command('study my induction sigil', ENCHANT_LOG[:study_sigil], takes: 'induction sigil')
+      game.command('trace wand on my brazier', ENCHANT_LOG[:trace_wand])
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+    end
+
+    it 'stops when the brazier is not to hand (log 2, "You jot down some notes.")' do
+      game.command('scribe wand on my brazier with my burin', ['You jot down some notes.'])
+
+      expect { run_script(chapter: '2', recipe: 'virga wand', noun: 'wand') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: You jot down some notes. The wand is still on the brazier.'])
+    end
+
+    it 'stops when the burin is not in hand (log 1)' do
+      game.command('scribe wand on my brazier with my burin', ['You must be holding the burin to do that.'])
+
+      expect { run_script(chapter: '2', recipe: 'virga wand', noun: 'wand') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+    end
+
+    it 'stops after three scribes in a row get no reply it knows' do
+      3.times { game.command('scribe wand on my brazier with my burin', []) }
+
+      expect { run_script(chapter: '2', recipe: 'virga wand', noun: 'wand') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: No reply to scribe wand on my brazier with my burin 3 times in a row; the wand is still on the brazier.'])
+    end
+
+    it 'keeps going when a known reply comes between the silent ones' do
+      2.times { game.command('scribe wand on my brazier with my burin', []) }
+      game.command('scribe wand on my brazier with my burin', ENCHANT_LOG[:scribe_wand])
+      2.times { game.command('scribe wand on my brazier with my burin', []) }
+      game.command('scribe wand on my brazier with my burin', ENCHANT_LOG[:scribe_wand_wants_imbue])
+      final_rod_imbue('wand', ENCHANT_LOG[:imbue_completes_wand])
+      tidy_up('wand')
+
+      run_script(chapter: '2', recipe: 'virga wand', noun: 'wand')
+
+      expect_transcript_done
+      expect(game.hands).to eq(['wand', nil])
     end
   end
 end
