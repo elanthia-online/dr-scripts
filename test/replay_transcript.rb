@@ -84,7 +84,9 @@ class ReplayTranscript
   # Two edits let a spec vary one step of a real run (an event-order sweep):
   # - inject: an extra reply for a step's command, scripted just before the
   #   step's own, so that send gets it and the resend gets the logged reply
-  #   (e.g. a real "...wait 1 seconds." line, 25:11582);
+  #   (e.g. a real "...wait 1 seconds." line, 25:11582). An Array of such
+  #   replies scripts each in turn (e.g. `[[], [], []]`: three sends go
+  #   unanswered before the logged reply);
   # - replace: other lines for a step's reply (e.g. the same lines in another
   #   order).
   #
@@ -95,8 +97,9 @@ class ReplayTranscript
   #   log sent that the script does not
   # @param from [Integer, nil] the first log line to take (a replay that
   #   starts part way through the window, e.g. `;remedy continue`)
-  # @param inject [Hash{Integer => Array<ReplayGame::Line>}] step line => an
-  #   extra reply scripted before the step's own
+  # @param inject [Hash{Integer => Array<ReplayGame::Line>, Array<Array<ReplayGame::Line>>}]
+  #   step line => an extra reply, or a list of extra replies, scripted
+  #   before the step's own
   # @param replace [Hash{Integer => Array<ReplayGame::Line>}] step line => the
   #   lines to reply with instead of the logged ones
   # @return [Array<Step>] the steps scripted
@@ -111,12 +114,21 @@ class ReplayTranscript
       raise ArgumentError, "#{@run}: line #{line} is not a scripted step" unless chosen.include?(step(line))
     end
     chosen.each do |step|
-      game.script(step.command, *inject[step.line]) if inject.key?(step.line)
+      extra_replies(inject[step.line]).each { |reply| game.script(step.command, *reply) } if inject.key?(step.line)
       game.script(step.command, *replace.fetch(step.line, step.lines))
     end
   end
 
   private
+
+  # The replies an inject value stands for: one reply (an Array of lines, or
+  # none for silence), or a non-empty Array of replies.
+  #
+  # @param value [Array<ReplayGame::Line>, Array<Array<ReplayGame::Line>>]
+  # @return [Array<Array<ReplayGame::Line>>]
+  def extra_replies(value)
+    !value.empty? && value.all?(Array) ? value : [value]
+  end
 
   # A reply line as a cited log line, checked against the log_lines.json
   # fixtures when they hold the same cite.

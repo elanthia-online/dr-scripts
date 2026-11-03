@@ -1547,21 +1547,43 @@ RSpec.describe Remedy do
     let(:first_crush) { 'crush my nemoih with my rounded pestle' }
 
     describe 'the crafting loop' do
-      # flipped by layer 07 (bounded loop), then by layer 08 (stop on the refusal)
-      it 'CURRENT (H01/H02): resends the crush forever on "You need a more suitable type of herb" (25:50933)' do
+      # flipped by layer 08 (stop on the refusal); layer 07 bounded the loop (H01)
+      it 'CURRENT (H02): stops on "You need a more suitable type of herb" (25:50933) only after the fourth unanswered crush, 60 s on' do
         game.override(first_crush, log('25:50933'), times: nil)
         script_short_unguent
-        expect(run_remedy(short_unguent)).to eq(:looped)
-        expect(game.sent.drop(3).uniq).to eq([first_crush])
-        expect(game.diagnostics.uniq).to eq(["DRC: No match was found after 15 seconds for command '#{first_crush}' (1 lines seen)"])
-        expect(remedy_messages).to be_empty
+        expect(run_remedy(short_unguent)).to eq(:exited)
+        expect(game.sent.drop(3)).to eq([first_crush] * 4)
+        expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command '#{first_crush}' (1 lines seen)"] * 4)
+        expect(game.trace.select { |event| event.kind == :stall }.sum(&:label)).to eq(60)
+        expect(remedy_messages).to eq(["Remedy: the game did not answer #{first_crush.inspect} 4 times in a row. Stopping."])
+        expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
       end
 
-      # flipped by layer 07 (bounded loop)
-      it 'CURRENT (D06): resends the first crush forever when its reply never comes' do
+      # layer 07: the loop is bounded
+      it 'D06: stops with a beep and a Remedy line naming the first crush once four sends of it go unanswered, the mortar still in hand' do
         script_short_unguent(first_crush: [])
-        expect(run_remedy(short_unguent)).to eq(:looped)
-        expect(game.sent.drop(3).uniq).to eq([first_crush])
+        expect(run_remedy(short_unguent) { allow(DRC).to receive(:beep) }).to eq(:exited)
+        expect(DRC).to have_received(:beep).once
+        expect(game.sent.drop(3)).to eq([first_crush] * 4)
+        expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command '#{first_crush}' (0 lines seen)"] * 4)
+        expect(remedy_messages).to eq(["Remedy: the game did not answer #{first_crush.inspect} 4 times in a row. Stopping."])
+        expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+        expect(commons.location_of('unguent')).to be_nil
+      end
+
+      context 'with a larger send budget' do
+        let(:game) { ReplayGame.new(send_budget: 200) }
+
+        # layer 07: the loop is bounded
+        it 'stops with a Remedy line after 100 crafting commands when every one is answered by Roundtime alone (25:10825)' do
+          script_short_unguent(first_crush: [log('25:10825')])
+          game.override('crush my unguent with my rounded pestle', log('25:10825'), times: nil)
+          expect(run_remedy(short_unguent)).to eq(:exited)
+          expect(game.sent.drop(3)).to eq([first_crush] + (['crush my unguent with my rounded pestle'] * 99))
+          expect(game.diagnostics).to be_empty
+          expect(remedy_messages).to eq(['Remedy: the unguent is not done after 100 crafting commands. Stopping.'])
+          expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
+        end
       end
 
       # flipped by layer 08 (MORE_PIECES stops) and layer 12 (the product get is checked)
@@ -2018,6 +2040,90 @@ RSpec.describe Remedy do
             send(sweep[:script], replace: { step.line => reordered })
             expect(run_remedy(typed(sweep[:line]))).to eq(:exited)
             expect_the_contract(game.sent)
+          end
+        end
+      end
+    end
+  end
+
+  # Layer 07: the crafting loop gives up after more than
+  # Remedy::CraftLoop::MAX_SILENT_REPLIES (3) unanswered sends of one command
+  # in a row. These sweeps check that lag below that bound changes nothing:
+  # three bput timeouts (15 s each, no line at all) before the logged reply
+  # of a crafting command only add three resends of it.
+  describe 'C16: a game that answers late, below the silence bound, over C01 and C02 (the contract)' do
+    silences = [[], [], []]
+    sweeps = [
+      { name: 'C01', run: '2026-10-26_5598', commands: cauldron_craft_commands, skips: general_elixir_skips,
+        script: :script_general_elixir, prefix: 'general_elixir', herb: 'crushed belradi', product: 'belradi elixir',
+        line: 'remedies 6 "a general elixir" belradi na "pewter ingot" bowl elixir' },
+      { name: 'C02', run: '2026-10-26_10483', commands: mortar_craft_commands, skips: head_unguent_skips,
+        script: :script_head_unguent, prefix: 'head_unguent', herb: 'dried nemoih', product: 'nemoih unguent',
+        line: 'remedies 3 "some head unguent" nemoih na "pewter ingot" mortar unguent' }
+    ]
+
+    sweeps.each do |sweep|
+      # The crafting commands the loop sends itself (mix or crush); the
+      # handlers' steps are not counted by the silence bound.
+      steps = ReplayTranscript.load(transcript_path(sweep[:run])).steps.select do |step|
+        sweep[:commands].match?(step.command) && !sweep[:skips].include?(step.line) && step.command.start_with?('mix ', 'crush ')
+      end
+
+      context "over #{sweep[:name]} (#{sweep[:run]})" do
+        let(:inventory) { logged_tools.merge(logged_supplies, sweep[:herb] => toolbag) }
+        let(:crafting_commands) { send("#{sweep[:prefix]}_crafting") }
+        let(:finishing_commands) { send("#{sweep[:prefix]}_finishing") }
+        let(:expected_moves) { send("#{sweep[:prefix]}_moves") }
+
+        # The contract parts of the run, as C15 checks them: the crafting
+        # commands first, the finishing commands last, at most the one
+        # CURRENT (D05) command between them; the same moves; the product in
+        # hand and no Remedy line.
+        #
+        # @param sends [Array<String>] the commands sent, resends removed
+        # @return [void]
+        def expect_the_contract(sends)
+          expect(sends.first(crafting_commands.size)).to eq(crafting_commands), game.report
+          expect(sends.last(finishing_commands.size)).to eq(finishing_commands), game.report
+          expect(sends.size - crafting_commands.size - finishing_commands.size).to be_between(0, 1)
+          expect(commons.moves).to eq(expected_moves)
+          expect(remedy_messages).to be_empty
+        end
+
+        it 'has crafting commands to sweep' do
+          expect(steps.size).to be > 5
+        end
+
+        steps.each do |step|
+          it "resends #{step.command.inspect} (#{step.line}) three times when three sends go unanswered, and changes nothing else" do
+            send(sweep[:script], inject: { step.line => silences })
+            expect(run_remedy(typed(sweep[:line]))).to eq(:exited)
+            silent_send = game.trace.take_while { |event| event.kind != :stall }.count { |event| event.kind == :send } - 1
+            sends = game.sent.dup
+            expect(sends[silent_send, 4].uniq.size).to eq(1), game.report
+            expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command '#{sends[silent_send]}' (0 lines seen)"] * 3)
+            3.times { sends.delete_at(silent_send) }
+            expect_the_contract(sends)
+            expect(commons.location_of(sweep[:product])).to eq('left').or eq('right')
+          end
+        end
+
+        context 'with a larger send budget' do
+          let(:game) { ReplayGame.new(send_budget: 200) }
+
+          it 'finishes with the same commands when every crafting command first goes unanswered three times' do
+            send(sweep[:script], inject: steps.to_h { |step| [step.line, silences] })
+            expect(run_remedy(typed(sweep[:line]))).to eq(:exited)
+            expect(game.diagnostics.size).to eq(steps.size * 3)
+            # Each unanswered send is the send just before a timeout.
+            sent = -1
+            silent = game.trace.each_with_object([]) do |event, found|
+              sent += 1 if event.kind == :send
+              found << sent if event.kind == :stall
+            end
+            expect(silent.size).to eq(steps.size * 3)
+            expect_the_contract(game.sent.reject.with_index { |_command, index| silent.include?(index) })
+            expect(commons.location_of(sweep[:product])).to eq('left').or eq('right')
           end
         end
       end
@@ -2912,8 +3018,8 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       Remedy::CraftLoop.new(tools: tools, noun: 'unguent', handlers: handlers_for(tools: tools), magic: magic)
     end
 
-    it 'has no bound yet: both limits are infinite until layer 07 sets them' do
-      expect([Remedy::CraftLoop::MAX_CRAFT_STEPS, Remedy::CraftLoop::MAX_SILENT_REPLIES]).to eq([Float::INFINITY, Float::INFINITY])
+    it 'gives up after 100 crafting commands, or after more than 3 unanswered in a row' do
+      expect([Remedy::CraftLoop::MAX_CRAFT_STEPS, Remedy::CraftLoop::MAX_SILENT_REPLIES]).to eq([100, 3])
     end
 
     it 'crushes the herb, then the product after Roundtime (25:10825), until the final touches (26:11333)' do
@@ -2923,11 +3029,23 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(game.sent).to eq([first_crush, next_crush])
     end
 
-    it 'runs the magic routine before and after every pass, and not after the pass that finishes' do
+    it 'runs the magic routine once at the start of every pass' do
       game.script(first_crush, log('26:11057'), log('25:10825'))
       game.script(next_crush, log('26:11333'))
       craft_loop.run(first_crush)
-      expect(DRCA).to have_received(:crafting_magic_routine).with(settings).exactly(3).times
+      expect(DRCA).to have_received(:crafting_magic_routine).with(settings).twice
+    end
+
+    it 'runs the magic routine for a handler pass too, before the handler sends' do
+      add_remedy_flags
+      routine_calls = []
+      allow(DRCA).to receive(:crafting_magic_routine) { routine_calls << game.sent.dup }
+      # 26:7707 after the crush's Roundtime: the order of 26:7705-7707.
+      game.script(first_crush, log('26:11057'), log('25:10825'), log('26:7707'))
+      game.script('turn my large mortar', log('26:6086'), log('26:6088'))
+      game.script(next_crush, log('26:11333'))
+      craft_loop.run(first_crush)
+      expect(routine_calls).to eq([[], [first_crush], [first_crush, 'turn my large mortar']])
     end
 
     [['25:11264', 'crush my unguent with my rounded pestle'],
@@ -2965,10 +3083,53 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(game.sent).to eq([first_crush, 'turn my large mortar', next_crush])
     end
 
-    it 'gives up as :unanswered once more commands than MAX_SILENT_REPLIES go unanswered in a row' do
-      stub_const('Remedy::CraftLoop::MAX_SILENT_REPLIES', 1)
-      expect(craft_loop.run(first_crush)).to eq(:unanswered)
-      expect(game.sent).to eq([first_crush, first_crush])
+    it 'gives up as :unanswered on the fourth unanswered send of a command, naming that command' do
+      loop_under_test = craft_loop
+      expect(loop_under_test.run(first_crush)).to eq(:unanswered)
+      expect(game.sent).to eq([first_crush] * 4)
+      expect(game.clock).to eq(60)
+      expect(loop_under_test.command).to eq(first_crush)
+    end
+
+    it 'keeps going through three unanswered sends of a command when the fourth is answered' do
+      3.times { game.script(first_crush) }
+      game.script(first_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(game.sent).to eq([first_crush] * 4)
+      expect(game.diagnostics.size).to eq(3)
+    end
+
+    it 'names the product command as the one unanswered when silence follows a Roundtime' do
+      game.script(first_crush, log('25:10825'))
+      loop_under_test = craft_loop
+      expect(loop_under_test.run(first_crush)).to eq(:unanswered)
+      expect(game.sent).to eq([first_crush] + ([next_crush] * 4))
+      expect(loop_under_test.command).to eq(next_crush)
+    end
+
+    it 'does not count a reply that brings only a cue as silence: the step is handled and the silence counted afresh' do
+      add_remedy_flags
+      3.times { game.script(first_crush) }
+      # The crush refused with the catalyst cue alone (26:39150-39152,
+      # analog: the reply to a push), which no crafting pattern matches.
+      game.script(first_crush, log('26:39150'), log('26:39152'))
+      game.script('put my pewter ingot in my large mortar', log('26:11117'))
+      3.times { game.script(first_crush) }
+      game.script(first_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(game.sent).to eq(([first_crush] * 4) + ['put my pewter ingot in my large mortar'] + ([first_crush] * 4))
+      expect(game.diagnostics.size).to eq(7)
+    end
+
+    it 'tolerates three unanswered sends of each command in turn, with a handled step between them' do
+      add_remedy_flags
+      3.times { game.script(first_crush) }
+      game.script(first_crush, log('26:11057'), log('25:10825'), log('26:7707'))
+      game.script('turn my large mortar', log('26:6086'), log('26:6088'))
+      3.times { game.script(next_crush) }
+      game.script(next_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
+      expect(game.sent).to eq(([first_crush] * 4) + ['turn my large mortar'] + ([next_crush] * 4))
     end
 
     it 'counts silence afresh after a Roundtime, so one answered command between silences keeps it going' do
@@ -2980,14 +3141,28 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(craft_loop.run(first_crush)).to eq(:done)
     end
 
-    it 'gives up as :too_long after more than MAX_CRAFT_STEPS crafting commands, not counting the handled cues' do
-      stub_const('Remedy::CraftLoop::MAX_CRAFT_STEPS', 2)
+    it 'gives up as :too_long after MAX_CRAFT_STEPS crafting commands, not counting the handled cues' do
+      stub_const('Remedy::CraftLoop::MAX_CRAFT_STEPS', 3)
       add_remedy_flags
       game.script(first_crush, log('25:10825'), log('26:7707'))
       game.script('turn my large mortar', log('26:6088'))
       game.fallback(next_crush, log('25:10825'))
       expect(craft_loop.run(first_crush)).to eq(:too_long)
       expect(game.sent).to eq([first_crush, 'turn my large mortar', next_crush, next_crush])
+    end
+
+    it 'counts the unanswered resends as crafting commands towards MAX_CRAFT_STEPS' do
+      stub_const('Remedy::CraftLoop::MAX_CRAFT_STEPS', 3)
+      2.times { game.script(first_crush) }
+      expect(craft_loop.run(first_crush)).to eq(:too_long)
+      expect(game.sent).to eq([first_crush] * 3)
+    end
+
+    it 'is done, not too long, when the last allowed crafting command draws the final touches (26:11333)' do
+      stub_const('Remedy::CraftLoop::MAX_CRAFT_STEPS', 2)
+      game.script(first_crush, log('25:10825'))
+      game.script(next_crush, log('26:11333'))
+      expect(craft_loop.run(first_crush)).to eq(:done)
     end
   end
 
