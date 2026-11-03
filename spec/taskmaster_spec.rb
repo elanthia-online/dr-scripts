@@ -3102,6 +3102,12 @@ RSpec.describe TaskMaster do
         expect(tm.dorhum_tools).to eq(['burin', 'rod', 'small brazier'])
       end
 
+      it 'judges the task room, not enchanting_room, when both are set' do
+        tm = dorhum(crafting_room: 16_936, settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to include('small brazier')
+      end
+
       it 'needs no brazier of your own in a Crossing brazier room' do
         tm = dorhum(settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
 

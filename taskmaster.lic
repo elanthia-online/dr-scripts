@@ -912,7 +912,7 @@ class TaskMaster
   # @return [Boolean] whether the room Dorhum's items are enchanted in may
   #   have no brazier: a set room that is not one of Crossing's brazier rooms
   def needs_own_brazier?
-    room = @settings.enchanting_room || @crafting_room
+    room = task_enchanting_room
     room ? !Array(artificing_info['brazier-rooms']).include?(room.to_i) : false
   end
 
