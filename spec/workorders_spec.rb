@@ -2,6 +2,7 @@
 
 require 'ostruct'
 require 'time'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -619,11 +620,13 @@ RSpec.describe WorkOrders do
       before do
         allow(workorders).to receive(:count_combine_rem)
         allow(workorders).to receive(:stow_tool)
+        # remedy left the salve in hand, its success signal.
+        allow(DRCI).to receive(:in_hands?).with('salve').and_return(true)
       end
 
       it 'still disposes and stops on the game line' do
         reply('bundle', [failure_text])
-        workorders.send(:remedy_items, info, {}, recipe, 1)
+        expect { workorders.send(:remedy_items, info, {}, recipe, 1) }.not_to raise_error
         expect(DRCI).to have_received(:dispose_trash).with('salve', nil, nil)
       end
 
@@ -631,10 +634,98 @@ RSpec.describe WorkOrders do
         (player_lines(failure_text) + player_lines('you put it where?')).each do |line|
           reply_queues.clear
           reply('bundle', [line, 'You notate the salve in the logbook then bundle it up for delivery.'])
-          workorders.send(:remedy_items, info, {}, recipe, 1)
+          expect { workorders.send(:remedy_items, info, {}, recipe, 1) }.not_to raise_error
         end
         expect(DRCI).not_to have_received(:dispose_trash).with('salve', any_args)
         expect(DRCI).to have_received(:put_away_item?).with('logbook').exactly(6).times
+      end
+    end
+
+    # remedy.lic gives no exit status; the product it leaves in hand is its
+    # success signal. Hand names are DRC's: the product
+    # line 25:52559 ("You get some plovik unguent from inside a diamondique
+    # large mortar ...") and the tools remedy holds while it crafts.
+    describe '#remedy_items when remedy leaves no product in hand' do
+      let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+      let(:chest_unguent) { recipes.find { |recipe| recipe['name'] == 'some chest unguent' } }
+      let(:blister_cream) { recipes.find { |recipe| recipe['name'] == 'some blister cream' } }
+      let(:info) { { 'stock-room' => 100, 'logbook' => 'alchemy', 'catalyst' => 'coal nugget' } }
+      # CODE-DERIVED: no log has a bundle reply; this one only has to match
+      # '^You notate' (workorders.lic:843).
+      let(:notated) { ReplayGame.code('You notate the unguent in the logbook then bundle it up for delivery.', from: 'workorders.lic:843').text }
+      let(:remedy_hands) { [] }
+
+      before do
+        allow(workorders).to receive(:count_combine_rem)
+        allow(workorders).to receive(:stow_tool)
+        allow(workorders).to receive(:exit).and_raise(SystemExit)
+        allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }
+        # Each remedy run leaves the next hands of remedy_hands.
+        allow(DRC).to receive(:wait_for_script_to_complete) do |_name, _args|
+          $left_hand, $right_hand = remedy_hands.shift
+        end
+        reply('bundle', [notated])
+      end
+
+      it 'bundles the product when remedy leaves it in hand, with the remedy arguments of today' do
+        remedy_hands << ['plovik unguent', nil]
+        # A guard that fires here would exit; not_to raise_error turns that
+        # into a failure instead of a silent end of the whole run.
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.not_to raise_error
+
+        expect(DRC).to have_received(:wait_for_script_to_complete)
+          .with('remedy', ['remedies', 3, 'some chest unguent', 'plovik', 'na', 'coal nugget', 'mortar', 'unguent'])
+        expect(sent?('bundle my unguent with logbook')).to be(true)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not leave/)
+      end
+
+      it 'bundles the product from the right hand too, with a tool in the left' do
+        remedy_hands << ['diamondique mortar', 'plovik unguent']
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.not_to raise_error
+
+        expect(sent?('bundle my unguent with logbook')).to be(true)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not leave/)
+      end
+
+      it 'stops before the logbook when remedy leaves only its tools in hand' do
+        remedy_hands << %w[pestle diamondique\ mortar]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.to raise_error(SystemExit)
+
+        expect(Lich::Messaging).to have_received(:msg)
+          .with('bold', 'WorkOrders: remedy did not leave some chest unguent (unguent) in hand. Stopping.')
+        expect(DRCI).not_to have_received(:get_item?)
+        expect(bput_log).to be_empty
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'stops when remedy leaves both hands empty' do
+        remedy_hands << [nil, nil]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.to raise_error(SystemExit)
+        expect(bput_log).to be_empty
+      end
+
+      it 'checks the two-herb call (workorders.lic:833) the same way' do
+        remedy_hands << [nil, nil]
+        expect { workorders.send(:remedy_items, info, {}, blister_cream, 1) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete)
+          .with('remedy', ['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'coal nugget', 'mortar', 'cream'])
+        expect(Lich::Messaging).to have_received(:msg)
+          .with('bold', 'WorkOrders: remedy did not leave some blister cream (cream) in hand. Stopping.')
+      end
+
+      it 'bundles the first remedy of a batch and stops when the second leaves nothing' do
+        remedy_hands << ['plovik unguent', nil] << [nil, 'mixing stick'] << ['plovik unguent', nil]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('remedy', anything).twice
+        expect(bput_log.map(&:first)).to eq(['bundle my unguent with logbook'])
+        expect(DRCI).to have_received(:put_away_item?).with('logbook').once
+      end
+
+      it 'does not take a different remedy in hand for the product' do
+        remedy_hands << ['belradi elixir', nil]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.to raise_error(SystemExit)
       end
     end
 

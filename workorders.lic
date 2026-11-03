@@ -796,6 +796,19 @@ class WorkOrders
     stow_tool(DRC.right_hand)
   end
 
+  # Makes and bundles +quantity+ remedies for an alchemy work order: buys or
+  # gathers the herbs, then runs remedy.lic once per item and bundles each
+  # product with the logbook.
+  #
+  # @param info [Hash] the hometown's alchemy work order data (stock-room,
+  #   logbook, catalyst)
+  # @param _materials_info [Hash] unused
+  # @param recipe [Hash] the base-recipes.yaml remedies entry
+  # @param quantity [Integer] how many remedies the work order needs
+  # @return [void]
+  # @raise [SystemExit] when remedy.lic leaves no product in hand: Lich gives
+  #   no exit status, and the product in hand is remedy's success signal
+  #   (remedy.lic header)
   def remedy_items(info, _materials_info, recipe, quantity)
     DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
     herb2_needed = ''
@@ -818,6 +831,10 @@ class WorkOrders
         DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2_needed, info['catalyst'], recipe['container'], recipe['noun']])
       else
         DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], info['catalyst'], recipe['container'], recipe['noun']])
+      end
+      unless DRCI.in_hands?(recipe['noun'])
+        Lich::Messaging.msg('bold', "WorkOrders: remedy did not leave #{recipe['name']} (#{recipe['noun']}) in hand. Stopping.")
+        exit
       end
       unless DRCI.get_item?("#{info['logbook']} logbook")
         Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for bundling remedy")

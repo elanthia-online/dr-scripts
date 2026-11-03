@@ -19,11 +19,11 @@
 #   ;remedy continue na "pewter ingot" mortar unguent
 #
 # == Callers
-# workorders.lic:818/820, craft.lic:680 and create_remedies.lic:47/49 run the
-# book form through DRC.wait_for_script_to_complete with a base-recipes.yaml
-# recipe. Lich gives a caller no exit status: a finished remedy is taken out
-# of the vessel and left in hand, the tools and the vessel are put away, and
-# the script ends. That product in hand is the success signal.
+# workorders.lic:831/833, craft.lic:694 and create_remedies.lic:54/56 run the
+# book form with a base-recipes.yaml recipe. Lich gives no exit status: the
+# finished remedy is left in hand, the tools and the vessel are put away and
+# the script ends. The product in hand is the success signal; each caller
+# checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
 #
 # == Settings read
 # crafting_container, crafting_items_in_container, alchemy_belt,
