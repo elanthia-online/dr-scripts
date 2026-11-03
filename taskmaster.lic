@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.04.3'
+  VERSION = '2026.11.04.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1421,8 +1421,11 @@ class TaskMaster
   # in the rest.
   #
   # @return [void]
-  # @raise [SystemExit] always: when not on a task, when the banked items
-  #   finish it, or after the last item is handed in
+  # @raise [SystemExit] when not on a task, when the banked items finish it,
+  #   or after the last item is handed in
+  # @raise [UncaughtThrowError] never: with task_cancel_foreign_tasks, a
+  #   task for another taskmaster is cancelled and FOREIGN_TASK_CANCELLED
+  #   thrown, caught in get_task and finish_task_in_progress
   def resume_task
     @dispose, @remainder = [false, false]
     item, owed = read_task
@@ -1551,10 +1554,12 @@ class TaskMaster
 
   # @param giver [String] the taskmaster
   # @param text [String] one of the TASK_CANCEL_* replies
-  # @return [Regexp] the reply, said by the taskmaster: its name, then
-  #   "says," before the quote
+  # @return [Regexp] the reply, said by the taskmaster: the line starts with
+  #   its name (after a title such as "Researcher"), then "says," or "looks
+  #   at you and says," before the quote, as every logged reply does. So
+  #   "Mallory looks at Researcher Dorhum and says, ..." does not count.
   def cancel_reply(giver, text)
-    /^[^"]*\b#{Regexp.escape(giver)}\b[^"]*says, "[^"]*#{Regexp.escape(text)}/i
+    /^(?:[\w'-]+ )?#{Regexp.escape(giver)} (?:looks at you and )?says, "[^"]*#{Regexp.escape(text)}/i
   end
 
   # Hands in finished items already in the bag and returns how many are still

@@ -930,7 +930,7 @@ RSpec.describe TaskMaster do
           game('ask zasele for task' => ->(*) { offers.shift || raise('asked again after the offer') }, 'accept task' => 'You can check your progress with the TASK verb',
                'task' => journal('a coil of reinforced cloth rope', 5, 0), 'read my rope instructions' => rope_materials)
           allow(DRCC).to receive(:stow_crafting_item)
-          tm.get_task
+          expect { tm.get_task }.not_to raise_error
           expect(UserVars.taskmaster_replacements).to eq('poltu' => 'dagger')
         end
       end
@@ -1035,7 +1035,7 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:fput) { |command| events << [:fput, command] }
           replies = [wait, offer]
           game('ask zasele for task' => ->(*) { replies.shift || raise('asked again after the last reply') }, 'accept task' => 'You can check your progress with the TASK verb.')
-          tm.get_task
+          expect { tm.get_task }.not_to raise_error
           expect(events).to eq([[:pause, 7]])
         end
 
@@ -1089,7 +1089,9 @@ RSpec.describe TaskMaster do
         end
 
         it 'counts unknown replies in a row only' do
-          expect(asking(['', '', wait, '', '', offer]).first).to eq(:accepted)
+          result = nil
+          expect { result = asking(['', '', wait, '', '', offer]) }.not_to raise_error
+          expect(result.first).to eq(:accepted)
         end
       end
 
@@ -2505,7 +2507,7 @@ RSpec.describe TaskMaster do
         replies = [confirm, cancelled]
         game('ask dorhum for task cancel' => ->(*) { replies.shift })
 
-        tm.cancel_task('dorhum', 'shell')
+        expect { tm.cancel_task('dorhum', 'shell') }.not_to raise_error
 
         expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).twice
         expect(DRCT).to have_received(:dispose).with('shell instructions', nil, 'bucket', 'tap')
@@ -2520,16 +2522,24 @@ RSpec.describe TaskMaster do
         # Like DRC.bput: the first line that one of the matchers takes.
         game('ask dorhum for task cancel' => ->(_cmd, *matchers) { heard.shift.find { |line| matchers.any? { |m| line.match?(m) } }.to_s })
 
-        tm.cancel_task('dorhum', 'shell')
+        expect { tm.cancel_task('dorhum', 'shell') }.not_to raise_error
 
         expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).twice
+      end
+
+      it 'does not take a player looking at the taskmaster and saying the words' do
+        heard = 'Mallory looks at Researcher Dorhum and says, "Very well, I see that you no longer wish to assist me."'
+        expect(heard).not_to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCELLED))
+        expect(cancelled).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCELLED))
+        expect(confirm).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCEL_CONFIRM))
+        expect(no_task).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCEL_NONE))
       end
 
       it 'takes "You do not currently have a task" as done' do
         tm = zasele_run
         game('ask dorhum for task cancel' => no_task)
 
-        tm.cancel_task('dorhum', 'shell')
+        expect { tm.cancel_task('dorhum', 'shell') }.not_to raise_error
 
         expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).once
       end
