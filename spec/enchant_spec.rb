@@ -909,14 +909,25 @@ RSpec.describe Enchant do
   # ---------------------------------------------------------------------------
 
   describe '#handle_new_enchant' do
-    it 'exits early with message when fount not found' do
+    it 'stops before reading the recipe or touching the brazier when there is no fount' do
       instance = build_instance(item: 'totem')
-      $mock_drci_exists = false
+      allow(DRCI).to receive(:exists?).with('fount').and_return(false)
 
-      allow(instance).to receive(:study_recipe)
-      expect(Lich::Messaging).to receive(:msg).with('bold', /fount not found in inventory/)
-      expect(instance).to receive(:cleanup)
-      expect(instance).not_to receive(:imbue)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'Enchant: fount not found in inventory. Cannot proceed.')
+      expect(instance).not_to receive(:study_recipe)
+      expect(instance).not_to receive(:cleanup)
+      expect(DRC).not_to receive(:bput)
+
+      expect { instance.send(:handle_new_enchant) }.to raise_error(SystemExit)
+    end
+
+    it 'needs no fount to make a fount from a small sphere' do
+      instance = build_instance(item: 'small sphere', baseitem: 'small sphere')
+      expect(DRCI).not_to receive(:exists?)
+      expect(instance).to receive(:study_recipe)
+      expect(instance).not_to receive(:wave_fount)
+      allow(instance).to receive(:imbue)
+      allow(instance).to receive(:scribe)
 
       instance.send(:handle_new_enchant)
     end
@@ -1019,7 +1030,7 @@ RSpec.describe Enchant do
       instance = build_instance
       allow(DRC).to receive(:bput).with(/^look on/, anything, anything)
                                   .and_return('On the brass brazier you see a totem.')
-      allow(DRC).to receive(:bput).with(/^wave my fount/, anything, anything)
+      allow(DRC).to receive(:bput).with(/^wave my fount/, anything, anything, anything)
                                   .and_return('The fragile mana fount is not required')
 
       expect(DRCC).to receive(:get_crafting_item).with('fount', 'backpack', ['burin'], 'toolbelt')
@@ -1645,6 +1656,38 @@ RSpec.describe Enchant, 'whole runs' do
       expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
 
       expect_transcript_done
+    end
+  end
+
+  context 'when there is no fount' do
+    it 'stops before reading the recipe, so nothing is left on the brazier' do
+      allow(DRCI).to receive(:exists?).with('fount').and_return(false)
+      game.call('EquipmentManager#empty_hands')
+      game.call('DRC.wait_for_script_to_complete', 'buff', ['enchant'])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: fount not found in inventory. Cannot proceed.'])
+    end
+  end
+
+  context 'when the fount wave does not take' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      # Log 1: the parser's reply to a wave with no fount in hand.
+      game.command('wave my fount at rock on my brazier', ['I do not understand what you mean.'])
+    end
+
+    it 'stops instead of imbuing without a fount' do
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: Could not wave the fount at the rock: I do not understand what you mean.'])
     end
   end
 end

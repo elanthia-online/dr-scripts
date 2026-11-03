@@ -28,6 +28,8 @@ class Enchant
   # Wave fount
   WAVE_FOUNT_SUCCESS = /^You slowly wave/.freeze
   WAVE_FOUNT_NOT_NEEDED = /^[^"]*?The fragile mana fount is not required/i.freeze
+  # The parser's answer to a wave with no fount in hand (log 1).
+  WAVE_FOUNT_FAILED = /^I do not understand what you mean.*/.freeze
 
   # Touch cube
   TOUCH_CUBE_PATTERNS = [
@@ -229,18 +231,13 @@ class Enchant
   end
 
   def handle_new_enchant
-    study_recipe
     @item = 'fount' if @item == 'small sphere'
+    # Checked before anything goes on the brazier, so a missing fount leaves
+    # nothing half done.
+    stop_enchant("#{@fount} not found in inventory. Cannot proceed.") unless @item == 'fount' || DRCI.exists?(@fount)
 
-    unless @item == "fount"
-      unless DRCI.exists?(@fount)
-        Lich::Messaging.msg("bold", "Enchant: #{@fount} not found in inventory. Cannot proceed.")
-        cleanup
-        return
-      end
-
-      wave_fount
-    end
+    study_recipe
+    wave_fount unless @item == 'fount'
 
     DRC.bput("touch my #{@cube}", *TOUCH_CUBE_PATTERNS) if @cube
     imbue
@@ -250,12 +247,18 @@ class Enchant
   end
 
   # Gets the fount and waves it at the item, which leaves it on the item.
-  # The game may say the item needs none; then it goes back in the bag.
+  # The game may say the item needs none; then it goes back in the bag. Any
+  # other reply stops: an imbue without the fount does nothing ("Sparkles of
+  # wave light cascade over the rock, but nothing else happens.", log 1).
   def wave_fount
     get_tool(@fount)
-    wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED)
+    wave_result = DRC.bput("wave my #{@fount} at #{@item} on #{@brazier_ref}", WAVE_FOUNT_SUCCESS, WAVE_FOUNT_NOT_NEEDED, WAVE_FOUNT_FAILED)
     @fount_on_item = !WAVE_FOUNT_NOT_NEEDED.match?(wave_result)
-    stow_tool(@fount) unless @fount_on_item
+    if !@fount_on_item
+      stow_tool(@fount)
+    elsif !WAVE_FOUNT_SUCCESS.match?(wave_result)
+      stop_enchant("Could not wave the #{@fount} at the #{@item}: #{wave_result.empty? ? 'no reply' : wave_result}")
+    end
   end
 
   def study_recipe
