@@ -1222,12 +1222,25 @@ RSpec.describe TaskMaster do
         it "finishes Zasele's task as hers when started for Dorhum" do
           tm = reader(npc: 'dorhum')
           game('task' => zasele_journal)
+          allow(tm).to receive(:reconcile_hands)
           allow(tm).to receive(:turn_in_banked) { exit }
 
           expect { tm.resume_task }.to raise_error(SystemExit)
 
           expect(tm.instance_variable_get(:@npc)).to eq('zasele')
           expect(DRC).to have_received(:message).with('You are on a task for Zasele, not Dorhum; finishing that one first.')
+        end
+
+        it "runs Zasele's hand check again after switching to her task, for an unfinished piece left in hand" do
+          tm = reader(npc: 'dorhum')
+          game('task' => zasele_journal)
+          npc_at_check = nil
+          allow(tm).to receive(:reconcile_hands) { npc_at_check = tm.instance_variable_get(:@npc) }
+
+          tm.read_task
+          tm.follow_task_giver
+
+          expect(npc_at_check).to eq('zasele')
         end
 
         it "stops on a task from a taskmaster it doesn't do, before handing anything in" do

@@ -1299,6 +1299,9 @@ class TaskMaster
     end
     DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}; finishing that one first.")
     @npc = giver
+    # The start's hand check ran for the other taskmaster: Zasele's finishes
+    # an unfinished piece left in hand, so it runs again for the new one.
+    reconcile_hands
   end
 
   # Hands in finished items already in the bag and returns how many are still
