@@ -582,6 +582,12 @@ RSpec.describe 'test harness replay support' do
       )
     end
 
+    it 'records ensure_copper_on_hand with the amount and town, leaving the settings out, and succeeds' do
+      commons = ReplayCommons.new(game: game).install(self)
+      expect(DRCM.ensure_copper_on_hand(1500, { hometown: 'Crossing' }, 'Shard')).to be(true)
+      expect(commons.calls).to eq([['DRCM.ensure_copper_on_hand', 1500, 'Shard']])
+    end
+
     it 'hold and release change the hands for scenario setup and after: hooks' do
       commons = commons_for(:current)
       expect([commons.hold('heavy cauldron'), commons.hold('mixing stick'), commons.hold('sieve')]).to eq([:right, :left, nil])
@@ -664,6 +670,37 @@ RSpec.describe 'test harness replay support' do
         expect(ReplayCommons.id_in(ids, 'pestle')).to eq('41782399')
         expect(ReplayCommons.id_in(ids, 'mortar')).to be_nil
         expect(ReplayCommons.id_in({}, 'nemoih')).to be_nil
+      end
+
+      # lich-5 DRCI.item_ref passes a "#<id>" reference through unchanged
+      # (480bdee3 common-items.rb:50-58), so put_away_item?("#<id>", bag)
+      # sends `put #<id> in my <bag>` and get_item?("#<id>") `get #<id>`.
+      describe 'a "#<id>" reference' do
+        let(:ids) { { 'nemoih unguent' => '41782311' } }
+
+        it 'puts away the held item with that id, and only that one' do
+          commons = ReplayCommons.new(game: game, ids: ids).install(self)
+          commons.hold('rounded pestle')
+          commons.hold('nemoih unguent')
+          expect(DRCI.put_away_item?('#41782311', bag)).to be(true)
+          expect([$right_hand, $left_hand]).to eq(['rounded pestle', nil])
+          expect(commons.moves.last).to eq("nemoih unguent: hand -> #{bag}")
+        end
+
+        it 'gets the item with that id back from wherever it is, past another of the same noun' do
+          commons = ReplayCommons.new(game: game, inventory: { 'blister unguent' => bag, 'nemoih unguent' => bag }, ids: ids).install(self)
+          expect(DRCI.get_item?('#41782311')).to be(true)
+          expect($right_hand).to eq('nemoih unguent')
+          expect(commons.location_of('blister unguent')).to eq(bag)
+        end
+
+        it 'finds nothing for an id no item has, held or owned' do
+          commons = ReplayCommons.new(game: game, inventory: { 'nemoih unguent' => bag }, ids: ids).install(self)
+          commons.hold('rounded pestle')
+          expect(DRCI.put_away_item?('#99999999', bag)).to be(false)
+          expect(DRCI.get_item?('#99999999')).to be(false)
+          expect([$right_hand, $left_hand]).to eq(['rounded pestle', nil])
+        end
       end
     end
   end

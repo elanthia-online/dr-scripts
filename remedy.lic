@@ -38,9 +38,10 @@
 # done after 100 crafting commands, when a tool, the remed book, the
 # catalyst or the second herb cannot be got or put in, when the game asks
 # for a second herb and herb2 is na, none or "not used", when the finished
-# remedy is not in hand after it is taken out of the vessel, or when water,
-# alcohol or a coal nugget must be bought and base-crafting.yaml knows no
-# alchemy shop in the crafting town or hometown. A stop leaves the vessel
+# remedy is not in hand after it is taken out of the vessel or after a
+# stamp repair (remedy_repair_stamp), or when water, alcohol or a coal
+# nugget must be bought and base-crafting.yaml knows no alchemy shop in the
+# crafting town or hometown. A stop leaves the vessel
 # in hand and puts the stirrer away; when the vessel holds a remedy the
 # game has begun and not finished, remedy prints the ;remedy continue line
 # that carries it on.
@@ -51,11 +52,22 @@
 # crafting_container, crafting_items_in_container, alchemy_belt (the tools
 # and the remed book are untied from it and tied back when it lists them),
 # alchemy_tools, herb_container, water_container, alcohol_container,
-# master_crafting_book, mark_crafted_goods, cube_armor_piece,
-# crafting_training_spells, hometown, force_crafting_town and alchemy_room.
+# master_crafting_book, mark_crafted_goods, remedy_repair_stamp,
+# cube_armor_piece, crafting_training_spells, hometown, force_crafting_town
+# and alchemy_room.
 # The commons it calls read more (DRCA.crafting_magic_routine,
 # DRCM.get_money_from_bank). remedy runs ;buff remedy, which casts
 # waggle_sets['remedy'], unless waggle_sets is unset or has no remedy set.
+#
+# == A damaged stamp
+# When mark_crafted_goods is set and the game says the stamp is too badly
+# damaged to mark the remedy, remedy says so and leaves the remedy
+# unmarked. With remedy_repair_stamp: true (off by default) it repairs the
+# stamp with your own wire brush and oil (DRCC.repair_own_tools, as
+# workorders_repair_own_tools does), then marks once more. The repair may
+# walk to the bank, and to the blacksmithing finisher shop of the crafting
+# town to buy oil or a wire brush, then back; the remedy waits in
+# crafting_container meanwhile, and is in hand again when remedy ends.
 #
 # == Buying supplies
 # With no water, alcohol or coal nugget catalyst on hand, remedy buys it at
@@ -338,15 +350,25 @@ class Remedy
     # @note code-derived (unverified): none of them appears in the logs.
     RELEASE_SYMBIOSIS_REPLIES = [/But you haven't/i, /You release/i, /Repeat this command/i].freeze
 
+    # The reply to `mark my <noun> with my stamp` that says the stamp must
+    # be repaired before it marks anything: "too badly damaged".
+    #
+    # @note code-derived (unverified): no log has it. remedy has always
+    #   waited for it (remedy.lic:423 at 03f11b54), and forge.lic:292,
+    #   smith.lic:357, shape.lic:267, tinker.lic:301 and carve.lic:214 wait
+    #   for the same text after the same command.
+    STAMP_DAMAGED = /too badly damaged/i
+
     # Replies to `mark my <noun> with my stamp`: "You hold the liniment
     # steady and score the surface with the stamp." (25:11294).
     #
     # @note code-derived (unverified): "carefully hammer the stamp", "You
-    #   cannot figure out how to do that" and "too badly damaged" appear in no
-    #   log (forge.lic and smith.lic read the same stamp lines).
+    #   cannot figure out how to do that" and "too badly damaged"
+    #   ({STAMP_DAMAGED}) appear in no log (forge.lic and smith.lic read the
+    #   same stamp lines).
     MARK_REPLIES = [/carefully hammer the stamp/i,
                     /You cannot figure out how to do that/i,
-                    /too badly damaged/i,
+                    STAMP_DAMAGED,
                     /score the surface with the stamp/].freeze
 
     # Replies to `count my <noun>` with the finished remedy in hand: "You
@@ -1085,6 +1107,56 @@ class Remedy
     # @return [void]
     def stow_tool(name)
       DRCC.stow_crafting_item(name, @bag, @belt)
+    end
+
+    # Puts a held item in the crafting container by its game id (`put
+    # #<id> in my <crafting_container>`, through DRCI.put_away_item?), and
+    # tells whether it left the hands, as {#released?} reads them.
+    #
+    # The id names the very item in hand; a name could take another item of
+    # the same name.
+    #
+    # @param id [String] the item's game id ({#held_id})
+    # @param name [String] the name the item was asked for by (its noun)
+    # @return [Boolean] whether neither hand holds it afterwards, or within
+    #   {LATE_GET_LOOKS} seconds
+    # @note DRCI.put_away_item?'s answer is not read: the hands decide, as
+    #   for every put remedy checks.
+    def put_aside(id, name)
+      DRCI.put_away_item?("##{id}", @bag)
+      released?(name)
+    end
+
+    # Gets an item back by its game id (`get #<id>`, through
+    # DRCI.get_item?, wherever it is), and tells whether a hand holds it, as
+    # {#got?} reads them.
+    #
+    # @param id [String] the item's game id, as {#put_aside} was given it
+    # @param name [String] the name the item was asked for by (its noun)
+    # @return [Boolean] whether a hand holds it afterwards, or within
+    #   {LATE_GET_LOOKS} seconds
+    # @note DRCI.get_item?'s answer is not read: before lich-5 v5.22.0 it
+    #   looks in the hands for DRC.get_noun("#<id>"), which is nil (v5.20.0
+    #   common-items.rb:1249-1262), so it answers false even when the get
+    #   worked.
+    def take_back(id, name)
+      DRCI.get_item?("##{id}")
+      got?(name)
+    end
+
+    # Repairs tools with the character's own wire brush and oil
+    # (DRCC.repair_own_tools, with the crafting container, its items and
+    # alchemy_belt), buying what is missing at the town's finisher shop.
+    #
+    # @param info [Hash] the town's base-crafting.yaml blacksmithing data
+    #   ('finisher-room', 'finisher-number')
+    # @param tools [Array<String>] the tools to repair
+    # @return [Object] DRCC.repair_own_tools' return, which remedy does not
+    #   read
+    # @raise [SystemExit] when the helper's get of the wire brush or the oil
+    #   stops the script
+    def repair_tools(info, tools)
+      DRCC.repair_own_tools(info, tools, @bag, @bag_items, @belt)
     end
 
     # Sets the vessel down, so the herb can be gathered into it.
@@ -2353,11 +2425,15 @@ class Remedy
     # @param tools [Tools] the vessel
     # @param noun [String] the product noun
     # @param mark [Boolean, nil] mark_crafted_goods
-    def initialize(inventory:, tools:, noun:, mark:)
+    # @param repair [StampRepair, nil] repairs a stamp too badly damaged to
+    #   mark, when remedy_repair_stamp is set; nil (the default) leaves the
+    #   product unmarked and says why
+    def initialize(inventory:, tools:, noun:, mark:, repair: nil)
       @inventory = inventory
       @tools = tools
       @noun = noun
       @mark = mark
+      @repair = repair
     end
 
     # Puts away the stirrer ({Inventory#stow_beside}), takes the product out
@@ -2384,7 +2460,8 @@ class Remedy
     #
     # @return [void]
     # @raise [SystemExit] when the product is not in hand after the get
-    #   ({Remedy.stop}), or as {Inventory#fetch?} may, on the stamp's get
+    #   ({Remedy.stop}), or as {Inventory#fetch?} may, on the stamp's get,
+    #   or as {#stamp} may, when the stamp is repaired
     # @note The count is one command more than remedy sent before layer 17
     #   (a deliberate, always-on change). Under workorders it repeats
     #   the count workorders makes of the bundled remedy (workorders.lic,
@@ -2428,22 +2505,54 @@ class Remedy
       Patterns::PRODUCT_TAKEN.any? { |pattern| pattern.match?(reply.to_s) } || @inventory.got?(@noun)
     end
 
-    # Marks the product with the stamp: "You hold the liniment steady and
-    # score the surface with the stamp." (25:11294). When the stamp cannot
-    # be got ({Inventory#fetch?}), says so and leaves the product unmarked:
-    # the product is made and in hand, so remedy still finishes.
+    # Marks the product with the stamp ({#mark}). When the game says the
+    # stamp is too badly damaged ({Patterns::STAMP_DAMAGED}):
+    # - with remedy_repair_stamp off (no {StampRepair}, the default), says
+    #   so and leaves the product unmarked, sending what remedy always sent
+    #   (D10: remedy used to say nothing);
+    # - with it on, has {StampRepair#repair} repair the stamp, then marks
+    #   once more; a stamp still damaged after that is reported, and the
+    #   product left unmarked, with no further repair.
+    # The product is made and in hand either way, so remedy still finishes.
     #
     # @return [void]
-    # @note code-derived (unverified): "too badly damaged" is not acted on
-    #   (CURRENT D10, layer 18).
+    # @raise [SystemExit] when the product cannot be got back after the
+    #   repair ({StampRepair#repair}), or when a commons helper of the
+    #   repair stops the script
+    # @note code-derived (unverified): no log has "too badly damaged".
     def stamp
+      return unless mark == :damaged
+      return report_damaged unless @repair
+      return unless @repair.repair(@noun)
+
+      DRC.message("Remedy: the stamp is still too badly damaged after its repair; the #{@noun} is left unmarked.") if mark == :damaged
+    end
+
+    # Gets the stamp, marks the product with it ("You hold the liniment
+    # steady and score the surface with the stamp.", 25:11294) and puts the
+    # stamp away. When the stamp cannot be got ({Inventory#fetch?}), says so
+    # and sends no mark.
+    #
+    # @return [Symbol] :damaged when the game says the stamp is too badly
+    #   damaged ({Patterns::STAMP_DAMAGED}); :no_stamp when it could not be
+    #   got; :sent for any other reply, or none
+    def mark
       unless @inventory.fetch?(STAMP)
         DRC.message("Remedy: could not get the stamp; the #{@noun} is left unmarked.")
-        return
+        return :no_stamp
       end
 
-      DRC.bput("mark my #{@noun} with my stamp", *Patterns::MARK_REPLIES)
+      reply = DRC.bput("mark my #{@noun} with my stamp", *Patterns::MARK_REPLIES)
       @inventory.stow_tool(STAMP)
+      Patterns::STAMP_DAMAGED.match?(reply) ? :damaged : :sent
+    end
+
+    # Says the stamp needs repair and the product is left unmarked, and how
+    # to have remedy repair it (remedy_repair_stamp).
+    #
+    # @return [void]
+    def report_damaged
+      DRC.message("Remedy: the stamp is too badly damaged to mark the #{@noun}; the #{@noun} is left unmarked. Repair the stamp, or set remedy_repair_stamp: true for remedy to repair it and mark again.")
     end
 
     # Counts the product in hand and prints its yield: "Remedy: made 12 uses
@@ -2466,6 +2575,132 @@ class Remedy
       uses = Remedy.counted("count my #{@noun}", Patterns::PRODUCT_COUNT_REPLIES)
       product = @inventory.held_name(@noun) || @noun
       DRC.message(uses ? "Remedy: made #{uses} uses of #{product}." : "Remedy: made #{product}; its uses could not be counted.")
+    end
+  end
+
+  # Repairs a stamp the game called too badly damaged to mark the product,
+  # when remedy_repair_stamp is set (opt-in, off by
+  # default), so the {Finisher} can mark once more.
+  #
+  # The repair is DRCC.repair_own_tools with the character's own wire brush
+  # and oil, as workorders.lic:385-389 runs it for workorders_repair_own_tools:
+  # coins on hand first (DRCM.ensure_copper_on_hand, {COPPER}), a walk back
+  # to the room, then the repair with the crafting town's base-crafting.yaml
+  # blacksmithing data. The helper buys oil or a wire brush at that town's
+  # finisher shop when the crafting container has too few uses, and walks
+  # back (lich-5 common-crafting.rb, check_consumables).
+  #
+  # The helper holds the stamp in one hand and the brush or the oil in the
+  # other, so the product cannot stay in hand: it is put in the crafting
+  # container by its game id for the repair and got back by the same id,
+  # so no other item of the same name is taken in its place. A product with
+  # no id is not put away, and the stamp is not repaired.
+  #
+  # Should the script end during the repair (a commons helper's exit, a
+  # ;kill), {#recover}, run from the before_dying cleanup, gets the product
+  # back.
+  #
+  # @api private
+  class StampRepair
+    # The coins, in copper, made sure of on hand before the repair, as
+    # workorders.lic:387 does before the same helper.
+    COPPER = 1500
+
+    # @param settings [OpenStruct] the character's settings; reads
+    #   force_crafting_town and hometown (DRCC.crafting_hometown), and the
+    #   bank helper reads more
+    # @param inventory [Inventory] the product's put and get, and the repair
+    # @param blacksmithing [Hash{String => Hash}, nil] base-crafting.yaml's
+    #   blacksmithing data, by town
+    def initialize(settings:, inventory:, blacksmithing:)
+      @settings = settings
+      @inventory = inventory
+      @blacksmithing = blacksmithing || {}
+      @aside = nil
+    end
+
+    # Repairs the stamp, the stamp put away and the product in hand (see the
+    # class comment). Says why and repairs nothing when base-crafting.yaml
+    # has no blacksmithing data for the crafting town, when the product in
+    # hand shows no game id, or when it does not leave the hand.
+    #
+    # @param noun [String] the product noun
+    # @return [Boolean] true when the repair ran and the product is back in
+    #   hand, so the stamp may mark it once more; false when nothing was
+    #   repaired and the product is still in hand
+    # @raise [SystemExit] when the product cannot be got back after the
+    #   repair ({Remedy.stop}), or when DRCC.repair_own_tools stops the
+    #   script (its gets of the wire brush and the oil pass no skip_exit)
+    def repair(noun)
+      town = DRCC.crafting_hometown(@settings)
+      info = @blacksmithing[town]
+      return unrepaired(noun, "base-crafting.yaml has no blacksmithing data for #{town.inspect} to repair it with") unless info
+
+      id = @inventory.held_id(noun)
+      return unrepaired(noun, "the #{noun} in hand shows no id to put it away by during the repair") unless id
+
+      DRC.message("Remedy: the stamp is too badly damaged to mark the #{noun}; repairing it, with the #{noun} in your #{@inventory.bag} meanwhile.")
+      return unrepaired(noun, "the #{noun} could not be put in your #{@inventory.bag} to free both hands for the repair") unless @inventory.put_aside(id, noun)
+
+      @aside = [id, noun]
+      repair_stamp(town, info)
+      Remedy.stop(lost(id, noun)) unless take_back
+      true
+    end
+
+    # Gets the product back when the script ends while it is put away for
+    # the repair; the before_dying cleanup runs it. Sends nothing otherwise.
+    #
+    # @return [void]
+    def recover
+      return unless @aside
+
+      id, noun = @aside
+      DRC.message("Remedy: #{lost(id, noun)}") unless take_back
+    end
+
+    private
+
+    # Makes sure of coins on hand, walks back to the room, and repairs the
+    # stamp ({Inventory#repair_tools}).
+    #
+    # @param town [String] the crafting town
+    # @param info [Hash] its blacksmithing data
+    # @return [void]
+    def repair_stamp(town, info)
+      room = Room.current&.id
+      DRCM.ensure_copper_on_hand(COPPER, @settings, town)
+      DRCT.walk_to(room) if room
+      @inventory.repair_tools(info, [Finisher::STAMP])
+    end
+
+    # Gets the put-away product back by its id ({Inventory#take_back}).
+    # Whatever the answer, it is not tried again.
+    #
+    # @return [Boolean] whether the product is in hand
+    def take_back
+      id, noun = @aside
+      @aside = nil
+      @inventory.take_back(id, noun)
+    end
+
+    # Says why the stamp is not repaired and the product is left unmarked.
+    #
+    # @param noun [String] the product noun
+    # @param why [String] the reason, as a clause
+    # @return [false]
+    def unrepaired(noun, why)
+      DRC.message("Remedy: the stamp is too badly damaged to mark the #{noun}, and #{why}; the #{noun} is left unmarked.")
+      false
+    end
+
+    # Where the product is when it could not be got back.
+    #
+    # @param id [String] its game id
+    # @param noun [String] the product noun
+    # @return [String] a sentence
+    def lost(id, noun)
+      "the #{noun} is in your #{@inventory.bag} (##{id}): it could not be got back after the stamp repair."
     end
   end
 
@@ -2587,6 +2822,8 @@ class Remedy
     @inventory = Inventory.new(settings, herbs: @order.herbs)
     @tools = nil
     @craft_loop = nil
+    @blacksmithing = nil
+    @stamp_repair = nil
     @finished = false
   end
 
@@ -2602,7 +2839,9 @@ class Remedy
     before_dying { cleanup }
     # The room remedy was started in is read before anything moves the
     # character, so a purchase can walk back to it.
-    supplies = Supplies.new(settings: @settings, remedies: get_data('crafting')['remedies'], inventory: @inventory,
+    crafting = get_data('crafting')
+    @blacksmithing = crafting['blacksmithing']
+    supplies = Supplies.new(settings: @settings, remedies: crafting['remedies'], inventory: @inventory,
                             return_room: @settings.alchemy_room || Room.current&.id)
     REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
 
@@ -2646,7 +2885,8 @@ class Remedy
   end
 
   # Leaves things tidy however the script ended. After a stop (the run did
-  # not finish), puts the stirrer away when a hand holds it, so the vessel
+  # not finish), gets back the product a stamp repair put away
+  # ({StampRepair#recover}), puts the stirrer away when a hand holds it, so the vessel
   # stays in hand with any unfinished remedy, and prints
   # the `;remedy continue` line when the remedy can be carried on
   # ({CraftLoop#resumable?}). Then releases the crafting magic when
@@ -2662,6 +2902,7 @@ class Remedy
   #   in hand is never touched.
   def cleanup
     unless @finished
+      @stamp_repair&.recover
       @inventory.stow_held(@tools.stirrer) if @tools
       report_resumable
     end
@@ -2786,7 +3027,8 @@ class Remedy
       stop("the #{@order.noun} is not done after #{CraftLoop::MAX_CRAFT_STEPS} crafting commands.")
     end
 
-    Finisher.new(inventory: @inventory, tools: @tools, noun: @order.noun, mark: @settings.mark_crafted_goods).finish
+    @stamp_repair = StampRepair.new(settings: @settings, inventory: @inventory, blacksmithing: @blacksmithing) if @settings.remedy_repair_stamp
+    Finisher.new(inventory: @inventory, tools: @tools, noun: @order.noun, mark: @settings.mark_crafted_goods, repair: @stamp_repair).finish
     @finished = true
     @magic.release
     exit
