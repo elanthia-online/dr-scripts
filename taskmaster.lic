@@ -27,7 +27,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.03.5'
+  VERSION = '2026.11.03.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -722,11 +722,11 @@ class TaskMaster
   # 2026 runs show them. :noun is the noun the finished item is handed in by,
   # which is its base item's: a spongestone is made from "a foraged rock" and
   # is still a rock; a virga wand from "a finished stone, bone or wood wand or
-  # rod" and is still the redwood wand it was made from. :base is the method
+  # rod" and is still the wand it was made from. :base is the method
   # that gets the base items. Any other item pauses the script.
   DORHUM_ITEMS = {
     'spongestone' => { noun: 'rock', base: :forage_rocks },
-    'wand'        => { noun: 'wand', base: :buy_redwood_wands }
+    'wand'        => { noun: 'wand', base: :buy_wands }
   }.freeze
 
   # Where Dorhum's spongestone tasks forage rocks unless task_rock_room says
@@ -735,8 +735,11 @@ class TaskMaster
   # area and realize that any collecting efforts would be futile."
   DEFAULT_ROCK_ROOM = 793
   # The wand on the steel crate in the Crossing enchanting supplies, 125
-  # Kronars (log 2).
-  REDWOOD_WAND = 'redwood wand'
+  # Kronars. TAP calls it "a redwood wand", but the game knows it only as a
+  # wand: "buy redwood wand" gets "You can't order anything here." and
+  # "tap my redwood wand" finds nothing, while "buy wand" gets "You decide to
+  # purchase the wand, and pay the sales clerk 125 Kronars." (2026-11-03).
+  SUPPLIES_WAND = 'wand'
   # A sigil on Dorhum's instructions and how many each item takes:
   # "(1) primary sigil (congruence)". The plural is accepted, though only
   # (1) has been seen.
@@ -856,21 +859,22 @@ class TaskMaster
     end
   end
 
-  # Buys a redwood wand for each virga wand still to make, less any carried.
+  # Buys a wand from the steel crate for each virga wand still to make, less
+  # any wands already in the crafting bag. DRCT.buy_item takes the crate's
+  # "You decide to purchase" reply.
   #
   # @param count [Integer] items to make
   # @return [void]
-  # @note A plain BUY at the steel crate is not in the logs (log 2 used
-  #   SHOP, then BUY THIS ITEM); DRCT.buy_item handles its "You decide to
-  #   purchase" reply.
-  def buy_redwood_wands(count)
-    needed = count - DRCI.count_items_in_container(REDWOOD_WAND, @bag)
+  # @note Every wand in the crafting bag counts, so an imbue wand kept there
+  #   (rather than a rod) would be taken for an unworked one.
+  def buy_wands(count)
+    needed = count - DRCI.count_items_in_container(SUPPLIES_WAND, @bag)
     return unless needed.positive?
 
     DRCM.ensure_copper_on_hand(needed * 125 + 7500, @settings, "Crossing")
     needed.times do
-      DRCT.buy_item(artificing_info['stock-room'], REDWOOD_WAND)
-      DRCC.stow_crafting_item('wand', @bag, nil)
+      DRCT.buy_item(artificing_info['stock-room'], SUPPLIES_WAND)
+      DRCC.stow_crafting_item(SUPPLIES_WAND, @bag, nil)
     end
   end
 

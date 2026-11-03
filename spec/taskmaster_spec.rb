@@ -2418,17 +2418,17 @@ RSpec.describe TaskMaster do
       end
     end
 
-    describe '#buy_redwood_wands' do
+    describe '#buy_wands' do
       before(:each) do
         allow(DRCC).to receive(:stow_crafting_item)
         allow(DRCM).to receive(:ensure_copper_on_hand)
       end
 
-      it 'buys a redwood wand for each virga wand not covered by the wands carried' do
-        allow(DRCI).to receive(:count_items_in_container).with('redwood wand', 'duffel bag').and_return(2)
-        expect(DRCT).to receive(:buy_item).with(14_753, 'redwood wand').exactly(4).times
+      it 'buys a wand from the steel crate for each virga wand not covered by the wands carried' do
+        allow(DRCI).to receive(:count_items_in_container).with('wand', 'duffel bag').and_return(2)
+        expect(DRCT).to receive(:buy_item).with(14_753, 'wand').exactly(4).times
 
-        dorhum.buy_redwood_wands(6)
+        dorhum.buy_wands(6)
 
         expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil).exactly(4).times
       end
@@ -2437,7 +2437,7 @@ RSpec.describe TaskMaster do
         allow(DRCI).to receive(:count_items_in_container).and_return(6)
         expect(DRCT).not_to receive(:buy_item)
 
-        dorhum.buy_redwood_wands(6)
+        dorhum.buy_wands(6)
       end
     end
 
@@ -2605,11 +2605,11 @@ RSpec.describe TaskMaster do
                              :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
       end
 
-      it 'buys redwood wands for a virga wand task' do
+      it 'buys wands for a virga wand task' do
         tm = dorhum
         %i[buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
         allow(DRCC).to receive(:fount)
-        expect(tm).to receive(:buy_redwood_wands).with(6)
+        expect(tm).to receive(:buy_wands).with(6)
 
         tm.dorhum('wand', 6, %w[induction])
       end
