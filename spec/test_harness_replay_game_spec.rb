@@ -488,6 +488,20 @@ RSpec.describe 'test harness replay support' do
         expect([DRCI.in_hands?('liniment instructions'), DRCI.in_hands?('stamp')]).to eq([true, false])
       end
 
+      it 'in_left_hand? and in_right_hand? each read only their own hand, by short_regex (common-items.rb:945-957, :985-990)' do
+        commons_for(:current)
+        $left_hand = 'diamondique large mortar'
+        $right_hand = 'rounded pestle'
+        expect([DRCI.in_left_hand?('mortar'), DRCI.in_right_hand?('mortar')]).to eq([true, false])
+        expect([DRCI.in_left_hand?('pestle'), DRCI.in_right_hand?('pestle')]).to eq([false, true])
+        expect([DRCI.in_left_hand?('large mortar'), DRCI.in_left_hand?('mortar large')]).to eq([true, false])
+      end
+
+      it 'in_left_hand? and in_right_hand? answer false for an empty hand' do
+        commons_for(:current)
+        expect([DRCI.in_left_hand?('mortar'), DRCI.in_right_hand?('mortar')]).to eq([false, false])
+      end
+
       it 'get_item? takes from a container when given, and counts an item in hand as got (common-items.rb:135)' do
         commons = commons_for(:current, 'nemoih' => 'large mortar')
         expect(DRCI.get_item?('nemoih', bag)).to be(false)

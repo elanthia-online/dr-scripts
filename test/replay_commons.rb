@@ -174,6 +174,8 @@ class ReplayCommons
       allow(DRCI).to receive(:lower_item?) { |*args| commons.lower_item?(*args) }
       allow(DRCI).to receive(:exists?) { |*args| commons.exists?(*args) }
       allow(DRCI).to receive(:in_hands?) { |*args| commons.in_hands?(*args) }
+      allow(DRCI).to receive(:in_left_hand?) { |*args| commons.in_left_hand?(*args) }
+      allow(DRCI).to receive(:in_right_hand?) { |*args| commons.in_right_hand?(*args) }
       allow(DRCT).to receive(:order_item) { |*args| commons.order_item(*args) }
       allow(DRCT).to receive(:walk_to) { |*args| commons.walk_to(*args) }
       allow(DRCM).to receive(:get_money_from_bank) { |*args| commons.get_money_from_bank(*args) }
@@ -377,6 +379,28 @@ class ReplayCommons
   def in_hands?(item)
     record('DRCI.in_hands?', item)
     !hand_holding(item).nil?
+  end
+
+  # Model of DRCI.in_left_hand? (480bdee3 common-items.rb:945-947, :985-988):
+  # the left hand's name matches the item's short_regex.
+  #
+  # @note Not modelled: the "#<id>" form.
+  # @param item [String] the item
+  # @return [Boolean]
+  def in_left_hand?(item)
+    record('DRCI.in_left_hand?', item)
+    self.class.matches?($left_hand, item)
+  end
+
+  # Model of DRCI.in_right_hand? (480bdee3 common-items.rb:955-957, :985-986, :989-990):
+  # the right hand's name matches the item's short_regex.
+  #
+  # @note Not modelled: the "#<id>" form.
+  # @param item [String] the item
+  # @return [Boolean]
+  def in_right_hand?(item)
+    record('DRCI.in_right_hand?', item)
+    self.class.matches?($right_hand, item)
   end
 
   # Model of DRCT.order_item: the ordered item, when {#initialize}'s orders
