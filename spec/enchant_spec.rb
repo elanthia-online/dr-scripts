@@ -617,14 +617,14 @@ RSpec.describe Enchant do
       instance.send(:trace_sigil, 'induction')
     end
 
-    it 'logs error and returns early when sigil not found' do
+    it 'stops without studying or tracing when the sigil-scroll is not there' do
       instance = build_instance
 
       expect(DRCI).to receive(:get_item?).with('induction sigil').and_return(false)
-      expect(Lich::Messaging).to receive(:msg).with('bold', /Failed to get induction sigil/)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'Enchant: No induction sigil-scroll to study; the totem is still on the brazier.')
       expect(DRC).not_to receive(:bput)
 
-      instance.send(:trace_sigil, 'induction')
+      expect { instance.send(:trace_sigil, 'induction') }.to raise_error(SystemExit)
     end
   end
 
@@ -1534,6 +1534,43 @@ RSpec.describe Enchant, 'whole runs' do
       run_script(chapter: '1', recipe: 'spongestone', noun: 'rock')
 
       expect(game.messages).to include('Enchant: The fount was used up and is gone.')
+    end
+  end
+
+  context 'when the sigil-scroll the game asks for is not there' do
+    before(:each) do
+      book_start(chapter: '1', recipe: 'spongestone')
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_glance])
+      game.command('put my rock on my brazier', ENCHANT_LOG[:put_rock], takes: 'rock')
+      game.call('DRCC.get_crafting_item', 'fount', bag, [], nil, gives: 'fount')
+      game.command('wave my fount at rock on my brazier', ENCHANT_LOG[:wave_fount_rock], takes: 'fount')
+      game.call('DRCC.get_crafting_item', 'imbuement rod', bag, [], nil, gives: 'imbuement rod')
+      game.command('wave imbuement rod at rock on my brazier', ENCHANT_LOG[:imbue_wants_congruence])
+      game.call('DRCC.stow_crafting_item', 'imbuement rod', bag, nil, takes: 'imbuement rod')
+      game.call('DRCC.get_crafting_item', 'burin', bag, [], nil, gives: 'burin')
+      game.call('DRCC.stow_crafting_item', 'burin', bag, nil, takes: 'burin')
+      game.call('DRCI.get_item?', 'congruence sigil', returns: false)
+      # Nothing more: scribing on would only get the same request back
+      # (log 1: a scribe while a sigil is wanted repeats "You need another").
+    end
+
+    it 'stops instead of scribing on' do
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+    end
+
+    it 'says which scroll is missing and that the rock is still on the brazier' do
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect(game.messages).to include('Enchant: No congruence sigil-scroll to study; the rock is still on the brazier.')
+    end
+
+    it 'removes its flags on the way out' do
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect(Flags.matchers.keys & Enchant::FLAG_NAMES).to eq([])
     end
   end
 end
