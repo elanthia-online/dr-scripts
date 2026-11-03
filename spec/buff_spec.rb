@@ -174,4 +174,70 @@ RSpec.describe Waggle do
       expect(do_buffs_calls.size).to eq(1)
     end
   end
+
+  describe 'force' do
+    before(:each) do
+      allow(DRC).to receive(:message)
+      allow(DRCA).to receive(:do_buffs) { |_settings, setname| do_buffs_calls << setname }
+    end
+
+    def run_force(set)
+      $parsed_args = { 'force' => true, 'spells' => 'default' }
+      $test_settings = OpenStruct.new(waggle_sets: { 'default' => set })
+      Waggle.new
+    end
+
+    it 'recasts every spell in a spell set' do
+      set = { 'Bless' => { 'abbrev' => 'bless' }, 'Centering' => { 'abbrev' => 'centering', 'recast' => 2 } }
+      run_force(set)
+      expect(set.values.map { |data| data['recast'] }).to eq([99, 99])
+      expect(do_buffs_calls).to eq(['default'])
+    end
+
+    it "starts a thief's khri list, saying force doesn't apply to it" do
+      DRStats.guild = 'Thief'
+      expect { run_force(['delay Hasten Focus', 'Sight']) }.not_to raise_error
+      expect(DRC).to have_received(:message).with(/"default" is a list of khri or abilities, so force doesn't apply/)
+      expect(do_buffs_calls).to eq(['default'])
+    end
+
+    it "starts a barbarian's ability list, saying force doesn't apply to it" do
+      DRStats.guild = 'Barbarian'
+      expect { run_force(['Famine', 'Avalanche']) }.not_to raise_error
+      expect(DRC).to have_received(:message).with(/"default" is a list of khri or abilities, so force doesn't apply/)
+      expect(do_buffs_calls).to eq(['default'])
+    end
+  end
+
+  describe 'set=' do
+    before(:each) do
+      allow(DRC).to receive(:message)
+    end
+
+    def list_set(name, sets)
+      $parsed_args = { 'set' => "set=#{name}" }
+      $test_settings = OpenStruct.new(waggle_sets: sets)
+      expect { Waggle.new }.to raise_error(SystemExit)
+    end
+
+    it "lists a spell set's spells" do
+      list_set('pre', { 'pre' => { 'Bless' => {}, 'Centering' => {} } })
+      expect(DRC).to have_received(:message).with('Spells under Waggle set "pre"')
+      expect(DRC).to have_received(:message).with(' - Bless')
+      expect(DRC).to have_received(:message).with(' - Centering')
+    end
+
+    it "lists a khri list's entries as written" do
+      list_set('carve', { 'carve' => ['Hasten', 'delay Focus'] })
+      expect(DRC).to have_received(:message).with('Spells under Waggle set "carve"')
+      expect(DRC).to have_received(:message).with(' - Hasten')
+      expect(DRC).to have_received(:message).with(' - delay Focus')
+    end
+
+    it 'says so when there is no such set' do
+      list_set('missing', { 'pre' => { 'Bless' => {} } })
+      expect(DRC).to have_received(:message).with('No waggle set found for name: missing')
+      expect(DRC).not_to have_received(:message).with(/Spells under/)
+    end
+  end
 end
