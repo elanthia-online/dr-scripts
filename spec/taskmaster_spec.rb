@@ -2334,7 +2334,8 @@ RSpec.describe TaskMaster do
     end
 
     before(:each) do
-      $test_data.crafting = { 'artificing' => { 'Crossing' => { 'stock-room' => 14_753, 'tool-room' => 14_754, 'fount' => 3 } } }
+      $test_data.crafting = { 'artificing' => { 'Crossing' => { 'stock-room' => 14_753, 'tool-room' => 14_754, 'fount' => 3,
+                                                                'brazier-rooms' => [14_757, 14_758, 14_759, 14_760] } } }
     end
 
     # READ of the instructions as Lich::Util.issue_command returns it: raw
@@ -2596,7 +2597,7 @@ RSpec.describe TaskMaster do
       before(:each) do
         allow(DRCT).to receive(:order_item) { |room, number| orders << [room, number] }
         allow(DRCC).to receive(:stow_crafting_item)
-        allow(DRCM).to receive(:ensure_copper_on_hand)
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
       end
 
       it 'orders one of each sigil per item from the enchanting supplies, by stock number' do
@@ -2663,11 +2664,12 @@ RSpec.describe TaskMaster do
     describe '#buy_wands' do
       before(:each) do
         allow(DRCC).to receive(:stow_crafting_item)
-        allow(DRCM).to receive(:ensure_copper_on_hand)
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
       end
 
       it 'buys a wand from the steel crate for each virga wand not covered by the wands carried' do
         allow(DRCI).to receive(:count_items_in_container).with('wand', 'duffel bag').and_return(2)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
         expect(DRCT).to receive(:buy_item).with(14_753, 'wand').exactly(4).times
 
         dorhum.buy_wands(6)
@@ -2973,9 +2975,10 @@ RSpec.describe TaskMaster do
     end
 
     describe '#dorhum' do
-      it 'buys the sigils, gets the base items, checks the fount, finds a room, enchants, then repairs' do
+      it 'checks the tools, buys the sigils, gets the base items, checks the fount, finds a room, enchants, then repairs' do
         tm = dorhum(settings: { enchanting_tools: %w[brazier burin], enchanting_belt: nil })
         steps = []
+        allow(tm).to receive(:ensure_tools) { |tools, discipline| steps << [:tools, tools, discipline] }
         allow(tm).to receive(:buy_sigils) { |sigils, count| steps << [:sigils, sigils, count] }
         allow(tm).to receive(:forage_rocks) { |count| steps << [:rocks, count] }
         allow(DRCC).to receive(:fount) { |*args| steps << [:fount, *args] }
@@ -2985,7 +2988,7 @@ RSpec.describe TaskMaster do
 
         tm.dorhum('spongestone', 8, %w[congruence decay])
 
-        expect(steps).to eq([[:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
+        expect(steps).to eq([[:tools, %w[burin rod], 'enchanting'], [:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
                              :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
       end
 
@@ -3019,7 +3022,7 @@ RSpec.describe TaskMaster do
         allow(tm).to receive(:read_task).and_return(['spongestone', 3])
         allow(tm).to receive(:set_aside_held_base)
         allow(tm).to receive(:turn_in_banked).and_return(3)
-        %i[ensure_instructions refresh_haste top_up_copper buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
+        %i[ensure_instructions refresh_haste top_up_copper ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
         allow(tm).to receive(:read_instructions).and_return(['spongestone', 3, %w[congruence decay]])
         allow(DRCI).to receive(:exists?).and_return(false)
         allow(DRCC).to receive(:fount)
@@ -3033,7 +3036,7 @@ RSpec.describe TaskMaster do
 
       it 'carries on when task_loot_bag holds none, and does not count a "rock marble deed"' do
         tm = dorhum
-        %i[buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        %i[ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
         allow(DRCC).to receive(:fount)
         game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock marble deed.')
 
@@ -3044,11 +3047,138 @@ RSpec.describe TaskMaster do
 
       it 'buys wands for a virga wand task' do
         tm = dorhum
-        %i[buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        %i[ensure_tools buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
         allow(DRCC).to receive(:fount)
         expect(tm).to receive(:buy_wands).with(6)
 
         tm.dorhum('wand', 6, %w[induction])
+      end
+    end
+
+    describe '#ensure_tools' do
+      it 'carries on when every tool is on you, asking no clerk' do
+        tm = dorhum
+        allow(DRCI).to receive(:exists?).and_return(true)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+
+        expect { tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting') }.not_to raise_error
+      end
+
+      it 'gets a missing tool from the society clerk' do
+        tm = dorhum
+        on_hand = ['burin']
+        allow(DRCI).to receive(:exists?) { |tool| on_hand.include?(tool) }
+        expect(DRC).to receive(:wait_for_script_to_complete).with('clerk-tools', %w[enchanting get]) { on_hand << 'augmenting loop' }
+
+        expect { tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting') }.not_to raise_error
+      end
+
+      it 'stops, naming the tools still missing, before anything is bought' do
+        tm = dorhum
+        allow(DRCI).to receive(:exists?) { |tool| tool == 'burin' }
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        expect { tm.ensure_tools(['burin', 'augmenting loop', 'imbuement rod'], 'enchanting') }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message)
+          .with("Can't find augmenting loop, imbuement rod: not on you, and the enchanting clerk didn't have it. Stopping before buying anything.")
+      end
+
+      it 'leaves the fount and brazier out of what a Dorhum task must carry, and adds the imbue rod enchant falls back to' do
+        expect(dorhum(settings: { enchanting_tools: ['small brazier', 'fount', 'burin', 'augmenting loop'] }).dorhum_tools)
+          .to eq(['burin', 'augmenting loop', 'rod'])
+      end
+
+      it 'needs no rod when an Imbue spell is set up, and uses the rod named in enchanting_tools' do
+        spell = dorhum(settings: { enchanting_tools: %w[burin], waggle_sets: { 'imbue' => { 'Imbue' => { 'mana' => 5 } } } })
+        named = dorhum(settings: { enchanting_tools: ['burin', 'imbuement rod'] })
+
+        expect([spell.dorhum_tools, named.dorhum_tools]).to eq([%w[burin], ['burin', 'imbuement rod']])
+      end
+
+      it 'needs your own brazier when enchanting in a set room that is not a Crossing brazier room' do
+        tm = dorhum(crafting_room: 16_936, settings: { enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(['burin', 'rod', 'small brazier'])
+      end
+
+      it 'judges the task room, not enchanting_room, when both are set' do
+        tm = dorhum(crafting_room: 16_936, settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to include('small brazier')
+      end
+
+      it "needs no rod when an Imbue spell is set up, even with the rod in enchanting_tools" do
+        tm = dorhum(settings: { enchanting_tools: ['burin', 'imbuement rod'], waggle_sets: { 'imbue' => { 'Imbue' => { 'mana' => 5 } } } })
+
+        expect(tm.dorhum_tools).to eq(%w[burin])
+      end
+
+      it "needs no brazier of your own in another town's public brazier room" do
+        $test_data.crafting['artificing']['Shard'] = { 'brazier-rooms' => [14_777, 14_778] }
+        tm = dorhum(settings: { enchanting_room: 14_777, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(%w[burin rod])
+      end
+
+      it 'needs no brazier of your own in a Crossing brazier room' do
+        tm = dorhum(settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(%w[burin rod])
+      end
+    end
+
+    describe 'paying for supplies' do
+      before(:each) do
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+      end
+
+      it 'stops before ordering when the bank cannot cover the sigils' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
+        expect(DRCT).not_to receive(:order_item)
+
+        expect { dorhum.buy_sigils(%w[decay], 8) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with(/Out of money: #{(8 * 1575) + 312 + 7500} Kronars/)
+      end
+
+      it 'stops when an order does not go through' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:order_item).and_return('takes some coins from you', nil)
+
+        expect { dorhum.buy_sigils(%w[decay], 8) }.to raise_error(SystemExit)
+
+        expect(DRCC).to have_received(:stow_crafting_item).once
+        expect(DRC).to have_received(:message).with('Could not buy a decay sigil-scroll. Stopping.')
+      end
+
+      it 'waits for the wand to reach a hand after the purchase line' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:buy_item)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(false, false, true)
+
+        expect { dorhum.buy_wands(1) }.not_to raise_error
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil)
+      end
+
+      it 'asks the bank for nothing when every sigil-scroll is already carried' do
+        game('rummage /C sigil-scroll in my duffel bag' => "You rummage through a heavy silk duffel bag looking for something similar to \"sigil-scroll\" and see #{Array.new(8, 'an intricate decay sigil-scroll').join(', ')}.")
+        expect(DRCM).not_to receive(:ensure_copper_on_hand)
+        expect(DRCT).not_to receive(:order_item)
+
+        dorhum.buy_sigils(%w[decay], 8)
+      end
+
+      it 'stops when a wand does not land in hand' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:buy_item)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(false)
+
+        expect { dorhum.buy_wands(6) }.to raise_error(SystemExit)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
       end
     end
 
