@@ -13,9 +13,9 @@
 # herb1 red flower or blue flower, or a part of one such as red, blue or
 # flower, is crafted as dried flower or crushed flower when the character has
 # none of the fresh flower. herb2 is na, none or "not used" when the
-# recipe needs one herb. The vessel is a word of an alchemy_tools entry
-# (mort finds a large mortar; bowl finds a cauldron or a bowl). Lich
-# lowercases every value.
+# recipe needs one herb. The vessel is the start of a word of an
+# alchemy_tools entry (mort finds a large mortar; bowl finds a cauldron or a
+# bowl). Lich lowercases every value.
 #   ;remedy remedies 2 "blister cream" "red flower" nemoih bar mortar cream
 #   ;remedy remedies 2 "blister cream" nemoih "not used" bar mortar cream
 #
@@ -33,24 +33,27 @@
 # game refuses the herb ("You need a more suitable type of herb", or more
 # pieces of it), when the studied instructions fade before crafting begins,
 # when the game stops answering a crafting command, when the remedy is not
-# done after 100 crafting commands, when a tool, the catalyst or the second
-# herb cannot be got or put in, when the game asks for a second herb and
-# herb2 is na, none or "not used", when the finished remedy is not in hand
-# after it is taken out of the vessel, or when water, alcohol or a coal
-# nugget must be bought and base-crafting.yaml knows no alchemy shop in the
-# crafting town or hometown. A stop leaves the vessel in hand and puts the
-# stirrer away; when the vessel holds a remedy the game has begun and not
-# finished, remedy prints the ;remedy continue line that carries it on.
+# done after 100 crafting commands, when a tool, the remed book, the
+# catalyst or the second herb cannot be got or put in, when the game asks
+# for a second herb and herb2 is na, none or "not used", when the finished
+# remedy is not in hand after it is taken out of the vessel, or when water,
+# alcohol or a coal nugget must be bought and base-crafting.yaml knows no
+# alchemy shop in the crafting town or hometown. A stop leaves the vessel
+# in hand and puts the stirrer away; when the vessel holds a remedy the
+# game has begun and not finished, remedy prints the ;remedy continue line
+# that carries it on.
 # However remedy ends, it releases the magic crafting_training_spells left
 # prepared, when that setting lists a spell.
 #
 # == Settings read
-# crafting_container, crafting_items_in_container, alchemy_belt,
+# crafting_container, crafting_items_in_container, alchemy_belt (the tools
+# and the remed book are untied from it and tied back when it lists them),
 # alchemy_tools, herb_container, water_container, alcohol_container,
 # master_crafting_book, mark_crafted_goods, cube_armor_piece,
 # crafting_training_spells, hometown, force_crafting_town and alchemy_room.
 # The commons it calls read more (DRCA.crafting_magic_routine,
-# DRCM.get_money_from_bank), and ;buff remedy reads waggle_sets['remedy'].
+# DRCM.get_money_from_bank). remedy runs ;buff remedy, which casts
+# waggle_sets['remedy'], unless waggle_sets is unset or has no remedy set.
 #
 # == Buying supplies
 # With no water, alcohol or coal nugget catalyst on hand, remedy buys it at
@@ -169,9 +172,16 @@ class Remedy
     # them. ..." (25:18266, 25:104590).
     COMBINE_REPLIES = [/^[^"]*?You combine/i, /^[^"]*?too large to add/i, /^You must be holding both/i].freeze
 
-    # Replies to `put <herb> in my <vessel>`: "You put your nemoih in your
-    # large mortar." (26:10749).
+    # Replies to the herb put ({HerbGatherer}: `put #<id> in my <vessel>`,
+    # or `put <herb> in my <vessel>` when the stack in hand has no id): "You
+    # put your nemoih in your large mortar." (26:10749, the reply to
+    # 26:10748 `put my nemoih in my large mortar`).
     #
+    # @note code-derived: the reply to the id form is taken to be the same
+    #   "You put your <herb> in your <vessel>."; no log sends the id form.
+    #   The id form also listens for {NOT_FOUND}, and on it the put is sent
+    #   again by name ({HerbGatherer#put_herb}); the name form listens for
+    #   these replies alone, as it always has.
     # @note code-derived (unverified): "already has something", "can only
     #   hold" and "You realize the" appear in no log. "You vigorously rub" is
     #   the catalyst reply (25:11081), never seen for a herb put.
@@ -414,6 +424,17 @@ class Remedy
   # The remed book, got and stowed when master_crafting_book is not set.
   REMED_BOOK = 'remed book'
 
+  # The Alchemy rank from which studying the remed book prints
+  # {BOOK_WARNING}. The warning used to be printed at exactly 175
+  # (H33), so a character past 175 with no master_crafting_book was never
+  # told again.
+  BOOK_WARNING_RANK = 175
+
+  # The warning printed when the remed book is studied at
+  # {BOOK_WARNING_RANK} Alchemy ranks or more, worded as remedy has always
+  # printed it.
+  BOOK_WARNING = '*** You will need to upgrade to a journeyman or master book before 176 ranks! ***'
+
   # The request remedy was started with, read from parse_args' result.
   #
   # Every value is kept exactly as parse_args gives it (lowercased): herb2 is
@@ -590,10 +611,10 @@ class Remedy
 
     # Finds the vessel and the stirrer in alchemy_tools.
     #
-    # The vessel is the first alchemy_tools entry the requested word matches
-    # anywhere in its name, so mort finds a large mortar and a recipe's
-    # mortar finds a rustic mortar. A request for a bowl takes a cauldron or
-    # a bowl.
+    # The vessel is the first alchemy_tools entry with a word that starts
+    # with the requested word ({request_pattern}), so mort finds a large
+    # mortar and a recipe's mortar finds a rustic mortar. A request for a
+    # bowl takes a cauldron or a bowl.
     #
     # Stops when the setting lists no match, because the setting is wrong.
     # Going on with the word the recipe used sends "get my bowl", which takes
@@ -605,8 +626,6 @@ class Remedy
     # @param order [Order] the request
     # @return [Tools]
     # @raise [SystemExit] when alchemy_tools lists no match
-    # @note The requested word goes into the Regexp unescaped, as it always
-    #   has (H12).
     def self.resolve(settings, order)
       container = find_container(settings.alchemy_tools, order)
       pestle = settings.alchemy_tools.find { |tool| PESTLE =~ tool } || DEFAULT_PESTLE
@@ -625,7 +644,7 @@ class Remedy
     # @raise [SystemExit] when alchemy_tools lists no match
     def self.find_container(tools, order)
       requested = order.container_request
-      pattern = requested =~ BOWL_REQUEST ? BOWL_TOOLS : /#{requested}/
+      pattern = request_pattern(requested)
       container = tools.to_a.find { |tool| pattern =~ tool }
       return container if container
 
@@ -634,6 +653,26 @@ class Remedy
       exit
     end
     private_class_method :find_container
+
+    # The pattern an alchemy_tools entry must match to answer the request:
+    # {BOWL_TOOLS} for a bowl, otherwise the requested word, escaped, at the
+    # start of a word of the entry.
+    #
+    # The word is a prefix, with no word boundary after it, so mort still
+    # finds a large mortar. It used to go into the Regexp unescaped and
+    # unanchored (H12): mortar( raised RegexpError, and r took the
+    # first entry holding an r anywhere (a heavy cauldron). Now a word with
+    # Regexp syntax in it matches only itself, and r finds only an entry
+    # with a word starting with r.
+    #
+    # @param requested [String] the vessel word the caller gave
+    # @return [Regexp]
+    def self.request_pattern(requested)
+      return BOWL_TOOLS if requested =~ BOWL_REQUEST
+
+      /\b#{Regexp.escape(requested.to_s)}/
+    end
+    private_class_method :request_pattern
 
     # Whether the vessel is a mortar.
     #
@@ -675,9 +714,8 @@ class Remedy
   #
   # {#fetch?} and {#fetch!} are the guarded gets: they work the same on every
   # lich-5 release. {#get} and {#get_tool} are the plain gets remedy has
-  # always made: the liquids, the remed book (a later layer changes it), and
-  # the herb gathering, which reads the hands after them ({#got?}) so its
-  # gets keep their arguments.
+  # always made: the liquids, and the herb gathering, which reads the hands
+  # after them ({#got?}) so its gets keep their arguments.
   #
   # @api private
   class Inventory
@@ -859,6 +897,27 @@ class Remedy
       DRCI.in_hands?(noun_of(name))
     end
 
+    # The game's id of the item a hand holds, the hand found by the last
+    # word of the item's name as {#stow_held} finds it (left hand first).
+    #
+    # The id is GameObj's: the +exist+ attribute of the game's <left> or
+    # <right> hand tag (lich-5 lib/common/xmlparser.rb:1345 and :1355,
+    # GameObj.new_right_hand / new_left_hand), a String, or nil when the
+    # tag carries none. GameObj.left_hand and GameObj.right_hand are nil
+    # before the first hand tag (lich-5 lib/common/gameobj.rb:500-503 at
+    # v5.20.0, :653-656 at v5.22.0), so they are read with a safe
+    # navigation.
+    #
+    # @param name [String] the name the item was asked for by
+    # @return [String, nil] the id, or nil when neither hand holds the item
+    #   or the hand's item has no id
+    def held_id(name)
+      hand = hand_holding(name)
+      return nil unless hand
+
+      (hand == :left ? GameObj.left_hand : GameObj.right_hand)&.id
+    end
+
     # Puts away what the hand holding an item holds, found by the last word
     # of the item's name as {#held?} finds it. Nothing is sent when neither
     # hand holds it.
@@ -962,28 +1021,26 @@ class Remedy
       released?(herb)
     end
 
-    # Gets an item with no herb routing: from the belt when it is one of
+    # Gets an item with no herb routing: from alchemy_belt when it is one of
     # the belt's items, otherwise from the crafting container.
     #
     # @param name [String] the item
-    # @param belt [Hash, nil] the belt to look on (alchemy_belt by default)
     # @param skip_exit [Boolean] return instead of exiting on a missing item
     # @return [Object] DRCC.get_crafting_item's return, which differs by
     #   lich-5 release
     # @raise [SystemExit] when DRCC.get_crafting_item stops the script
     #   (lich-5 v5.22.0 and later, on a missing item, without skip_exit)
-    def get_tool(name, belt: @belt, skip_exit: false)
-      crafting_get(name, @bag, @bag_items, belt, skip_exit)
+    def get_tool(name, skip_exit: false)
+      crafting_get(name, @bag, @bag_items, @belt, skip_exit)
     end
 
-    # Puts an item away with no herb routing: on the belt when it is one of
-    # the belt's items, otherwise in the crafting container.
+    # Puts an item away with no herb routing: on alchemy_belt when it is one
+    # of the belt's items, otherwise in the crafting container.
     #
     # @param name [String, nil] the item
-    # @param belt [Hash, nil] the belt to tie it to (alchemy_belt by default)
     # @return [void]
-    def stow_tool(name, belt: @belt)
-      DRCC.stow_crafting_item(name, @bag, belt)
+    def stow_tool(name)
+      DRCC.stow_crafting_item(name, @bag, @belt)
     end
 
     # Sets the vessel down, so the herb can be gathered into it.
@@ -1753,18 +1810,60 @@ class Remedy
     # @return [void]
     # @raise [SystemExit] when the herb left cannot be put away
     #   ({#put_away_leftover})
-    # @note The put has no "my" before the herb (CURRENT H32, changed in
-    #   layer 15).
     def put_in(herb, vessel)
-      case DRC.bput("put #{herb} in my #{vessel}", *Patterns::HERB_PUT_REPLIES)
+      case put_herb(herb, vessel, Patterns::HERB_PUT_REPLIES)
       when 'You put', /can only hold\z/, /You vigorously rub\z/
         put_away_leftover(herb, vessel)
       when /already has something\z/, 'You realize the'
         DRC.bput("tilt my #{vessel}", *Patterns::TILT_REPLIES)
         DRC.bput("tilt my #{vessel}", *Patterns::TILT_AGAIN_REPLIES)
-        DRC.bput("put #{herb} in my #{vessel}", *Patterns::HERB_PUT_AGAIN_REPLIES)
+        put_herb(herb, vessel, Patterns::HERB_PUT_AGAIN_REPLIES)
         put_away_leftover(herb, vessel)
       end
+    end
+
+    # Puts the herb in the vessel and returns bput's reply.
+    #
+    # When the herb stack in hand has an id ({Inventory#held_id}, the hand
+    # chosen by matching the herb), the put is `put #<id> in my <vessel>`,
+    # listening for +replies+ and for {Patterns::NOT_FOUND}. Should the game
+    # answer "What were you referring to?" (a stale id, for one), the put is
+    # sent once more as remedy's old command, `put <herb> in my <vessel>`,
+    # with +replies+ alone, and that reply is returned: so a refused id
+    # leaves remedy exactly where the old command would have. With no id,
+    # or no hand holding the herb, only the old command is sent, byte for
+    # byte and with the same replies as before.
+    #
+    # The old command names the herb with no "my" (H32), so the
+    # game may take a same-noun item other than the stack in hand. The id
+    # names the very stack remedy gathered, whatever else shares its
+    # noun. The id is
+    # read for each put, so the put after a tilt names the stack then in
+    # hand.
+    #
+    # Only a refusal sends the old command after the id form. A put that
+    # bput gave up on (no reply) is not resent: the game may yet have taken
+    # the stack, and a second put by name could then take a same-noun item
+    # (H32). That case ends as it did with the old command alone.
+    #
+    # @param herb [String] herb1, as remedy gathered it
+    # @param vessel [String] the alchemy_tools entry
+    # @param replies [Array<Regexp>] {Patterns::HERB_PUT_REPLIES}, or
+    #   {Patterns::HERB_PUT_AGAIN_REPLIES} after a tilt
+    # @return [String] the text bput returned for the last put sent
+    # @note The id is GameObj's at the moment of the put. A hand tag the
+    #   game has not yet sent for the last combine would leave a stale id;
+    #   no log carries hand tags (Genie client logs), so this is code-derived, as
+    #   is the refusal of a stale id: no log sends the id form.
+    #   "What were you referring to?" is the game's answer to a put of an
+    #   item it cannot find (26:39192 -> 26:39194).
+    def put_herb(herb, vessel, replies)
+      id = @inventory.held_id(herb)
+      if id
+        reply = DRC.bput("put ##{id} in my #{vessel}", *replies, *Patterns::NOT_FOUND)
+        return reply unless reply.start_with?(Patterns::NOT_FOUND_REPLY)
+      end
+      DRC.bput("put #{herb} in my #{vessel}", *replies)
     end
 
     # Puts away the herb left in hand after the put ({Inventory#stow_leftover}),
@@ -2400,7 +2499,7 @@ class Remedy
     @water = Liquid.find('water', @settings.water_container, @inventory)
     @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
     supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst)
-    DRC.wait_for_script_to_complete('buff', ['remedy'])
+    DRC.wait_for_script_to_complete('buff', ['remedy']) if buff_set?
 
     if @order.continue?
       @inventory.fetch!(@tools.stirrer)
@@ -2411,6 +2510,28 @@ class Remedy
   end
 
   private
+
+  # Whether ;buff remedy may cast anything: false only when buff.lic would
+  # print "No waggle set found for name: remedy" and exit at once
+  # (buff.lic:37-42, `unless settings.waggle_sets[setname]`), which is when
+  # waggle_sets is unset (nil, its profiles/base.yaml default; Lich answers
+  # nil['remedy'] with nil, lich-5 lib/common/class_exts/nilclass.rb:9-11)
+  # or is a Hash with no truthy 'remedy' entry. Any other
+  # waggle_sets value runs ;buff remedy as before, whatever buff.lic then
+  # makes of it. An empty remedy set ({}) is truthy, so
+  # buff.lic would go on to DRCA.do_buffs, and ;buff remedy runs.
+  #
+  # @return [Boolean]
+  # @note Reads the settings remedy was started with, the same get_settings
+  #   buff.lic calls. A custom buff.lic that does something without a remedy
+  #   waggle set is not run either.
+  def buff_set?
+    sets = @settings.waggle_sets
+    return false if sets.nil?
+    return true unless sets.is_a?(Hash)
+
+    sets['remedy'] ? true : false
+  end
 
   # Leaves things tidy however the script ended. After a stop (the run did
   # not finish), puts the stirrer away when a hand holds it, so the vessel
@@ -2488,15 +2609,20 @@ class Remedy
   # {FADED_FLAG} is reset once the recipe is studied, so only a fade of
   # these instructions can stop the crafting, not one of a study before.
   #
+  # Without master_crafting_book, the remed book is got with a guarded get
+  # ({Inventory#fetch!}) and stowed, both with alchemy_belt like every
+  # other tool. remedy used to pass no belt for the book (H08: it
+  # read a @forging_belt that was never set), so DRCC.get_crafting_item
+  # never untied it from alchemy_belt and DRCC.stow_crafting_item put it in
+  # the crafting container even when alchemy_belt lists it. A book that
+  # cannot be got stops remedy with "Remedy: could not get remed book.
+  # Stopping." on every lich-5 release. The warning that the remed book is
+  # outgrown ({BOOK_WARNING}) is printed from {BOOK_WARNING_RANK} Alchemy
+  # ranks up.
+  #
   # @return [void]
   # @raise [SystemExit] when the remedy is finished, or when remedy or a
   #   commons helper stops the script
-  # @note The remed book is got and stowed with no belt: remedy has never
-  #   passed alchemy_belt for it. Its get passes no skip_exit, as before
-  #   (layer 15 changes this get); a book not in hand afterwards, nor within
-  #   {Inventory::LATE_GET_LOOKS} seconds ({Inventory#got?}), stops remedy,
-  #   which matters on lich-5 v5.21.0 and before, where the get returns
-  #   without exiting.
   def create_item
     @magic.routine
     @inventory.stow(DRC.left_hand)
@@ -2505,11 +2631,10 @@ class Remedy
     if @settings.master_crafting_book
       DRCC.find_recipe2(@order.chapter, @order.recipe_name, @settings.master_crafting_book, @order.book_type)
     else
-      @inventory.get_tool(REMED_BOOK, belt: nil)
-      stop("could not get #{REMED_BOOK}.") unless @inventory.got?(REMED_BOOK)
-      echo('*** You will need to upgrade to a journeyman or master book before 176 ranks! ***') if DRSkill.getrank('Alchemy') == 175
+      @inventory.fetch!(REMED_BOOK)
+      echo(BOOK_WARNING) if DRSkill.getrank('Alchemy') >= BOOK_WARNING_RANK
       DRCC.find_recipe2(@order.chapter, @order.recipe_name)
-      @inventory.stow_tool(REMED_BOOK, belt: nil)
+      @inventory.stow_tool(REMED_BOOK)
     end
     Flags.reset(FADED_FLAG)
 

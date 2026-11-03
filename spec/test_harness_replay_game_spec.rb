@@ -443,6 +443,28 @@ RSpec.describe 'test harness replay support' do
         expect(DRCC.get_crafting_item('pewter ingot', bag, ['pewter ingot'], belt, true)).to be(false)
       end
 
+      context 'when the belt lists the name, which the real helper unties first (480bdee3 common-crafting.rb:446-455)' do
+        let(:belt_with_book) { { 'name' => 'grass toolstrap', 'items' => ['mixing stick', 'remed book'] } }
+
+        it 'takes it from the belt, though bag_items lists it too' do
+          commons = commons_for(:current, 'remed book' => 'grass toolstrap')
+          expect(DRCC.get_crafting_item('remed book', bag, ['remed book'], belt_with_book, true)).to be(true)
+          expect(commons.moves).to eq(['remed book: grass toolstrap -> hand'])
+        end
+
+        it 'goes on to the bag when none is tied there' do
+          commons = commons_for(:current, 'remed book' => bag)
+          expect(DRCC.get_crafting_item('remed book', bag, ['remed book'], belt_with_book, true)).to be(true)
+          expect(commons.moves).to eq(["remed book: #{bag} -> hand"])
+        end
+
+        it 'fails as before when it is neither on the belt nor in the bag' do
+          commons = commons_for(:current, 'remed book' => 'leather satchel')
+          expect(DRCC.get_crafting_item('remed book', bag, ['remed book'], belt_with_book, true)).to be(false)
+          expect(commons.messages).to eq(['DRCC: You seem to be missing: remed book'])
+        end
+      end
+
       it 'fails with no hand free on :current, and returns nil on older releases' do
         $right_hand = 'heavy cauldron'
         $left_hand = 'luminescent starshine mixing stick'
@@ -607,6 +629,41 @@ RSpec.describe 'test harness replay support' do
         $left_hand = 'luminescent starshine mixing stick'
         DRCT.order_item(8862, 1)
         expect(commons.moves).to be_empty
+      end
+    end
+
+    # The ids are made up (code-derived): Genie client logs carry no ids.
+    describe 'item ids (GameObj.left_hand.id / right_hand.id)' do
+      it 'gives no hand an id by default, as for every run of the logs' do
+        commons = commons_for(:current, 'dried nemoih' => bag)
+        DRCC.get_crafting_item('nemoih', bag, [], belt)
+        expect($right_hand).to eq('dried nemoih')
+        expect(GameObj.right_hand.id).to be_nil
+        expect(commons.id_of('nemoih')).to be_nil
+      end
+
+      it 'shows the id of the item a hand holds, by its full name, once installed' do
+        ReplayCommons.new(game: game, inventory: { 'dried nemoih' => bag }, ids: { 'dried nemoih' => '41782305' }).install(self)
+        DRCC.get_crafting_item('nemoih', bag, [], belt)
+        expect(GameObj.right_hand.id).to eq('41782305')
+        expect(GameObj.left_hand.id).to be_nil
+        expect(GameObj.left_hand.name).to eq('Empty')
+      end
+
+      it 'drops the id with the item: an emptied hand shows none' do
+        commons = ReplayCommons.new(game: game, ids: { 'dried nemoih' => '41782305' }).install(self)
+        commons.hold('dried nemoih')
+        commons.release('nemoih')
+        expect(GameObj.right_hand.id).to be_nil
+      end
+
+      it 'answers the id a requested name finds, as the helpers find items (id_of, id_in)' do
+        ids = { 'rounded pestle' => '41782399', 'dried nemoih' => '41782305' }
+        expect(ReplayCommons.new(ids: ids).id_of('nemoih')).to eq('41782305')
+        expect(ReplayCommons.id_in(ids, 'dried nemoih')).to eq('41782305')
+        expect(ReplayCommons.id_in(ids, 'pestle')).to eq('41782399')
+        expect(ReplayCommons.id_in(ids, 'mortar')).to be_nil
+        expect(ReplayCommons.id_in({}, 'nemoih')).to be_nil
       end
     end
   end

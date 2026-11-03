@@ -23,6 +23,11 @@
 # carry no hand data): an item picked up goes to the right hand when it is
 # empty, else to the left.
 #
+# Items have no game id unless {#initialize} is given `ids:`: once
+# installed, GameObj.left_hand.id and GameObj.right_hand.id (the harness's
+# $hand_ids) answer the id of the item a hand holds, by its full name. The
+# ids are made up for a spec (code-derived): Genie client logs carry no ids.
+#
 # == Not modelled: ordinals
 # An item named by its place, such as "second nemoih" (remedy.lic:239 and
 # :241 at 03f11b54 put away "second #{@herb1}" / "first #{@herb1}"), is
@@ -138,6 +143,19 @@ class ReplayCommons
     def held?(item)
       matches?($left_hand, item) || matches?($right_hand, item)
     end
+
+    # The id {#id_of} answers, from a `{ full name => id }` table without a
+    # ReplayCommons: a spec can work out a command before its commons is
+    # built (building it reads the inventory, which the example may still
+    # change).
+    #
+    # @param ids [Hash{String => String}] full item name => game id
+    # @param requested [String] the name a script asks for the item by
+    # @return [String, nil] the id of the first item the name finds
+    #   ({.matches?}), or nil
+    def id_in(ids, requested)
+      ids.find { |full_name, _id| matches?(full_name, requested) }&.last
+    end
   end
 
   # @param game [ReplayGame, nil] the replay whose timeline records each call
@@ -145,25 +163,30 @@ class ReplayCommons
   # @param inventory [Hash{String => String}] full item name => location
   # @param orders [Hash{Object => String}] DRCT.order_item number => the full
   #   name of the item it puts in hand
+  # @param ids [Hash{String => String}] full item name => the game id
+  #   GameObj shows for it in a hand (none by default)
   # @raise [ArgumentError] for an unknown release
-  def initialize(game: nil, lich5: :current, inventory: {}, orders: {})
+  def initialize(game: nil, lich5: :current, inventory: {}, orders: {}, ids: {})
     raise ArgumentError, "lich5: must be one of #{LICH5_RELEASES.inspect}, not #{lich5.inspect}" unless LICH5_RELEASES.include?(lich5)
 
     @game = game
     @lich5 = lich5
     @inventory = inventory.map { |name, location| Item.new(name, location) }
     @orders = orders
+    @ids = ids
     @calls = []
     @messages = []
     @moves = []
   end
 
-  # Routes the modelled helpers through `allow`, for the running example.
+  # Routes the modelled helpers through `allow`, for the running example,
+  # and gives the hands' items their ids ($hand_ids, read by GameObj).
   #
   # @param example [RSpec::Core::ExampleGroup] the running example (`self`)
   # @return [ReplayCommons] self
   def install(example)
     commons = self
+    $hand_ids = @ids
     example.instance_exec do
       allow(DRCC).to receive(:get_crafting_item) { |*args| commons.get_crafting_item(*args) }
       allow(DRCC).to receive(:stow_crafting_item) { |*args| commons.stow_crafting_item(*args) }
@@ -183,6 +206,15 @@ class ReplayCommons
       allow(DRC).to receive(:wait_for_script_to_complete) { |*args| commons.wait_for_script_to_complete(*args) }
     end
     self
+  end
+
+  # The game id of the first item with an id that a requested name finds
+  # ({.matches?}), as GameObj would show it once the item is in a hand.
+  #
+  # @param requested [String] the name a script asks for the item by
+  # @return [String, nil] the id, or nil when no item with an id matches
+  def id_of(requested)
+    self.class.id_in(@ids, requested)
   end
 
   # Puts an item in a free hand, as a scenario's starting state or a game
@@ -225,6 +257,9 @@ class ReplayCommons
 
   # Model of DRCC.get_crafting_item: puts the item in hand.
   #
+  # When +belt+ lists the name ({#belt_holds?}) the real helper first unties
+  # it from the belt (480bdee3 common-crafting.rb:446-455): an item tied
+  # there goes to a free hand; when none is, it goes on to the get.
   # When +bag_items+ lists the name the real helper sends `get my <name>
   # from my <bag>` (480bdee3 common-crafting.rb:455-456): a matching item in
   # +bag+ goes to a free hand, even with another already held (a second
@@ -250,7 +285,8 @@ class ReplayCommons
   def get_crafting_item(name, bag, bag_items, belt, skip_exit = false)
     record('DRCC.get_crafting_item', name, bag, bag_items, belt, skip_exit)
     from_bag = bag if bag_items&.include?(name)
-    item = find_item(name, from_bag)
+    tied = find_item(name, belt['name']) if belt_holds?(belt, name)
+    item = tied || find_item(name, from_bag)
     return got if hand_holding(name) && (from_bag.nil? || item.nil?)
     return crafting_failure(format(MISSING_MESSAGE, name), skip_exit) unless item
 
