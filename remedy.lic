@@ -34,6 +34,16 @@
 # analyzes the product, then carries on crafting it.
 #   ;remedy continue na "pewter ingot" mortar unguent
 #
+# The instructions form crafts a remedy from loose crafting instructions,
+# "<noun> instructions", instead of a recipe book: herb1, catalyst,
+# vessel, product noun and the optional herb quantity, as in the book
+# form, with no herb2. remedy gets the instructions (from
+# crafting_container, or alchemy_belt when it lists them), studies them
+# (`study my <noun> instructions`, again when the game asks), puts them
+# back, and says how many uses they have left, or that the study used
+# their last use and the game tossed them. No book is opened.
+#   ;remedy instructions marram "pewter ingot" mortar salve
+#
 # == Callers
 # workorders.lic:831/833, craft.lic:694 and create_remedies.lic:54/56 run the
 # book form with a base-recipes.yaml recipe. Lich gives no exit status: the
@@ -47,8 +57,11 @@
 # when the game stops answering a crafting command, when the remedy is not
 # done after 100 crafting commands, when it gathers fewer pieces of herb1
 # than a herb quantity asks for, when a tool, the remed book, the
-# catalyst or the second herb cannot be got or put in, when the game asks
-# for a second herb and herb2 is na, none or "not used", when the finished
+# catalyst or the second herb cannot be got or put in, when the crafting
+# instructions of the instructions form cannot be got or studied (before
+# any herb is gathered), when the game asks
+# for a second herb and herb2 is na, none or "not used" (or the order is
+# the instructions form, which takes none), when the finished
 # remedy is not in hand after it is taken out of the vessel or after a
 # stamp repair (remedy_repair_stamp), or when water, alcohol or a coal
 # nugget must be bought and base-crafting.yaml knows no alchemy shop in the
@@ -88,7 +101,8 @@
 # alchemy_room, or back to the room it was started in when alchemy_room is
 # not set.
 
-# Crafts one alchemy remedy from a recipe book, or resumes one in progress.
+# Crafts one alchemy remedy from a recipe book or from crafting
+# instructions, or resumes one in progress.
 #
 # {Remedy.new} only takes the settings and the parsed arguments; {#run} does
 # the work: it registers the before_dying cleanup and the Flags, finds the
@@ -464,13 +478,17 @@ class Remedy
   # (H11).
   RECIPE_NAME = /^[A-Za-z\[\\\]^_`\s-]+$/i
 
+  # The herb1 argument, shared by the book and instructions forms: the herb
+  # gathered into the vessel.
+  HERB1_ARG = { name: 'herb1', regex: /\w+/i, variable: true, description: 'Prepared herb, wrap in double quotes if this is multiple words..' }.freeze
+
   # The book form: `;remedy <book type> <chapter> <recipe name> <herb1>
   # <herb2> <catalyst> <container> <noun> [herb quantity]`.
   BOOK_FORM = [
     { name: 'book_type', display: 'book type', options: %w[remedies].freeze, description: 'What alchemy type is this item.' }.freeze,
     { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' }.freeze,
     { name: 'recipe_name', display: 'recipe name', regex: RECIPE_NAME, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' }.freeze,
-    { name: 'herb1', regex: /\w+/i, variable: true, description: 'Prepared herb, wrap in double quotes if this is multiple words..' }.freeze,
+    HERB1_ARG,
     HERB2_ARG,
     CATALYST_ARG,
     CONTAINER_ARG,
@@ -488,8 +506,32 @@ class Remedy
     NOUN_ARG
   ].freeze
 
+  # The instructions form: `;remedy instructions <herb1> <catalyst>
+  # <container> <noun> [herb quantity]`, for a remedy made from loose
+  # crafting instructions, "<noun> instructions" ({Order#instructions_name}),
+  # instead of a recipe book. It takes no herb2: every instructions remedy
+  # of the logs uses one herb (clubmoss liniment 25:10795, marram salve
+  # 25:94375, woundwort curative), so the order reads herb2 as na.
+  #
+  # Its first argument is the word instructions, whole: the pattern is
+  # anchored, so it never matches the book form's first argument (an option
+  # remedies) or the continue form's (any word holding continue), and no
+  # argument list that matched a form before matches this one too (lich-5
+  # ArgParser exits with its help when several forms match, lib/common/
+  # arg_parser.rb:30-44 at 480bdee3). The word has no :variable or
+  # :options, so the help shows it as the literal word (format_item,
+  # arg_parser.rb:130-138).
+  INSTRUCTIONS_FORM = [
+    { name: 'instructions', regex: /\Ainstructions\z/i, description: 'Craft from crafting instructions (<noun> instructions) instead of a recipe book.' }.freeze,
+    HERB1_ARG,
+    CATALYST_ARG,
+    CONTAINER_ARG,
+    NOUN_ARG,
+    HERB_QUANTITY_ARG
+  ].freeze
+
   # The forms parse_args matches the arguments against.
-  ARG_DEFINITIONS = [BOOK_FORM, CONTINUE_FORM].freeze
+  ARG_DEFINITIONS = [BOOK_FORM, CONTINUE_FORM, INSTRUCTIONS_FORM].freeze
 
   # The prepared flower each fresh flower is crafted with when herb1 is that
   # flower's name or a part of it (red, blue, ed flower) and the character has
@@ -522,19 +564,22 @@ class Remedy
   #
   # @!attribute [r] mode
   #   @return [Symbol] :book for the book form, :continue for the continue
-  #     form
+  #     form, :instructions for the instructions form
   # @!attribute [r] book_type
   #   @return [String, nil] the book type (remedies); nil in the continue
-  #     form
+  #     and instructions forms
   # @!attribute [r] chapter
-  #   @return [String, nil] the chapter; nil in the continue form
+  #   @return [String, nil] the chapter; nil in the continue and
+  #     instructions forms
   # @!attribute [r] recipe_name
-  #   @return [String, nil] the recipe name; nil in the continue form
+  #   @return [String, nil] the recipe name; nil in the continue and
+  #     instructions forms
   # @!attribute [r] herb1
   #   @return [String, nil] the herb gathered into the vessel; nil in the
   #     continue form
   # @!attribute [r] herb2
-  #   @return [String] the second herb, as given
+  #   @return [String] the second herb, as given; na in the instructions
+  #     form, which takes none ({INSTRUCTIONS_FORM})
   # @!attribute [r] catalyst
   #   @return [String] the catalyst
   # @!attribute [r] container_request
@@ -571,9 +616,17 @@ class Remedy
       super
     end
 
-    # Reads the request from parse_args' result, in either form of
-    # {ARG_DEFINITIONS}. Only the continue form sets `continue`, and only
-    # the book form a herb quantity. Stops before anything is sent when the
+    # The herb2 an order carries when its form takes none (the instructions
+    # form; the book and continue forms require herb2): na, the value every
+    # caller passes for a recipe with one herb ({NO_SECOND_HERB}), so the
+    # order reads, routes and prints herb2 exactly as a book-form order
+    # with na does ({#second_herb}, {#herbs}, {#continue_command}).
+    INSTRUCTIONS_HERB2 = NO_SECOND_HERB.first
+
+    # Reads the request from parse_args' result, in any form of
+    # {ARG_DEFINITIONS}. Only the continue form sets `continue`, only the
+    # instructions form `instructions`, and only the book and instructions
+    # forms a herb quantity. Stops before anything is sent when the
     # recipe name is no valid Regexp ({.recipe_name_error}) or the herb
     # quantity is one no stack can hold ({.herb_quantity_error}).
     #
@@ -587,16 +640,30 @@ class Remedy
       error = herb_quantity_error(args.herb_quantity)
       Remedy.stop(error) if error
 
-      new(mode: args.continue ? :continue : :book,
+      new(mode: mode_of(args),
           book_type: args.book_type,
           chapter: args.chapter,
           recipe_name: args.recipe_name,
           herb1: args.herb1,
-          herb2: args.herb2,
+          herb2: args.herb2 || INSTRUCTIONS_HERB2,
           catalyst: args.catalyst,
           container_request: args.container,
           noun: args.noun,
           herb_quantity: args.herb_quantity&.to_i)
+    end
+
+    # Which form of {ARG_DEFINITIONS} parse_args matched.
+    #
+    # @param args [OpenStruct] parse_args' result
+    # @return [Symbol] :continue, :instructions or :book
+    def self.mode_of(args)
+      if args.continue
+        :continue
+      elsif args.instructions
+        :instructions
+      else
+        :book
+      end
     end
 
     # Why remedy cannot gather this herb quantity, or nil when it can. The
@@ -641,6 +708,27 @@ class Remedy
       mode == :continue
     end
 
+    # Whether this is the instructions form, which studies loose crafting
+    # instructions ({#instructions_name}) instead of a recipe book.
+    #
+    # @return [Boolean]
+    def instructions?
+      mode == :instructions
+    end
+
+    # The crafting instructions an instructions-form order studies, as
+    # `get my`, `study my` and `put my` name them: "<noun> instructions", the
+    # convention forge.lic:980 uses for its instructions, and the name the
+    # logs got, studied and put the remedy instructions by (`study my
+    # liniment instructions`, 25:10808-10831; `study my salve
+    # instructions`, 25:94392-94418).
+    #
+    # @return [String, nil] e.g. "salve instructions"; nil in the book and
+    #   continue forms
+    def instructions_name
+      "#{noun} instructions" if instructions?
+    end
+
     # The names {Inventory} gets from and stows in the herb container: herb1
     # and herb2, as given.
     #
@@ -659,6 +747,17 @@ class Remedy
     # @return [String, nil]
     def second_herb
       herb2 unless herb2.nil? || NO_SECOND_HERB.include?(herb2)
+    end
+
+    # Why the order has no second herb to add, for the stop when the game
+    # asks for one anyway ({#second_herb} nil). In the book and continue
+    # forms it names the herb2 typed; the instructions form takes no herb2
+    # (its na is filled in, {INSTRUCTIONS_HERB2}), so it names the form
+    # instead of an argument the user never typed.
+    #
+    # @return [String] e.g. 'herb2 is "na", which names none'
+    def no_second_herb
+      instructions? ? 'the instructions form takes none' : "herb2 is #{herb2.inspect}, which names none"
     end
 
     # The command that carries on this remedy from the vessel in hand, in
@@ -873,6 +972,14 @@ class Remedy
 
     # @return [String] crafting_container
     attr_reader :bag
+
+    # @return [Array<String>, nil] crafting_items_in_container: the items
+    #   DRCC.get_crafting_item gets from {#bag} by name
+    attr_reader :bag_items
+
+    # @return [Hash, nil] alchemy_belt ('name', 'items'): the tools
+    #   DRCC.get_crafting_item unties and DRCC.stow_crafting_item ties back
+    attr_reader :belt
 
     # @param settings [OpenStruct] the character's settings; reads
     #   crafting_container, crafting_items_in_container, alchemy_belt and
@@ -2372,7 +2479,8 @@ class Remedy
 
     # Adds the second herb ({Patterns::NEED_HERB}). Stops, getting nothing,
     # when herb2 names none ({Order#second_herb}): there is no herb to add,
-    # and asking for one by the name "na" can only fail.
+    # and asking for one by the name "na" can only fail. The stop says why
+    # in the order's own terms ({Order#no_second_herb}).
     #
     # @return [void]
     # @raise [SystemExit] when herb2 names no herb, or when it cannot be got
@@ -2380,7 +2488,7 @@ class Remedy
     # @note code-derived (unverified): no log shows the cue or this put.
     def add_herb
       herb = @order.second_herb
-      Remedy.stop("the game asks for a second herb, and herb2 is #{@order.herb2.inspect}, which names none.") unless herb
+      Remedy.stop("the game asks for a second herb, and #{@order.no_second_herb}.") unless herb
 
       with_item(herb, 'remedy-herb') { put_ingredient(herb) }
     end
@@ -3068,13 +3176,460 @@ class Remedy
     end
   end
 
-  # Deletes every remedy Flag ({REGISTERED_FLAGS}). The before_dying
+  # A local copy of lich-5's DRCC.study_instructions, for the instructions
+  # form ({Order#instructions?}): gets crafting instructions, studies them
+  # until the game is ready to craft, and puts them away again unless the
+  # game tossed them.
+  #
+  # It mirrors the helper proposed in elanthia-online/lich-5#2246
+  # (common-crafting.rb, its
+  # STUDY_INSTRUCTIONS_* constants, StudyInstructionsResult and
+  # study_instructions with its private helpers): the same signature,
+  # result, constants, steps and messages, with two differences:
+  # - the GET's success is read from the hands, DRCI.in_hands?(name), not
+  #   from DRCC.get_crafting_item's answer, which is nil on success too on
+  #   lich-5 v5.20.0 to v5.22.0 (common-crafting.rb:324-363 at those tags);
+  #   only v5.23.0 and later answer true or false. DRCI.in_hands? exists on
+  #   every release and matches the hand's full name by the short_regex
+  #   (/\bliniment.*\binstructions/i finds "shining clubmoss liniment
+  #   instructions", 25:10795);
+  # - its Flag has its own name ({STUDY_INSTRUCTIONS_DISCARDED_FLAG}), so it
+  #   cannot collide with the helper's once both exist, and the failure
+  #   report is its own ({.instructions_failed}), because
+  #   DRCC.crafting_item_failed is private in lich-5.
+  #
+  # Remedy calls it once, from {Recipe::Instructions#prepare}, with skip_exit
+  # true, and decides itself what a failure means.
+  #
+  # @deprecated Use DRCC.study_instructions once a lich-5 release ships it.
+  # @note Remove once a lich-5 release ships DRCC.study_instructions
+  #   (elanthia-online/lich-5#2246): the
+  #   follow-up `refactor(remedy): use DRCC.study_instructions` deletes this
+  #   module and its specs, calls DRCC.study_instructions from
+  #   {Recipe::Instructions#prepare}, drops the Flag from
+  #   {Remedy.delete_flags}, and adds a study_instructions default to
+  #   Harness::DRCC in test/test_harness.rb. Until then, a change to the
+  #   helper must be made here too; the API spec in spec/remedy_spec.rb
+  #   pins the parameters and the result members.
+  # @api private
+  module LocalStudyInstructions
+    # The first study of instructions that wear out asks for a second one,
+    # on one line that also gives the uses left before this study:
+    #   [These instructions have only 5 uses remaining.  Study them again to proceed.]
+    # (25:10812). The uses part is optional so that a bare "Study them
+    # again" prompt (what forge, sew, shape and tinker wait for) still
+    # counts as a prompt. The game says "1 uses" for the last use
+    # (25:30340); the singular "use" is accepted but has not been seen.
+    # DRC.bput returns the matched text, from which +uses+ is read with
+    # this same pattern.
+    STUDY_INSTRUCTIONS_AGAIN = /(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/
+
+    # Ends a completed study: "Roundtime: 7 sec." (25:10825).
+    STUDY_INSTRUCTIONS_SUCCESS = /^Roundtime/
+
+    # The reply to a `<verb> my <name>` that names nothing on the
+    # character, as the GET of missing instructions got at 26:60708.
+    #
+    # @note code-derived (unverified) for a study: never seen after one.
+    STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/
+
+    # A study when the game does not see the instructions in hand. "You must
+    # be holding the instructions to study them." is the real reply to
+    # `study instruc` in a 2026-11 enchanting log (enchant.lic in #7891
+    # matches it too). "But you're not holding" is the reply to a book command when the
+    # book is not in hand (25:10805).
+    #
+    # @note "But you're not holding" is code-derived (unverified) for a
+    #   study: never seen after one.
+    STUDY_INSTRUCTIONS_NOT_HOLDING = /^(?:But you're not holding|You must be holding the instructions)/
+
+    # Sent after the Roundtime of the study that used the last use, so
+    # DRC.bput has already returned when it arrives and a Flag has to catch
+    # it (25:30349 then 25:30352; same order at 25:32936, 26:49540 and
+    # 26:58546). Anchored like DRParser's spoof-guarded patterns (StatLine,
+    # TDPValue): only tags or whitespace may come before the text, so
+    # another player's speech or ESP that quotes it does not count as a
+    # toss and skip the stow of instructions still in hand.
+    STUDY_INSTRUCTIONS_DISCARDED = /^(?:<[^>]*>|\s)*The instructions have grown so smudged and faded from use that you can no longer make them out/
+
+    # Flag that catches {STUDY_INSTRUCTIONS_DISCARDED} during one
+    # {.study_instructions} call. Its own name, not the helper's
+    # 'drcc-study-instructions-discarded', and a remedy- name, so
+    # {Remedy.delete_flags} deletes it after a ;kill.
+    STUDY_INSTRUCTIONS_DISCARDED_FLAG = 'remedy-instructions-discarded'
+
+    # The uses count in the prompt before the study that uses the last use.
+    # Every "1 uses" prompt in the logs is followed by the toss once that
+    # study completes (25:30340 then 25:30352, 25:32923 then 25:32936;
+    # 26:49528 then 26:49540, 26:58534 then 26:58546), and no set is tossed
+    # without one. A completed study after this count is a toss even when
+    # the Flag missed the line, so the instructions are not put away after
+    # they are gone.
+    STUDY_INSTRUCTIONS_LAST_USE = 1
+
+    # Most studies sent per {.study_instructions} call. The game asks for
+    # one more study, once (31 prompts in 62 studies over both logs); the
+    # third is headroom, not an expected path.
+    STUDY_INSTRUCTIONS_MAX_STUDIES = 3
+
+    # The line {.instructions_failed} prints before it stops the script,
+    # as DRCC.crafting_item_failed does (lich-5 common-crafting.rb:538 at
+    # upstream main bae103f5).
+    STUDY_INSTRUCTIONS_STOP_MESSAGE = 'DRCC: Cannot continue crafting without required item. Stopping script.'
+
+    # What one {.study_instructions} call did.
+    #
+    # @!attribute [r] studied
+    #   @return [Boolean] a study reply matched {STUDY_INSTRUCTIONS_SUCCESS}
+    # @!attribute [r] uses_left
+    #   @return [Integer, nil] 0 when the instructions were tossed; the
+    #     game's count less one after a completed study (the count is shown
+    #     before the study uses one: 5 at 25:10812, 4 on the next set at
+    #     25:11657, and "1 uses" is followed by the toss at 25:30340/30352);
+    #     the game's count when the study did not complete; nil when the
+    #     game gave no count (instructions that do not wear out, or a
+    #     failure first)
+    # @!attribute [r] discarded
+    #   @return [Boolean] true when the game tossed the worn-out
+    #     instructions away after the study: the Flag caught the toss line,
+    #     or the study that completed followed a "1 uses" prompt
+    #     ({STUDY_INSTRUCTIONS_LAST_USE})
+    #
+    # There is no stow field: DRCC.stow_crafting_item answers true for a PUT
+    # that timed out or got "What were you referring to?" (25:30361), so it
+    # cannot tell whether the instructions were put away.
+    #
+    # Defined as a constant and reopened below without a superclass, as
+    # {Order} is: Lich evals the whole script again on every run in the
+    # same session and keeps its constants.
+    StudyInstructionsResult = Data.define(:studied, :uses_left, :discarded)
+
+    class StudyInstructionsResult
+      # @return [Boolean] see #studied
+      def studied?
+        studied
+      end
+
+      # @return [Boolean] see #discarded
+      def discarded?
+        discarded
+      end
+    end
+
+    module_function
+
+    # Gets crafting instructions, studies them until the game is ready to
+    # craft, and puts them away again unless the game tossed them.
+    #
+    # Steps:
+    # 1. DRCC.get_crafting_item(+name+, +bag+, +bag_items+, +belt+,
+    #    +skip_exit+); the instructions are got when a hand holds them
+    #    afterwards (DRCI.in_hands?).
+    # 2. `study my <name>`, by full name so a second set of instructions or
+    #    another "instructions" item cannot answer it. A "Study them again"
+    #    prompt sends it again, up to {STUDY_INSTRUCTIONS_MAX_STUDIES}
+    #    studies in all; the prompt's uses count is kept for +uses_left+.
+    # 3. Waits out the study's roundtime, then checks a Flag for
+    #    {STUDY_INSTRUCTIONS_DISCARDED}, which arrives after the Roundtime
+    #    line DRC.bput returned on. A completed study after a "1 uses"
+    #    prompt counts as a toss even if the Flag missed the line.
+    # 4. DRCC.stow_crafting_item(+name+, +bag+, +belt+), unless the
+    #    instructions were tossed. A study that says they are not there or
+    #    not in hand still comes after a GET that got them, so they are put
+    #    away too; if they really are gone, the PUT only gets "What were you
+    #    referring to?" (25:30361).
+    #
+    # A study that does not end in Roundtime (not found, not holding, a
+    # timeout, or still "Study them again" after the last study) is a final
+    # failure: it beeps, prints a bold line and stops the script, or returns
+    # with +studied+ false when +skip_exit+ is set. The instructions are put
+    # away first, so a stop does not leave them in hand. A GET that leaves
+    # no instructions in hand returns +studied+ false without a message of
+    # its own (DRCC.get_crafting_item has reported a final failure);
+    # without +skip_exit+ it stops the script, since crafting cannot start
+    # without the design.
+    #
+    # @param name [String] the instructions, as `get my`/`study my` take
+    #   them, e.g. "liniment instructions"
+    # @param bag [String] container that holds +bag_items+ and takes the
+    #   instructions back
+    # @param bag_items [Array<String>, nil] items kept in +bag+
+    # @param belt [Hash, nil] crafting belt settings ('name', 'items')
+    # @param skip_exit [Boolean] return a result on a final failure instead
+    #   of stopping the script
+    # @return [StudyInstructionsResult]
+    # @raise [ArgumentError] when +name+ is nil or blank, before any command
+    #   is sent (a blank name would GET or untie nothing in particular)
+    # @raise [SystemExit] on a final failure without +skip_exit+, or when
+    #   DRCC.get_crafting_item stops the script itself
+    # @note When the GET's reply comes after DRC.bput gave up, the hands are
+    #   read before the instructions arrive, and the call fails as if they
+    #   were missing; the helper on v5.23.0 and later has the same window
+    #   for that reply. No get in the logs timed out.
+    #
+    # @example Prepare a remedy from instructions
+    #   result = LocalStudyInstructions.study_instructions('liniment instructions', bag, bag_items, belt, true)
+    #   DRC.message('Last use of these instructions.') if result.discarded?
+    def study_instructions(name, bag, bag_items, belt, skip_exit = false)
+      raise ArgumentError, 'study_instructions needs the name of the instructions' if name.to_s.strip.empty?
+
+      DRCC.get_crafting_item(name, bag, bag_items, belt, skip_exit)
+      unless DRCI.in_hands?(name)
+        # A final GET failure has already reported; only stop here.
+        instructions_failed("DRCC: Could not get #{name} to study.", skip_exit) unless skip_exit
+        return StudyInstructionsResult.new(studied: false, uses_left: nil, discarded: false)
+      end
+
+      outcome, uses, discarded = study_held_instructions(name)
+      studied = outcome == :studied
+      DRCC.stow_crafting_item(name, bag, belt) unless discarded
+      instructions_failed(study_instructions_failure(outcome, name), skip_exit) unless studied
+      StudyInstructionsResult.new(
+        studied: studied,
+        uses_left: discarded ? 0 : instructions_uses_left(uses, studied),
+        discarded: discarded
+      )
+    end
+
+    # Sends `study my <name>` until a reply other than "Study them again",
+    # or {STUDY_INSTRUCTIONS_MAX_STUDIES} studies, then waits out roundtime
+    # and reads the discard Flag. The Flag is added before the first study
+    # and deleted on the way out, however the method leaves. A completed
+    # study after a {STUDY_INSTRUCTIONS_LAST_USE} count is a toss too, so a
+    # toss line that arrives after waitrt? cannot lead to a stow of
+    # instructions that are gone.
+    #
+    # @param name [String] the instructions, as study_instructions got them
+    # @return [Array(Symbol, Integer, Boolean)] the outcome (:studied,
+    #   :again, :not_found, :not_holding or :timeout), the last uses count
+    #   the game gave (nil if none), and whether the instructions were
+    #   tossed
+    def study_held_instructions(name)
+      Flags.add(STUDY_INSTRUCTIONS_DISCARDED_FLAG, STUDY_INSTRUCTIONS_DISCARDED)
+      outcome = :again
+      uses = nil
+      STUDY_INSTRUCTIONS_MAX_STUDIES.times do
+        reply = DRC.bput("study my #{name}", STUDY_INSTRUCTIONS_AGAIN, STUDY_INSTRUCTIONS_SUCCESS, STUDY_INSTRUCTIONS_NOT_FOUND, STUDY_INSTRUCTIONS_NOT_HOLDING)
+        outcome = study_instructions_outcome(reply)
+        break unless outcome == :again
+
+        uses = reply[STUDY_INSTRUCTIONS_AGAIN, :uses]&.to_i || uses
+      end
+      waitrt?
+      tossed = Flags[STUDY_INSTRUCTIONS_DISCARDED_FLAG] || (outcome == :studied && uses == STUDY_INSTRUCTIONS_LAST_USE)
+      [outcome, uses, tossed ? true : false]
+    ensure
+      Flags.delete(STUDY_INSTRUCTIONS_DISCARDED_FLAG)
+    end
+
+    # Classifies one study reply.
+    #
+    # @param reply [String] text DRC.bput matched ('' on a timeout)
+    # @return [Symbol] :again, :studied, :not_found, :not_holding or :timeout
+    def study_instructions_outcome(reply)
+      case reply
+      when STUDY_INSTRUCTIONS_AGAIN then :again
+      when STUDY_INSTRUCTIONS_SUCCESS then :studied
+      when STUDY_INSTRUCTIONS_NOT_FOUND then :not_found
+      when STUDY_INSTRUCTIONS_NOT_HOLDING then :not_holding
+      else :timeout
+      end
+    end
+
+    # The bold line for a study that did not end in Roundtime.
+    #
+    # @param outcome [Symbol] a study_instructions_outcome other than :studied
+    # @param name [String] the instructions
+    # @return [String]
+    def study_instructions_failure(outcome, name)
+      case outcome
+      when :again then "DRCC: Still told to study #{name} again after #{STUDY_INSTRUCTIONS_MAX_STUDIES} studies."
+      when :not_found then "DRCC: Could not find #{name} to study."
+      when :not_holding then "DRCC: Not holding #{name} to study."
+      else "DRCC: No reply to studying #{name}."
+      end
+    end
+
+    # Uses left after a study_instructions call that kept the instructions.
+    #
+    # @param uses [Integer, nil] the game's count, taken before the study
+    # @param studied [Boolean] whether the study completed (and so used one)
+    # @return [Integer, nil] nil when the game gave no count
+    def instructions_uses_left(uses, studied)
+      return nil unless uses
+
+      studied ? uses - 1 : uses
+    end
+
+    # Reports a final failure as DRCC.crafting_item_failed does (lich-5
+    # common-crafting.rb:533-540 at upstream main bae103f5, private there): beeps and
+    # prints +message+ in bold, then, unless +skip_exit+, prints
+    # {STUDY_INSTRUCTIONS_STOP_MESSAGE} and stops the script. DRC.message is
+    # the bold line on every lich-5 release.
+    #
+    # @param message [String] bold line naming the failure
+    # @param skip_exit [Boolean] return instead of stopping the script
+    # @return [false] when +skip_exit+
+    # @raise [SystemExit] without +skip_exit+
+    def instructions_failed(message, skip_exit)
+      DRC.beep
+      DRC.message(message)
+      return false if skip_exit
+
+      DRC.message(STUDY_INSTRUCTIONS_STOP_MESSAGE)
+      exit
+    end
+
+    # Internal to study_instructions; kept off the module's public API, as
+    # the helper keeps them off DRCC's.
+    private_class_method :study_held_instructions, :study_instructions_outcome,
+                         :study_instructions_failure, :instructions_uses_left,
+                         :instructions_failed
+  end
+
+  # Where a fresh craft (the book or the instructions form) studies its
+  # recipe before the herb goes in: one strategy class per recipe source,
+  # each with {Book#prepare} and {Book#studied_instructions}, picked by the
+  # order's form ({.for}). A new recipe source is a new class and a new
+  # {SOURCES} entry; {Remedy#create_item} only calls #prepare.
+  #
+  # The continue form has no entry: it studies nothing, and resumes the
+  # remedy in the vessel without the stows, cube, flower swap and herb
+  # gathering a fresh craft does ({Remedy#run}).
+  #
+  # @api private
+  module Recipe
+    # Finds the recipe in a book: master_crafting_book when it is set,
+    # otherwise the remed book.
+    #
+    # Without master_crafting_book, the remed book is got with a guarded get
+    # ({Inventory#fetch!}) and stowed, both with alchemy_belt like every
+    # other tool. remedy used to pass no belt for the book (H08: it
+    # read a @forging_belt that was never set), so DRCC.get_crafting_item
+    # never untied it from alchemy_belt and DRCC.stow_crafting_item put it in
+    # the crafting container even when alchemy_belt lists it. A book that
+    # cannot be got stops remedy with "Remedy: could not get remed book.
+    # Stopping." on every lich-5 release. The warning that the remed book is
+    # outgrown ({BOOK_WARNING}) is printed from {BOOK_WARNING_RANK} Alchemy
+    # ranks up.
+    #
+    # @api private
+    class Book
+      # @param order [Order] a book-form order (chapter, recipe name, book
+      #   type)
+      # @param settings [OpenStruct] the character's settings; reads
+      #   master_crafting_book
+      # @param inventory [Inventory] gets and stows the remed book
+      def initialize(order:, settings:, inventory:)
+        @order = order
+        @settings = settings
+        @inventory = inventory
+      end
+
+      # Turns the book to the recipe's page (DRCC.find_recipe2).
+      #
+      # @return [void]
+      # @raise [SystemExit] when the remed book cannot be got, or when a
+      #   commons helper stops the script
+      def prepare
+        if @settings.master_crafting_book
+          DRCC.find_recipe2(@order.chapter, @order.recipe_name, @settings.master_crafting_book, @order.book_type)
+        else
+          @inventory.fetch!(REMED_BOOK)
+          echo(BOOK_WARNING) if DRSkill.getrank('Alchemy') >= BOOK_WARNING_RANK
+          DRCC.find_recipe2(@order.chapter, @order.recipe_name)
+          @inventory.stow_tool(REMED_BOOK)
+        end
+      end
+
+      # What a stop for faded instructions calls the instructions studied,
+      # as remedy has always said it.
+      #
+      # @return [String] e.g. "the instructions for some head unguent"
+      def studied_instructions
+        "the instructions for #{@order.recipe_name}"
+      end
+    end
+
+    # Studies loose crafting instructions, "<noun> instructions"
+    # ({Order#instructions_name}), with the local study_instructions
+    # ({LocalStudyInstructions.study_instructions}), routed like every
+    # other crafting item: from crafting_container (by name when
+    # crafting_items_in_container lists them) or alchemy_belt, and back
+    # there. No book is opened.
+    #
+    # @api private
+    class Instructions
+      # @param order [Order] an instructions-form order
+      # @param inventory [Inventory] the crafting container, its listed
+      #   items and alchemy_belt the instructions are got from
+      # @param _others [Hash] the other keywords {Recipe.for} passes every
+      #   source (settings), which instructions do not read
+      def initialize(order:, inventory:, **_others)
+        @order = order
+        @inventory = inventory
+      end
+
+      # Studies the instructions with skip_exit, so remedy decides what
+      # each result means:
+      # - not studied (the instructions cannot be got, or the study never
+      #   ends in Roundtime): stops with "Remedy: could not study the <noun>
+      #   instructions. Stopping.", after the helper put any instructions
+      #   in hand away, before any herb is gathered;
+      # - tossed (the study used their last use): says so, then crafts on;
+      # - a uses count the game gave: says how many uses are left, then
+      #   crafts on.
+      #
+      # @return [void]
+      # @raise [SystemExit] when the instructions are not studied, or when
+      #   a commons helper stops the script
+      def prepare
+        name = @order.instructions_name
+        result = LocalStudyInstructions.study_instructions(name, @inventory.bag, @inventory.bag_items, @inventory.belt, true)
+        Remedy.stop("could not study the #{name}.") unless result.studied?
+        if result.discarded?
+          DRC.message("Remedy: that was the last use of the #{name}; they are gone.")
+        elsif result.uses_left
+          DRC.message("Remedy: #{result.uses_left} #{result.uses_left == 1 ? 'use' : 'uses'} left on the #{name}.")
+        end
+      end
+
+      # What a stop for faded instructions calls the instructions studied;
+      # the instructions form has no recipe name.
+      #
+      # @return [String] e.g. "the salve instructions"
+      def studied_instructions
+        "the #{@order.instructions_name}"
+      end
+    end
+
+    # The recipe source of each form that studies a recipe, by
+    # {Order#mode}.
+    SOURCES = { book: Book, instructions: Instructions }.freeze
+
+    # The recipe source for an order.
+    #
+    # @param order [Order] a book- or instructions-form order
+    # @param settings [OpenStruct] the character's settings
+    # @param inventory [Inventory] where the book or instructions live
+    # @return [Book, Instructions]
+    # @raise [KeyError] for a continue-form order, which studies nothing
+    def self.for(order, settings:, inventory:)
+      SOURCES.fetch(order.mode).new(order: order, settings: settings, inventory: inventory)
+    end
+  end
+
+  # Deletes every remedy Flag: {REGISTERED_FLAGS}, and the Flag the local
+  # study_instructions adds while it studies
+  # ({LocalStudyInstructions::STUDY_INSTRUCTIONS_DISCARDED_FLAG}), which it
+  # deletes itself unless the script is killed mid-study. The before_dying
   # cleanup {#run} registers ends with it, so it runs however the script
   # ends.
   #
   # @return [void]
   def self.delete_flags
     REGISTERED_FLAGS.each_key { |name| Flags.delete(name) }
+    Flags.delete(LocalStudyInstructions::STUDY_INSTRUCTIONS_DISCARDED_FLAG)
   end
 
   # Stops the script: beeps, prints a bold "Remedy: <why> Stopping." line
@@ -3122,6 +3677,7 @@ class Remedy
     @craft_loop = nil
     @blacksmithing = nil
     @stamp_repair = nil
+    @recipe = nil
     @finished = false
   end
 
@@ -3255,21 +3811,12 @@ class Remedy
     use_herb1(prepared) if fresh && !DRCI.exists?(fresh)
   end
 
-  # Opens the recipe, gathers the herb into the vessel, then crafts.
+  # Studies the recipe from its source ({Recipe.for}: the book, or in the
+  # instructions form the crafting instructions), gathers the herb into the
+  # vessel, then crafts.
   #
   # {FADED_FLAG} is reset once the recipe is studied, so only a fade of
   # these instructions can stop the crafting, not one of a study before.
-  #
-  # Without master_crafting_book, the remed book is got with a guarded get
-  # ({Inventory#fetch!}) and stowed, both with alchemy_belt like every
-  # other tool. remedy used to pass no belt for the book (H08: it
-  # read a @forging_belt that was never set), so DRCC.get_crafting_item
-  # never untied it from alchemy_belt and DRCC.stow_crafting_item put it in
-  # the crafting container even when alchemy_belt lists it. A book that
-  # cannot be got stops remedy with "Remedy: could not get remed book.
-  # Stopping." on every lich-5 release. The warning that the remed book is
-  # outgrown ({BOOK_WARNING}) is printed from {BOOK_WARNING_RANK} Alchemy
-  # ranks up.
   #
   # @return [void]
   # @raise [SystemExit] when the remedy is finished, or when remedy or a
@@ -3279,14 +3826,8 @@ class Remedy
     @inventory.stow(DRC.left_hand)
     @inventory.stow(DRC.right_hand)
     pause 0.2 # to prevent issues with lag during the stow commands
-    if @settings.master_crafting_book
-      DRCC.find_recipe2(@order.chapter, @order.recipe_name, @settings.master_crafting_book, @order.book_type)
-    else
-      @inventory.fetch!(REMED_BOOK)
-      echo(BOOK_WARNING) if DRSkill.getrank('Alchemy') >= BOOK_WARNING_RANK
-      DRCC.find_recipe2(@order.chapter, @order.recipe_name)
-      @inventory.stow_tool(REMED_BOOK)
-    end
+    @recipe = Recipe.for(@order, settings: @settings, inventory: @inventory)
+    @recipe.prepare
     Flags.reset(FADED_FLAG)
 
     DRC.bput("touch my #{@cube}", *Patterns::CUBE_TOUCH_REPLIES) if @cube
@@ -3318,7 +3859,7 @@ class Remedy
     when :more_pieces
       stop("the #{@order.noun} needs more pieces of #{herb_in_vessel} to begin: the game refused #{@craft_loop.command.inspect}.")
     when :faded
-      stop("the instructions for #{@order.recipe_name} faded from memory before crafting began; run remedy again to study them.")
+      stop("#{@recipe.studied_instructions} faded from memory before crafting began; run remedy again to study them.")
     when :unanswered
       stop("the game did not answer #{@craft_loop.command.inspect} #{CraftLoop::MAX_SILENT_REPLIES + 1} times in a row.")
     when :too_long
