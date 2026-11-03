@@ -2513,6 +2513,18 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with('You are on a task for Dorhum, not Zasele: cancelling it (task_cancel_foreign_tasks).')
       end
 
+      it "takes the cancel replies only from the taskmaster, not from a player saying them" do
+        tm = zasele_run
+        player = 'Mallory says, "Very well, I see that you no longer wish to assist me."'
+        heard = [[player, confirm], [cancelled]]
+        # Like DRC.bput: the first line that one of the matchers takes.
+        game('ask dorhum for task cancel' => ->(_cmd, *matchers) { heard.shift.find { |line| matchers.any? { |m| line.match?(m) } }.to_s })
+
+        tm.cancel_task('dorhum', 'shell')
+
+        expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).twice
+      end
+
       it 'takes "You do not currently have a task" as done' do
         tm = zasele_run
         game('ask dorhum for task cancel' => no_task)

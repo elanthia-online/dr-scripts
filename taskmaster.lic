@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.04.1'
+  VERSION = '2026.11.04.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -168,8 +168,9 @@ class TaskMaster
   # @param args [OpenStruct] parsed arguments (npc, finish, find, tools,
   #   repeat, reset_output, pickup, cycle, marathon, loot_history)
   # @return [void]
-  # @raise [SystemExit] after the one-shot modes, marathon and finish, or
-  #   from run_tasks
+  # @raise [SystemExit] after the one-shot modes, marathon, and finish (which
+  #   goes on to run_tasks instead when it cancelled another taskmaster's
+  #   task), or from run_tasks
   def run(args = parse_args(ARG_DEFINITIONS))
     DRC.message("taskmaster version #{VERSION}")
     shift_to_task_hometown
@@ -1492,10 +1493,13 @@ class TaskMaster
   FOREIGN_TASK_CANCELLED = :taskmaster_foreign_task_cancelled
   # The taskmaster's replies to ASK <taskmaster> FOR TASK CANCEL (Dorhum,
   # 2026-11-03): the first asks to confirm within fifteen seconds, the second
-  # cancels, and with no task there is nothing to cancel.
-  TASK_CANCEL_CONFIRM = /ask me again within fifteen seconds/
-  TASK_CANCELLED = /I see that you no longer wish to assist me/
-  TASK_CANCEL_NONE = /You do not currently have a task/
+  # cancels, and with no task there is nothing to cancel. They are speech
+  # ('Researcher Dorhum says, "Very well, I see that you no longer wish to
+  # assist me."'), so cancel_reply matches them only after the taskmaster's
+  # name; a player saying the words does not count.
+  TASK_CANCEL_CONFIRM = 'ask me again within fifteen seconds'
+  TASK_CANCELLED = 'I see that you no longer wish to assist me'
+  TASK_CANCEL_NONE = 'You do not currently have a task'
   # How long taskmasters call you unreliable after a cancel: about ten
   # minutes, the figure players go by, and what Mahtra's log shows (cancel
   # 18:45:30, refused until 18:54:47, offered a task at 18:56:00).
@@ -1529,19 +1533,28 @@ class TaskMaster
     DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it (task_cancel_foreign_tasks).")
     DRCI.stow_hands
     find_npc(@rooms, giver)
+    confirm, cancelled, none = [TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCEL_NONE].map { |text| cancel_reply(giver, text) }
     asks = 0
     reply = ''
     while asks < 2
       asks += 1
-      reply = DRC.bput("ask #{giver} for task cancel", TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCEL_NONE)
-      break unless reply.match?(TASK_CANCEL_CONFIRM)
+      reply = DRC.bput("ask #{giver} for task cancel", confirm, cancelled, none)
+      break unless reply.match?(confirm)
     end
-    unless reply.match?(TASK_CANCELLED) || reply.match?(TASK_CANCEL_NONE)
+    unless reply.match?(cancelled) || reply.match?(none)
       DRC.message("Could not cancel #{giver.capitalize}'s task#{reply.empty? ? '' : " (#{reply})"}. Stopping.")
       exit
     end
     DRCT.dispose("#{item} instructions", nil, @worn_trashcan, @worn_trashcan_verb) if item
     forget_replacement(giver)
+  end
+
+  # @param giver [String] the taskmaster
+  # @param text [String] one of the TASK_CANCEL_* replies
+  # @return [Regexp] the reply, said by the taskmaster: its name, then
+  #   "says," before the quote
+  def cancel_reply(giver, text)
+    /^[^"]*\b#{Regexp.escape(giver)}\b[^"]*says, "[^"]*#{Regexp.escape(text)}/i
   end
 
   # Hands in finished items already in the bag and returns how many are still
