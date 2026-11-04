@@ -40,6 +40,18 @@
   "1104:30870": "You put your cloth in your traveler's pack.",
   "1104:30872": "You get some heavy silk cloth from inside your traveler's pack.",
   "1104:30876": "You count out 16 yards of material there.",
+  "1104:32027": "Inch by inch you take up woven cloth over a roller on loom's frame, careful not to crease it, and then re-tighten the warp threads.",
+  "1104:32031": "You shift the loom's beam and swap the raised heddles with the lowered ones.  The loom's shuttle zips across the shed of warp threads and the weft battens together evenly along the edge.",
+  "1104:32038": "You remove the pirn from the loom's shuttle and completely untangle all the knots and loops threatening the next pick.",
+  "1104:32039": "The cloth threads begin to unravel along the fell and need pushing together.",
+  "1104:32040": "Roundtime: 4 sec.",
+  "1104:32042": "You turn the loom's cloth roller while releasing slack on the warp threads, repositioning the partially-woven cloth with room to spare.",
+  "1104:32043": "Roundtime: 6 sec.",
+  "1104:32044": "You snip off the bolt of fabric and are left with some heavy silk cloth.",
   "1104:32050": "What were you referring to?",
-  "1104:32641": "You combine the bolts of cloth together."
+  "1104:32605": "With a pull of the beam, you swap heddles securing the warp threads on the loom.  You pass the shuttle back and forth across the loom, your skill showing in the exceptional quality weave produced along the cloth's edge.",
+  "1104:32641": "You combine the bolts of cloth together.",
+  "1104:33218": "You shift the loom's beam and swap the raised heddles with the lowered ones.  You pass the shuttle back and forth across the loom, your skill showing in the exceptional quality weave produced along the cloth's edge.",
+  "1104:33219": "One side of the partially-woven cloth is uneven, and needs pushing together.",
+  "1104:33220": "Roundtime: 8 sec."
 }

@@ -59,17 +59,24 @@ class WeaveCloth
   # (1104:30604).
   NOT_FOUND = /^What were you/i.freeze
 
-  # The loom's state, from `look on loom` (1104:30590).
+  # An empty loom, from `look on loom` (1104:30590).
   LOOM_EMPTY = /loom is not loaded/i.freeze
+
+  # A loaded loom, from `look on loom`. The wording is the original
+  # weave-cloth's; no log shows a loaded loom.
   LOOM_LOADED = /loom is loaded with/i.freeze
 
-  # A thread coming off the loom (1104:30752), and the loom having none left.
+  # A thread coming off the loom (1104:30752).
   PULLED = /You pull some .+ off from/i.freeze
+
+  # A loom with no thread left to pull. The wording is the original
+  # weave-cloth's; no log shows it.
   NOTHING_TO_PULL = /You see nothing to pull/i.freeze
 
-  # The loom taking a thread (1104:30803), or refusing a second thread of
-  # another material (1104:30609).
+  # The loom taking a thread (1104:30803).
   LOADED = /You load .+ with/i.freeze
+
+  # The loom refusing a second thread of another material (1104:30609).
   REFUSED = /You have difficulty stringing the loom/i.freeze
 
   # Loom problems the game reports while weaving, and the command that fixes
@@ -685,7 +692,20 @@ class WeaveCloth
   # @param id [String, Integer] the item's id
   # @return [Boolean] true when it went in
   def put_away?(id)
-    DRCI.put_away_item?("##{id}", @bag)
+    DRCI.put_away_item?("##{id}", crafting_container_ref)
+  end
+
+  # The crafting container as a command names it: by id when it is worn,
+  # so another item of the same noun cannot catch the put (a crafting
+  # container that is a duffel bag, while a duffel bag is being sewn); by
+  # name otherwise. "put #<id> in #<id>" works in game (1104:35084-35085).
+  #
+  # @return [String] '#<id>' or the container's name
+  def crafting_container_ref
+    return @bag unless @bag
+
+    worn = (GameObj.inv || []).find { |item| item.name.to_s =~ /\b#{Regexp.escape(@bag)}\z/i }
+    worn&.id ? "##{worn.id}" : @bag
   end
 
   # Drops spools from the record spin keeps.
