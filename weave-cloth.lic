@@ -2,45 +2,64 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#weave-cloth
 =end
 
-DRCC.find_loom_room(get_settings.hometown, nil)
-case DRC.bput('look on loom', /loom is loaded with some \w+ thread\.$/, /loom is loaded with some \w+ thread and some \w+ thread\.$/, /loom is not loaded/)
-when /loom is loaded with some/
-  while DRC.bput('pull loom', /You pull some (\w+) thread off from/, /You see nothing to pull/) =~ /You pull some (\w+) thread off from/
-    DRC.bput("drop my #{Regexp.last_match(1)} thread", /You drop/)
-  end
-end
+class WeaveCloth
+  def initialize
+    @hometown = DRCC.crafting_hometown(get_settings)
+    stop("Could not reach a loom in #{@hometown || 'your crafting town'}.") unless DRCC.find_loom_room(@hometown)
+    case DRC.bput('look on loom', /loom is loaded with some \w+ thread\.$/, /loom is loaded with some \w+ thread and some \w+ thread\.$/, /loom is not loaded/)
+    when /loom is loaded with some/
+      while DRC.bput('pull loom', /You pull some (\w+) thread off from/, /You see nothing to pull/) =~ /You pull some (\w+) thread off from/
+        DRC.bput("drop my #{Regexp.last_match(1)} thread", /You drop/)
+      end
+    end
 
-fput('get my thread')
-fput('put my thread on loom')
-fput('drop thread') if checkright || checkleft
+    fput('get my thread')
+    fput('put my thread on loom')
+    fput('drop thread') if checkright || checkleft
 
-fput('get my thread')
-fput('put my thread on loom')
-fput('drop thread') if checkright || checkleft
+    fput('get my thread')
+    fput('put my thread on loom')
+    fput('drop thread') if checkright || checkleft
 
-command = 'weave loom'
-pause 0.5 while DRC.left_hand || DRC.right_hand
-
-until DRC.left_hand || DRC.right_hand
-  waitrt?
-  case DRC.bput(command, 'dust and debris', 'unravel', 'bunch', 'needs pushing together', 'need pushing together', 'roundtime')
-  when 'dust and debris'
-    pause
-    waitrt?
-    command = 'clean loom'
-  when 'bunch'
-    pause
-    waitrt?
-    command = 'turn loom'
-  when 'unravel', 'needs pushing together', 'need pushing together'
-    pause
-    waitrt?
-    command = 'push loom'
-  else
     command = 'weave loom'
-    pause
-    waitrt?
+    pause 0.5 while DRC.left_hand || DRC.right_hand
+
+    until DRC.left_hand || DRC.right_hand
+      waitrt?
+      case DRC.bput(command, 'dust and debris', 'unravel', 'bunch', 'needs pushing together', 'need pushing together', 'roundtime')
+      when 'dust and debris'
+        pause
+        waitrt?
+        command = 'clean loom'
+      when 'bunch'
+        pause
+        waitrt?
+        command = 'turn loom'
+      when 'unravel', 'needs pushing together', 'need pushing together'
+        pause
+        waitrt?
+        command = 'push loom'
+      else
+        command = 'weave loom'
+        pause
+        waitrt?
+      end
+    end
+
+    fput('stow my cloth')
+  end
+
+  private
+
+  # Tells the player why weave-cloth stopped, then stops.
+  #
+  # @param message [String] what went wrong
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop(message)
+    Lich::Messaging.msg('bold', "weave-cloth: #{message}")
+    exit
   end
 end
 
-fput('stow my cloth')
+WeaveCloth.new
