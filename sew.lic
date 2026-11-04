@@ -230,11 +230,16 @@ class Sew
   # item is missing, or the reply times out with no free hand), puts the
   # material back and stops before any study, so the run leaves neither the
   # material in hand nor a study sent with nothing to study.
+  #
+  # A failed put-back names the hand only while the piece is still in the
+  # left hand by id: put_away_item? returns false on every failure reply,
+  # including "Perhaps you should be holding that first.", which means the
+  # piece is no longer held.
   def get_recipe_item(name, material)
     return if DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
 
     message = "sew: Could not get '#{name}'. Stopping before the recipe is studied."
-    message += " The #{material} is still in your left hand." if material && !put_back_material(material)
+    message += " The #{material} is still in your left hand." if material && !put_back_material(material) && DRCI.in_left_hand?("##{@material_id}")
     Lich::Messaging.msg('bold', message)
     magic_cleanup
     exit
