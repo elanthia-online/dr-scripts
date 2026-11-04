@@ -171,8 +171,9 @@ class WeaveCloth
   end
 
   # Spins and weaves until at least yards of this heavy cloth are on hand,
-  # in one piece in the crafting container. Each batch is two ;spin runs
-  # and one weave of exactly the spools they recorded. The cloth is counted
+  # in one piece in the crafting container. Each batch weaves two recorded
+  # heavy spools of the fiber when there are two, and otherwise runs ;spin
+  # twice and weaves exactly the spools those runs recorded. The cloth is counted
   # after every batch rather than assumed, since a weave's yield depends on
   # the thread, and the run stops as soon as a spin or a weave fails or a
   # batch adds nothing, so a failure never keeps buying fiber.
@@ -188,12 +189,24 @@ class WeaveCloth
     stop('Could not empty your hands.') unless DRCI.stow_hands
     have = gather_cloth(fiber)
     while have < yards
-      weave(spin_pair(fiber))
+      weave(spun_pair(fiber) || spin_pair(fiber))
       now = gather_cloth(fiber)
       stop("Weaving added no #{fiber} cloth (#{now} yards on hand); stopping before buying more fiber.") unless now > have
       have = now
     end
     Lich::Messaging.msg('plain', "weave-cloth: Your #{@bag} holds #{have} yards of #{STOCK_WEIGHT} #{fiber} cloth.")
+  end
+
+  # Two recorded spools of this fiber at the stock weight, newest first,
+  # when there are two: a run that stopped after spinning leaves them
+  # recorded, and weaving them first keeps the next run from buying fiber
+  # for two more.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Array<String>, nil] spool ids, or nil when fewer than two
+  def spun_pair(fiber)
+    ids = recorded_spools.reverse.select { |spool| spool['fiber'] == fiber && spool['weight'] == STOCK_WEIGHT }.map { |spool| spool['id'] }
+    ids if ids.size >= 2
   end
 
   # Runs ;spin twice, checking after each run that it recorded a spool.

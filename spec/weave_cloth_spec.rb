@@ -849,6 +849,30 @@ RSpec.describe WeaveCloth do
         expect(DRCI).not_to have_received(:get_item?).with('#1900000')
       end
 
+      it 'weaves two heavy spools a stopped run left recorded before spinning more (review on #7950)' do
+        UserVars.spun_spools = [{ 'id' => '1900000', 'fiber' => 'linen', 'weight' => 'heavy' }] + silk_spools
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+      end
+
+      it 'spins for the batch when only one heavy spool of the fiber is recorded' do
+        UserVars.spun_spools = [silk_spools.first, { 'id' => '1963477', 'fiber' => 'silk', 'weight' => 'thin' }]
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('spin', ['silk']).once
+      end
+
       it 'does not start the second spin when the first made no spool' do
         allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
         game.script('get my silk cloth from my duffel bag', no_cloth)
