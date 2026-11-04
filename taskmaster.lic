@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.04.5'
+  VERSION = '2026.11.05.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -595,17 +595,21 @@ class TaskMaster
   end
 
   # Takes each piece of stock out of the crafting bag and disposes of it in
-  # the given room, until the bag has none left or TRASH_CAP pieces are gone.
+  # the given room by the id of the piece in hand, until the bag has none
+  # left or TRASH_CAP pieces are gone. A piece that can't be disposed of goes
+  # back in the bag by its id and ends the loop.
   #
   # @param stock [String] e.g. 'burlap cloth' or 'bronze ingot'
   # @param room [Integer] room with the bin
   # @return [void]
   def dispose_leftovers(stock, room)
     TRASH_CAP.times do
-      reply = DRC.bput("get my #{stock} from my #{@bag}", "You get", "You are already", "You're already", "What were you")
-      break unless reply =~ /You get|You are already|You're already/
+      ref = take_stock_piece(stock, stock.split.last)
+      break unless ref
+      next if DRCT.dispose(ref, room)
 
-      DRCT.dispose(stock, room)
+      put_back_stock(ref, stock)
+      break
     end
   end
 
@@ -2144,26 +2148,25 @@ class TaskMaster
   end
 
   # With task_bin_leftover_stock, after a Zasele task is handed in, bins
-  # every piece of her stock in the crafting bag into the worn trash can,
-  # then uses the trash can's verb twice. Without the setting or a worn trash
-  # can it bins nothing, so nothing is ever dropped, and trash keeps taking
-  # leftover stock to the bin room. A piece the trash can refuses goes back
-  # in the bag and ends that stock's loop.
+  # every piece of her stock in the crafting bag into the worn trash can
+  # (dispose_trash uses the trash can's verb twice after each piece).
+  # Without the setting or a worn trash can it sends nothing, and trash
+  # keeps taking leftover stock to the bin room. A piece the worn trash can
+  # refuses goes to dispose_trash's other ways (a room bin, then the floor);
+  # one it can't get rid of at all goes back in the bag and ends that
+  # stock's loop.
   #
   # @return [Integer] pieces binned
   def bin_task_stock
     return 0 unless bins_task_stock?
 
     binned = TASK_STOCK_BASES.sum { |base| bin_stock("#{@stackmap[base].first} #{base}", base) }
-    return binned unless binned.positive?
-
-    2.times { DRC.bput("#{@worn_trashcan_verb} my #{@worn_trashcan}", /You drum/, /THUD/, /What were you/, /^You /) } if @worn_trashcan_verb
-    DRC.message("Binned #{binned} piece(s) of leftover task stock")
+    DRC.message("Binned #{binned} piece(s) of leftover task stock") if binned.positive?
     binned
   end
 
   # Bins the pieces of one stock from the crafting bag, up to
-  # TASK_STOCK_BIN_CAP.
+  # TASK_STOCK_BIN_CAP, each by the id of the piece in hand.
   #
   # @param stock [String] e.g. 'burlap cloth'
   # @param noun [String] the stock's noun, e.g. 'cloth'
@@ -2171,19 +2174,61 @@ class TaskMaster
   def bin_stock(stock, noun)
     binned = 0
     TASK_STOCK_BIN_CAP.times do
-      got = DRC.bput("get my #{stock} from my #{@bag}", /^You get/, /^What were you referring to/, /^I could not find/, /^You need a free hand/)
-      break unless got.start_with?('You get')
+      ref = take_stock_piece(stock, noun)
+      break unless ref
 
-      put = DRC.bput("put my #{noun} in my #{@worn_trashcan}", /^You drop/, /^You put/, /^What were you/, /won't fit|no room|too full/)
-      unless put.match?(/^You (drop|put)/)
-        # The trash can refused it: put it back rather than leave a hand full.
-        DRC.bput("put my #{noun} in my #{@bag}", /^You put/, /^What were you/)
+      unless DRCI.dispose_trash(ref, @worn_trashcan, @worn_trashcan_verb)
+        put_back_stock(ref, stock)
         break
       end
 
       binned += 1
     end
     binned
+  end
+
+  # Takes one piece of stock out of the crafting bag and returns the id of
+  # the piece in hand, so the commands after it name that piece and nothing
+  # else. By noun, "put my leather" can name worn "sinuous leathers" instead
+  # and get "Perhaps you should be holding that first." (Hollow Eve 2026).
+  #
+  # @param stock [String] e.g. 'rat leather'
+  # @param noun [String] the stock's noun, e.g. 'leather'
+  # @return [String, nil] "#id" of the piece in hand; nil when the bag has
+  #   none left, or (after saying why) when it can't be taken or found
+  def take_stock_piece(stock, noun)
+    before = hand_ids
+    got = DRC.bput("get my #{stock} from my #{@bag}", /^You get/, /^You are already/, /^You're already/,
+                   /^What were you referring to/, /^I could not find/, /^You need a free hand/)
+    if got.start_with?('You need a free hand')
+      DRC.message("Both hands are full, so the leftover #{stock} stays in your #{@bag}. Empty your hands to get rid of it.")
+      return
+    end
+    return unless got.match?(/^You (get|are already|'re already)/)
+
+    id = (hand_ids - before).first || held_id(noun)
+    return "##{id}" if id
+
+    DRC.message("Took out the #{stock} but can't find it in your hands, so it was not thrown away. Stopping.")
+    nil
+  end
+
+  # Puts a piece that could not be thrown away back in the crafting bag by
+  # its id. When that fails too, says so: the piece may still be in hand,
+  # where a later STOW would send it to the default container.
+  #
+  # @param ref [String] "#id" of the piece
+  # @param stock [String] e.g. 'rat leather'
+  # @return [void]
+  def put_back_stock(ref, stock)
+    return if DRCI.put_away_item?(ref, @bag)
+
+    DRC.message("Could not throw away the #{stock} (#{ref}) or put it back in your #{@bag}. It may still be in your hand. Stopping.")
+  end
+
+  # @return [Array<String>] the ids of what is in either hand
+  def hand_ids
+    [GameObj.right_hand, GameObj.left_hand].filter_map { |obj| obj&.id }
   end
 
   # Clears the record of a replacement request for this taskmaster's task.
