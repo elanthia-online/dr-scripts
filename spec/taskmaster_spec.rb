@@ -1954,7 +1954,7 @@ RSpec.describe TaskMaster do
       # that sale on (0-based) the piece lands but the clerk's line comes after
       # bput's timeout, so order_item returns ''. refuse_combine:
       # COMBINE always answers "You must be holding both". keep_new: a combine
-      # keeps the new piece's id instead of the stack's. new_id_combine: the
+      # keeps the new piece's id instead of the stack's. new_id_combine (the default, as in game): the
       # combined stack comes back under an id neither had. hollow_combine:
       # COMBINE answers "You combine" but both pieces stay in hand.
       # silent_combine / silent_count: that command goes unanswered (bput's
@@ -1970,7 +1970,7 @@ RSpec.describe TaskMaster do
       #
       # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
       def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false, late_from: nil,
-               refuse_combine: false, keep_new: false, new_id_combine: false, hollow_combine: false, silent_combine: false,
+               refuse_combine: false, keep_new: false, new_id_combine: true, hollow_combine: false, silent_combine: false,
                silent_count: false)
         world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false }
         next_id = 3_000_000
@@ -2152,7 +2152,7 @@ RSpec.describe TaskMaster do
       end
 
       it 'follows the stack when the combine keeps the new piece\'s id' do
-        world = shop(keep_new: true)
+        world = shop(keep_new: true, new_id_combine: false)
 
         buyer.buy_stackables('rope', 3, 10, 'cloth')
 
@@ -2164,8 +2164,8 @@ RSpec.describe TaskMaster do
 
         expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.not_to raise_error
 
-        expect(world[:sent]).to include('combine cloth', 'count #3000005', 'put #3000005 in my duffel bag')
-        expect(world[:sent].grep(/\Acombine #/)).to be_empty
+        expect(world[:sent]).to include('combine #3000003 with #3000004', 'count #3000005', 'put #3000005 in my duffel bag')
+        expect(world[:sent].grep(/\Acombine \w+\z/)).to be_empty
         expect(bagged(world, 'burlap cloth')).to eq([30])
         expect(world[:hands].values.compact).to be_empty
       end
@@ -2194,7 +2194,7 @@ RSpec.describe TaskMaster do
 
         expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
         expect(DRC).to have_received(:message)
-          .with(/Could not buy burlap cloth: the order did not go through.*\. #3000001 would not go back in your duffel bag and is still in your hands; put it away before starting again\. Stopping\./)
+          .with(/Could not buy burlap cloth: the order did not go through.*\. #3000003 would not go back in your duffel bag and is still in your hands; put it away before starting again\. Stopping\./)
         expect(world[:hands].values.compact.map(&:yards)).to eq([20])
       end
 
@@ -2205,12 +2205,21 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with(/\A[^#]*full hands\)\. Stopping\.\z/)
       end
 
-      it 'trusts the hands when a combine goes unanswered but only the stack is left in hand' do
+      it 'trusts the hands when a combine goes unanswered but one id, the stack under its new id, is all that is held' do
         world = shop(silent_combine: true)
 
         buyer.buy_stackables('rope', 2, 10, 'cloth')
 
         expect(bagged(world, 'burlap cloth')).to eq([20])
+      end
+
+      it 'follows the stack when the game keeps the stack\'s own id' do
+        world = shop(new_id_combine: false)
+
+        buyer.buy_stackables('rope', 3, 10, 'cloth')
+
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+        expect(world[:hands].values.compact).to be_empty
       end
 
       it 'counts the stack by id and stops, saying how much is missing, when it is short' do

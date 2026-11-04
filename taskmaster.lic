@@ -1874,14 +1874,12 @@ class TaskMaster
     stop_stock("Could not buy #{stock}: #{why}.")
   end
 
-  # Combines a newly bought piece into the stack. COMBINE goes by the stock's
-  # noun ("combine cloth"), the form the game is known to accept; buy_stock
-  # emptied both hands first and COMBINE only looks at what is held, so the
-  # noun can only mean these two pieces. A "combine #id with #id" was refused
-  # in game with both items held, so it is not used. The hands decide: it
-  # worked when the game did not refuse and exactly one of the two is still
-  # held, or when it said "You combine" and one id, neither of the two, is all
-  # that is held (the stack under a new id; check_yards still counts it).
+  # Combines a newly bought piece into the stack, both named by id. In game
+  # "combine #a with #b" answers "You combine the bolts of cloth together."
+  # and the stack comes back under a new id, neither of the two (Mahtra,
+  # 2026-11-05). The hands decide: unless the game refused, it worked when one
+  # id is all that is held, one of the two or the stack under its new id, even
+  # when the reply was missed. check_yards still counts that stack.
   #
   # @param stack [String] id of the stack
   # @param piece [String] id of the new piece
@@ -1889,11 +1887,11 @@ class TaskMaster
   # @return [String] id of the combined stack
   # @raise [SystemExit] when they did not combine
   def combine_stock(stack, piece, stock)
-    reply = DRC.bput("combine #{stock.split.last}", *COMBINE_REPLIES)
+    reply = DRC.bput("combine ##{stack} with ##{piece}", *COMBINE_REPLIES)
     unless reply.start_with?('You must')
       held = hand_ids & [stack, piece]
       return held.first if held.size == 1
-      return hand_ids.first if reply.start_with?('You combine') && hand_ids.size == 1
+      return hand_ids.first if hand_ids.size == 1
     end
 
     stop_stock("Could not combine the #{stock} (#{combine_failure(reply)}).")
