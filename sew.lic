@@ -205,6 +205,7 @@ class Sew
       exit
     end
     check_hand(noun) unless DRCI.in_left_hand?(noun)
+    @material_id = GameObj.left_hand.id
   end
 
   # Reads the recipe once +material+ is in the left hand. +material+ is
@@ -232,10 +233,22 @@ class Sew
   def get_recipe_item(name, material)
     return if DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
 
-    DRCC.stow_crafting_item(material, @bag, @belt) if material
-    Lich::Messaging.msg('bold', "sew: Could not get '#{name}'. Stopping before the recipe is studied.")
+    message = "sew: Could not get '#{name}'. Stopping before the recipe is studied."
+    message += " The #{material} is still in your left hand." if material && !put_back_material(material)
+    Lich::Messaging.msg('bold', message)
     magic_cleanup
     exit
+  end
+
+  # Puts the held material back in the bag. By id when hold_material saw
+  # one, so the put reaches the piece in hand and a full bag fails at once
+  # instead of after a 15 second timeout. Returns false when the put
+  # failed and the material is still held.
+  def put_back_material(material)
+    return DRCI.put_away_item?("##{@material_id}", @bag) if @material_id
+
+    DRCC.stow_crafting_item(material, @bag, @belt)
+    true
   end
 
   def assemble_part

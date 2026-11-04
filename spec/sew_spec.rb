@@ -1462,6 +1462,99 @@ RSpec.describe Sew do
 
           expect(sent).to eq(['get my shirt instructions'])
         end
+
+        # The game gives the held material an id, so the put-back goes by
+        # id. The DRCI double follows v5.23.0 put_away_item?: it returns
+        # false at once on a reply in PUT_AWAY_ITEM_FAILURE_PATTERNS, such
+        # as a full bag, where the by-name DRCC stow waits out its 15
+        # second timeout and returns true.
+        context 'when the held material has an id' do
+          before do
+            allow(DRCC).to receive(:get_crafting_item) do |name, _bag, _items, _belt, _skip_exit|
+              reply = DRC.bput("get my #{name}", /^You get/, /^What were you/)
+              next false if reply.start_with?('What were you')
+
+              $left_hand = name unless name.end_with?('instructions')
+              true
+            end
+            $hand_ids = { 'burlap cloth' => '2222485', 'rat leather' => '2222486' }
+            allow(DRCI).to receive(:put_away_item?) do |item, container|
+              command = "put #{item} in my #{container}"
+              sent << command
+              replies.fetch(command, 'You put your cloth in your duffel bag.') !~ /^(There isn't any more room in|Perhaps you should be holding that first)/
+            end
+            replies['get my rucksack instructions'] = 'What were you referring to?'
+          end
+
+          it 'puts the cloth back by its id' do
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+
+            expect(sent).to eq(['get my burlap cloth', 'get my rucksack instructions', 'put #2222485 in my duffel bag'])
+          end
+
+          it 'puts the leather back by its id, never by name' do
+            sew.instance_variable_set(:@mat_type, 'rat')
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+
+            expect(sent.last).to eq('put #2222486 in my duffel bag')
+            expect(sent).not_to include('put my rat leather in my duffel bag')
+          end
+
+          it 'says only that the instructions are missing when the put-back lands' do
+            expect(Lich::Messaging).to receive(:msg)
+              .with('bold', "sew: Could not get 'rucksack instructions'. Stopping before the recipe is studied.")
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
+
+          it 'names the cloth still in hand when the bag is full' do
+            replies['put #2222485 in my duffel bag'] = "There isn't any more room in the duffel bag for that."
+            expect(sew).to receive(:magic_cleanup)
+            expect(Lich::Messaging).to receive(:msg)
+              .with('bold', "sew: Could not get 'rucksack instructions'. Stopping before the recipe is studied. " \
+                            'The burlap cloth is still in your left hand.')
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
+
+          it 'sends no study and no second put when the bag is full' do
+            replies['put #2222485 in my duffel bag'] = "There isn't any more room in the duffel bag for that."
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+
+            expect(sent).to eq(['get my burlap cloth', 'get my rucksack instructions', 'put #2222485 in my duffel bag'])
+          end
+
+          it 'names the leather still in hand when the put is refused' do
+            sew.instance_variable_set(:@mat_type, 'rat')
+            replies['put #2222486 in my duffel bag'] = 'Perhaps you should be holding that first.'
+            expect(Lich::Messaging).to receive(:msg)
+              .with('bold', "sew: Could not get 'rucksack instructions'. Stopping before the recipe is studied. " \
+                            'The rat leather is still in your left hand.')
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
+
+          it 'puts back by id after the cloth is swapped from the right hand' do
+            allow(DRCC).to receive(:get_crafting_item) do |name, *|
+              DRC.bput("get my #{name}", /^You get/, /^What were you/)
+              next false if name.end_with?('instructions')
+
+              $right_hand = name
+              true
+            end
+            allow(DRCI).to receive(:in_left_hand?).and_return(false)
+            allow(sew).to receive(:check_hand) do
+              $left_hand = $right_hand
+              $right_hand = nil
+            end
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+
+            expect(sent.last).to eq('put #2222485 in my duffel bag')
+          end
+        end
       end
 
       it 'gets the cloth, then the instructions, then studies' do
