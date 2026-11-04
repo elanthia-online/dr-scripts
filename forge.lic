@@ -86,9 +86,18 @@ class Forge
   # @return [Array<String>]
   RENTAL_NOT_FOUND_PATTERNS = ['I could not find', 'What were you referring to'].freeze
 
-  # Patterns indicating successful rental renewal
-  # @return [Array<String>]
-  RENTAL_RENEW_SUCCESS_PATTERNS = ['You mark the notice', 'renewed your rental', 'extends your rental'].freeze
+  # Pattern for the game's bracketed line confirming a renewal, e.g.
+  # "[Your private forge rental has been extended until Sat Nov 14 14:56:41 ET 2026.]".
+  # Anchored at line start (leading tags allowed) so player text can't fake it.
+  # @return [Array<Regexp>]
+  RENTAL_RENEW_SUCCESS_PATTERNS = [/^(?:<[^>]+>)*\[Your [^\]]*rental has been extended until/].freeze
+
+  # Pattern for the game's bracketed rental warning, e.g. "[You have less than
+  # 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE
+  # to signal the sentry.]". The sentry's spoken warning before it has a quote
+  # before its text, so it can't be told from player speech.
+  # @return [Regexp]
+  RENTAL_WARNING_PATTERN = /^(?:<[^>]+>)*\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
 
   # Patterns indicating failed rental renewal
   # @return [Array<String>]
@@ -400,7 +409,7 @@ class Forge
               /^(?:<[^>]+>)*Applying the final touches/i,
               /^(?:<[^>]+>)*The .* was successfully/)
     Flags.add('ingot-restow', /^(?:<[^>]+>)*You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
-    Flags.add('forge-rental-warning', /^(?:<[^>]*>|[^"<])*?Your rental time is almost up/i)
+    Flags.add('forge-rental-warning', RENTAL_WARNING_PATTERN)
   end
 
   # Load settings from YAML configuration and command-line arguments.
@@ -801,12 +810,14 @@ class Forge
     Flags.reset('forge-rental-warning')
     result = DRC.bput('mark notice', *RENTAL_RENEW_SUCCESS_PATTERNS, *RENTAL_RENEW_FAILURE_PATTERNS)
     case result
+    when *RENTAL_RENEW_SUCCESS_PATTERNS
+      info_log('RENTAL RENEWED')
     when "You don't have enough"
       error_log('INSUFFICIENT FUNDS TO RENEW RENTAL')
     when 'I could not find'
       error_log('COULD NOT FIND NOTICE - CHECK LOCATION')
     else
-      info_log('RENTAL RENEWED')
+      error_log('RENTAL RENEWAL NOT CONFIRMED - CHECK THE NOTICE')
     end
   end
 
