@@ -348,7 +348,7 @@ RSpec.describe Spin do
 
     it 'stops before banking when the scissors for the silk cut cannot be got' do
       allow(DRCC).to receive(:get_crafting_item).and_return(false)
-      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get your scissors for the silk cut.')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get your scissors to cut the silk fiber.')
       expect(DRCM).not_to receive(:ensure_copper_on_hand)
 
       expect { Spin.new }.to raise_error(SystemExit)
@@ -645,6 +645,270 @@ RSpec.describe Spin do
       Spin.new
 
       expect(game.sent.drop_while { |command| command != 'spin wheel' }).to eq(['spin wheel', 'push wheel', 'spin wheel', 'turn wheel', 'spin wheel'])
+    end
+  end
+
+  # Each silk spin cuts a 30-yard bundle down to 10 and the game puts the
+  # other 20 in a container; those leftovers are used before buying more.
+  describe 'reusing leftover fiber' do
+    let(:pack) { OpenStruct.new(id: '2135058', noun: 'pack', name: "scuffed traveler's pack") }
+    let(:twenty) { log('2052:11197') } # "You count out 20 yards of material there."
+    let(:thirty) { ReplayGame.code('You count out 30 yards of material there.', from: 'the 2052:11197 wording, for a fresh 30-yard silk bundle (1104:30058)') }
+
+    # Leftover bundles of silk fiber in the pack, as GameObj streams them.
+    def leftovers(*ids)
+      $containers[pack.id] = ids.map { |id| OpenStruct.new(id: id, noun: 'fibers', name: 'silk fibers') }
+      ids.each { |id| game.script("count ##{id}", twenty) }
+    end
+
+    before do
+      $worn_items = [pack]
+      sold = 0
+      allow(DRCT).to receive(:order_item) do
+        sold += 1
+        $left_hand = 'silk fibers'
+        $hand_ids['silk fibers'] = "300#{sold}"
+        'takes some coins from you'
+      end
+      # A leftover comes out into whichever hand is free.
+      allow(DRCI).to receive(:get_item?) do
+        $left_hand ? $right_hand = 'silk fibers' : $left_hand = 'silk fibers'
+        true
+      end
+      game.fallback('combine my fiber', log('1104:30101'), after: ->(_) { $right_hand = nil })
+      game.script('put fiber on wheel', log('1104:30204'), after: ->(_) { $left_hand = nil })
+      game.script('adjust wheel to heavy', log('1104:30206'), log('1104:30207'))
+      game.script('spin wheel', log('1104:30284'), log('1104:30285'), log('1104:30286'), after: lambda { |_|
+        $left_hand = 'silk thread'
+        $hand_ids['silk thread'] = '1958040'
+      })
+    end
+
+    it 'uses 160 yards of leftovers and buys only 8 bundles to fill the wheel' do
+      leftovers(*%w[2135081 2135082 2135083 2135084 2135085 2135086 2135089 2135090])
+      game.script('count #3001', thirty)
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).exactly(8).times
+      expect(DRCI).to have_received(:get_item?).exactly(8).times
+      expect(game.sent.grep(/\A(mark|cut) /)).to be_empty # 160 + 8 x 30 = 400 exactly
+      expect(game.sent.count('combine my fiber')).to eq(15)
+    end
+
+    it 'cuts the first bought bundle by id so leftovers and bundles make exactly 400 yards' do
+      leftovers('2135081')
+      game.script('count #3001', thirty)
+      game.script('mark #3001 at 20', ReplayGame.code('You count out 20 yards of the fibers and mark it for cutting.', from: 'the 2052:11228 wording, marked at 20'))
+      game.script('cut #3001 with my scissors', log('2052:11233'))
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).exactly(13).times # 20 + 20 + 12 x 30
+      expect(game.sent).to include('mark #3001 at 20', 'cut #3001 with my scissors')
+    end
+
+    it 'gets the scissors out before any money is spent, and puts them back before handling the leftovers' do
+      leftovers('2135081')
+      game.script('count #3001', thirty)
+      game.script('mark #3001 at 20', log('2052:11228'))
+      game.script('cut #3001 with my scissors', log('2052:11233'))
+      expect(DRCC).to receive(:get_crafting_item).with('scissors', 'duffel bag', [], anything, true).ordered.and_return(true)
+      expect(DRCM).to receive(:ensure_copper_on_hand).ordered.and_return(true)
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', anything).ordered.and_return(true)
+      expect(DRCI).to receive(:get_item?).with('#2135081').ordered.and_return(true)
+
+      Spin.new
+    end
+
+    it 'buys nothing when the leftovers already fill the wheel, and takes no more than fits' do
+      ids = (1..21).map { |n| "21350#{format('%02d', n)}" }
+      leftovers(*ids)
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      expect(DRCM).not_to receive(:ensure_copper_on_hand)
+
+      Spin.new
+
+      expect(DRCT).not_to have_received(:order_item)
+      expect(DRCI).to have_received(:get_item?).exactly(20).times
+      expect(game.sent.count('combine my fiber')).to eq(19)
+      expect(game.sent.grep(/\Acount #/).size).to eq(20) # stops counting once the wheel is full
+    end
+
+    it 'leaves out a leftover whose count goes unanswered' do
+      $containers[pack.id] = [OpenStruct.new(id: '2135081', noun: 'fibers', name: 'silk fibers')]
+      game.script('count #2135081')
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).exactly(14).times
+      expect(DRCI).not_to have_received(:get_item?)
+    end
+
+    it 'ignores fiber of another material' do
+      $containers[pack.id] = [OpenStruct.new(id: '9', noun: 'fibers', name: 'wool fibers')]
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+
+      Spin.new
+
+      expect(game.sent).not_to include('count #9')
+    end
+
+    it 'stops, the fiber in hand, when the bought bundle will not count' do
+      leftovers('2135081')
+      game.script('count #3001')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not count the bundle bought; it is in your hands.')
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', anything)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+    end
+
+    it 'finds no leftovers when GameObj has not streamed the worn items (GameObj.inv is nil), and buys a full wheel' do
+      $worn_items = nil
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).exactly(14).times
+    end
+  end
+
+  # Review of #7958, and the independent review of the leftover layer.
+  describe 'leftover fiber: scissors, coins and the rest' do
+    let(:pack) { OpenStruct.new(id: '2135058', noun: 'pack', name: "scuffed traveler's pack") }
+    let(:twenty) { log('2052:11197') }
+    let(:fifty) { ReplayGame.code('You count out 50 yards of material there.', from: 'the 2052:11197 wording, for a 50-yard bundle') }
+
+    before do
+      $worn_items = [pack]
+      sold = 0
+      allow(DRCT).to receive(:order_item) do
+        sold += 1
+        $left_hand = "#{$parsed_args['material']} fibers"
+        $hand_ids[$left_hand] = "300#{sold}"
+        'takes some coins from you'
+      end
+      allow(DRCI).to receive(:get_item?) do
+        $right_hand = "#{$parsed_args['material']} fibers"
+        true
+      end
+      game.fallback('combine my fiber', log('1104:30101'), after: ->(_) { $right_hand = nil })
+      game.script('put fiber on wheel', log('1104:30204'), after: ->(_) { $left_hand = nil })
+      game.fallback('adjust wheel to heavy', log('1104:30206'), log('1104:30207'))
+      game.script('spin wheel', log('1104:30284'), log('1104:30285'), log('1104:30286'), after: lambda { |_|
+        $left_hand = "#{$parsed_args['material']} thread"
+        $hand_ids[$left_hand] = '1958040'
+      })
+    end
+
+    it 'spins a cotton wheel without scissors, setting the leftovers aside and saying so' do
+      $parsed_args = { 'material' => 'cotton' }
+      $containers[pack.id] = [OpenStruct.new(id: '9', noun: 'fibers', name: 'cotton fibers')]
+      game.script('count #9', twenty)
+      allow(DRCC).to receive(:get_crafting_item).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get your scissors, so the leftover cotton fibers wait for another spin.')
+      allow(Lich::Messaging).to receive(:msg).with('plain', anything)
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).exactly(8).times
+      expect(DRCI).not_to have_received(:get_item?)
+    end
+
+    it 'still stops a silk spin without scissors, naming the fiber' do
+      $containers[pack.id] = [OpenStruct.new(id: '9', noun: 'fibers', name: 'silk fibers')]
+      game.script('count #9', twenty)
+      allow(DRCC).to receive(:get_crafting_item).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get your scissors to cut the silk fiber.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).not_to have_received(:order_item)
+    end
+
+    it 'asks for the coins of the extra bundles when the shop sells smaller bundles than FIBERS expects' do
+      $parsed_args = { 'material' => 'silk' }
+      $containers[pack.id] = [OpenStruct.new(id: '9', noun: 'fibers', name: 'silk fibers')]
+      game.script('count #9', twenty)
+      game.script('count #3001', ReplayGame.code('You count out 20 yards of material there.', from: 'the 2052:11197 wording, for a 20-yard bundle'))
+      allow(DRCM).to receive(:convert_currency).and_return(135)
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(14 * 135, anything, 'Shard').ordered.and_return(true)
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(18 * 135, anything, 'Shard').ordered.and_return(true)
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).exactly(19).times # 20 + 19 x 20 = 400
+    end
+
+    it 'finds leftovers inside a container inside a worn one, after asking the feed to fill GameObj' do
+      $parsed_args = { 'material' => 'silk' }
+      pouch = OpenStruct.new(id: '7', noun: 'pouch', name: 'cloth pouch')
+      $containers[pack.id] = [pouch]
+      $containers[pouch.id] = [OpenStruct.new(id: '9', noun: 'fibers', name: 'silk fibers')]
+      game.script('count #9', twenty)
+      game.script('count #3001', ReplayGame.code('You count out 30 yards of material there.', from: 'the 2052:11197 wording, for a 30-yard bundle'))
+      game.script('mark #3001 at 20', ReplayGame.code('You count out 20 yards of the fibers and mark it for cutting.', from: 'the 2052:11228 wording, marked at 20'))
+      game.script('cut #3001 with my scissors', log('2052:11233'))
+      expect(Lich::Common::Inventory).to receive(:refresh).at_least(:once)
+
+      Spin.new
+
+      expect(DRCI).to have_received(:get_item?).with('#9')
+    end
+
+    it 'stops with a message when a leftover cannot be got' do
+      $parsed_args = { 'material' => 'silk' }
+      $containers[pack.id] = [OpenStruct.new(id: '9', noun: 'fibers', name: 'silk fibers')]
+      game.script('count #9', twenty)
+      game.script('count #3001', ReplayGame.code('You count out 30 yards of material there.', from: 'the 2052:11197 wording, for a 30-yard bundle'))
+      game.script('mark #3001 at 20', ReplayGame.code('You count out 20 yards of the fibers and mark it for cutting.', from: 'the 2052:11228 wording, marked at 20'))
+      game.script('cut #3001 with my scissors', log('2052:11233'))
+      allow(DRCI).to receive(:get_item?).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get your leftover silk fibers #9.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+    end
+
+    it 'puts the scissors back after the full-wheel cut' do
+      $parsed_args = { 'material' => 'silk' }
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', anything).once.and_return(true)
+
+      Spin.new
+    end
+  end
+
+  # spin.lic and weave-cloth.lic each read what is carried and name the
+  # crafting container; they are separate files, so this holds the two
+  # copies to the same answers.
+  describe 'the helpers shared in kind with weave-cloth' do
+    before { load_lic_class('weave-cloth.lic', 'WeaveCloth') }
+
+    let(:spin) { Spin.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'duffel bag') } }
+    let(:weave) { WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'duffel bag') } }
+
+    it 'reads the same carried items, nested containers and hands included' do
+      bag = OpenStruct.new(id: '1', noun: 'bag', name: 'duffel bag')
+      pouch = OpenStruct.new(id: '2', noun: 'pouch', name: 'cloth pouch')
+      $worn_items = [bag]
+      $containers = { '1' => [pouch, OpenStruct.new(id: '3', noun: 'thread', name: 'some heavy silk thread')], '2' => [OpenStruct.new(id: '4', noun: 'fibers', name: 'some silk fibers')] }
+      $left_hand = 'silk cloth'
+      $hand_ids['silk cloth'] = '5'
+
+      expect(spin.send(:carried_items).map(&:id).sort).to eq(weave.send(:carried_items).map(&:id).sort)
+      expect(spin.send(:carried_items).map(&:id).sort).to eq(%w[1 2 3 4 5])
+    end
+
+    it 'names the crafting container the same way: by id when worn, by name otherwise, nil-safe' do
+      [[OpenStruct.new(id: '1', noun: 'bag', name: 'duffel bag')], [], nil].each do |worn|
+        $worn_items = worn
+        expect(spin.send(:crafting_container_ref)).to eq(weave.send(:crafting_container_ref))
+      end
     end
   end
 end

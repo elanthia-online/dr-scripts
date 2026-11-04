@@ -3,8 +3,9 @@
 =end
 
 # Spins one spool of thread (or yarn) at the crafting town's outfitting
-# society: buys a full wheel of fiber, spins it, puts the spool in the
-# crafting container by id, and records the spool for weave-cloth.
+# society: fills the wheel with leftover fiber from earlier spins and buys
+# the rest, spins it, puts the spool in the crafting container by id, and
+# records the spool for weave-cloth.
 #
 # @example Two heavy silk spools, then cloth
 #   ;spin silk
@@ -39,6 +40,13 @@ class Spin
     'wool'   => { order: 4, kronars: 133, bundles: 8 },
     'burlap' => { order: 5, kronars: 201, bundles: 4 }
   }.freeze
+
+  # Yards of fiber a spinning wheel takes (Mahtra's silk: 10 + 13 x 30).
+  WHEEL_YARDS = 400
+
+  # The yards a bundle of fiber holds, read with `count #<id>`
+  # (2052:11197: "You count out 20 yards of material there.").
+  COUNTED = /^You count out (\d+) yards/i.freeze
 
   # The attendant's reply when an order goes through (1104:30058).
   ORDER_TAKEN = /takes some coins/i.freeze
@@ -104,8 +112,8 @@ class Spin
 
   private
 
-  # Empties the hands, and gets the scissors when the first bundle needs a
-  # cut. The scissors come out before any money is spent, so missing
+  # Empties the hands, finds the leftover fiber to use, and gets the
+  # scissors when the first bundle may need a cut ({#get_scissors}). The scissors come out before any money is spent, so missing
   # scissors stop the run before it buys fiber it cannot cut.
   #
   # @return [void]
@@ -113,21 +121,52 @@ class Spin
   #   cannot be got
   def prepare
     stop('Could not empty your hands before buying fiber.') unless DRCI.stow_hands
-    @scissors = !@fiber[:cut_first_to].nil?
-    stop('Could not get your scissors for the silk cut.') if @scissors && !DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
+    @leftovers = leftover_fiber
+    @scissors = @leftovers.empty? ? !@fiber[:cut_first_to].nil? : leftover_yards < WHEEL_YARDS
+    get_scissors if @scissors
   end
 
-  # Makes sure the coins for a wheel of fiber are on hand. The shop prices
+  # Gets the scissors. Without them, leftover fiber of a fiber that needs no
+  # cut of its own waits for another spin, and a full wheel is bought;
+  # otherwise spin stops.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the scissors cannot be got and the fiber needs
+  #   a cut
+  def get_scissors
+    return if DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
+
+    @scissors = false
+    stop("Could not get your scissors to cut the #{@fiber_name} fiber.") if @fiber[:cut_first_to] || @leftovers.empty?
+    Lich::Messaging.msg('bold', "spin: Could not get your scissors, so the leftover #{@fiber_name} fibers wait for another spin.")
+    @leftovers = []
+  end
+
+  # Makes sure the coins for a wheel of fiber (or for the bundles given) are
+  # on hand. Leftovers that fill the wheel need none. The shop prices
   # each bundle in its own currency, rounded up (187 kronars is 135
   # Dokoras, 1104:30056), so the bundle price is converted before it is
   # multiplied.
   #
+  # @param bundles [Integer] how many bundles to pay for
   # @return [void]
   # @raise [SystemExit] when the coins cannot be got
-  def pay_for_fiber
+  def pay_for_fiber(bundles = @fiber[:bundles])
+    return if @leftovers.any? && leftover_yards >= WHEEL_YARDS
+
     currency = DRCM.town_currency(@hometown)
-    copper = DRCM.convert_currency(@fiber[:kronars], 'kronars', currency, 0) * @fiber[:bundles]
+    copper = DRCM.convert_currency(@fiber[:kronars], 'kronars', currency, 0) * bundles
     stop_with_scissors("Could not get #{copper} copper #{currency} for the fiber.") unless DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
+  end
+
+  # Gathers a wheel of fiber into one bundle in hand. Leftover fiber from
+  # earlier spins goes in first, and only what tops it up to
+  # {WHEEL_YARDS} is bought; without leftovers it buys {FIBERS}' bundles.
+  #
+  # @return [void]
+  # @raise [SystemExit] when a bundle is not sold, counted, cut or combined
+  def buy_fiber
+    @leftovers.empty? ? buy_full_wheel : top_up_leftovers
   end
 
   # Buys a wheel of fiber into one bundle in hand: cuts the first bundle
@@ -135,7 +174,7 @@ class Spin
   #
   # @return [void]
   # @raise [SystemExit] when a bundle is not sold, cut or combined
-  def buy_fiber
+  def buy_full_wheel
     @fiber[:bundles].times do |index|
       bought = DRCT.order_item(@stock_room, @fiber[:order])
       stop_with_scissors("The shop did not sell bundle #{index + 1} of #{@fiber[:bundles]}; any bought so far are in your hands.") unless ORDER_TAKEN.match?(bought.to_s)
@@ -147,6 +186,147 @@ class Spin
     end
   end
 
+  # Combines the leftover bundles and as many bought ones as fill the wheel.
+  # The first bundle bought is counted by id to learn the shop's bundle
+  # size, and cut down when whole bundles would overfill the wheel: the
+  # marked yards stay in hand and the rest goes to a container by itself
+  # (2052:11228-11244), to be the next spin's leftover.
+  #
+  # @return [void]
+  # @raise [SystemExit] when a bundle is not sold, counted, cut or combined
+  def top_up_leftovers
+    need = WHEEL_YARDS - leftover_yards
+    more = 0
+    if need.positive?
+      buy_bundle(1)
+      bought = held_fiber
+      size = (bought&.id && count_fiber(bought.id)) || stop_with_scissors('Could not count the bundle bought; it is in your hands.')
+      bundles = (need.to_f / size).ceil
+      # The coins were checked for FIBERS' bundles; a smaller shop bundle
+      # means more of them.
+      pay_for_fiber(bundles - 1) if bundles > @fiber[:bundles]
+      keep = need - ((bundles - 1) * size)
+      cut_held_to(keep) if keep < size
+      more = bundles - 1
+    end
+    put_scissors_back
+    @leftovers.each do |leftover|
+      stop("Could not get your leftover #{@fiber_name} fibers ##{leftover['id']}.") unless DRCI.get_item?("##{leftover['id']}")
+      combine_fiber if hands_holding_fiber > 1
+    end
+    more.times do |index|
+      buy_bundle(index + 2)
+      combine_fiber
+    end
+  end
+
+  # Orders one bundle into a free hand.
+  #
+  # @param number [Integer] which bundle this is, for the message
+  # @return [void]
+  # @raise [SystemExit] when the shop does not sell it
+  def buy_bundle(number)
+    stop_with_scissors("The shop did not sell bundle #{number}; any fiber bought so far is in your hands.") unless ORDER_TAKEN.match?(DRCT.order_item(@stock_room, @fiber[:order]).to_s)
+  end
+
+  # Marks the bundle in hand at keep yards and cuts it, by id.
+  #
+  # @param keep [Integer] yards to keep in hand
+  # @return [void]
+  # @raise [SystemExit] when the mark or the cut fails
+  def cut_held_to(keep)
+    id = held_fiber.id
+    send_checked("mark ##{id} at #{keep}", /mark it for cutting/i, 'Could not mark the fiber for cutting; it is in your hands.')
+    send_checked("cut ##{id} with my scissors", /You carefully cut off/i, 'Could not cut the fiber; it is in your hands.')
+  end
+
+  # Combines the two bundles in hand into one.
+  #
+  # @return [void]
+  # @raise [SystemExit] when they will not combine
+  def combine_fiber
+    send_checked('combine my fiber', /You combine/i, 'Could not combine the fiber bundles; they are in your hands.')
+  end
+
+  # Puts the scissors back on the belt or in the crafting container, once.
+  #
+  # @return [void]
+  def put_scissors_back
+    DRCC.stow_crafting_item('scissors', @bag, @belt) if @scissors
+    @scissors = false
+  end
+
+  # The leftover bundles of this fiber carried in containers, found by name
+  # through GameObj ("silk fibers") and counted by id, as many as fit the
+  # wheel. A bundle whose count goes unanswered is left out.
+  #
+  # @return [Array<Hash>] { 'id', 'yards' }
+  def leftover_fiber
+    picked = []
+    carried_fiber.each do |item|
+      break if picked.sum { |leftover| leftover['yards'] } >= WHEEL_YARDS
+
+      yards = count_fiber(item.id)
+      next unless yards && picked.sum { |leftover| leftover['yards'] } + yards <= WHEEL_YARDS
+
+      picked << { 'id' => item.id.to_s, 'yards' => yards }
+    end
+    picked
+  end
+
+  # @return [Integer] the yards of leftover fiber picked
+  def leftover_yards
+    @leftovers.sum { |leftover| leftover['yards'] }
+  end
+
+  # The bundles of this fiber carried, by name ("silk fibers").
+  #
+  # @return [Array<GameObj>]
+  def carried_fiber
+    carried_items.select { |item| item.noun == 'fibers' && item.name.to_s =~ /\b#{@fiber_name} fibers\z/i }
+  end
+
+  # Everything carried, as GameObj knows it: the worn items, what is in
+  # hand, and every container's contents beneath them. The inventory feed
+  # is asked first to fill the contents of containers not opened this
+  # session. weave-cloth.lic reads what is carried the same way, and a spec
+  # holds the two to the same result.
+  #
+  # @return [Array<GameObj>]
+  def carried_items
+    Lich::Common::Inventory.refresh
+    containers = GameObj.containers
+    queue = (GameObj.inv || []) + [GameObj.right_hand, GameObj.left_hand].select(&:id)
+    seen = {}
+    until queue.empty?
+      item = queue.shift
+      next if seen.key?(item.id)
+
+      seen[item.id] = item
+      queue.concat(containers[item.id] || [])
+    end
+    seen.values
+  end
+
+  # Counts a bundle of fiber by id.
+  #
+  # @param id [String] the bundle's id
+  # @return [Integer, nil] its yards, or nil when the count goes unanswered
+  def count_fiber(id)
+    yards = DRC.bput("count ##{id}", COUNTED, NOT_FOUND)[COUNTED, 1]
+    yards&.to_i
+  end
+
+  # @return [GameObj, nil] the hand holding a bundle of fiber
+  def held_fiber
+    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'fibers' }
+  end
+
+  # @return [Integer] how many hands hold a bundle of fiber
+  def hands_holding_fiber
+    [GameObj.left_hand, GameObj.right_hand].count { |hand| hand.name.split.last == 'fibers' }
+  end
+
   # Cuts the first bundle down to {FIBERS}' cut_first_to yards and puts the
   # scissors back. The game puts the excess in a container by itself
   # (1104:30068).
@@ -156,8 +336,7 @@ class Spin
   def cut_first_bundle
     send_checked("mark my fibers at #{@fiber[:cut_first_to]}", /mark it for cutting/i, 'Could not mark the fiber for cutting; it is in your hands.')
     send_checked('cut my fibers with my scissors', /You carefully cut off/i, 'Could not cut the fiber; it is in your hands.')
-    DRCC.stow_crafting_item('scissors', @bag, @belt)
-    @scissors = false
+    put_scissors_back
   end
 
   # Walks to a free wheel (DRCT waits for one to come free), puts the fiber on it and sets the weight.

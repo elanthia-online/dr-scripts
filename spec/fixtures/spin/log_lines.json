@@ -1,5 +1,5 @@
 {
-  "_source": "Real game lines cited <log>:<line>: 1104 = Mahtra's 2026-11-04 Lich game log (angua logs/DR-Mahtra/2026/11/2026-11-04_14-08-52.log; Shard; Lich 5.23.0). Each text is the log line with its 'YYYY-MM-DD HH:MM:SS NZDT: ' stamp removed. Ids (exist=) are only in the raw XML twin, 2026-11-04_18-07-27.xml, which the specs cite in comments. Read by ReplayGame.log (test/replay_game.rb); every log_lines.json under spec/fixtures shares one cite namespace.",
+  "_source": "Real game lines cited <log>:<line>: 1104 = Mahtra's 2026-11-04 Lich game log (angua logs/DR-Mahtra/2026/11/2026-11-04_14-08-52.log; Shard; Lich 5.23.0); 2052 = her log from the 20:52 login the same day (2026-11-04_20-52-17.log). Each text is the log line with its 'YYYY-MM-DD HH:MM:SS NZDT: ' stamp removed. Ids (exist=) are only in the raw XML twin, 2026-11-04_18-07-27.xml, which the specs cite in comments. Read by ReplayGame.log (test/replay_game.rb); every log_lines.json under spec/fixtures shares one cite namespace.",
   "1104:30056": "The attendant says, \"You can purchase 30 yards of silk fiber for 135 Dokoras.  Just order it again and we'll see it done!\"",
   "1104:30058": "The attendant takes some coins from you and hands you 30 yards of silk fiber.",
   "1104:30060": "You count out 10 yards of the fibers and mark it for cutting.",
@@ -42,5 +42,11 @@
   "1104:30508": "Roundtime: 6 sec.",
   "1104:31648": "Back and forth you spin a thread of fiber from around your wheel onto a spool.  The fiber rolls between your fingers and out into masterfully crafted thread.",
   "1104:31649": "Individual strands of the fiber begin twisting apart unevenly.",
-  "1104:31650": "Roundtime: 4 sec."
+  "1104:31650": "Roundtime: 4 sec.",
+  "2052:11197": "You count out 20 yards of material there.",
+  "2052:11228": "You count out 5 yards of the fibers and mark it for cutting.",
+  "2052:11233": "You carefully cut off 5 yards from some silk fibers and place the excess in your traveler's pack.",
+  "2052:11240": "You count out 5 yards of material there.",
+  "2052:11244": "You count out 15 yards of material there.",
+  "2052:11250": "You combine the bundles of fiber together."
 }
