@@ -536,6 +536,16 @@ RSpec.describe WeaveCloth do
       expect(UserVars.spun_spools).to eq([{ 'id' => '1980000', 'fiber' => 'silk', 'weight' => 'heavy' }])
     end
 
+    it 'keeps the record to the newest 20 spools, as spin does' do
+      UserVars.spun_spools = (1..20).map { |n| { 'id' => n.to_s, 'fiber' => 'linen', 'weight' => 'heavy' } } + silk_spools
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+      WeaveCloth.new
+
+      expect(UserVars.spun_spools.size).to eq(20)
+      expect(UserVars.spun_spools.last['id']).to eq('1980000')
+    end
+
     it 'does not record it when the woven spools were given by id and not recorded' do
       UserVars.spun_spools = nil
       $parse_args_model = true
@@ -652,6 +662,7 @@ RSpec.describe WeaveCloth do
 
     it 'uses the same UserVars key and cap as spin' do
       expect(WeaveCloth::SPOOL_RECORD).to eq(Spin::SPOOL_RECORD)
+      expect(WeaveCloth::MAX_RECORDED_SPOOLS).to eq(Spin::MAX_RECORDED_SPOOLS)
     end
 
     it 'knows exactly the fibers spin spins' do
@@ -667,6 +678,28 @@ RSpec.describe WeaveCloth do
       spin.send(:record_spool, '1963477')
 
       expect(WeaveCloth.allocate.send(:recorded_pair)).to eq(%w[1963477 1958040])
+    end
+  end
+
+  describe 'a pulled thread whose hand shows no id' do
+    let(:loaded_with_cotton) { ReplayGame.code('The loom is loaded with some cotton thread.', from: 'weave-cloth.lic@c2739670:6') }
+
+    it 'stops with the thread in hand rather than guess at it' do
+      game.script('look on loom', loaded_with_cotton)
+      game.script('pull loom', log('1104:30752'), after: ->(_) { $left_hand = 'cotton thread' })
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Pulled thread off the loom but cannot tell which; it is in your hand.')
+      expect(DRCI).not_to receive(:put_away_item?)
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+    end
+
+    it 'does not take a loom for empty when a pull answers but no thread shows in hand' do
+      game.script('look on loom', loaded_with_cotton)
+      game.script('pull loom', log('1104:30752'))
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Pulled thread off the loom but cannot tell which; it is in your hand.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent).not_to include('weave loom')
     end
   end
 end
