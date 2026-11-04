@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.05.5'
+  VERSION = '2026.11.05.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1987,7 +1987,7 @@ class TaskMaster
   # @param item [String] item noun
   # @param count [Integer] how many
   # @param type [String] metal to forge with
-  # @return [void]
+  # @return [Integer] how many were made (craft_each stops on a run that made none)
   def forge_item(item, count, type)
     unless @crafting_room
       info = get_data('crafting')['blacksmithing']["Crossing"]
@@ -1997,11 +1997,10 @@ class TaskMaster
       DRCT.walk_to(@crafting_room)
     end
     DRCC.clean_anvil?
-    count.times do
+    craft_each('forge', item, count) do
       DRC.wait_for_script_to_complete('forge', ['instructions', type, item, 'skip'])
       DRC.bput("put my #{item} in my #{@bag}", "You put")
     end
-    DRC.message("#{count} #{item}s completed")
   end
 
   # Carves each stone item from its rock deed and bags it. When the thief's
@@ -2091,7 +2090,7 @@ class TaskMaster
   # @param count [Integer] how many
   # @param base [String] 'yarn' knits, anything else sews
   # @param type [String] stock name
-  # @return [void]
+  # @return [Integer] how many were made (craft_each stops on a run that made none)
   def tailor_item(item, count, base, type)
     unless @crafting_room
       DRCT.walk_to(14886) unless @marathon
@@ -2099,10 +2098,50 @@ class TaskMaster
       DRCT.walk_to(@crafting_room)
     end
     check_sewing_consumables(count) unless base == 'yarn'
-    count.times do
+    craft_each('sew', item, count) do
       DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
-    DRC.message("#{count} #{item}s completed")
+  end
+
+  # Runs a crafting script once per item owed (the block runs it once) and
+  # stops on the first run that made none, judged by the finished items in
+  # the crafting bag and hands before and after each run. A run with no
+  # stock still uses one instruction use (sew studies them before it looks
+  # for the cloth): a 6-netting task with stock for one launched sew six
+  # times and said "6 nettings completed" (Barrask, 2026-11-04).
+  #
+  # @param script [String] the script the block runs, for the message
+  # @param item [String] item noun
+  # @param count [Integer] how many are owed
+  # @yield runs the script once
+  # @return [Integer] how many were made
+  def craft_each(script, item, count)
+    start = before = finished_count(item)
+    count.times do
+      yield
+      after = finished_count(item)
+      break if after <= before
+
+      before = after
+    end
+    made = before - start
+    if made < count
+      DRC.message("Made #{made} of #{count} #{item}s: the last #{script} run made none, so no more runs.")
+    else
+      DRC.message("#{made} #{item}s completed")
+    end
+    made
+  end
+
+  # Finished items of the noun in the crafting bag (RUMMAGE, which also
+  # lists an unfinished one, the same before and after a run) and in hand
+  # (a finished item the bag would not take stays there).
+  #
+  # @param item [String] item noun
+  # @return [Integer]
+  def finished_count(item)
+    held = held_items.count { |name| name =~ /\b#{Regexp.escape(item)}$/i && name !~ /\bunfinished\b/i }
+    DRCI.count_items_in_container(item, @bag) + held
   end
 
   # Pins and thread are checked once for the whole task, so each sew run can
@@ -2130,13 +2169,12 @@ class TaskMaster
   # @param count [Integer] how many
   # @param _base [String] unused
   # @param type [String] lumber, e.g. 'balsa'
-  # @return [void]
+  # @return [Integer] how many were made (craft_each stops on a run that made none)
   def shape_item(item, count, _base, type)
     DRCC.find_shaping_room(@anvil_town)
-    count.times do
+    craft_each('shape', item, count) do
       DRC.wait_for_script_to_complete('shape', ['stow', 'instructions', type, item])
     end
-    DRC.message("#{count} #{item}s completed")
   end
 
   # Consecutive gives that found nobody to take the item before giving up.
@@ -2205,7 +2243,10 @@ class TaskMaster
     unknown_replies = 0
     loop do
       reply = give_item(item)
-      exit unless reply
+      unless reply
+        DRC.message("Could not get another #{hand_in_noun(item)} to hand in and the task is not finished, stopping.")
+        exit
+      end
       break if reply =~ /hands you a/
 
       if reply =~ TURN_IN_MORE_NEEDED
