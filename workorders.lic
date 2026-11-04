@@ -40,6 +40,10 @@ class WorkOrders
   # Extra forge attempts beyond asked quantity to cover quality rejects / failed crafts
   FORGE_ATTEMPT_BUFFER = 5
 
+  # Stock ingots this size and larger are sold at the town's bulk materials
+  # shop (bingots-room), not its stock shop. smith.lic has the same constant.
+  BULK_INGOT_VOLUME = 50
+
   REPAIR_GIVE_PATTERNS = [
     "I don't repair those here",
     'What is it',
@@ -901,9 +905,17 @@ class WorkOrders
     recipe = find_recipe(materials_info, item, quantity).first
     remaining_volume = 0
 
+    shop = ingot_shop(info, materials_info)
+    unless shop
+      Lich::Messaging.msg('bold', "WorkOrders: #{materials_info['stock-name']} ingots of #{materials_info['stock-volume']} volume are sold at a bulk materials shop, and #{@hometown} has none. Set workorders_materials metal_type to a smaller ingot.")
+      exit
+    end
+
     info['trash-room'] = nil if @worn_trashcan && @worn_trashcan_verb
 
-    DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
+    # A bulk ingot can cost more than the default copper on hand. crafting_cost
+    # is one ingot's price (plus consumables) in the town's currency.
+    DRCM.ensure_copper_on_hand([@cash_on_hand || 5000, DRCC.crafting_cost(recipe, @hometown, nil, 1, materials_info)].max, @settings, @hometown)
 
     max_attempts = quantity + FORGE_ATTEMPT_BUFFER
     attempts = 0
@@ -917,7 +929,7 @@ class WorkOrders
 
       if remaining_volume < recipe['volume']
         DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
-        DRCT.order_item(info['stock-room'], materials_info['stock-number'])
+        DRCT.order_item(shop, materials_info['stock-number'])
         DRCC.stow_crafting_item("#{materials_info['stock-name']} ingot", @bag, @belt)
         remaining_volume = materials_info['stock-volume']
       end
@@ -935,6 +947,18 @@ class WorkOrders
     end
 
     DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
+  end
+
+  # The room of the shop that sells a stock ingot. Ingots of BULK_INGOT_VOLUME
+  # and up (immense, gigantic, colossal) are sold at the town's bulk materials
+  # shop, bingots-room, under their own numbers: Crossing's Supplies lists
+  # immense bronze's number, 1, as a tiny coal nugget.
+  #
+  # @param info [Hash] the town's blacksmithing data
+  # @param ingot [Hash] the stock entry
+  # @return [Integer, nil] nil for a bulk ingot in a town without a bulk shop
+  def ingot_shop(info, ingot)
+    ingot['stock-volume'] >= BULK_INGOT_VOLUME ? info['bingots-room'] : info['stock-room']
   end
 
   def ingot_volume

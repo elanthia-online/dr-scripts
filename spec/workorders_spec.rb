@@ -1765,6 +1765,53 @@ RSpec.describe WorkOrders do
       expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword']).exactly(3).times
       workorders.send(:forge_items, info, materials_info, item, 2)
     end
+
+    # Stock ingots of 50 volume and up are sold at the town's bulk materials
+    # shop under their own numbers. Ordered at the stock shop, immense
+    # bronze's number 1 bought Crossing's tiny coal nugget instead.
+    context 'with a bulk ingot as metal_type' do
+      let(:crafting) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true) }
+      let(:info) { crafting['blacksmithing']['Crossing'].merge('logbook' => 'forging') }
+      let(:materials_info) { crafting['stock']['bronze50'] }
+
+      before { allow(DRCC).to receive(:stow_crafting_item) }
+
+      it 'reads the rooms and the ingot these examples rely on from the data' do
+        expect(info.values_at('stock-room', 'bingots-room')).to eq([8775, 17118])
+        expect(materials_info.values_at('stock-number', 'stock-volume', 'stock-value')).to eq([1, 50, 6250])
+      end
+
+      it 'orders it at the bulk materials shop' do
+        expect(DRCT).to receive(:order_item).with(17118, 1)
+        workorders.send(:forge_items, info, materials_info, item, 1)
+      end
+
+      it 'carries enough copper to buy one, priced in the town currency' do
+        # crafting_cost: 6250 for the ingot plus 1000 for consumables, in Kronars
+        expect(DRCC).to receive(:crafting_cost).with(recipe, 'Crossing', nil, 1, materials_info).and_return(7250)
+        expect(DRCM).to receive(:ensure_copper_on_hand).with(7250, anything, 'Crossing')
+        workorders.send(:forge_items, info, materials_info, item, 1)
+      end
+
+      it 'stops without buying in a town with no bulk materials shop' do
+        ratha = crafting['blacksmithing']['Ratha'].merge('logbook' => 'forging')
+        workorders.instance_variable_set(:@hometown, 'Ratha')
+        expect(ratha['bingots-room']).to be_nil
+        expect(DRCT).not_to receive(:order_item)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: bronze ingots of 50 volume are sold at a bulk materials shop, and Ratha has none. Set workorders_materials metal_type to a smaller ingot.')
+        expect(workorders).to receive(:exit).and_raise(SystemExit)
+
+        expect { workorders.send(:forge_items, ratha, materials_info, item, 1) }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'still carries the default 5000 copper for a huge bronze ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCC).to receive(:crafting_cost).and_return(1562)
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(5000, anything, 'Crossing')
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
   end
 
   # ===========================================================================
