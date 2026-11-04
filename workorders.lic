@@ -915,7 +915,8 @@ class WorkOrders
 
     # A bulk ingot can cost more than the default copper on hand. crafting_cost
     # is one ingot's price (plus consumables) in the town's currency.
-    DRCM.ensure_copper_on_hand([@cash_on_hand || 5000, DRCC.crafting_cost(recipe, @hometown, nil, 1, materials_info)].max, @settings, @hometown)
+    ingot_cost = DRCC.crafting_cost(recipe, @hometown, nil, 1, materials_info)
+    DRCM.ensure_copper_on_hand([@cash_on_hand || 5000, ingot_cost].max, @settings, @hometown)
 
     max_attempts = quantity + FORGE_ATTEMPT_BUFFER
     attempts = 0
@@ -929,7 +930,15 @@ class WorkOrders
 
       if remaining_volume < recipe['volume']
         DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
-        DRCT.order_item(shop, materials_info['stock-number'])
+        remaining_volume = 0 # so a failed purchase below doesn't dispose of it again
+        # The copper above can run out after one ingot, so top up before each
+        # one. Only to one ingot's cost: topping up to the floor would send
+        # every small-ingot reorder to the bank.
+        DRCM.ensure_copper_on_hand(ingot_cost, @settings, @hometown)
+        unless DRCT.order_item(shop, materials_info['stock-number'])
+          Lich::Messaging.msg('bold', "WorkOrders: Could not buy a #{materials_info['stock-name']} ingot, so not forging the rest of this order.")
+          break
+        end
         DRCC.stow_crafting_item("#{materials_info['stock-name']} ingot", @bag, @belt)
         remaining_volume = materials_info['stock-volume']
       end
