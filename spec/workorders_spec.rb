@@ -1117,6 +1117,138 @@ RSpec.describe WorkOrders do
   end
 
   # ===========================================================================
+  # #recipes_that_fit_stock - forging orders one bought ingot can't make
+  # ===========================================================================
+  # forge_items buys one ingot of metal_type at a time. An order for an item
+  # bigger than that ingot used to buy one on every attempt, fail each with
+  # "You need a larger ingot to forge this item.", and waste them all: with
+  # the default bronze (a 5-volume huge bronze ingot), a metal cane (8) or a
+  # metal club (6) burned about eight ingots per order.
+  describe '#recipes_that_fit_stock' do
+    let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+    let(:stock) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['stock'] }
+    let(:weaponsmithing) { recipes.select { |recipe| recipe['work_order'] && recipe['type'] == 'weaponsmithing' } }
+    let(:messages) { [] }
+
+    before do
+      workorders.instance_variable_set(:@workorders_materials, { 'metal_type' => 'bronze', 'wood_type' => 'maple' })
+      workorders.instance_variable_set(:@use_own_ingot_type, nil)
+      allow(Lich::Messaging).to receive(:msg) { |type, text| messages << [type, text] }
+    end
+
+    # @return [Array<String>] the recipe names kept for the discipline
+    def kept(discipline, from = weaponsmithing)
+      workorders.send(:recipes_that_fit_stock, discipline, from, stock).map { |recipe| recipe['name'] }
+    end
+
+    it 'reads the volumes these examples rely on from the data' do
+      expect(stock['bronze']['stock-volume']).to eq(5)
+      expect(stock['steel']['stock-volume']).to eq(10)
+      volumes = weaponsmithing.to_h { |recipe| [recipe['name'], recipe['volume']] }
+      expect(volumes.values_at('a metal kris', 'a metal club', 'a metal cane')).to eq([4, 6, 8])
+    end
+
+    it 'turns down items bigger than a huge bronze ingot and keeps the rest' do
+      names = kept('weaponsmithing')
+
+      expect(names).to include('a metal kris', 'a metal briquet', 'a short metal hammer')
+      expect(names).not_to include('a metal cane', 'a metal club')
+      expect(names).to eq(weaponsmithing.select { |recipe| recipe['volume'] <= 5 }.map { |recipe| recipe['name'] })
+    end
+
+    it 'says once that bigger orders are being turned down' do
+      kept('weaponsmithing')
+
+      expect(messages).to eq([['plain', 'WorkOrders: Turning down orders for items over 5 volume, the most one bronze ingot holds.']])
+    end
+
+    it 'keeps a metal cane when metal_type is a 10-volume steel ingot' do
+      workorders.instance_variable_set(:@workorders_materials, { 'metal_type' => 'steel' })
+
+      expect(kept('weaponsmithing')).to include('a metal cane', 'a metal club')
+    end
+
+    it 'keeps every recipe, silently, when they all fit' do
+      small = weaponsmithing.select { |recipe| recipe['volume'] <= 5 }
+
+      expect(kept('weaponsmithing', small)).to eq(small.map { |recipe| recipe['name'] })
+      expect(messages).to be_empty
+    end
+
+    it 'leaves other disciplines alone' do
+      shaping = recipes.select { |recipe| recipe['work_order'] && recipe['type'] == 'shaping' }
+
+      expect(kept('shaping', shaping)).to eq(shaping.map { |recipe| recipe['name'] })
+    end
+
+    it 'leaves use_own_ingot_type alone, which checks the volume itself' do
+      workorders.instance_variable_set(:@use_own_ingot_type, 'bronze')
+
+      expect(kept('weaponsmithing')).to eq(weaponsmithing.map { |recipe| recipe['name'] })
+    end
+
+    it 'leaves the recipes alone when metal_type is not in the stock data' do
+      workorders.instance_variable_set(:@workorders_materials, { 'metal_type' => 'unobtainium' })
+
+      expect(kept('weaponsmithing')).to eq(weaponsmithing.map { |recipe| recipe['name'] })
+    end
+
+    it 'stops, rather than asking the NPC forever, when no order fits' do
+      big = weaponsmithing.select { |recipe| recipe['volume'] > 5 }
+
+      expect(workorders).to receive(:exit).and_raise(SystemExit)
+      expect { kept('weaponsmithing', big) }.to raise_error(SystemExit)
+      expect(messages).to eq([['bold', 'WorkOrders: No weaponsmithing work order item fits in one bronze ingot (5 volume). Set workorders_materials metal_type to a larger ingot.']])
+    end
+  end
+
+  # ===========================================================================
+  # #work_order - which recipes a new work order is asked with
+  # ===========================================================================
+  describe '#work_order asking for a forging order' do
+    let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+    let(:stock) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['stock'] }
+
+    before do
+      $test_settings = OpenStruct.new(
+        crafting_container: 'backpack',
+        hometown: 'Crossing',
+        workorders_materials: { 'metal_type' => 'bronze' }
+      )
+      $test_data.crafting = OpenStruct.new(
+        'recipe_parts'   => {},
+        'deeds'          => { 'Crossing' => { 'room' => 1, 'medium_number' => 2 } },
+        'stock'          => stock,
+        # work_order reads crafting_data['weaponsmithing'] before falling back
+        # to blacksmithing's. Lich's nil answers nil[...] with nil; this
+        # harness's doesn't, so the key is here.
+        'weaponsmithing' => {},
+        'blacksmithing'  => { 'Crossing' => { 'npc-rooms' => [100], 'npc' => 'Yalda', 'npc_last_name' => 'Yalda', 'logbook' => 'forging' } }
+      )
+      $test_data.recipes = OpenStruct.new(crafting_recipes: recipes)
+      allow(Lich::Messaging).to receive(:msg)
+      # Stop at the request: what's checked is the recipes it's asked with
+      allow(workorders).to receive(:request_work_order) { |asked_with, *| throw(:asked, asked_with.map { |recipe| recipe['name'] }) }
+    end
+
+    # @return [Array<String>] the recipe names request_work_order was given
+    def asked_with(turnin: nil)
+      catch(:asked) { workorders.send(:work_order, 'weaponsmithing', nil, turnin) }
+    end
+
+    it 'asks the NPC only for items that fit in one metal_type ingot' do
+      names = asked_with
+
+      expect(names).to include('a metal kris')
+      expect(names).not_to include('a metal cane', 'a metal club')
+    end
+
+    it 'takes any order for turnin, which hands in items already made' do
+      expect(asked_with(turnin: true)).to include('a metal kris', 'a metal cane', 'a metal club')
+    end
+  end
+
+  # ===========================================================================
   # #get_tool / #stow_tool - delegates to DRCC
   # ===========================================================================
   describe '#get_tool' do
@@ -1878,6 +2010,29 @@ RSpec.describe WorkOrders do
       expect(DRCC).not_to have_received(:stow_crafting_item)
       expect(DRC).not_to have_received(:wait_for_script_to_complete)
       expect(DRCT).not_to have_received(:dispose)
+    end
+
+    context 'when a resumed order needs more metal than one ingot holds' do
+      let(:item) { { 'name' => 'a metal cane' } }
+      let(:recipe) { { 'name' => 'a metal cane', 'volume' => 8, 'noun' => 'cane' } }
+      let(:materials_info) { { 'stock-name' => 'bronze', 'stock-number' => 11, 'stock-volume' => 5 } }
+
+      it 'stops without buying an ingot or forging' do
+        expect(DRCT).not_to receive(:order_item)
+        expect(DRCM).not_to receive(:ensure_copper_on_hand)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: a metal cane needs 8 volume of metal, more than one bronze ingot holds (5). Not buying ingots for it: get a new work order, or set workorders_materials metal_type to a larger ingot.')
+
+        expect(workorders).to receive(:exit).and_raise(SystemExit)
+        expect { workorders.send(:forge_items, info, materials_info, item, 4) }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'forges an item exactly as big as the ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(workorders).to receive(:find_recipe).and_return([recipe.merge('volume' => 10)])
+      expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword'])
+      workorders.send(:forge_items, info, materials_info, item, 1)
     end
   end
 

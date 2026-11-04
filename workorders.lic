@@ -44,6 +44,9 @@ class WorkOrders
   # shop (bingots-room), not its stock shop. smith.lic has the same constant.
   BULK_INGOT_VOLUME = 50
 
+  # Disciplines whose work orders are forged from metal ingots
+  FORGING_DISCIPLINES = %w[blacksmithing weaponsmithing armorsmithing].freeze
+
   REPAIR_GIVE_PATTERNS = [
     "I don't repair those here",
     'What is it',
@@ -166,10 +169,12 @@ class WorkOrders
       item_name, quantity = resume_work_order(info['logbook'], recipes)
       item = recipes.find { |r| r['name'] == item_name } if item_name
     elsif !repair
+      # turnin uses items already made, so it needs no ingot
+      accepted = turnin ? recipes : recipes_that_fit_stock(discipline, recipes, crafting_data['stock'])
       if @settings.workorder_diff.is_a?(Hash)
-        item_name, quantity = request_work_order(recipes, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], @settings.workorder_diff[discipline])
+        item_name, quantity = request_work_order(accepted, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], @settings.workorder_diff[discipline])
       else
-        item_name, quantity = request_work_order(recipes, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], @settings.workorder_diff)
+        item_name, quantity = request_work_order(accepted, info['npc-rooms'], info['npc'], info['npc_last_name'], discipline, info['logbook'], @settings.workorder_diff)
       end
       item = recipes.find { |r| r['name'] == item_name }
     end
@@ -177,7 +182,7 @@ class WorkOrders
     skill = ''
 
     case discipline
-    when 'blacksmithing', 'weaponsmithing', 'armorsmithing'
+    when *FORGING_DISCIPLINES
       materials_info = crafting_data['stock'][@workorders_materials['metal_type']]
       skill = 'Forging'
       tools = @settings.forging_tools
@@ -490,6 +495,35 @@ class WorkOrders
     scrap = spare_stock || (quantity % items_per_stock).nonzero?
 
     [recipe, items_per_stock, spare_stock, scrap]
+  end
+
+  # The recipes a work order may be accepted for. forge_items buys one stock
+  # ingot of workorders_materials metal_type at a time, and forge can't make
+  # an item bigger than the ingot ("You need a larger ingot to forge this
+  # item."), so an order for one would buy and waste an ingot on every
+  # attempt. Those orders are turned down and the NPC asked again. Other
+  # disciplines, and use_own_ingot_type (which checks volume itself), keep
+  # every recipe.
+  #
+  # @param discipline [String]
+  # @param recipes [Array<Hash>] from #work_order_recipes
+  # @param stock [Hash{String => Hash}] base-crafting's stock entries
+  # @return [Array<Hash>] the recipes one ingot holds, or all of them
+  def recipes_that_fit_stock(discipline, recipes, stock)
+    return recipes unless FORGING_DISCIPLINES.include?(discipline) && !@use_own_ingot_type
+
+    ingot = stock[@workorders_materials['metal_type']]
+    return recipes unless ingot
+
+    fitting = recipes.select { |recipe| recipe['volume'].to_i <= ingot['stock-volume'] }
+    if fitting.empty?
+      Lich::Messaging.msg('bold', "WorkOrders: No #{discipline} work order item fits in one #{ingot['stock-name']} ingot (#{ingot['stock-volume']} volume). Set workorders_materials metal_type to a larger ingot.")
+      exit
+    end
+    if fitting.size < recipes.size
+      Lich::Messaging.msg('plain', "WorkOrders: Turning down orders for items over #{ingot['stock-volume']} volume, the most one #{ingot['stock-name']} ingot holds.")
+    end
+    fitting
   end
 
   def go_door
@@ -908,6 +942,13 @@ class WorkOrders
     shop = ingot_shop(info, materials_info)
     unless shop
       Lich::Messaging.msg('bold', "WorkOrders: #{materials_info['stock-name']} ingots of #{materials_info['stock-volume']} volume are sold at a bulk materials shop, and #{@hometown} has none. Set workorders_materials metal_type to a smaller ingot.")
+      exit
+    end
+
+    # New orders this big are turned down (#recipes_that_fit_stock), but a
+    # resumed one can still be. Every ingot bought for it would be wasted.
+    if recipe['volume'] > materials_info['stock-volume']
+      Lich::Messaging.msg('bold', "WorkOrders: #{item['name']} needs #{recipe['volume']} volume of metal, more than one #{materials_info['stock-name']} ingot holds (#{materials_info['stock-volume']}). Not buying ingots for it: get a new work order, or set workorders_materials metal_type to a larger ingot.")
       exit
     end
 
