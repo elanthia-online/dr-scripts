@@ -1479,6 +1479,7 @@ module Harness
       def sort_destinations(ids); ids; end
       def buy_item(*_args); end
       def order_item(*_args); end
+      def find_empty_room(*_args); true; end
       def dispose(*_args); end
       def refill_lockpick_container(*_args); end
     end
