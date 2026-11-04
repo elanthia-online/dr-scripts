@@ -211,6 +211,16 @@ RSpec.describe ShopRestock do
           expect(scripts.map(&:first)).to eq(['weave-cloth'])
         end
 
+        it 'does not trust a count an earlier run left, when weave-cloth does not run this time (review on #7951)' do
+          SessionVars['weave_cloth_stock'] = { 'fiber' => material, 'yards' => 200 }
+          allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| scripts << [name, args] }
+
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.map(&:first)).to eq(['weave-cloth'])
+          expect(instance).not_to have_received(:buy_part)
+        end
+
         it "does not trust a count of another cloth left by an earlier run" do
           allow(DRC).to receive(:wait_for_script_to_complete) do |name, args = []|
             scripts << [name, args]

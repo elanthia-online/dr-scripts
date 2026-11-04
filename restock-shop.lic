@@ -389,6 +389,9 @@ class ShopRestock
   # @param volume [Integer] yards needed
   # @return [Boolean] true when weave-cloth reports enough cloth
   def stock_cloth(material, volume)
+    # A count left by an earlier run must not pass for this one's, e.g. when
+    # weave-cloth is already running and this call returns at once.
+    SessionVars['weave_cloth_stock'] = nil
     DRC.wait_for_script_to_complete('weave-cloth', [material, volume.to_s])
     stocked = SessionVars['weave_cloth_stock']
     return true if stocked.is_a?(Hash) && stocked['fiber'] == material && stocked['yards'].to_i >= volume
