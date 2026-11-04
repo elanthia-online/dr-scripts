@@ -22,6 +22,12 @@ class Sew
   NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
   NO_QUOTE_RUN = '(?:<[^>]*>|[^"<])*'
 
+  # Rental lines the game brackets on their own line after the sentry's
+  # speech. The sentry's speech has a quote before its text, so these are
+  # what to match; anchoring at line start keeps player text from faking them.
+  RENTAL_RENEWED = /#{LINE_START}\[Your [^\]]*rental has been extended until/
+  RENTAL_WARNING = /#{LINE_START}\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
+
   # Unrecognized replies in a row before #work gives up on a command.
   MAX_UNMATCHED = 3
 
@@ -94,7 +100,7 @@ class Sew
               /#{LINE_START}Applying the final touches/i,
               /#{NO_QUOTE}The #{NO_QUOTE_RUN} shows a slightly reduced weight/i,
               /#{LINE_START}You realize that cannot be repaired, and stop/)
-    Flags.add('sew-rental-warning', /#{NO_QUOTE}Your rental time is almost up/i)
+    Flags.add('sew-rental-warning', RENTAL_WARNING)
 
     if args.resume
       Lich::Messaging.msg('plain', "Resuming work on #{@noun} (finish mode: #{@finish}).")
@@ -481,17 +487,17 @@ class Sew
     Lich::Messaging.msg('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
     Flags.reset('sew-rental-warning')
     case DRC.bput('mark notice',
-                  'You mark the notice',
-                  'renewed your rental',
-                  'extends your rental',
+                  RENTAL_RENEWED,
                   "You don't have enough",
                   'I could not find')
+    when RENTAL_RENEWED
+      Lich::Messaging.msg('bold', '*** RENTAL RENEWED ***')
     when "You don't have enough"
       Lich::Messaging.msg('bold', '*** INSUFFICIENT FUNDS TO RENEW RENTAL ***')
     when 'I could not find'
       Lich::Messaging.msg('bold', '*** COULD NOT FIND NOTICE -- CHECK LOCATION ***')
     else
-      Lich::Messaging.msg('bold', '*** RENTAL RENEWED ***')
+      Lich::Messaging.msg('bold', '*** RENTAL RENEWAL NOT CONFIRMED -- CHECK THE NOTICE ***')
     end
   end
 end
