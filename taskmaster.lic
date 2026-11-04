@@ -1807,7 +1807,12 @@ class TaskMaster
   COMBINE_REPLIES = [/^You combine/, /^You must be holding both/].freeze
 
   # Replies to COUNT by id: the yards counted, or the id is not to be found.
-  COUNT_REPLIES = [/^You count out \d+ yards/, /^I could not find/].freeze
+  # The last two catch any other answer, in full, so that an answer in other
+  # wording ("You count out 30 pieces of material there.", or "That doesn't
+  # tell you much of anything." for what can't be counted, as corn-maze.lic
+  # reads it) is told apart from no answer at all: bput returns '' for both.
+  COUNT_YARDS = /^You count out \d+ yards/.freeze
+  COUNT_REPLIES = [COUNT_YARDS, /^I could not find/, /^You count.*/, /^That doesn't tell you much.*/].freeze
 
   # Buys pieces of a stock one at a time, combining each into the stack in
   # the other hand, then puts the stack in the crafting bag, everything by
@@ -1815,7 +1820,9 @@ class TaskMaster
   # order after the first gets "You realize your hands are full, and stop."
   # So it empties both hands into the crafting bag first. For Zasele's stock
   # (counted in yards) it counts the stack before stowing it, so a task never
-  # starts short. Whatever goes wrong, it says what and stops.
+  # starts on a stack that counts short. A COUNT unanswered twice is the one
+  # exception: it goes ahead uncounted, saying so (see check_yards). Whatever
+  # else goes wrong, it says what and stops.
   #
   # @param base [String] stock base, a STACKMAP key, e.g. 'cloth'
   # @param number [Integer] the stock's order number
@@ -1916,22 +1923,25 @@ class TaskMaster
   end
 
   # Counts the stack and stops when it holds fewer yards than the task needs,
-  # or when its id is not to be found. A COUNT with no answer (bput's '') is
-  # asked once more; unanswered twice, it goes ahead on the orders, saying so:
-  # each piece was a new id in hand and each combine left one id held, so the
-  # pieces bought already cover the yards. Stopping there would put a stack
-  # already paid for back and buy a whole new one on the relaunch.
+  # when its id is not to be found, or when COUNT answers in wording other
+  # than yards (quoting the answer), since a number it can't read could be
+  # short. A COUNT with no answer at all (bput's '') is asked once more;
+  # unanswered twice, it goes ahead uncounted, saying so: each piece was a new
+  # id in hand and each combine left one id held, so the pieces ordered
+  # should cover the yards. Stopping there would put a stack already paid for
+  # back and buy a whole new one on the relaunch.
   #
   # @param stack [String] id of the stack
   # @param yards [Integer] yards the task needs
   # @param stock [String] e.g. 'burlap cloth'
   # @return [void]
-  # @raise [SystemExit] when short or not found
+  # @raise [SystemExit] when short, not found or answered in other wording
   def check_yards(stack, yards, stock)
     reply = DRC.bput("count ##{stack}", *COUNT_REPLIES)
     reply = DRC.bput("count ##{stack}", *COUNT_REPLIES) if reply.empty?
-    return DRC.message("Could not count the #{stock} (##{stack}): COUNT went unanswered twice. Going ahead on the #{yards} yards ordered.") if reply.empty?
+    return DRC.message("Could not count the #{stock} (##{stack}): COUNT went unanswered twice. Going ahead uncounted; the task needs #{yards} yards.") if reply.empty?
     stop_stock("Could not find the #{stock} you bought (##{stack}) to count it. Not starting the task.") if reply.start_with?('I could not find')
+    stop_stock("Could not read the count of the #{stock} you bought (##{stack}): the game said \"#{reply}\", not yards. Not starting the task.") unless reply.match?(COUNT_YARDS)
 
     counted = reply[/\d+/].to_i
     return if counted >= yards

@@ -1959,6 +1959,7 @@ RSpec.describe TaskMaster do
       # COMBINE answers "You combine" but both pieces stay in hand.
       # silent_combine: COMBINE goes unanswered (bput's ''). silent_count: the
       # first that many COUNTs go unanswered (Float::INFINITY for all).
+      # count_text: COUNT answers with this line instead of the yards.
       #
       # DRCT, DRCI and DRCC are harness doubles, so order_item and
       # put_away_item? stand in for lich-5 v5.23.0 here and send their
@@ -1971,7 +1972,7 @@ RSpec.describe TaskMaster do
       # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
       def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false, late_from: nil,
                refuse_combine: false, keep_new: false, new_id_combine: true, hollow_combine: false, silent_combine: false,
-               silent_count: 0)
+               silent_count: 0, count_text: nil)
         world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false, silenced: 0 }
         next_id = 3_000_000
         allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
@@ -2018,6 +2019,7 @@ RSpec.describe TaskMaster do
             hand = hand_of.call(Regexp.last_match(1))
             next 'I could not find what you were referring to.' unless hand
             next '' if (world[:silenced] += 1) <= silent_count
+            next count_text if count_text
 
             "You count out #{world[:hands][hand].yards} yards of material there."
           when /\Aput (#\d+) in my duffel bag\z/
@@ -2240,13 +2242,13 @@ RSpec.describe TaskMaster do
         expect(bagged(world, 'burlap cloth')).to eq([30])
       end
 
-      it 'asks COUNT twice, never a third time, then goes ahead on the yards ordered, saying so, when COUNT goes unanswered' do
+      it 'asks COUNT twice, never a third time, then goes ahead uncounted, saying so, when COUNT goes unanswered' do
         world = shop(silent_count: Float::INFINITY)
 
         expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.not_to raise_error
         expect(world[:sent].grep(/\Acount #/).size).to eq(2)
         expect(DRC).to have_received(:message)
-          .with(/\ACould not count the burlap cloth \(#\d+\): COUNT went unanswered twice\. Going ahead on the 60 yards ordered\.\z/)
+          .with(/\ACould not count the burlap cloth \(#\d+\): COUNT went unanswered twice\. Going ahead uncounted; the task needs 60 yards\.\z/)
         expect(DRC).not_to have_received(:message).with(/Bought \d+ yards/)
         expect(bagged(world, 'burlap cloth')).to eq([60])
         expect(world[:hands].values.compact).to be_empty
@@ -2268,6 +2270,34 @@ RSpec.describe TaskMaster do
         expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
         expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
         expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'stops on a COUNT in other wording, quoting it, without asking again or going ahead, even when the stack is short' do
+        world = shop(yards: 5, count_text: 'You count out 30 pieces of material there.')
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:sent].grep(/\Acount #/).size).to eq(1)
+        expect(DRC).to have_received(:message)
+          .with(/\ACould not read the count of the burlap cloth you bought \(#\d+\): the game said "You count out 30 pieces of material there\.", not yards\. Not starting the task\. Stopping\.\z/)
+        expect(DRC).not_to have_received(:message).with(/Going ahead|unanswered/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'stops on a COUNT in other wording even when the stack is in fact long enough' do
+        world = shop(count_text: 'You count out 60 pieces of material there.')
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/the game said "You count out 60 pieces of material there\.", not yards/)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'stops on "That doesn\'t tell you much", quoting it, rather than reading it as no answer' do
+        world = shop(hands: { right: leftover_leather }, count_text: "That doesn't tell you much of anything.")
+
+        expect { buyer.check_yards('2222485', 10, 'rat leather') }.to raise_error(SystemExit)
+        expect(world[:sent].grep(/\Acount #/).size).to eq(1)
+        expect(DRC).to have_received(:message).with(/the game said "That doesn't tell you much of anything\.", not yards/)
+        expect(DRC).not_to have_received(:message).with(/Going ahead/)
       end
 
       it 'stops, naming the id, without asking again, when COUNT cannot find the stack' do
