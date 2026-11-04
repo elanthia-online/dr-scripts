@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.05.4'
+  VERSION = '2026.11.05.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1770,8 +1770,8 @@ class TaskMaster
   end
 
   # Buys enough 10-volume stock (cloth, leather, bone, lumber) for the
-  # task, combines it and stows it, setting @remainder when some is left
-  # over.
+  # task, combines it and stows it (see buy_stock), setting @remainder when
+  # some is left over.
   #
   # @param _item [String] unused
   # @param count [Integer] how many items
@@ -1783,15 +1783,11 @@ class TaskMaster
     @remainder = (count * vpi) % 10 > 0 ? true : false
     cost = base_to_buy * @stockdata[@stackmap[base].first]['stock-value'] + 7500 # 5 gold for the next task, 2500 for repair monies
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
-    base_to_buy.times do
-      DRCT.order_item(@stackmap[base].last, @stockdata[@stackmap[base].first]['stock-number'])
-      DRC.bput("combine #{base}", /you (combine|must)/i)
-    end
-    DRCC.stow_crafting_item(base, @bag, @settings.engineering_belt)
+    buy_stock(base, @stockdata[@stackmap[base].first]['stock-number'], base_to_buy, count * vpi)
   end
 
-  # Buys enough 100-yard yarn for the task, combines it and stows it,
-  # setting @remainder when some is left over.
+  # Buys enough 100-yard yarn for the task, combines it and stows it (see
+  # buy_stock), setting @remainder when some is left over.
   #
   # @param _item [String] unused
   # @param count [Integer] how many items
@@ -1803,11 +1799,122 @@ class TaskMaster
     @remainder = (count * vpi) % 100 > 0 ? true : false
     cost = base_to_buy * @stockdata[base]['stock-value'] + 7500 # 5 gold for the next task, 2500 for repair monies
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
-    base_to_buy.times do
-      DRCT.order_item(@stackmap[base].last, @stockdata[base]['stock-number'])
-      DRC.bput("combine #{base}", /you (combine|must)/i)
+    buy_stock(base, @stockdata[base]['stock-number'], base_to_buy, count * vpi)
+  end
+
+  # Replies to COMBINE. "You must be holding both substances to combine
+  # them." is a refusal, not a combine (Barrask, Hollow Eve 2026-11-04).
+  COMBINE_REPLIES = [/^You combine/, /^You must be holding both/].freeze
+
+  # Buys pieces of a stock one at a time, combining each into the stack in
+  # the other hand, then puts the stack in the crafting bag, everything by
+  # the ids in hand. Each piece needs a free hand: with one hand full, every
+  # order after the first gets "You realize your hands are full, and stop."
+  # So it empties both hands into the crafting bag first. For Zasele's stock
+  # (counted in yards) it counts the stack before stowing it, so a task never
+  # starts short. Whatever goes wrong, it says what and stops.
+  #
+  # @param base [String] stock base, a STACKMAP key, e.g. 'cloth'
+  # @param number [Integer] the stock's order number
+  # @param pieces [Integer] pieces to buy
+  # @param yards [Integer] yards the task needs
+  # @return [void]
+  # @raise [SystemExit] when a hand can't be freed, an order or combine
+  #   fails, the stack is short or it won't go in the crafting bag
+  def buy_stock(base, number, pieces, yards)
+    stock = "#{@stackmap[base].first} #{base}"
+    free_hands_for(stock)
+    stack = nil
+    pieces.times do
+      piece = order_stock_piece(@stackmap[base].last, number, stock, stack)
+      stack = stack ? combine_stock(stack, piece, stock) : piece
     end
-    DRCC.stow_crafting_item(base, @bag, @settings.engineering_belt)
+    check_yards(stack, yards, stock) if TASK_STOCK_BASES.include?(base)
+    return if DRCI.put_away_item?("##{stack}", @bag) || left_hands?("##{stack}")
+
+    DRC.message("Could not put the #{stock} you bought (##{stack}) in your #{@bag}. Stopping.")
+    exit
+  end
+
+  # Puts whatever is in either hand in the crafting bag by its id, so the
+  # orders that follow have a hand to land in.
+  #
+  # @param stock [String] what is about to be bought, e.g. 'burlap cloth'
+  # @return [void]
+  # @raise [SystemExit] when a hand can't be emptied
+  def free_hands_for(stock)
+    [GameObj.right_hand, GameObj.left_hand].each do |obj|
+      next unless obj&.id
+
+      ref = "##{obj.id}"
+      next if DRCI.put_away_item?(ref, @bag) || left_hands?(ref)
+
+      DRC.message("Could not put your #{obj.name} (#{ref}) in your #{@bag}, so there is no free hand to buy #{stock} into. Empty your hands, then start again. Stopping.")
+      exit
+    end
+  end
+
+  # Orders one piece of stock and returns the id of the piece that came into
+  # a hand. DRCT.order_item returns nil without coins or a way to the shop,
+  # and '' when the clerk's reply is not the sale ("You realize your hands
+  # are full, and stop." among them).
+  #
+  # @param room [Integer] the shop's room
+  # @param number [Integer] the stock's order number
+  # @param stock [String] e.g. 'burlap cloth'
+  # @param stack [String, nil] id of the stack bought so far, put back on a stop
+  # @return [String] id of the new piece
+  # @raise [SystemExit] when the order fails or no new piece is in hand
+  def order_stock_piece(room, number, stock, stack)
+    before = hand_ids
+    bought = DRCT.order_item(room, number)
+    piece = (hand_ids - before).first unless bought.to_s.empty?
+    return piece if piece
+
+    why = bought.to_s.empty? ? 'the order did not go through (not enough coins, no way to the shop, or full hands)' : 'no new piece is in your hands'
+    stop_stock("Could not buy #{stock}: #{why}.", stack)
+  end
+
+  # Combines a newly bought piece into the stack. The hands decide: it worked
+  # when exactly one of the two is still held and the game did not refuse.
+  #
+  # @param stack [String] id of the stack
+  # @param piece [String] id of the new piece
+  # @param stock [String] e.g. 'burlap cloth'
+  # @return [String] id of the combined stack
+  # @raise [SystemExit] when they did not combine
+  def combine_stock(stack, piece, stock)
+    reply = DRC.bput("combine ##{stack} with ##{piece}", *COMBINE_REPLIES)
+    held = hand_ids & [stack, piece]
+    return held.first if held.size == 1 && !reply.start_with?('You must')
+
+    stop_stock("Could not combine the #{stock} (#{reply.empty? ? 'no answer' : reply}).", *held)
+  end
+
+  # Counts the stack and stops when it holds fewer yards than the task needs.
+  #
+  # @param stack [String] id of the stack
+  # @param yards [Integer] yards the task needs
+  # @param stock [String] e.g. 'burlap cloth'
+  # @return [void]
+  # @raise [SystemExit] when short
+  def check_yards(stack, yards, stock)
+    counted = DRC.bput("count ##{stack}", /^You count out \d+ yards/)[/\d+/].to_i
+    return if counted >= yards
+
+    stop_stock("Bought #{counted} yards of #{stock}, but the task needs #{yards}: #{yards - counted} yards missing. Not starting the task short.", stack)
+  end
+
+  # Puts stock bought so far back in the crafting bag by id, says why it is
+  # stopping, and stops.
+  #
+  # @param text [String] why
+  # @param ids [Array<String, nil>] ids of the stock in hand
+  # @raise [SystemExit] always
+  def stop_stock(text, *ids)
+    ids.compact.each { |id| DRCI.put_away_item?("##{id}", @bag) }
+    DRC.message("#{text} Stopping.")
+    exit
   end
 
   # Buys one alabaster rock deed per item and stows the deeds.

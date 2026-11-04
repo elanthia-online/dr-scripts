@@ -1930,6 +1930,273 @@ RSpec.describe TaskMaster do
         expect(DRCM).not_to have_received(:deposit_coins)
       end
     end
+
+    describe 'buying task stock (#buy_stackables, #buy_yarn)' do
+      # Stock prices and order numbers mirroring data/base-crafting.yaml.
+      let(:stockdata) do
+        { 'burlap' => { 'stock-value' => 437, 'stock-number' => 8 }, 'rat' => { 'stock-value' => 750, 'stock-number' => 2 },
+          'yarn' => { 'stock-value' => 625, 'stock-number' => 13 }, 'balsa' => { 'stock-value' => 500, 'stock-number' => 4 } }
+      end
+      # Barrask's leftover rat leather, as it sat in his right hand
+      # (Hollow Eve 2026-11-04).
+      let(:leftover_leather) { OpenStruct.new(name: 'rat leather', noun: 'leather', id: '2222485', yards: 10) }
+      let(:hands_full) { 'You realize your hands are full, and stop.' }
+      let(:must_hold_both) { 'You must be holding both substances to combine them.  For more information, see HELP VERB COMBINE.' }
+
+      # The stock shop, the hands and the crafting bag, answering commands by
+      # "#id" the way the game does. Each piece bought goes to the first free
+      # hand with a new id and `yards` yards; with both hands full the sale
+      # gets "You realize your hands are full, and stop." His pack is full, so
+      # any STOW gets "There isn't any more room". bag_room: pieces the
+      # crafting bag still takes. coins: pieces he can pay for. refuse_after:
+      # sales that go through before every later one gets the hands-full line.
+      # lost: the sale goes through but no piece reaches a hand. refuse_combine:
+      # COMBINE always answers "You must be holding both". keep_new: a combine
+      # keeps the new piece's id instead of the stack's. silent_combine /
+      # silent_count: that command goes unanswered (bput's '').
+      #
+      # DRCT, DRCI and DRCC are harness doubles, so order_item and
+      # put_away_item? stand in for lich-5 v5.23.0 here and send their
+      # commands through the world: order_item asks twice and returns nil on
+      # "you don't have enough coins", else the second reply's match, '' when
+      # none. The clerk's lines other than the hands-full one are stand-ins
+      # carrying the substring order_item matches. stow_crafting_item (the
+      # parent's stow by noun) is taken as landing.
+      #
+      # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
+      def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false,
+               refuse_combine: false, keep_new: false, silent_combine: false, silent_count: false)
+        world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false }
+        next_id = 3_000_000
+        allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+        allow(GameObj).to receive(:left_hand) { world[:hands][:left] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+        allow(DRC).to receive(:right_hand) { world[:hands][:right]&.name }
+        allow(DRC).to receive(:left_hand) { world[:hands][:left]&.name }
+
+        hand_of = ->(ref) { world[:hands].find { |_, obj| obj && "##{obj.id}" == ref }&.first }
+        sell = lambda do |number|
+          name = { 8 => 'burlap cloth', 2 => 'rat leather', 13 => 'wool yarn', 4 => 'balsa lumber' }.fetch(number)
+          free = world[:hands].find { |_, obj| obj.nil? }&.first
+          next hands_full if free.nil? || (refuse_after && world[:sold] >= refuse_after)
+
+          world[:sold] += 1
+          world[:hands][free] = OpenStruct.new(name: name, noun: name.split.last, id: (next_id += 1).to_s, yards: yards) unless lost
+          "The clerk takes some coins from you and hands you some #{name}."
+        end
+        combine = lambda do |first, second|
+          next must_hold_both if refuse_combine || first.nil? || second.nil? || first == second
+
+          kept, gone = keep_new ? [second, first] : [first, second]
+          world[:hands][kept].yards += world[:hands][gone].yards
+          world[:hands][gone] = nil
+          silent_combine ? '' : 'You combine the stacks.'
+        end
+        reply = lambda do |command|
+          case command
+          when /\Aorder (\d+)\z/
+            world[:asked] = !world[:asked]
+            next 'The clerk says, "Just order it again to buy it."' if world[:asked]
+            next "The clerk frowns, since you don't have enough coins." if world[:sold] >= coins
+
+            sell.call(Regexp.last_match(1).to_i)
+          when /\Acombine (#\d+) with (#\d+)\z/
+            combine.call(hand_of.call(Regexp.last_match(1)), hand_of.call(Regexp.last_match(2)))
+          when /\Acombine (\w+)\z/
+            noun = Regexp.last_match(1)
+            held = world[:hands].select { |_, obj| obj&.noun == noun }.keys
+            combine.call(*(held.size == 2 ? held : [nil, nil]))
+          when /\Acount (#\d+)\z/
+            hand = hand_of.call(Regexp.last_match(1))
+            next 'I could not find what you were referring to.' unless hand
+            next '' if silent_count
+
+            "You count out #{world[:hands][hand].yards} yards of material there."
+          when /\Aput (#\d+) in my duffel bag\z/
+            hand = hand_of.call(Regexp.last_match(1))
+            next 'What were you referring to?' unless hand
+            next "There isn't any more room in the duffel bag for that." if world[:bag].size >= bag_room
+
+            world[:bag] << world[:hands][hand]
+            world[:hands][hand] = nil
+            "You put your #{world[:bag].last.noun} in your duffel bag."
+          when /\Astow /
+            "There isn't any more room in the traveler's pack for that."
+          else
+            ''
+          end
+        end
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          world[:sent] << command
+          line = reply.call(command)
+          patterns.flatten.map { |pattern| line.match(pattern) }.compact.first.to_a.first || ''
+        end
+
+        allow(DRCT).to receive(:order_item) do |room, number|
+          world[:orders] << [room, number]
+          next if DRC.bput("order #{number}", 'Just order it again', "you don't have enough coins") == "you don't have enough coins"
+
+          DRC.bput("order #{number}", 'takes some coins from you')
+        end
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          DRC.bput("put #{item} in my #{container}", /^You put/, /^What were you/, /^There isn't any more room/).start_with?('You put')
+        end
+        allow(DRCC).to receive(:stow_crafting_item) do |noun, *_rest|
+          hand = world[:hands].find { |_, obj| obj&.noun == noun }&.first
+          world[:bag] << world[:hands][hand] if hand
+          world[:hands][hand] = nil if hand
+          true
+        end
+        world
+      end
+
+      def buyer
+        build(stockdata: stockdata, settings: { engineering_belt: nil })
+      end
+
+      # The yards of a stock that went in the crafting bag in one piece.
+      def bagged(world, name)
+        world[:bag].select { |obj| obj.name == name }.map(&:yards)
+      end
+
+      context 'the Hollow Eve replay: leftover leather in the right hand, the pack full' do
+        it 'puts the leather in the crafting bag by its id first, then buys and bags all 60 yards' do
+          world = shop(hands: { right: leftover_leather })
+
+          buyer.buy_stackables('rope', 6, 10, 'cloth')
+
+          expect(bagged(world, 'burlap cloth')).to eq([60])
+          expect(world[:sent].first).to eq('put #2222485 in my duffel bag')
+          expect(bagged(world, 'rat leather')).to eq([10])
+          expect(world[:orders]).to eq([[16_667, 8]] * 6)
+          expect(world[:hands].values.compact).to be_empty
+        end
+
+        it 'stops before ordering anything when the leather will not go in the crafting bag either, naming it and its id' do
+          world = shop(hands: { right: leftover_leather }, bag_room: 0)
+
+          expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+          expect(world[:orders]).to be_empty
+          expect(DRC).to have_received(:message).with(/rat leather \(#2222485\).*Stopping/)
+        end
+
+        it 'empties both hands, the left as well as the right' do
+          shield = OpenStruct.new(name: 'target shield', noun: 'shield', id: '4444', yards: 0)
+          world = shop(hands: { right: leftover_leather, left: shield })
+
+          buyer.buy_stackables('rope', 2, 10, 'cloth')
+
+          expect(world[:sent].first(2)).to eq(['put #2222485 in my duffel bag', 'put #4444 in my duffel bag'])
+          expect(bagged(world, 'burlap cloth')).to eq([20])
+        end
+      end
+
+      it 'stops, without starting the task short, when an order gets "You realize your hands are full, and stop."' do
+        world = shop(refuse_after: 2)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Could not buy burlap cloth: the order did not go through.*Stopping\./)
+        expect(world[:orders].size).to eq(3)
+        expect(bagged(world, 'burlap cloth')).to eq([20])
+      end
+
+      it 'stops at the first order he cannot pay for (order_item returns nil)' do
+        world = shop(coins: 1)
+
+        expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:orders].size).to eq(2)
+        expect(bagged(world, 'burlap cloth')).to eq([10])
+      end
+
+      it 'stops when the sale goes through but no piece reaches a hand' do
+        shop(lost: true)
+
+        expect { buyer.buy_stackables('rope', 1, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/no new piece is in your hands/)
+      end
+
+      it 'takes "You must be holding both substances" as a failed combine, and puts both pieces back' do
+        world = shop(refuse_combine: true)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:orders].size).to eq(2)
+        expect(DRC).to have_received(:message).with(/Could not combine the burlap cloth \(You must be holding both/)
+        expect(bagged(world, 'burlap cloth')).to eq([10, 10])
+      end
+
+      it 'follows the stack when the combine keeps the new piece\'s id' do
+        world = shop(keep_new: true)
+
+        buyer.buy_stackables('rope', 3, 10, 'cloth')
+
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'trusts the hands when a combine goes unanswered but only the stack is left in hand' do
+        world = shop(silent_combine: true)
+
+        buyer.buy_stackables('rope', 2, 10, 'cloth')
+
+        expect(bagged(world, 'burlap cloth')).to eq([20])
+      end
+
+      it 'counts the stack by id and stops, saying how much is missing, when it is short' do
+        world = shop(yards: 5)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:sent]).to include(a_string_matching(/\Acount #\d+\z/))
+        expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'takes an unanswered count as nothing counted, and stops' do
+        shop(silent_count: true)
+
+        expect { buyer.buy_stackables('rope', 1, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 0 yards of burlap cloth, but the task needs 10: 10 yards missing/)
+      end
+
+      it 'stops when the bought stack will not go in the crafting bag' do
+        world = shop(hands: { right: leftover_leather }, bag_room: 1)
+
+        expect { buyer.buy_stackables('rope', 2, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Could not put the burlap cloth you bought \(#\d+\) in your duffel bag\. Stopping/)
+        expect(world[:hands].values.compact.map(&:yards)).to eq([20])
+      end
+
+      it 'buys rat leather by its own order number for a leather task' do
+        world = shop
+
+        buyer.buy_stackables('belt', 2, 15, 'leather')
+
+        expect(world[:orders]).to eq([[16_667, 2]] * 3)
+        expect(bagged(world, 'rat leather')).to eq([30])
+      end
+
+      it 'buys 100-yard yarn by the yard needed, combines it and checks it' do
+        world = shop(yards: 100)
+
+        buyer.buy_yarn('scarf', 3, 50, 'yarn')
+
+        expect(world[:orders]).to eq([[16_667, 13]] * 2)
+        expect(bagged(world, 'wool yarn')).to eq([200])
+      end
+
+      it 'stops a yarn task short of yards as well' do
+        shop(yards: 40)
+
+        expect { buyer.buy_yarn('scarf', 3, 50, 'yarn') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 80 yards of wool yarn, but the task needs 150: 70 yards missing/)
+      end
+
+      it 'buys and bags lumber by id without counting it in yards' do
+        world = shop
+
+        buyer.buy_stackables('bowl', 2, 5, 'lumber')
+
+        expect(world[:sent].grep(/\Acount /)).to be_empty
+        expect(bagged(world, 'balsa lumber')).to eq([10])
+      end
+    end
   end
 
   describe 'turning in' do
