@@ -2110,6 +2110,10 @@ class TaskMaster
   # for the cloth): a 6-netting task with stock for one launched sew six
   # times and said "6 nettings completed" (Barrask, 2026-11-04).
   #
+  # A count the game did not answer (finished_count nil) judges nothing: with
+  # none to start from no run is launched, and a run after which none came
+  # is judged by the next count instead.
+  #
   # @param script [String] the script the block runs, for the message
   # @param item [String] item noun
   # @param count [Integer] how many are owed
@@ -2117,16 +2121,28 @@ class TaskMaster
   # @return [Integer] how many were made
   def craft_each(script, item, count)
     start = before = finished_count(item)
+    unless start
+      DRC.message("Could not count the #{item}s in #{@bag} (no reply to RUMMAGE), so no #{script} runs.")
+      return 0
+    end
+    stalled = false
+    after = start
     count.times do
       yield
       after = finished_count(item)
-      break if after <= before
+      next unless after
+
+      stalled = after <= before
+      break if stalled
 
       before = after
     end
+    before = finished_count(item) || before unless after
     made = before - start
-    if made < count
-      DRC.message("Made #{made} of #{count} #{item}s: the last #{script} run made none, so no more runs.")
+    if stalled
+      DRC.message("Made #{made} of #{count} #{item}s: no new #{item} in #{@bag} or in hand after the last #{script} run, so no more runs.")
+    elsif made < count
+      DRC.message("Counted #{made} of #{count} #{item}s made (RUMMAGE did not answer after every #{script} run).")
     else
       DRC.message("#{made} #{item}s completed")
     end
@@ -2140,11 +2156,18 @@ class TaskMaster
   # the same bag do not, so a run that makes the last item and uses up the
   # instructions still counts as one made.
   #
+  # bput returns '' when neither RUMMAGE reply came within its timeout; that
+  # is asked once more, and is not a count of none.
+  #
   # @param item [String] item noun
-  # @return [Integer]
+  # @return [Integer, nil] nil when RUMMAGE got no reply twice
   def finished_count(item)
+    contents = rummage(@bag, item)
+    contents = rummage(@bag, item) if contents.to_s.empty?
+    return nil if contents.to_s.empty?
+
     held = held_items.count { |name| name =~ /\b#{Regexp.escape(item)}$/i && name !~ /\bunfinished\b/i }
-    count_listed(rummage(@bag, item), item) + held
+    count_listed(contents, item) + held
   end
 
   # Pins and thread are checked once for the whole task, so each sew run can

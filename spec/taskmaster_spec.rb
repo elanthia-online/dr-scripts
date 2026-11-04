@@ -1902,14 +1902,14 @@ RSpec.describe TaskMaster do
 
       it 'says how many were made of how many, never that all six were completed' do
         tailor('cloth', count: 6, stock: 1)
-        expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: the last sew run made none, so no more runs.')
+        expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
         expect(DRC).not_to have_received(:message).with('6 nettings completed')
       end
 
       it 'launches sew only once when the very first run makes nothing' do
         _, launches = tailor('cloth', count: 6, stock: 0)
         expect(launches.size).to eq(1)
-        expect(DRC).to have_received(:message).with('Made 0 of 6 nettings: the last sew run made none, so no more runs.')
+        expect(DRC).to have_received(:message).with('Made 0 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
       end
 
       it 'counts from what the bag already held: nettings left from before the task are not made by this one' do
@@ -1966,6 +1966,85 @@ RSpec.describe TaskMaster do
         allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
         expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(0)
         expect(launches).to eq(1)
+      end
+
+      context 'when RUMMAGE gets no reply' do
+        # Like tailor, but bput returns '' (no reply matched within its
+        # timeout) for the RUMMAGE calls numbered in `missed`; call 1 is the
+        # count before the first run. The bag starts with `old` nettings from
+        # before the task. Returns how many tailor_item says it made and the
+        # sew launches.
+        def tailor_missing(missed, count: 6, stock: nil, old: 0)
+          tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+          allow(tm).to receive(:get_data).and_return(tailoring)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCC).to receive(:check_consumables)
+          rummages = 0
+          bagged = 0
+          game('rummage /C netting in my duffel bag' => lambda do |*|
+            rummages += 1
+            next '' if missed.include?(rummages)
+
+            rummaged_bag('netting', ['some netting instructions'] + Array.new(old + bagged, 'some burlap netting'))
+          end)
+          launches = 0
+          allow(DRC).to receive(:wait_for_script_to_complete) do
+            launches += 1
+            bagged += 1 if stock.nil? || bagged < stock
+          end
+          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches]
+        end
+
+        # Counting the first miss as none started from 0 against 3 old
+        # nettings: "Made 4 of 6" after one netting was made.
+        it 'does not count the 3 nettings already in the bag as made when the first RUMMAGE got no reply' do
+          made, launches = tailor_missing([1], stock: 1, old: 3)
+          expect(made).to eq(1)
+          expect(launches).to eq(2)
+          expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+        end
+
+        it 'launches no sew run, and says why, when the count before the first run gets no reply twice' do
+          made, launches = tailor_missing([1, 2])
+          expect(made).to eq(0)
+          expect(launches).to eq(0)
+          expect(DRC).to have_received(:message).with('Could not count the nettings in duffel bag (no reply to RUMMAGE), so no sew runs.')
+        end
+
+        # Counting the miss as none after run 2 stopped a task where every
+        # run made one: "the last sew run made none" after 2 of 6.
+        it 'keeps sewing when one RUMMAGE after a good run got no reply' do
+          made, launches = tailor_missing([3])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('6 nettings completed')
+        end
+
+        it 'judges the run by the next count when the count after it gets no reply twice' do
+          made, launches = tailor_missing([3, 4])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+        end
+
+        it 'still stops, one run late, when the uncounted run was followed by one that made none' do
+          made, launches = tailor_missing([3, 4], stock: 2)
+          expect(made).to eq(2)
+          expect(launches).to eq(4)
+        end
+
+        it 'counts again after the last run when its count got no reply twice' do
+          made, launches = tailor_missing([7, 8])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('6 nettings completed')
+        end
+
+        it 'says the count is short, not that a run made none, when the last run never got a count' do
+          made, launches = tailor_missing([7, 8, 9, 10])
+          expect(made).to eq(5)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('Counted 5 of 6 nettings made (RUMMAGE did not answer after every sew run).')
+        end
       end
 
       context 'with what the run left in hand' do
@@ -2043,7 +2122,7 @@ RSpec.describe TaskMaster do
 
       it 'stops after the first forge run that made nothing' do
         expect(forge(5, 2)).to eq([2, 3])
-        expect(DRC).to have_received(:message).with('Made 2 of 5 daggers: the last forge run made none, so no more runs.')
+        expect(DRC).to have_received(:message).with('Made 2 of 5 daggers: no new dagger in duffel bag or in hand after the last forge run, so no more runs.')
       end
 
       it 'forges every item while there is metal' do
@@ -2065,7 +2144,7 @@ RSpec.describe TaskMaster do
         end
         expect(tm.shape_item('bowl', 4, 'lumber', 'balsa')).to eq(1)
         expect(runs).to eq(2)
-        expect(DRC).to have_received(:message).with('Made 1 of 4 bowls: the last shape run made none, so no more runs.')
+        expect(DRC).to have_received(:message).with('Made 1 of 4 bowls: no new bowl in duffel bag or in hand after the last shape run, so no more runs.')
       end
     end
 
