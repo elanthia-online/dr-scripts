@@ -2135,13 +2135,16 @@ class TaskMaster
 
   # Finished items of the noun in the crafting bag (RUMMAGE, which also
   # lists an unfinished one, the same before and after a run) and in hand
-  # (a finished item the bag would not take stays there).
+  # (a finished item the bag would not take stays there). Only names that
+  # end in the noun count: the "netting instructions" sew and forge stow in
+  # the same bag do not, so a run that makes the last item and uses up the
+  # instructions still counts as one made.
   #
   # @param item [String] item noun
   # @return [Integer]
   def finished_count(item)
     held = held_items.count { |name| name =~ /\b#{Regexp.escape(item)}$/i && name !~ /\bunfinished\b/i }
-    DRCI.count_items_in_container(item, @bag) + held
+    count_listed(rummage(@bag, item), item) + held
   end
 
   # Pins and thread are checked once for the whole task, so each sew run can

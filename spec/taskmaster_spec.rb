@@ -44,6 +44,16 @@ RSpec.describe TaskMaster do
     end
   end
 
+  # RUMMAGE /C <noun> in the duffel bag as the game prints it, listing
+  # `names` (each with its article).
+  def rummaged_bag(noun, names)
+    lead = "You rummage through a heavy silk duffel bag looking for something similar to \"#{noun}\""
+    return "#{lead} but there is nothing in there like that." if names.empty?
+
+    listed = names.size > 1 ? "#{names[0..-2].join(', ')} and #{names.last}" : names.first
+    "#{lead} and see #{listed}."
+  end
+
   # Zasele's task journal entry as TASK prints it (2025 Hollow Eve logs). With
   # no returned count the "So far" sentence is left out, as the game sometimes
   # prints it.
@@ -1843,7 +1853,9 @@ RSpec.describe TaskMaster do
       # and how many it says it made.
       # Each sew run stows one finished netting in the bag while there is stock
       # for one (stock: how many, every item when nil); a run without stock
-      # makes nothing, as sew exits in check_hand once it has studied.
+      # makes nothing, as sew exits in check_hand once it has studied. The
+      # bag also holds the task's netting instructions, which RUMMAGE /C
+      # netting lists too.
       def tailor(base, count: 6, marathon: false, stock: nil)
         tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936, marathon: marathon)
         allow(tm).to receive(:get_data).and_return(tailoring)
@@ -1851,7 +1863,7 @@ RSpec.describe TaskMaster do
         checks = []
         allow(DRCC).to receive(:check_consumables) { |name, room, number, *rest| checks << [name, room, number, rest.last] }
         bagged = 0
-        allow(DRCI).to receive(:count_items_in_container).with('netting', 'duffel bag') { bagged }
+        game('rummage /C netting in my duffel bag' => ->(*) { rummaged_bag('netting', ['some netting instructions'] + Array.new(bagged, 'some burlap netting')) })
         launches = []
         allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
           launches << [name, args]
@@ -1905,7 +1917,7 @@ RSpec.describe TaskMaster do
         allow(tm).to receive(:get_data).and_return(tailoring)
         allow(DRCT).to receive(:walk_to)
         allow(DRCC).to receive(:check_consumables)
-        allow(DRCI).to receive(:count_items_in_container).with('netting', 'duffel bag').and_return(3)
+        game('rummage /C netting in my duffel bag' => rummaged_bag('netting', Array.new(3, 'some burlap netting') + ['some netting instructions']))
         launches = 0
         allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
         expect(tm.tailor_item('netting', 4, 'cloth', 'burlap')).to eq(0)
@@ -1919,6 +1931,43 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with('4 nettings completed')
       end
 
+      # The last study uses up the instructions, so the run that makes the
+      # last netting also takes "some netting instructions" out of the bag.
+      # Counting every " netting" in the reply saw no change on that run.
+      it 'counts the last netting as made when that run also used up the instructions' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        bagged = 0
+        uses = 6
+        game('rummage /C netting in my duffel bag' => lambda do |*|
+          rummaged_bag('netting', Array.new(bagged, 'some reinforced cloth netting') + (uses.positive? ? ['some netting instructions'] : []))
+        end)
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          launches += 1
+          uses -= 1
+          bagged += 1
+        end
+        expect(tm.tailor_item('netting', 6, 'cloth', 'reinforced')).to eq(6)
+        expect(launches).to eq(6)
+        expect(DRC).to have_received(:message).with('6 nettings completed')
+        expect(DRC).not_to have_received(:message).with(/^Made 5 of 6/)
+      end
+
+      it 'counts none made when the bag lists the same unfinished netting, instructions and netting after the run' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        game('rummage /C netting in my duffel bag' => rummaged_bag('netting', ['an unfinished burlap netting', 'some netting instructions', 'some burlap netting']))
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
+        expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(0)
+        expect(launches).to eq(1)
+      end
+
       context 'with what the run left in hand' do
         # One sew run that leaves `left` in the right hand and nothing new in
         # the bag; returns how many tailor_item says it made and the launches.
@@ -1927,7 +1976,7 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:get_data).and_return(tailoring)
           allow(DRCT).to receive(:walk_to)
           allow(DRCC).to receive(:check_consumables)
-          allow(DRCI).to receive(:count_items_in_container).and_return(0)
+          game('rummage /C netting in my duffel bag' => rummaged_bag('netting', ['some netting instructions']))
           right = nil
           allow(DRC).to receive(:right_hand) { right }
           allow(DRC).to receive(:left_hand).and_return(nil)
@@ -1975,13 +2024,13 @@ RSpec.describe TaskMaster do
         allow(DRCC).to receive(:clean_anvil?).and_return(true)
         bagged = 0
         held = false
-        allow(DRCI).to receive(:count_items_in_container).with('dagger', 'duffel bag') { bagged }
         runs = 0
         allow(DRC).to receive(:wait_for_script_to_complete) do
           runs += 1
           held = runs <= metal
         end
         allow(DRC).to receive(:bput) do |command, *|
+          next rummaged_bag('dagger', ['some dagger instructions'] + Array.new(bagged, 'a bronze dagger')) if command == 'rummage /C dagger in my duffel bag'
           # bput returns '' on "What were you referring to?", which it does not list.
           next '' unless command == 'put my dagger in my duffel bag' && held
 
@@ -2008,7 +2057,7 @@ RSpec.describe TaskMaster do
         tm = build
         allow(DRCC).to receive(:find_shaping_room)
         bagged = 0
-        allow(DRCI).to receive(:count_items_in_container).with('bowl', 'duffel bag') { bagged }
+        game('rummage /C bowl in my duffel bag' => ->(*) { rummaged_bag('bowl', Array.new(bagged, 'a balsa bowl') + ['some bowl instructions']) })
         runs = 0
         allow(DRC).to receive(:wait_for_script_to_complete) do
           runs += 1
