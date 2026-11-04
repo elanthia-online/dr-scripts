@@ -19,6 +19,15 @@ class Spin
   # Unanswered or unrecognised replies in a row before spin gives up.
   MAX_UNMATCHED = 3
 
+  # Where spin records each spool it makes, so weave-cloth can load exactly
+  # those spools by id. Each entry is
+  # { 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }, oldest
+  # first. weave-cloth.lic reads and prunes the same list.
+  SPOOL_RECORD = 'spun_spools'
+
+  # Most spools the record keeps; the oldest are forgotten first.
+  MAX_RECORDED_SPOOLS = 20
+
   # Commands sent to the wheel before spin gives up on finishing the spool.
   # The first heavy silk spool in Mahtra's log took 10 spins and 5 fixes.
   MAX_STEPS = 100
@@ -68,7 +77,7 @@ class Spin
       if index == 0 && data[:name] == 'silk'
         stop_with_scissors('Could not mark the fiber for cutting; it is in your hands.') unless DRC.bput('mark my fibers at 10', /mark it for cutting/i, /^What were you/i) =~ /mark it for cutting/i
         stop_with_scissors('Could not cut the fiber; it is in your hands.') unless DRC.bput('cut my fibers with my scissors', /You carefully cut off/i, /^What were you/i) =~ /You carefully cut off/i
-        @bag = "other #{@bag}" unless DRCC.stow_crafting_item('scissors', @bag, @belt)
+        DRCC.stow_crafting_item('scissors', @bag, @belt)
         @scissors = false
       elsif index > 0
         stop('Could not combine the fiber bundles; they are in your hands.') unless DRC.bput('combine my fiber', /You combine/i, /^What were you/i) =~ /You combine/i
@@ -83,7 +92,7 @@ class Spin
 
     spin_until_done
 
-    fput("stow my #{spool_in_hand}")
+    store_spool(spool_in_hand, args.material, args.weight || 'heavy')
   end
 
   private
@@ -115,13 +124,50 @@ class Spin
     stop("No spool after #{MAX_STEPS} commands to the wheel.")
   end
 
-  # The finished spool, as a hand shows it ('silk thread', 'wool yarn').
-  # Something else in a hand, such as a book a background script picked up,
-  # is not a spool.
+  # The hand holding the finished spool. The game shows a spool in hand as
+  # 'silk thread' (or 'wool yarn'), with its id: <left exist="1958040"
+  # noun="thread">silk thread</left> (XML twin of 1104:30286). Something
+  # else in a hand, such as a book a background script picked up, is not a
+  # spool.
   #
-  # @return [String, nil] the spool's name, or nil when neither hand holds one
+  # @return [GameObj, nil] the hand, or nil when neither hand holds a spool
   def spool_in_hand
-    [DRC.left_hand, DRC.right_hand].compact.find { |held| held.split.last == @product }
+    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == @product }
+  end
+
+  # Records the spool for weave-cloth, then puts it in the crafting
+  # container by id. A spool with no id (never seen in game) goes in by name
+  # and is not recorded.
+  #
+  # @param hand [GameObj] the hand holding the spool
+  # @param fiber [String] the fiber it was spun from, e.g. 'silk'
+  # @param weight [String] the weight it was spun at, e.g. 'heavy'
+  # @return [void]
+  # @raise [SystemExit] when the spool will not go into the container
+  def store_spool(hand, fiber, weight)
+    unless hand.id
+      Lich::Messaging.msg('bold', "spin: The #{hand.name} has no id, so weave-cloth will not know it.")
+      stop("Could not put the #{hand.name} in your #{@bag}; it is in your hand.") unless DRCI.put_away_item?(hand.name, @bag)
+      return
+    end
+
+    record_spool(hand.id.to_s, fiber, weight)
+    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless DRCI.put_away_item?("##{hand.id}", @bag)
+    Lich::Messaging.msg('plain', "spin: Put the #{weight} #{hand.name} (##{hand.id}) in your #{@bag}.")
+  end
+
+  # Adds a spool to the record weave-cloth reads, keeping the newest
+  # {MAX_RECORDED_SPOOLS}.
+  #
+  # @param id [String] the spool's id
+  # @param fiber [String] the fiber it was spun from
+  # @param weight [String] the weight it was spun at
+  # @return [void]
+  def record_spool(id, fiber, weight)
+    recorded = UserVars.send(SPOOL_RECORD)
+    spools = (recorded.is_a?(Array) ? recorded : []).select { |spool| spool.is_a?(Hash) && spool['id'] && spool['id'] != id }
+    spools << { 'id' => id, 'fiber' => fiber, 'weight' => weight }
+    UserVars.send("#{SPOOL_RECORD}=", spools.last(MAX_RECORDED_SPOOLS))
   end
 
   # Puts the scissors back when they are still out, then stops.
