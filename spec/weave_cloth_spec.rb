@@ -864,6 +864,25 @@ RSpec.describe WeaveCloth do
         expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
       end
 
+      it 'forgets a recorded pair that is no longer on hand and spins a new one, instead of stopping every run (re-review on #7950)' do
+        UserVars.spun_spools = [{ 'id' => '111', 'fiber' => 'silk', 'weight' => 'heavy' }, { 'id' => '222', 'fiber' => 'silk', 'weight' => 'heavy' }]
+        allow(DRCI).to receive(:get_item?) { |ref| !%w[#111 #222].include?(ref) }
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('look on loom', log('1104:30590'))
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'weave-cloth: Recorded spools #222, #111 are not on hand; forgot them and spinning a new pair.')
+
+        WeaveCloth.new
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('spin', ['silk']).twice
+        expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+        expect(UserVars.spun_spools.map { |spool| spool['id'] }).not_to include('111', '222')
+      end
+
       it 'spins for the batch when only one heavy spool of the fiber is recorded' do
         UserVars.spun_spools = [silk_spools.first, { 'id' => '1963477', 'fiber' => 'silk', 'weight' => 'thin' }]
         allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])

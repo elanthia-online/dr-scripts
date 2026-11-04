@@ -155,14 +155,18 @@ class WeaveCloth
   # Weaves two spools into one bolt of cloth, start to finish.
   #
   # @param candidates [Array<String>] spool ids to try, in order
+  # @param fallback [Proc, nil] gives other spool ids when two of these
+  #   cannot be got; the ones that could not are forgotten first
   # @return [void]
   # @raise [SystemExit] with a message on any step that fails
-  def weave(candidates)
+  def weave(candidates, fallback: nil)
     @candidates = candidates
     stop(NEED_TWO_SPOOLS) if @candidates.size < 2
     stop('Could not empty your hands.') unless DRCI.stow_hands
     find_loom
-    spools = take_spools
+    spools = take_spools(fallback)
+    return weave(fallback.call) unless spools
+
     load_loom(spools)
     cloth = weave_until_done(spools)
     forget_spools(spools)
@@ -189,7 +193,8 @@ class WeaveCloth
     stop('Could not empty your hands.') unless DRCI.stow_hands
     have = gather_cloth(fiber)
     while have < yards
-      weave(spun_pair(fiber) || spin_pair(fiber))
+      recorded = spun_pair(fiber)
+      recorded ? weave(recorded, fallback: -> { spin_pair(fiber) }) : weave(spin_pair(fiber))
       now = gather_cloth(fiber)
       stop("Weaving added no #{fiber} cloth (#{now} yards on hand); stopping before buying more fiber.") unless now > have
       have = now
@@ -448,9 +453,17 @@ class WeaveCloth
   # got is named and skipped, and the next one is tried; it stays recorded,
   # since a failed get does not prove it is gone.
   #
-  # @return [Array<String>] the two spool ids, both in hand
-  # @raise [SystemExit] when two spools cannot be found
-  def take_spools
+  # With a fallback, the spools that cannot be got are forgotten instead,
+  # and nil is returned so the caller can weave others: a recorded pair
+  # that is no longer carried (ids last only for a session) must not stop
+  # every later stock run.
+  #
+  # @param fallback [Proc, nil] whether the caller has other spools to try
+  # @return [Array<String>, nil] the two spool ids, both in hand, or nil
+  #   when a fallback is given and two could not be got
+  # @raise [SystemExit] when two spools cannot be found and there is no
+  #   fallback
+  def take_spools(fallback = nil)
     held = []
     @missing = []
     @candidates.each do |id|
@@ -468,7 +481,14 @@ class WeaveCloth
     end
 
     held.each { |id| put_away?(id) }
-    Lich::Messaging.msg('bold', "weave-cloth: Could not get spool #{@missing.map { |id| "##{id}" }.join(', ')}; it may be elsewhere.") unless @missing.empty?
+    missing = @missing.map { |id| "##{id}" }.join(', ')
+    if fallback
+      forget_spools(@missing)
+      one = @missing.size == 1
+      Lich::Messaging.msg('plain', "weave-cloth: Recorded #{one ? 'spool' : 'spools'} #{missing} #{one ? 'is' : 'are'} not on hand; forgot #{one ? 'it' : 'them'} and spinning a new pair.")
+      return
+    end
+    Lich::Messaging.msg('bold', "weave-cloth: Could not get spool #{missing}; it may be elsewhere.") unless @missing.empty?
     stop(NEED_TWO_SPOOLS)
   end
 
