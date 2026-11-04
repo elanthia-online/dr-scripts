@@ -990,4 +990,68 @@ RSpec.describe WeaveCloth do
       expect(SessionVars['weave_cloth_stock']).to be_nil
     end
   end
+
+  describe 'naming the crafting container' do
+    before do
+      script_empty_loom_and_load
+      script_weave
+    end
+
+    it 'puts the cloth in the worn crafting container by its id, so a duffel bag being sewn cannot catch it' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag', noun: 'bag', id: '1222175')]
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', '#1222175').and_return(true)
+
+      WeaveCloth.new
+    end
+
+    it 'names the container when it is not worn' do
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+      WeaveCloth.new
+    end
+
+    it 'names the container when GameObj has not streamed the worn items yet (GameObj.inv is nil)' do
+      $worn_items = nil
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+      WeaveCloth.new
+    end
+  end
+
+  # Every loom reply in Mahtra's four heavy silk weaves on 2026-11-04.
+  describe 'the loom replies seen in game' do
+    {
+      '1104:30821' => 'turn loom',  # "Several weft threads bunch together..."
+      '1104:30833' => 'clean loom', # "...dust and debris obstructing the pirn of the shuttle."
+      '1104:30851' => 'push loom',  # "The cloth threads begin to unravel along the fell and need pushing together."
+      '1104:33219' => 'push loom'   # "One side of the partially-woven cloth is uneven, and needs pushing together."
+    }.each do |cite, fix|
+      it "answers #{cite} with #{fix}" do
+        line = log(cite).text
+        expect(WeaveCloth::LOOM_FIXES.find { |problem, _| problem.match?(line) }&.last).to eq(fix)
+      end
+    end
+
+    %w[1104:30817 1104:30832 1104:30844 1104:30847 1104:32031 1104:32605 1104:32027 1104:32038 1104:30840 1104:30858].each do |cite|
+      it "takes the ordinary loom line #{cite} for no problem" do
+        expect(WeaveCloth::LOOM_FIXES.keys.none? { |problem| problem.match?(log(cite).text) }).to be(true)
+      end
+    end
+
+    it 'fixes a problem that arrives in the reply to a fix, then finishes (1104:32037-32044)' do
+      script_empty_loom_and_load
+      game.script('weave loom', log('1104:30832'), log('1104:30833'), log('1104:30834'))
+      game.script('clean loom', log('1104:32038'), log('1104:32039'), log('1104:32040'))
+      game.script('push loom', log('1104:32042'), log('1104:32043'), log('1104:32044'),
+                  after: lambda { |_|
+                    $left_hand = 'silk cloth'
+                    $hand_ids['silk cloth'] = '1976604'
+                  })
+      game.fallback('look on loom', log('1104:30590'))
+
+      WeaveCloth.new
+
+      expect(game.sent.drop_while { |command| command != 'weave loom' }.take(3)).to eq(['weave loom', 'clean loom', 'push loom'])
+    end
+  end
 end
