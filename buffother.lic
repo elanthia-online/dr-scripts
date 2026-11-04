@@ -19,8 +19,28 @@ class BuffOther
     waggle_set = args.waggle
     room = args.room
 
+    spells = buff_spells(settings, waggle_set)
     move_to_room(recipient, room)
-    cast_buff_spells(recipient, waggle_set, settings)
+    cast_buff_spells(recipient, spells, settings)
+  end
+
+  # The spells in the waggle set to cast. Exits with a message, before any
+  # walking or casting, when there's no such set, when it's a thief's or
+  # barbarian's list (those can't be cast on someone else), or when it's empty.
+  def buff_spells(settings, waggle_set)
+    spells = (settings.waggle_sets || {})[waggle_set]
+    if spells.nil?
+      DRC.message("No waggle set found for name: #{waggle_set}")
+      exit
+    elsif !spells.is_a?(Hash)
+      DRC.message("Waggle set \"#{waggle_set}\" is a list of khri or abilities; buffother can only cast spells on someone else.")
+      exit
+    elsif spells.empty?
+      DRC.message("Waggle set \"#{waggle_set}\" has no spells to cast.")
+      exit
+    end
+
+    spells
   end
 
   def move_to_room(recipient, room)
@@ -30,13 +50,13 @@ class BuffOther
     DRCT.walk_to(room)
   end
 
-  def cast_buff_spells(recipient, waggle_set, settings)
+  def cast_buff_spells(recipient, spells, settings)
     if !DRRoom.pcs.include?(recipient)
       DRC.message "#{recipient} not found in room. Exiting..."
       exit
     end
 
-    settings.waggle_sets[waggle_set].values.each do |spell_data|
+    spells.each_value do |spell_data|
       spell_data['cast'] = "cast #{recipient}"
       spell_data['recast'] = 99
 
