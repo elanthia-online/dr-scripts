@@ -70,7 +70,7 @@ RSpec.describe Spin do
     # noun="thread">silk thread</left> with the tie-off line).
     game.script('spin wheel', log('1104:30284'), log('1104:30285'), log('1104:30286'),
                 after: ->(_) { $left_hand = 'silk thread' })
-    game.script('stow my silk thread', log('1104:30296'))
+    $hand_ids['silk thread'] = '1958040'
   end
 
   describe 'cutting the first silk bundle down to 10 yards' do
@@ -118,14 +118,14 @@ RSpec.describe Spin do
       spin_commands = game.sent.drop_while { |command| command != 'spin wheel' }
       expect(spin_commands).to eq(
         ['spin wheel', 'spin wheel', 'clean wheel', 'spin wheel', 'turn wheel',
-         'spin wheel', 'push wheel', 'spin wheel', 'stow my silk thread']
+         'spin wheel', 'push wheel', 'spin wheel']
       )
     end
 
-    it 'stops spinning once the spool is in hand and stows it' do
+    it 'stops spinning once the spool is in hand' do
       Spin.new
 
-      expect(game.sent.last).to eq('stow my silk thread')
+      expect(game.sent.last).to eq('spin wheel')
       expect(game.sent.count('spin wheel')).to eq(5)
     end
 
@@ -133,10 +133,11 @@ RSpec.describe Spin do
       # e.g. almanac getting its book mid-spin, as it did mid-weave (1104:30663)
       game.override('clean wheel', log('1104:30226'), log('1104:30227'), after: ->(_) { $right_hand = 'encyclopedic almanac' })
 
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
       Spin.new
 
       expect(game.sent.count('spin wheel')).to eq(5)
-      expect(game.sent.last).to eq('stow my silk thread')
     end
   end
 
@@ -150,11 +151,11 @@ RSpec.describe Spin do
         true
       end
       expect(DRCM).to receive(:ensure_copper_on_hand).ordered.and_return(true)
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
 
       Spin.new
 
       expect(game.sent.count('spin wheel')).to eq(5)
-      expect(game.sent.last).to eq('stow my silk thread')
     end
 
     it 'stops before spending money when the hands cannot be emptied' do
@@ -245,14 +246,16 @@ RSpec.describe Spin do
       game.script('adjust wheel to yarn', log('1104:30206'), log('1104:30207'))
       game.script('spin wheel', log('1104:30215'), log('1104:30216'), after: ->(_) { $left_hand = 'wool thread' })
       game.script('spin wheel', log('1104:30215'), log('1104:30216'), after: ->(_) { $left_hand = 'wool yarn' })
-      game.script('stow my wool yarn', log('1104:30296'))
+      $hand_ids['wool thread'] = '111'
+      $hand_ids['wool yarn'] = '222'
     end
 
     it 'waits for the yarn, not for thread' do
+      expect(DRCI).to receive(:put_away_item?).with('#222', 'duffel bag').and_return(true)
+
       Spin.new
 
       expect(game.sent.count('spin wheel')).to eq(2)
-      expect(game.sent.last).to eq('stow my wool yarn')
     end
   end
 
@@ -455,6 +458,106 @@ RSpec.describe Spin do
 
       expect { Spin.new }.to raise_error(SystemExit)
       expect(game.sent).not_to include('put fiber on wheel')
+    end
+  end
+
+  describe 'storing the spool' do
+    before { script_silk_spin }
+
+    it 'puts the spool in the crafting container by its id, not in the stow container by name' do
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+
+      expect(game.sent.grep(/\Astow\b/)).to be_empty
+    end
+
+    it 'records the spool so weave-cloth can load exactly it' do
+      Spin.new
+
+      expect(UserVars.spun_spools).to eq([{ 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }])
+    end
+
+    it 'adds each new spool after the ones already recorded' do
+      UserVars.spun_spools = [{ 'id' => '1950000', 'fiber' => 'silk', 'weight' => 'heavy' }]
+
+      Spin.new
+
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).to eq(%w[1950000 1958040])
+    end
+
+    it 'does not record the same spool twice' do
+      UserVars.spun_spools = [{ 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }]
+
+      Spin.new
+
+      expect(UserVars.spun_spools.size).to eq(1)
+    end
+
+    it 'forgets the oldest spools past 20' do
+      UserVars.spun_spools = (1..20).map { |n| { 'id' => n.to_s, 'fiber' => 'silk', 'weight' => 'heavy' } }
+
+      Spin.new
+
+      expect(UserVars.spun_spools.size).to eq(20)
+      expect(UserVars.spun_spools.first['id']).to eq('2')
+      expect(UserVars.spun_spools.last['id']).to eq('1958040')
+    end
+
+    it 'drops recorded entries that have no id, so they cannot crowd out real spools' do
+      UserVars.spun_spools = [{ 'fiber' => 'silk' }, 'junk', { 'id' => '1950000', 'fiber' => 'silk', 'weight' => 'heavy' }]
+
+      Spin.new
+
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).to eq(%w[1950000 1958040])
+    end
+
+    it 'starts a fresh record when the stored one is not a list' do
+      UserVars.spun_spools = { 'id' => 'junk' }
+
+      Spin.new
+
+      expect(UserVars.spun_spools).to eq([{ 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }])
+    end
+
+    it 'keeps the spool recorded and says so when it will not go into the container' do
+      allow(DRCI).to receive(:put_away_item?).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not put the silk thread (#1958040) in your duffel bag; it is in your hand.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).to eq(['1958040'])
+    end
+
+    it 'puts a spool with no id away by name and does not record it' do
+      $hand_ids.clear
+      expect(DRCI).to receive(:put_away_item?).with('silk thread', 'duffel bag').and_return(true)
+
+      Spin.new
+
+      expect(UserVars.spun_spools).to be_nil
+    end
+
+    it 'records the weight the spool was spun at' do
+      $parsed_args = { 'material' => 'silk', 'weight' => 'thin' }
+      game.alias_command('adjust wheel to thin', as: 'adjust wheel to heavy')
+
+      Spin.new
+
+      expect(UserVars.spun_spools.last['weight']).to eq('thin')
+    end
+  end
+
+  describe 'when the crafting container refuses the scissors' do
+    before { script_silk_spin }
+
+    # DRCC.stow_crafting_item answers "You can't put that there" by putting
+    # the scissors in your "other" bag and returning false; the spool still
+    # belongs in the crafting container.
+    it 'still puts the spool in the crafting container' do
+      allow(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', anything).and_return(false)
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
     end
   end
 end
