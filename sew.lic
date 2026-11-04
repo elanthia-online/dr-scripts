@@ -248,7 +248,8 @@ class Sew
   # Puts the held material back in the bag. By id when hold_material saw
   # one, so the put reaches the piece in hand and a full bag fails at once
   # instead of after a 15 second timeout. Returns false when the put
-  # failed and the material is still held.
+  # failed; the caller checks the hand to see whether the piece is still
+  # held.
   def put_back_material(material)
     return DRCI.put_away_item?("##{@material_id}", @bag) if @material_id
 
