@@ -708,24 +708,6 @@ RSpec.describe WeaveCloth do
     let(:no_cloth) { log('1104:30604') }
     let(:combined) { log('1104:32641') }
 
-    # One item of the inventory feed, answering as lich-5's Inventory::Item.
-    def feed_item(id, name, relation: 'in', parent: '1222175', noun: 'cloth')
-      article, adjective, = name.split(',')
-      OpenStruct.new(id: id, noun: noun, article: article, adjective: adjective, parent_id: parent,
-                     worn?: relation == 'worn', held?: %w[lefthand righthand].include?(relation),
-                     at_feet?: relation == 'atfeet', in_room?: relation == 'room')
-    end
-
-    # A feed snapshot answering where(noun:) and [], as Inventory::Snapshot.
-    def snapshot(*items)
-      bag = feed_item('1222175', 'a,duffel,bag', relation: 'worn', parent: 'player', noun: 'bag')
-      all = items + [bag]
-      double('snapshot').tap do |snap|
-        allow(snap).to receive(:where) { |noun:| all.select { |item| item.noun == noun } }
-        allow(snap).to receive(:[]) { |id| all.find { |item| item.id == id } }
-      end
-    end
-
     before do
       $parse_args_model = true
       $script_vars = ArgParserModel.script_vars('silk 16')
@@ -742,11 +724,24 @@ RSpec.describe WeaveCloth do
       allow(Lich::Messaging).to receive(:msg)
     end
 
-    context 'with the inventory feed' do
-      it 'gets every carried piece of the heavy cloth by id, combines them, and puts the one piece in the crafting container' do
-        pack = feed_item('1222003', "a scuffed,traveler's,pack", relation: 'worn', parent: 'player', noun: 'pack')
-        pieces = [feed_item('1976604', 'some heavy,silk,cloth'), feed_item('1999999', 'some heavy,silk,cloth', parent: '1222003')]
-        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(*pieces, pack))
+    context 'with GameObj knowing the containers (the inventory feed answered)' do
+      let(:pack) { OpenStruct.new(id: '1222003', noun: 'pack', name: "scuffed traveler's pack") }
+      let(:duffel) { OpenStruct.new(id: '1222175', noun: 'bag', name: 'duffel bag') }
+
+      # A carried item, as GameObj streams it into a container's contents.
+      def carried(id, name, noun: 'cloth', inside: duffel)
+        OpenStruct.new(id: id, noun: noun, name: name).tap { |item| ($containers[inside.id] ||= []) << item }
+      end
+
+      before do
+        game # route DRC.bput to the replay before the run, so game.sent is real
+        $worn_items = [duffel, pack]
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(double('snapshot'))
+      end
+
+      it 'gets every carried piece of the heavy cloth by id, from any container, combines them, and puts the one piece in the crafting container' do
+        carried('1976604', 'heavy silk cloth')
+        carried('1999999', 'heavy silk cloth', inside: pack)
         allow(DRCI).to receive(:get_item?) do |ref|
           ref == '#1976604' ? $left_hand = 'silk cloth' : $right_hand = 'silk cloth'
           $hand_ids['silk cloth'] = '1976604'
@@ -759,25 +754,14 @@ RSpec.describe WeaveCloth do
 
         expect(DRCI).to have_received(:get_item?).with('#1976604').ordered
         expect(DRCI).to have_received(:get_item?).with('#1999999').ordered
-        expect(DRCI).to have_received(:put_away_item?).with('#1976604', 'duffel bag')
+        expect(DRCI).to have_received(:put_away_item?).with('#1976604', '#1222175')
         expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 16)
         expect(DRC).not_to have_received(:wait_for_script_to_complete)
       end
 
-      it "leaves out a chamois cloth, a worn cloth, a floor cloth that isn't ours and cloth of another weight" do
-        others = [feed_item('1', 'a,chamois,cloth'), feed_item('2', 'some heavy,silk,cloth', relation: 'worn', parent: 'player'),
-                  feed_item('3', 'some heavy,silk,cloth', relation: 'room', parent: 'room'), feed_item('4', 'some fine,silk,cloth')]
-        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(*others))
-        allow(DRCI).to receive(:get_item?).and_return(true)
-        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
-
-        expect { WeaveCloth.new }.to raise_error(SystemExit)
-        expect(DRCI).not_to have_received(:get_item?).with(/\A#[1-4]\z/)
-        expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 0)
-      end
-
-      it 'takes a piece lying at its feet, where sew sets offcuts' do
-        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(feed_item('1976604', 'some heavy,silk,cloth', relation: 'atfeet', parent: 'player')))
+      it 'finds a piece inside a container inside a worn one' do
+        pouch = carried('5', 'cloth pouch', noun: 'pouch', inside: pack)
+        carried('1976604', 'heavy silk cloth', inside: pouch)
         allow(DRCI).to receive(:get_item?) do
           $left_hand = 'silk cloth'
           $hand_ids['silk cloth'] = '1976604'
@@ -790,9 +774,28 @@ RSpec.describe WeaveCloth do
         expect(DRCI).to have_received(:get_item?).with('#1976604')
       end
 
+      it 'leaves out a chamois cloth, a worn cloth and cloth of another weight' do
+        carried('1', 'chamois cloth')
+        carried('4', 'fine silk cloth')
+        $worn_items << OpenStruct.new(id: '2', noun: 'cloth', name: 'heavy silk cloth')
+        allow(DRCI).to receive(:get_item?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRCI).not_to have_received(:get_item?).with(/\A#[124]\z/)
+        expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 0)
+      end
+
+      it 'does not fall back to names when GameObj knows there is no cloth' do
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(game.sent).not_to include('get my silk cloth from my duffel bag')
+      end
+
       it 'stops, saying where the cloth is, when a later piece cannot be got' do
-        pieces = [feed_item('1976604', 'some heavy,silk,cloth'), feed_item('1999999', 'some heavy,silk,cloth')]
-        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(*pieces))
+        carried('1976604', 'heavy silk cloth')
+        carried('1999999', 'heavy silk cloth')
         allow(DRCI).to receive(:get_item?) { |ref| ref == '#1976604' }
         expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Could not get the silk cloth #1999999; the rest is in your hand.')
 
@@ -1052,6 +1055,236 @@ RSpec.describe WeaveCloth do
       WeaveCloth.new
 
       expect(game.sent.drop_while { |command| command != 'weave loom' }.take(3)).to eq(['weave loom', 'clean loom', 'push loom'])
+    end
+  end
+
+  # Ids last only for a session: after a login every item has a new one.
+  describe 'finding the spools by name after a login' do
+    let(:duffel) { OpenStruct.new(id: '2135261', noun: 'bag', name: 'duffel bag') }
+
+    def carried(id, name)
+      OpenStruct.new(id: id, noun: 'thread', name: name).tap { |item| ($containers[duffel.id] ||= []) << item }
+    end
+
+    before do
+      game # route DRC.bput to the replay before the run, so game.sent is real
+      $worn_items = [duffel]
+      allow(Lich::Common::Inventory).to receive(:refresh).and_return(double('snapshot'))
+    end
+
+    it 'weaves the carried spools under their new ids, dropping the ids recorded before the login' do
+      carried('2200001', 'some heavy silk thread')
+      carried('2200002', 'some heavy silk thread')
+      script_empty_loom_and_load(first: '2200002', second: '2200001')
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #2200002 on loom', 'put #2200001 on loom'])
+      expect(UserVars.spun_spools).to eq([])
+    end
+
+    it 'never takes the cotton sewing thread for a spool' do
+      carried('2172610', 'some cotton thread')
+      carried('2200001', 'some heavy silk thread')
+      expect(Lich::Messaging).to receive(:msg).with('bold', "weave-cloth: #{WeaveCloth::NEED_TWO_SPOOLS}")
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).to eq(['2200001'])
+    end
+
+    it 'keeps recorded spools still carried as the newest, and adds the others as older' do
+      UserVars.spun_spools = [{ 'id' => '2200009', 'fiber' => 'silk', 'weight' => 'heavy' }]
+      carried('2200001', 'some heavy silk thread')
+      carried('2200009', 'some heavy silk thread')
+      script_empty_loom_and_load(first: '2200009', second: '2200001')
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #2200009 on loom', 'put #2200001 on loom'])
+    end
+
+    it 'asks for the fiber when it carries unrecorded spools of several kinds' do
+      UserVars.spun_spools = nil
+      carried('1', 'some heavy silk thread')
+      carried('2', 'some heavy silk thread')
+      carried('3', 'some heavy linen thread')
+      carried('4', 'some heavy linen thread')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: You carry spools of several kinds (heavy silk, heavy linen); name the fiber, e.g. ;weave-cloth silk.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent).to be_empty
+    end
+
+    it 'weaves the named fiber among several kinds' do
+      UserVars.spun_spools = nil
+      $parse_args_model = true
+      $script_vars = ArgParserModel.script_vars('linen')
+      carried('1', 'some heavy silk thread')
+      carried('3', 'some heavy linen thread')
+      carried('4', 'some heavy linen thread')
+      script_empty_loom_and_load(first: '4', second: '3')
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #4 on loom', 'put #3 on loom'])
+    end
+
+    it 'keeps the record as it is when the inventory feed does not answer' do
+      allow(Lich::Common::Inventory).to receive(:refresh).and_return(nil)
+      script_empty_loom_and_load
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+    end
+  end
+
+  # Round-1 review of #7957.
+  describe 'checking the record against what is carried' do
+    let(:duffel) { OpenStruct.new(id: '2135261', noun: 'bag', name: 'duffel bag') }
+
+    def carried(id, name, noun: 'thread')
+      OpenStruct.new(id: id, noun: noun, name: name).tap { |item| ($containers[duffel.id] ||= []) << item }
+    end
+
+    before do
+      game
+      $worn_items = [duffel]
+      allow(Lich::Common::Inventory).to receive(:refresh).and_return(double('snapshot'))
+    end
+
+    it 'still takes back its own spool a stopped run left on the loom, though it is no longer carried' do
+      UserVars.spun_spools = [{ 'id' => '1626431', 'fiber' => 'silk', 'weight' => 'heavy' }] + silk_spools
+      carried('1958040', 'some heavy silk thread')
+      carried('1963477', 'some heavy silk thread')
+      game.script('look on loom', ReplayGame.code('You see the loom is loaded with some heavy silk thread.', from: 'the loaded-loom wording Mahtra saw on 2026-11-04 at 22:05'))
+      game.script('pull loom', log('1104:30752'), after: lambda { |_|
+        $left_hand = 'silk thread'
+        $hand_ids['silk thread'] = '1626431'
+      })
+      game.script('pull loom', ReplayGame.code('You see nothing to pull off that.', from: 'the empty-loom pull Mahtra saw on 2026-11-04 at 22:05'))
+      game.script('put #1963477 on loom', log('1104:30803'))
+      game.script('put #1958040 on loom', log('1104:30815'))
+      script_weave
+      allow(DRCI).to receive(:put_away_item?) do
+        $left_hand = nil
+        true
+      end
+
+      WeaveCloth.new
+
+      expect(DRCI).to have_received(:put_away_item?).with('#1626431', '#2135261')
+      expect(game.sent).not_to include('put #1626431 on loom')
+    end
+
+    it 'empties the hands before checking, so a recorded spool held in hand is not dropped' do
+      held = OpenStruct.new(id: '1963477', noun: 'thread', name: 'some heavy silk thread')
+      carried('1958040', 'some heavy silk thread')
+      $left_hand = 'silk thread'
+      $hand_ids['silk thread'] = '1963477'
+      allow(DRCI).to receive(:stow_hands) do
+        $containers[duffel.id] << held if $left_hand
+        $left_hand = nil
+        true
+      end
+      script_empty_loom_and_load
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+    end
+
+    it 'keeps recorded spools it cannot see when the feed did not answer, even if GameObj knows other containers' do
+      allow(Lich::Common::Inventory).to receive(:refresh).and_return(nil)
+      carried('1', 'some cotton thread')
+      script_empty_loom_and_load
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+    end
+
+    it 'adds unrecorded carried spools as the oldest and keeps the record to 20' do
+      UserVars.spun_spools = (1..20).map { |n| { 'id' => "9#{n}", 'fiber' => 'linen', 'weight' => 'heavy' } }
+      (1..20).each { |n| carried("9#{n}", 'some heavy linen thread') }
+      carried('2200001', 'some heavy silk thread')
+      allow(DRCT).to receive(:find_empty_room).and_return(false)
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(UserVars.spun_spools.size).to eq(20)
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).not_to include('2200001')
+      expect(UserVars.spun_spools.last['id']).to eq('920')
+    end
+
+    it 'weaves the recorded pair when unrecorded spools of other kinds are carried too' do
+      carried('1958040', 'some heavy silk thread')
+      carried('1963477', 'some heavy silk thread')
+      carried('3', 'some heavy linen thread')
+      carried('4', 'some thin cotton thread')
+      script_empty_loom_and_load
+      script_weave
+
+      WeaveCloth.new
+
+      expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+    end
+
+    it 'asks for ids, not the fiber, when the named fiber comes in several weights' do
+      UserVars.spun_spools = nil
+      $parse_args_model = true
+      $script_vars = ArgParserModel.script_vars('silk')
+      carried('1', 'some heavy silk thread')
+      carried('2', 'some thin silk thread')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: You carry silk spools of several weights (heavy silk, thin silk); give the two to weave by id (;weave-cloth <id> <id>).')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent).to be_empty
+    end
+
+    context 'in stock mode' do
+      before do
+        $parse_args_model = true
+        $script_vars = ArgParserModel.script_vars('silk 16')
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        allow(Lich::Messaging).to receive(:msg)
+      end
+
+      it 'takes a piece lying at its feet from the feed, where sew sets offcuts' do
+        at_feet = OpenStruct.new(id: '1976604', noun: 'cloth', name: 'some heavy silk cloth')
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(double('snapshot', at_feet: [at_feet]))
+        allow(DRCI).to receive(:get_item?) do
+          $left_hand = 'silk cloth'
+          $hand_ids['silk cloth'] = '1976604'
+          true
+        end
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRCI).to have_received(:get_item?).with('#1976604')
+      end
+
+      it 'gets the pieces GameObj knows by id even when the feed did not answer' do
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(nil)
+        carried('1976604', 'some heavy silk cloth', noun: 'cloth')
+        allow(DRCI).to receive(:get_item?) do
+          $left_hand = 'silk cloth'
+          $hand_ids['silk cloth'] = '1976604'
+          true
+        end
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRCI).to have_received(:get_item?).with('#1976604')
+        expect(game.sent).not_to include('get my silk cloth from my duffel bag')
+      end
     end
   end
 end

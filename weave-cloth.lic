@@ -5,7 +5,9 @@
 # Weaves two spools of thread into cloth on a loom at the crafting town's
 # outfitting society. The spools are the newest pair spin recorded (of one
 # fiber, or of the fiber given), or two named by id, and they are only ever
-# handled by id, so sewing thread (noun 'thread' too) is never touched. The
+# handled by id, so sewing thread (noun 'thread' too) is never touched. Ids
+# last only for a session, so carried spools are matched to the record by
+# name ("some heavy silk thread") through GameObj's containers. The
 # loom is one with no other player and no one else's thread. The cloth goes
 # in the crafting container by id. Nothing is ever dropped.
 #
@@ -109,6 +111,11 @@ class WeaveCloth
   # Threads a loom holds.
   MAX_THREADS_ON_LOOM = 2
 
+  # A spun spool's name, which carries its weight and fiber ("some heavy
+  # silk thread", 1104:30286); sewing thread ("some cotton thread") carries
+  # no weight, so it never matches.
+  SPOOL_NAME = /\b(fine|thin|average|thick|heavy) (\w+) thread\z/i
+
   # The weight stock mode weaves: spin's default (Spin::DEFAULT_WEIGHT). Woven
   # cloth carries it in its name, "some heavy silk cloth" (1104:30860).
   STOCK_WEIGHT = 'heavy'
@@ -150,10 +157,15 @@ class WeaveCloth
     @bag = settings.crafting_container
     # parse_args accepts any argument that starts with an option ('silks').
     fiber = args.fiber && FIBERS.find { |name| args.fiber.start_with?(name) }
-    if args.yards
-      stock(fiber, args.yards.to_i)
+    SessionVars[STOCK_RESULT] = nil if args.yards
+    if args.first
+      weave(given_pair(args.first, args.second))
     else
-      weave(args.first ? given_pair(args.first, args.second) : recorded_pair(fiber))
+      # A spool held in hand shows no weight ("silk thread"), so the hands
+      # are emptied before the record is checked against what is carried.
+      stop('Could not empty your hands.') unless DRCI.stow_hands
+      reconcile_record
+      args.yards ? stock(fiber, args.yards.to_i) : weave(default_pair(fiber))
     end
   end
 
@@ -252,9 +264,10 @@ class WeaveCloth
 
   # Gets every carried piece of this heavy cloth by id, combines them and
   # counts the result, then puts it in the crafting container. Pieces are
-  # found in the inventory feed: by name, "get my other silk cloth" missed a
-  # second piece in Mahtra's pack (1104:32050). Without the
-  # feed it falls back to the pieces in the crafting container, by name.
+  # found in GameObj's containers: by name, "get my other silk cloth"
+  # missed a second piece in Mahtra's pack (1104:32050). When GameObj knows
+  # no piece and the inventory feed is absent, it falls back to the pieces
+  # in the crafting container, by name.
   #
   # @param fiber [String] e.g. 'silk'
   # @return [Integer] yards, 0 when there is none
@@ -262,7 +275,7 @@ class WeaveCloth
   #   the cloth will not count, or it will not go back
   def cloth_on_hand(fiber)
     pieces = cloth_pieces(fiber)
-    return cloth_in_bag_by_name(fiber) if pieces.nil?
+    return cloth_in_bag_by_name(fiber) if pieces.empty? && !@feed_seen
     return 0 if pieces.empty?
 
     pieces.each_with_index do |piece, index|
@@ -272,35 +285,95 @@ class WeaveCloth
     count_and_put_back(fiber)
   end
 
-  # The carried pieces of this heavy cloth, from a fresh inventory feed:
-  # not worn, not on the room's floor, and not some other cloth (a chamois
-  # cloth has adjective 'chamois'; woven silk is "some heavy,silk,cloth").
+  # The carried pieces of this heavy cloth: "some heavy silk cloth"
+  # (1104:30860), not a chamois cloth, not another weight, and not a worn
+  # item.
   #
   # @param fiber [String] e.g. 'silk'
-  # @return [Array, nil] the feed's items, or nil when the feed is absent
+  # @return [Array<GameObj>]
   def cloth_pieces(fiber)
-    snapshot = Lich::Common::Inventory.refresh
-    return unless snapshot
-
-    snapshot.where(noun: 'cloth').select do |item|
-      item.adjective == fiber && item.article.to_s.split.include?(STOCK_WEIGHT) && !item.worn? && carried?(snapshot, item)
+    worn = (GameObj.inv || []).map(&:id)
+    # GameObj does not hold what lies at the player's feet, where sew sets
+    # offcuts; the inventory feed lists it.
+    at_feet = @snapshot.respond_to?(:at_feet) ? @snapshot.at_feet.to_a : []
+    (carried_items + at_feet).select do |item|
+      item.noun == 'cloth' && item.name.to_s =~ /\b#{STOCK_WEIGHT} #{fiber} cloth\z/i && !worn.include?(item.id)
     end
   end
 
-  # Whether an item in the feed is the player's: in hand, at their feet,
-  # or inside something they wear or hold.
+  # Everything carried, as GameObj knows it: the worn items, what is in
+  # hand, and every container's contents beneath them, the way GS scripts
+  # read GameObj.inv and container contents. The inventory feed is asked
+  # first; it fills GameObj's container contents, even for containers not
+  # opened this session, as LOOK IN does for one container.
   #
-  # @param snapshot [Object] the inventory feed snapshot
-  # @param item [Object] the feed's item
-  # @return [Boolean]
-  def carried?(snapshot, item)
-    10.times do
-      return false if item.nil? || item.in_room?
-      return true if item.held? || item.at_feet? || item.worn?
+  # @return [Array<GameObj>]
+  def carried_items
+    @snapshot = Lich::Common::Inventory.refresh
+    @feed_seen = !@snapshot.nil?
+    containers = GameObj.containers
+    queue = (GameObj.inv || []) + [GameObj.right_hand, GameObj.left_hand].select(&:id)
+    seen = {}
+    until queue.empty?
+      item = queue.shift
+      next if seen.key?(item.id)
 
-      item = snapshot[item.parent_id]
+      seen[item.id] = item
+      queue.concat(containers[item.id] || [])
     end
-    false
+    seen.values
+  end
+
+  # The spun spools carried, by their names.
+  #
+  # @return [Array<Hash>] { 'id', 'fiber', 'weight' }
+  def carried_spools
+    carried_items.filter_map do |item|
+      match = item.noun == 'thread' && item.name.to_s.match(SPOOL_NAME)
+      next unless match && FIBERS.include?(match[2].downcase)
+
+      { 'id' => item.id.to_s, 'fiber' => match[2].downcase, 'weight' => match[1].downcase }
+    end
+  end
+
+  # Brings the spool record up to date with what is carried. Ids last only
+  # for a session, so a spool spun before the last login shows up under a
+  # new id: carried spools the record does not know are added, as the
+  # oldest. Recorded spools no longer carried (woven, given away, or from
+  # an earlier session) are dropped, but only when the inventory feed
+  # answered, since otherwise GameObj may not know every container. A
+  # dropped spool may be on a loom a stopped run left it on, so the ids
+  # recorded before this run still count as ours ({#ours?}).
+  #
+  # @return [void]
+  def reconcile_record
+    @recorded_before = recorded_ids
+    carried = carried_spools
+    ids = carried.map { |spool| spool['id'] }
+    kept = @feed_seen ? recorded_spools.select { |spool| ids.include?(spool['id']) } : recorded_spools
+    @found_spools = carried.reject { |spool| kept.any? { |recorded| recorded['id'] == spool['id'] } }
+    return if !@feed_seen && @found_spools.empty?
+
+    UserVars.send("#{SPOOL_RECORD}=", (@found_spools + kept).last(MAX_RECORDED_SPOOLS))
+  end
+
+  # The spools to weave when none are named: the recorded pair, unless the
+  # record knew none of the carried spools (as after a login) and they are
+  # of several kinds, when only a fiber can say which to weave.
+  #
+  # @param fiber [String, nil] only spools of this fiber
+  # @return [Array<String>] spool ids, newest first
+  # @raise [SystemExit] when the kind to weave is ambiguous
+  def default_pair(fiber)
+    wanted = ->(spool) { fiber.nil? || spool['fiber'] == fiber }
+    found = (@found_spools || []).select(&wanted)
+    known = recorded_spools.select(&wanted).reject { |spool| found.include?(spool) }
+    kinds = found.map { |spool| spool.values_at('fiber', 'weight') }.uniq
+    if known.empty? && kinds.size > 1
+      names = kinds.map { |kind| kind.reverse.join(' ') }.join(', ')
+      stop(fiber ? "You carry #{fiber} spools of several weights (#{names}); give the two to weave by id (;weave-cloth <id> <id>)." : "You carry spools of several kinds (#{names}); name the fiber, e.g. ;weave-cloth silk.")
+    end
+    recorded_pair(fiber)
   end
 
   # Combines every piece of this cloth in the crafting container, by name,
@@ -384,12 +457,13 @@ class WeaveCloth
     spools.select { |spool| spool.values_at('fiber', 'weight') == kind }.map { |spool| spool['id'] }
   end
 
-  # Whether a thread is ours: a spool spin recorded, or one given to weave.
+  # Whether a thread is ours: a spool spin recorded (now, or before this run
+  # checked the record against what is carried), or one given to weave.
   #
   # @param id [String, Integer] the thread's id
   # @return [Boolean]
   def ours?(id)
-    recorded_ids.include?(id.to_s) || @candidates.include?(id.to_s)
+    (recorded_ids | (@recorded_before || []) | @candidates).include?(id.to_s)
   end
 
   # @return [Array<String>] every recorded spool id
