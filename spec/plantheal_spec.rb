@@ -167,18 +167,20 @@ RSpec.describe PlantHeal do
 
   describe '#ensure_healing_spells' do
     context 'waggle healing path' do
-      it 'does nothing when Heal is active' do
+      it 'does nothing when the only listed healing spell (Heal) is active' do
         DRSpells._set_active_spells({ 'Heal' => 300 })
-        instance = build_instance(waggle_healing: true)
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Heal' => { 'abbrev' => 'heal' } })
         expect(DRC).not_to receive(:wait_for_script_to_complete)
-        instance.send(:ensure_healing_spells)
+        expect(DRCA).not_to receive(:cast_spells)
+        expect(instance.send(:ensure_healing_spells)).to be(false)
       end
 
-      it 'does nothing when Regenerate is active' do
+      it 'does nothing when the only listed healing spell (Regenerate) is active' do
         DRSpells._set_active_spells({ 'Regenerate' => 300 })
-        instance = build_instance(waggle_healing: true)
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Regenerate' => { 'abbrev' => 'regen' } })
         expect(DRC).not_to receive(:wait_for_script_to_complete)
-        instance.send(:ensure_healing_spells)
+        expect(DRCA).not_to receive(:cast_spells)
+        expect(instance.send(:ensure_healing_spells)).to be(false)
       end
 
       let(:ev_data) { { 'abbrev' => 'EV', 'mana' => 525, 'recast' => 5 } }
@@ -230,6 +232,95 @@ RSpec.describe PlantHeal do
         expect(waggle.keys).to eq(["Embrace of the Vela'Tohr", 'Regenerate'])
       end
 
+      # Regression: with both listed, an active Regenerate hid a Heal that had
+      # ended ("You feel the warmth in your flesh gradually subside."), so Heal
+      # was never recast and the wait fell back to healme.
+      it 'recasts Heal when it has ended even though Regenerate is still active' do
+        DRSpells._set_active_spells({ 'Regenerate' => 1000 })
+        heal_data = { 'abbrev' => 'heal', 'mana' => 10 }
+        waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Regenerate' => regen_data, 'Heal' => heal_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRCA).to receive(:cast_spells).with({ 'Heal' => heal_data }, settings, nil)
+        expect(instance.send(:ensure_healing_spells)).to be(true)
+      end
+
+      it 'recasts Regenerate when it has ended even though Heal is still active' do
+        DRSpells._set_active_spells({ 'Heal' => 10 })
+        waggle = { 'Heal' => { 'abbrev' => 'heal' }, 'Regenerate' => regen_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRCA).to receive(:cast_spells).with({ 'Regenerate' => regen_data }, settings, nil)
+        expect(instance.send(:ensure_healing_spells)).to be(true)
+      end
+
+      it 'casts nothing and returns false when every listed healing spell is active' do
+        DRSpells._set_active_spells({ 'Heal' => 10, 'Regenerate' => 1000 })
+        waggle = { "Embrace of the Vela'Tohr" => ev_data, 'Heal' => { 'abbrev' => 'heal' }, 'Regenerate' => regen_data }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRCA).not_to receive(:cast_spells)
+        expect(DRCA).not_to receive(:check_discern)
+        expect(instance.send(:ensure_healing_spells)).to be(false)
+      end
+
+      it 'casts a listed Heal even when an unlisted Regenerate is active' do
+        DRSpells._set_active_spells({ 'Regenerate' => 1000 })
+        heal_data = { 'abbrev' => 'heal' }
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Heal' => heal_data }, settings: settings)
+        expect(DRCA).to receive(:cast_spells).with({ 'Heal' => heal_data }, settings, nil)
+        instance.send(:ensure_healing_spells)
+      end
+
+      # Mirrors DRCA.cast_spells' skip rule, so buff and plantheal agree on when
+      # a spell is due.
+      it 'recasts Heal that is fading (0) at or below its recast threshold' do
+        DRSpells._set_active_spells({ 'Heal' => 0 })
+        heal_data = { 'abbrev' => 'heal', 'recast' => 1 }
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Heal' => heal_data }, settings: settings)
+        expect(DRCA).to receive(:cast_spells).with({ 'Heal' => heal_data }, settings, nil)
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'recasts Heal with exactly its recast threshold remaining' do
+        DRSpells._set_active_spells({ 'Heal' => 1 })
+        heal_data = { 'abbrev' => 'heal', 'recast' => 1 }
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Heal' => heal_data }, settings: settings)
+        expect(DRCA).to receive(:cast_spells).with({ 'Heal' => heal_data }, settings, nil)
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'does not recast Heal with more time left than its recast threshold' do
+        DRSpells._set_active_spells({ 'Heal' => 2 })
+        heal_data = { 'abbrev' => 'heal', 'recast' => 1 }
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Heal' => heal_data }, settings: settings)
+        expect(DRCA).not_to receive(:cast_spells)
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'does not recast an unknown-duration spell (parsed as 1000)' do
+        DRSpells._set_active_spells({ 'Heal' => 1000 })
+        heal_data = { 'abbrev' => 'heal', 'recast' => 1 }
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Heal' => heal_data }, settings: settings)
+        expect(DRCA).not_to receive(:cast_spells)
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'never recasts an active cyclic Regenerate (recast -1)' do
+        DRSpells._set_active_spells({ 'Regenerate' => 0 })
+        instance = build_instance(waggle_healing: true, ev_waggle: { 'Regenerate' => regen_data.merge('recast' => -1) },
+                                  settings: settings)
+        expect(DRCA).not_to receive(:cast_spells)
+        instance.send(:ensure_healing_spells)
+      end
+
+      it 'discerns mana only for lapsed healing entries' do
+        DRSpells._set_active_spells({ 'Regenerate' => 1000 })
+        auto_regen = regen_data.merge('use_auto_mana' => true)
+        auto_heal = { 'abbrev' => 'heal', 'use_auto_mana' => true }
+        waggle = { 'Regenerate' => auto_regen, 'Heal' => auto_heal }
+        instance = build_instance(waggle_healing: true, ev_waggle: waggle, settings: settings)
+        expect(DRCA).to receive(:check_discern).once.with(auto_heal, settings)
+        instance.send(:ensure_healing_spells)
+      end
+
       it 'discerns mana only for healing entries that use auto mana' do
         DRSpells._set_active_spells({})
         auto_regen = regen_data.merge('use_auto_mana' => true)
@@ -247,7 +338,7 @@ RSpec.describe PlantHeal do
         instance = build_instance(waggle_healing: false)
         expect(DRC).not_to receive(:wait_for_script_to_complete)
         expect(DRCA).not_to receive(:cast_spells)
-        instance.send(:ensure_healing_spells)
+        expect(instance.send(:ensure_healing_spells)).to be(false)
       end
     end
   end
@@ -334,6 +425,88 @@ RSpec.describe PlantHeal do
       expect(DRC).to receive(:message).with(/Still wounded after.*passive healing.*healme as fallback/)
       expect(DRCT).to receive(:walk_to).with(1234)
       expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+      instance.send(:wait_for_passive_healing)
+    end
+
+    it 'recasts a healing spell that ends mid-wait and restarts the timeout' do
+      # Healed on poll 31 (~150s), past the 120s timeout; the recast on poll 21
+      # (~100s) restarts it, so healme must not run.
+      polls = 0
+      allow(DRCH).to receive(:check_health) do
+        polls += 1
+        { 'score' => polls >= 31 ? 0 : 5 }
+      end
+      instance = build_instance(healingroom: 1234)
+      allow(instance).to receive(:pause)
+      ensure_calls = 0
+      allow(instance).to receive(:ensure_healing_spells) do
+        ensure_calls += 1
+        ensure_calls == 21
+      end
+      expect(DRC).not_to receive(:wait_for_script_to_complete).with('healme')
+      expect(DRCT).not_to receive(:walk_to)
+      instance.send(:wait_for_passive_healing)
+    end
+
+    it 'still falls back to healme if wounds outlast the window after a recast' do
+      allow(DRCH).to receive(:check_health).and_return('score' => 5)
+      instance = build_instance(healingroom: 1234)
+      pauses = 0
+      allow(instance).to receive(:pause) { pauses += 1 }
+      ensure_calls = 0
+      allow(instance).to receive(:ensure_healing_spells) do
+        ensure_calls += 1
+        ensure_calls == 3
+      end
+      expect(DRCT).to receive(:walk_to).with(1234)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+      instance.send(:wait_for_passive_healing)
+      # 2 pauses before the recast, then a full fresh window.
+      expect(pauses).to eq(2 + (PlantHeal::PASSIVE_HEAL_MAX_WAIT / PlantHeal::PASSIVE_HEAL_POLL_INTERVAL))
+    end
+
+    it 'stops recasting after PASSIVE_HEAL_MAX_RECASTS so a failing cast cannot loop forever' do
+      allow(DRCH).to receive(:check_health).and_return('score' => 5)
+      instance = build_instance(healingroom: 1234)
+      allow(instance).to receive(:pause)
+      expect(instance).to receive(:ensure_healing_spells).exactly(PlantHeal::PASSIVE_HEAL_MAX_RECASTS).times.and_return(true)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+      allow(DRCT).to receive(:walk_to)
+      instance.send(:wait_for_passive_healing)
+    end
+
+    it 'pauses after a recast before checking again' do
+      polls = 0
+      allow(DRCH).to receive(:check_health) do
+        polls += 1
+        { 'score' => polls >= 2 ? 0 : 5 }
+      end
+      instance = build_instance(healingroom: 1234)
+      expect(instance).to receive(:ensure_healing_spells).ordered.and_return(true)
+      expect(instance).to receive(:pause).with(PlantHeal::PASSIVE_HEAL_POLL_INTERVAL).ordered
+      instance.send(:wait_for_passive_healing)
+    end
+
+    # End to end through the real ensure_healing_spells: the reported run had
+    # Heal and Regenerate listed, Heal ended mid-wait while Regenerate stayed up.
+    it 'recasts Heal when it ends mid-wait while Regenerate stays active' do
+      heal_data = { 'abbrev' => 'heal', 'mana' => 10 }
+      regen_data = { 'abbrev' => 'regen', 'mana' => 13, 'recast' => -1 }
+      settings = OpenStruct.new
+      DRSpells._set_active_spells({ 'Heal' => 10, 'Regenerate' => 1000 })
+      polls = 0
+      allow(DRCH).to receive(:check_health) do
+        polls += 1
+        DRSpells._set_active_spells({ 'Regenerate' => 1000 }) if polls == 4
+        { 'score' => polls >= 8 ? 0 : 5 }
+      end
+      instance = build_instance(waggle_healing: true, healingroom: 1234, settings: settings,
+                                ev_waggle: { 'Heal' => heal_data, 'Regenerate' => regen_data })
+      allow(instance).to receive(:pause)
+      expect(DRCA).to receive(:cast_spells).once.with({ 'Heal' => heal_data }, settings, nil) do
+        DRSpells._set_active_spells({ 'Heal' => 10, 'Regenerate' => 1000 })
+      end
+      expect(DRC).not_to receive(:wait_for_script_to_complete).with('healme')
       instance.send(:wait_for_passive_healing)
     end
 
