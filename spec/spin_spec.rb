@@ -18,9 +18,12 @@ RSpec.describe Spin do
 
   let(:game) { ReplayGame.new.install(self) }
 
-  # A spin that never ends would hang the suite instead of failing it.
+  # A spin that never ends would hang the suite instead of failing it, and an
+  # exit nothing expected would end the whole run with status 0 (spec_helper).
   around do |example|
     Timeout.timeout(10) { example.run }
+  rescue SystemExit
+    raise 'spin exited where the example expected it to carry on'
   end
 
   before do
@@ -35,8 +38,14 @@ RSpec.describe Spin do
     )
     $parsed_args = { 'material' => 'silk' }
 
-    # The attendant hands over each bundle (1104:30058).
-    allow(DRCT).to receive(:order_item) { $left_hand = 'silk fibers' }
+    # The attendant hands over each bundle (1104:30058); DRCT.order_item
+    # returns what its bput matched.
+    allow(DRCT).to receive(:order_item) do
+      $left_hand = 'silk fibers'
+      'takes some coins from you'
+    end
+    allow(DRCM).to receive(:town_currency).with('Shard').and_return('dokoras')
+    allow(DRCM).to receive(:convert_currency).and_return(135)
   end
 
   # The game's side of one whole silk spin, line for line as Mahtra's log has
@@ -226,7 +235,10 @@ RSpec.describe Spin do
   describe 'spinning yarn' do
     before do
       $parsed_args = { 'material' => 'wool', 'weight' => 'yarn' }
-      allow(DRCT).to receive(:order_item) { $left_hand = 'wool fibers' }
+      allow(DRCT).to receive(:order_item) do
+        $left_hand = 'wool fibers'
+        'takes some coins from you'
+      end
       7.times { game.script('combine my fiber', log('1104:30101')) }
       # The lines are silk's; the game's yarn wording is not in any log.
       game.script('put fiber on wheel', log('1104:30204'), after: ->(_) { $left_hand = nil })
@@ -241,6 +253,208 @@ RSpec.describe Spin do
 
       expect(game.sent.count('spin wheel')).to eq(2)
       expect(game.sent.last).to eq('stow my wool yarn')
+    end
+  end
+
+  describe 'before buying anything' do
+    it 'shops and spins in force_crafting_town when it is set' do
+      $test_settings.force_crafting_town = 'Crossing'
+      $test_data.crafting['tailoring']['Crossing'] = { 'stock-room' => 16_667 }
+      allow(DRCM).to receive(:town_currency).with('Crossing').and_return('kronars')
+      script_silk_spin
+      expect(DRCC).to receive(:find_wheel).with('Crossing').and_return(true)
+
+      Spin.new
+
+      expect(DRCT).to have_received(:order_item).with(16_667, 1).exactly(14).times
+    end
+
+    it 'stops before touching money when the town has no stock room in the data' do
+      $test_settings.hometown = 'Aesry'
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: No outfitting society stock room is known for Aesry.')
+      expect(DRCM).not_to receive(:ensure_copper_on_hand)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).not_to have_received(:order_item)
+    end
+
+    it 'stops with a message, not a crash, when no hometown is set' do
+      $test_settings.hometown = nil
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: No outfitting society stock room is known for your crafting town.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+    end
+
+    it 'stops with the choices when the fiber is not one the shop sells' do
+      $parsed_args = { 'material' => 'hemp' }
+      expect(Lich::Messaging).to receive(:msg).with('bold', "spin: Unknown fiber 'hemp'. Choose one of: silk, cotton, linen, wool, burlap.")
+
+      expect { Spin.new }.to raise_error(SystemExit)
+    end
+
+    it 'gets the scissors for the silk cut before spending money' do
+      script_silk_spin
+      expect(DRCC).to receive(:get_crafting_item).with('scissors', 'duffel bag', [], $test_settings.outfitting_belt, true).ordered.and_return(true)
+      expect(DRCM).to receive(:ensure_copper_on_hand).ordered.and_return(true)
+
+      Spin.new
+    end
+  end
+
+  describe 'paying for the fiber' do
+    it 'converts the kronar price to the town currency: 14 silk bundles are 1890 Dokoras in Shard (1104:30056)' do
+      script_silk_spin
+      expect(DRCM).to receive(:convert_currency).with(187, 'kronars', 'dokoras', 0).and_return(135)
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(1890, $test_settings, 'Shard').and_return(true)
+
+      Spin.new
+    end
+
+    context 'with lich-5 v5.23.0 exchange rates (common-money.rb convert_currency, fee 0)' do
+      before do
+        rates = { 'dokoras' => 0.7216, 'lirums' => 0.8, 'kronars' => 1 }
+        allow(DRCM).to receive(:convert_currency) { |amount, _from, to, fee| ((amount * rates.fetch(to)).ceil * (1 - fee)).floor }
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
+      end
+
+      {
+        ['Riverhaven', 'lirums', 'silk'] => 14 * 150,
+        ['Shard', 'dokoras', 'linen']    => 8 * 121,
+        ['Shard', 'dokoras', 'silk']     => 14 * 135
+      }.each do |(town, currency, fiber), copper|
+        it "asks for each #{fiber} bundle's rounded #{currency} price times the bundles: #{copper} in #{town}" do
+          $test_settings.hometown = town
+          $test_data.crafting['tailoring'][town] = { 'stock-room' => 1 }
+          $parsed_args = { 'material' => fiber }
+          allow(DRCM).to receive(:town_currency).with(town).and_return(currency)
+
+          expect { Spin.new }.to raise_error(SystemExit)
+          expect(DRCM).to have_received(:ensure_copper_on_hand).with(copper, $test_settings, town)
+        end
+      end
+    end
+
+    it 'stops before ordering when the money cannot be got' do
+      allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get 1890 copper dokoras for the fiber.')
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', $test_settings.outfitting_belt)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).not_to have_received(:order_item)
+    end
+
+    it 'stops before banking when the scissors for the silk cut cannot be got' do
+      allow(DRCC).to receive(:get_crafting_item).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not get your scissors for the silk cut.')
+      expect(DRCM).not_to receive(:ensure_copper_on_hand)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).not_to have_received(:order_item)
+    end
+
+    it 'puts the scissors back when the first bundle is not sold' do
+      allow(DRCT).to receive(:order_item).and_return(nil)
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', $test_settings.outfitting_belt)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+    end
+
+    it 'does not try to put the scissors back again once the cut has put them away' do
+      sold = 0
+      allow(DRCT).to receive(:order_item) { (sold += 1) < 2 ? 'takes some coins from you' : nil }
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+      allow(DRCC).to receive(:stow_crafting_item).and_return(true)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCC).to have_received(:stow_crafting_item).once
+    end
+  end
+
+  describe 'buying the bundles' do
+    it 'stops at the first bundle the shop does not sell (DRCT.order_item returns nil when the coins run short)' do
+      sold = 0
+      allow(DRCT).to receive(:order_item) { (sold += 1) < 3 ? 'takes some coins from you' : nil }
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+      game.script('combine my fiber', log('1104:30101'))
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: The shop did not sell bundle 3 of 14; any bought so far are in your hands.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).to have_received(:order_item).exactly(3).times
+      expect(game.sent).not_to include('put fiber on wheel')
+    end
+
+    it 'stops when the order goes unanswered (DRCT.order_item returns the empty bput timeout)' do
+      allow(DRCT).to receive(:order_item).and_return('')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: The shop did not sell bundle 1 of 14; any bought so far are in your hands.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).to have_received(:order_item).once
+      expect(game.sent).to be_empty
+    end
+
+    it 'stops at an unanswered later order of an uncut fiber, before combining or spinning' do
+      $parsed_args = { 'material' => 'cotton' }
+      replies = ['takes some coins from you', '']
+      allow(DRCT).to receive(:order_item) { replies.shift }
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: The shop did not sell bundle 2 of 8; any bought so far are in your hands.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).to have_received(:order_item).twice
+      expect(game.sent).not_to include('combine my fiber', 'put fiber on wheel')
+    end
+
+    it 'stops when the fiber cannot be marked for cutting' do
+      game.script('mark my fibers at 10', log('1104:30072'))
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not mark the fiber for cutting; it is in your hands.')
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', $test_settings.outfitting_belt)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(game.sent).not_to include('cut my fibers with my scissors')
+    end
+
+    it 'stops when the cut does not happen' do
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not cut the fiber; it is in your hands.')
+      expect(DRCC).to receive(:stow_crafting_item).with('scissors', 'duffel bag', $test_settings.outfitting_belt)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).to have_received(:order_item).once
+    end
+
+    it 'stops when two bundles will not combine, instead of buying more into full hands' do
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+      game.script('combine my fiber', log('1104:30072'))
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not combine the fiber bundles; they are in your hands.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(DRCT).to have_received(:order_item).twice
+    end
+
+    it 'combines only from the second bundle on when there is no cut' do
+      $parsed_args = { 'material' => 'cotton' }
+      7.times { game.script('combine my fiber', log('1104:30101')) }
+      allow(DRCC).to receive(:find_wheel).and_return(false)
+      expect(DRCC).not_to receive(:get_crafting_item)
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(game.sent.count('combine my fiber')).to eq(7)
+    end
+  end
+
+  describe 'finding a wheel' do
+    it 'stops with a message when no wheel can be reached, instead of walking out the door every 30 seconds' do
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+      13.times { game.script('combine my fiber', log('1104:30101')) }
+      allow(DRCC).to receive(:find_wheel).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'spin: Could not reach a spinning wheel in Shard.')
+
+      expect { Spin.new }.to raise_error(SystemExit)
+      expect(game.sent).not_to include('put fiber on wheel')
     end
   end
 end

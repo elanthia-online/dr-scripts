@@ -1399,7 +1399,7 @@ module Harness
       def check_for_existing_sigil?(*_args); true; end
       def get_adjust_tongs?(*_args); true; end
       def stow_crafting_item(*_args); true; end
-      def get_crafting_item(*_args); end
+      def get_crafting_item(*_args); true; end
       def logbook_item(*_args); end
       def crafting_cost(*_args); 0; end
       def order_enchant(*_args); end
@@ -1465,6 +1465,7 @@ module Harness
       def minimize_coins(*_args); []; end
       def deposit_coins(*_args); end
       def convert_currency(*_args); end
+      def town_currency(*_args); end
       def withdraw_exact_amount?(*_args); true; end
     end
   end
