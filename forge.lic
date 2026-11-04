@@ -1035,6 +1035,7 @@ class Forge
   # @return [void]
   # @raise [SystemExit] if ingot cannot be found
   def prep_ingot
+    free_hand_for_ingot
     DRCC.get_crafting_item("#{@metal} ingot", @bag, @bag_items, @forging_belt, true)
     unless DRCI.in_hands?('ingot')
       cleanup_and_exit("Failed to get #{@metal} ingot.")
@@ -1042,6 +1043,27 @@ class Forge
     DRC.bput('put my ingot on anvil', PUT_SUCCESS_PATTERN)
     ready_hammer_with_tongs
     @command = "pound ingot on anvil with my #{@hammer}"
+  end
+
+  # Make sure a hand is free to pick up the ingot.
+  #
+  # validate_free_hand runs before the recipe and hammer steps, so a held
+  # item that passed it then (e.g. a finished item of the same noun kept in
+  # hand by an earlier 'hold' run) leaves both hands full once the hammer
+  # is out, and the game refuses the ingot with "You need a free hand".
+  # Stow whatever is not the hammer.
+  #
+  # @return [void]
+  # @raise [SystemExit] if no hand could be freed
+  def free_hand_for_ingot
+    return unless DRC.left_hand && DRC.right_hand
+
+    held = DRCI.in_right_hand?(@hammer) ? DRC.left_hand : DRC.right_hand
+    info_log("Stowing #{held} to free a hand for the #{@metal} ingot.")
+    DRCC.stow_crafting_item(held, @bag, @forging_belt)
+    return unless DRC.left_hand && DRC.right_hand
+
+    cleanup_and_exit("Need a free hand for the #{@metal} ingot, but could not stow #{held}.")
   end
 
   # @!endgroup
