@@ -2183,6 +2183,101 @@ RSpec.describe TaskMaster do
         sort(filtered(task_junk_list: ['dye']), '3 haledroth shards')
         expect(DRC).to have_received(:message).with('Found a keeper: 3 haledroth shards')
       end
+
+      describe 'taking the coins' do
+        # Replies to GET COIN FROM MY SACK as the game prints them (Hollow Eve
+        # 2026 logs): one coin stack per get, then this once none is left.
+        let(:no_coin) { 'What were you referring to?' }
+        # A four-stack sack, of mixed currencies, from Dorhum.
+        let(:four_stacks) { ['You pick up 2 copper Dokoras.', 'You pick up 2 bronze Dokoras.', 'You pick up 2 silver Dokoras.', 'You pick up 1 gold Lirum.'] }
+
+        # Real sacks from Zasele and Dorhum (Hollow Eve 2026 logs) holding one
+        # to four coin stacks, the most any sack has held, with what LOOK
+        # then showed. The old code asked exactly four times.
+        real_sacks = {
+          1 => [['You pick up 1 gold Lirum.'], 'a large iron nugget'],
+          2 => [['You pick up 2 bronze Lirums.', 'You pick up 8 silver Lirums.'], 'a deer-bone stack'],
+          3 => [['You pick up 9 copper Lirums.', 'You pick up 5 bronze Dokoras.', 'You pick up 1 gold Dokora.'], 'a bear-bone stack'],
+          4 => [['You pick up 2 copper Dokoras.', 'You pick up 2 bronze Dokoras.', 'You pick up 2 silver Dokoras.', 'You pick up 1 gold Lirum.'], 'a huge muracite fragment']
+        }.freeze
+
+        # Plays a sack holding the coin stacks `coins` (pickup lines, in
+        # order) through sort_sack. Each get is answered as DRC.bput answers:
+        # the text the first of its matchers finds in the next line, or ''
+        # (a timeout) when none does; `line` overrides what the game says.
+        # Returns every command sent, in order.
+        def sort_coins(coins, contents: 'a huge muracite fragment', line: nil)
+          commands = []
+          coins = coins.dup
+          allow(DRC).to receive(:bput) do |command, *matchers|
+            commands << command
+            reply = if command == 'get coin from my sack'
+                      line || coins.shift || no_coin
+                    elsif command == 'look in my sack'
+                      "In the woven sack you see #{contents}."
+                    else
+                      ''
+                    end
+            matchers.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }.filter_map { |m| reply.match(m)&.[](0) }.first || ''
+          end
+          allow(DRCI).to receive(:put_away_item?)
+          allow(DRCI).to receive(:dispose_trash)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          filtered(task_keep_list: ['shard']).sort_sack('rope')
+          expect(coins).to be_empty
+          commands
+        end
+
+        def gets(commands)
+          commands.count('get coin from my sack')
+        end
+
+        # Every get comes before the LOOK that decides the sack's fate.
+        def looked_after_gets(commands)
+          commands.rindex('get coin from my sack') < commands.index('look in my sack')
+        end
+
+        real_sacks.each do |stacks, (coins, contents)|
+          it "takes every coin of a #{stacks}-stack sack, then sorts the sack as before" do
+            commands = sort_coins(coins, contents: contents)
+            expect(looked_after_gets(commands)).to be(true)
+            expect(commands.uniq).to eq(['get coin from my sack', 'look in my sack'])
+            expect(DRC).to have_received(:message).with("Nothing special: In the woven sack you see #{contents}.")
+            expect(DRCI).to have_received(:dispose_trash).with('sack', nil, nil)
+          end
+
+          it "stops asking for coins at the first empty reply from a #{stacks}-stack sack" do
+            expect(gets(sort_coins(coins, contents: contents))).to eq(stacks + 1)
+          end
+        end
+
+        it 'takes a fifth stack instead of binning the sack with it inside' do
+          commands = sort_coins(four_stacks + ['You pick up 7 silver Lirums.'])
+          expect(gets(commands)).to eq(6)
+          expect(looked_after_gets(commands)).to be(true)
+          expect(DRCI).to have_received(:dispose_trash)
+        end
+
+        it 'asks once for a sack with no coins' do
+          commands = sort_coins([])
+          expect(gets(commands)).to eq(1)
+          expect(commands).to include('look in my sack')
+        end
+
+        it "stops at the cap of gets when the coins never run out, and still sorts the sack" do
+          commands = sort_coins([], line: 'You pick up 2 copper Dokoras.')
+          expect(gets(commands)).to eq(20)
+          expect(described_class::SACK_COIN_GETS_MAX).to eq(20)
+          expect(looked_after_gets(commands)).to be(true)
+          expect(DRCI).to have_received(:dispose_trash)
+        end
+
+        it 'stops asking when a get times out' do
+          commands = sort_coins([], line: 'Kythkani drums his fingers on his bucket rhythmically.')
+          expect(gets(commands)).to eq(1)
+          expect(commands).to include('look in my sack')
+        end
+      end
     end
 
     describe '#run version banner' do
