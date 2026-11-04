@@ -1956,7 +1956,9 @@ class TaskMaster
     info = get_data('crafting')['tailoring']["Crossing"]
     belt = @settings.outfitting_belt
     DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, belt, PIN_USES_PER_ITEM * count + 5)
-    DRCC.check_consumables('thread', info['stock-room'], 6, @bag, @bag_items, belt)
+    # Named by material: spun spools ("some heavy silk thread") share the
+    # noun and live in the crafting container too (see sew.lic SEWING_THREAD).
+    DRCC.check_consumables('cotton thread', info['stock-room'], 6, @bag, @bag_items, belt)
   end
 
   # Shapes each wooden item with the shape script in a shaping room.

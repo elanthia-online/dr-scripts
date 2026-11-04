@@ -25,6 +25,12 @@ class Sew
   # Unrecognized replies in a row before #work gives up on a command.
   MAX_UNMATCHED = 3
 
+  # The thread the needles take, as the stock room sells it ("100 yards of
+  # cotton thread", order 6). Spun spools are thread too ("some heavy silk
+  # thread") and spin keeps them in the crafting container, so the thread
+  # is always named by its material, never by the bare noun.
+  SEWING_THREAD = 'cotton thread'
+
   def initialize
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
@@ -114,7 +120,7 @@ class Sew
       DRCC.check_consumables('wax', @info['tool-room'], 10, @bag, @bag_items, @belt) unless args.skip
     elsif @chapter != 5
       DRCC.check_consumables('pins', @info['tool-room'], 5, @bag, @bag_items, @belt) unless args.skip
-      DRCC.check_consumables('thread', @info['stock-room'], 6, @bag, @bag_items, @belt) unless args.skip
+      DRCC.check_consumables(SEWING_THREAD, @info['stock-room'], 6, @bag, @bag_items, @belt) unless args.skip
     end
 
     check_rental_status
@@ -332,7 +338,7 @@ class Sew
           magic_cleanup
           exit
         end
-        swap_tool('cotton thread', true)
+        swap_tool(SEWING_THREAD, true)
         command = "put my thread on ##{needles_id}"
       when 'You carefully thread some cotton thread', 'is already threaded with'
         swap_tool('sewing needles')
@@ -347,8 +353,8 @@ class Sew
           DRCC.check_consumables('pins', @info['tool-room'], 5, @bag, @bag_items, @belt)
           swap_tool('pins')
         elsif command.include?('thread')
-          DRCC.check_consumables('thread', @info['stock-room'], 6, @bag, @bag_items, @belt)
-          swap_tool('thread')
+          DRCC.check_consumables(SEWING_THREAD, @info['stock-room'], 6, @bag, @bag_items, @belt)
+          swap_tool(SEWING_THREAD)
         end
       when 'needs holes punched', 'requires some holes punched'
         @home_tool = 'sewing needles'

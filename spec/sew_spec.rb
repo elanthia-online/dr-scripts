@@ -2017,7 +2017,20 @@ RSpec.describe Sew do
 
       sew.send(:initialize)
 
-      expect(calls).to eq([:clear_hands, 'check_consumables pins', 'check_consumables thread'])
+      expect(calls).to eq([:clear_hands, 'check_consumables pins', 'check_consumables cotton thread'])
+    end
+
+    # spin keeps its spools ("some heavy silk thread") in the crafting
+    # container, and `get my thread from my <bag>` would take one for the
+    # sewing thread, count its yards as uses, and skip buying cotton thread.
+    it 'checks the cotton thread by name, never the bare noun a spun spool shares' do
+      $parsed_args = OpenStruct.new(finish: 'stow', type: 'sewing', chapter: '2', recipe_name: +'rucksack',
+                                    material: 'burlap', noun: 'rucksack')
+
+      sew.send(:initialize)
+
+      expect(DRCC).to have_received(:check_consumables).with('cotton thread', 2, 6, any_args)
+      expect(DRCC).not_to have_received(:check_consumables).with('thread', any_args)
     end
 
     it 'clears hands before checking wax for a seal' do

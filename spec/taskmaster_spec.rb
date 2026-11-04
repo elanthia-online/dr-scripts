@@ -1715,9 +1715,10 @@ RSpec.describe TaskMaster do
         expect(checks.find { |c| c.first == 'pins' }).to eq(['pins', 16666, 5, 29])
       end
 
-      it 'checks thread once, from the stock room' do
+      it 'checks the cotton thread once, from the stock room, never the bare noun a spun spool shares' do
         checks, = tailor('leather')
-        expect(checks.select { |c| c.first == 'thread' }.map { |c| c[1..2] }).to eq([[16667, 6]])
+        expect(checks.select { |c| c.first == 'cotton thread' }.map { |c| c[1..2] }).to eq([[16667, 6]])
+        expect(checks.map(&:first)).not_to include('thread')
       end
 
       it 'tells every sew run to skip its own consumable check' do
@@ -1734,7 +1735,7 @@ RSpec.describe TaskMaster do
 
       it 'behaves the same in marathon mode' do
         checks, launches = tailor('cloth', count: 2, marathon: true)
-        expect(checks.map(&:first)).to eq(%w[pins thread])
+        expect(checks.map(&:first)).to eq(['pins', 'cotton thread'])
         expect(launches).to all(satisfy { |_, args| args.include?('skip') })
       end
     end
