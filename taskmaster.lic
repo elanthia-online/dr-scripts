@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.04.4'
+  VERSION = '2026.11.04.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2249,6 +2249,15 @@ class TaskMaster
     end
   end
 
+  # Replies to GET COIN FROM MY SACK (Hollow Eve 2026 logs): each get picks up
+  # one coin stack ("You pick up 2 copper Dokoras."), and once none is left
+  # the game says "What were you referring to?". Sacks have held up to four
+  # stacks, of mixed currencies.
+  SACK_COIN_TAKEN = /^You pick up/
+  SACK_NO_COIN = /^What were you referring to/
+  # Gets before giving up on a sack whose coins never seem to run out.
+  SACK_COIN_GETS_MAX = 20
+
   # Sorts the reward sack: gems go to the gem pouch and coins are picked up,
   # then a keeper goes into the loot bag (with a Slack message if asked)
   # and anything else is binned. Logs the contents to the Task Master
@@ -2259,8 +2268,8 @@ class TaskMaster
   def sort_sack(_item)
     DRCI.fill_gem_pouch_with_container(@settings.gem_pouch_adjective, @settings.gem_pouch_noun, 'sack', @settings.full_pouch_container, @settings.spare_gem_pouch_container, @settings.tie_gem_pouches)
 
-    4.times do
-      DRC.bput("get coin from my sack", "You pick up", "What were you")
+    SACK_COIN_GETS_MAX.times do
+      break unless DRC.bput('get coin from my sack', SACK_COIN_TAKEN, SACK_NO_COIN).match?(SACK_COIN_TAKEN)
     end
     result = DRC.bput("look in my sack", /^In the .* you see.*/)
     if keeper?(result)
