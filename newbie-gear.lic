@@ -109,7 +109,7 @@ class NewbieGear
         fput('stow padding')
       end
 
-      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', item[2], item[3], item[0], 'burlap'])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', item[2], item[3], 'burlap', item[0]])
 
       fput("get my #{item[0]} from my #{@bag}")
       # fput('get my stamp')
@@ -135,7 +135,7 @@ class NewbieGear
     return unless stock_cloth('linen', volume)
 
     missing_items.each do |item|
-      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', item[2], item[3], item[0], 'linen'])
+      DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', item[2], item[3], 'linen', item[0]])
       fput("get my #{item[0]} from my #{@bag}")
       # fput('get my stamp')
       # fput("mark my #{item[0]} with my stamp")
