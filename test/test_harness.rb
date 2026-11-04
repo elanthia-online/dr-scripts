@@ -1410,6 +1410,11 @@ module Harness
       def find_empty_crucible(*_args); end
       def find_enchanting_room(*_args); end
       def find_sewing_room(*_args); end
+      # Station finders walk to a free room and say whether they found one
+      # (lich-5 DRCC.find_wheel / find_loom_room return find_empty_room's
+      # true, or false when the town has no such rooms or none is reachable).
+      def find_wheel(*_args); true; end
+      def find_loom_room(*_args); true; end
       def find_shaping_room(*_args); end
       def fount(*_args); end
 
