@@ -461,8 +461,8 @@ RSpec.describe PlantHeal do
       expect(DRCT).to receive(:walk_to).with(1234)
       expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
       instance.send(:wait_for_passive_healing)
-      # 2 pauses before the recast, then a full fresh window.
-      expect(pauses).to eq(2 + (PlantHeal::PASSIVE_HEAL_MAX_WAIT / PlantHeal::PASSIVE_HEAL_POLL_INTERVAL))
+      # The 3rd check (after the 3rd pause) recasts, then a full fresh window.
+      expect(pauses).to eq(3 + (PlantHeal::PASSIVE_HEAL_MAX_WAIT / PlantHeal::PASSIVE_HEAL_POLL_INTERVAL))
     end
 
     it 'stops recasting after PASSIVE_HEAL_MAX_RECASTS so a failing cast cannot loop forever' do
@@ -475,16 +475,21 @@ RSpec.describe PlantHeal do
       instance.send(:wait_for_passive_healing)
     end
 
-    it 'pauses after a recast before checking again' do
+    it 'pauses before every healing-spell check, including the first' do
       polls = 0
       allow(DRCH).to receive(:check_health) do
         polls += 1
-        { 'score' => polls >= 2 ? 0 : 5 }
+        { 'score' => polls >= 3 ? 0 : 5 }
       end
       instance = build_instance(healingroom: 1234)
-      expect(instance).to receive(:ensure_healing_spells).ordered.and_return(true)
-      expect(instance).to receive(:pause).with(PlantHeal::PASSIVE_HEAL_POLL_INTERVAL).ordered
+      events = []
+      allow(instance).to receive(:pause) { events << :pause }
+      allow(instance).to receive(:ensure_healing_spells) do
+        events << :ensure
+        true
+      end
       instance.send(:wait_for_passive_healing)
+      expect(events).to eq(%i[pause ensure pause ensure])
     end
 
     # End to end through the real ensure_healing_spells: the reported run had
@@ -549,6 +554,32 @@ RSpec.describe PlantHeal do
       expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
       instance.send(:wait_for_passive_healing)
       expect(pauses).to eq(PlantHeal::PASSIVE_HEAL_MAX_WAIT / PlantHeal::PASSIVE_HEAL_POLL_INTERVAL)
+    end
+
+    # Review (mrhoribu, a8aff931): heal_now/heal_between_hugs cast, then the
+    # wait's first iteration checked again with no pause in between. If the
+    # spell list lags the cast, that cast the same spell twice.
+    [:heal_now, :heal_between_hugs].each do |caller_method|
+      it "#{caller_method} casts a lapsed spell once before the first pause, even if the spell list lags" do
+        heal_data = { 'abbrev' => 'heal', 'mana' => 10 }
+        settings = OpenStruct.new
+        DRSpells._set_active_spells({})
+        polls = 0
+        allow(DRCH).to receive(:check_health) do
+          polls += 1
+          { 'score' => polls >= 4 ? 0 : 5 }
+        end
+        instance = build_instance(waggle_healing: true, healingroom: 1234, plantroom: 5678,
+                                  settings: settings, ev_waggle: { 'Heal' => heal_data })
+        events = []
+        # The cast never shows up in DRSpells: the worst-case lag.
+        allow(DRCA).to receive(:cast_spells) { events << :cast }
+        allow(instance).to receive(:pause) { events << :pause }
+        instance.send(caller_method)
+        expect(events.first(2)).to eq(%i[cast pause])
+        # Every cast is separated from the next by at least one pause.
+        expect(events.each_cons(2).none? { |a, b| a == :cast && b == :cast }).to be(true)
+      end
     end
 
     it 'uses PASSIVE_HEAL_POLL_INTERVAL for pause duration' do

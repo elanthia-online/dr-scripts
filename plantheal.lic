@@ -461,12 +461,6 @@ class PlantHeal
         lowest = score
         elapsed = 0
       end
-      # Pause after a recast too (no `next`), so the spell list has caught up
-      # before the following check.
-      if recasts < PASSIVE_HEAL_MAX_RECASTS && ensure_healing_spells
-        recasts += 1
-        elapsed = 0
-      end
       if elapsed >= PASSIVE_HEAL_MAX_WAIT
         DRC.message("**WARNING: Still wounded after #{PASSIVE_HEAL_MAX_WAIT}s with no healing progress.** Running healme as fallback.")
         DRCT.walk_to(@healingroom)
@@ -475,6 +469,13 @@ class PlantHeal
       end
       pause PASSIVE_HEAL_POLL_INTERVAL
       elapsed += PASSIVE_HEAL_POLL_INTERVAL
+      # Check for a lapsed healing spell only after a pause, so the spell list
+      # has caught up with any cast made just before: the caller's cast ahead
+      # of this wait, or a recast on the previous pass.
+      if recasts < PASSIVE_HEAL_MAX_RECASTS && ensure_healing_spells
+        recasts += 1
+        elapsed = 0
+      end
     end
   end
 
