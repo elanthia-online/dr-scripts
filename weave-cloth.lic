@@ -42,6 +42,30 @@ class WeaveCloth
   LOADED = /You load .+ with/i.freeze
   REFUSED = /You have difficulty stringing the loom/i.freeze
 
+  # Loom problems the game reports while weaving, and the command that fixes
+  # each one (1104:30821, 30833, 30851). Every problem line arrives before the
+  # step's Roundtime line, so the first pattern DRC.bput matches is the
+  # problem, if any.
+  LOOM_FIXES = {
+    /dust and debris/i                 => 'clean loom',
+    /bunch/i                           => 'turn loom',
+    /unravel|needs? pushing together/i => 'push loom'
+  }.freeze
+
+  # The loom will not weave what is on it (1104:30615).
+  NOT_READY = /needs to have 2 sections of thread/i.freeze
+
+  # A step that went through: the game's Roundtime line ends every weave and
+  # every fix.
+  STEP_DONE = /Roundtime/i.freeze
+
+  # Unanswered or unrecognised replies in a row before weave-cloth gives up.
+  MAX_UNMATCHED = 3
+
+  # Commands sent to the loom before weave-cloth gives up on the cloth. The
+  # 16 yards of heavy silk in Mahtra's log took 9.
+  MAX_STEPS = 100
+
   # Why weave-cloth stops when it has not got two spools.
   NEED_TWO_SPOOLS = 'Need two spools of the same thread: run ;spin twice, or give two spool ids (;weave-cloth <id> <id>).'
 
@@ -68,32 +92,10 @@ class WeaveCloth
     spools = take_spools
     load_loom(spools)
 
-    command = 'weave loom'
-
-    until DRC.left_hand || DRC.right_hand
-      waitrt?
-      case DRC.bput(command, 'dust and debris', 'unravel', 'bunch', 'needs pushing together', 'need pushing together', 'roundtime')
-      when 'dust and debris'
-        pause
-        waitrt?
-        command = 'clean loom'
-      when 'bunch'
-        pause
-        waitrt?
-        command = 'turn loom'
-      when 'unravel', 'needs pushing together', 'need pushing together'
-        pause
-        waitrt?
-        command = 'push loom'
-      else
-        command = 'weave loom'
-        pause
-        waitrt?
-      end
-    end
-
-    fput('stow my cloth')
+    cloth = weave_until_done(spools)
     forget_spools(spools)
+    clear_leftover_thread
+    store_cloth(cloth)
   end
 
   private
@@ -227,7 +229,10 @@ class WeaveCloth
         @missing << id
       end
     end
-    return held if held.size == 2
+    if held.size == 2
+      @woven_kind = recorded_spools.find { |spool| spool['id'] == held.first }&.slice('fiber', 'weight')
+      return held
+    end
 
     held.each { |id| put_away?(id) }
     Lich::Messaging.msg('bold', "weave-cloth: Could not get spool #{@missing.map { |id| "##{id}" }.join(', ')}; it may be elsewhere.") unless @missing.empty?
@@ -259,6 +264,108 @@ class WeaveCloth
   # @return [String]
   def where_spools_are(back, total)
     back == total ? 'The spools are back in your bag.' : "#{total - back} of #{total} spools are still on the loom or in your hands."
+  end
+
+  # Weaves, fixing each problem the game reports, until the cloth is in hand.
+  #
+  # @param spools [Array<String>] the spools on the loom
+  # @return [GameObj] the hand holding the cloth
+  # @raise [SystemExit] when the loom will not weave, after {MAX_UNMATCHED}
+  #   unrecognised replies in a row, or after {MAX_STEPS} commands without
+  #   cloth; each time the spools are pulled back into the crafting container
+  #   first, as far as the loom gives them
+  def weave_until_done(spools)
+    command = 'weave loom'
+    unmatched = 0
+    MAX_STEPS.times do
+      waitrt?
+      reply = DRC.bput(command, *LOOM_FIXES.keys, NOT_READY, STEP_DONE)
+      waitrt?
+      cloth = cloth_in_hand
+      return cloth if cloth
+
+      give_up('The loom will not weave the spools: each needs 10 yards or more.', spools) if NOT_READY.match?(reply)
+
+      fix = LOOM_FIXES.find { |problem, _| problem.match?(reply) }&.last
+      if fix || STEP_DONE.match?(reply)
+        unmatched = 0
+        command = fix || 'weave loom'
+      else
+        unmatched += 1
+        give_up("The loom did not answer '#{command}' #{MAX_UNMATCHED} times in a row.", spools) if unmatched >= MAX_UNMATCHED
+      end
+    end
+    give_up("No cloth after #{MAX_STEPS} commands to the loom.", spools)
+  end
+
+  # Pulls the spools back off the loom, then stops, saying where they are.
+  #
+  # @param reason [String] why the weave stopped
+  # @param spools [Array<String>] the spools on the loom
+  # @return [void]
+  # @raise [SystemExit] always
+  def give_up(reason, spools)
+    back = take_back(spools)
+    stop("#{reason} #{where_spools_are(back, spools.size)}")
+  end
+
+  # The hand holding the woven cloth. The game ends a weave with "You snip
+  # off the bolt of fabric and are left with some heavy silk cloth."
+  # (1104:30860), the cloth in hand as 'silk cloth'.
+  #
+  # @return [GameObj, nil] the hand, or nil when neither holds cloth
+  def cloth_in_hand
+    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'cloth' }
+  end
+
+  # Takes any thread still on the loom after the weave (it is ours: the loom
+  # was empty before our spools went on) into the crafting container, and
+  # records it with the woven spools' fiber and weight (when they were
+  # recorded spools) so a later weave can use it. Whether a weave leaves
+  # thread on the loom is not in any log; this costs one look when it does
+  # not.
+  #
+  # It runs before the cloth is put away, so a cloth that will not go in
+  # does not strand the thread; one free hand is enough to pull.
+  #
+  # @return [void]
+  # @raise [SystemExit] when a pulled thread's hand shows no id, or it will
+  #   not go into the crafting container
+  def clear_leftover_thread
+    look = DRC.bput('look on loom', LOOM_EMPTY, LOOM_LOADED)
+    unless LOOM_EMPTY.match?(look) || LOOM_LOADED.match?(look)
+      Lich::Messaging.msg('plain', 'weave-cloth: Could not see whether thread is left on the loom.')
+      return
+    end
+    return if LOOM_EMPTY.match?(look)
+
+    MAX_THREADS_ON_LOOM.times do
+      break unless PULLED.match?(DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY))
+
+      thread = thread_in_hand
+      stop('Pulled thread off the loom but cannot tell which; it and the cloth are in your hands.') unless thread&.id
+      remember_spool(thread.id.to_s, @woven_kind) if @woven_kind
+      put_away(thread)
+    end
+  end
+
+  # Puts the cloth in the crafting container by id.
+  #
+  # @param hand [GameObj] the hand holding the cloth
+  # @return [void]
+  # @raise [SystemExit] when it will not go in
+  def store_cloth(hand)
+    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless hand.id && DRCI.put_away_item?("##{hand.id}", @bag)
+    Lich::Messaging.msg('plain', "weave-cloth: Put the #{hand.name} (##{hand.id}) in your #{@bag}.")
+  end
+
+  # Adds a thread to the record, as spin does for a spool.
+  #
+  # @param id [String] the thread's id
+  # @param kind [Hash] its 'fiber' and 'weight'
+  # @return [void]
+  def remember_spool(id, kind)
+    UserVars.send("#{SPOOL_RECORD}=", recorded_spools.reject { |spool| spool['id'] == id } + [kind.merge('id' => id)])
   end
 
   # Pulls our loaded spools back off the loom into the crafting container.
