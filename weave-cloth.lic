@@ -2,6 +2,27 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#weave-cloth
 =end
 
+# Weaves two spools of thread into cloth on a loom at the crafting town's
+# outfitting society. The spools are the newest pair spin recorded (of one
+# fiber, or of the fiber given), or two named by id, and they are only ever
+# handled by id, so sewing thread (noun 'thread' too) is never touched. The
+# loom is one with no other player and no one else's thread. The cloth goes
+# in the crafting container by id. Nothing is ever dropped.
+#
+# A weave turns both threads into cloth, one yard for every 20 yards of
+# thread: two heavy spools from a full 400-yard wheel make 16 yards (every
+# weave in Mahtra's 2026-11-04 log), and the loom is empty afterwards
+# (2026212, 19:28 and 19:37). Finer thread makes more cloth from the same
+# fiber, so callers should count the cloth rather than assume a yield.
+#
+# @example Weave the two spools spin just made
+#   ;spin silk
+#   ;spin silk
+#   ;weave-cloth
+# @example Weave the newest two silk spools
+#   ;weave-cloth silk
+# @example Weave two spools by id
+#   ;weave-cloth 1958040 1963477
 class WeaveCloth
   # Fibers spin spins (Spin::FIBERS).
   FIBERS = %w[silk cotton linen wool burlap].freeze
@@ -72,11 +93,17 @@ class WeaveCloth
   # Threads a loom holds.
   MAX_THREADS_ON_LOOM = 2
 
+  # Most spools the record keeps (Spin::MAX_RECORDED_SPOOLS).
+  MAX_RECORDED_SPOOLS = 20
+
   # Passes over the town's loom rooms before weave-cloth gives up on finding
   # one with no other player and no one else's thread on the loom. DRCT
   # waits 20-40 seconds at the idle room between passes.
   MAX_LOOM_SEARCHES = 5
 
+  # Weaves one bolt of cloth, start to finish.
+  #
+  # @raise [SystemExit] with a message on any step that fails
   def initialize
     args = parse_args(ARG_DEFINITIONS)
     settings = get_settings
@@ -91,7 +118,6 @@ class WeaveCloth
     find_loom
     spools = take_spools
     load_loom(spools)
-
     cloth = weave_until_done(spools)
     forget_spools(spools)
     clear_leftover_thread
@@ -178,19 +204,18 @@ class WeaveCloth
   def loom_ready?
     return false unless (DRRoom.pcs - DRRoom.group_members).empty?
 
-    look = DRC.bput('look on loom', LOOM_EMPTY, LOOM_LOADED)
-    return true if LOOM_EMPTY.match?(look)
+    loom = look_at_loom
+    return true if loom == :empty
 
-    stop('Could not see whether the loom is loaded.') unless LOOM_LOADED.match?(look)
+    stop('Could not see whether the loom is loaded.') unless loom
     strangers = []
     # One pull past a full loom, to see it empty.
     (MAX_THREADS_ON_LOOM + 1).times do
-      pulled = DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY)
-      return return_strangers(strangers) unless PULLED.match?(pulled)
+      thread = pull_thread(strangers)
+      return return_strangers(strangers) if thread.nil?
 
-      thread = [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'thread' && strangers.none? { |held| held.id == hand.id } }
-      stop('Pulled thread off the loom but cannot tell which; it is in your hand.') unless thread&.id
-      ours?(thread.id) ? put_away(thread) : strangers << thread
+      stop('Pulled thread off the loom but cannot tell which; it is in your hand.') unless thread
+      ours?(thread.id) ? put_away(thread.id) : strangers << thread
     end
     stop("The loom still holds thread after taking #{MAX_THREADS_ON_LOOM + 1} off.")
   end
@@ -281,7 +306,7 @@ class WeaveCloth
       waitrt?
       reply = DRC.bput(command, *LOOM_FIXES.keys, NOT_READY, STEP_DONE)
       waitrt?
-      cloth = cloth_in_hand
+      cloth = hand_holding('cloth')
       return cloth if cloth
 
       give_up('The loom will not weave the spools: each needs 10 yards or more.', spools) if NOT_READY.match?(reply)
@@ -309,21 +334,11 @@ class WeaveCloth
     stop("#{reason} #{where_spools_are(back, spools.size)}")
   end
 
-  # The hand holding the woven cloth. The game ends a weave with "You snip
-  # off the bolt of fabric and are left with some heavy silk cloth."
-  # (1104:30860), the cloth in hand as 'silk cloth'.
-  #
-  # @return [GameObj, nil] the hand, or nil when neither holds cloth
-  def cloth_in_hand
-    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'cloth' }
-  end
-
   # Takes any thread still on the loom after the weave (it is ours: the loom
   # was empty before our spools went on) into the crafting container, and
   # records it with the woven spools' fiber and weight (when they were
-  # recorded spools) so a later weave can use it. Whether a weave leaves
-  # thread on the loom is not in any log; this costs one look when it does
-  # not.
+  # recorded spools) so a later weave can use it. In Mahtra's log the loom
+  # was empty after a weave, so this is usually one look.
   #
   # It runs before the cloth is put away, so a cloth that will not go in
   # does not strand the thread; one free hand is enough to pull.
@@ -332,40 +347,41 @@ class WeaveCloth
   # @raise [SystemExit] when a pulled thread's hand shows no id, or it will
   #   not go into the crafting container
   def clear_leftover_thread
-    look = DRC.bput('look on loom', LOOM_EMPTY, LOOM_LOADED)
-    unless LOOM_EMPTY.match?(look) || LOOM_LOADED.match?(look)
-      Lich::Messaging.msg('plain', 'weave-cloth: Could not see whether thread is left on the loom.')
-      return
-    end
-    return if LOOM_EMPTY.match?(look)
+    loom = look_at_loom
+    Lich::Messaging.msg('plain', 'weave-cloth: Could not see whether thread is left on the loom.') unless loom
+    return unless loom == :loaded
 
     MAX_THREADS_ON_LOOM.times do
-      break unless PULLED.match?(DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY))
+      thread = pull_thread
+      break if thread.nil?
 
-      thread = thread_in_hand
-      stop('Pulled thread off the loom but cannot tell which; it and the cloth are in your hands.') unless thread&.id
-      remember_spool(thread.id.to_s, @woven_kind) if @woven_kind
-      put_away(thread)
+      stop('Pulled thread off the loom but cannot tell which; it and the cloth are in your hands.') unless thread
+      remember_spool(thread.id, @woven_kind) if @woven_kind
+      put_away(thread.id)
     end
   end
 
-  # Puts the cloth in the crafting container by id.
+  # Puts the cloth in the crafting container by id. The game ends a weave
+  # with "You snip off the bolt of fabric and are left with some heavy silk
+  # cloth." (1104:30860), the cloth in hand as 'silk cloth'.
   #
   # @param hand [GameObj] the hand holding the cloth
   # @return [void]
   # @raise [SystemExit] when it will not go in
   def store_cloth(hand)
-    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless hand.id && DRCI.put_away_item?("##{hand.id}", @bag)
+    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless hand.id && put_away?(hand.id)
     Lich::Messaging.msg('plain', "weave-cloth: Put the #{hand.name} (##{hand.id}) in your #{@bag}.")
   end
 
-  # Adds a thread to the record, as spin does for a spool.
+  # Adds a thread to the record, as spin does for a spool, keeping the
+  # newest {MAX_RECORDED_SPOOLS}.
   #
-  # @param id [String] the thread's id
+  # @param id [String, Integer] the thread's id
   # @param kind [Hash] its 'fiber' and 'weight'
   # @return [void]
   def remember_spool(id, kind)
-    UserVars.send("#{SPOOL_RECORD}=", recorded_spools.reject { |spool| spool['id'] == id } + [kind.merge('id' => id)])
+    spools = recorded_spools.reject { |spool| spool['id'] == id.to_s } + [kind.merge('id' => id.to_s)]
+    UserVars.send("#{SPOOL_RECORD}=", spools.last(MAX_RECORDED_SPOOLS))
   end
 
   # Pulls our loaded spools back off the loom into the crafting container.
@@ -376,35 +392,54 @@ class WeaveCloth
   # @return [Integer] how many came back
   def take_back(ids)
     ids.count do
-      next false unless PULLED.match?(DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY))
-
-      thread = thread_in_hand
-      thread&.id ? put_away?(thread.id) : false
+      thread = pull_thread
+      thread ? put_away?(thread.id) : false
     end
   end
 
-  # The hand holding a thread.
+  # What `look on loom` shows.
   #
-  # @return [GameObj, nil] the hand, or nil when neither holds thread
-  def thread_in_hand
-    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'thread' }
+  # @return [Symbol, nil] :empty, :loaded, or nil when the look goes
+  #   unanswered
+  def look_at_loom
+    look = DRC.bput('look on loom', LOOM_EMPTY, LOOM_LOADED)
+    if LOOM_EMPTY.match?(look)
+      :empty
+    elsif LOOM_LOADED.match?(look)
+      :loaded
+    end
   end
 
-  # Puts a held thread in the crafting container by id.
+  # Pulls one thread off the loom into a free hand.
   #
-  # @param hand [GameObj] the hand holding it
-  # @return [void]
-  # @raise [SystemExit] when it will not go in
-  def put_away(hand)
-    put_away_id(hand.id.to_s)
+  # @param held [Array<GameObj>] threads already in hand, which are not the
+  #   one just pulled
+  # @return [GameObj, false, nil] the hand holding the pulled thread; false
+  #   when the loom gave a thread but no hand shows it with an id; nil when
+  #   the loom had none to give
+  def pull_thread(held = [])
+    return unless PULLED.match?(DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY))
+
+    thread = [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'thread' && held.none? { |other| other.id == hand.id } }
+    thread&.id ? thread : false
+  end
+
+  # The hand holding something with this noun. A hand shows a spool as
+  # 'silk thread' and cloth as 'silk cloth'; something else in a hand, such
+  # as a book a background script picked up, does not count.
+  #
+  # @param noun [String] 'thread' or 'cloth'
+  # @return [GameObj, nil] the hand, or nil when neither holds one
+  def hand_holding(noun)
+    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == noun }
   end
 
   # Puts a held item in the crafting container by id.
   #
-  # @param id [String] the item's id
+  # @param id [String, Integer] the item's id
   # @return [void]
   # @raise [SystemExit] when it will not go in
-  def put_away_id(id)
+  def put_away(id)
     stop("Could not put ##{id} in your #{@bag}; it is in your hand.") unless put_away?(id)
   end
 
