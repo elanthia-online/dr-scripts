@@ -260,8 +260,8 @@ RSpec.describe WeaveCloth do
   end
 
   describe 'a loom that already holds thread' do
-    let(:loaded_with_cotton) { ReplayGame.code('The loom is loaded with some cotton thread.', from: 'weave-cloth.lic@c2739670:6') }
-    let(:nothing_to_pull) { ReplayGame.code('You see nothing to pull.', from: 'weave-cloth.lic@c2739670:8') }
+    let(:loaded_with_cotton) { log('2052:12437') }
+    let(:nothing_to_pull) { log('2052:12457') }
 
     before do
       game.script('look on loom', loaded_with_cotton)
@@ -504,8 +504,8 @@ RSpec.describe WeaveCloth do
   end
 
   describe 'thread left on the loom after the weave' do
-    let(:loaded_with_silk) { ReplayGame.code('The loom is loaded with some heavy silk thread.', from: 'weave-cloth.lic@c2739670:6') }
-    let(:nothing_to_pull) { ReplayGame.code('You see nothing to pull.', from: 'weave-cloth.lic@c2739670:8') }
+    let(:loaded_with_silk) { ReplayGame.code('You see the loom is loaded with some heavy silk thread.', from: 'the 2052:12437 wording, with heavy silk thread') }
+    let(:nothing_to_pull) { log('2052:12457') }
 
     before do
       script_empty_loom_and_load
@@ -564,7 +564,7 @@ RSpec.describe WeaveCloth do
     end
 
     it 'takes two threads left on the loom, both into the crafting container and the record' do
-      game.script('look on loom', ReplayGame.code('The loom is loaded with some heavy silk thread and some heavy silk thread.', from: 'weave-cloth.lic@c2739670:6'))
+      game.script('look on loom', ReplayGame.code('You see the loom is loaded with some heavy silk thread and some heavy silk thread.', from: 'the 2052:12437 wording, with two threads'))
       game.script('pull loom', log('1104:30752'), after: lambda { |_|
         $right_hand = 'silk thread'
         $hand_ids['silk thread'] = '1980001'
@@ -588,7 +588,7 @@ RSpec.describe WeaveCloth do
   end
 
   describe 'round-2 review cases' do
-    let(:loaded) { ReplayGame.code('The loom is loaded with some cotton thread and some heavy silk thread.', from: 'weave-cloth.lic@c2739670:6') }
+    let(:loaded) { ReplayGame.code('You see the loom is loaded with some cotton thread and some heavy silk thread.', from: 'the 2052:12437 wording, with two threads') }
 
     it "takes its own thread back even when someone else's came off the loom first" do
       UserVars.spun_spools = [{ 'id' => '1626499', 'fiber' => 'silk', 'weight' => 'heavy' }] + silk_spools
@@ -682,7 +682,7 @@ RSpec.describe WeaveCloth do
   end
 
   describe 'a pulled thread whose hand shows no id' do
-    let(:loaded_with_cotton) { ReplayGame.code('The loom is loaded with some cotton thread.', from: 'weave-cloth.lic@c2739670:6') }
+    let(:loaded_with_cotton) { log('2052:12437') }
 
     it 'stops with the thread in hand rather than guess at it' do
       game.script('look on loom', loaded_with_cotton)
@@ -1161,12 +1161,12 @@ RSpec.describe WeaveCloth do
       UserVars.spun_spools = [{ 'id' => '1626431', 'fiber' => 'silk', 'weight' => 'heavy' }] + silk_spools
       carried('1958040', 'some heavy silk thread')
       carried('1963477', 'some heavy silk thread')
-      game.script('look on loom', ReplayGame.code('You see the loom is loaded with some heavy silk thread.', from: 'the loaded-loom wording Mahtra saw on 2026-11-04 at 22:05'))
+      game.script('look on loom', ReplayGame.code('You see the loom is loaded with some heavy silk thread.', from: 'the 2052:12437 wording, with heavy silk thread'))
       game.script('pull loom', log('1104:30752'), after: lambda { |_|
         $left_hand = 'silk thread'
         $hand_ids['silk thread'] = '1626431'
       })
-      game.script('pull loom', ReplayGame.code('You see nothing to pull off that.', from: 'the empty-loom pull Mahtra saw on 2026-11-04 at 22:05'))
+      game.script('pull loom', log('2052:12457'))
       game.script('put #1963477 on loom', log('1104:30803'))
       game.script('put #1958040 on loom', log('1104:30815'))
       script_weave
@@ -1285,6 +1285,23 @@ RSpec.describe WeaveCloth do
         expect(DRCI).to have_received(:get_item?).with('#1976604')
         expect(game.sent).not_to include('get my silk cloth from my duffel bag')
       end
+    end
+  end
+
+  # The loom wordings first seen in the 22:04 test run (2052 log).
+  describe 'the loom replies confirmed in game' do
+    it 'reads "You see the loom is loaded with some cotton thread." as a loaded loom (2052:12437)' do
+      expect(WeaveCloth::LOOM_LOADED).to match(log('2052:12437').text)
+      expect(WeaveCloth::LOOM_EMPTY).not_to match(log('2052:12437').text)
+    end
+
+    it 'reads the pull that gives the thread back as a pull (2052:12450)' do
+      expect(WeaveCloth::PULLED).to match(log('2052:12450').text)
+    end
+
+    it 'reads "You see nothing to pull off that." as an empty loom, not a pull (2052:12457)' do
+      expect(WeaveCloth::NOTHING_TO_PULL).to match(log('2052:12457').text)
+      expect(WeaveCloth::PULLED).not_to match(log('2052:12457').text)
     end
   end
 end

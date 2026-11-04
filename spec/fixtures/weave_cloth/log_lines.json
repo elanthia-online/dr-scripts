@@ -1,5 +1,5 @@
 {
-  "_source": "Real game lines cited <log>:<line>: 1104 = Mahtra's 2026-11-04 Lich game log (angua logs/DR-Mahtra/2026/11/2026-11-04_14-08-52.log; Shard; Lich 5.23.0). Each text is the log line with its 'YYYY-MM-DD HH:MM:SS NZDT: ' stamp removed. Ids (exist=) are only in the raw XML twin, 2026-11-04_18-07-27.xml, which the specs cite in comments. Read by ReplayGame.log (test/replay_game.rb); every log_lines.json under spec/fixtures shares one cite namespace.",
+  "_source": "Real game lines cited <log>:<line>: 1104 = Mahtra's 2026-11-04 Lich game log (angua logs/DR-Mahtra/2026/11/2026-11-04_14-08-52.log; Shard; Lich 5.23.0); 2052 = her log from the 20:52 login the same day (2026-11-04_20-52-17.log). Each text is the log line with its 'YYYY-MM-DD HH:MM:SS NZDT: ' stamp removed. Ids (exist=) are only in the raw XML twin, 2026-11-04_18-07-27.xml, which the specs cite in comments. Read by ReplayGame.log (test/replay_game.rb); every log_lines.json under spec/fixtures shares one cite namespace.",
   "1104:30590": "The loom is not loaded with any thread.",
   "1104:30598": "You get some cotton thread from inside your duffel bag.",
   "1104:30601": "You load a hefty loom with all of some cotton thread.",
@@ -53,5 +53,8 @@
   "1104:32641": "You combine the bolts of cloth together.",
   "1104:33218": "You shift the loom's beam and swap the raised heddles with the lowered ones.  You pass the shuttle back and forth across the loom, your skill showing in the exceptional quality weave produced along the cloth's edge.",
   "1104:33219": "One side of the partially-woven cloth is uneven, and needs pushing together.",
-  "1104:33220": "Roundtime: 8 sec."
+  "1104:33220": "Roundtime: 8 sec.",
+  "2052:12437": "You see the loom is loaded with some cotton thread.",
+  "2052:12450": "You pull some cotton thread off from a hefty loom.",
+  "2052:12457": "You see nothing to pull off that."
 }
