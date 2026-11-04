@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.05.6'
+  VERSION = '2026.11.05.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2208,6 +2208,21 @@ class TaskMaster
   # GIVE reply when the taskmaster is not in the room.
   GIVE_MISSED = /What is it you're trying to give/
 
+  # GIVE reply, after "You don't need to specify the object - GIVE <person>
+  # assumes you mean to give the object in your right hand!", to a give that
+  # names its item. The way through is the one the game spells out: the item
+  # in the right hand and GIVE <taskmaster> with no object
+  # (give_from_right_hand). Unlisted, each one waited out bput's 15 s and
+  # counted toward a stop: 181 times across the fleet on 2026-11-05, 165 of
+  # them between 10:38 and 10:44, with 19 tasks stopped and relaunched.
+  GIVE_NOT_NOW = /^Don't be silly\./
+  # Seconds between gives while the taskmaster answers GIVE_NOT_NOW.
+  GIVE_NOT_NOW_PAUSE = 10
+  # Most seconds give_item waits out GIVE_NOT_NOW in a row, across calls, before
+  # it hands the reply back, so complete_task's own count can stop the task.
+  # Any other reply starts the count again.
+  GIVE_NOT_NOW_MAX_WAIT = 600
+
   # Dorhum turning down an item with no enchantment on it (a manual run,
   # 2026-11-04: 'Researcher Dorhum examines the small brazier and shakes his
   # head.  "I don't sense any hint of enchantment on this.  What are you
@@ -2218,21 +2233,65 @@ class TaskMaster
   # there is none in hand or in the bag. A give that misses her (she wandered
   # off between the get and the give) leaves the item in hand: find her again
   # and give that same item, stopping after MAX_GIVE_MISSES misses in a row.
+  # A GIVE_NOT_NOW answer is followed at once by GIVE <taskmaster> with the
+  # item in the right hand (give_from_right_hand). While that gets
+  # GIVE_NOT_NOW too, both are tried again every GIVE_NOT_NOW_PAUSE seconds,
+  # for up to GIVE_NOT_NOW_MAX_WAIT seconds in a row (counted across calls,
+  # so complete_task asking again doesn't restart the wait); after that the
+  # reply goes back to the caller like any other.
   #
   # @param item [String] item noun
   # @return [String, nil] the taskmaster's reply, or nil when none is left
   # @raise [SystemExit] after MAX_GIVE_MISSES misses in a row
   def give_item(item)
     noun = hand_in_noun(item)
-    MAX_GIVE_MISSES.times do
+    misses = 0
+    @not_now_waited ||= 0
+    loop do
       find_npc(@rooms, @npc)
       return unless DRCI.in_hands?(noun) || DRCI.get_item?(noun, hand_in_bag)
 
-      reply = DRC.bput("give my #{noun} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED)
+      reply = DRC.bput("give my #{noun} to #{@npc}", *GIVE_REPLIES)
+      reply = give_from_right_hand(noun) || reply if reply.match?(GIVE_NOT_NOW)
+      if reply.match?(GIVE_NOT_NOW)
+        if @not_now_waited < GIVE_NOT_NOW_MAX_WAIT
+          DRC.message("#{@npc.capitalize} answered \"Don't be silly.\" to the #{noun} from the right hand too. Trying again every #{GIVE_NOT_NOW_PAUSE} seconds, for up to #{GIVE_NOT_NOW_MAX_WAIT / 60} minutes.") if @not_now_waited.zero?
+          pause GIVE_NOT_NOW_PAUSE
+          @not_now_waited += GIVE_NOT_NOW_PAUSE
+          next
+        end
+        return reply
+      end
+      @not_now_waited = 0
       return reply unless reply =~ GIVE_MISSED
+
+      misses += 1
+      break if misses >= MAX_GIVE_MISSES
     end
     DRC.message("Could not hand a #{noun} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
     exit
+  end
+
+  # Every reply a GIVE to the taskmaster waits for.
+  GIVE_REPLIES = [TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED, GIVE_NOT_NOW].freeze
+
+  # Hands the item over the way the game asks after GIVE_NOT_NOW: in the
+  # right hand, with GIVE <taskmaster> and no object. A bare GIVE hands over
+  # whatever the right hand holds, and the taskmaster keeps what she is
+  # given, so it is only sent once the right hand holds this item, checked by
+  # its id; from the left hand it is swapped over first.
+  #
+  # @param noun [String] the item's noun
+  # @return [String, nil] the reply; nil, with no GIVE sent, when the item is
+  #   not in a hand or would not move to the right hand
+  def give_from_right_hand(noun)
+    id = held_id(noun)
+    return unless id
+
+    DRC.bput('swap', /^You move/, /^You have nothing/) if GameObj.left_hand&.id == id
+    return unless GameObj.right_hand&.id == id
+
+    DRC.bput("give #{@npc}", *GIVE_REPLIES)
   end
 
   # The noun a task's finished items are handed in by. Dorhum's keep their
@@ -2296,9 +2355,9 @@ class TaskMaster
   end
 
   # Hand-in replies in a row that were neither the reward sack nor "N more
-  # are needed" before complete_task stops. Zasele has taken a rope on the
-  # fifth give after four "Don't be silly." replies (a fleet log,
-  # 2026-11-03), so a few unknown replies are not yet a refusal.
+  # are needed" before complete_task stops: a few unknown replies are not
+  # yet a refusal. "Don't be silly." (GIVE_NOT_NOW) is waited out in
+  # give_item first, and only reaches this count once that wait is used up.
   MAX_UNKNOWN_GIVE_REPLIES = 5
 
   # Puts an item that cannot be used in the trash: a finished Dorhum item

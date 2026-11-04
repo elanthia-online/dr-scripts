@@ -2752,6 +2752,125 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe '#give_item answering "Don\'t be silly."' do
+      let(:silly) { "Don't be silly." }
+      let(:rope) { OpenStruct.new(name: 'burlap rope', noun: 'rope', id: '3758858') }
+      let(:leather) { OpenStruct.new(name: 'rat-pelt leather', noun: 'leather', id: '2222485') }
+      let(:empty_hand) { OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+
+      # Zasele at the hand-in. named: replies to "give my rope to zasele"
+      # (the game sends "You don't need to specify the object - GIVE <person>
+      # assumes you mean to give the object in your right hand!" before each
+      # "Don't be silly."; bput returns only the matched line);
+      # bare: replies to "give zasele", which hands over whatever is in the
+      # right hand. A taken rope leaves the hand; swap: whether SWAP moves
+      # the hands. Returns :sent (commands), :handed (what Zasele got) and
+      # :hands.
+      def zasele(named:, bare: [], right: nil, left: nil, swap: true)
+        world = { sent: [], handed: [], hands: { right: right, left: left } }
+        allow(GameObj).to receive(:right_hand) { world[:hands][:right] || empty_hand }
+        allow(GameObj).to receive(:left_hand) { world[:hands][:left] || empty_hand }
+        allow(DRCI).to receive(:in_hands?) { |noun| world[:hands].values.compact.any? { |obj| obj.noun == noun } }
+        allow(DRCI).to receive(:get_item?).and_return(false)
+        take = lambda do |reply, side|
+          if reply.match?(TaskMaster::TURN_IN_MORE_NEEDED) || reply.include?('hands you a')
+            world[:handed] << world[:hands][side]
+            world[:hands][side] = nil
+          end
+          reply
+        end
+        allow(DRC).to receive(:bput) do |command, *_|
+          world[:sent] << command
+          case command
+          when 'give my rope to zasele'
+            reply = named.shift || silly
+            reply == silly ? silly : take.call(reply, world[:hands].key(rope) || :right)
+          when 'give zasele'
+            take.call(bare.shift || silly, :right)
+          when 'swap'
+            world[:hands][:right], world[:hands][:left] = world[:hands][:left], world[:hands][:right] if swap
+            'You move a burlap rope to your right hand.'
+          else
+            ''
+          end
+        end
+        world
+      end
+
+      def giver
+        tm = build
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:pause)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        tm
+      end
+
+      it 'hands the rope over from the right hand with a bare GIVE ZASELE, at once' do
+        tm = giver
+        world = zasele(named: [silly], bare: [more_needed(1)], right: rope)
+
+        expect(tm.give_item('rope')).to eq(more_needed(1))
+
+        expect(world[:sent]).to eq(['give my rope to zasele', 'give zasele'])
+        expect(world[:handed]).to eq([rope])
+        expect(tm).not_to have_received(:pause)
+      end
+
+      it 'swaps the rope into the right hand first when it is in the left' do
+        tm = giver
+        world = zasele(named: [silly], bare: [more_needed(1)], right: leather, left: rope)
+
+        tm.give_item('rope')
+
+        expect(world[:sent]).to eq(['give my rope to zasele', 'swap', 'give zasele'])
+        expect(world[:handed]).to eq([rope])
+        expect(world[:hands][:left]).to eq(leather)
+      end
+
+      it 'never sends a bare GIVE while the right hand holds something else (Zasele keeps what she is given)' do
+        tm = giver
+        world = zasele(named: Array.new(70, silly), right: leather, left: rope, swap: false)
+
+        reply = tm.give_item('rope')
+
+        expect(world[:sent]).not_to include('give zasele')
+        expect(world[:handed]).to be_empty
+        expect(reply).to eq(silly)
+      end
+
+      it 'tries both gives again after a pause while the bare GIVE is refused too, then hands the rope in' do
+        tm = giver
+        world = zasele(named: [silly, silly], bare: [silly, more_needed(1)], right: rope)
+
+        expect(tm.give_item('rope')).to eq(more_needed(1))
+
+        expect(world[:sent]).to eq(['give my rope to zasele', 'give zasele', 'give my rope to zasele', 'give zasele'])
+        expect(tm).to have_received(:pause).with(TaskMaster::GIVE_NOT_NOW_PAUSE).once
+        expect(DRC).to have_received(:message).with(/answered "Don't be silly\." to the rope from the right hand too/).once
+      end
+
+      it 'waits at most GIVE_NOT_NOW_MAX_WAIT in all across complete_task\'s retries, then stops' do
+        tm = giver
+        allow(DRCC).to receive(:stow_crafting_item)
+        zasele(named: Array.new(500, silly), bare: Array.new(500, silly), right: rope)
+
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+        expect(tm).to have_received(:pause).exactly(TaskMaster::GIVE_NOT_NOW_MAX_WAIT / TaskMaster::GIVE_NOT_NOW_PAUSE).times
+        expect(DRC).to have_received(:message).with("Zasele did not take the rope (#{silly}). Stopping.")
+      end
+
+      it 'starts the wait over after a give is taken' do
+        tm = giver
+        zasele(named: [silly, silly, more_needed(1)], bare: [silly, silly], right: rope)
+
+        tm.give_item('rope')
+
+        expect(tm.instance_variable_get(:@not_now_waited)).to eq(0)
+      end
+    end
+
     describe '#bin_task_stock' do
       def binner(**ivars)
         build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', bin_leftover_stock: true, **ivars)
