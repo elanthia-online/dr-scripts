@@ -91,4 +91,20 @@ RSpec.describe NewbieGear do
       end
     end
   end
+
+  describe 'sewing the items' do
+    # sew's arguments are finish, type, chapter, recipe name, material, noun
+    # (sew.lic ARG_DEFINITIONS), matched by position.
+    it 'passes sew the material before the noun for burlap items' do
+      gear.restock_burlap('locker', [shirt])
+
+      expect(scripts).to include(['sew', ['stow', 'sewing', 4, 'quilted cloth shirt', 'burlap', 'shirt']])
+    end
+
+    it 'passes sew the material before the noun for linen items' do
+      gear.restock_linen('locker', [backpack])
+
+      expect(scripts).to include(['sew', ['stow', 'sewing', 3, 'backpack', 'linen', 'backpack']])
+    end
+  end
 end
