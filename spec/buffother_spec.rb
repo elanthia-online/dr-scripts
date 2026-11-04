@@ -37,8 +37,8 @@ RSpec.describe BuffOther do
 
   it 'walks to the room first when one is given' do
     run_buffother('friend', { 'friend' => friend_set }, room: '1234')
-    expect(DRCT).to have_received(:walk_to).with('1234')
-    expect(DRCA).to have_received(:cast_spell).twice
+    expect(DRCT).to have_received(:walk_to).with('1234').ordered
+    expect(DRCA).to have_received(:cast_spell).twice.ordered
   end
 
   shared_examples 'a set buffother cannot cast' do |message|
