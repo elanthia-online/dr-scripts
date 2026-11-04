@@ -2164,7 +2164,8 @@ RSpec.describe TaskMaster do
 
         expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.not_to raise_error
 
-        expect(world[:sent]).to include('combine #3000003 with #3000004', 'count #3000005', 'put #3000005 in my duffel bag')
+        expect(world[:sent]).to include('combine cloth', 'count #3000005', 'put #3000005 in my duffel bag')
+        expect(world[:sent].grep(/\Acombine #/)).to be_empty
         expect(bagged(world, 'burlap cloth')).to eq([30])
         expect(world[:hands].values.compact).to be_empty
       end
