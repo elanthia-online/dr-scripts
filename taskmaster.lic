@@ -1806,6 +1806,9 @@ class TaskMaster
   # them." is a refusal, not a combine (Barrask, Hollow Eve 2026-11-04).
   COMBINE_REPLIES = [/^You combine/, /^You must be holding both/].freeze
 
+  # Replies to COUNT by id: the yards counted, or the id is not to be found.
+  COUNT_REPLIES = [/^You count out \d+ yards/, /^I could not find/].freeze
+
   # Buys pieces of a stock one at a time, combining each into the stack in
   # the other hand, then puts the stack in the crafting bag, everything by
   # the ids in hand. Each piece needs a free hand: with one hand full, every
@@ -1857,7 +1860,10 @@ class TaskMaster
   # Orders one piece of stock and returns the id of the piece that came into
   # a hand. DRCT.order_item returns nil without coins or a way to the shop,
   # and '' when the clerk's reply is not the sale ("You realize your hands
-  # are full, and stop." among them).
+  # are full, and stop." among them) or came after its timeout. The hands
+  # decide, as in combine_stock: a new id in hand is the piece even when
+  # order_item returned '' or nil, since the sale line can be missed after
+  # the coins are paid; no new id in hand stops.
   #
   # @param room [Integer] the shop's room
   # @param number [Integer] the stock's order number
@@ -1867,7 +1873,7 @@ class TaskMaster
   def order_stock_piece(room, number, stock)
     before = hand_ids
     bought = DRCT.order_item(room, number)
-    piece = (hand_ids - before).first unless bought.to_s.empty?
+    piece = (hand_ids - before).first
     return piece if piece
 
     why = bought.to_s.empty? ? 'the order did not go through (not enough coins, no way to the shop, or full hands)' : 'no new piece is in your hands'
@@ -1909,15 +1915,25 @@ class TaskMaster
     "the game said it combined them, but your hands hold #{held.empty? ? 'nothing' : held.join(' and ')}"
   end
 
-  # Counts the stack and stops when it holds fewer yards than the task needs.
+  # Counts the stack and stops when it holds fewer yards than the task needs,
+  # or when its id is not to be found. A COUNT with no answer (bput's '') is
+  # asked once more; unanswered twice, it goes ahead on the orders, saying so:
+  # each piece was a new id in hand and each combine left one id held, so the
+  # pieces bought already cover the yards. Stopping there would put a stack
+  # already paid for back and buy a whole new one on the relaunch.
   #
   # @param stack [String] id of the stack
   # @param yards [Integer] yards the task needs
   # @param stock [String] e.g. 'burlap cloth'
   # @return [void]
-  # @raise [SystemExit] when short
+  # @raise [SystemExit] when short or not found
   def check_yards(stack, yards, stock)
-    counted = DRC.bput("count ##{stack}", /^You count out \d+ yards/)[/\d+/].to_i
+    reply = DRC.bput("count ##{stack}", *COUNT_REPLIES)
+    reply = DRC.bput("count ##{stack}", *COUNT_REPLIES) if reply.empty?
+    return DRC.message("Could not count the #{stock} (##{stack}): COUNT went unanswered twice. Going ahead on the #{yards} yards ordered.") if reply.empty?
+    stop_stock("Could not find the #{stock} you bought (##{stack}) to count it. Not starting the task.") if reply.start_with?('I could not find')
+
+    counted = reply[/\d+/].to_i
     return if counted >= yards
 
     stop_stock("Bought #{counted} yards of #{stock}, but the task needs #{yards}: #{yards - counted} yards missing. Not starting the task short.")
@@ -1926,9 +1942,9 @@ class TaskMaster
   # Puts whatever is in either hand back in the crafting bag by id, says why
   # it is stopping, names by id whatever would not go back, and stops.
   # free_hands_for emptied both hands before the first order, so all that is
-  # held is stock bought since, including a piece that landed from an order
-  # that still came back '' (the sale line missed, or it came after
-  # order_item's timeout).
+  # held is stock bought since. Hands are read once: a piece that lands after
+  # that (the whole reply more than bput's timeout late) is neither put back
+  # nor named.
   #
   # @param text [String] why
   # @raise [SystemExit] always

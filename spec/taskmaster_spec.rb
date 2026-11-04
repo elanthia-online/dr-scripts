@@ -1957,8 +1957,8 @@ RSpec.describe TaskMaster do
       # keeps the new piece's id instead of the stack's. new_id_combine (the default, as in game): the
       # combined stack comes back under an id neither had. hollow_combine:
       # COMBINE answers "You combine" but both pieces stay in hand.
-      # silent_combine / silent_count: that command goes unanswered (bput's
-      # '').
+      # silent_combine: COMBINE goes unanswered (bput's ''). silent_count: the
+      # first that many COUNTs go unanswered (Float::INFINITY for all).
       #
       # DRCT, DRCI and DRCC are harness doubles, so order_item and
       # put_away_item? stand in for lich-5 v5.23.0 here and send their
@@ -1971,8 +1971,8 @@ RSpec.describe TaskMaster do
       # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
       def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false, late_from: nil,
                refuse_combine: false, keep_new: false, new_id_combine: true, hollow_combine: false, silent_combine: false,
-               silent_count: false)
-        world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false }
+               silent_count: 0)
+        world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false, silenced: 0 }
         next_id = 3_000_000
         allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
         allow(GameObj).to receive(:left_hand) { world[:hands][:left] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
@@ -2017,7 +2017,7 @@ RSpec.describe TaskMaster do
           when /\Acount (#\d+)\z/
             hand = hand_of.call(Regexp.last_match(1))
             next 'I could not find what you were referring to.' unless hand
-            next '' if silent_count
+            next '' if (world[:silenced] += 1) <= silent_count
 
             "You count out #{world[:hands][hand].yards} yards of material there."
           when /\Aput (#\d+) in my duffel bag\z/
@@ -2108,23 +2108,32 @@ RSpec.describe TaskMaster do
         expect(bagged(world, 'burlap cloth')).to eq([20])
       end
 
-      it 'puts back the piece that landed when the first order still comes back empty, leaving both hands empty' do
+      it 'trusts the hands, taking each new piece as bought, when every order comes back empty after paying' do
         world = shop(late_from: 0)
 
-        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
-        expect(DRC).to have_received(:message).with(/Could not buy burlap cloth: the order did not go through.*Stopping\./)
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.not_to raise_error
+        expect(DRC).not_to have_received(:message).with(/Could not buy/)
+        expect(world[:orders].size).to eq(6)
         expect(world[:hands].values.compact).to be_empty
-        expect(bagged(world, 'burlap cloth')).to eq([10])
+        expect(bagged(world, 'burlap cloth')).to eq([60])
       end
 
-      it 'puts back the stack and the late piece both when a later order comes back empty' do
-        world = shop(late_from: 1)
+      it 'takes the piece in hand as bought when only the last order comes back empty, and bags one 60-yard stack' do
+        world = shop(late_from: 5)
+
+        buyer.buy_stackables('rope', 6, 10, 'cloth')
+
+        expect(world[:orders].size).to eq(6)
+        expect(world[:sent].grep(/\Aput #/).size).to eq(1)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'still stops, saying the order did not go through, when an order comes back empty and no new piece is in hand' do
+        world = shop(late_from: 0, lost: true)
 
         expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
-        expect(world[:orders].size).to eq(2)
-        expect(world[:sent].grep(/\Aput #/).size).to eq(2)
-        expect(world[:hands].values.compact).to be_empty
-        expect(bagged(world, 'burlap cloth')).to eq([10, 10])
+        expect(DRC).to have_received(:message).with(/Could not buy burlap cloth: the order did not go through/)
+        expect(world[:orders].size).to eq(1)
       end
 
       it 'stops at the first order he cannot pay for (order_item returns nil)' do
@@ -2231,11 +2240,43 @@ RSpec.describe TaskMaster do
         expect(bagged(world, 'burlap cloth')).to eq([30])
       end
 
-      it 'takes an unanswered count as nothing counted, and stops' do
-        shop(silent_count: true)
+      it 'asks COUNT twice, never a third time, then goes ahead on the yards ordered, saying so, when COUNT goes unanswered' do
+        world = shop(silent_count: Float::INFINITY)
 
-        expect { buyer.buy_stackables('rope', 1, 10, 'cloth') }.to raise_error(SystemExit)
-        expect(DRC).to have_received(:message).with(/Bought 0 yards of burlap cloth, but the task needs 10: 10 yards missing/)
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.not_to raise_error
+        expect(world[:sent].grep(/\Acount #/).size).to eq(2)
+        expect(DRC).to have_received(:message)
+          .with(/\ACould not count the burlap cloth \(#\d+\): COUNT went unanswered twice\. Going ahead on the 60 yards ordered\.\z/)
+        expect(DRC).not_to have_received(:message).with(/Bought \d+ yards/)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+        expect(world[:hands].values.compact).to be_empty
+      end
+
+      it 'goes on the second COUNT\'s answer, without saying it was not counted, when only the first goes unanswered' do
+        world = shop(silent_count: 1)
+
+        buyer.buy_stackables('rope', 6, 10, 'cloth')
+
+        expect(world[:sent].grep(/\Acount #/).size).to eq(2)
+        expect(DRC).not_to have_received(:message).with(/Could not count/)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'still stops on a short count that only the second COUNT answers' do
+        world = shop(silent_count: 1, yards: 5)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'stops, naming the id, without asking again, when COUNT cannot find the stack' do
+        world = shop
+
+        expect { buyer.check_yards('9999999', 60, 'burlap cloth') }.to raise_error(SystemExit)
+        expect(world[:sent].grep(/\Acount #/)).to eq(['count #9999999'])
+        expect(DRC).to have_received(:message).with(/\ACould not find the burlap cloth you bought \(#9999999\) to count it\. Not starting the task\. Stopping\.\z/)
+        expect(DRC).not_to have_received(:message).with(/Going ahead/)
       end
 
       it 'stops when the bought stack will not go in the crafting bag' do
