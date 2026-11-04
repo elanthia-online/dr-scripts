@@ -36,8 +36,6 @@ class Spin
         DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt)
         DRC.bput('cut my fibers with my scissors', /You carefully cut off/)
         @bag = "other #{@bag}" unless DRCC.stow_crafting_item('scissors', @bag, @belt)
-        DRC.bput('drop my other fibers', /You drop some/)
-        DRC.bput('get my fibers', /You pick up the fibers lying at your feet/)
       else
         fput('combine my fiber')
       end
