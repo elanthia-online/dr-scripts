@@ -64,15 +64,15 @@ class WeaveCloth
   # An empty loom, from `look on loom` (1104:30590).
   LOOM_EMPTY = /loom is not loaded/i.freeze
 
-  # A loaded loom, from `look on loom`. The wording is the original
-  # weave-cloth's; no log shows a loaded loom.
+  # A loaded loom, from `look on loom` ("You see the loom is loaded with
+  # some cotton thread.", 2052:12437).
   LOOM_LOADED = /loom is loaded with/i.freeze
 
   # A thread coming off the loom (1104:30752).
   PULLED = /You pull some .+ off from/i.freeze
 
-  # A loom with no thread left to pull. The wording is the original
-  # weave-cloth's; no log shows it.
+  # A loom with no thread left to pull ("You see nothing to pull off
+  # that.", 2052:12457).
   NOTHING_TO_PULL = /You see nothing to pull/i.freeze
 
   # The loom taking a thread (1104:30803).
