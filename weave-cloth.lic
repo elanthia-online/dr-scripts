@@ -157,14 +157,15 @@ class WeaveCloth
     @bag = settings.crafting_container
     # parse_args accepts any argument that starts with an option ('silks').
     fiber = args.fiber && FIBERS.find { |name| args.fiber.start_with?(name) }
-    if args.yards
-      reconcile_record
-      stock(fiber, args.yards.to_i)
-    elsif args.first
+    SessionVars[STOCK_RESULT] = nil if args.yards
+    if args.first
       weave(given_pair(args.first, args.second))
     else
+      # A spool held in hand shows no weight ("silk thread"), so the hands
+      # are emptied before the record is checked against what is carried.
+      stop('Could not empty your hands.') unless DRCI.stow_hands
       reconcile_record
-      weave(default_pair(fiber))
+      args.yards ? stock(fiber, args.yards.to_i) : weave(default_pair(fiber))
     end
   end
 
@@ -292,7 +293,10 @@ class WeaveCloth
   # @return [Array<GameObj>]
   def cloth_pieces(fiber)
     worn = (GameObj.inv || []).map(&:id)
-    carried_items.select do |item|
+    # GameObj does not hold what lies at the player's feet, where sew sets
+    # offcuts; the inventory feed lists it.
+    at_feet = @snapshot.respond_to?(:at_feet) ? @snapshot.at_feet.to_a : []
+    (carried_items + at_feet).select do |item|
       item.noun == 'cloth' && item.name.to_s =~ /\b#{STOCK_WEIGHT} #{fiber} cloth\z/i && !worn.include?(item.id)
     end
   end
@@ -305,7 +309,8 @@ class WeaveCloth
   #
   # @return [Array<GameObj>]
   def carried_items
-    @feed_seen = !Lich::Common::Inventory.refresh.nil?
+    @snapshot = Lich::Common::Inventory.refresh
+    @feed_seen = !@snapshot.nil?
     containers = GameObj.containers
     queue = (GameObj.inv || []) + [GameObj.right_hand, GameObj.left_hand].select(&:id)
     seen = {}
@@ -336,10 +341,13 @@ class WeaveCloth
   # new id: carried spools the record does not know are added, as the
   # oldest. Recorded spools no longer carried (woven, given away, or from
   # an earlier session) are dropped, but only when the inventory feed
-  # answered, since otherwise GameObj may not know every container.
+  # answered, since otherwise GameObj may not know every container. A
+  # dropped spool may be on a loom a stopped run left it on, so the ids
+  # recorded before this run still count as ours ({#ours?}).
   #
   # @return [void]
   def reconcile_record
+    @recorded_before = recorded_ids
     carried = carried_spools
     ids = carried.map { |spool| spool['id'] }
     kept = @feed_seen ? recorded_spools.select { |spool| ids.include?(spool['id']) } : recorded_spools
@@ -357,10 +365,14 @@ class WeaveCloth
   # @return [Array<String>] spool ids, newest first
   # @raise [SystemExit] when the kind to weave is ambiguous
   def default_pair(fiber)
-    found = (@found_spools || []).reject { |spool| spool['weight'] == 'yarn' || (fiber && spool['fiber'] != fiber) }
-    known = recorded_spools.reject { |spool| found.include?(spool) }
+    wanted = ->(spool) { fiber.nil? || spool['fiber'] == fiber }
+    found = (@found_spools || []).select(&wanted)
+    known = recorded_spools.select(&wanted).reject { |spool| found.include?(spool) }
     kinds = found.map { |spool| spool.values_at('fiber', 'weight') }.uniq
-    stop("You carry spools of several kinds (#{kinds.map { |kind| kind.reverse.join(' ') }.join(', ')}); name the fiber, e.g. ;weave-cloth silk.") if known.empty? && kinds.size > 1
+    if known.empty? && kinds.size > 1
+      names = kinds.map { |kind| kind.reverse.join(' ') }.join(', ')
+      stop(fiber ? "You carry #{fiber} spools of several weights (#{names}); give the two to weave by id (;weave-cloth <id> <id>)." : "You carry spools of several kinds (#{names}); name the fiber, e.g. ;weave-cloth silk.")
+    end
     recorded_pair(fiber)
   end
 
@@ -445,12 +457,13 @@ class WeaveCloth
     spools.select { |spool| spool.values_at('fiber', 'weight') == kind }.map { |spool| spool['id'] }
   end
 
-  # Whether a thread is ours: a spool spin recorded, or one given to weave.
+  # Whether a thread is ours: a spool spin recorded (now, or before this run
+  # checked the record against what is carried), or one given to weave.
   #
   # @param id [String, Integer] the thread's id
   # @return [Boolean]
   def ours?(id)
-    recorded_ids.include?(id.to_s) || @candidates.include?(id.to_s)
+    (recorded_ids | (@recorded_before || []) | @candidates).include?(id.to_s)
   end
 
   # @return [Array<String>] every recorded spool id
