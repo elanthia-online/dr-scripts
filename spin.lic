@@ -3,6 +3,26 @@
 =end
 
 class Spin
+  # Wheel problems the game reports while spinning, and the command that
+  # fixes each one. Every problem line arrives before the step's Roundtime
+  # line, so the first pattern DRC.bput matches is the problem, if any.
+  WHEEL_FIXES = {
+    /shade/i                                                  => 'clean wheel',
+    /twist\b|Individual strands of the fiber begin twisting/i => 'turn wheel',
+    /bunch|slide/i                                            => 'push wheel'
+  }.freeze
+
+  # A step that went through: the game's Roundtime line ends every spin and
+  # every fix.
+  STEP_DONE = /Roundtime/i.freeze
+
+  # Unanswered or unrecognised replies in a row before spin gives up.
+  MAX_UNMATCHED = 3
+
+  # Commands sent to the wheel before spin gives up on finishing the spool.
+  # The first heavy silk spool in Mahtra's log took 10 spins and 5 fixes.
+  MAX_STEPS = 100
+
   def initialize
     arg_definitions = [
       [
@@ -26,6 +46,7 @@ class Spin
     @bag = @settings.crafting_container
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.outfitting_belt
+    stop('Could not empty your hands before buying fiber.') unless DRCI.stow_hands
     DRCM.ensure_copper_on_hand(data[:cost] * data[:count], @settings, @hometown)
 
     data[:count].times do |index|
@@ -46,32 +67,61 @@ class Spin
       pause 30
     end
 
-    fput('put fiber on wheel')
-    fput("adjust wheel to #{args.weight || 'heavy'}")
-    pause
+    @product = args.weight == 'yarn' ? 'yarn' : 'thread'
+    stop('Could not put the fiber on the wheel.') unless DRC.bput('put fiber on wheel', /You carefully wrap/i, /^What were you/i) =~ /You carefully wrap/i
+    stop("Could not set the wheel to #{args.weight || 'heavy'}.") unless DRC.bput("adjust wheel to #{args.weight || 'heavy'}", /You adjust the wheel/i, /^What were you/i) =~ /You adjust the wheel/i
 
-    until DRC.left_hand || DRC.right_hand
+    spin_until_done
+
+    fput("stow my #{spool_in_hand}")
+  end
+
+  private
+
+  # Spins the wheel, fixing each problem the game reports, until the spool is
+  # in hand.
+  #
+  # @return [void]
+  # @raise [SystemExit] after {MAX_UNMATCHED} unrecognised replies in a row,
+  #   or {MAX_STEPS} commands without a spool
+  def spin_until_done
+    command = 'spin wheel'
+    unmatched = 0
+    MAX_STEPS.times do
       waitrt?
-      case DRC.bput('spin wheel', 'shade', 'twist\b', 'bunch', 'slide', 'roundtime', 'Individual strands of the fiber begin twisting')
-      when 'shade'
-        pause
-        waitrt?
-        fput('clean wheel')
-      when 'twist', 'Individual strands of the fiber begin twisting'
-        pause
-        waitrt?
-        fput('turn wheel')
-      when 'bunch', 'slide'
-        pause
-        waitrt?
-        fput('push wheel')
+      reply = DRC.bput(command, *WHEEL_FIXES.keys, STEP_DONE)
+      waitrt?
+      return if spool_in_hand
+
+      fix = WHEEL_FIXES.find { |problem, _| problem.match?(reply) }&.last
+      if fix || STEP_DONE.match?(reply)
+        unmatched = 0
+        command = fix || 'spin wheel'
       else
-        pause
-        waitrt?
+        unmatched += 1
+        stop("The wheel did not answer '#{command}' #{MAX_UNMATCHED} times in a row.") if unmatched >= MAX_UNMATCHED
       end
     end
+    stop("No spool after #{MAX_STEPS} commands to the wheel.")
+  end
 
-    fput("stow my #{DRC.right_hand || DRC.left_hand}")
+  # The finished spool, as a hand shows it ('silk thread', 'wool yarn').
+  # Something else in a hand, such as a book a background script picked up,
+  # is not a spool.
+  #
+  # @return [String, nil] the spool's name, or nil when neither hand holds one
+  def spool_in_hand
+    [DRC.left_hand, DRC.right_hand].compact.find { |held| held.split.last == @product }
+  end
+
+  # Tells the player why spin stopped, then stops.
+  #
+  # @param message [String] what went wrong
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop(message)
+    Lich::Messaging.msg('bold', "spin: #{message}")
+    exit
   end
 end
 
