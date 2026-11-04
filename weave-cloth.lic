@@ -23,17 +23,26 @@
 #   ;weave-cloth silk
 # @example Weave two spools by id
 #   ;weave-cloth 1958040 1963477
+# @example Spin and weave until 30 yards of heavy silk cloth are on hand,
+#   in one piece in the crafting container
+#   ;weave-cloth silk 30
 class WeaveCloth
   # Fibers spin spins (Spin::FIBERS).
   FIBERS = %w[silk cotton linen wool burlap].freeze
 
   # @return [Array<Array<Hash>>] the argument forms parse_args accepts: none
   #   (weave the two newest spools spin recorded, of the newest one's
-  #   kind), a fiber (the two newest recorded spools of it), or two spool ids
+  #   kind), a fiber (the two newest recorded spools of it), a fiber and
+  #   yards (spin and weave until that much cloth is on hand), or two spool
+  #   ids
   ARG_DEFINITIONS = [
     [],
     [
       { name: 'fiber', options: FIBERS, description: 'Weave the two newest spools spin made of this fiber' }
+    ],
+    [
+      { name: 'fiber', options: FIBERS, description: 'Fiber to spin and weave' },
+      { name: 'yards', regex: /^\d+$/, variable: true, description: 'Spin and weave until this many yards of the heavy cloth are on hand' }
     ],
     [
       { name: 'first', regex: /^#?\d+$/, variable: true, description: 'Id of the first spool, e.g. 1958040 or #1958040' },
@@ -93,6 +102,29 @@ class WeaveCloth
   # Threads a loom holds.
   MAX_THREADS_ON_LOOM = 2
 
+  # The weight stock mode weaves: spin's default (Spin::DEFAULT_WEIGHT). Woven
+  # cloth carries it in its name, "some heavy silk cloth" (1104:30860).
+  STOCK_WEIGHT = 'heavy'
+
+  # The most yards stock mode takes; a bigger number is more likely a spool
+  # id typed after the fiber.
+  MAX_STOCK_YARDS = 1000
+
+  # Where stock mode leaves the cloth it counted for its caller, in
+  # SessionVars: { 'fiber' => 'silk', 'yards' => 42 }. Cleared when a stock
+  # run starts and updated at every count, so a caller can tell whether the
+  # run got the yards it needed.
+  STOCK_RESULT = 'weave_cloth_stock'
+
+  # One bolt of cloth taking another into it (1104:32641).
+  COMBINED = /^You combine/i.freeze
+
+  # The yards a piece of cloth holds (1104:30876).
+  COUNTED = /^You count out (\d+) yards/i.freeze
+
+  # A piece coming out of a container (1104:30872).
+  GOT = /^You get/i.freeze
+
   # Most spools the record keeps (Spin::MAX_RECORDED_SPOOLS).
   MAX_RECORDED_SPOOLS = 20
 
@@ -101,7 +133,7 @@ class WeaveCloth
   # waits 20-40 seconds at the idle room between passes.
   MAX_LOOM_SEARCHES = 5
 
-  # Weaves one bolt of cloth, start to finish.
+  # Weaves one bolt of cloth, or with yards, as many as it takes.
   #
   # @raise [SystemExit] with a message on any step that fails
   def initialize
@@ -111,8 +143,22 @@ class WeaveCloth
     @bag = settings.crafting_container
     # parse_args accepts any argument that starts with an option ('silks').
     fiber = args.fiber && FIBERS.find { |name| args.fiber.start_with?(name) }
-    @candidates = args.first ? given_pair(args.first, args.second) : recorded_pair(fiber)
+    if args.yards
+      stock(fiber, args.yards.to_i)
+    else
+      weave(args.first ? given_pair(args.first, args.second) : recorded_pair(fiber))
+    end
+  end
 
+  private
+
+  # Weaves two spools into one bolt of cloth, start to finish.
+  #
+  # @param candidates [Array<String>] spool ids to try, in order
+  # @return [void]
+  # @raise [SystemExit] with a message on any step that fails
+  def weave(candidates)
+    @candidates = candidates
     stop(NEED_TWO_SPOOLS) if @candidates.size < 2
     stop('Could not empty your hands.') unless DRCI.stow_hands
     find_loom
@@ -124,7 +170,156 @@ class WeaveCloth
     store_cloth(cloth)
   end
 
-  private
+  # Spins and weaves until at least yards of this heavy cloth are on hand,
+  # in one piece in the crafting container. Each batch is two ;spin runs
+  # and one weave of exactly the spools they recorded. The cloth is counted
+  # after every batch rather than assumed, since a weave's yield depends on
+  # the thread, and the run stops as soon as a spin or a weave fails or a
+  # batch adds nothing, so a failure never keeps buying fiber.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @param yards [Integer] yards wanted
+  # @return [void]
+  # @raise [SystemExit] when the yards are too many, a spin makes no spool,
+  #   a weave fails, or a batch adds no cloth
+  def stock(fiber, yards)
+    SessionVars[STOCK_RESULT] = nil
+    stop("Ask for #{MAX_STOCK_YARDS} yards or fewer.") if yards > MAX_STOCK_YARDS
+    stop('Could not empty your hands.') unless DRCI.stow_hands
+    have = gather_cloth(fiber)
+    while have < yards
+      weave(spin_pair(fiber))
+      now = gather_cloth(fiber)
+      stop("Weaving added no #{fiber} cloth (#{now} yards on hand); stopping before buying more fiber.") unless now > have
+      have = now
+    end
+    Lich::Messaging.msg('plain', "weave-cloth: Your #{@bag} holds #{have} yards of #{STOCK_WEIGHT} #{fiber} cloth.")
+  end
+
+  # Runs ;spin twice, checking after each run that it recorded a spool.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Array<String>] the two new spool ids, newest first
+  # @raise [SystemExit] as soon as a run records no spool of the fiber, so a
+  #   failed first run never buys fiber for a second
+  def spin_pair(fiber)
+    spun = []
+    2.times do
+      before = recorded_ids
+      DRC.wait_for_script_to_complete('spin', [fiber])
+      new_spool = recorded_spools.find { |spool| !before.include?(spool['id']) && spool['fiber'] == fiber }
+      stop("spin made #{spun.size} of 2 #{fiber} spools; stopping.") unless new_spool
+      spun << new_spool['id']
+    end
+    spun.reverse
+  end
+
+  # Combines every piece of this cloth on hand into one in the crafting
+  # container, counts it, and leaves the count for the caller.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards, 0 when there is none
+  def gather_cloth(fiber)
+    yards = cloth_on_hand(fiber)
+    SessionVars[STOCK_RESULT] = { 'fiber' => fiber, 'yards' => yards }
+    yards
+  end
+
+  # Gets every carried piece of this heavy cloth by id, combines them and
+  # counts the result, then puts it in the crafting container. Pieces are
+  # found in the inventory feed: by name, "get my other silk cloth" missed a
+  # second piece in Mahtra's pack (1104:32050). Without the
+  # feed it falls back to the pieces in the crafting container, by name.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards, 0 when there is none
+  # @raise [SystemExit] when a piece cannot be got, two will not combine,
+  #   the cloth will not count, or it will not go back
+  def cloth_on_hand(fiber)
+    pieces = cloth_pieces(fiber)
+    return cloth_in_bag_by_name(fiber) if pieces.nil?
+    return 0 if pieces.empty?
+
+    pieces.each_with_index do |piece, index|
+      stop("Could not get the #{fiber} cloth ##{piece.id}#{index.zero? ? '' : '; the rest is in your hand'}.") unless DRCI.get_item?("##{piece.id}")
+      combine(fiber) unless index.zero?
+    end
+    count_and_put_back(fiber)
+  end
+
+  # The carried pieces of this heavy cloth, from a fresh inventory feed:
+  # not worn, not on the room's floor, and not some other cloth (a chamois
+  # cloth has adjective 'chamois'; woven silk is "some heavy,silk,cloth").
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Array, nil] the feed's items, or nil when the feed is absent
+  def cloth_pieces(fiber)
+    snapshot = Lich::Common::Inventory.refresh
+    return unless snapshot
+
+    snapshot.where(noun: 'cloth').select do |item|
+      item.adjective == fiber && item.article.to_s.split.include?(STOCK_WEIGHT) && !item.worn? && carried?(snapshot, item)
+    end
+  end
+
+  # Whether an item in the feed is the player's: in hand, at their feet,
+  # or inside something they wear or hold.
+  #
+  # @param snapshot [Object] the inventory feed snapshot
+  # @param item [Object] the feed's item
+  # @return [Boolean]
+  def carried?(snapshot, item)
+    10.times do
+      return false if item.nil? || item.in_room?
+      return true if item.held? || item.at_feet? || item.worn?
+
+      item = snapshot[item.parent_id]
+    end
+    false
+  end
+
+  # Combines every piece of this cloth in the crafting container, by name,
+  # for when the inventory feed is absent.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards, 0 when there is none
+  def cloth_in_bag_by_name(fiber)
+    return 0 unless get_cloth_by_name(fiber)
+
+    combine(fiber) while get_cloth_by_name(fiber)
+    count_and_put_back(fiber)
+  end
+
+  # Gets one piece of this cloth from the crafting container by name.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Boolean] true when a piece came out
+  def get_cloth_by_name(fiber)
+    GOT.match?(DRC.bput("get my #{fiber} cloth from my #{@bag}", GOT, NOT_FOUND))
+  end
+
+  # Combines the two pieces in hand ("combine silk cloth with silk cloth",
+  # 1104:32641).
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [void]
+  # @raise [SystemExit] when both hands still hold cloth
+  def combine(fiber)
+    DRC.bput("combine #{fiber} cloth with #{fiber} cloth", COMBINED, NOT_FOUND, /^You must/i)
+    stop("Could not combine two pieces of #{fiber} cloth; they are in your hands.") if hands_holding('cloth').size > 1
+  end
+
+  # Counts the cloth in hand and puts it in the crafting container.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards
+  # @raise [SystemExit] when it will not count or go back
+  def count_and_put_back(fiber)
+    yards = DRC.bput("count my #{fiber} cloth", COUNTED)[COUNTED, 1]
+    stop("Could not count the #{fiber} cloth; it is in your hand.") unless yards
+    put_away(hand_holding('cloth').id)
+    yards.to_i
+  end
 
   # The spools spin recorded, as a list of Hashes. A record that is not a
   # list is treated as empty.
@@ -431,7 +626,15 @@ class WeaveCloth
   # @param noun [String] 'thread' or 'cloth'
   # @return [GameObj, nil] the hand, or nil when neither holds one
   def hand_holding(noun)
-    [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == noun }
+    hands_holding(noun).first
+  end
+
+  # The hands holding something with this noun.
+  #
+  # @param noun [String] 'thread' or 'cloth'
+  # @return [Array<GameObj>] none, one or both hands
+  def hands_holding(noun)
+    [GameObj.left_hand, GameObj.right_hand].select { |hand| hand.name.split.last == noun }
   end
 
   # Puts a held item in the crafting container by id.
