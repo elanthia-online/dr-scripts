@@ -560,4 +560,17 @@ RSpec.describe Spin do
       Spin.new
     end
   end
+
+  describe 'its fiber table' do
+    it 'offers exactly the fibers it knows how to buy' do
+      material = Spin::ARG_DEFINITIONS.first.find { |arg| arg[:name] == 'material' }
+
+      expect(material[:options]).to eq(Spin::FIBERS.keys)
+    end
+
+    it 'cuts only fiber whose bundles overshoot the wheel (silk: 10 + 13 x 30 = 400 yards)' do
+      expect(Spin::FIBERS.select { |_, fiber| fiber[:cut_first_to] }.keys).to eq(['silk'])
+      expect(Spin::FIBERS['silk'][:cut_first_to] + ((Spin::FIBERS['silk'][:bundles] - 1) * 30)).to eq(400)
+    end
+  end
 end
