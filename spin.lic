@@ -113,7 +113,7 @@ class Spin
   private
 
   # Empties the hands, finds the leftover fiber to use, and gets the
-  # scissors when the first bundle may need a cut. The scissors come out before any money is spent, so missing
+  # scissors when the first bundle may need a cut ({#get_scissors}). The scissors come out before any money is spent, so missing
   # scissors stop the run before it buys fiber it cannot cut.
   #
   # @return [void]
@@ -123,19 +123,39 @@ class Spin
     stop('Could not empty your hands before buying fiber.') unless DRCI.stow_hands
     @leftovers = leftover_fiber
     @scissors = @leftovers.empty? ? !@fiber[:cut_first_to].nil? : leftover_yards < WHEEL_YARDS
-    stop('Could not get your scissors for the silk cut.') if @scissors && !DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
+    get_scissors if @scissors
   end
 
-  # Makes sure the coins for a wheel of fiber are on hand. The shop prices
+  # Gets the scissors. Without them, leftover fiber of a fiber that needs no
+  # cut of its own waits for another spin, and a full wheel is bought;
+  # otherwise spin stops.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the scissors cannot be got and the fiber needs
+  #   a cut
+  def get_scissors
+    return if DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
+
+    @scissors = false
+    stop("Could not get your scissors to cut the #{@fiber_name} fiber.") if @fiber[:cut_first_to] || @leftovers.empty?
+    Lich::Messaging.msg('bold', "spin: Could not get your scissors, so the leftover #{@fiber_name} fibers wait for another spin.")
+    @leftovers = []
+  end
+
+  # Makes sure the coins for a wheel of fiber (or for the bundles given) are
+  # on hand. Leftovers that fill the wheel need none. The shop prices
   # each bundle in its own currency, rounded up (187 kronars is 135
   # Dokoras, 1104:30056), so the bundle price is converted before it is
   # multiplied.
   #
+  # @param bundles [Integer] how many bundles to pay for
   # @return [void]
   # @raise [SystemExit] when the coins cannot be got
-  def pay_for_fiber
+  def pay_for_fiber(bundles = @fiber[:bundles])
+    return if @leftovers.any? && leftover_yards >= WHEEL_YARDS
+
     currency = DRCM.town_currency(@hometown)
-    copper = DRCM.convert_currency(@fiber[:kronars], 'kronars', currency, 0) * @fiber[:bundles]
+    copper = DRCM.convert_currency(@fiber[:kronars], 'kronars', currency, 0) * bundles
     stop_with_scissors("Could not get #{copper} copper #{currency} for the fiber.") unless DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
   end
 
@@ -182,6 +202,9 @@ class Spin
       bought = held_fiber
       size = (bought&.id && count_fiber(bought.id)) || stop_with_scissors('Could not count the bundle bought; it is in your hands.')
       bundles = (need.to_f / size).ceil
+      # The coins were checked for FIBERS' bundles; a smaller shop bundle
+      # means more of them.
+      pay_for_fiber(bundles - 1) if bundles > @fiber[:bundles]
       keep = need - ((bundles - 1) * size)
       cut_held_to(keep) if keep < size
       more = bundles - 1
@@ -241,6 +264,8 @@ class Spin
   def leftover_fiber
     picked = []
     carried_fiber.each do |item|
+      break if picked.sum { |leftover| leftover['yards'] } >= WHEEL_YARDS
+
       yards = count_fiber(item.id)
       next unless yards && picked.sum { |leftover| leftover['yards'] } + yards <= WHEEL_YARDS
 
@@ -254,24 +279,33 @@ class Spin
     @leftovers.sum { |leftover| leftover['yards'] }
   end
 
-  # The bundles of this fiber in the containers GameObj knows, nested ones
-  # included. The inventory feed is asked first to fill the contents of
-  # containers not opened this session.
+  # The bundles of this fiber carried, by name ("silk fibers").
   #
   # @return [Array<GameObj>]
   def carried_fiber
+    carried_items.select { |item| item.noun == 'fibers' && item.name.to_s =~ /\b#{@fiber_name} fibers\z/i }
+  end
+
+  # Everything carried, as GameObj knows it: the worn items, what is in
+  # hand, and every container's contents beneath them. The inventory feed
+  # is asked first to fill the contents of containers not opened this
+  # session. weave-cloth.lic reads what is carried the same way, and a spec
+  # holds the two to the same result.
+  #
+  # @return [Array<GameObj>]
+  def carried_items
     Lich::Common::Inventory.refresh
     containers = GameObj.containers
-    queue = (GameObj.inv || []).dup
-    found = {}
+    queue = (GameObj.inv || []) + [GameObj.right_hand, GameObj.left_hand].select(&:id)
+    seen = {}
     until queue.empty?
       item = queue.shift
-      next if found.key?(item.id)
+      next if seen.key?(item.id)
 
-      found[item.id] = item
+      seen[item.id] = item
       queue.concat(containers[item.id] || [])
     end
-    found.values.select { |item| item.noun == 'fibers' && item.name.to_s =~ /\b#{@fiber_name} fibers\z/i }
+    seen.values
   end
 
   # Counts a bundle of fiber by id.
