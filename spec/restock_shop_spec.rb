@@ -158,12 +158,10 @@ RSpec.describe ShopRestock do
     end
   end
 
-  describe 'cloth stock checks (#restock_burlap, #restock_linen, #restock_silk)' do
+  describe 'cloth stock (#restock_burlap, #restock_linen, #restock_silk)' do
     let(:item) { { 'recipe' => 'shirt', 'noun' => 'shirt' } }
     let(:instance) { build_instance(bag: 'backpack', inner_id: 99) }
-    let(:get_command) { { 'burlap' => 'get burlap cloth', 'linen' => 'get linen cloth', 'silk' => 'get silk cloth from my backpack' } }
-    let(:bag_command) { { 'burlap' => 'get burlap cloth from backpack', 'linen' => 'get linen cloth from backpack', 'silk' => 'get silk cloth from my backpack' } }
-    let(:sent) { [] }
+    let(:scripts) { [] }
 
     before do
       allow(instance).to receive(:total_volume_of).and_return(40)
@@ -172,45 +170,74 @@ RSpec.describe ShopRestock do
       allow(instance).to receive(:stamp)
       allow(instance).to receive(:sell)
       allow(instance).to receive(:buy_part)
-      allow(instance).to receive(:fput) { |command| sent << command }
+      allow(instance).to receive(:fput)
+      allow(instance).to receive(:move)
       allow(DRCC).to receive(:recipe_lookup).and_return({ 'part' => [], 'chapter' => 1 })
-    end
-
-    def spins(material)
-      spun = []
-      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| spun << args if name == 'spin' }
-      instance.send(:"restock_#{material}", [item])
-      spun.size
+      allow(DRC).to receive(:wait_for_script_to_complete) do |name, args = []|
+        scripts << [name, args]
+        # weave-cloth leaves its count in SessionVars (weave-cloth.lic STOCK_RESULT)
+        SessionVars['weave_cloth_stock'] = { 'fiber' => args.first, 'yards' => 40 } if name == 'weave-cloth'
+      end
+      allow(DRC).to receive(:bput).and_return('')
     end
 
     %w[burlap linen silk].each do |material|
       context material do
-        it 'spins only for the shortfall the game counts' do
-          stub_bput(get_command[material] => [["You get some heavy #{material} cloth from inside your backpack."]],
-                    'count my cloth'      => [['You count out 30 yards of material there.']])
-          expect(spins(material)).to eq(2) # ceil((40 - 30) / 16) batches of two spins
+        it 'has weave-cloth stock the yards the items need, before sewing them' do
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.first).to eq(['weave-cloth', [material, '40']])
+          expect(scripts.map(&:first)).to include('sew')
+          expect(scripts.index { |name, _| name == 'weave-cloth' }).to be < scripts.index { |name, _| name == 'sew' }
         end
 
-        it "uses the game's get reply, not a player line saying 'What were'" do
-          stub_bput(get_command[material] => [[player_lines('What were you thinking?')['ESP'], "You get some heavy #{material} cloth from inside your backpack."]],
-                    'count my cloth'      => [['You count out 30 yards of material there.']])
-          expect(spins(material)).to eq(2)
+        it 'sews nothing, and says why, when weave-cloth comes up short' do
+          allow(DRC).to receive(:wait_for_script_to_complete) do |name, args = []|
+            scripts << [name, args]
+            SessionVars['weave_cloth_stock'] = { 'fiber' => material, 'yards' => 16 } if name == 'weave-cloth'
+          end
+          expect(Lich::Messaging).to receive(:msg).with('bold', "restock-shop: weave-cloth has 16 of the 40 yards of #{material} cloth needed; not sewing the #{material} items.")
+
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.map(&:first)).to eq(['weave-cloth'])
         end
 
-        it "uses the game's count, not a player line quoting a bigger one" do
-          stub_bput(get_command[material] => [["You get some heavy #{material} cloth from inside your backpack."]],
-                    'count my cloth'      => [[player_lines('You count out 900 yards of material there.')['say'], 'You count out 30 yards of material there.']])
-          expect(spins(material)).to eq(2)
+        it 'sews nothing when weave-cloth stopped before counting any cloth' do
+          allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| scripts << [name, args] }
+
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.map(&:first)).to eq(['weave-cloth'])
         end
 
-        it 'does not combine cloth when only a player line says "You get"' do
-          # silk uses the same command for both gets, so queue both replies on it.
-          replies = Hash.new { |hash, key| hash[key] = [] }
-          replies[get_command[material]] << ['What were you referring to?']
-          replies[bag_command[material]] << [player_lines('You get it.')['whisper'], 'What were you referring to?']
-          stub_bput(replies)
-          spins(material)
-          expect(sent).not_to include('combine cloth')
+        it 'does not trust a count an earlier run left, when weave-cloth does not run this time (review on #7951)' do
+          SessionVars['weave_cloth_stock'] = { 'fiber' => material, 'yards' => 200 }
+          allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| scripts << [name, args] }
+
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.map(&:first)).to eq(['weave-cloth'])
+          expect(instance).not_to have_received(:buy_part)
+        end
+
+        it "does not trust a count of another cloth left by an earlier run" do
+          allow(DRC).to receive(:wait_for_script_to_complete) do |name, args = []|
+            scripts << [name, args]
+            SessionVars['weave_cloth_stock'] = { 'fiber' => 'wool', 'yards' => 400 } if name == 'weave-cloth'
+          end
+
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.map(&:first)).to eq(['weave-cloth'])
+        end
+
+        it 'no longer spins, combines or moves the cloth itself (weave-cloth owns that)' do
+          instance.send(:"restock_#{material}", [item])
+
+          expect(scripts.map(&:first)).not_to include('spin')
+          expect(instance).not_to have_received(:fput).with('combine cloth')
+          expect(DRC).not_to have_received(:bput).with(/cloth/, any_args)
         end
       end
     end
