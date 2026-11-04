@@ -12,7 +12,9 @@ class NewbieGear
 
     args = parse_args(arg_definitions)
 
-    DRCM.ensure_copper_on_hand(40_000, get_settings)
+    settings = get_settings
+    @bag = settings.crafting_container
+    DRCM.ensure_copper_on_hand(40_000, settings)
 
     item_list = [
       # noun, volumes, chapter, recipe name, number of small padding, number of large padding, material
@@ -66,6 +68,23 @@ class NewbieGear
     fput('put ingot in bucket')
   end
 
+  # Has weave-cloth spin and weave until at least volume yards of this
+  # cloth are on hand, in one piece in the crafting container. weave-cloth
+  # stops with a message, instead of buying more fiber, when a batch makes
+  # no cloth, and leaves its last count in SessionVars for this check.
+  #
+  # @param material [String] 'burlap' or 'linen'
+  # @param volume [Integer] yards needed
+  # @return [Boolean] true when weave-cloth reports enough cloth
+  def stock_cloth(material, volume)
+    DRC.wait_for_script_to_complete('weave-cloth', [material, volume.to_s])
+    stocked = SessionVars['weave_cloth_stock']
+    return true if stocked.is_a?(Hash) && stocked['fiber'] == material && stocked['yards'].to_i >= volume
+
+    Lich::Messaging.msg('bold', "newbie-gear: weave-cloth has #{stocked.is_a?(Hash) ? stocked['yards'].to_i : 0} of the #{volume} yards of #{material} cloth needed; not sewing the #{material} items.")
+    false
+  end
+
   def restock_burlap(storage, missing_items)
     return if missing_items.empty?
 
@@ -73,26 +92,7 @@ class NewbieGear
 
     volume = missing_items.map { |x| x[1] }.inject(&:+)
 
-    have = 0
-    if DRC.bput('get burlap cloth', 'You get', 'What were') == 'You get'
-      res = DRC.bput('count my cloth', 'You count out .*')
-      have = res.scan(/\d+/).first.to_i
-      DRCI.stow_hands
-    end
-
-    if have < volume
-      multiples = ((volume - have) / 16.0).ceil
-      multiples.times do
-        DRC.wait_for_script_to_complete('spin', ['burlap'])
-        DRC.wait_for_script_to_complete('spin', ['burlap'])
-        DRC.wait_for_script_to_complete('weave-cloth')
-      end
-    end
-
-    while DRC.bput('get burlap cloth from back', 'You get', 'What were') == 'You get'
-      fput('combine cloth')
-    end
-    DRCI.stow_hands
+    return unless stock_cloth('burlap', volume)
 
     missing_items.each do |item|
       move('out') if Room.current.id == @inner_id
@@ -108,7 +108,7 @@ class NewbieGear
 
       DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', item[2], item[3], item[0], 'burlap'])
 
-      fput("get #{item[0]} from back")
+      fput("get my #{item[0]} from my #{@bag}")
       # fput('get my stamp')
       # fput("mark my #{item[0]} with my stamp")
       # waitrt?
@@ -129,30 +129,11 @@ class NewbieGear
 
     volume = missing_items.map { |x| x[1] }.inject(&:+)
 
-    have = 0
-    if DRC.bput('get linen cloth', 'You get', 'What were') == 'You get'
-      res = DRC.bput('count my cloth', 'You count out .*')
-      have = res.scan(/\d+/).first.to_i
-      DRCI.stow_hands
-    end
-
-    if have < volume
-      multiples = ((volume - have) / 16.0).ceil
-      multiples.times do
-        DRC.wait_for_script_to_complete('spin', ['linen'])
-        DRC.wait_for_script_to_complete('spin', ['linen'])
-        DRC.wait_for_script_to_complete('weave-cloth')
-      end
-    end
-
-    while DRC.bput('get linen cloth from back', 'You get', 'What were') == 'You get'
-      fput('combine cloth')
-    end
-    DRCI.stow_hands
+    return unless stock_cloth('linen', volume)
 
     missing_items.each do |item|
       DRC.wait_for_script_to_complete('sew', ['stow', 'sewing', item[2], item[3], item[0], 'linen'])
-      fput("get #{item[0]} from back")
+      fput("get my #{item[0]} from my #{@bag}")
       # fput('get my stamp')
       # fput("mark my #{item[0]} with my stamp")
       # waitrt?
