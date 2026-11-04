@@ -110,7 +110,7 @@ RSpec.describe TaskMaster do
     allow(DRC).to receive(:right_hand) { world[:hands][:right]&.name }
     allow(DRC).to receive(:left_hand) { world[:hands][:left]&.name }
 
-    held = ->(ref) { world[:hands].find { |_, obj| obj && (ref == "##{obj.id}" || ref == "my #{obj.noun}") }&.first }
+    held = ->(ref) { world[:hands].find { |_, obj| obj && ["##{obj.id}", "my #{obj.noun}", "my #{obj.name}"].include?(ref) }&.first }
     worn = ->(ref) { worn_leathers && ref.start_with?('my ') && 'leathers'.start_with?(ref.delete_prefix('my ')) }
     reply = lambda do |command|
       case command
@@ -123,7 +123,7 @@ RSpec.describe TaskMaster do
         world[:bag][stock] -= 1
         world[:hands][hand] = OpenStruct.new(name: stock, noun: stock.split.last, id: (next_id += 1).to_s)
         "You get some #{stock} from inside your duffel bag."
-      when /\Aput (my \w+|#\d+) in (my bucket|bin|my duffel bag)\z/
+      when /\Aput (my \w+(?: \w+)?|#\d+) in (my bucket|bin|my duffel bag)\z/
         ref = Regexp.last_match(1)
         into = Regexp.last_match(2)
         next 'Perhaps you should be holding that first.' if worn.call(ref)
@@ -1669,16 +1669,33 @@ RSpec.describe TaskMaster do
         expect(DRCT).not_to have_received(:dispose)
       end
 
-      it 'stops with a message instead of throwing away a piece it cannot find in hand' do
+      it 'stops with a message instead of throwing away a piece it cannot find in hand, after one put-back by name' do
         world = stock_world({ 'burlap cloth' => 3 })
         allow(DRC).to receive(:bput) do |command, *|
           world[:sent] << command
           'You get'
         end
         build(remainder: true).trash('rope', 'cloth', 'burlap')
-        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag', 'put my burlap cloth in my duffel bag'])
         expect(DRCT).not_to have_received(:dispose)
-        expect(DRC).to have_received(:message).with(a_string_including("can't find it in your hands"))
+        expect(DRC).to have_received(:message).with(a_string_including("can't find it in your hands", 'may still be in your hand', 'Stopping'))
+      end
+
+      # A put whose reply bput did not know waits out its timeout and comes
+      # back false, though the piece went in the bin; putting it back by id
+      # then fails ("What were you referring to?") and used to stop all
+      # disposal with a message that the piece may be in hand.
+      it 'goes on to the next piece when the bin took one with a reply it did not know' do
+        world = stock_world({ 'burlap cloth' => 3 })
+        allow(DRCT).to receive(:dispose) do |item, _room|
+          DRC.bput("put #{item} in bin", /^You (drop|put)/)
+          false
+        end
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:bag]).to eq({ 'burlap cloth' => 0 })
+        expect(world[:sent]).not_to include(a_string_ending_with('in my duffel bag'))
+        expect(world[:hands].values).to all(be_nil)
+        expect(DRC).not_to have_received(:message)
       end
     end
 
@@ -2212,8 +2229,79 @@ RSpec.describe TaskMaster do
           command.start_with?('get ') ? 'You get some burlap cloth from inside your duffel bag.' : ''
         end
         expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag', 'put my burlap cloth in my duffel bag'])
+        expect(world[:sent]).not_to include(a_string_including('bucket'))
+        expect(DRC).to have_received(:message).with(a_string_including("can't find it in your hands", 'may still be in your hand'))
+      end
+
+      # Hands the stream reports without ids: the get takes the piece out,
+      # but no id appears to bin it by.
+      def hide_hand_ids(world)
+        %i[right left].each do |hand|
+          allow(GameObj).to receive(:"#{hand}_hand") do
+            obj = world[:hands][hand]
+            OpenStruct.new(name: obj&.name || 'Empty', noun: obj&.noun, id: nil)
+          end
+        end
+      end
+
+      # Before, the leather taken out stayed in hand with nothing sent to
+      # clear it. "my rat leather" names the stock piece even while the
+      # character wears "sinuous leathers", which "my leather" would name.
+      it 'puts a piece it took out but cannot find by id back in the bag by its full name, past worn "sinuous leathers"' do
+        world = stock_world({ 'rat leather' => 2 }, worn_leathers: true)
+        hide_hand_ids(world)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].last(2)).to eq(['get my rat leather from my duffel bag', 'put my rat leather in my duffel bag'])
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'rat leather' => 2 })
+        expect(DRC).to have_received(:message).with(a_string_including('Took out the rat leather', 'went back in your duffel bag', 'Stopping'))
+      end
+
+      it 'says the piece is not in hand, not that it was taken out, when "already holding" shows no such piece' do
+        world = stock_world({})
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          'You are already holding that.'
+        end
+        expect(binner.bin_task_stock).to eq(0)
         expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
-        expect(DRC).to have_received(:message).with(a_string_including("can't find it in your hands"))
+        expect(DRC).to have_received(:message).with(a_string_including('already hold the burlap cloth', 'not in your hands', 'Stopping'))
+        expect(DRC).not_to have_received(:message).with(a_string_including('Took out'))
+      end
+
+      # DRCI.put_away_item? (v5.23.0) waits out bput's timeout on a reply it
+      # does not list and returns false, though the piece went in the can.
+      # Putting it back by id then fails, and binning used to stop with
+      # "It may still be in your hand" and leave the piece out of the count.
+      it 'counts a piece the worn trash can took with a reply it did not know, and carries on' do
+        world = stock_world({ 'burlap cloth' => 2, 'wool yarn' => 1 })
+        can = []
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          piece = world[:hands].values.compact.find { |obj| item == "##{obj.id}" }
+          DRC.bput("put #{item} in my #{container}", /^You (drop|put)/)
+          can << piece.name if piece && container == 'bucket'
+          false
+        end
+        expect(binner.bin_task_stock).to eq(3)
+        expect(can).to eq(['burlap cloth', 'burlap cloth', 'wool yarn'])
+        expect(world[:sent]).not_to include(a_string_ending_with('in my duffel bag'))
+        expect(world[:sent].last(2)).to eq(['tap my bucket', 'tap my bucket'])
+        expect(DRC).not_to have_received(:message).with(a_string_including('Stopping'))
+      end
+
+      it 'carries on when the put-back went in the bag with a reply it did not know' do
+        world = stock_world({ 'burlap cloth' => 3, 'wool yarn' => 1 }, refuse: true)
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          landed = DRC.bput("put #{item} in my #{container}", /^You (drop|put)/).start_with?('You')
+          container == 'duffel bag' ? false : landed
+        end
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].grep(/\Aget /))
+          .to eq(['get my burlap cloth from my duffel bag', 'get my rat leather from my duffel bag', 'get my wool yarn from my duffel bag'])
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'burlap cloth' => 3, 'wool yarn' => 1 })
+        expect(DRC).not_to have_received(:message).with(a_string_including('Stopping'))
       end
 
       it 'bins the held piece by its id when the game says it is already held' do
