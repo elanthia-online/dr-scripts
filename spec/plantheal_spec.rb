@@ -422,7 +422,7 @@ RSpec.describe PlantHeal do
       allow(DRCH).to receive(:check_health).and_return('score' => 5)
       instance = build_instance(healingroom: 1234)
       allow(instance).to receive(:pause)
-      expect(DRC).to receive(:message).with(/Still wounded after.*passive healing.*healme as fallback/)
+      expect(DRC).to receive(:message).with(/Still wounded after.*no healing progress.*healme as fallback/)
       expect(DRCT).to receive(:walk_to).with(1234)
       expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
       instance.send(:wait_for_passive_healing)
@@ -508,6 +508,47 @@ RSpec.describe PlantHeal do
       end
       expect(DRC).not_to receive(:wait_for_script_to_complete).with('healme')
       instance.send(:wait_for_passive_healing)
+    end
+
+    # Heal pulses every 30s and clears a few wounds per pulse, so one hug can
+    # take longer than PASSIVE_HEAL_MAX_WAIT in total while healing steadily.
+    it 'keeps waiting past the timeout while the wound score keeps dropping' do
+      # Score drops every 6 polls (one 30s Heal pulse), 4 pulses, ~150s total.
+      scores = [12] * 6 + [9] * 6 + [6] * 6 + [3] * 6 + [3] * 6 + [0]
+      allow(DRCH).to receive(:check_health) { { 'score' => scores.shift } }
+      instance = build_instance(healingroom: 1234)
+      pauses = 0
+      allow(instance).to receive(:pause) { pauses += 1 }
+      expect(DRC).not_to receive(:wait_for_script_to_complete).with('healme')
+      expect(DRCT).not_to receive(:walk_to)
+      instance.send(:wait_for_passive_healing)
+      expect(pauses * PlantHeal::PASSIVE_HEAL_POLL_INTERVAL).to be > PlantHeal::PASSIVE_HEAL_MAX_WAIT
+    end
+
+    it 'falls back PASSIVE_HEAL_MAX_WAIT after the last score drop' do
+      scores = [8, 8, 4]
+      allow(DRCH).to receive(:check_health) { { 'score' => scores.shift || 4 } }
+      instance = build_instance(healingroom: 1234)
+      pauses = 0
+      allow(instance).to receive(:pause) { pauses += 1 }
+      expect(DRCT).to receive(:walk_to).with(1234)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+      instance.send(:wait_for_passive_healing)
+      # 2 pauses before the drop to 4, then a full window with no progress.
+      expect(pauses).to eq(2 + (PlantHeal::PASSIVE_HEAL_MAX_WAIT / PlantHeal::PASSIVE_HEAL_POLL_INTERVAL))
+    end
+
+    it 'does not restart the timeout when the score rises back to a previous value' do
+      # Only a new low counts as progress; 5 -> 6 -> 5 is not.
+      flip = [5, 6].cycle
+      allow(DRCH).to receive(:check_health) { { 'score' => flip.next } }
+      instance = build_instance(healingroom: 1234)
+      pauses = 0
+      allow(instance).to receive(:pause) { pauses += 1 }
+      allow(DRCT).to receive(:walk_to)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('healme')
+      instance.send(:wait_for_passive_healing)
+      expect(pauses).to eq(PlantHeal::PASSIVE_HEAL_MAX_WAIT / PlantHeal::PASSIVE_HEAL_POLL_INTERVAL)
     end
 
     it 'uses PASSIVE_HEAL_POLL_INTERVAL for pause duration' do

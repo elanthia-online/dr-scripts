@@ -435,19 +435,32 @@ class PlantHeal
   end
 
   PASSIVE_HEAL_POLL_INTERVAL = 5
+  # Seconds without progress (no wound score drop, no recast) before falling
+  # back to healme. Heal pulses every 30s and clears a few wounds per pulse,
+  # so one hug's wounds can take over 120s in total even with Heal active.
   PASSIVE_HEAL_MAX_WAIT = 120
   # Recasts allowed while waiting, each restarting the timeout. Bounded so a
   # cast that never takes (no mana, interrupted) cannot loop forever.
   PASSIVE_HEAL_MAX_RECASTS = 2
 
   # Wait for passive healing (Heal/Regenerate) to clear wounds.
-  # A healing spell that ends mid-wait is recast and the timeout restarts,
-  # so the fresh spell gets a full window. Falls back to healme if wounds
-  # persist beyond the timeout.
+  # The timeout restarts whenever the wound score drops below its lowest
+  # value so far, and when a healing spell that ended mid-wait is recast.
+  # Falls back to healme once PASSIVE_HEAL_MAX_WAIT passes with neither.
+  # Bounded: the score is a non-negative integer that must reach a new low
+  # to restart the timer, and recasts are capped.
   def wait_for_passive_healing
     elapsed = 0
     recasts = 0
-    until DRCH.check_health['score'].zero?
+    lowest = nil
+    loop do
+      score = DRCH.check_health['score']
+      break if score.zero?
+
+      if lowest.nil? || score < lowest
+        lowest = score
+        elapsed = 0
+      end
       # Pause after a recast too (no `next`), so the spell list has caught up
       # before the following check.
       if recasts < PASSIVE_HEAL_MAX_RECASTS && ensure_healing_spells
@@ -455,7 +468,7 @@ class PlantHeal
         elapsed = 0
       end
       if elapsed >= PASSIVE_HEAL_MAX_WAIT
-        DRC.message("**WARNING: Still wounded after #{PASSIVE_HEAL_MAX_WAIT}s of passive healing.** Running healme as fallback.")
+        DRC.message("**WARNING: Still wounded after #{PASSIVE_HEAL_MAX_WAIT}s with no healing progress.** Running healme as fallback.")
         DRCT.walk_to(@healingroom)
         DRC.wait_for_script_to_complete('healme')
         return
