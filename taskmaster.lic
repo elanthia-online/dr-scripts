@@ -1875,7 +1875,9 @@ class TaskMaster
   end
 
   # Combines a newly bought piece into the stack. The hands decide: it worked
-  # when exactly one of the two is still held and the game did not refuse.
+  # when the game did not refuse and exactly one of the two is still held,
+  # or when it said "You combine" and one id, neither of the two, is all that
+  # is held (the stack under a new id; check_yards still counts it).
   #
   # @param stack [String] id of the stack
   # @param piece [String] id of the new piece
@@ -1884,8 +1886,11 @@ class TaskMaster
   # @raise [SystemExit] when they did not combine
   def combine_stock(stack, piece, stock)
     reply = DRC.bput("combine ##{stack} with ##{piece}", *COMBINE_REPLIES)
-    held = hand_ids & [stack, piece]
-    return held.first if held.size == 1 && !reply.start_with?('You must')
+    unless reply.start_with?('You must')
+      held = hand_ids & [stack, piece]
+      return held.first if held.size == 1
+      return hand_ids.first if reply.start_with?('You combine') && hand_ids.size == 1
+    end
 
     stop_stock("Could not combine the #{stock} (#{combine_failure(reply)}).")
   end
@@ -1917,15 +1922,20 @@ class TaskMaster
   end
 
   # Puts whatever is in either hand back in the crafting bag by id, says why
-  # it is stopping, and stops. free_hands_for emptied both hands before the
-  # first order, so all that is held is stock bought since, including a piece
-  # that landed from an order that still came back '' (the sale line missed,
-  # or it came after order_item's timeout).
+  # it is stopping, names by id whatever would not go back, and stops.
+  # free_hands_for emptied both hands before the first order, so all that is
+  # held is stock bought since, including a piece that landed from an order
+  # that still came back '' (the sale line missed, or it came after
+  # order_item's timeout).
   #
   # @param text [String] why
   # @raise [SystemExit] always
   def stop_stock(text)
-    hand_ids.each { |id| DRCI.put_away_item?("##{id}", @bag) }
+    kept = hand_ids.reject { |id| DRCI.put_away_item?("##{id}", @bag) || left_hands?("##{id}") }
+    unless kept.empty?
+      refs = kept.map { |id| "##{id}" }.join(' and ')
+      text = "#{text} #{refs} would not go back in your #{@bag} and #{kept.size == 1 ? 'is' : 'are'} still in your hands; put #{kept.size == 1 ? 'it' : 'them'} away before starting again."
+    end
     DRC.message("#{text} Stopping.")
     exit
   end

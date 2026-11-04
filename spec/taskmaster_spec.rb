@@ -1955,8 +1955,10 @@ RSpec.describe TaskMaster do
       # bput's timeout, so order_item returns ''. refuse_combine:
       # COMBINE always answers "You must be holding both". keep_new: a combine
       # keeps the new piece's id instead of the stack's. new_id_combine: the
-      # combined stack comes back under an id neither had. silent_combine /
-      # silent_count: that command goes unanswered (bput's '').
+      # combined stack comes back under an id neither had. hollow_combine:
+      # COMBINE answers "You combine" but both pieces stay in hand.
+      # silent_combine / silent_count: that command goes unanswered (bput's
+      # '').
       #
       # DRCT, DRCI and DRCC are harness doubles, so order_item and
       # put_away_item? stand in for lich-5 v5.23.0 here and send their
@@ -1968,7 +1970,8 @@ RSpec.describe TaskMaster do
       #
       # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
       def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false, late_from: nil,
-               refuse_combine: false, keep_new: false, new_id_combine: false, silent_combine: false, silent_count: false)
+               refuse_combine: false, keep_new: false, new_id_combine: false, hollow_combine: false, silent_combine: false,
+               silent_count: false)
         world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false }
         next_id = 3_000_000
         allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
@@ -1989,6 +1992,7 @@ RSpec.describe TaskMaster do
         end
         combine = lambda do |first, second|
           next must_hold_both if refuse_combine || first.nil? || second.nil? || first == second
+          next 'You combine the stacks.' if hollow_combine
 
           kept, gone = keep_new ? [second, first] : [first, second]
           world[:hands][kept].yards += world[:hands][gone].yards
@@ -2155,14 +2159,49 @@ RSpec.describe TaskMaster do
         expect(bagged(world, 'burlap cloth')).to eq([30])
       end
 
-      it 'says the game claimed a combine the hands do not show, and puts the stack back, when it comes back under a new id' do
+      it 'follows the stack, counts it and bags it, when "You combine" leaves one id neither piece had' do
         world = shop(new_id_combine: true)
+
+        expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.not_to raise_error
+
+        expect(world[:sent]).to include('combine #3000003 with #3000004', 'count #3000005', 'put #3000005 in my duffel bag')
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+        expect(world[:hands].values.compact).to be_empty
+      end
+
+      it 'still stops on the yards counted when a stack under a new id is short' do
+        world = shop(new_id_combine: true, yards: 5)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'says the game claimed a combine the hands do not show, and puts both pieces back, when both stay in hand' do
+        world = shop(hollow_combine: true)
 
         expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.to raise_error(SystemExit)
         expect(DRC).to have_received(:message)
-          .with(/Could not combine the burlap cloth \(the game said it combined them, but your hands hold #3000003\)\. Stopping\./)
+          .with(/Could not combine the burlap cloth \(the game said it combined them, but your hands hold #3000001 and #3000002\)\. Stopping\./)
+        expect(world[:orders].size).to eq(2)
         expect(world[:hands].values.compact).to be_empty
-        expect(bagged(world, 'burlap cloth')).to eq([20])
+        expect(bagged(world, 'burlap cloth')).to eq([10, 10])
+      end
+
+      it 'names by id the stock it could not put back when the crafting bag refuses it on a stop' do
+        world = shop(refuse_after: 2, bag_room: 0)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message)
+          .with(/Could not buy burlap cloth: the order did not go through.*\. #3000001 would not go back in your duffel bag and is still in your hands; put it away before starting again\. Stopping\./)
+        expect(world[:hands].values.compact.map(&:yards)).to eq([20])
+      end
+
+      it 'names nothing as left in hand when every put-back on a stop goes through' do
+        shop(refuse_after: 2)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/\A[^#]*full hands\)\. Stopping\.\z/)
       end
 
       it 'trusts the hands when a combine goes unanswered but only the stack is left in hand' do
