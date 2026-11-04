@@ -1611,6 +1611,15 @@ module Harness
       def self.stream_window(*_args); end
     end
 
+    # lich-5's Lich::Common::Inventory read model (lib/common/inventory.rb).
+    # refresh answers nil, as it does when the extended feed is absent; a
+    # spec that needs a snapshot stubs it.
+    module Common
+      module Inventory
+        def self.refresh(*_args); end
+      end
+    end
+
     module Util
       def self.issue_command(*_args); []; end
     end

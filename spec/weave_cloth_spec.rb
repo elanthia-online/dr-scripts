@@ -702,4 +702,292 @@ RSpec.describe WeaveCloth do
       expect(game.sent).not_to include('weave loom')
     end
   end
+
+  describe 'stocking cloth (;weave-cloth silk 16)' do
+    let(:got_cloth) { log('1104:30872') }
+    let(:no_cloth) { log('1104:30604') }
+    let(:combined) { log('1104:32641') }
+
+    # One item of the inventory feed, answering as lich-5's Inventory::Item.
+    def feed_item(id, name, relation: 'in', parent: '1222175', noun: 'cloth')
+      article, adjective, = name.split(',')
+      OpenStruct.new(id: id, noun: noun, article: article, adjective: adjective, parent_id: parent,
+                     worn?: relation == 'worn', held?: %w[lefthand righthand].include?(relation),
+                     at_feet?: relation == 'atfeet', in_room?: relation == 'room')
+    end
+
+    # A feed snapshot answering where(noun:) and [], as Inventory::Snapshot.
+    def snapshot(*items)
+      bag = feed_item('1222175', 'a,duffel,bag', relation: 'worn', parent: 'player', noun: 'bag')
+      all = items + [bag]
+      double('snapshot').tap do |snap|
+        allow(snap).to receive(:where) { |noun:| all.select { |item| item.noun == noun } }
+        allow(snap).to receive(:[]) { |id| all.find { |item| item.id == id } }
+      end
+    end
+
+    before do
+      $parse_args_model = true
+      $script_vars = ArgParserModel.script_vars('silk 16')
+      UserVars.spun_spools = []
+      new_spools = %w[1958040 1963477]
+      allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk']) do
+        UserVars.spun_spools = UserVars.spun_spools + [{ 'id' => new_spools.shift, 'fiber' => 'silk', 'weight' => 'heavy' }]
+      end
+      allow(DRCI).to receive(:put_away_item?) do
+        $left_hand = nil
+        $right_hand = nil
+        true
+      end
+      allow(Lich::Messaging).to receive(:msg)
+    end
+
+    context 'with the inventory feed' do
+      it 'gets every carried piece of the heavy cloth by id, combines them, and puts the one piece in the crafting container' do
+        pack = feed_item('1222003', "a scuffed,traveler's,pack", relation: 'worn', parent: 'player', noun: 'pack')
+        pieces = [feed_item('1976604', 'some heavy,silk,cloth'), feed_item('1999999', 'some heavy,silk,cloth', parent: '1222003')]
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(*pieces, pack))
+        allow(DRCI).to receive(:get_item?) do |ref|
+          ref == '#1976604' ? $left_hand = 'silk cloth' : $right_hand = 'silk cloth'
+          $hand_ids['silk cloth'] = '1976604'
+          true
+        end
+        game.script('combine silk cloth with silk cloth', combined, after: ->(_) { $right_hand = nil })
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRCI).to have_received(:get_item?).with('#1976604').ordered
+        expect(DRCI).to have_received(:get_item?).with('#1999999').ordered
+        expect(DRCI).to have_received(:put_away_item?).with('#1976604', 'duffel bag')
+        expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 16)
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+      end
+
+      it "leaves out a chamois cloth, a worn cloth, a floor cloth that isn't ours and cloth of another weight" do
+        others = [feed_item('1', 'a,chamois,cloth'), feed_item('2', 'some heavy,silk,cloth', relation: 'worn', parent: 'player'),
+                  feed_item('3', 'some heavy,silk,cloth', relation: 'room', parent: 'room'), feed_item('4', 'some fine,silk,cloth')]
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(*others))
+        allow(DRCI).to receive(:get_item?).and_return(true)
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRCI).not_to have_received(:get_item?).with(/\A#[1-4]\z/)
+        expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 0)
+      end
+
+      it 'takes a piece lying at its feet, where sew sets offcuts' do
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(feed_item('1976604', 'some heavy,silk,cloth', relation: 'atfeet', parent: 'player')))
+        allow(DRCI).to receive(:get_item?) do
+          $left_hand = 'silk cloth'
+          $hand_ids['silk cloth'] = '1976604'
+          true
+        end
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRCI).to have_received(:get_item?).with('#1976604')
+      end
+
+      it 'stops, saying where the cloth is, when a later piece cannot be got' do
+        pieces = [feed_item('1976604', 'some heavy,silk,cloth'), feed_item('1999999', 'some heavy,silk,cloth')]
+        allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot(*pieces))
+        allow(DRCI).to receive(:get_item?) { |ref| ref == '#1976604' }
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Could not get the silk cloth #1999999; the rest is in your hand.')
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+      end
+    end
+
+    context 'without the inventory feed (Inventory.refresh answers nil)' do
+      def cloth_comes_out(hand, id)
+        game.script('get my silk cloth from my duffel bag', got_cloth, after: lambda { |_|
+          hand == :left ? $left_hand = 'silk cloth' : $right_hand = 'silk cloth'
+          $hand_ids['silk cloth'] = id
+        })
+      end
+
+      it 'spins and weaves nothing when the crafting container already holds enough' do
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect(Lich::Messaging).to have_received(:msg).with('plain', 'weave-cloth: Your duffel bag holds 16 yards of heavy silk cloth.')
+      end
+
+      it 'spins two spools and weaves exactly those two, then counts the cloth it made' do
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('spin', ['silk']).twice
+        expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+        expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 16)
+      end
+
+      it 'weaves only the spools spin just made, never older recorded ones' do
+        UserVars.spun_spools = [{ 'id' => '1900000', 'fiber' => 'silk', 'weight' => 'heavy' }]
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+        allow(DRCI).to receive(:get_item?).and_return(true)
+
+        WeaveCloth.new
+
+        expect(DRCI).not_to have_received(:get_item?).with('#1900000')
+      end
+
+      it 'weaves two heavy spools a stopped run left recorded before spinning more (review on #7950)' do
+        UserVars.spun_spools = [{ 'id' => '1900000', 'fiber' => 'linen', 'weight' => 'heavy' }] + silk_spools
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(DRC).not_to have_received(:wait_for_script_to_complete)
+        expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+      end
+
+      it 'forgets a recorded pair that is no longer on hand and spins a new one, instead of stopping every run (re-review on #7950)' do
+        UserVars.spun_spools = [{ 'id' => '111', 'fiber' => 'silk', 'weight' => 'heavy' }, { 'id' => '222', 'fiber' => 'silk', 'weight' => 'heavy' }]
+        allow(DRCI).to receive(:get_item?) { |ref| !%w[#111 #222].include?(ref) }
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('look on loom', log('1104:30590'))
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'weave-cloth: Recorded spools #222, #111 are not on hand; forgot them and spinning a new pair.')
+
+        WeaveCloth.new
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('spin', ['silk']).twice
+        expect(game.sent.grep(/\Aput #\d+ on loom\z/)).to eq(['put #1963477 on loom', 'put #1958040 on loom'])
+        expect(UserVars.spun_spools.map { |spool| spool['id'] }).not_to include('111', '222')
+      end
+
+      it 'spins for the batch when only one heavy spool of the fiber is recorded' do
+        UserVars.spun_spools = [silk_spools.first, { 'id' => '1963477', 'fiber' => 'silk', 'weight' => 'thin' }]
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('spin', ['silk']).once
+      end
+
+      it 'does not start the second spin when the first made no spool' do
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk'])
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: spin made 0 of 2 silk spools; stopping.')
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+      end
+
+      it 'stops before weaving when the second spin makes no spool' do
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk']) do
+          UserVars.spun_spools = [{ 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }] if UserVars.spun_spools.empty?
+        end
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: spin made 1 of 2 silk spools; stopping.')
+        expect(DRCT).not_to receive(:find_empty_room)
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+      end
+
+      it 'does not count a spool of another fiber recorded meanwhile' do
+        allow(DRC).to receive(:wait_for_script_to_complete).with('spin', ['silk']) do
+          UserVars.spun_spools = UserVars.spun_spools + [{ 'id' => '1', 'fiber' => 'linen', 'weight' => 'heavy' }]
+        end
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+      end
+
+      it 'stops before buying more fiber when a batch adds no cloth, leaving the count for the caller' do
+        $script_vars = ArgParserModel.script_vars('silk 40')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        script_empty_loom_and_load(first: '1963477', second: '1958040')
+        script_weave
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Weaving added no silk cloth (0 yards on hand); stopping before buying more fiber.')
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:wait_for_script_to_complete).twice
+        expect(SessionVars['weave_cloth_stock']).to eq('fiber' => 'silk', 'yards' => 0)
+      end
+
+      it 'combines two pieces with the command the game answers (1104:32641)' do
+        cloth_comes_out(:left, '1976604')
+        cloth_comes_out(:right, '1976605')
+        game.script('combine silk cloth with silk cloth', combined, after: ->(_) { $right_hand = nil })
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth', log('1104:30876'))
+
+        WeaveCloth.new
+
+        expect(game.sent.count('combine silk cloth with silk cloth')).to eq(1)
+      end
+
+      it 'stops, the pieces in hand, when two pieces will not combine' do
+        cloth_comes_out(:left, '1976604')
+        cloth_comes_out(:right, '1976605')
+        game.script('combine silk cloth with silk cloth')
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Could not combine two pieces of silk cloth; they are in your hands.')
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+      end
+
+      it 'stops when the cloth will not count' do
+        cloth_comes_out(:left, '1976604')
+        game.script('get my silk cloth from my duffel bag', no_cloth)
+        game.script('count my silk cloth')
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Could not count the silk cloth; it is in your hand.')
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'stops before touching anything when the hands cannot be emptied' do
+      allow(DRCI).to receive(:stow_hands).and_return(false)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Could not empty your hands.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent).to be_empty
+    end
+
+    it 'refuses more than 1000 yards, more likely a spool id typed after the fiber' do
+      $script_vars = ArgParserModel.script_vars('silk 1958040')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Ask for 1000 yards or fewer.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(DRCI).not_to have_received(:put_away_item?)
+    end
+
+    it "clears an earlier run's count when it starts" do
+      SessionVars['weave_cloth_stock'] = { 'fiber' => 'silk', 'yards' => 99 }
+      allow(DRCI).to receive(:stow_hands).and_return(false)
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(SessionVars['weave_cloth_stock']).to be_nil
+    end
+  end
 end
