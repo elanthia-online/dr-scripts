@@ -2323,6 +2323,81 @@ RSpec.describe TaskMaster do
         expect(world[:sent]).to include('put #999 in my bucket')
         expect(world[:hands][:left]).to be_nil
       end
+
+      # "You are already holding that." adds no id to the hands, so the piece
+      # meant is picked from them. Picked by noun alone, the right hand came
+      # first and the player's own silk cloth went in the trash can.
+      it "bins the held burlap cloth by its id, never the player's silk cloth in the other hand, when the game says it is already held" do
+        silk = OpenStruct.new(name: 'silk cloth', noun: 'cloth', id: '111')
+        burlap = OpenStruct.new(name: 'burlap cloth', noun: 'cloth', id: '222')
+        world = stock_world({}, hands: { right: silk, left: burlap })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my burlap cloth from my duffel bag'
+            world[:hands][:left] ? 'You are already holding that.' : 'What were you referring to?'
+          when 'put #222 in my bucket'
+            world[:hands][:left] = nil
+            'You drop some burlap cloth in a bucket.'
+          when 'put #111 in my bucket'
+            world[:hands][:right] = nil
+            'You drop some silk cloth in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(1)
+        expect(world[:sent]).to include('put #222 in my bucket')
+        expect(world[:sent]).not_to include('put #111 in my bucket')
+        expect(world[:hands]).to eq(right: silk, left: nil)
+      end
+
+      it 'stops without binning anything when "already holding" leaves only the player\'s silk cloth in hand' do
+        silk = OpenStruct.new(name: 'silk cloth', noun: 'cloth', id: '111')
+        world = stock_world({}, hands: { right: silk })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my burlap cloth from my duffel bag'
+            'You are already holding that.'
+          when 'put #111 in my bucket'
+            world[:hands][:right] = nil
+            'You drop some silk cloth in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(world[:hands]).to eq(right: silk, left: nil)
+        expect(DRC).to have_received(:message).with(a_string_including('already hold the burlap cloth', 'not in your hands', 'Stopping'))
+      end
+
+      # The game names a "rat-pelt leather" by "rat leather": the stock word
+      # only starts a word of the name. Matching the whole stock name against
+      # the end of the item's name would miss every leftover rat-pelt piece.
+      it 'bins a held "rat-pelt leather" by its id when the game says the rat leather is already held' do
+        pelt = OpenStruct.new(name: 'rat-pelt leather', noun: 'leather', id: '333')
+        world = stock_world({}, hands: { left: pelt })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my rat leather from my duffel bag'
+            world[:hands][:left] ? 'You are already holding that.' : 'What were you referring to?'
+          when 'get my burlap cloth from my duffel bag', 'get my wool yarn from my duffel bag'
+            'What were you referring to?'
+          when 'put #333 in my bucket'
+            world[:hands][:left] = nil
+            'You drop some rat-pelt leather in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(1)
+        expect(world[:sent]).to include('put #333 in my bucket')
+        expect(world[:hands]).to eq(right: nil, left: nil)
+        expect(DRC).not_to have_received(:message).with(a_string_including('Stopping'))
+      end
     end
 
     describe 'binning task stock at the hand-in' do

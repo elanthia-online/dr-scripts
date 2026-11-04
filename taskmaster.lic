@@ -30,7 +30,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.04.6'
+  VERSION = '2026.11.05.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2220,9 +2220,9 @@ class TaskMaster
 
     # After "You get" only an id that newly appeared is the piece, never a
     # same-noun piece already in the other hand. "You are already holding
-    # that" adds no id, so only then is the held piece with that noun it.
+    # that" adds no id, so only then is the held piece of that stock it.
     id = (hand_ids - before).first
-    id ||= held_id(noun) if got.include?('already')
+    id ||= held_stock_id(stock, noun) if got.include?('already')
     return "##{id}" if id
 
     stock_not_found(stock, got)
@@ -2272,6 +2272,21 @@ class TaskMaster
   # @return [Boolean]
   def left_hands?(ref)
     !hand_ids.include?(ref.delete_prefix('#'))
+  end
+
+  # The id of a held piece of this stock: its noun, and every other word of
+  # the stock name starting a word of the piece's name, as the game matches
+  # them ("rat leather" names a "rat-pelt leather"), so the player's own
+  # "silk cloth" is never taken for "burlap cloth".
+  #
+  # @param stock [String] e.g. 'rat leather'
+  # @param noun [String] e.g. 'leather'
+  # @return [String, nil]
+  def held_stock_id(stock, noun)
+    words = stock.split[0...-1]
+    [GameObj.right_hand, GameObj.left_hand]
+      .find { |obj| obj&.noun == noun && obj.id && words.all? { |word| obj.name.to_s.match?(/\b#{Regexp.escape(word)}/) } }
+      &.id
   end
 
   # @return [Array<String>] the ids of what is in either hand
