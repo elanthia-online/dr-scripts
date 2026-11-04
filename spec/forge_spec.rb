@@ -102,8 +102,6 @@ RSpec.describe Forge do
 
     it 'defines RENTAL_RENEW_SUCCESS_PATTERNS as frozen array' do
       expect(Forge::RENTAL_RENEW_SUCCESS_PATTERNS).to be_frozen
-      expect(Forge::RENTAL_RENEW_SUCCESS_PATTERNS).to include('You mark the notice')
-      expect(Forge::RENTAL_RENEW_SUCCESS_PATTERNS).to include('renewed your rental')
     end
 
     it 'defines RENTAL_RENEW_FAILURE_PATTERNS as frozen array' do
@@ -482,19 +480,72 @@ RSpec.describe Forge do
         Flags['forge-rental-warning'] = true
       end
 
+      # The game's reply to MARK NOTICE (angua DR logs, 2026-10-12 to
+      # 2026-11-02): one line with the sentry's speech, then a bracketed line.
+      let(:renewal_reply) do
+        [
+          %(You reach to make your mark, signaling your intent to extend your forge rental.  The sentry holds out his hand, saying, "That'll be 23220 Kronars, sir."  You hand over the coins.  The sentry drops them into a nearby locked coffer.  "Right then, that's all settled.  You've got more time."),
+          '[Your private forge rental has been extended until Mon Nov  2 01:23:58 ET 2026.]'
+        ]
+      end
+
+      def bput_returns
+        @bput_returns ||= []
+      end
+
+      # Answers bput the way lich-5's DRC.bput does: strings become
+      # case-insensitive regexes, each line is tried against every pattern,
+      # the first match's text is returned, and '' means it timed out.
+      def reply_with(lines)
+        allow(DRC).to receive(:bput) do |_command, *matches|
+          regexes = matches.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+          hit = nil
+          lines.find { |line| regexes.find { |re| (hit = line.match(re)) } }
+          (bput_returns << (hit ? hit.to_a.first : '')).last
+        end
+      end
+
       it 'resets the forge-rental-warning flag' do
-        allow(DRC).to receive(:bput).and_return('You mark the notice')
+        reply_with(renewal_reply)
         forge_instance.send(:renew_forge_rental)
         expect(Flags['forge-rental-warning']).to eq(false)
       end
 
-      it 'logs success message on renewal' do
-        allow(DRC).to receive(:bput).and_return('You mark the notice')
+      it "logs success on the game's renewal reply instead of timing out" do
+        reply_with(renewal_reply)
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
         expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
         forge_instance.send(:renew_forge_rental)
+        expect(bput_returns).to eq(['[Your private forge rental has been extended until'])
       end
 
+      it 'logs success when the bracketed line carries leading XML tags' do
+        reply_with(['<pushBold/>[Your private forge rental has been extended until Thu Dec  3 00:56:41 ET 2026.]'])
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
+        forge_instance.send(:renew_forge_rental)
+        expect(bput_returns).to eq(['<pushBold/>[Your private forge rental has been extended until'])
+      end
+
+      it 'does not log a renewal when no reply is recognized' do
+        reply_with(['You glance around.'])
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: RENTAL RENEWAL NOT CONFIRMED - CHECK THE NOTICE')
+        expect(Lich::Messaging).not_to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
+        forge_instance.send(:renew_forge_rental)
+      end
+
+      it "does not take other players' text of the bracketed line as a renewal" do
+        line = '[Your private forge rental has been extended until Mon Nov  2 01:23:58 ET 2026.]'
+        allow(Lich::Messaging).to receive(:msg)
+        [%([General][Mallory] "#{line}"), %(Mallory says, "#{line}"), %(Mallory whispers, "#{line}")].each do |heard|
+          reply_with([heard])
+          forge_instance.send(:renew_forge_rental)
+        end
+        expect(Lich::Messaging).not_to have_received(:msg).with('plain', 'Forge: RENTAL RENEWED')
+      end
+
+      # Unverified wording: no failed renewal is in the logs.
       it 'logs error when insufficient funds' do
         allow(DRC).to receive(:bput).and_return("You don't have enough")
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
@@ -1402,7 +1453,10 @@ RSpec.describe Forge do
 
     describe 'ingot-restow and forge-rental-warning' do
       let(:restow_line) { "You realize the sword will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your pack." }
-      let(:rental_line) { 'Your rental time is almost up.' }
+      # The game's warning (angua DR log 2026-11-02) is the sentry's speech,
+      # which has a quote before the text, then this bracketed line.
+      let(:rental_line) { '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]' }
+      let(:sentry_line) { 'The sentry peeks in and gruffly announces, "Your rental time is almost up.  If you want to stay longer, you gotta pay up again."' }
 
       it 'sets both flags from the real lines with the same capture' do
         ["<pushBold/>#{restow_line}", restow_line].each do |line|
@@ -1414,8 +1468,13 @@ RSpec.describe Forge do
         expect(Flags['forge-rental-warning']).to be_truthy
       end
 
+      it 'sets the rental warning from the two game lines, with leading XML tags' do
+        deliver("<pushBold/>#{sentry_line}\r\n<pushBold/>#{rental_line}")
+        expect(Flags['forge-rental-warning']).to be_truthy
+      end
+
       it 'ignores both lines in speech, whispers or ESP' do
-        (player_shapes(restow_line) + player_shapes(rental_line)).each { |line| deliver(line) }
+        (player_shapes(restow_line) + player_shapes(rental_line) + player_shapes('Your rental time is almost up.')).each { |line| deliver(line) }
         expect(Flags['ingot-restow']).to be(false)
         expect(Flags['forge-rental-warning']).to be(false)
       end

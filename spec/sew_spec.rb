@@ -950,19 +950,56 @@ RSpec.describe Sew do
       end)
     end
 
-    context 'successful renewal' do
-      it 'marks the notice and reports success' do
-        allow(DRC).to receive(:bput).and_return('renewed your rental')
+    # The game's reply to MARK NOTICE (angua DR logs, 2026-10-12 to
+    # 2026-11-02): one line with the sentry's speech, then a bracketed line.
+    let(:renewal_reply) do
+      [
+        %(You reach to make your mark, signaling your intent to extend your forge rental.  The sentry holds out her hand, saying, "That'll be 19560 Kronars, madam."  You hand over the coins.  The sentry drops them into a nearby locked coffer.  "Right then, that's all settled.  You've got more time."),
+        '[Your private forge rental has been extended until Sat Nov 14 14:56:41 ET 2026.]'
+      ]
+    end
 
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL RENEWED ***')
+    def bput_returns
+      @bput_returns ||= []
+    end
+
+    # Answers bput the way lich-5's DRC.bput does: strings become
+    # case-insensitive regexes, each line is tried against every pattern,
+    # the first match's text is returned, and '' means it timed out.
+    def reply_with(lines)
+      allow(DRC).to receive(:bput) do |_command, *matches|
+        regexes = matches.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+        hit = nil
+        lines.find { |line| regexes.find { |re| (hit = line.match(re)) } }
+        (bput_returns << (hit ? hit.to_a.first : '')).last
+      end
+    end
+
+    context 'successful renewal' do
+      it "recognizes the game's renewal reply instead of timing out" do
+        reply_with(renewal_reply)
+        allow(Lich::Messaging).to receive(:msg)
 
         sew.send(:renew_rental)
+
+        expect(bput_returns).to eq(['[Your private forge rental has been extended until'])
+        expect(Lich::Messaging).to have_received(:msg).with('bold', '*** RENTAL RENEWED ***')
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /NOT CONFIRMED/)
+      end
+
+      it 'recognizes the bracketed line with leading XML tags' do
+        reply_with(['<pushBold/>[Your private forge rental has been extended until Thu Dec  3 00:56:41 ET 2026.]'])
+        allow(Lich::Messaging).to receive(:msg)
+
+        sew.send(:renew_rental)
+
+        expect(bput_returns).to eq(['<pushBold/>[Your private forge rental has been extended until'])
+        expect(Lich::Messaging).to have_received(:msg).with('bold', '*** RENTAL RENEWED ***')
       end
 
       it 'resets the rental warning flag' do
         Flags['sew-rental-warning'] = true
-        allow(DRC).to receive(:bput).and_return('renewed your rental')
+        reply_with(renewal_reply)
         allow(Lich::Messaging).to receive(:msg)
 
         sew.send(:renew_rental)
@@ -971,7 +1008,31 @@ RSpec.describe Sew do
       end
     end
 
+    context 'no recognized reply' do
+      it 'does not report a renewal when bput times out' do
+        reply_with(['You glance around.'])
+        allow(Lich::Messaging).to receive(:msg)
+
+        sew.send(:renew_rental)
+
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', '*** RENTAL RENEWED ***')
+        expect(Lich::Messaging).to have_received(:msg).with('bold', '*** RENTAL RENEWAL NOT CONFIRMED -- CHECK THE NOTICE ***')
+      end
+
+      it "does not take other players' text of the bracketed line as a renewal" do
+        allow(Lich::Messaging).to receive(:msg)
+        line = '[Your private forge rental has been extended until Sat Nov 14 14:56:41 ET 2026.]'
+        [%([General][Mallory] "#{line}"), %(Mallory says, "#{line}"), %(Mallory whispers, "#{line}")].each do |heard|
+          reply_with([heard])
+          sew.send(:renew_rental)
+        end
+
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', '*** RENTAL RENEWED ***')
+      end
+    end
+
     context 'insufficient funds' do
+      # Unverified wording: no failed renewal is in the logs.
       it 'warns about insufficient funds' do
         allow(DRC).to receive(:bput).and_return("You don't have enough")
 
@@ -988,17 +1049,6 @@ RSpec.describe Sew do
 
         expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
         expect(Lich::Messaging).to receive(:msg).with('bold', '*** COULD NOT FIND NOTICE -- CHECK LOCATION ***')
-
-        sew.send(:renew_rental)
-      end
-    end
-
-    context 'extends rental response' do
-      it 'treats extends as success' do
-        allow(DRC).to receive(:bput).and_return('extends your rental')
-
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
-        expect(Lich::Messaging).to receive(:msg).with('bold', '*** RENTAL RENEWED ***')
 
         sew.send(:renew_rental)
       end
@@ -2171,14 +2221,27 @@ RSpec.describe Sew do
     end
 
     describe "'sew-rental-warning'" do
-      it 'renews the rental on the game line' do
-        run_work('Your rental time is almost up.')
+      # The game's warning (angua DR log 2026-11-02): the sentry's speech,
+      # then a bracketed line. In the raw XML <pushBold/> is on its own line.
+      sentry_line = 'The sentry peeks in and gruffly announces, "Your rental time is almost up.  If you want to stay longer, you gotta pay up again."'
+      notice_line = '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]'
+
+      [notice_line, "<pushBold/>#{notice_line}"].each do |line|
+        it "renews the rental on the game line: #{line}" do
+          run_work(line)
+
+          expect(sent).to include('mark notice')
+        end
+      end
+
+      it 'renews when the warning arrives as the two game lines in one chunk' do
+        run_work("#{sentry_line}\r\n#{notice_line}")
 
         expect(sent).to include('mark notice')
       end
 
       it "does not renew when other players' text carries the warning" do
-        player_shapes('Your rental time is almost up.').each { |line| run_work(line) }
+        (player_shapes(notice_line) + player_shapes('Your rental time is almost up.')).each { |line| run_work(line) }
 
         expect(sent).not_to include('mark notice')
         expect(Flags['sew-rental-warning']).to be(false)

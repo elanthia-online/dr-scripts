@@ -61,14 +61,18 @@
 #     Harness::UserVars to add just that default (see combat_trainer_spec).
 #   - If a .lic method calls exit on a guard, drive it with
 #     `expect { ... }.to raise_error(SystemExit)` (or stub exit on the instance).
-#     A stray unwrapped exit terminates the whole run, not just the example.
+#     RSpec itself does not rescue SystemExit: an unwrapped exit would end the
+#     whole run there, counting only the examples run so far and leaving with
+#     the exit's own status (0 for a bare exit, even after failures). The
+#     global around hook at the bottom of this file turns such an exit into a
+#     failure of that example instead, so the rest of the suite still runs.
 #
 # Shared setup / why reset_data lives here (do not move it):
 #   - This file is loaded before every spec via .rspec (--require spec_helper). It
 #     loads the test harness, includes Harness at the top level, provides the
 #     load_lic_class / load_lic_module / load_lic_constant / load_lic_methods
 #     extraction helpers, and registers the single global before(:each)
-#     { reset_data } hook.
+#     { reset_data } hook and the global around(:each) exit guard.
 #   - Do NOT register a global RSpec.configure { config.before } in a spec.
 #     Same-scope before(:each) hooks run in the order they are registered, so a
 #     config.before(:each) runs before a group's own before hooks only when it
@@ -350,5 +354,22 @@ end
 RSpec.configure do |config|
   config.before(:each) do
     reset_data
+  end
+
+  # RSpec rescues everything an example raises except SystemExit (and signals
+  # and NoMemoryError: rspec-support AVOID_RESCUING),
+  # so code under test that calls exit (or abort) would end the whole process
+  # here: the examples after it never run, and the process leaves with the
+  # exit's status (0 for a bare exit, even when earlier examples failed), so a
+  # truncated run reads as green. Re-raise it as an ordinary error,
+  # which RSpec records as this example's failure; the SystemExit stays
+  # attached as the cause, so the report shows where exit was called. An
+  # example that asserts its exit with raise_error(SystemExit) catches it
+  # itself and never gets here.
+  config.around(:each) do |example|
+    example.run
+  rescue SystemExit => e
+    raise "the code under test called exit (status #{e.status}), which would end the whole " \
+          'rspec run here; assert it with expect { ... }.to raise_error(SystemExit), or stub exit'
   end
 end
