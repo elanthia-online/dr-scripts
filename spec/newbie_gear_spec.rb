@@ -45,6 +45,16 @@ RSpec.describe NewbieGear do
       expect(sent).to be_empty
     end
 
+    it 'does not trust a count an earlier run left, when weave-cloth does not run this time (review on #7952)' do
+      SessionVars['weave_cloth_stock'] = { 'fiber' => 'burlap', 'yards' => 200 }
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| scripts << [name, args] }
+      expect(DRCT).not_to receive(:order_item)
+
+      gear.restock_burlap('locker', [shirt])
+
+      expect(scripts.map(&:first)).to eq(['weave-cloth'])
+    end
+
     it 'does not spin, combine or count cloth itself' do
       gear.restock_burlap('locker', [shirt])
 
