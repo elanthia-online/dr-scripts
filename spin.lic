@@ -32,6 +32,8 @@ class Spin
     ]
     args = parse_args(arg_definitions)
 
+    # cost: the price of one bundle, in kronars (the shop asks the same price
+    # in its own currency: 135 Dokoras for silk in Shard, 1104:30056).
     mat_data = {
       'silk'   => { name: 'silk', index: 1, cost: 187, count: 14 },
       'cotton' => { name: 'cotton', index: 2, cost: 185, count: 8 },
@@ -41,31 +43,39 @@ class Spin
     }
 
     data = mat_data[args.material]
+    stop("Unknown fiber '#{args.material}'. Choose one of: #{mat_data.keys.join(', ')}.") unless data
     @settings = get_settings
-    @hometown = @settings.force_crafting_town || @settings.hometown
+    @hometown = DRCC.crafting_hometown(@settings)
     @bag = @settings.crafting_container
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.outfitting_belt
+    stock_room = get_data('crafting')['tailoring'].dig(@hometown, 'stock-room')
+    stop("No outfitting society stock room is known for #{@hometown || 'your crafting town'}.") unless stock_room
     stop('Could not empty your hands before buying fiber.') unless DRCI.stow_hands
-    DRCM.ensure_copper_on_hand(data[:cost] * data[:count], @settings, @hometown)
+    # The scissors come out before any money is spent, so missing scissors
+    # stop the run before it buys fiber it cannot cut.
+    @scissors = data[:name] == 'silk'
+    stop('Could not get your scissors for the silk cut.') if @scissors && !DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
+    # The shop prices each bundle in its own currency, rounded up (187
+    # kronars is 135 Dokoras, 1104:30056), so the bundle price is converted
+    # before it is multiplied.
+    currency = DRCM.town_currency(@hometown)
+    copper = DRCM.convert_currency(data[:cost], 'kronars', currency, 0) * data[:count]
+    stop_with_scissors("Could not get #{copper} copper #{currency} for the fiber.") unless DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
 
     data[:count].times do |index|
-      stock_room = get_data('crafting')['tailoring'][@hometown]['stock-room']
-      DRCT.order_item(stock_room, data[:index])
+      stop_with_scissors("The shop did not sell bundle #{index + 1} of #{data[:count]}; any bought so far are in your hands.") unless DRCT.order_item(stock_room, data[:index]) =~ /takes some coins/i
       if index == 0 && data[:name] == 'silk'
-        DRC.bput('mark my fibers at 10', /mark it for cutting/)
-        DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt)
-        DRC.bput('cut my fibers with my scissors', /You carefully cut off/)
+        stop_with_scissors('Could not mark the fiber for cutting; it is in your hands.') unless DRC.bput('mark my fibers at 10', /mark it for cutting/i, /^What were you/i) =~ /mark it for cutting/i
+        stop_with_scissors('Could not cut the fiber; it is in your hands.') unless DRC.bput('cut my fibers with my scissors', /You carefully cut off/i, /^What were you/i) =~ /You carefully cut off/i
         @bag = "other #{@bag}" unless DRCC.stow_crafting_item('scissors', @bag, @belt)
-      else
-        fput('combine my fiber')
+        @scissors = false
+      elsif index > 0
+        stop('Could not combine the fiber bundles; they are in your hands.') unless DRC.bput('combine my fiber', /You combine/i, /^What were you/i) =~ /You combine/i
       end
     end
 
-    until DRCC.find_wheel(@hometown)
-      move('go door')
-      pause 30
-    end
+    stop("Could not reach a spinning wheel in #{@hometown}.") unless DRCC.find_wheel(@hometown)
 
     @product = args.weight == 'yarn' ? 'yarn' : 'thread'
     stop('Could not put the fiber on the wheel.') unless DRC.bput('put fiber on wheel', /You carefully wrap/i, /^What were you/i) =~ /You carefully wrap/i
@@ -112,6 +122,16 @@ class Spin
   # @return [String, nil] the spool's name, or nil when neither hand holds one
   def spool_in_hand
     [DRC.left_hand, DRC.right_hand].compact.find { |held| held.split.last == @product }
+  end
+
+  # Puts the scissors back when they are still out, then stops.
+  #
+  # @param message [String] what went wrong
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop_with_scissors(message)
+    DRCC.stow_crafting_item('scissors', @bag, @belt) if @scissors
+    stop(message)
   end
 
   # Tells the player why spin stopped, then stops.
