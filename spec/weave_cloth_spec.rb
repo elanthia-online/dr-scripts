@@ -57,11 +57,15 @@ RSpec.describe WeaveCloth do
     game.script('weave loom', log('1104:30844'), log('1104:30845'))
     game.script('weave loom', log('1104:30847'), log('1104:30848'))
     game.script('weave loom', log('1104:30850'), log('1104:30851'), log('1104:30852'))
-    # The cloth is in hand once the reply has arrived (XML: <left exist=...
-    # noun="cloth">silk cloth</left> with the snip line).
+    # The cloth is in hand once the reply has arrived (XML: <left
+    # exist="1976604" noun="cloth">silk cloth</left> with the snip line).
     game.script('push loom', log('1104:30858'), log('1104:30859'), log('1104:30860'),
-                after: ->(_) { $left_hand = 'silk cloth' })
-    game.script('stow my cloth', log('1104:30870'))
+                after: lambda { |_|
+                  $left_hand = 'silk cloth'
+                  $hand_ids['silk cloth'] = '1976604'
+                })
+    # The loom after the weave; no log looks at it then.
+    game.fallback('look on loom', log('1104:30590'))
   end
 
   # An empty loom, then both spools loaded (1104:30799, 30803, 30815).
@@ -275,9 +279,11 @@ RSpec.describe WeaveCloth do
       game.script('put #1963477 on loom', log('1104:30803'))
       game.script('put #1958040 on loom', log('1104:30815'))
       script_weave
-      expect(DRCI).to receive(:put_away_item?).with('#1626431', 'duffel bag').and_return(true)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
 
       WeaveCloth.new
+
+      expect(DRCI).to have_received(:put_away_item?).with('#1626431', 'duffel bag')
     end
 
     it "puts anyone else's thread back on the loom and passes the room over, dropping nothing" do
@@ -389,6 +395,185 @@ RSpec.describe WeaveCloth do
 
       expect { WeaveCloth.new }.to raise_error(SystemExit)
       expect(game.sent).not_to include('pull loom')
+    end
+  end
+
+  describe 'weaving' do
+    before { script_empty_loom_and_load }
+
+    context 'the whole 16-yard heavy silk weave from the log' do
+      before { script_weave }
+
+      it 'answers each loom problem with its fix, then weaves on' do
+        WeaveCloth.new
+
+        weave_commands = game.sent.drop_while { |command| command != 'weave loom' }.take(9)
+        expect(weave_commands).to eq(
+          ['weave loom', 'weave loom', 'turn loom', 'weave loom', 'clean loom',
+           'weave loom', 'weave loom', 'weave loom', 'push loom']
+        )
+      end
+
+      it 'puts the cloth in the crafting container by its id, not in the stow container' do
+        expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+        WeaveCloth.new
+
+        expect(game.sent.grep(/\Astow\b/)).to be_empty
+      end
+
+      it 'says where the cloth went' do
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'weave-cloth: Put the silk cloth (#1976604) in your duffel bag.')
+
+        WeaveCloth.new
+      end
+
+      it 'stops with a message, the cloth in hand, when it will not go into the container' do
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: Could not put the silk cloth (#1976604) in your duffel bag; it is in your hand.')
+
+        expect { WeaveCloth.new }.to raise_error(SystemExit)
+        expect(UserVars.spun_spools).to eq([])
+      end
+
+      it 'keeps weaving when a background script puts something else in a hand' do
+        game.override('clean loom', log('1104:30840'), log('1104:30841'), after: ->(_) { $right_hand = 'encyclopedic almanac' })
+        expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+        WeaveCloth.new
+
+        expect(game.sent).to include('push loom')
+      end
+    end
+
+    it 'stops on "needs to have 2 sections of thread" instead of weaving forever, putting both spools back (1104:30615)' do
+      game.script('weave loom', log('1104:30615'))
+      game.script('pull loom', log('1104:30752'), after: lambda { |_|
+        $left_hand = 'silk thread'
+        $hand_ids['silk thread'] = '1963477'
+      })
+      game.script('pull loom', log('1104:30752'), after: lambda { |_|
+        $right_hand = 'silk thread'
+        $hand_ids['silk thread'] = '1958040'
+      })
+      expect(DRCI).to receive(:put_away_item?).with('#1963477', 'duffel bag').and_return(true)
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: The loom will not weave the spools: each needs 10 yards or more. The spools are back in your bag.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent.count('weave loom')).to eq(1)
+      expect(UserVars.spun_spools).to eq(silk_spools)
+    end
+
+    it 'says how many spools are still on the loom when it cannot pull them back' do
+      game.script('weave loom', log('1104:30615'))
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: The loom will not weave the spools: each needs 10 yards or more. 2 of 2 spools are still on the loom or in your hands.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent.count('pull loom')).to eq(2)
+    end
+
+    it 'stops with a message after three unanswered weaves, trying to pull the spools back' do
+      expect(Lich::Messaging).to receive(:msg).with('bold', "weave-cloth: The loom did not answer 'weave loom' 3 times in a row. 2 of 2 spools are still on the loom or in your hands.")
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent.count('weave loom')).to eq(3)
+      expect(game.sent).not_to include('stow my cloth')
+    end
+
+    it 'starts the count again after a weave the game answers' do
+      game.script('weave loom')
+      game.script('weave loom')
+      game.script('weave loom', log('1104:30817'), log('1104:30818'))
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(game.sent.count('weave loom')).to eq(6)
+    end
+
+    it 'stops after 100 commands when the cloth never comes' do
+      endless = ReplayGame.new(send_budget: 200).install(self)
+      endless.script('look on loom', log('1104:30590'))
+      endless.script('put #1963477 on loom', log('1104:30803'))
+      endless.script('put #1958040 on loom', log('1104:30815'))
+      endless.fallback('weave loom', log('1104:30817'), log('1104:30818'))
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'weave-cloth: No cloth after 100 commands to the loom. 2 of 2 spools are still on the loom or in your hands.')
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(endless.sent.count('weave loom')).to eq(100)
+    end
+  end
+
+  describe 'thread left on the loom after the weave' do
+    let(:loaded_with_silk) { ReplayGame.code('The loom is loaded with some heavy silk thread.', from: 'weave-cloth.lic@c2739670:6') }
+    let(:nothing_to_pull) { ReplayGame.code('You see nothing to pull.', from: 'weave-cloth.lic@c2739670:8') }
+
+    before do
+      script_empty_loom_and_load
+      script_weave
+      game.script('look on loom', loaded_with_silk)
+      game.script('pull loom', log('1104:30752'), after: lambda { |_|
+        $right_hand = 'silk thread'
+        $hand_ids['silk thread'] = '1980000'
+      })
+      game.script('pull loom', nothing_to_pull)
+    end
+
+    it 'takes it into the crafting container and records it as a spool of the woven thread' do
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+      WeaveCloth.new
+
+      expect(DRCI).to have_received(:put_away_item?).with('#1980000', 'duffel bag')
+      expect(UserVars.spun_spools).to eq([{ 'id' => '1980000', 'fiber' => 'silk', 'weight' => 'heavy' }])
+    end
+
+    it 'takes it off before putting the cloth away, so a cloth that will not go in strands nothing' do
+      allow(DRCI).to receive(:put_away_item?) { |ref, _bag| ref != '#1976604' }
+
+      expect { WeaveCloth.new }.to raise_error(SystemExit)
+      expect(DRCI).to have_received(:put_away_item?).with('#1980000', 'duffel bag').ordered
+      expect(DRCI).to have_received(:put_away_item?).with('#1976604', 'duffel bag').ordered
+      expect(UserVars.spun_spools).to eq([{ 'id' => '1980000', 'fiber' => 'silk', 'weight' => 'heavy' }])
+    end
+
+    it 'does not record it when the woven spools were given by id and not recorded' do
+      UserVars.spun_spools = nil
+      $parse_args_model = true
+      $script_vars = ArgParserModel.script_vars('1963477 1958040')
+
+      WeaveCloth.new
+
+      expect(UserVars.spun_spools).to eq([])
+    end
+  end
+
+  describe 'after the weave' do
+    before do
+      script_empty_loom_and_load
+      script_weave
+    end
+
+    it 'takes two threads left on the loom, both into the crafting container and the record' do
+      game.script('look on loom', ReplayGame.code('The loom is loaded with some heavy silk thread and some heavy silk thread.', from: 'weave-cloth.lic@c2739670:6'))
+      game.script('pull loom', log('1104:30752'), after: lambda { |_|
+        $right_hand = 'silk thread'
+        $hand_ids['silk thread'] = '1980001'
+      })
+      game.script('pull loom', log('1104:30752'), after: ->(_) { $hand_ids['silk thread'] = '1980002' })
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+      WeaveCloth.new
+
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).to eq(%w[1980001 1980002])
+    end
+
+    it 'still puts the cloth away when the look at the loom goes unanswered' do
+      game.script('look on loom')
+      allow(Lich::Messaging).to receive(:msg)
+      expect(Lich::Messaging).to receive(:msg).with('plain', 'weave-cloth: Could not see whether thread is left on the loom.')
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+      WeaveCloth.new
     end
   end
 
