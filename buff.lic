@@ -19,9 +19,15 @@ class Waggle
 
     if (args.set)
       set = args.set.split('=')[1]
+      spells = settings.waggle_sets[set]
+      unless spells
+        DRC.message("No waggle set found for name: #{set}")
+        exit
+      end
+
       DRC.message("Spells under Waggle set \"#{set}\"")
-      settings.waggle_sets[set].each_key do |key|
-        DRC.message(" - #{key}")
+      set_entries(spells).each do |entry|
+        DRC.message(" - #{entry}")
       end
       exit
     end
@@ -41,11 +47,7 @@ class Waggle
       exit
     end
 
-    if args.force
-      settings.waggle_sets[setname].values.each do |spell_data|
-        spell_data['recast'] = 99 # force spell to be recast
-      end
-    end
+    force_recast(settings.waggle_sets[setname], setname) if args.force
 
     if args.strict
       until (spells_to_wait_on(settings.waggle_sets[setname]) - DRSpells.active_spells.keys).empty?
@@ -53,6 +55,27 @@ class Waggle
       end
     else
       DRCA.do_buffs(settings, setname)
+    end
+  end
+
+  # The entries of a waggle set, as set= lists them: a spell set's spell names,
+  # or a thief's or barbarian's list as written.
+  def set_entries(spells)
+    spells.is_a?(Hash) ? spells.keys : Array(spells)
+  end
+
+  # force: makes DRCA.cast_spells recast each spell in a spell set unless it
+  # has more than 99 minutes left. Thief and barbarian sets are lists, and
+  # DRCA.start_khris and DRCA.start_barb_abilities only start what isn't
+  # active, so for them force has nothing to change.
+  def force_recast(spells, setname)
+    unless spells.is_a?(Hash)
+      DRC.message("Waggle set \"#{setname}\" is a list of khri or abilities, so force doesn't apply: they're only started when they aren't already active.")
+      return
+    end
+
+    spells.each_value do |spell_data|
+      spell_data['recast'] = 99 # force spell to be recast
     end
   end
 
