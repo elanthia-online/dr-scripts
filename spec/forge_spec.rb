@@ -337,6 +337,74 @@ RSpec.describe Forge do
       end
     end
 
+    # Saelia log 2026-11-04 13:39: a 'hold' run left a loimic slender awl in
+    # the left hand, the next run untied the mallet into the right, and
+    # 'get my loimic ingot' got "You need a free hand to pick that up."
+    describe '#free_hand_for_ingot' do
+      let(:hands) { { left: nil, right: nil } }
+      let(:stowed) { [] }
+
+      before do
+        forge_instance.instance_variable_set(:@hammer, 'silversteel mallet')
+        forge_instance.instance_variable_set(:@metal, 'loimic')
+        allow(DRC).to receive(:left_hand) { hands[:left] }
+        allow(DRC).to receive(:right_hand) { hands[:right] }
+        allow(DRCI).to receive(:in_right_hand?) { |item| hands[:right]&.include?(item.split.last) }
+        allow(DRCC).to receive(:stow_crafting_item) do |name, _bag, _belt|
+          stowed << name
+          hands.each_key { |hand| hands[hand] = nil if hands[hand] == name }
+          true
+        end
+        allow(forge_instance).to receive(:magic_cleanup)
+      end
+
+      it 'does nothing when a hand is already free' do
+        hands[:right] = 'silversteel mallet'
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to be_empty
+      end
+
+      it 'does nothing when both hands are empty' do
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to be_empty
+      end
+
+      it 'stows the left-hand item and keeps the hammer in the right hand' do
+        hands.merge!(left: 'slender awl', right: 'silversteel mallet')
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to eq(['slender awl'])
+        expect(hands).to eq(left: nil, right: 'silversteel mallet')
+      end
+
+      it 'stows the right-hand item when the hammer is in the left hand' do
+        hands.merge!(left: 'silversteel mallet', right: 'slender awl')
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to eq(['slender awl'])
+        expect(hands).to eq(left: 'silversteel mallet', right: nil)
+      end
+
+      it 'exits instead of attempting the get when the stow leaves both hands full' do
+        hands.merge!(left: 'slender awl', right: 'silversteel mallet')
+        allow(DRCC).to receive(:stow_crafting_item).with('slender awl', anything, anything).and_return(false)
+        allow(DRCC).to receive(:stow_crafting_item).with('silversteel mallet', anything, anything)
+        expect(Lich::Messaging).to receive(:msg).with('plain', /Stowing slender awl/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Need a free hand for the loimic ingot, but could not stow slender awl.')
+        expect { forge_instance.send(:free_hand_for_ingot) }.to raise_error(SystemExit)
+      end
+
+      it 'frees the hand before prep_ingot asks for the ingot' do
+        hands.merge!(left: 'slender awl', right: 'silversteel mallet')
+        allow(forge_instance).to receive(:ready_hammer_with_tongs)
+        allow(DRC).to receive(:bput)
+        allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
+        expect(DRCC).to receive(:get_crafting_item).with('loimic ingot', 'backpack', [], nil, true) do
+          expect(hands[:left]).to be_nil
+        end
+        forge_instance.send(:prep_ingot)
+        expect(stowed).to eq(['slender awl'])
+      end
+    end
+
     describe '#prepare_item_in_left_hand' do
       it 'returns true immediately when item already in left hand' do
         allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(true)
