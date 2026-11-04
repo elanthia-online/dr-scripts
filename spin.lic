@@ -2,7 +2,51 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#spin
 =end
 
+# Spins one spool of thread (or yarn) at the crafting town's outfitting
+# society: buys a full wheel of fiber, spins it, puts the spool in the
+# crafting container by id, and records the spool for weave-cloth.
+#
+# @example Two heavy silk spools, then cloth
+#   ;spin silk
+#   ;spin silk
+#   ;weave-cloth
 class Spin
+  # @return [Array<Array<Hash>>] the argument forms parse_args accepts
+  ARG_DEFINITIONS = [
+    [
+      { name: 'material', options: %w[silk cotton linen wool burlap], description: 'fiber to spin' },
+      { name: 'weight', options: %w[fine thin average thick heavy yarn], optional: true, description: 'Thickness, defaults to heavy' }
+    ]
+  ].freeze
+
+  # The weight spin uses when none is given.
+  DEFAULT_WEIGHT = 'heavy'
+
+  # Fiber sold at the outfitting society stock rooms. A wheel holds 400
+  # yards of fiber, and each entry is meant to buy that (Mahtra's log
+  # confirms silk: 10 + 13 x 30; the other bundle sizes are not in any log):
+  # - order: the stock room's order number;
+  # - kronars: the price of one bundle, in kronars (the shop asks the same
+  #   price in its own currency: 135 Dokoras for 30 yards of silk in Shard,
+  #   1104:30056);
+  # - bundles: how many bundles fill the wheel;
+  # - cut_first_to: yards to cut the first bundle down to, when the bundles
+  #   overshoot 400 (silk: 10 + 13 x 30).
+  FIBERS = {
+    'silk'   => { order: 1, kronars: 187, bundles: 14, cut_first_to: 10 },
+    'cotton' => { order: 2, kronars: 185, bundles: 8 },
+    'linen'  => { order: 3, kronars: 167, bundles: 8 },
+    'wool'   => { order: 4, kronars: 133, bundles: 8 },
+    'burlap' => { order: 5, kronars: 201, bundles: 4 }
+  }.freeze
+
+  # The attendant's reply when an order goes through (1104:30058).
+  ORDER_TAKEN = /takes some coins/i.freeze
+
+  # The game's reply to a command naming something you do not have
+  # (1104:30072).
+  NOT_FOUND = /^What were you/i.freeze
+
   # Wheel problems the game reports while spinning, and the command that
   # fixes each one. Every problem line arrives before the step's Roundtime
   # line, so the first pattern DRC.bput matches is the problem, if any.
@@ -19,6 +63,10 @@ class Spin
   # Unanswered or unrecognised replies in a row before spin gives up.
   MAX_UNMATCHED = 3
 
+  # Commands sent to the wheel before spin gives up on finishing the spool.
+  # The first heavy silk spool in Mahtra's log took 10 spins and 5 fixes.
+  MAX_STEPS = 100
+
   # Where spin records each spool it makes, so weave-cloth can load exactly
   # those spools by id. Each entry is
   # { 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }, oldest
@@ -28,74 +76,100 @@ class Spin
   # Most spools the record keeps; the oldest are forgotten first.
   MAX_RECORDED_SPOOLS = 20
 
-  # Commands sent to the wheel before spin gives up on finishing the spool.
-  # The first heavy silk spool in Mahtra's log took 10 spins and 5 fixes.
-  MAX_STEPS = 100
-
+  # Spins one spool, start to finish.
+  #
+  # @raise [SystemExit] with a message on any step that fails
   def initialize
-    arg_definitions = [
-      [
-        { name: 'material', options: %w[silk cotton linen wool burlap], description: 'fiber to spin' },
-        { name: 'weight', options: %w[fine thin average thick heavy yarn], optional: true, description: 'Thickness, defaults to heavy' }
-      ]
-    ]
-    args = parse_args(arg_definitions)
+    args = parse_args(ARG_DEFINITIONS)
+    @fiber_name = args.material
+    @fiber = FIBERS[@fiber_name] || stop("Unknown fiber '#{@fiber_name}'. Choose one of: #{FIBERS.keys.join(', ')}.")
+    @weight = args.weight || DEFAULT_WEIGHT
+    @product = @weight == 'yarn' ? 'yarn' : 'thread'
 
-    # cost: the price of one bundle, in kronars (the shop asks the same price
-    # in its own currency: 135 Dokoras for silk in Shard, 1104:30056).
-    mat_data = {
-      'silk'   => { name: 'silk', index: 1, cost: 187, count: 14 },
-      'cotton' => { name: 'cotton', index: 2, cost: 185, count: 8 },
-      'linen'  => { name: 'linen', index: 3, cost: 167, count: 8 },
-      'wool'   => { name: 'wool', index: 4, cost: 133, count: 8 },
-      'burlap' => { name: 'burlap', index: 5, cost: 201, count: 4 }
-    }
-
-    data = mat_data[args.material]
-    stop("Unknown fiber '#{args.material}'. Choose one of: #{mat_data.keys.join(', ')}.") unless data
     @settings = get_settings
     @hometown = DRCC.crafting_hometown(@settings)
     @bag = @settings.crafting_container
     @bag_items = @settings.crafting_items_in_container
     @belt = @settings.outfitting_belt
-    stock_room = get_data('crafting')['tailoring'].dig(@hometown, 'stock-room')
-    stop("No outfitting society stock room is known for #{@hometown || 'your crafting town'}.") unless stock_room
-    stop('Could not empty your hands before buying fiber.') unless DRCI.stow_hands
-    # The scissors come out before any money is spent, so missing scissors
-    # stop the run before it buys fiber it cannot cut.
-    @scissors = data[:name] == 'silk'
-    stop('Could not get your scissors for the silk cut.') if @scissors && !DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
-    # The shop prices each bundle in its own currency, rounded up (187
-    # kronars is 135 Dokoras, 1104:30056), so the bundle price is converted
-    # before it is multiplied.
-    currency = DRCM.town_currency(@hometown)
-    copper = DRCM.convert_currency(data[:cost], 'kronars', currency, 0) * data[:count]
-    stop_with_scissors("Could not get #{copper} copper #{currency} for the fiber.") unless DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
+    @stock_room = get_data('crafting')['tailoring'].dig(@hometown, 'stock-room') ||
+                  stop("No outfitting society stock room is known for #{@hometown || 'your crafting town'}.")
 
-    data[:count].times do |index|
-      stop_with_scissors("The shop did not sell bundle #{index + 1} of #{data[:count]}; any bought so far are in your hands.") unless DRCT.order_item(stock_room, data[:index]) =~ /takes some coins/i
-      if index == 0 && data[:name] == 'silk'
-        stop_with_scissors('Could not mark the fiber for cutting; it is in your hands.') unless DRC.bput('mark my fibers at 10', /mark it for cutting/i, /^What were you/i) =~ /mark it for cutting/i
-        stop_with_scissors('Could not cut the fiber; it is in your hands.') unless DRC.bput('cut my fibers with my scissors', /You carefully cut off/i, /^What were you/i) =~ /You carefully cut off/i
-        DRCC.stow_crafting_item('scissors', @bag, @belt)
-        @scissors = false
-      elsif index > 0
-        stop('Could not combine the fiber bundles; they are in your hands.') unless DRC.bput('combine my fiber', /You combine/i, /^What were you/i) =~ /You combine/i
-      end
-    end
-
-    stop("Could not reach a spinning wheel in #{@hometown}.") unless DRCC.find_wheel(@hometown)
-
-    @product = args.weight == 'yarn' ? 'yarn' : 'thread'
-    stop('Could not put the fiber on the wheel.') unless DRC.bput('put fiber on wheel', /You carefully wrap/i, /^What were you/i) =~ /You carefully wrap/i
-    stop("Could not set the wheel to #{args.weight || 'heavy'}.") unless DRC.bput("adjust wheel to #{args.weight || 'heavy'}", /You adjust the wheel/i, /^What were you/i) =~ /You adjust the wheel/i
-
+    prepare
+    pay_for_fiber
+    buy_fiber
+    load_wheel
     spin_until_done
-
-    store_spool(spool_in_hand, args.material, args.weight || 'heavy')
+    store_spool(spool_in_hand)
   end
 
   private
+
+  # Empties the hands, and gets the scissors when the first bundle needs a
+  # cut. The scissors come out before any money is spent, so missing
+  # scissors stop the run before it buys fiber it cannot cut.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the hands cannot be emptied or the scissors
+  #   cannot be got
+  def prepare
+    stop('Could not empty your hands before buying fiber.') unless DRCI.stow_hands
+    @scissors = !@fiber[:cut_first_to].nil?
+    stop('Could not get your scissors for the silk cut.') if @scissors && !DRCC.get_crafting_item('scissors', @bag, @bag_items, @belt, true)
+  end
+
+  # Makes sure the coins for a wheel of fiber are on hand. The shop prices
+  # each bundle in its own currency, rounded up (187 kronars is 135
+  # Dokoras, 1104:30056), so the bundle price is converted before it is
+  # multiplied.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the coins cannot be got
+  def pay_for_fiber
+    currency = DRCM.town_currency(@hometown)
+    copper = DRCM.convert_currency(@fiber[:kronars], 'kronars', currency, 0) * @fiber[:bundles]
+    stop_with_scissors("Could not get #{copper} copper #{currency} for the fiber.") unless DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
+  end
+
+  # Buys a wheel of fiber into one bundle in hand: cuts the first bundle
+  # down when the fiber needs it, and combines each later one into it.
+  #
+  # @return [void]
+  # @raise [SystemExit] when a bundle is not sold, cut or combined
+  def buy_fiber
+    @fiber[:bundles].times do |index|
+      bought = DRCT.order_item(@stock_room, @fiber[:order])
+      stop_with_scissors("The shop did not sell bundle #{index + 1} of #{@fiber[:bundles]}; any bought so far are in your hands.") unless ORDER_TAKEN.match?(bought.to_s)
+      if index.zero?
+        cut_first_bundle if @fiber[:cut_first_to]
+      else
+        send_checked('combine my fiber', /You combine/i, 'Could not combine the fiber bundles; they are in your hands.')
+      end
+    end
+  end
+
+  # Cuts the first bundle down to {FIBERS}' cut_first_to yards and puts the
+  # scissors back. The game puts the excess in a container by itself
+  # (1104:30068).
+  #
+  # @return [void]
+  # @raise [SystemExit] when the fiber is not marked or cut
+  def cut_first_bundle
+    send_checked("mark my fibers at #{@fiber[:cut_first_to]}", /mark it for cutting/i, 'Could not mark the fiber for cutting; it is in your hands.')
+    send_checked('cut my fibers with my scissors', /You carefully cut off/i, 'Could not cut the fiber; it is in your hands.')
+    DRCC.stow_crafting_item('scissors', @bag, @belt)
+    @scissors = false
+  end
+
+  # Walks to a free wheel (DRCT waits for one to come free), puts the fiber on it and sets the weight.
+  #
+  # @return [void]
+  # @raise [SystemExit] when no wheel can be reached, or the wheel refuses
+  #   either
+  def load_wheel
+    stop("Could not reach a spinning wheel in #{@hometown}.") unless DRCC.find_wheel(@hometown)
+    send_checked('put fiber on wheel', /You carefully wrap/i, 'Could not put the fiber on the wheel.')
+    send_checked("adjust wheel to #{@weight}", /You adjust the wheel/i, "Could not set the wheel to #{@weight}.")
+  end
 
   # Spins the wheel, fixing each problem the game reports, until the spool is
   # in hand.
@@ -140,34 +214,43 @@ class Spin
   # and is not recorded.
   #
   # @param hand [GameObj] the hand holding the spool
-  # @param fiber [String] the fiber it was spun from, e.g. 'silk'
-  # @param weight [String] the weight it was spun at, e.g. 'heavy'
   # @return [void]
   # @raise [SystemExit] when the spool will not go into the container
-  def store_spool(hand, fiber, weight)
+  def store_spool(hand)
     unless hand.id
       Lich::Messaging.msg('bold', "spin: The #{hand.name} has no id, so weave-cloth will not know it.")
       stop("Could not put the #{hand.name} in your #{@bag}; it is in your hand.") unless DRCI.put_away_item?(hand.name, @bag)
       return
     end
 
-    record_spool(hand.id.to_s, fiber, weight)
+    record_spool(hand.id.to_s)
     stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless DRCI.put_away_item?("##{hand.id}", @bag)
-    Lich::Messaging.msg('plain', "spin: Put the #{weight} #{hand.name} (##{hand.id}) in your #{@bag}.")
+    Lich::Messaging.msg('plain', "spin: Put the #{@weight} #{hand.name} (##{hand.id}) in your #{@bag}.")
   end
 
   # Adds a spool to the record weave-cloth reads, keeping the newest
-  # {MAX_RECORDED_SPOOLS}.
+  # {MAX_RECORDED_SPOOLS}. A record that is not a list of spools is started
+  # afresh.
   #
   # @param id [String] the spool's id
-  # @param fiber [String] the fiber it was spun from
-  # @param weight [String] the weight it was spun at
   # @return [void]
-  def record_spool(id, fiber, weight)
+  def record_spool(id)
     recorded = UserVars.send(SPOOL_RECORD)
     spools = (recorded.is_a?(Array) ? recorded : []).select { |spool| spool.is_a?(Hash) && spool['id'] && spool['id'] != id }
-    spools << { 'id' => id, 'fiber' => fiber, 'weight' => weight }
+    spools << { 'id' => id, 'fiber' => @fiber_name, 'weight' => @weight }
     UserVars.send("#{SPOOL_RECORD}=", spools.last(MAX_RECORDED_SPOOLS))
+  end
+
+  # Sends a command and stops unless the game answers with the expected
+  # reply, putting the scissors back first when they are still out.
+  #
+  # @param command [String] the command
+  # @param success [Regexp] the reply that means it worked
+  # @param failure [String] what to tell the player when it did not
+  # @return [void]
+  # @raise [SystemExit] on any other reply, or none
+  def send_checked(command, success, failure)
+    stop_with_scissors(failure) unless success.match?(DRC.bput(command, success, NOT_FOUND))
   end
 
   # Puts the scissors back when they are still out, then stops.
