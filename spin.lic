@@ -224,8 +224,22 @@ class Spin
     end
 
     record_spool(hand.id.to_s)
-    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless DRCI.put_away_item?("##{hand.id}", @bag)
+    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless DRCI.put_away_item?("##{hand.id}", crafting_container_ref)
     Lich::Messaging.msg('plain', "spin: Put the #{@weight} #{hand.name} (##{hand.id}) in your #{@bag}.")
+  end
+
+  # The crafting container as a command names it: by id when it is worn,
+  # so another item of the same noun cannot catch the put (a crafting
+  # container that is a duffel bag, while a duffel bag is being sewn); by
+  # name otherwise. "put #<id> in #<id>" works in game (1104:35084-35085:
+  # "You put your book in your duffel bag.").
+  #
+  # @return [String] '#<id>' or the container's name
+  def crafting_container_ref
+    return @bag unless @bag
+
+    worn = (GameObj.inv || []).find { |item| item.name.to_s =~ /\b#{Regexp.escape(@bag)}\z/i }
+    worn&.id ? "##{worn.id}" : @bag
   end
 
   # Adds a spool to the record weave-cloth reads, keeping the newest

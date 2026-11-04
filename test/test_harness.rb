@@ -467,6 +467,19 @@ module Harness
     def self.right_hand=(val)
       Harness.right_hand(val)
     end
+
+    # @return [Array<OpenStruct>, nil] the worn items, as GameObj.inv lists
+    #   them (name, noun, id); nil, as in lich-5, before any were streamed.
+    #   Specs set $worn_items; reset_data empties it.
+    def self.inv
+      $worn_items
+    end
+
+    # @return [Hash{String => Array<OpenStruct>}] container id => the
+    #   contents GameObj knows; specs set $containers, reset_data empties it
+    def self.containers
+      $containers || {}
+    end
   end
 
   class Flags
@@ -929,6 +942,8 @@ module Harness
     $right_hand = nil
     # Held item full name => the game's id GameObj shows for it.
     $hand_ids = {}
+    $worn_items = []
+    $containers = {}
 
     Flags._reset
     DRSpells._reset

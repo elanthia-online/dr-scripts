@@ -573,4 +573,78 @@ RSpec.describe Spin do
       expect(Spin::FIBERS['silk'][:cut_first_to] + ((Spin::FIBERS['silk'][:bundles] - 1) * 30)).to eq(400)
     end
   end
+
+  describe 'naming the crafting container' do
+    before { script_silk_spin }
+
+    it 'puts the spool in the worn crafting container by its id, so a duffel bag being sewn cannot catch it' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag', noun: 'bag', id: '1222175'),
+                     OpenStruct.new(name: "scuffed traveler's pack", noun: 'pack', id: '1222003')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'names the container when it is not worn' do
+      $worn_items = [OpenStruct.new(name: "scuffed traveler's pack", noun: 'pack', id: '1222003')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+    end
+
+    it 'names the container when GameObj has not streamed the worn items yet (GameObj.inv is nil)' do
+      $worn_items = nil
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+    end
+
+    it 'does not take a worn item whose name only contains the container name' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag strap', noun: 'strap', id: '1')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+    end
+  end
+
+  # Every wheel reply in Mahtra's seven silk spins on 2026-11-04 (1104 log).
+  describe 'the wheel replies seen in game' do
+    {
+      '1104:30219' => 'clean wheel', # "...dull shade from grime..."
+      '1104:30231' => 'turn wheel',  # "A counter-twist in the fiber strand..."
+      '1104:31649' => 'turn wheel',  # "Individual strands of the fiber begin twisting apart unevenly."
+      '1104:30274' => 'push wheel',  # "...begins to slide down the wheel..."
+      '1104:30507' => 'push wheel'   # "One half of the fiber bundle begins to slip from the wheel and bunch together."
+    }.each do |cite, fix|
+      it "answers #{cite} with #{fix}" do
+        line = log(cite).text
+        expect(Spin::WHEEL_FIXES.find { |problem, _| problem.match?(line) }&.last).to eq(fix)
+      end
+    end
+
+    %w[1104:30215 1104:30230 1104:30254 1104:30484 1104:31648].each do |cite|
+      it "takes the ordinary spin line #{cite} for no problem" do
+        expect(Spin::WHEEL_FIXES.keys.none? { |problem| problem.match?(log(cite).text) }).to be(true)
+      end
+    end
+
+    it 'fixes a problem that arrives in its own reply, then spins on (1104:30505-30508)' do
+      game.script('mark my fibers at 10', log('1104:30060'))
+      game.script('cut my fibers with my scissors', log('1104:30068'))
+      13.times { game.script('combine my fiber', log('1104:30101')) }
+      game.script('put fiber on wheel', log('1104:30204'), after: ->(_) { $left_hand = nil })
+      game.script('adjust wheel to heavy', log('1104:30206'), log('1104:30207'))
+      game.script('spin wheel', log('1104:30506'), log('1104:30507'), log('1104:30508'))
+      game.script('push wheel', log('1104:30281'), log('1104:30282'))
+      game.script('spin wheel', log('1104:31648'), log('1104:31649'), log('1104:31650'))
+      game.script('turn wheel', log('1104:30244'), log('1104:30245'))
+      game.script('spin wheel', log('1104:30284'), log('1104:30285'), log('1104:30286'),
+                  after: ->(_) { $left_hand = 'silk thread' })
+      $hand_ids['silk thread'] = '1958040'
+
+      Spin.new
+
+      expect(game.sent.drop_while { |command| command != 'spin wheel' }).to eq(['spin wheel', 'push wheel', 'spin wheel', 'turn wheel', 'spin wheel'])
+    end
+  end
 end
