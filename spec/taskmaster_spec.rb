@@ -1950,9 +1950,12 @@ RSpec.describe TaskMaster do
       # any STOW gets "There isn't any more room". bag_room: pieces the
       # crafting bag still takes. coins: pieces he can pay for. refuse_after:
       # sales that go through before every later one gets the hands-full line.
-      # lost: the sale goes through but no piece reaches a hand. refuse_combine:
+      # lost: the sale goes through but no piece reaches a hand. late_from: from
+      # that sale on (0-based) the piece lands but the clerk's line comes after
+      # bput's timeout, so order_item returns ''. refuse_combine:
       # COMBINE always answers "You must be holding both". keep_new: a combine
-      # keeps the new piece's id instead of the stack's. silent_combine /
+      # keeps the new piece's id instead of the stack's. new_id_combine: the
+      # combined stack comes back under an id neither had. silent_combine /
       # silent_count: that command goes unanswered (bput's '').
       #
       # DRCT, DRCI and DRCC are harness doubles, so order_item and
@@ -1964,8 +1967,8 @@ RSpec.describe TaskMaster do
       # parent's stow by noun) is taken as landing.
       #
       # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
-      def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false,
-               refuse_combine: false, keep_new: false, silent_combine: false, silent_count: false)
+      def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false, late_from: nil,
+               refuse_combine: false, keep_new: false, new_id_combine: false, silent_combine: false, silent_count: false)
         world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false }
         next_id = 3_000_000
         allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
@@ -1979,9 +1982,10 @@ RSpec.describe TaskMaster do
           free = world[:hands].find { |_, obj| obj.nil? }&.first
           next hands_full if free.nil? || (refuse_after && world[:sold] >= refuse_after)
 
+          late = late_from && world[:sold] >= late_from
           world[:sold] += 1
           world[:hands][free] = OpenStruct.new(name: name, noun: name.split.last, id: (next_id += 1).to_s, yards: yards) unless lost
-          "The clerk takes some coins from you and hands you some #{name}."
+          late ? '' : "The clerk takes some coins from you and hands you some #{name}."
         end
         combine = lambda do |first, second|
           next must_hold_both if refuse_combine || first.nil? || second.nil? || first == second
@@ -1989,6 +1993,7 @@ RSpec.describe TaskMaster do
           kept, gone = keep_new ? [second, first] : [first, second]
           world[:hands][kept].yards += world[:hands][gone].yards
           world[:hands][gone] = nil
+          world[:hands][kept].id = (next_id += 1).to_s if new_id_combine
           silent_combine ? '' : 'You combine the stacks.'
         end
         reply = lambda do |command|
@@ -2099,6 +2104,25 @@ RSpec.describe TaskMaster do
         expect(bagged(world, 'burlap cloth')).to eq([20])
       end
 
+      it 'puts back the piece that landed when the first order still comes back empty, leaving both hands empty' do
+        world = shop(late_from: 0)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Could not buy burlap cloth: the order did not go through.*Stopping\./)
+        expect(world[:hands].values.compact).to be_empty
+        expect(bagged(world, 'burlap cloth')).to eq([10])
+      end
+
+      it 'puts back the stack and the late piece both when a later order comes back empty' do
+        world = shop(late_from: 1)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:orders].size).to eq(2)
+        expect(world[:sent].grep(/\Aput #/).size).to eq(2)
+        expect(world[:hands].values.compact).to be_empty
+        expect(bagged(world, 'burlap cloth')).to eq([10, 10])
+      end
+
       it 'stops at the first order he cannot pay for (order_item returns nil)' do
         world = shop(coins: 1)
 
@@ -2129,6 +2153,16 @@ RSpec.describe TaskMaster do
         buyer.buy_stackables('rope', 3, 10, 'cloth')
 
         expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'says the game claimed a combine the hands do not show, and puts the stack back, when it comes back under a new id' do
+        world = shop(new_id_combine: true)
+
+        expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message)
+          .with(/Could not combine the burlap cloth \(the game said it combined them, but your hands hold #3000003\)\. Stopping\./)
+        expect(world[:hands].values.compact).to be_empty
+        expect(bagged(world, 'burlap cloth')).to eq([20])
       end
 
       it 'trusts the hands when a combine goes unanswered but only the stack is left in hand' do

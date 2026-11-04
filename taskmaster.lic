@@ -1826,7 +1826,7 @@ class TaskMaster
     free_hands_for(stock)
     stack = nil
     pieces.times do
-      piece = order_stock_piece(@stackmap[base].last, number, stock, stack)
+      piece = order_stock_piece(@stackmap[base].last, number, stock)
       stack = stack ? combine_stock(stack, piece, stock) : piece
     end
     check_yards(stack, yards, stock) if TASK_STOCK_BASES.include?(base)
@@ -1862,17 +1862,16 @@ class TaskMaster
   # @param room [Integer] the shop's room
   # @param number [Integer] the stock's order number
   # @param stock [String] e.g. 'burlap cloth'
-  # @param stack [String, nil] id of the stack bought so far, put back on a stop
   # @return [String] id of the new piece
   # @raise [SystemExit] when the order fails or no new piece is in hand
-  def order_stock_piece(room, number, stock, stack)
+  def order_stock_piece(room, number, stock)
     before = hand_ids
     bought = DRCT.order_item(room, number)
     piece = (hand_ids - before).first unless bought.to_s.empty?
     return piece if piece
 
     why = bought.to_s.empty? ? 'the order did not go through (not enough coins, no way to the shop, or full hands)' : 'no new piece is in your hands'
-    stop_stock("Could not buy #{stock}: #{why}.", stack)
+    stop_stock("Could not buy #{stock}: #{why}.")
   end
 
   # Combines a newly bought piece into the stack. The hands decide: it worked
@@ -1888,7 +1887,19 @@ class TaskMaster
     held = hand_ids & [stack, piece]
     return held.first if held.size == 1 && !reply.start_with?('You must')
 
-    stop_stock("Could not combine the #{stock} (#{reply.empty? ? 'no answer' : reply}).", *held)
+    stop_stock("Could not combine the #{stock} (#{combine_failure(reply)}).")
+  end
+
+  # Says why a combine did not take, for the stop message.
+  #
+  # @param reply [String] what COMBINE matched, '' for no answer
+  # @return [String]
+  def combine_failure(reply)
+    return 'no answer' if reply.empty?
+    return reply unless reply.start_with?('You combine')
+
+    held = hand_ids.map { |id| "##{id}" }
+    "the game said it combined them, but your hands hold #{held.empty? ? 'nothing' : held.join(' and ')}"
   end
 
   # Counts the stack and stops when it holds fewer yards than the task needs.
@@ -1902,17 +1913,19 @@ class TaskMaster
     counted = DRC.bput("count ##{stack}", /^You count out \d+ yards/)[/\d+/].to_i
     return if counted >= yards
 
-    stop_stock("Bought #{counted} yards of #{stock}, but the task needs #{yards}: #{yards - counted} yards missing. Not starting the task short.", stack)
+    stop_stock("Bought #{counted} yards of #{stock}, but the task needs #{yards}: #{yards - counted} yards missing. Not starting the task short.")
   end
 
-  # Puts stock bought so far back in the crafting bag by id, says why it is
-  # stopping, and stops.
+  # Puts whatever is in either hand back in the crafting bag by id, says why
+  # it is stopping, and stops. free_hands_for emptied both hands before the
+  # first order, so all that is held is stock bought since, including a piece
+  # that landed from an order that still came back '' (the sale line missed,
+  # or it came after order_item's timeout).
   #
   # @param text [String] why
-  # @param ids [Array<String, nil>] ids of the stock in hand
   # @raise [SystemExit] always
-  def stop_stock(text, *ids)
-    ids.compact.each { |id| DRCI.put_away_item?("##{id}", @bag) }
+  def stop_stock(text)
+    hand_ids.each { |id| DRCI.put_away_item?("##{id}", @bag) }
     DRC.message("#{text} Stopping.")
     exit
   end
