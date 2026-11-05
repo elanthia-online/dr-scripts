@@ -1,0 +1,61 @@
+{
+  "run": "2026-10-26_5598",
+  "log": "26",
+  "from": 6726,
+  "to": 6770,
+  "source": "the 2026-10-26 game log, lines 6726-6773: a slice of spec/fixtures/remedy/transcripts/2026-10-26_5598.json (same attribution) for the ReplayTranscript self-tests",
+  "steps": [
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 6726,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 6728
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 6731,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+          "line": 6733
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6736,
+      "user": false,
+      "responses": [
+        {
+          "text": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 6738
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 6740
+        },
+        {
+          "text": "Applying the final touches, you complete working on a belradi elixir.",
+          "line": 6742
+        }
+      ]
+    },
+    {
+      "cmd": "mix my heavy cauldron with my mixing stick",
+      "line": 6770,
+      "user": false,
+      "responses": [
+        {
+          "text": "Try as you might, you just can't mix the elixir.",
+          "line": 6773
+        }
+      ]
+    }
+  ]
+}

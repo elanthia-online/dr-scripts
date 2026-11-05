@@ -441,23 +441,44 @@ module Harness
     end
   end
 
+  # The hands as GameObj shows them: name and noun are the held item's
+  # name ('Empty' when nothing is held), and id is the game's id of the
+  # held item, looked up by that name in $hand_ids (nil when $hand_ids has
+  # no id for it, as for an empty hand). A spec gives held items ids by
+  # setting $hand_ids, `{ full item name => id }`, or through
+  # ReplayCommons.new(ids:).
   class GameObj
+    # @return [OpenStruct] the left hand's name, noun and id
     def self.left_hand
       item = Harness.left_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item })
+      OpenStruct.new({ name: item, noun: item, id: ($hand_ids || {})[Harness.left_hand] })
     end
 
     def self.left_hand=(val)
       Harness.left_hand(val)
     end
 
+    # @return [OpenStruct] the right hand's name, noun and id
     def self.right_hand
       item = Harness.right_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item })
+      OpenStruct.new({ name: item, noun: item, id: ($hand_ids || {})[Harness.right_hand] })
     end
 
     def self.right_hand=(val)
       Harness.right_hand(val)
+    end
+
+    # @return [Array<OpenStruct>, nil] the worn items, as GameObj.inv lists
+    #   them (name, noun, id); nil, as in lich-5, before any were streamed.
+    #   Specs set $worn_items; reset_data empties it.
+    def self.inv
+      $worn_items
+    end
+
+    # @return [Hash{String => Array<OpenStruct>}] container id => the
+    #   contents GameObj knows; specs set $containers, reset_data empties it
+    def self.containers
+      $containers || {}
     end
   end
 
@@ -747,9 +768,26 @@ module Harness
     # Don't actually sleep, slows down tests.
     # Use Timecop gem to simulate elapsed time.
     # See test_bput as an example.
+    # During a replay (test/replay_game.rb) the pause moves the fake clock.
+    $replay_game&.advance(duration)
   end
 
-  def parse_args(_data, _flex_args = false)
+  # Two modes:
+  # - by default it returns $parsed_args as an OpenStruct (plus flex = 'test'),
+  #   whatever the definitions say;
+  # - with $parse_args_model = true it matches the arguments in $script_vars
+  #   (Lich's `variable`) against the definitions the way lich-5's ArgParser
+  #   does (test/arg_parser_model.rb), including help + exit on a bad call.
+  # reset_data turns the model off and clears $script_vars before each example.
+  #
+  # @param data [Array<Array<Hash>>] the script's argument forms
+  # @param flex_args [Boolean] keep leftover arguments (model only)
+  # @return [OpenStruct] the parsed arguments
+  # @raise [SystemExit] in model mode, when the arguments match no form or
+  #   several, or ask for help
+  def parse_args(data, flex_args = false)
+    return ArgParserModel.parse(data, variable.drop(1), raw: variable.first.to_s, flex: flex_args) if $parse_args_model
+
     args = OpenStruct.new($parsed_args.dup || {})
     args.flex = 'test'
     args
@@ -757,7 +795,7 @@ module Harness
 
   # Mirrors Lich's global variable (Script.current.vars): [0] is the raw
   # argument string, [1..] the arguments as typed, before parse_args downcases
-  # them. Specs set $script_vars.
+  # them. Specs set $script_vars; reset_data clears it before each example.
   def variable
     $script_vars || []
   end
@@ -809,6 +847,44 @@ module Harness
     end
   end
 
+  # Mirrors lich-5's SessionVars (lib/sessionvars.rb): an in-memory store shared
+  # by the scripts of one session and never saved. Keys are strings, read either
+  # as SessionVars[:name] / SessionVars['name'] or SessionVars.name, and storing
+  # nil deletes the key, as in lich-5. _reset (called by reset_data before every
+  # example) clears it.
+  module SessionVars
+    @svars = {}
+
+    class << self
+      def _reset
+        @svars = {}
+      end
+
+      def [](name)
+        @svars[name.to_s]
+      end
+
+      def []=(name, val)
+        val.nil? ? @svars.delete(name.to_s) : @svars[name.to_s] = val
+      end
+
+      def list
+        @svars.dup
+      end
+
+      def method_missing(name, *args)
+        key = name.to_s
+        return self[key] unless key.end_with?('=')
+
+        self[key.chomp('=')] = args.first
+      end
+
+      def respond_to_missing?(_name, _include_private = false)
+        true
+      end
+    end
+  end
+
   # After tests run, we need to wipe out/reset
   # constants and other contextual data so that
   # each test doesn't interfere with the others.
@@ -821,6 +897,13 @@ module Harness
     $test_data = OpenStruct.new
     $test_settings = OpenStruct.new
     $parsed_args = OpenStruct.new
+    # parse_args returns $parsed_args unless an example opts into the
+    # ArgParser model; fput and pause go to a replay only while one is set.
+    # $script_vars (what the model parses, through `variable`) starts empty,
+    # so no example parses the arguments an earlier one left.
+    $parse_args_model = false
+    $script_vars = nil
+    $replay_game = nil
 
     # We use queues because they are thread safe
     # https://ruby-doc.org/core-2.5.5/Queue.html
@@ -857,6 +940,10 @@ module Harness
 
     $left_hand = nil
     $right_hand = nil
+    # Held item full name => the game's id GameObj shows for it.
+    $hand_ids = {}
+    $worn_items = []
+    $containers = {}
 
     Flags._reset
     DRSpells._reset
@@ -866,6 +953,7 @@ module Harness
     Map._reset
     XMLData._reset
     UserVars._reset
+    SessionVars._reset
     Lich::DragonRealms::Creature._reset
   end
 
@@ -885,6 +973,20 @@ module Harness
 
   def respond(message = '')
     echo(message)
+  end
+
+  # Lich's global +debug+ (lich-5 480bdee3 lib/global_defs.rb:446-454, a
+  # top-level def, so a private Object method): it yields or echoes only when
+  # $LICH_DEBUG is set and returns nil otherwise. A script method that names
+  # +debug+ with no local of that name calls this, not a NameError.
+  #
+  # @param args [Array] what to echo or yield
+  # @yield [*args] the debug block, run only when $LICH_DEBUG is set
+  # @return [Object, nil] the block's or echo's value, nil when not debugging
+  private def debug(*args)
+    return unless $LICH_DEBUG
+
+    block_given? ? yield(*args) : echo(*args)
   end
 
   def displayed_messages
@@ -929,7 +1031,15 @@ module Harness
     $concentration || 100
   end
 
-  def fput(message)
+  # Records the command. During a replay (test/replay_game.rb) the replay
+  # answers it instead, as Lich's fput would.
+  #
+  # @param message [String] the command
+  # @param waitingfor [Array] fput patterns (a replay models none)
+  # @return [Object] the replay's answer (ReplayGame#fput), else the queue
+  def fput(message, *waitingfor)
+    return $replay_game.fput(message, *waitingfor) if $replay_game
+
     sent_messages << message
   end
 
@@ -1082,6 +1192,15 @@ module Harness
   def no_kill_all; end
 
   def setpriority(*); end
+
+  # dependency.lic's hometown override, which lich-5 applies to get_settings.
+  def shift_hometown(town_name)
+    $HOMETOWN = town_name
+  end
+
+  def clear_hometown
+    $HOMETOWN = nil
+  end
 
   def register_slackbot(username); end
 
@@ -1285,12 +1404,19 @@ module Harness
   end
 
   module DRCC
+    # Private-forge entry patterns, mirroring lich-5's public DRCC constants
+    # (#1560). Scripts (forge) reference these directly instead of keeping
+    # their own copy. Keep in sync with lich-5.
+    PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
+    PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
+
     class << self
       def check_for_existing_sigil?(*_args); true; end
       def get_adjust_tongs?(*_args); true; end
       def stow_crafting_item(*_args); true; end
-      def get_crafting_item(*_args); end
+      def get_crafting_item(*_args); true; end
       def logbook_item(*_args); end
+      def crafting_cost(*_args); 0; end
       def order_enchant(*_args); end
       def repair_own_tools(*_args); end
       def check_consumables(*_args); end
@@ -1299,8 +1425,48 @@ module Harness
       def find_empty_crucible(*_args); end
       def find_enchanting_room(*_args); end
       def find_sewing_room(*_args); end
+      # Station finders walk to a free room and say whether they found one
+      # (lich-5 DRCC.find_wheel / find_loom_room return find_empty_room's
+      # true, or false when the town has no such rooms or none is reachable).
+      def find_wheel(*_args); true; end
+      def find_loom_room(*_args); true; end
       def find_shaping_room(*_args); end
       def fount(*_args); end
+
+      # Private-forge helpers, the same rules as lich-5 DRCC (#1560), so the
+      # scripts' private-forge specs exercise the real settings resolution and
+      # crafting-data lookups. Keep in sync with lich-5.
+      def crafting_hometown(settings)
+        settings.force_crafting_town || settings.hometown
+      end
+
+      def use_private_forge?(settings)
+        settings.use_private_forge || settings.forge_use_private_forge || false
+      end
+
+      def private_forge_cost(settings)
+        settings.forge_private_forge_cost || 50_000
+      end
+
+      def private_forge_room(hometown)
+        get_data('crafting')['blacksmithing'][hometown]['private_forge']
+      end
+
+      def towns_with_private_forge
+        get_data('crafting')['blacksmithing'].select { |_town, data| data['private_forge'] }.keys
+      end
+
+      def go_to_private_forge(hometown, settings)
+        room = private_forge_room(hometown)
+        return false unless room
+        return false unless DRCM.ensure_copper_on_hand(private_forge_cost(settings), settings, hometown)
+
+        DRCT.walk_to(room)
+        return true if Room.current.id == room
+
+        DRC.bput('go door', *PRIVATE_FORGE_ENTRY_SUCCESS, *PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
+        Room.current.id == room
+      end
     end
   end
 
@@ -1313,6 +1479,9 @@ module Harness
       def convert_to_copper(amount, _denom = nil); amount.to_i; end
       def minimize_coins(*_args); []; end
       def deposit_coins(*_args); end
+      def convert_currency(*_args); end
+      def town_currency(*_args); end
+      def withdraw_exact_amount?(*_args); true; end
     end
   end
 
@@ -1325,6 +1494,7 @@ module Harness
       def sort_destinations(ids); ids; end
       def buy_item(*_args); end
       def order_item(*_args); end
+      def find_empty_room(*_args); true; end
       def dispose(*_args); end
       def refill_lockpick_container(*_args); end
     end
@@ -1376,6 +1546,7 @@ module Harness
       def shatter_regalia?(*_args); true; end
       def cast_spell(*_args); end
       def cast_spells(*_args); end
+      def do_buffs(*_args); end
       def check_discern(*_args); end
       def check_elemental_charge(*_args); end
       def check_to_harness(*_args); end
@@ -1389,6 +1560,16 @@ module Harness
       def release_cyclics(*_args); end
       def stow_cambrinth(*_args); end
       def update_avtalia(*_args); end
+
+      # Same rule as lich-5 DRCA.day_night_ok? (#1691), so specs exercise the
+      # real skip logic. Keep in sync with lich-5.
+      def day_night_ok?(data)
+        sun = UserVars.sun || {}
+        return false if data['night'] && !sun['night']
+        return false if data['day'] && !sun['day']
+
+        true
+      end
     end
   end
 
@@ -1443,6 +1624,15 @@ module Harness
       def self.msg(*_args); end
       def self.monsterbold(text); text; end
       def self.stream_window(*_args); end
+    end
+
+    # lich-5's Lich::Common::Inventory read model (lib/common/inventory.rb).
+    # refresh answers nil, as it does when the extended feed is absent; a
+    # spec that needs a snapshot stubs it.
+    module Common
+      module Inventory
+        def self.refresh(*_args); end
+      end
     end
 
     module Util
@@ -1582,3 +1772,12 @@ module Harness
     end
   end
 end
+
+# Replay support (see each file's header): a model of lich-5's ArgParser for
+# parse_args, a game played from real log lines that answers DRC.bput and
+# fput, an API-level model of the commons helpers a crafting script calls,
+# and transcript fixtures that script a replay from a real run.
+require_relative 'arg_parser_model'
+require_relative 'replay_game'
+require_relative 'replay_commons'
+require_relative 'replay_transcript'

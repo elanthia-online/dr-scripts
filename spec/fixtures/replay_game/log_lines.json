@@ -1,0 +1,11 @@
+{
+  "_source": "Real game lines cited <log>:<line>: 25 = the 2026-10-25 game log, 26 = the 2026-10-26 game log (Genie client logs). Each text is the timestamped copy of the line with its [hh:mm:ss AM] stamp removed, so no client substitution is in it. Read by ReplayGame.log (test/replay_game.rb); every log_lines.json under spec/fixtures shares one cite namespace.",
+  "25:11582": "...wait 1 seconds.",
+  "25:11587": "You put your brush in your botanist's toolbag.",
+  "26:6733": "You untie a luminescent starshine mixing stick etched with stars from the straps of your grass toolstrap.",
+  "26:6738": "With wide strokes you mix an unfinished belradi elixir with your stick.  Peering at the solution reveals it is mixing correctly.",
+  "26:6740": "Roundtime: 9 sec.",
+  "26:6742": "Applying the final touches, you complete working on a belradi elixir.",
+  "26:6773": "Try as you might, you just can't mix the elixir.",
+  "26:39162": "What were you referring to?"
+}

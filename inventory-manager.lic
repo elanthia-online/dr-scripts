@@ -246,7 +246,11 @@ class InventoryManager
     end
   end
 
-  def check_inventory(command, end_pattern, inventory_type, rummage_length = 0)
+  # A refusal only the player can fix in game, so retrying it is pointless and
+  # skipping it hides why nothing was saved. Unanchored: the line can carry XML.
+  VAULT_RENT_DUE = /You can't access your vault at this time\.\s+Rent is due\./
+
+  def check_inventory(command, end_pattern, inventory_type, rummage_length = 0, refusals: {})
     using_sorter = false
     if Script.running?('sorter')
       stop_script('sorter')
@@ -261,6 +265,14 @@ class InventoryManager
       # Nothing is written, so the saved file keeps whatever it already had.
       start_script('sorter') if using_sorter && !Script.running?('sorter')
       return
+    end
+
+    refusals.each do |pattern, note|
+      next unless capture.first.to_s.match?(pattern)
+
+      DRC.message(note)
+      start_script('sorter') if using_sorter && !Script.running?('sorter')
+      exit
     end
 
     lines = capture
@@ -451,7 +463,8 @@ class InventoryManager
   end
 
   def add_vault_standard
-    check_inventory("vault standard", /^Vault Inventory:/, 'vault')
+    check_inventory("vault standard", Regexp.union(/^Vault Inventory:/, VAULT_RENT_DUE), 'vault',
+                    refusals: { VAULT_RENT_DUE => 'Pay yer rent, ya slob!' })
   end
 
   def add_vault_family

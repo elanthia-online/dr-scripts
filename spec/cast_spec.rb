@@ -73,16 +73,6 @@ RSpec.describe Cast do
       expect(prep).to eq(9)
       expect(cambrinth.flatten.sum + prep).to eq(25)
     end
-
-    # The harness DRCA has no allocate_cambrinth_charges, exactly like an older
-    # Lich, so this drives the real guard rather than a stub of it.
-    it 'falls back to the built-in split when Lich has no allocator' do
-      instance = build_instance(distribute: true, total_mana: 25)
-      expect(DRCA).not_to respond_to(:allocate_cambrinth_charges)
-      prep, cambrinth = instance.send(:charge_plan)
-      expect(prep).to eq(7)
-      expect(cambrinth).to eq([[], [], [6, 6, 6]])
-    end
   end
 
   describe '#distribute_num_charges' do

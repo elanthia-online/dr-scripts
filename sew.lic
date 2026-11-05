@@ -22,6 +22,21 @@ class Sew
   NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
   NO_QUOTE_RUN = '(?:<[^>]*>|[^"<])*'
 
+  # Rental lines the game brackets on their own line after the sentry's
+  # speech. The sentry's speech has a quote before its text, so these are
+  # what to match; anchoring at line start keeps player text from faking them.
+  RENTAL_RENEWED = /#{LINE_START}\[Your [^\]]*rental has been extended until/
+  RENTAL_WARNING = /#{LINE_START}\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
+
+  # Unrecognized replies in a row before #work gives up on a command.
+  MAX_UNMATCHED = 3
+
+  # The thread the needles take, as the stock room sells it ("100 yards of
+  # cotton thread", order 6). Spun spools are thread too ("some heavy silk
+  # thread") and spin keeps them in the crafting container, so the thread
+  # is always named by its material, never by the bare noun.
+  SEWING_THREAD = 'cotton thread'
+
   def initialize
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
@@ -91,7 +106,7 @@ class Sew
               /#{LINE_START}Applying the final touches/i,
               /#{NO_QUOTE}The #{NO_QUOTE_RUN} shows a slightly reduced weight/i,
               /#{LINE_START}You realize that cannot be repaired, and stop/)
-    Flags.add('sew-rental-warning', /#{NO_QUOTE}Your rental time is almost up/i)
+    Flags.add('sew-rental-warning', RENTAL_WARNING)
 
     if args.resume
       Lich::Messaging.msg('plain', "Resuming work on #{@noun} (finish mode: #{@finish}).")
@@ -105,11 +120,13 @@ class Sew
       end
       work(command)
     end
+    # Before the consumables check: its get needs a free hand too.
+    clear_hands
     if @recipe_name.include?('seal')
       DRCC.check_consumables('wax', @info['tool-room'], 10, @bag, @bag_items, @belt) unless args.skip
     elsif @chapter != 5
       DRCC.check_consumables('pins', @info['tool-room'], 5, @bag, @bag_items, @belt) unless args.skip
-      DRCC.check_consumables('thread', @info['stock-room'], 6, @bag, @bag_items, @belt) unless args.skip
+      DRCC.check_consumables(SEWING_THREAD, @info['stock-room'], 6, @bag, @bag_items, @belt) unless args.skip
     end
 
     check_rental_status
@@ -131,25 +148,28 @@ class Sew
     Lich::Messaging.msg('plain', "Items at feet: #{atfeet.join(', ')}") if atfeet&.any?
   end
 
+  # A new item starts with empty hands. Anything still held, such as the
+  # item a previous run finished with 'hold', blocks every later get.
+  # Enhancements work on the held item, so that one stays. DRC.right_hand
+  # and DRC.left_hand shorten names of three or more words to the first and
+  # last word ("quilted cloth shirt" becomes "quilted shirt"), so the keep
+  # matches the noun's last word, the one the shortening leaves in place.
+  def clear_hands
+    keep = @noun.tr('.', ' ').split.last if @recipe_name.include?('tailored armor')
+    [DRC.right_hand, DRC.left_hand].each do |item|
+      next if item.nil? || (keep && item.include?(keep))
+
+      DRCC.stow_crafting_item(item, @bag, @belt)
+    end
+  end
+
+  # The material comes first: each study of the instructions uses one of
+  # their uses, so a missing material must stop the run before the study.
   def prep
     DRCA.crafting_magic_routine(@settings)
-    if @instructions
-      DRCC.get_crafting_item("#{@noun} instructions", @bag, @bag_items, @belt)
-      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      end
-    elsif @settings.master_crafting_book
-      DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
-    else
-      DRCC.get_crafting_item('tailoring book', @bag, @bag_items, @belt)
-      Lich::Messaging.msg('bold', 'You will need to upgrade to a journeyman or master book before 176 ranks!') if DRSkill.getrank('Outfitting') == 175
-      DRCC.find_recipe2(@chapter, @recipe_name)
-      DRCC.stow_crafting_item('tailoring book', @bag, @belt)
-    end
-
     if @knit || @chapter == 5 # knitting
-      DRCC.get_crafting_item('yarn', @bag, @bag_items, @belt)
-      check_hand('yarn') unless DRCI.in_left_hand?('yarn')
+      hold_material('yarn', 'yarn')
+      read_recipe('yarn')
       swap_tool('knitting needles')
       @home_tool = 'knitting needles'
       @home_command = 'knit my needles'
@@ -157,6 +177,7 @@ class Sew
     elsif @recipe_name.include?('tailored armor') # enhancements
       @stamp = false
       check_hand(@noun) unless DRCI.in_left_hand?(@noun)
+      read_recipe(nil)
       if @recipe_name.include?('seal')
         swap_tool('sealing wax')
         @home_tool = 'sealing wax'
@@ -169,20 +190,90 @@ class Sew
         "cut my #{@noun} with my scissors"
       end
     elsif @cloth.include?(@mat_type) # any cloth products
-      DRCC.get_crafting_item("#{@mat_type} cloth", @bag, @bag_items, @belt)
-      check_hand('cloth') unless DRCI.in_left_hand?('cloth')
+      hold_material("#{@mat_type} cloth", 'cloth')
+      read_recipe("#{@mat_type} cloth")
       swap_tool('scissors')
       @home_tool = 'sewing needles'
       @home_command = "push my #{@noun} with my needles"
+      @offcut = 'cloth'
       "cut my #{@mat_type} cloth with my scissors"
     else # any leather products
-      DRCC.get_crafting_item("#{@mat_type} leather", @bag, @bag_items, @belt)
-      check_hand('leather') unless DRCI.in_left_hand?('leather')
+      hold_material("#{@mat_type} leather", 'leather')
+      read_recipe("#{@mat_type} leather")
       swap_tool('scissors')
       @home_tool = 'sewing needles'
       @home_command = "push my #{@noun} with my needles"
+      @offcut = 'leather'
       "cut my #{@mat_type} leather with my scissors"
     end
+  end
+
+  # Gets the material into the left hand, or stops the run when the get
+  # fails (missing, or no free hand), before check_hand can blame the hand.
+  def hold_material(name, noun)
+    unless DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
+      Lich::Messaging.msg('bold', "sew: Could not get '#{name}'. Stopping before the recipe is studied.")
+      magic_cleanup
+      exit
+    end
+    check_hand(noun) unless DRCI.in_left_hand?(noun)
+    @material_id = GameObj.left_hand.id
+  end
+
+  # Reads the recipe once +material+ is in the left hand. +material+ is
+  # nil for an enhancement, whose piece was in hand before the run.
+  def read_recipe(material)
+    if @instructions
+      get_recipe_item("#{@noun} instructions", material)
+      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+      end
+    elsif @settings.master_crafting_book
+      DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
+    else
+      get_recipe_item('tailoring book', material)
+      Lich::Messaging.msg('bold', 'You will need to upgrade to a journeyman or master book before 176 ranks!') if DRSkill.getrank('Outfitting') == 175
+      DRCC.find_recipe2(@chapter, @recipe_name)
+      DRCC.stow_crafting_item('tailoring book', @bag, @belt)
+    end
+  end
+
+  # Gets the instructions or the tailoring book. When the get fails (the
+  # item is missing, or the reply times out with no free hand), puts the
+  # material back and stops before any study, so the run leaves neither the
+  # material in hand nor a study sent with nothing to study.
+  #
+  # A failed put-back names the hand only while the piece is still in the
+  # left hand (material_in_left_hand?): put_away_item? returns false on
+  # every failure reply, including "Perhaps you should be holding that
+  # first.", which means the piece is no longer held.
+  def get_recipe_item(name, material)
+    return if DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
+
+    message = "sew: Could not get '#{name}'. Stopping before the recipe is studied."
+    message += " The #{material} is still in your left hand." if material && !put_back_material(material) && material_in_left_hand?(material)
+    Lich::Messaging.msg('bold', message)
+    magic_cleanup
+    exit
+  end
+
+  # Puts the held material back in the bag. By id when hold_material saw
+  # one, so the put reaches the piece in hand and a full bag fails at once
+  # instead of after a 15 second timeout. Returns false when the put
+  # failed; the caller checks the hand to see whether the piece is still
+  # held. By name, the stow's result says nothing (it returns true even
+  # after its "stow" fallback fails), so the left hand decides.
+  def put_back_material(material)
+    return DRCI.put_away_item?("##{@material_id}", @bag) if @material_id
+
+    DRCC.stow_crafting_item(material, @bag, @belt)
+    !material_in_left_hand?(material)
+  end
+
+  # Whether the material is still in the left hand: by the id hold_material
+  # saw, or by name when it saw none.
+  def material_in_left_hand?(material)
+    DRCI.in_left_hand?(@material_id ? "##{@material_id}" : material)
   end
 
   def assemble_part
@@ -197,8 +288,12 @@ class Sew
     end
   end
 
+  # Cutting cloth or leather leaves the excess at your feet, and prep sets
+  # @offcut to its noun. Lift it by that noun so it goes back to the
+  # crafting bag: DRCI.lift? sends nothing without one, and 'stow feet'
+  # puts the offcut in the default stow container instead.
   def lift_or_stow_feet
-    if DRCI.lift?
+    if @offcut && DRCI.lift?(@offcut)
       right = DRC.right_hand
       left = DRC.left_hand
       DRCC.stow_crafting_item(right, @bag, @belt) if right && !right.include?(@noun.tr('.', ' '))
@@ -210,6 +305,7 @@ class Sew
 
   def work(command)
     DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/, /^You reach out and touch/) if @cube
+    unmatched = 0
     loop do
       DRCA.crafting_magic_routine(@settings)
       renew_rental if Flags['sew-rental-warning']
@@ -249,6 +345,7 @@ class Sew
                         'wrinkles from all the handling and could use',
                         'You are already knitting',
                         'You carefully thread some cotton thread',
+                        'is already threaded with',
                         'You must assemble',
                         'You need another',
                         'You untie and discard',
@@ -259,6 +356,18 @@ class Sew
                         /^You realize that cannot be repaired, and stop/,
                         /^You must be holding the .* to do that/,
                         /^You cannot do that while engaged!/)
+      # bput returns an empty string when no matcher fits. Resending the
+      # same command would loop forever, so give up after a few misses.
+      if result.empty?
+        unmatched += 1
+        next if unmatched < MAX_UNMATCHED
+
+        Lich::Messaging.msg('bold', "sew: No recognized response to '#{command}' after #{MAX_UNMATCHED} tries. Cannot continue crafting.")
+        magic_cleanup
+        exit
+      end
+      unmatched = 0
+
       case result
       when /You need a larger amount of material to continue crafting/
         Lich::Messaging.msg('bold', "sew: Not enough material to continue crafting #{@noun}. Exiting.")
@@ -284,9 +393,17 @@ class Sew
         swap_tool('slickstone')
         command = "scrape my #{@noun} with my slickstone"
       when 'The needles need to have thread put on them before they can be used for sewing'
-        swap_tool('cotton thread', true)
-        command = 'put thread on my sewing needles'
-      when 'You carefully thread some cotton thread'
+        # Take the id while the needles are still in hand. Once they are tied
+        # or stowed, "my sewing needles" can pick a spare pair instead.
+        needles_id = GameObj.right_hand&.id
+        unless needles_id
+          Lich::Messaging.msg('bold', 'sew: Could not identify the sewing needles to thread. Cannot continue crafting.')
+          magic_cleanup
+          exit
+        end
+        swap_tool(SEWING_THREAD, true)
+        command = "put my thread on ##{needles_id}"
+      when 'You carefully thread some cotton thread', 'is already threaded with'
         swap_tool('sewing needles')
         command = "push my #{@noun} with my sewing needles"
       when 'What were you referring', 'I could not find what you were'
@@ -299,8 +416,8 @@ class Sew
           DRCC.check_consumables('pins', @info['tool-room'], 5, @bag, @bag_items, @belt)
           swap_tool('pins')
         elsif command.include?('thread')
-          DRCC.check_consumables('thread', @info['stock-room'], 6, @bag, @bag_items, @belt)
-          swap_tool('thread')
+          DRCC.check_consumables(SEWING_THREAD, @info['stock-room'], 6, @bag, @bag_items, @belt)
+          swap_tool(SEWING_THREAD)
         end
       when 'needs holes punched', 'requires some holes punched'
         @home_tool = 'sewing needles'
@@ -433,17 +550,17 @@ class Sew
     Lich::Messaging.msg('bold', '*** RENTAL EXPIRING -- AUTO-RENEWING ***')
     Flags.reset('sew-rental-warning')
     case DRC.bput('mark notice',
-                  'You mark the notice',
-                  'renewed your rental',
-                  'extends your rental',
+                  RENTAL_RENEWED,
                   "You don't have enough",
                   'I could not find')
+    when RENTAL_RENEWED
+      Lich::Messaging.msg('bold', '*** RENTAL RENEWED ***')
     when "You don't have enough"
       Lich::Messaging.msg('bold', '*** INSUFFICIENT FUNDS TO RENEW RENTAL ***')
     when 'I could not find'
       Lich::Messaging.msg('bold', '*** COULD NOT FIND NOTICE -- CHECK LOCATION ***')
     else
-      Lich::Messaging.msg('bold', '*** RENTAL RENEWED ***')
+      Lich::Messaging.msg('bold', '*** RENTAL RENEWAL NOT CONFIRMED -- CHECK THE NOTICE ***')
     end
   end
 end

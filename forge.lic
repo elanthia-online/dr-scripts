@@ -36,6 +36,46 @@
 # @author Elanthia Online
 # @since 2025-12-29 Refactored with finish option and rental renewal
 class Forge
+  # parse_args definitions, one argument pattern per entry (see #initialize).
+  # 'here' keeps forge in the current room instead of walking to the private
+  # forge; smith passes it with its own 'here'.
+  # @return [Array<Array<Hash>>]
+  ARG_DEFINITIONS = [
+    [
+      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
+      { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
+      { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
+      { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
+      { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'name of item being crafted' },
+      { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
+      { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ],
+    [
+      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
+      { name: 'instructions', regex: /instructions/i, description: 'Instructions if using instructions' },
+      { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item being crafted' },
+      { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
+      { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ],
+    [
+      { name: 'recipe_name', display: 'Enhancement', options: %w[temper balance hone lighten reinforce], description: 'Enhancements applied to finished weapons and armor' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to enhance.' },
+      { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
+      { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ],
+    [
+      { name: 'resume', regex: /resume/i },
+      { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
+      { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to resume.' },
+      { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
+    ]
+  ].freeze
+
   # @!group Rental Patterns
 
   # Pattern to extract rental expiration time
@@ -46,9 +86,18 @@ class Forge
   # @return [Array<String>]
   RENTAL_NOT_FOUND_PATTERNS = ['I could not find', 'What were you referring to'].freeze
 
-  # Patterns indicating successful rental renewal
-  # @return [Array<String>]
-  RENTAL_RENEW_SUCCESS_PATTERNS = ['You mark the notice', 'renewed your rental', 'extends your rental'].freeze
+  # Pattern for the game's bracketed line confirming a renewal, e.g.
+  # "[Your private forge rental has been extended until Sat Nov 14 14:56:41 ET 2026.]".
+  # Anchored at line start (leading tags allowed) so player text can't fake it.
+  # @return [Array<Regexp>]
+  RENTAL_RENEW_SUCCESS_PATTERNS = [/^(?:<[^>]+>)*\[Your [^\]]*rental has been extended until/].freeze
+
+  # Pattern for the game's bracketed rental warning, e.g. "[You have less than
+  # 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE
+  # to signal the sentry.]". The sentry's spoken warning before it has a quote
+  # before its text, so it can't be told from player speech.
+  # @return [Regexp]
+  RENTAL_WARNING_PATTERN = /^(?:<[^>]+>)*\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
 
   # Patterns indicating failed rental renewal
   # @return [Array<String>]
@@ -301,18 +350,6 @@ class Forge
 
   # @!endgroup
 
-  # @!group Private Forge Constants
-
-  # Patterns for successful private forge entry
-  # @return [Array<String>]
-  PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
-
-  # Patterns for blocked private forge entry
-  # @return [Array<String>]
-  PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
-
-  # @!endgroup
-
   # Initialize and run the forge script.
   #
   # Parses command-line arguments, validates settings, and orchestrates
@@ -334,40 +371,7 @@ class Forge
   #
   # @return [void]
   def initialize
-    arg_definitions = [
-      [
-        { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
-        { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
-        { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
-        { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
-        { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'name of item being crafted' },
-        { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ],
-      [
-        { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
-        { name: 'instructions', regex: /instructions/i, description: 'Instructions if using instructions' },
-        { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item being crafted' },
-        { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ],
-      [
-        { name: 'recipe_name', display: 'Enhancement', options: %w[temper balance hone lighten reinforce], description: 'Enhancements applied to finished weapons and armor' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to enhance.' },
-        { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ],
-      [
-        { name: 'resume', regex: /resume/i },
-        { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
-        { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item to resume.' },
-        { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
-      ]
-    ]
-
-    args = parse_args(arg_definitions)
+    args = parse_args(ARG_DEFINITIONS)
     setup_flags
     load_settings(args)
     validate_setup(args)
@@ -405,7 +409,7 @@ class Forge
               /^(?:<[^>]+>)*Applying the final touches/i,
               /^(?:<[^>]+>)*The .* was successfully/)
     Flags.add('ingot-restow', /^(?:<[^>]+>)*You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
-    Flags.add('forge-rental-warning', /^(?:<[^>]*>|[^"<])*?Your rental time is almost up/i)
+    Flags.add('forge-rental-warning', RENTAL_WARNING_PATTERN)
   end
 
   # Load settings from YAML configuration and command-line arguments.
@@ -414,7 +418,7 @@ class Forge
   # @return [void]
   def load_settings(args)
     settings = get_settings
-    @hometown = crafting_hometown(settings)
+    @hometown = DRCC.crafting_hometown(settings)
     @stamp = settings.mark_crafted_goods
     @cube = settings.cube_armor_piece
     @bag = settings.crafting_container
@@ -432,34 +436,10 @@ class Forge
     @metal = args.metal
     @next_spin = Time.now
     @debug = args.debug || settings.debug_mode
-    @use_private_forge = use_private_forge?(settings)
-    @private_forge_cost = private_forge_cost(settings)
+    @use_private_forge = DRCC.use_private_forge?(settings)
+    @private_forge_cost = DRCC.private_forge_cost(settings)
     @show_progress = settings.forge_show_progress
     @settings = settings
-  end
-
-  # --- Private-forge helpers (normalized across smith/forge/makesteel). --------
-  # Prefer the shared DRCC helpers (lich-5 #1560); fall back to a local copy so
-  # the script keeps working on an older lich-5. The fallbacks can be deleted
-  # once DRCC ships these methods everywhere. (forge keeps its own richer
-  # go_to_private_forge navigation; only the settings resolution is shared.)
-
-  def crafting_hometown(settings)
-    return DRCC.crafting_hometown(settings) if DRCC.respond_to?(:crafting_hometown)
-
-    settings.force_crafting_town || settings.hometown
-  end
-
-  def use_private_forge?(settings)
-    return DRCC.use_private_forge?(settings) if DRCC.respond_to?(:use_private_forge?)
-
-    settings.use_private_forge || settings.forge_use_private_forge || false
-  end
-
-  def private_forge_cost(settings)
-    return DRCC.private_forge_cost(settings) if DRCC.respond_to?(:private_forge_cost)
-
-    settings.forge_private_forge_cost || 50_000
   end
 
   # Validate required settings and preconditions.
@@ -540,7 +520,7 @@ class Forge
   # @param args [OpenStruct] parsed command-line arguments
   # @return [void]
   def execute_workflow(args)
-    go_to_private_forge if @use_private_forge && !args.resume
+    go_to_private_forge if @use_private_forge && !args.resume && !args.here
     check_rental_status
     check_all_consumables unless args.skip
     set_defaults
@@ -739,10 +719,10 @@ class Forge
   # @raise [SystemExit] if blocked from entering
   def attempt_private_forge_entry
     debug_log('Not in private forge room - trying to enter manually...')
-    result = DRC.bput('go door', *PRIVATE_FORGE_ENTRY_SUCCESS, *PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
+    result = DRC.bput('go door', *DRCC::PRIVATE_FORGE_ENTRY_SUCCESS, *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
 
     case result
-    when *PRIVATE_FORGE_ENTRY_BLOCKED
+    when *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED
       error_log('BLOCKED from entering private forge!')
       error_log("The sentry won't let you in. Possible reasons:")
       error_log('  - Not enough money on hand (need ~5 plat)')
@@ -830,12 +810,14 @@ class Forge
     Flags.reset('forge-rental-warning')
     result = DRC.bput('mark notice', *RENTAL_RENEW_SUCCESS_PATTERNS, *RENTAL_RENEW_FAILURE_PATTERNS)
     case result
+    when *RENTAL_RENEW_SUCCESS_PATTERNS
+      info_log('RENTAL RENEWED')
     when "You don't have enough"
       error_log('INSUFFICIENT FUNDS TO RENEW RENTAL')
     when 'I could not find'
       error_log('COULD NOT FIND NOTICE - CHECK LOCATION')
     else
-      info_log('RENTAL RENEWED')
+      error_log('RENTAL RENEWAL NOT CONFIRMED - CHECK THE NOTICE')
     end
   end
 
@@ -1064,6 +1046,7 @@ class Forge
   # @return [void]
   # @raise [SystemExit] if ingot cannot be found
   def prep_ingot
+    free_hand_for_ingot
     DRCC.get_crafting_item("#{@metal} ingot", @bag, @bag_items, @forging_belt, true)
     unless DRCI.in_hands?('ingot')
       cleanup_and_exit("Failed to get #{@metal} ingot.")
@@ -1071,6 +1054,27 @@ class Forge
     DRC.bput('put my ingot on anvil', PUT_SUCCESS_PATTERN)
     ready_hammer_with_tongs
     @command = "pound ingot on anvil with my #{@hammer}"
+  end
+
+  # Make sure a hand is free to pick up the ingot.
+  #
+  # validate_free_hand runs before the recipe and hammer steps, so a held
+  # item that passed it then (e.g. a finished item of the same noun kept in
+  # hand by an earlier 'hold' run) leaves both hands full once the hammer
+  # is out, and the game refuses the ingot with "You need a free hand".
+  # Stow whatever is not the hammer.
+  #
+  # @return [void]
+  # @raise [SystemExit] if no hand could be freed
+  def free_hand_for_ingot
+    return unless DRC.left_hand && DRC.right_hand
+
+    held = DRCI.in_right_hand?(@hammer) ? DRC.left_hand : DRC.right_hand
+    info_log("Stowing #{held} to free a hand for the #{@metal} ingot.")
+    DRCC.stow_crafting_item(held, @bag, @forging_belt)
+    return unless DRC.left_hand && DRC.right_hand
+
+    cleanup_and_exit("Need a free hand for the #{@metal} ingot, but could not stow #{held}.")
   end
 
   # @!endgroup

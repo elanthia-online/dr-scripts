@@ -2,45 +2,803 @@
   Documentation: https://elanthipedia.play.net/Lich_script_repository#weave-cloth
 =end
 
-DRCC.find_loom_room(get_settings.hometown, nil)
-case DRC.bput('look on loom', /loom is loaded with some \w+ thread\.$/, /loom is loaded with some \w+ thread and some \w+ thread\.$/, /loom is not loaded/)
-when /loom is loaded with some/
-  while DRC.bput('pull loom', /You pull some (\w+) thread off from/, /You see nothing to pull/) =~ /You pull some (\w+) thread off from/
-    DRC.bput("drop my #{Regexp.last_match(1)} thread", /You drop/)
+# Weaves two spools of thread into cloth on a loom at the crafting town's
+# outfitting society. The spools are the newest pair spin recorded (of one
+# fiber, or of the fiber given), or two named by id, and they are only ever
+# handled by id, so sewing thread (noun 'thread' too) is never touched. Ids
+# last only for a session, so carried spools are matched to the record by
+# name ("some heavy silk thread") through GameObj's containers. The
+# loom is one with no other player and no one else's thread. The cloth goes
+# in the crafting container by id. Nothing is ever dropped.
+#
+# A weave turns both threads into cloth, one yard for every 20 yards of
+# thread: two heavy spools from a full 400-yard wheel make 16 yards (every
+# weave in Mahtra's 2026-11-04 log), and the loom is empty afterwards
+# (2026212, 19:28 and 19:37). Finer thread makes more cloth from the same
+# fiber, so callers should count the cloth rather than assume a yield.
+#
+# @example Weave the two spools spin just made
+#   ;spin silk
+#   ;spin silk
+#   ;weave-cloth
+# @example Weave the newest two silk spools
+#   ;weave-cloth silk
+# @example Weave two spools by id
+#   ;weave-cloth 1958040 1963477
+# @example Spin and weave until 30 yards of heavy silk cloth are on hand,
+#   in one piece in the crafting container
+#   ;weave-cloth silk 30
+class WeaveCloth
+  # Fibers spin spins (Spin::FIBERS).
+  FIBERS = %w[silk cotton linen wool burlap].freeze
+
+  # @return [Array<Array<Hash>>] the argument forms parse_args accepts: none
+  #   (weave the two newest spools spin recorded, of the newest one's
+  #   kind), a fiber (the two newest recorded spools of it), a fiber and
+  #   yards (spin and weave until that much cloth is on hand), or two spool
+  #   ids
+  ARG_DEFINITIONS = [
+    [],
+    [
+      { name: 'fiber', options: FIBERS, description: 'Weave the two newest spools spin made of this fiber' }
+    ],
+    [
+      { name: 'fiber', options: FIBERS, description: 'Fiber to spin and weave' },
+      { name: 'yards', regex: /^\d+$/, variable: true, description: 'Spin and weave until this many yards of the heavy cloth are on hand' }
+    ],
+    [
+      { name: 'first', regex: /^#?\d+$/, variable: true, description: 'Id of the first spool, e.g. 1958040 or #1958040' },
+      { name: 'second', regex: /^#?\d+$/, variable: true, description: 'Id of the second spool' }
+    ]
+  ].freeze
+
+  # Where spin.lic records each spool it makes: a list of
+  # { 'id' => '1958040', 'fiber' => 'silk', 'weight' => 'heavy' }, oldest
+  # first (Spin::SPOOL_RECORD).
+  SPOOL_RECORD = 'spun_spools'
+
+  # The game's reply to a command naming something you do not have
+  # (1104:30604).
+  NOT_FOUND = /^What were you/i.freeze
+
+  # An empty loom, from `look on loom` (1104:30590).
+  LOOM_EMPTY = /loom is not loaded/i.freeze
+
+  # A loaded loom, from `look on loom` ("You see the loom is loaded with
+  # some cotton thread.", 2052:12437).
+  LOOM_LOADED = /loom is loaded with/i.freeze
+
+  # A thread coming off the loom (1104:30752).
+  PULLED = /You pull some .+ off from/i.freeze
+
+  # A loom with no thread left to pull ("You see nothing to pull off
+  # that.", 2052:12457).
+  NOTHING_TO_PULL = /You see nothing to pull/i.freeze
+
+  # The loom taking a thread (1104:30803).
+  LOADED = /You load .+ with/i.freeze
+
+  # The loom refusing a second thread of another material (1104:30609).
+  REFUSED = /You have difficulty stringing the loom/i.freeze
+
+  # Loom problems the game reports while weaving, and the command that fixes
+  # each one (1104:30821, 30833, 30851). Every problem line arrives before the
+  # step's Roundtime line, so the first pattern DRC.bput matches is the
+  # problem, if any.
+  LOOM_FIXES = {
+    /dust and debris/i                 => 'clean loom',
+    /bunch/i                           => 'turn loom',
+    /unravel|needs? pushing together/i => 'push loom'
+  }.freeze
+
+  # The loom will not weave what is on it (1104:30615).
+  NOT_READY = /needs to have 2 sections of thread/i.freeze
+
+  # A step that went through: the game's Roundtime line ends every weave and
+  # every fix.
+  STEP_DONE = /Roundtime/i.freeze
+
+  # Unanswered or unrecognised replies in a row before weave-cloth gives up.
+  MAX_UNMATCHED = 3
+
+  # Commands sent to the loom before weave-cloth gives up on the cloth. The
+  # 16 yards of heavy silk in Mahtra's log took 9.
+  MAX_STEPS = 100
+
+  # Why weave-cloth stops when it has not got two spools.
+  NEED_TWO_SPOOLS = 'Need two spools of the same thread: run ;spin twice, or give two spool ids (;weave-cloth <id> <id>).'
+
+  # Threads a loom holds.
+  MAX_THREADS_ON_LOOM = 2
+
+  # A spun spool's name, which carries its weight and fiber ("some heavy
+  # silk thread", 1104:30286); sewing thread ("some cotton thread") carries
+  # no weight, so it never matches.
+  SPOOL_NAME = /\b(fine|thin|average|thick|heavy) (\w+) thread\z/i
+
+  # The weight stock mode weaves: spin's default (Spin::DEFAULT_WEIGHT). Woven
+  # cloth carries it in its name, "some heavy silk cloth" (1104:30860).
+  STOCK_WEIGHT = 'heavy'
+
+  # The most yards stock mode takes; a bigger number is more likely a spool
+  # id typed after the fiber.
+  MAX_STOCK_YARDS = 1000
+
+  # Where stock mode leaves the cloth it counted for its caller, in
+  # SessionVars: { 'fiber' => 'silk', 'yards' => 42 }. Cleared when a stock
+  # run starts and updated at every count, so a caller can tell whether the
+  # run got the yards it needed.
+  STOCK_RESULT = 'weave_cloth_stock'
+
+  # One bolt of cloth taking another into it (1104:32641).
+  COMBINED = /^You combine/i.freeze
+
+  # The yards a piece of cloth holds (1104:30876).
+  COUNTED = /^You count out (\d+) yards/i.freeze
+
+  # A piece coming out of a container (1104:30872).
+  GOT = /^You get/i.freeze
+
+  # Most spools the record keeps (Spin::MAX_RECORDED_SPOOLS).
+  MAX_RECORDED_SPOOLS = 20
+
+  # Passes over the town's loom rooms before weave-cloth gives up on finding
+  # one with no other player and no one else's thread on the loom. DRCT
+  # waits 20-40 seconds at the idle room between passes.
+  MAX_LOOM_SEARCHES = 5
+
+  # Weaves one bolt of cloth, or with yards, as many as it takes.
+  #
+  # @raise [SystemExit] with a message on any step that fails
+  def initialize
+    args = parse_args(ARG_DEFINITIONS)
+    settings = get_settings
+    @hometown = DRCC.crafting_hometown(settings)
+    @bag = settings.crafting_container
+    # parse_args accepts any argument that starts with an option ('silks').
+    fiber = args.fiber && FIBERS.find { |name| args.fiber.start_with?(name) }
+    SessionVars[STOCK_RESULT] = nil if args.yards
+    if args.first
+      weave(given_pair(args.first, args.second))
+    else
+      # A spool held in hand shows no weight ("silk thread"), so the hands
+      # are emptied before the record is checked against what is carried.
+      stop('Could not empty your hands.') unless DRCI.stow_hands
+      reconcile_record
+      args.yards ? stock(fiber, args.yards.to_i) : weave(default_pair(fiber))
+    end
   end
-end
 
-fput('get my thread')
-fput('put my thread on loom')
-fput('drop thread') if checkright || checkleft
+  private
 
-fput('get my thread')
-fput('put my thread on loom')
-fput('drop thread') if checkright || checkleft
+  # Weaves two spools into one bolt of cloth, start to finish.
+  #
+  # @param candidates [Array<String>] spool ids to try, in order
+  # @param fallback [Proc, nil] gives other spool ids when two of these
+  #   cannot be got; the ones that could not are forgotten first
+  # @return [void]
+  # @raise [SystemExit] with a message on any step that fails
+  def weave(candidates, fallback: nil)
+    @candidates = candidates
+    stop(NEED_TWO_SPOOLS) if @candidates.size < 2
+    stop('Could not empty your hands.') unless DRCI.stow_hands
+    find_loom
+    spools = take_spools(fallback)
+    return weave(fallback.call) unless spools
 
-command = 'weave loom'
-pause 0.5 while DRC.left_hand || DRC.right_hand
+    load_loom(spools)
+    cloth = weave_until_done(spools)
+    forget_spools(spools)
+    clear_leftover_thread
+    store_cloth(cloth)
+  end
 
-until DRC.left_hand || DRC.right_hand
-  waitrt?
-  case DRC.bput(command, 'dust and debris', 'unravel', 'bunch', 'needs pushing together', 'need pushing together', 'roundtime')
-  when 'dust and debris'
-    pause
-    waitrt?
-    command = 'clean loom'
-  when 'bunch'
-    pause
-    waitrt?
-    command = 'turn loom'
-  when 'unravel', 'needs pushing together', 'need pushing together'
-    pause
-    waitrt?
-    command = 'push loom'
-  else
+  # Spins and weaves until at least yards of this heavy cloth are on hand,
+  # in one piece in the crafting container. Each batch weaves two recorded
+  # heavy spools of the fiber when there are two, and otherwise runs ;spin
+  # twice and weaves exactly the spools those runs recorded. The cloth is counted
+  # after every batch rather than assumed, since a weave's yield depends on
+  # the thread, and the run stops as soon as a spin or a weave fails or a
+  # batch adds nothing, so a failure never keeps buying fiber.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @param yards [Integer] yards wanted
+  # @return [void]
+  # @raise [SystemExit] when the yards are too many, a spin makes no spool,
+  #   a weave fails, or a batch adds no cloth
+  def stock(fiber, yards)
+    SessionVars[STOCK_RESULT] = nil
+    stop("Ask for #{MAX_STOCK_YARDS} yards or fewer.") if yards > MAX_STOCK_YARDS
+    stop('Could not empty your hands.') unless DRCI.stow_hands
+    have = gather_cloth(fiber)
+    while have < yards
+      recorded = spun_pair(fiber)
+      recorded ? weave(recorded, fallback: -> { spin_pair(fiber) }) : weave(spin_pair(fiber))
+      now = gather_cloth(fiber)
+      stop("Weaving added no #{fiber} cloth (#{now} yards on hand); stopping before buying more fiber.") unless now > have
+      have = now
+    end
+    Lich::Messaging.msg('plain', "weave-cloth: Your #{@bag} holds #{have} yards of #{STOCK_WEIGHT} #{fiber} cloth.")
+  end
+
+  # Two recorded spools of this fiber at the stock weight, newest first,
+  # when there are two: a run that stopped after spinning leaves them
+  # recorded, and weaving them first keeps the next run from buying fiber
+  # for two more.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Array<String>, nil] spool ids, or nil when fewer than two
+  def spun_pair(fiber)
+    ids = recorded_spools.reverse.select { |spool| spool['fiber'] == fiber && spool['weight'] == STOCK_WEIGHT }.map { |spool| spool['id'] }
+    ids if ids.size >= 2
+  end
+
+  # Runs ;spin twice, checking after each run that it recorded a spool.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Array<String>] the two new spool ids, newest first
+  # @raise [SystemExit] as soon as a run records no spool of the fiber, so a
+  #   failed first run never buys fiber for a second
+  def spin_pair(fiber)
+    spun = []
+    2.times do
+      before = recorded_ids
+      DRC.wait_for_script_to_complete('spin', [fiber])
+      new_spool = recorded_spools.find { |spool| !before.include?(spool['id']) && spool['fiber'] == fiber }
+      stop("spin made #{spun.size} of 2 #{fiber} spools; stopping.") unless new_spool
+      spun << new_spool['id']
+    end
+    spun.reverse
+  end
+
+  # Combines every piece of this cloth on hand into one in the crafting
+  # container, counts it, and leaves the count for the caller.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards, 0 when there is none
+  def gather_cloth(fiber)
+    yards = cloth_on_hand(fiber)
+    SessionVars[STOCK_RESULT] = { 'fiber' => fiber, 'yards' => yards }
+    yards
+  end
+
+  # Gets every carried piece of this heavy cloth by id, combines them and
+  # counts the result, then puts it in the crafting container. Pieces are
+  # found in GameObj's containers: by name, "get my other silk cloth"
+  # missed a second piece in Mahtra's pack (1104:32050). When GameObj knows
+  # no piece and the inventory feed is absent, it falls back to the pieces
+  # in the crafting container, by name.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards, 0 when there is none
+  # @raise [SystemExit] when a piece cannot be got, two will not combine,
+  #   the cloth will not count, or it will not go back
+  def cloth_on_hand(fiber)
+    pieces = cloth_pieces(fiber)
+    return cloth_in_bag_by_name(fiber) if pieces.empty? && !@feed_seen
+    return 0 if pieces.empty?
+
+    pieces.each_with_index do |piece, index|
+      stop("Could not get the #{fiber} cloth ##{piece.id}#{index.zero? ? '' : '; the rest is in your hand'}.") unless DRCI.get_item?("##{piece.id}")
+      combine(fiber) unless index.zero?
+    end
+    count_and_put_back(fiber)
+  end
+
+  # The carried pieces of this heavy cloth: "some heavy silk cloth"
+  # (1104:30860), not a chamois cloth, not another weight, and not a worn
+  # item.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Array<GameObj>]
+  def cloth_pieces(fiber)
+    worn = (GameObj.inv || []).map(&:id)
+    # GameObj does not hold what lies at the player's feet, where sew sets
+    # offcuts; the inventory feed lists it.
+    at_feet = @snapshot.respond_to?(:at_feet) ? @snapshot.at_feet.to_a : []
+    (carried_items + at_feet).select do |item|
+      item.noun == 'cloth' && item.name.to_s =~ /\b#{STOCK_WEIGHT} #{fiber} cloth\z/i && !worn.include?(item.id)
+    end
+  end
+
+  # Everything carried, as GameObj knows it: the worn items, what is in
+  # hand, and every container's contents beneath them, the way GS scripts
+  # read GameObj.inv and container contents. The inventory feed is asked
+  # first; it fills GameObj's container contents, even for containers not
+  # opened this session, as LOOK IN does for one container.
+  #
+  # @return [Array<GameObj>]
+  def carried_items
+    @snapshot = Lich::Common::Inventory.refresh
+    @feed_seen = !@snapshot.nil?
+    containers = GameObj.containers
+    queue = (GameObj.inv || []) + [GameObj.right_hand, GameObj.left_hand].select(&:id)
+    seen = {}
+    until queue.empty?
+      item = queue.shift
+      next if seen.key?(item.id)
+
+      seen[item.id] = item
+      queue.concat(containers[item.id] || [])
+    end
+    seen.values
+  end
+
+  # The spun spools carried, by their names.
+  #
+  # @return [Array<Hash>] { 'id', 'fiber', 'weight' }
+  def carried_spools
+    carried_items.filter_map do |item|
+      match = item.noun == 'thread' && item.name.to_s.match(SPOOL_NAME)
+      next unless match && FIBERS.include?(match[2].downcase)
+
+      { 'id' => item.id.to_s, 'fiber' => match[2].downcase, 'weight' => match[1].downcase }
+    end
+  end
+
+  # Brings the spool record up to date with what is carried. Ids last only
+  # for a session, so a spool spun before the last login shows up under a
+  # new id: carried spools the record does not know are added, as the
+  # oldest. Recorded spools no longer carried (woven, given away, or from
+  # an earlier session) are dropped, but only when the inventory feed
+  # answered, since otherwise GameObj may not know every container. A
+  # dropped spool may be on a loom a stopped run left it on, so the ids
+  # recorded before this run still count as ours ({#ours?}).
+  #
+  # @return [void]
+  def reconcile_record
+    @recorded_before = recorded_ids
+    carried = carried_spools
+    ids = carried.map { |spool| spool['id'] }
+    kept = @feed_seen ? recorded_spools.select { |spool| ids.include?(spool['id']) } : recorded_spools
+    @found_spools = carried.reject { |spool| kept.any? { |recorded| recorded['id'] == spool['id'] } }
+    return if !@feed_seen && @found_spools.empty?
+
+    UserVars.send("#{SPOOL_RECORD}=", (@found_spools + kept).last(MAX_RECORDED_SPOOLS))
+  end
+
+  # The spools to weave when none are named: the recorded pair, unless the
+  # record knew none of the carried spools (as after a login) and they are
+  # of several kinds, when only a fiber can say which to weave.
+  #
+  # @param fiber [String, nil] only spools of this fiber
+  # @return [Array<String>] spool ids, newest first
+  # @raise [SystemExit] when the kind to weave is ambiguous
+  def default_pair(fiber)
+    wanted = ->(spool) { fiber.nil? || spool['fiber'] == fiber }
+    found = (@found_spools || []).select(&wanted)
+    known = recorded_spools.select(&wanted).reject { |spool| found.include?(spool) }
+    kinds = found.map { |spool| spool.values_at('fiber', 'weight') }.uniq
+    if known.empty? && kinds.size > 1
+      names = kinds.map { |kind| kind.reverse.join(' ') }.join(', ')
+      stop(fiber ? "You carry #{fiber} spools of several weights (#{names}); give the two to weave by id (;weave-cloth <id> <id>)." : "You carry spools of several kinds (#{names}); name the fiber, e.g. ;weave-cloth silk.")
+    end
+    recorded_pair(fiber)
+  end
+
+  # Combines every piece of this cloth in the crafting container, by name,
+  # for when the inventory feed is absent.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards, 0 when there is none
+  def cloth_in_bag_by_name(fiber)
+    return 0 unless get_cloth_by_name(fiber)
+
+    combine(fiber) while get_cloth_by_name(fiber)
+    count_and_put_back(fiber)
+  end
+
+  # Gets one piece of this cloth from the crafting container by name.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Boolean] true when a piece came out
+  def get_cloth_by_name(fiber)
+    GOT.match?(DRC.bput("get my #{fiber} cloth from my #{@bag}", GOT, NOT_FOUND))
+  end
+
+  # Combines the two pieces in hand ("combine silk cloth with silk cloth",
+  # 1104:32641).
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [void]
+  # @raise [SystemExit] when both hands still hold cloth
+  def combine(fiber)
+    DRC.bput("combine #{fiber} cloth with #{fiber} cloth", COMBINED, NOT_FOUND, /^You must/i)
+    stop("Could not combine two pieces of #{fiber} cloth; they are in your hands.") if hands_holding('cloth').size > 1
+  end
+
+  # Counts the cloth in hand and puts it in the crafting container.
+  #
+  # @param fiber [String] e.g. 'silk'
+  # @return [Integer] yards
+  # @raise [SystemExit] when it will not count or go back
+  def count_and_put_back(fiber)
+    yards = DRC.bput("count my #{fiber} cloth", COUNTED)[COUNTED, 1]
+    stop("Could not count the #{fiber} cloth; it is in your hand.") unless yards
+    put_away(hand_holding('cloth').id)
+    yards.to_i
+  end
+
+  # The spools spin recorded, as a list of Hashes. A record that is not a
+  # list is treated as empty.
+  #
+  # @return [Array<Hash>] oldest first
+  def recorded_spools
+    recorded = UserVars.send(SPOOL_RECORD)
+    (recorded.is_a?(Array) ? recorded : []).select { |spool| spool.is_a?(Hash) && spool['id'] }
+  end
+
+  # The two spool ids given on the command line, without their '#'.
+  #
+  # @param first [String] e.g. '#1958040' or '1958040'
+  # @param second [String]
+  # @return [Array<String>] the two ids
+  # @raise [SystemExit] when both name the same spool
+  def given_pair(first, second)
+    ids = [first, second].map { |id| id.delete('#') }
+    stop('Give two different spool ids.') if ids.uniq.size < 2
+    ids
+  end
+
+  # The ids of the recorded spools to weave, newest first: those of the
+  # newest recorded spool's fiber and weight (of the given fiber, when one
+  # is given). A simple loom weaves only two threads of the same material
+  # (1104:30609); yarn is for knitting, not weaving. An older spool of
+  # another kind is never used in place of a missing one.
+  #
+  # @param fiber [String, nil] only spools of this fiber
+  # @return [Array<String>] spool ids, newest first
+  def recorded_pair(fiber = nil)
+    spools = recorded_spools.reverse.reject { |spool| spool['weight'] == 'yarn' }
+    spools = spools.select { |spool| spool['fiber'] == fiber } if fiber
+    return [] if spools.empty?
+
+    kind = spools.first.values_at('fiber', 'weight')
+    spools.select { |spool| spool.values_at('fiber', 'weight') == kind }.map { |spool| spool['id'] }
+  end
+
+  # Whether a thread is ours: a spool spin recorded (now, or before this run
+  # checked the record against what is carried), or one given to weave.
+  #
+  # @param id [String, Integer] the thread's id
+  # @return [Boolean]
+  def ours?(id)
+    (recorded_ids | (@recorded_before || []) | @candidates).include?(id.to_s)
+  end
+
+  # @return [Array<String>] every recorded spool id
+  def recorded_ids
+    recorded_spools.map { |spool| spool['id'] }
+  end
+
+  # Walks to a loom room with no other player in it and a loom free of
+  # anyone else's thread, waiting at the idle room between passes as DRCT
+  # does for any crafting station.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the town has no loom rooms in the data, or no
+  #   loom is free after {MAX_LOOM_SEARCHES} passes
+  def find_loom
+    tailoring = get_data('crafting')['tailoring'][@hometown] || {}
+    rooms = tailoring['loom-rooms']
+    stop("No loom rooms are known for #{@hometown || 'your crafting town'}.") if rooms.nil? || rooms.empty?
+    found = DRCT.find_empty_room(DRCT.sort_destinations(rooms), tailoring['idle-room'], ->(_attempt) { loom_ready? }, 0, false, MAX_LOOM_SEARCHES)
+    stop("Could not find a free loom in #{@hometown}.") unless found
+  end
+
+  # Whether this room's loom can take our spools: no other player is here,
+  # and the loom is empty once our own thread, left by a run that stopped,
+  # is back in the crafting container. Anyone else's thread goes back on
+  # the loom and the room is passed over: weave-cloth never drops or keeps
+  # thread that is not ours.
+  #
+  # @return [Boolean] true when the loom is empty and ours to use
+  # @raise [SystemExit] when the loom does not answer, will not take a
+  #   stranger's thread back, or keeps giving thread
+  def loom_ready?
+    return false unless (DRRoom.pcs - DRRoom.group_members).empty?
+
+    loom = look_at_loom
+    return true if loom == :empty
+
+    stop('Could not see whether the loom is loaded.') unless loom
+    strangers = []
+    # One pull past a full loom, to see it empty.
+    (MAX_THREADS_ON_LOOM + 1).times do
+      thread = pull_thread(strangers)
+      return return_strangers(strangers) if thread.nil?
+
+      stop('Pulled thread off the loom but cannot tell which; it is in your hand.') unless thread
+      ours?(thread.id) ? put_away(thread.id) : strangers << thread
+    end
+    stop("The loom still holds thread after taking #{MAX_THREADS_ON_LOOM + 1} off.")
+  end
+
+  # Puts back on the loom the threads pulled off it that are not ours, once
+  # our own are in the crafting container.
+  #
+  # @param strangers [Array<GameObj>] the hands holding them
+  # @return [Boolean] true when there were none, so the loom is ours
+  # @raise [SystemExit] when the loom will not take one back
+  def return_strangers(strangers)
+    return true if strangers.empty?
+
+    strangers.each do |thread|
+      stop("The loom holds someone else's #{thread.name}; it is in your hand.") unless LOADED.match?(DRC.bput("put ##{thread.id} on loom", LOADED, REFUSED, NOT_FOUND))
+    end
+    Lich::Messaging.msg('plain', "weave-cloth: This loom holds someone else's #{strangers.first.name}; left it there and looking for another.")
+    false
+  end
+
+  # Gets the spools to weave into the hands, by id. A spool that cannot be
+  # got is named and skipped, and the next one is tried; it stays recorded,
+  # since a failed get does not prove it is gone.
+  #
+  # With a fallback, the spools that cannot be got are forgotten instead,
+  # and nil is returned so the caller can weave others: a recorded pair
+  # that is no longer carried (ids last only for a session) must not stop
+  # every later stock run.
+  #
+  # @param fallback [Proc, nil] whether the caller has other spools to try
+  # @return [Array<String>, nil] the two spool ids, both in hand, or nil
+  #   when a fallback is given and two could not be got
+  # @raise [SystemExit] when two spools cannot be found and there is no
+  #   fallback
+  def take_spools(fallback = nil)
+    held = []
+    @missing = []
+    @candidates.each do |id|
+      break if held.size == 2
+
+      if DRCI.get_item?("##{id}")
+        held << id
+      else
+        @missing << id
+      end
+    end
+    if held.size == 2
+      @woven_kind = recorded_spools.find { |spool| spool['id'] == held.first }&.slice('fiber', 'weight')
+      return held
+    end
+
+    held.each { |id| put_away?(id) }
+    missing = @missing.map { |id| "##{id}" }.join(', ')
+    if fallback
+      forget_spools(@missing)
+      one = @missing.size == 1
+      Lich::Messaging.msg('plain', "weave-cloth: Recorded #{one ? 'spool' : 'spools'} #{missing} #{one ? 'is' : 'are'} not on hand; forgot #{one ? 'it' : 'them'} and spinning a new pair.")
+      return
+    end
+    Lich::Messaging.msg('bold', "weave-cloth: Could not get spool #{missing}; it may be elsewhere.") unless @missing.empty?
+    stop(NEED_TWO_SPOOLS)
+  end
+
+  # Puts both spools on the loom. When the loom refuses one, every spool
+  # goes back in the crafting container, the loaded one included, as far as
+  # the game lets it; the message says how many did not.
+  #
+  # @param spools [Array<String>] the two spool ids, in hand
+  # @return [void]
+  # @raise [SystemExit] when the loom refuses a spool
+  def load_loom(spools)
+    spools.each_with_index do |id, index|
+      reply = DRC.bput("put ##{id} on loom", LOADED, REFUSED, NOT_FOUND)
+      next if LOADED.match?(reply)
+
+      back = spools.drop(index).count { |held| put_away?(held) } + take_back(spools.first(index))
+      reason = REFUSED.match?(reply) ? "The loom will not take spool ##{id} with the other: a simple loom weaves two threads of one material." : "Could not put spool ##{id} on the loom."
+      stop("#{reason} #{where_spools_are(back, spools.size)}")
+    end
+  end
+
+  # Where the spools are after weave-cloth tried to put them back.
+  #
+  # @param back [Integer] how many are back in the crafting container
+  # @param total [Integer] how many there are
+  # @return [String]
+  def where_spools_are(back, total)
+    back == total ? 'The spools are back in your bag.' : "#{total - back} of #{total} spools are still on the loom or in your hands."
+  end
+
+  # Weaves, fixing each problem the game reports, until the cloth is in hand.
+  #
+  # @param spools [Array<String>] the spools on the loom
+  # @return [GameObj] the hand holding the cloth
+  # @raise [SystemExit] when the loom will not weave, after {MAX_UNMATCHED}
+  #   unrecognised replies in a row, or after {MAX_STEPS} commands without
+  #   cloth; each time the spools are pulled back into the crafting container
+  #   first, as far as the loom gives them
+  def weave_until_done(spools)
     command = 'weave loom'
-    pause
-    waitrt?
+    unmatched = 0
+    MAX_STEPS.times do
+      waitrt?
+      reply = DRC.bput(command, *LOOM_FIXES.keys, NOT_READY, STEP_DONE)
+      waitrt?
+      cloth = hand_holding('cloth')
+      return cloth if cloth
+
+      give_up('The loom will not weave the spools: each needs 10 yards or more.', spools) if NOT_READY.match?(reply)
+
+      fix = LOOM_FIXES.find { |problem, _| problem.match?(reply) }&.last
+      if fix || STEP_DONE.match?(reply)
+        unmatched = 0
+        command = fix || 'weave loom'
+      else
+        unmatched += 1
+        give_up("The loom did not answer '#{command}' #{MAX_UNMATCHED} times in a row.", spools) if unmatched >= MAX_UNMATCHED
+      end
+    end
+    give_up("No cloth after #{MAX_STEPS} commands to the loom.", spools)
+  end
+
+  # Pulls the spools back off the loom, then stops, saying where they are.
+  #
+  # @param reason [String] why the weave stopped
+  # @param spools [Array<String>] the spools on the loom
+  # @return [void]
+  # @raise [SystemExit] always
+  def give_up(reason, spools)
+    back = take_back(spools)
+    stop("#{reason} #{where_spools_are(back, spools.size)}")
+  end
+
+  # Takes any thread still on the loom after the weave (it is ours: the loom
+  # was empty before our spools went on) into the crafting container, and
+  # records it with the woven spools' fiber and weight (when they were
+  # recorded spools) so a later weave can use it. In Mahtra's log the loom
+  # was empty after a weave, so this is usually one look.
+  #
+  # It runs before the cloth is put away, so a cloth that will not go in
+  # does not strand the thread; one free hand is enough to pull.
+  #
+  # @return [void]
+  # @raise [SystemExit] when a pulled thread's hand shows no id, or it will
+  #   not go into the crafting container
+  def clear_leftover_thread
+    loom = look_at_loom
+    Lich::Messaging.msg('plain', 'weave-cloth: Could not see whether thread is left on the loom.') unless loom
+    return unless loom == :loaded
+
+    MAX_THREADS_ON_LOOM.times do
+      thread = pull_thread
+      break if thread.nil?
+
+      stop('Pulled thread off the loom but cannot tell which; it and the cloth are in your hands.') unless thread
+      remember_spool(thread.id, @woven_kind) if @woven_kind
+      put_away(thread.id)
+    end
+  end
+
+  # Puts the cloth in the crafting container by id. The game ends a weave
+  # with "You snip off the bolt of fabric and are left with some heavy silk
+  # cloth." (1104:30860), the cloth in hand as 'silk cloth'.
+  #
+  # @param hand [GameObj] the hand holding the cloth
+  # @return [void]
+  # @raise [SystemExit] when it will not go in
+  def store_cloth(hand)
+    stop("Could not put the #{hand.name} (##{hand.id}) in your #{@bag}; it is in your hand.") unless hand.id && put_away?(hand.id)
+    Lich::Messaging.msg('plain', "weave-cloth: Put the #{hand.name} (##{hand.id}) in your #{@bag}.")
+  end
+
+  # Adds a thread to the record, as spin does for a spool, keeping the
+  # newest {MAX_RECORDED_SPOOLS}.
+  #
+  # @param id [String, Integer] the thread's id
+  # @param kind [Hash] its 'fiber' and 'weight'
+  # @return [void]
+  def remember_spool(id, kind)
+    spools = recorded_spools.reject { |spool| spool['id'] == id.to_s } + [kind.merge('id' => id.to_s)]
+    UserVars.send("#{SPOOL_RECORD}=", spools.last(MAX_RECORDED_SPOOLS))
+  end
+
+  # Pulls our loaded spools back off the loom into the crafting container.
+  # It never stops part-way, so one spool that will not go in does not
+  # strand the other.
+  #
+  # @param ids [Array<String>] the spools on the loom
+  # @return [Integer] how many came back
+  def take_back(ids)
+    ids.count do
+      thread = pull_thread
+      thread ? put_away?(thread.id) : false
+    end
+  end
+
+  # What `look on loom` shows.
+  #
+  # @return [Symbol, nil] :empty, :loaded, or nil when the look goes
+  #   unanswered
+  def look_at_loom
+    look = DRC.bput('look on loom', LOOM_EMPTY, LOOM_LOADED)
+    if LOOM_EMPTY.match?(look)
+      :empty
+    elsif LOOM_LOADED.match?(look)
+      :loaded
+    end
+  end
+
+  # Pulls one thread off the loom into a free hand.
+  #
+  # @param held [Array<GameObj>] threads already in hand, which are not the
+  #   one just pulled
+  # @return [GameObj, false, nil] the hand holding the pulled thread; false
+  #   when the loom gave a thread but no hand shows it with an id; nil when
+  #   the loom had none to give
+  def pull_thread(held = [])
+    return unless PULLED.match?(DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY))
+
+    thread = [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'thread' && held.none? { |other| other.id == hand.id } }
+    thread&.id ? thread : false
+  end
+
+  # The hand holding something with this noun. A hand shows a spool as
+  # 'silk thread' and cloth as 'silk cloth'; something else in a hand, such
+  # as a book a background script picked up, does not count.
+  #
+  # @param noun [String] 'thread' or 'cloth'
+  # @return [GameObj, nil] the hand, or nil when neither holds one
+  def hand_holding(noun)
+    hands_holding(noun).first
+  end
+
+  # The hands holding something with this noun.
+  #
+  # @param noun [String] 'thread' or 'cloth'
+  # @return [Array<GameObj>] none, one or both hands
+  def hands_holding(noun)
+    [GameObj.left_hand, GameObj.right_hand].select { |hand| hand.name.split.last == noun }
+  end
+
+  # Puts a held item in the crafting container by id.
+  #
+  # @param id [String, Integer] the item's id
+  # @return [void]
+  # @raise [SystemExit] when it will not go in
+  def put_away(id)
+    stop("Could not put ##{id} in your #{@bag}; it is in your hand.") unless put_away?(id)
+  end
+
+  # Puts a held item in the crafting container by id, for clean-up paths
+  # that must carry on when one put fails.
+  #
+  # @param id [String, Integer] the item's id
+  # @return [Boolean] true when it went in
+  def put_away?(id)
+    DRCI.put_away_item?("##{id}", crafting_container_ref)
+  end
+
+  # The crafting container as a command names it: by id when it is worn,
+  # so another item of the same noun cannot catch the put (a crafting
+  # container that is a duffel bag, while a duffel bag is being sewn); by
+  # name otherwise. "put #<id> in #<id>" works in game (1104:35084-35085).
+  #
+  # @return [String] '#<id>' or the container's name
+  def crafting_container_ref
+    return @bag unless @bag
+
+    worn = (GameObj.inv || []).find { |item| item.name.to_s =~ /\b#{Regexp.escape(@bag)}\z/i }
+    worn&.id ? "##{worn.id}" : @bag
+  end
+
+  # Drops spools from the record spin keeps.
+  #
+  # @param ids [Array<String>] the spools to forget
+  # @return [void]
+  def forget_spools(ids)
+    UserVars.send("#{SPOOL_RECORD}=", recorded_spools.reject { |spool| ids.include?(spool['id']) })
+  end
+
+  # Tells the player why weave-cloth stopped, then stops.
+  #
+  # @param message [String] what went wrong
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop(message)
+    Lich::Messaging.msg('bold', "weave-cloth: #{message}")
+    exit
   end
 end
 
-fput('stow my cloth')
+WeaveCloth.new

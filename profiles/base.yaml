@@ -1202,6 +1202,12 @@ alcohol_container:
 water_container:
 # container used to hold herbs for remedy.lic (optional) Not optional if overriding
 herb_container:
+# remedy.lic, with mark_crafted_goods: when the stamp is too badly damaged to mark a finished remedy,
+# repair it with your own wire brush and oil (as workorders_repair_own_tools does) and mark once more.
+# The repair may walk to the bank, and to the blacksmithing finisher shop of your crafting town to buy
+# oil or a wire brush, then back; the remedy waits in crafting_container meanwhile.
+# Off: the remedy is left unmarked, with a message saying the stamp needs repair.
+remedy_repair_stamp: false
 # override craft.lic training items
 craft_overrides:
 # Settings to change the stock materials purchased by Workorders to fulfill orders.
@@ -1653,9 +1659,15 @@ sell_loot_trader: false
 # unsold after that goes to the gemshop and tannery.
 sell_loot_trader_room:
 # Nouns to look for there. Kiosks can be altered, the noun included.
+# Note that if you have already set this to kiosk and plinth in your user profile
+# then you will never use the new types.
 sell_loot_trader_nouns:
   - kiosk
   - plinth
+  - booth
+  - lectern
+  - pedestal
+  - stand
 # Lowest markup percent a kiosk must advertise before selling to it. Its owner
 # can set anywhere from -10 to 80, so this defaults to 0 -- never sell below
 # base price. Set it to -10 to sell to any kiosk in the room.
@@ -3031,6 +3043,14 @@ task_cooldown_poll: 15
 task_junk_list: []
 # Setting for taskmaster - Send a Slack message (to slack_username) for each keeper.
 task_slack_keepers: false
+# Setting for taskmaster - Put a keeper's item in task_loot_bag and bin its empty sack, instead of
+# keeping the whole sack. Falls back to keeping the sack if any step fails.
+task_unpack_keepers: false
+# Setting for taskmaster - After each Zasele task is handed in, bin her leftover stock and the offcuts
+# (burlap cloth, rat leather, wool yarn) from the crafting bag into worn_trashcan. Needs worn_trashcan;
+# with it, the walk to the bin room for leftover stock is skipped. Bins your own pieces of those stocks
+# in the crafting bag too. Never runs in marathon mode, which carries its restock stock between tasks.
+task_bin_leftover_stock: false
 
 # Setting for taskmaster - boosts to use. task: BOOST TASK when a task is on cooldown
 # (task_use_boost: true also turns this on). haste: keep BOOST HASTE running between tasks.
@@ -3041,6 +3061,21 @@ task_copper_floor: 20000
 # Setting for taskmaster - copper (Kronars) to withdraw up to when below task_copper_floor.
 # A value below task_copper_floor is raised to the floor.
 task_copper_target: 110000
+# Setting for taskmaster - town scripts such as sew and restock treat as your hometown while
+# a task runs (e.g. Crossing for Hollow Eve); your hometown is put back when taskmaster stops.
+# Empty leaves hometown alone.
+task_hometown:
+
+# Setting for taskmaster - room where Dorhum's spongestone and splashstone tasks forage rocks, one per FORAGE ROCK
+# (793 is The Crossing, Town Green Southeast; rocks cannot be had on Andreshlew).
+task_rock_room: 793
+# Setting for taskmaster - room where Dorhum's glow shell tasks forage shells, one per FORAGE SHELL
+# (793, The Crossing, Town Green Southeast, has both shells and rocks).
+task_shell_room: 793
+# Setting for taskmaster - a run never works another taskmaster's task. When one is open, cancel it
+# with ASK <taskmaster> FOR TASK CANCEL, wait out the 10-minute "unreliable" cooldown a cancel brings,
+# then carry on with this run's taskmaster. Off: stop, saying whose task it is and how to clear it.
+task_cancel_foreign_tasks: false
 
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
@@ -3148,3 +3183,25 @@ capture_critter_settings:
 # aesthene_lock_answers:
 #   - cloak
 aesthene_lock_answers: []
+
+#kiosk.lic settings
+kiosk_settings:
+  # The town whose bank holds the coins used to refill your kiosk. Must not be blank.
+  bank_town: Crossing
+  # Room number where you want your kiosk
+  cast_room: 4652
+  # What noun your kiosk uses (probably "kiosk" unless you've had it customized)
+  kiosk_noun: kiosk
+  # Markup % (Decimal or whole numbers accepted. Rounds down to nearest 5%)
+  markup: 0
+  # The maximum amount of copper kronar you'll load your kiosk with (probably 1000 plat, unless you can't afford it)
+  target_deposit: 10000000
+  # The remaining balance at which you'll add more money to your kiosk
+  minimum_refill: 5000000
+  # If your pouch amount is more than this, get the pouch
+  minimum_pouch_withdrawal: 5000000
+  # If your bundle amount is more than this, get the bundle.
+  minimum_bundle_withdrawal: 1000000
+  # Set to true and share the log if the script doesn't work correctly.
+  debug: false
+

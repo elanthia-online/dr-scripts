@@ -60,6 +60,32 @@ load_lic_class('forge.lic', 'Forge')
 
 RSpec.describe Forge do
   describe 'class constants' do
+    # smith's 'here' runs forge with 'skip here'. On main, forge rejected that
+    # ("DON'T MATCH ANY PATTERN"), so every pattern smith uses must accept it.
+    describe 'ARG_DEFINITIONS' do
+      let(:patterns) { Forge::ARG_DEFINITIONS }
+      let(:here_arg) { ->(pattern) { pattern.find { |arg| arg[:name] == 'here' } } }
+
+      it "accepts an optional 'here' in the item, instructions and enhancement patterns" do
+        patterns.first(3).each do |pattern|
+          expect(here_arg[pattern]).to include(optional: true)
+          expect('here').to match(here_arg[pattern][:regex])
+        end
+      end
+
+      it "matches only the word 'here', not a recipe noun that contains it" do
+        here = here_arg[patterns.first][:regex]
+
+        expect(%w[there hereby]).to all(satisfy { |word| word !~ here })
+      end
+
+      it "keeps 'skip' optional in the same patterns" do
+        patterns.first(3).each do |pattern|
+          expect(pattern.find { |arg| arg[:name] == 'skip' }).to include(optional: true)
+        end
+      end
+    end
+
     it 'defines RENTAL_EXPIRE_PATTERN with named capture' do
       pattern = Forge::RENTAL_EXPIRE_PATTERN
       expect(pattern).to be_a(Regexp)
@@ -76,8 +102,6 @@ RSpec.describe Forge do
 
     it 'defines RENTAL_RENEW_SUCCESS_PATTERNS as frozen array' do
       expect(Forge::RENTAL_RENEW_SUCCESS_PATTERNS).to be_frozen
-      expect(Forge::RENTAL_RENEW_SUCCESS_PATTERNS).to include('You mark the notice')
-      expect(Forge::RENTAL_RENEW_SUCCESS_PATTERNS).to include('renewed your rental')
     end
 
     it 'defines RENTAL_RENEW_FAILURE_PATTERNS as frozen array' do
@@ -185,16 +209,11 @@ RSpec.describe Forge do
       expect(Forge::FORGE_EMPTY_PATTERN).to eq('There is nothing')
     end
 
-    it 'defines PRIVATE_FORGE_ENTRY_SUCCESS as frozen array' do
-      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to be_frozen
-      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('You head through')
-      expect(Forge::PRIVATE_FORGE_ENTRY_SUCCESS).to include('Obvious exits')
-    end
-
-    it 'defines PRIVATE_FORGE_ENTRY_BLOCKED as frozen array' do
-      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to be_frozen
-      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to include("You don't have enough")
-      expect(Forge::PRIVATE_FORGE_ENTRY_BLOCKED).to include('The sentry blocks')
+    # The private-forge entry patterns live in lich-5 DRCC; a local copy here
+    # would silently drift from the commons version.
+    it 'does not keep its own copy of the DRCC private-forge entry patterns' do
+      expect(Forge.const_defined?(:PRIVATE_FORGE_ENTRY_SUCCESS, false)).to be(false)
+      expect(Forge.const_defined?(:PRIVATE_FORGE_ENTRY_BLOCKED, false)).to be(false)
     end
   end
 
@@ -316,6 +335,74 @@ RSpec.describe Forge do
       end
     end
 
+    # Saelia log 2026-11-04 13:39: a 'hold' run left a loimic slender awl in
+    # the left hand, the next run untied the mallet into the right, and
+    # 'get my loimic ingot' got "You need a free hand to pick that up."
+    describe '#free_hand_for_ingot' do
+      let(:hands) { { left: nil, right: nil } }
+      let(:stowed) { [] }
+
+      before do
+        forge_instance.instance_variable_set(:@hammer, 'silversteel mallet')
+        forge_instance.instance_variable_set(:@metal, 'loimic')
+        allow(DRC).to receive(:left_hand) { hands[:left] }
+        allow(DRC).to receive(:right_hand) { hands[:right] }
+        allow(DRCI).to receive(:in_right_hand?) { |item| hands[:right]&.include?(item.split.last) }
+        allow(DRCC).to receive(:stow_crafting_item) do |name, _bag, _belt|
+          stowed << name
+          hands.each_key { |hand| hands[hand] = nil if hands[hand] == name }
+          true
+        end
+        allow(forge_instance).to receive(:magic_cleanup)
+      end
+
+      it 'does nothing when a hand is already free' do
+        hands[:right] = 'silversteel mallet'
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to be_empty
+      end
+
+      it 'does nothing when both hands are empty' do
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to be_empty
+      end
+
+      it 'stows the left-hand item and keeps the hammer in the right hand' do
+        hands.merge!(left: 'slender awl', right: 'silversteel mallet')
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to eq(['slender awl'])
+        expect(hands).to eq(left: nil, right: 'silversteel mallet')
+      end
+
+      it 'stows the right-hand item when the hammer is in the left hand' do
+        hands.merge!(left: 'silversteel mallet', right: 'slender awl')
+        forge_instance.send(:free_hand_for_ingot)
+        expect(stowed).to eq(['slender awl'])
+        expect(hands).to eq(left: 'silversteel mallet', right: nil)
+      end
+
+      it 'exits instead of attempting the get when the stow leaves both hands full' do
+        hands.merge!(left: 'slender awl', right: 'silversteel mallet')
+        allow(DRCC).to receive(:stow_crafting_item).with('slender awl', anything, anything).and_return(false)
+        allow(DRCC).to receive(:stow_crafting_item).with('silversteel mallet', anything, anything)
+        expect(Lich::Messaging).to receive(:msg).with('plain', /Stowing slender awl/)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Need a free hand for the loimic ingot, but could not stow slender awl.')
+        expect { forge_instance.send(:free_hand_for_ingot) }.to raise_error(SystemExit)
+      end
+
+      it 'frees the hand before prep_ingot asks for the ingot' do
+        hands.merge!(left: 'slender awl', right: 'silversteel mallet')
+        allow(forge_instance).to receive(:ready_hammer_with_tongs)
+        allow(DRC).to receive(:bput)
+        allow(DRCI).to receive(:in_hands?).with('ingot').and_return(true)
+        expect(DRCC).to receive(:get_crafting_item).with('loimic ingot', 'backpack', [], nil, true) do
+          expect(hands[:left]).to be_nil
+        end
+        forge_instance.send(:prep_ingot)
+        expect(stowed).to eq(['slender awl'])
+      end
+    end
+
     describe '#prepare_item_in_left_hand' do
       it 'returns true immediately when item already in left hand' do
         allow(DRCI).to receive(:in_left_hand?).with('sword').and_return(true)
@@ -393,19 +480,72 @@ RSpec.describe Forge do
         Flags['forge-rental-warning'] = true
       end
 
+      # The game's reply to MARK NOTICE (angua DR logs, 2026-10-12 to
+      # 2026-11-02): one line with the sentry's speech, then a bracketed line.
+      let(:renewal_reply) do
+        [
+          %(You reach to make your mark, signaling your intent to extend your forge rental.  The sentry holds out his hand, saying, "That'll be 23220 Kronars, sir."  You hand over the coins.  The sentry drops them into a nearby locked coffer.  "Right then, that's all settled.  You've got more time."),
+          '[Your private forge rental has been extended until Mon Nov  2 01:23:58 ET 2026.]'
+        ]
+      end
+
+      def bput_returns
+        @bput_returns ||= []
+      end
+
+      # Answers bput the way lich-5's DRC.bput does: strings become
+      # case-insensitive regexes, each line is tried against every pattern,
+      # the first match's text is returned, and '' means it timed out.
+      def reply_with(lines)
+        allow(DRC).to receive(:bput) do |_command, *matches|
+          regexes = matches.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+          hit = nil
+          lines.find { |line| regexes.find { |re| (hit = line.match(re)) } }
+          (bput_returns << (hit ? hit.to_a.first : '')).last
+        end
+      end
+
       it 'resets the forge-rental-warning flag' do
-        allow(DRC).to receive(:bput).and_return('You mark the notice')
+        reply_with(renewal_reply)
         forge_instance.send(:renew_forge_rental)
         expect(Flags['forge-rental-warning']).to eq(false)
       end
 
-      it 'logs success message on renewal' do
-        allow(DRC).to receive(:bput).and_return('You mark the notice')
+      it "logs success on the game's renewal reply instead of timing out" do
+        reply_with(renewal_reply)
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
         expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
         forge_instance.send(:renew_forge_rental)
+        expect(bput_returns).to eq(['[Your private forge rental has been extended until'])
       end
 
+      it 'logs success when the bracketed line carries leading XML tags' do
+        reply_with(['<pushBold/>[Your private forge rental has been extended until Thu Dec  3 00:56:41 ET 2026.]'])
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
+        expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
+        forge_instance.send(:renew_forge_rental)
+        expect(bput_returns).to eq(['<pushBold/>[Your private forge rental has been extended until'])
+      end
+
+      it 'does not log a renewal when no reply is recognized' do
+        reply_with(['You glance around.'])
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: RENTAL RENEWAL NOT CONFIRMED - CHECK THE NOTICE')
+        expect(Lich::Messaging).not_to receive(:msg).with('plain', 'Forge: RENTAL RENEWED')
+        forge_instance.send(:renew_forge_rental)
+      end
+
+      it "does not take other players' text of the bracketed line as a renewal" do
+        line = '[Your private forge rental has been extended until Mon Nov  2 01:23:58 ET 2026.]'
+        allow(Lich::Messaging).to receive(:msg)
+        [%([General][Mallory] "#{line}"), %(Mallory says, "#{line}"), %(Mallory whispers, "#{line}")].each do |heard|
+          reply_with([heard])
+          forge_instance.send(:renew_forge_rental)
+        end
+        expect(Lich::Messaging).not_to have_received(:msg).with('plain', 'Forge: RENTAL RENEWED')
+      end
+
+      # Unverified wording: no failed renewal is in the logs.
       it 'logs error when insufficient funds' do
         allow(DRC).to receive(:bput).and_return("You don't have enough")
         expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: FORGE RENTAL EXPIRING - AUTO-RENEWING')
@@ -917,9 +1057,46 @@ RSpec.describe Forge do
         allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
         allow(DRCT).to receive(:walk_to)
         allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
-        expect(DRC).to receive(:bput).with('go door', *Forge::PRIVATE_FORGE_ENTRY_SUCCESS, *Forge::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
+        expect(DRC).to receive(:bput).with('go door', *DRCC::PRIVATE_FORGE_ENTRY_SUCCESS, *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you').and_return('You head through')
         expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: Entered private forge.')
         forge_instance.send(:go_to_private_forge)
+      end
+
+      DRCC::PRIVATE_FORGE_ENTRY_SUCCESS.each do |response|
+        it "reports entry on the DRCC success response '#{response}'" do
+          allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+          allow(DRCT).to receive(:walk_to)
+          allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
+          allow(DRC).to receive(:bput).and_return(response)
+          expect(Lich::Messaging).to receive(:msg).with('plain', 'Forge: Entered private forge.')
+          forge_instance.send(:go_to_private_forge)
+        end
+      end
+
+      DRCC::PRIVATE_FORGE_ENTRY_BLOCKED.each do |response|
+        it "exits on the DRCC blocked response '#{response}'" do
+          allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+          allow(DRCT).to receive(:walk_to)
+          allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
+          allow(DRC).to receive(:bput).and_return(response)
+          allow(Lich::Messaging).to receive(:msg)
+          expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
+          expect(Lich::Messaging).to have_received(:msg).with('bold', 'Forge: BLOCKED from entering private forge!')
+        end
+      end
+
+      # A blocked response lich-5 adds later must stop forge too, rather than
+      # falling through to "Entered private forge." on a stale local list.
+      it 'follows a blocked pattern added to the DRCC list' do
+        stub_const('Harness::DRCC::PRIVATE_FORGE_ENTRY_BLOCKED', [*DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'The forge is closed'].freeze)
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:walk_to)
+        allow(Room).to receive(:current).and_return(MockRoom.new(12_345))
+        allow(DRC).to receive(:bput).and_return('The forge is closed')
+        allow(Lich::Messaging).to receive(:msg)
+        expect { forge_instance.send(:go_to_private_forge) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).with('go door', *DRCC::PRIVATE_FORGE_ENTRY_SUCCESS, *DRCC::PRIVATE_FORGE_ENTRY_BLOCKED, 'What were you')
+        expect(Lich::Messaging).not_to have_received(:msg).with('plain', 'Forge: Entered private forge.')
       end
 
       it 'exits with verbose error when blocked by sentry' do
@@ -944,6 +1121,48 @@ RSpec.describe Forge do
         expect(Lich::Messaging).to receive(:msg).with('bold', /No door found/)
         expect(Lich::Messaging).to receive(:msg).with('bold', /Falling back/)
         forge_instance.send(:go_to_private_forge)
+      end
+    end
+
+    # 'here' keeps forge in the current room (a rented forge you are already
+    # in, or a forge wand) even with use_private_forge on. smith's 'here'
+    # passes it; before, forge walked to the private forge regardless.
+    describe '#execute_workflow private-forge walk' do
+      before do
+        forge_instance.instance_variable_set(:@use_private_forge, true)
+        allow(forge_instance).to receive(:go_to_private_forge)
+        allow(forge_instance).to receive(:check_rental_status)
+        allow(forge_instance).to receive(:check_all_consumables)
+        allow(forge_instance).to receive(:set_defaults)
+        allow(forge_instance).to receive(:prep)
+        allow(forge_instance).to receive(:work)
+      end
+
+      it 'walks to the private forge by default' do
+        forge_instance.send(:execute_workflow, OpenStruct.new)
+
+        expect(forge_instance).to have_received(:go_to_private_forge)
+      end
+
+      it "stays in the current room with 'here', and still checks the rental" do
+        forge_instance.send(:execute_workflow, OpenStruct.new(here: 'here'))
+
+        expect(forge_instance).not_to have_received(:go_to_private_forge)
+        expect(forge_instance).to have_received(:check_rental_status)
+      end
+
+      it 'does not walk when resuming' do
+        forge_instance.send(:execute_workflow, OpenStruct.new(resume: 'resume'))
+
+        expect(forge_instance).not_to have_received(:go_to_private_forge)
+      end
+
+      it 'does not walk when use_private_forge is off' do
+        forge_instance.instance_variable_set(:@use_private_forge, false)
+
+        forge_instance.send(:execute_workflow, OpenStruct.new)
+
+        expect(forge_instance).not_to have_received(:go_to_private_forge)
       end
     end
 
@@ -1061,25 +1280,35 @@ RSpec.describe Forge do
     end
   end
 
-  # The dr-scripts harness stubs a DRCC without the new private-forge helpers,
-  # so these exercise forge's local fallbacks (the path on an older lich-5).
-  describe 'private-forge settings (gated DRCC helpers with local fallback)' do
+  # load_settings resolves the crafting town and the private-forge settings
+  # through DRCC (lich-5 #1560), the same rules smith and makesteel use.
+  describe '#load_settings private-forge settings' do
     let(:forge_instance) { Forge.allocate }
+    let(:settings) do
+      OpenStruct.new(hometown: 'Crossing', force_crafting_town: 'Shard', forging_tools: ['forging hammer'])
+    end
+    let(:args) { OpenStruct.new(recipe_name: 'short sword') }
 
-    it 'crafting_hometown prefers force_crafting_town over hometown' do
-      expect(forge_instance.send(:crafting_hometown, OpenStruct.new(force_crafting_town: 'Shard', hometown: 'Crossing'))).to eq('Shard')
-      expect(forge_instance.send(:crafting_hometown, OpenStruct.new(hometown: 'Crossing'))).to eq('Crossing')
+    before do
+      $test_settings = settings
+      $test_data[:crafting] = { 'blacksmithing' => { 'Shard' => { 'private_forge' => 51_058 } } }
+      allow(DRCC).to receive(:crafting_hometown).with(settings).and_return('Shard')
+      allow(DRCC).to receive(:use_private_forge?).with(settings).and_return(true)
+      allow(DRCC).to receive(:private_forge_cost).with(settings).and_return(7_500)
     end
 
-    it 'use_private_forge? honors use_private_forge and the legacy forge_use_private_forge' do
-      expect(forge_instance.send(:use_private_forge?, OpenStruct.new(use_private_forge: true))).to be true
-      expect(forge_instance.send(:use_private_forge?, OpenStruct.new(forge_use_private_forge: true))).to be true
-      expect(forge_instance.send(:use_private_forge?, OpenStruct.new)).to be false
+    it 'takes the town, the private-forge toggle and its cost from DRCC' do
+      forge_instance.send(:load_settings, args)
+
+      expect(forge_instance.instance_variable_get(:@hometown)).to eq('Shard')
+      expect(forge_instance.instance_variable_get(:@use_private_forge)).to be true
+      expect(forge_instance.instance_variable_get(:@private_forge_cost)).to eq(7_500)
     end
 
-    it 'private_forge_cost uses the setting, else defaults to 50_000' do
-      expect(forge_instance.send(:private_forge_cost, OpenStruct.new(forge_private_forge_cost: 7_500))).to eq(7_500)
-      expect(forge_instance.send(:private_forge_cost, OpenStruct.new)).to eq(50_000)
+    it "reads the town's blacksmithing data for the town DRCC picks" do
+      forge_instance.send(:load_settings, args)
+
+      expect(forge_instance.instance_variable_get(:@info)).to eq({ 'private_forge' => 51_058 })
     end
   end
 
@@ -1224,7 +1453,10 @@ RSpec.describe Forge do
 
     describe 'ingot-restow and forge-rental-warning' do
       let(:restow_line) { "You realize the sword will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your pack." }
-      let(:rental_line) { 'Your rental time is almost up.' }
+      # The game's warning (angua DR log 2026-11-02) is the sentry's speech,
+      # which has a quote before the text, then this bracketed line.
+      let(:rental_line) { '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]' }
+      let(:sentry_line) { 'The sentry peeks in and gruffly announces, "Your rental time is almost up.  If you want to stay longer, you gotta pay up again."' }
 
       it 'sets both flags from the real lines with the same capture' do
         ["<pushBold/>#{restow_line}", restow_line].each do |line|
@@ -1236,8 +1468,13 @@ RSpec.describe Forge do
         expect(Flags['forge-rental-warning']).to be_truthy
       end
 
+      it 'sets the rental warning from the two game lines, with leading XML tags' do
+        deliver("<pushBold/>#{sentry_line}\r\n<pushBold/>#{rental_line}")
+        expect(Flags['forge-rental-warning']).to be_truthy
+      end
+
       it 'ignores both lines in speech, whispers or ESP' do
-        (player_shapes(restow_line) + player_shapes(rental_line)).each { |line| deliver(line) }
+        (player_shapes(restow_line) + player_shapes(rental_line) + player_shapes('Your rental time is almost up.')).each { |line| deliver(line) }
         expect(Flags['ingot-restow']).to be(false)
         expect(Flags['forge-rental-warning']).to be(false)
       end

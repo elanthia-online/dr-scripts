@@ -44,6 +44,16 @@ RSpec.describe TaskMaster do
     end
   end
 
+  # RUMMAGE /C <noun> in the duffel bag as the game prints it, listing
+  # `names` (each with its article).
+  def rummaged_bag(noun, names)
+    lead = "You rummage through a heavy silk duffel bag looking for something similar to \"#{noun}\""
+    return "#{lead} but there is nothing in there like that." if names.empty?
+
+    listed = names.size > 1 ? "#{names[0..-2].join(', ')} and #{names.last}" : names.first
+    "#{lead} and see #{listed}."
+  end
+
   # Zasele's task journal entry as TASK prints it (2025 Hollow Eve logs). With
   # no returned count the "So far" sentence is left out, as the game sometimes
   # prints it.
@@ -79,6 +89,107 @@ RSpec.describe TaskMaster do
     state
   end
 
+  # Leftover stock in the crafting bag, the hands, a worn trash can and a
+  # room bin, answering commands by noun and by "#id" the way the game does.
+  # A piece taken out goes to the first free hand with a new id. With
+  # worn_leathers the character wears "sinuous leathers", and DR binds "my
+  # leather" to them by prefix (Barrask, Hollow Eve 2026-11-04), so a put by
+  # that noun answers "Perhaps you should be holding that first." whatever
+  # is in hand. refuse: the bin and the worn trash can are full. bag_full:
+  # nothing more fits in the crafting bag. no_floor: the room refuses a drop.
+  #
+  # DRCI and DRCT are harness doubles, so dispose_trash, put_away_item? and
+  # dispose stand in for lich-5 v5.23.0 here: each sends its put through the
+  # same world (an "#id" passes through unqualified, a noun gets "my "), and
+  # dispose_trash uses the trash can's verb twice after a piece lands. As in
+  # v5.23.0, a piece the worn trash can refuses is dropped on the floor and
+  # dispose_trash returns true (this room has no bin, and the 15s timeout on
+  # the unlisted "There isn't any more room" reply is not waited out); only
+  # when the drop is refused too does it return false. DRCT.dispose's false
+  # on a refused bin likewise stands for every way, the floor included,
+  # having failed. Replies come back the way DRC.bput returns them: the text
+  # the first matching pattern matched, or '' when none did.
+  #
+  # @return [Hash] :bag (pieces left per stock), :hands, :floor (pieces
+  #   dropped), :sent (commands)
+  def stock_world(pieces, worn_leathers: false, refuse: false, bag_full: false, no_floor: false, hands: {})
+    world = { bag: pieces.dup, hands: { right: nil, left: nil }.merge(hands), floor: [], sent: [] }
+    next_id = 2_222_485
+    allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+    allow(GameObj).to receive(:left_hand) { world[:hands][:left] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+    allow(DRC).to receive(:right_hand) { world[:hands][:right]&.name }
+    allow(DRC).to receive(:left_hand) { world[:hands][:left]&.name }
+
+    held = ->(ref) { world[:hands].find { |_, obj| obj && ["##{obj.id}", "my #{obj.noun}", "my #{obj.name}"].include?(ref) }&.first }
+    worn = ->(ref) { worn_leathers && ref.start_with?('my ') && 'leathers'.start_with?(ref.delete_prefix('my ')) }
+    reply = lambda do |command|
+      case command
+      when /\Aget my (.+) from my duffel bag\z/
+        stock = Regexp.last_match(1)
+        hand = world[:hands].find { |_, obj| obj.nil? }&.first
+        next 'You need a free hand to pick that up.' unless hand
+        next 'What were you referring to?' unless world[:bag].fetch(stock, 0).positive?
+
+        world[:bag][stock] -= 1
+        world[:hands][hand] = OpenStruct.new(name: stock, noun: stock.split.last, id: (next_id += 1).to_s)
+        "You get some #{stock} from inside your duffel bag."
+      when /\Aput (my \w+(?: \w+)?|#\d+) in (my bucket|bin|my duffel bag)\z/
+        ref = Regexp.last_match(1)
+        into = Regexp.last_match(2)
+        next 'Perhaps you should be holding that first.' if worn.call(ref)
+
+        hand = held.call(ref)
+        next 'What were you referring to?' unless hand
+
+        piece = world[:hands][hand]
+        if into == 'my duffel bag'
+          next "There isn't any more room in the duffel bag for that." if bag_full
+
+          world[:bag][piece.name] = world[:bag].fetch(piece.name, 0) + 1
+        elsif refuse
+          next "There isn't any more room in the #{into.delete_prefix('my ')} for that."
+        end
+        world[:hands][hand] = nil
+        into == 'my duffel bag' ? "You put your #{piece.noun} in your duffel bag." : "You drop your #{piece.noun} in a #{into.delete_prefix('my ')}."
+      when /\Adrop (#\d+)\z/
+        hand = held.call(Regexp.last_match(1))
+        next 'What were you referring to?' unless hand
+        next "You can't do that here." if no_floor
+
+        world[:floor] << world[:hands][hand].name
+        world[:hands][hand] = nil
+        'You drop some stock.'
+      when 'tap my bucket'
+        'You drum your fingers on the bucket rhythmically.'
+      else
+        ''
+      end
+    end
+    allow(DRC).to receive(:bput) do |command, *patterns|
+      world[:sent] << command
+      line = reply.call(command)
+      patterns.flatten.map { |pattern| line.match(pattern) }.compact.first.to_a.first || ''
+    end
+
+    ref_of = ->(item) { item.start_with?('#') ? item : "my #{item}" }
+    landed = /^You (drop|put)/
+    allow(DRCI).to receive(:dispose_trash) do |item, can, verb|
+      if DRC.bput("put #{ref_of.call(item)} in my #{can}", landed, /^Perhaps you should/, /^What were you/).match?(landed)
+        2.times { DRC.bput("#{verb} my #{can}", /You drum/) } if verb
+        next true
+      end
+
+      DRC.bput("drop #{ref_of.call(item)}", landed, /^You can't do that/, /^What were you/).match?(landed)
+    end
+    allow(DRCI).to receive(:put_away_item?) do |item, container|
+      DRC.bput("put #{ref_of.call(item)} in my #{container}", landed, /^Perhaps you should/, /^What were you/, /^There isn't any more room/).match?(landed)
+    end
+    allow(DRCT).to receive(:dispose) do |item, _room|
+      DRC.bput("put #{ref_of.call(item)} in bin", landed, /^Perhaps you should/, /^What were you/, /^There isn't any more room/).match?(landed)
+    end
+    world
+  end
+
   describe 'settings' do
     describe '#configure_loot_filter' do
       it 'registers the slackbot with slack_username only when keepers are reported' do
@@ -103,6 +214,21 @@ RSpec.describe TaskMaster do
         tm.send(:configure_loot_filter)
         expect(tm.keeper?('In the woven sack you see a large agonite shard.')).to be(true)
         expect(tm.keeper?('In the woven sack you see some coral dye.')).to be(false)
+      end
+    end
+
+    describe 'task_bin_leftover_stock' do
+      # The binning specs set @bin_leftover_stock directly, so this pins the
+      # setting name initialize reads: a misspelt name would silently leave
+      # the feature off.
+      [true, false, nil].each do |value|
+        it "is read from the settings when built (#{value.inspect})" do
+          tm = described_class.allocate
+          allow(tm).to receive(:get_settings).and_return(OpenStruct.new(task_bin_leftover_stock: value))
+          allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
+          tm.send(:initialize)
+          expect(tm.instance_variable_get(:@bin_leftover_stock)).to eq(value)
+        end
       end
     end
 
@@ -191,6 +317,121 @@ RSpec.describe TaskMaster do
     end
   end
 
+  describe 'hometown while a task runs' do
+    # $HOMETOWN is the global dependency's shift_hometown sets; lich-5 applies
+    # it to hometown in every get_settings call, so sew and restock follow it.
+    # Entries from lich-5's HOMETOWN_REGEX_MAP (drvariables.rb), which
+    # DRC.get_town_name matches against to return the canonical name.
+    town_regex_map = {
+      'Crossing'   => /^(cross(ing)?)$/i,
+      'Riverhaven' => /^(river|haven|riverhaven)$/i,
+      'Shard'      => /^(shard)$/i
+    }
+
+    let(:messages) { [] }
+
+    before do
+      $HOMETOWN = nil
+      described_class.saved_hometown = nil
+      allow(DRC).to receive(:get_town_name) { |text| town_regex_map.select { |_town, re| re =~ text }.keys.first }
+      allow(DRC).to receive(:message) { |text| messages << text }
+    end
+
+    after do
+      $HOMETOWN = nil
+      described_class.saved_hometown = nil
+    end
+
+    it 'leaves hometown alone when task_hometown is unset, as base.yaml ships it' do
+      tm = build(task_hometown: base_yaml['task_hometown'])
+      tm.shift_to_task_hometown
+      expect($HOMETOWN).to be_nil
+      expect(described_class.saved_hometown).to be_nil
+    end
+
+    it 'treats a blank or missing task_hometown as unset' do
+      build(task_hometown: '  ').shift_to_task_hometown
+      build.shift_to_task_hometown
+      expect($HOMETOWN).to be_nil
+    end
+
+    it 'ignores surrounding spaces in the town name' do
+      build(task_hometown: ' Crossing ').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+    end
+
+    it 'resolves a short or lowercase town name to the canonical one lich-5 looks up' do
+      build(task_hometown: 'cross').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+      described_class.restore_hometown
+      build(task_hometown: 'crossing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+    end
+
+    it 'reports a task_hometown that matches no town and leaves hometown alone' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crosing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Shard')
+      expect(described_class.saved_hometown).to be_nil
+      expect(messages).to include(/task_hometown 'Crosing' does not match any town/)
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Shard')
+    end
+
+    it 'makes task_hometown the hometown while taskmaster runs, and clears it afterwards' do
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+      described_class.restore_hometown
+      expect($HOMETOWN).to be_nil
+    end
+
+    it 'puts back an override another script had set, such as trade' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      expect($HOMETOWN).to eq('Crossing')
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Shard')
+    end
+
+    it 'leaves an override another script set while taskmaster ran' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      $HOMETOWN = 'Riverhaven' # set by another script mid-run
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Riverhaven')
+      expect(described_class.saved_hometown).to be_nil
+    end
+
+    it 'leaves a mid-run clear by another script in place' do
+      $HOMETOWN = 'Shard'
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      $HOMETOWN = nil # another script cleared it mid-run
+      described_class.restore_hometown
+      expect($HOMETOWN).to be_nil
+    end
+
+    it 'changes nothing on stop when it never shifted' do
+      $HOMETOWN = 'Riverhaven'
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Riverhaven')
+    end
+
+    it 'restores only once, so a second stop cannot clear a later override' do
+      build(task_hometown: 'Crossing').shift_to_task_hometown
+      described_class.restore_hometown
+      $HOMETOWN = 'Shard' # set by something else after taskmaster stopped
+      described_class.restore_hometown
+      expect($HOMETOWN).to eq('Shard')
+    end
+
+    it 'shifts before running any mode' do
+      tm = build(task_hometown: 'Crossing')
+      allow(tm).to receive(:find_npc)
+      expect { tm.run(OpenStruct.new(npc: 'zasele', find: 'find')) }.to raise_error(SystemExit)
+      expect($HOMETOWN).to eq('Crossing')
+    end
+  end
+
   describe 'running the script' do
     let(:rope_task) { ['rope', 2, 4, 'cloth', 'burlap'] }
     let(:outfitting_belt) { { 'name' => 'tailor belt', 'items' => [] } }
@@ -256,7 +497,7 @@ RSpec.describe TaskMaster do
       allow(tm).to receive(:tailor_item) { |*task| events << [:tailor, *task] }
       allow(DRCT).to receive(:dispose) { |item, room| events << [:dispose, item, room] }
       allow(tm).to receive(:_respond) { |text| events << [:respond, text] }
-      allow(DRC).to receive(:message) { |text| events << [:message, text] }
+      allow(DRC).to receive(:message) { |text| events << [:message, text] unless text.start_with?("taskmaster version ") } # the version banner has its own example
       begin
         tm.send(:initialize)
         tm.run
@@ -360,9 +601,10 @@ RSpec.describe TaskMaster do
     end
 
     describe 'marathon' do
-      # Marathon never clears the previous task's flags.
+      # Marathon never clears the previous task's flags. The instructions are
+      # thrown away by complete_task once the task is handed in.
       let(:marathon_task) do
-        [[:copper, nil, nil], :haste, :before, :get_task, [:check_stock, 8, 'burlap', 'cloth'], [:tailor, 'rope', 2, 'cloth', 'burlap'], [:dispose, 'rope instructions', 16_144], [:complete, 'rope', 2]]
+        [[:copper, nil, nil], :haste, :before, :get_task, [:check_stock, 8, 'burlap', 'cloth'], [:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2]]
       end
 
       it 'runs Zasele tasks after a restock, whatever taskmaster is named, and exits at the wrap-up call' do
@@ -375,7 +617,7 @@ RSpec.describe TaskMaster do
         events = start(npc: 'zasele', marathon: true, stock_ok: false, wrap_up_after: 1)
         expect(events).to eq([:reconcile, :restock, *marathon_task.first(4), [:check_stock, 8, 'burlap', 'cloth'],
                               [:repair, ['scissors'], outfitting_belt], :restock, [:find_npc, 21, 'zasele'],
-                              [:tailor, 'rope', 2, 'cloth', 'burlap'], [:dispose, 'rope instructions', 16_144], [:complete, 'rope', 2], :exit])
+                              [:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2], :exit])
       end
 
       it 'skips the repair with task_no_repair' do
@@ -411,11 +653,12 @@ RSpec.describe TaskMaster do
         expect(start(npc: 'zasele', reset_output: true)).to eq([[:respond, "<clearStream id='Task Master'/>"], :exit])
       end
 
-      it 'loot_history prints each taskmaster\'s sacks and exits' do
+      it 'loot_history prints each taskmaster\'s sacks and exits, Dorhum\'s empty when an older history has none' do
         UserVars.taskmaster_sacks = { 'poltu' => ['a bronze bar.'], 'bradyn' => [], 'zasele' => ['some coral dye.', 'a large haledroth shard.'] }
         expect(start(npc: 'zasele', loot_history: true)).to eq([[:message, 'Sack history for Taskmaster Poltu:'], [:message, 'a bronze bar.'],
                                                                 [:message, 'Sack history for Taskmaster Bradyn:'],
                                                                 [:message, 'Sack history for Taskmaster Zasele:'], [:message, 'some coral dye.'], [:message, 'a large haledroth shard.'],
+                                                                [:message, 'Sack history for Taskmaster Dorhum:'],
                                                                 :exit])
       end
 
@@ -790,6 +1033,17 @@ RSpec.describe TaskMaster do
 
           expect(tm.get_task).to eq(['rope', 5, 4, 'cloth', 'burlap'])
         end
+
+        it 'starts with no replacement request on record from an earlier task' do
+          tm = reader
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope', 'poltu' => 'dagger' }
+          offers = ['You may accept by typing ACCEPT TASK']
+          game('ask zasele for task' => ->(*) { offers.shift || raise('asked again after the offer') }, 'accept task' => 'You can check your progress with the TASK verb',
+               'task' => journal('a coil of reinforced cloth rope', 5, 0), 'read my rope instructions' => rope_materials)
+          allow(DRCC).to receive(:stow_crafting_item)
+          expect { tm.get_task }.not_to raise_error
+          expect(UserVars.taskmaster_replacements).to eq('poltu' => 'dagger')
+        end
       end
 
       describe 'every reply to ASK FOR TASK' do
@@ -836,6 +1090,7 @@ RSpec.describe TaskMaster do
             'You can check your progress with the TASK verb.'
           end
           game('ask zasele for task' => ask, 'accept task' => accept)
+          yield tm if block_given?
           [tm.get_task, events, tm]
         end
 
@@ -845,7 +1100,8 @@ RSpec.describe TaskMaster do
         it 'asks with the same matchers' do
           asking([offer])
           expect(DRC).to have_received(:bput).with('ask zasele for task', /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/,
-                                                   /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, /^To whom are you speaking/)
+                                                   /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/,
+                                                   TaskMaster::TASK_UNRELIABLE, /^To whom are you speaking/)
           expect(DRC).to have_received(:bput).with('accept task', /You can check your progress with the TASK verb/)
         end
 
@@ -890,7 +1146,7 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:fput) { |command| events << [:fput, command] }
           replies = [wait, offer]
           game('ask zasele for task' => ->(*) { replies.shift || raise('asked again after the last reply') }, 'accept task' => 'You can check your progress with the TASK verb.')
-          tm.get_task
+          expect { tm.get_task }.not_to raise_error
           expect(events).to eq([[:pause, 7]])
         end
 
@@ -913,8 +1169,40 @@ RSpec.describe TaskMaster do
           expect(events.count([:pause, 7])).to eq(20_000)
         end
 
-        it 'gives up and returns nil, without asking again, when no reply matches' do
-          expect(asking(['']).first(2)).to eq([nil, %i[find ask]])
+        it "asks its own taskmaster again after cancelling another taskmaster's task" do
+          resumes = 0
+          result, events, = asking([on_task, offer]) do |tm|
+            allow(tm).to receive(:resume_task) do
+              resumes += 1
+              throw TaskMaster::FOREIGN_TASK_CANCELLED
+            end
+          end
+          expect(result).to eq(:accepted)
+          expect(resumes).to eq(1)
+          expect(events).to eq(%i[find ask find ask accept finish])
+        end
+
+        # Zasele after a cancelled task (Mahtra, 2026-11-03 18:47), two lines.
+        let(:unreliable) { '"Word has traveled.  You are unreliable.  Perhaps I\'ll give' }
+
+        it 'waits the poll interval and asks again when the taskmaster calls you unreliable after a cancel' do
+          expect(asking([unreliable, offer]).first(2)).to eq([:accepted, [:find, :ask, cooldown_message, [:pause, 7], *accepted]])
+        end
+
+        it 'asks again after a reply it does not know, instead of going on with no task' do
+          expect(asking(['', '', offer]).first(2)).to eq([:accepted, [:find, :ask, [:pause, 7], :find, :ask, [:pause, 7], *accepted]])
+        end
+
+        it "stops after #{TaskMaster::MAX_UNKNOWN_TASK_REPLIES} replies in a row it does not know" do
+          nil
+          expect { _, _, _ = asking(Array.new(TaskMaster::MAX_UNKNOWN_TASK_REPLIES, '')) }.to raise_error(SystemExit)
+          expect(DRC).to have_received(:message).with('No answer Zasele gives that taskmaster knows, 3 times in a row. Stopping.')
+        end
+
+        it 'counts unknown replies in a row only' do
+          result = nil
+          expect { result = asking(['', '', wait, '', '', offer]) }.not_to raise_error
+          expect(result.first).to eq(:accepted)
         end
       end
 
@@ -1061,6 +1349,95 @@ RSpec.describe TaskMaster do
         events
       end
 
+      describe 'a task from another taskmaster' do
+        # The journal as the game prints it (Fidon, 2026-11).
+        let(:zasele_journal) do
+          'While visiting Andreshlew for the Hollow Eve festivities, Zasele has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  ' \
+            'In particular, she wanted you to craft a coil of reinforced cloth rope and indicated that 3 would suffice.  So far, you have returned 0 to her.'
+        end
+
+        it 'reads the item, the count and the taskmaster off the full journal line' do
+          tm = reader
+          game('task' => zasele_journal)
+
+          expect(tm.read_task).to eq(['rope', 3])
+          expect(tm.instance_variable_get(:@task_giver)).to eq('zasele')
+        end
+
+        it "stops on Zasele's task when started for Dorhum, before handing anything in, saying how to finish or cancel it" do
+          tm = reader(npc: 'dorhum')
+          game('task' => zasele_journal)
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(tm.instance_variable_get(:@npc)).to eq('dorhum')
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Zasele, not Dorhum. Finish it with ;taskmaster zasele, or cancel it with ASK ZASELE FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
+        end
+
+        it "stops on a task from a taskmaster it doesn't do, saying to finish it by hand" do
+          tm = reader(npc: 'zasele')
+          game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
+          expect(tm).not_to receive(:turn_in_banked)
+          expect(tm).not_to receive(:cancel_task)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Nezhiri, not Zasele. Nezhiri is not a taskmaster this script does, so finish it yourself, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
+        end
+
+        it "with task_cancel_foreign_tasks, cancels another taskmaster's task, waits out the cooldown and goes back to its own" do
+          tm = reader(npc: 'zasele', cancel_foreign_tasks: true)
+          game('task' => zasele_journal.sub('Zasele has asked', 'Dorhum has asked'))
+          allow(tm).to receive(:pause)
+          expect(tm).to receive(:cancel_task).with('dorhum', 'rope')
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+
+          expect(tm).to have_received(:pause).with(600)
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+        end
+
+        it 'keeps the taskmaster it was started for when the journal names none' do
+          tm = reader(npc: 'zasele')
+          game('task' => journal('a coil of reinforced cloth rope', 3))
+
+          tm.read_task
+          tm.check_task_giver
+
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+        end
+      end
+
+      describe 'asking for replacement instructions' do
+        it 'asks once when the carried set is used up, and remembers it for this task' do
+          events = resume(owed: 3, uses: nil)
+          expect(events).to include(:asked_for_instructions)
+          expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+        end
+
+        it 'stops instead of asking a second time for the same task' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          events = resume(owed: 3, uses: nil)
+          expect(events).not_to include(:asked_for_instructions)
+          expect(events).not_to include([:make, 'rope', 3])
+          expect(DRC).to have_received(:message).with(/Already asked zasele for rope instructions/)
+        end
+
+        it 'still asks when the earlier request was for a different item' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'netting' }
+          expect(resume(owed: 3, uses: nil)).to include(:asked_for_instructions)
+        end
+
+        it 'does not ask at all while the carried set has a use for every item owed' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          expect(resume(owed: 3, uses: 4)).to include([:make, 'rope', 3])
+        end
+      end
+
       it 'refreshes haste before making the items still owed' do
         events = resume(owed: 3, uses: 4)
         expect(events.index(:haste)).to be < events.index([:make, 'rope', 3])
@@ -1078,6 +1455,25 @@ RSpec.describe TaskMaster do
 
       it 'finishes the task from the bag alone when enough are banked, buying nothing' do
         expect(resume(owed: 3, banked: 3, uses: 4)).to eq([:sack])
+      end
+
+      # Regression: trash no longer throws the instructions away, so a task the
+      # banked items finish must close out like complete_task does, or the set
+      # stays in the bag beside the next task's and the replacement record stays.
+      it 'throws the instructions away and clears the replacement record when the banked items finish the task' do
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope', 'poltu' => 'dagger' }
+        allow(DRCT).to receive(:dispose)
+        resume(owed: 3, banked: 3, uses: 4)
+        expect(DRCT).to have_received(:dispose).with('rope instructions', nil, nil, nil)
+        expect(UserVars.taskmaster_replacements).to eq('poltu' => 'dagger')
+      end
+
+      it 'keeps the instructions and the replacement record when the banked items leave some owed' do
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+        allow(DRCT).to receive(:dispose)
+        resume(owed: 5, banked: 2, uses: 4)
+        expect(DRCT).not_to have_received(:dispose)
+        expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
       end
 
       it 'keeps the carried instructions when they have a use for every item owed' do
@@ -1103,18 +1499,84 @@ RSpec.describe TaskMaster do
         expect(resume(owed: 2, uses: 9, foreign: true)).to include(:asked_for_instructions)
       end
 
+      describe 'sets written for someone else' do
+        let(:foreign) { "You can't read the ink printed on the rope instructions.  They were written by or for someone else." }
+        let(:usable) { 'These instructions appear to be very fragile and will wear out quickly when studied.  They have only 4 uses remaining.' }
+
+        def carrying(replies)
+          tm = reader(worn_trashcan: 'bucket', worn_trashcan_verb: 'drop')
+          allow(DRCI).to receive(:get_item?) { !replies.empty? }
+          game('read my rope instructions' => ->(*) { replies.shift })
+          allow(tm).to receive(:request_replacement)
+          allow(DRCC).to receive(:stow_crafting_item)
+          tm
+        end
+
+        it 'throws a foreign set away instead of putting it back, then asks for a fresh one' do
+          tm = carrying([foreign])
+          expect(DRCI).to receive(:dispose_trash).with('rope instructions', 'bucket', 'drop').and_return(true)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCC).not_to have_received(:stow_crafting_item)
+          expect(tm).to have_received(:request_replacement).with('rope')
+        end
+
+        it 'uses a good set carried behind a foreign one, asking for nothing' do
+          tm = carrying([foreign, usable])
+          allow(DRCI).to receive(:dispose_trash).and_return(true)
+
+          tm.ensure_instructions('rope', 3)
+
+          expect(tm).not_to have_received(:request_replacement)
+        end
+
+        it 'puts a foreign set back when the trash will not take it, and asks once' do
+          tm = carrying([foreign, foreign])
+          allow(DRCI).to receive(:dispose_trash).and_return(false)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCC).to have_received(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).once
+          expect(tm).to have_received(:request_replacement).once
+        end
+
+        it "stops looking after #{TaskMaster::MAX_CARRIED_SETS} sets" do
+          tm = carrying(Array.new(10, foreign))
+          allow(DRCI).to receive(:dispose_trash).and_return(true)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCI).to have_received(:dispose_trash).exactly(TaskMaster::MAX_CARRIED_SETS).times
+          expect(tm).to have_received(:request_replacement).once
+        end
+      end
+
       it 'counts the items still owed after the banked ones are in' do
         expect(resume(owed: 6, target: 8, banked: 1, uses: 6)).to include([:make, 'rope', 5])
       end
     end
 
     describe '#turn_in_banked' do
-      it 'puts back an item the taskmaster will not take and stops handing in' do
+      it 'puts back an item the taskmaster will not take, after five tries in a row, and stops handing in' do
         tm = reader
         allow(DRCI).to receive(:get_item?).and_return(true)
+        allow(DRCI).to receive(:in_hands?).and_return(true)
         allow(DRC).to receive(:bput).and_return('Zasele shakes her head.')
         expect(DRCC).to receive(:stow_crafting_item).with('rope', 'duffel bag', nil)
         expect(tm.turn_in_banked('rope', 4)).to eq(4)
+        expect(DRC).to have_received(:bput).with('give my rope to zasele', any_args).exactly(5).times
+      end
+
+      it "gives again through four replies it did not know, as complete_task does, and carries on" do
+        tm = reader
+        allow(DRCC).to receive(:stow_crafting_item)
+        replies = ['', '', '', '', more_needed(2), more_needed(1)]
+        allow(tm).to receive(:give_item) { replies.shift }
+
+        expect(tm.turn_in_banked('rope', 3)).to eq(1)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
       end
 
       context 'when the taskmaster wanders off' do
@@ -1142,6 +1604,135 @@ RSpec.describe TaskMaster do
   end
 
   describe 'making the items' do
+    describe '#trash' do
+      def trasher(remainder:, **world_options)
+        world = stock_world({ 'burlap cloth' => 1 }, **world_options)
+        build(remainder: remainder).trash('rope', 'cloth', 'burlap')
+        world
+      end
+
+      it 'leaves the instructions alone, so a task that is not handed in yet keeps them' do
+        expect(trasher(remainder: false)[:sent]).to eq([])
+      end
+
+      it 'throws away leftover stock by the id of the piece in hand, in the bin room' do
+        world = trasher(remainder: true)
+        expect(DRCT).to have_received(:dispose).with('#2222486', 14_886)
+        expect(world[:sent]).to include('put #2222486 in bin')
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'burlap cloth' => 0 })
+      end
+
+      it 'takes leftover ingots to the forge bin' do
+        stock_world({ 'bronze ingot' => 1 })
+        build(remainder: true).trash('hammer', 'ingot', 'bronze')
+        expect(DRCT).to have_received(:dispose).with('#2222486', 793)
+      end
+
+      # Before, the result of the disposal was ignored: the refused piece
+      # stayed in hand, the next get filled the other hand, and the third
+      # answered "You need a free hand", leaving two pieces for the next
+      # task's STOW to send to the default container.
+      it 'puts a piece the bin refuses back in the bag by its id and stops, leaving both hands empty' do
+        world = stock_world({ 'burlap cloth' => 3 }, refuse: true)
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:sent].count('get my burlap cloth from my duffel bag')).to eq(1)
+        expect(world[:sent]).to include('put #2222486 in my duffel bag')
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'burlap cloth' => 3 })
+      end
+
+      it 'says which piece is left when it can be neither thrown away nor put back' do
+        world = stock_world({ 'burlap cloth' => 3 }, refuse: true, bag_full: true)
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:sent].count('get my burlap cloth from my duffel bag')).to eq(1)
+        expect(DRC).to have_received(:message).with(a_string_including('burlap cloth (#2222486)', 'Stopping'))
+      end
+
+      it 'stops at TRASH_CAP pieces when every piece goes in the bin' do
+        cap = described_class::TRASH_CAP
+        world = stock_world({ 'burlap cloth' => cap + 10 })
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(DRCT).to have_received(:dispose).exactly(cap).times
+        expect(world[:bag]).to eq({ 'burlap cloth' => 10 })
+      end
+
+      it 'disposes of nothing and says why when both hands are full' do
+        full = OpenStruct.new(name: 'iron chisels', noun: 'chisels', id: '1')
+        world = stock_world({ 'burlap cloth' => 3 }, hands: { right: full, left: full })
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(DRCT).not_to have_received(:dispose)
+        expect(DRC).to have_received(:message).with(a_string_including('Both hands are full', 'burlap cloth'))
+      end
+
+      # A get no pattern matched (bput timed out) must not dispose of
+      # whatever happens to be in hand.
+      it 'stops without disposing when the get goes unanswered' do
+        world = stock_world({ 'burlap cloth' => 3 })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          ''
+        end
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(DRCT).not_to have_received(:dispose)
+      end
+
+      it 'stops with a message instead of throwing away a piece it cannot find in hand, after one put-back by name' do
+        world = stock_world({ 'burlap cloth' => 3 })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          'You get'
+        end
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag', 'put my burlap cloth in my duffel bag'])
+        expect(DRCT).not_to have_received(:dispose)
+        expect(DRC).to have_received(:message).with(a_string_including("can't find it in your hands", 'may still be in your hand', 'Stopping'))
+      end
+
+      # A put whose reply bput did not know waits out its timeout and comes
+      # back false, though the piece went in the bin; putting it back by id
+      # then fails ("What were you referring to?") and used to stop all
+      # disposal with a message that the piece may be in hand.
+      it 'goes on to the next piece when the bin took one with a reply it did not know' do
+        world = stock_world({ 'burlap cloth' => 3 })
+        allow(DRCT).to receive(:dispose) do |item, _room|
+          DRC.bput("put #{item} in bin", /^You (drop|put)/)
+          false
+        end
+        build(remainder: true).trash('rope', 'cloth', 'burlap')
+        expect(world[:bag]).to eq({ 'burlap cloth' => 0 })
+        expect(world[:sent]).not_to include(a_string_ending_with('in my duffel bag'))
+        expect(world[:hands].values).to all(be_nil)
+        expect(DRC).not_to have_received(:message)
+      end
+    end
+
+    describe '#zasele leftover stock' do
+      def tailor(worn_trashcan:, bin_leftover_stock: true)
+        tm = build(worn_trashcan: worn_trashcan, bin_leftover_stock: bin_leftover_stock, settings: { outfitting_tools: ['scissors'] })
+        allow(tm).to receive(:buy_stackables)
+        allow(tm).to receive(:tailor_item)
+        allow(tm).to receive(:repair)
+        allow(tm).to receive(:trash)
+        tm.zasele('rope', 8, 10, 'cloth', 'burlap')
+        tm
+      end
+
+      it 'skips the walk to the bin room when opted in with a worn trash can (the stock is binned after the hand-in)' do
+        expect(tailor(worn_trashcan: 'bucket')).not_to have_received(:trash)
+      end
+
+      it 'still walks leftover stock to the bin room when not opted in, even with a worn trash can' do
+        expect(tailor(worn_trashcan: 'bucket', bin_leftover_stock: nil)).to have_received(:trash).with('rope', 'cloth', 'burlap')
+      end
+
+      it 'still walks leftover stock to the bin room without a worn trash can' do
+        expect(tailor(worn_trashcan: nil)).to have_received(:trash).with('rope', 'cloth', 'burlap')
+      end
+    end
+
     describe '#bradyn lumber tasks' do
       # Runs the real lumber branch down to the Rangu hand-off and reports which
       # tools were fetched for repair. Buying, shaping and disposal are not under
@@ -1258,17 +1849,28 @@ RSpec.describe TaskMaster do
     describe '#tailor_item' do
       let(:tailoring) { { 'tailoring' => { 'Crossing' => { 'tool-room' => 16666, 'stock-room' => 16667 } } } }
 
-      # Runs the real tailor_item and records consumable checks and sew launches.
-      def tailor(base, count: 6, marathon: false)
+      # Runs the real tailor_item; returns the consumable checks, the sew launches
+      # and how many it says it made.
+      # Each sew run stows one finished netting in the bag while there is stock
+      # for one (stock: how many, every item when nil); a run without stock
+      # makes nothing, as sew exits in check_hand once it has studied. The
+      # bag also holds the task's netting instructions, which RUMMAGE /C
+      # netting lists too.
+      def tailor(base, count: 6, marathon: false, stock: nil)
         tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936, marathon: marathon)
         allow(tm).to receive(:get_data).and_return(tailoring)
         allow(DRCT).to receive(:walk_to)
         checks = []
         allow(DRCC).to receive(:check_consumables) { |name, room, number, *rest| checks << [name, room, number, rest.last] }
+        bagged = 0
+        game('rummage /C netting in my duffel bag' => ->(*) { rummaged_bag('netting', ['some netting instructions'] + Array.new(bagged, 'some burlap netting')) })
         launches = []
-        allow(DRC).to receive(:wait_for_script_to_complete) { |name, args| launches << [name, args] }
-        tm.tailor_item('netting', count, base, 'burlap')
-        [checks, launches]
+        allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+          launches << [name, args]
+          bagged += 1 if stock.nil? || bagged < stock
+        end
+        made = tm.tailor_item('netting', count, base, 'burlap')
+        [checks, launches, made]
       end
 
       it 'checks pins once for the whole task, enough for every item' do
@@ -1277,15 +1879,205 @@ RSpec.describe TaskMaster do
         expect(checks.find { |c| c.first == 'pins' }).to eq(['pins', 16666, 5, 29])
       end
 
-      it 'checks thread once, from the stock room' do
+      it 'checks the cotton thread once, from the stock room, never the bare noun a spun spool shares' do
         checks, = tailor('leather')
-        expect(checks.select { |c| c.first == 'thread' }.map { |c| c[1..2] }).to eq([[16667, 6]])
+        expect(checks.select { |c| c.first == 'cotton thread' }.map { |c| c[1..2] }).to eq([[16667, 6]])
+        expect(checks.map(&:first)).not_to include('thread')
       end
 
       it 'tells every sew run to skip its own consumable check' do
         _, launches = tailor('cloth', count: 3)
         expect(launches.size).to eq(3)
         expect(launches).to all(satisfy { |name, args| name == 'sew' && args.include?('skip') })
+      end
+
+      # Barrask, 2026-11-04: a 6-netting task with 10 of the 60 yards. Run 1
+      # made one netting; runs 2-6 each studied (one instruction use each),
+      # found no burlap and exited, and taskmaster said "6 nettings completed".
+      it 'stops launching sew after the first run that made nothing, when there is stock for only one of six' do
+        _, launches, made = tailor('cloth', count: 6, stock: 1)
+        expect(launches.size).to eq(2)
+        expect(made).to eq(1)
+      end
+
+      it 'says how many were made of how many, never that all six were completed' do
+        tailor('cloth', count: 6, stock: 1)
+        expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+        expect(DRC).not_to have_received(:message).with('6 nettings completed')
+      end
+
+      it 'launches sew only once when the very first run makes nothing' do
+        _, launches = tailor('cloth', count: 6, stock: 0)
+        expect(launches.size).to eq(1)
+        expect(DRC).to have_received(:message).with('Made 0 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+      end
+
+      it 'counts from what the bag already held: nettings left from before the task are not made by this one' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        game('rummage /C netting in my duffel bag' => rummaged_bag('netting', Array.new(3, 'some burlap netting') + ['some netting instructions']))
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
+        expect(tm.tailor_item('netting', 4, 'cloth', 'burlap')).to eq(0)
+        expect(launches).to eq(1)
+      end
+
+      it 'reports every item when every run made one' do
+        _, launches, made = tailor('leather', count: 4)
+        expect(launches.size).to eq(4)
+        expect(made).to eq(4)
+        expect(DRC).to have_received(:message).with('4 nettings completed')
+      end
+
+      # The last study uses up the instructions, so the run that makes the
+      # last netting also takes "some netting instructions" out of the bag.
+      # Counting every " netting" in the reply saw no change on that run.
+      it 'counts the last netting as made when that run also used up the instructions' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        bagged = 0
+        uses = 6
+        game('rummage /C netting in my duffel bag' => lambda do |*|
+          rummaged_bag('netting', Array.new(bagged, 'some reinforced cloth netting') + (uses.positive? ? ['some netting instructions'] : []))
+        end)
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          launches += 1
+          uses -= 1
+          bagged += 1
+        end
+        expect(tm.tailor_item('netting', 6, 'cloth', 'reinforced')).to eq(6)
+        expect(launches).to eq(6)
+        expect(DRC).to have_received(:message).with('6 nettings completed')
+        expect(DRC).not_to have_received(:message).with(/^Made 5 of 6/)
+      end
+
+      it 'counts none made when the bag lists the same unfinished netting, instructions and netting after the run' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        game('rummage /C netting in my duffel bag' => rummaged_bag('netting', ['an unfinished burlap netting', 'some netting instructions', 'some burlap netting']))
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
+        expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(0)
+        expect(launches).to eq(1)
+      end
+
+      context 'when RUMMAGE gets no reply' do
+        # Like tailor, but bput returns '' (no reply matched within its
+        # timeout) for the RUMMAGE calls numbered in `missed`; call 1 is the
+        # count before the first run. The bag starts with `old` nettings from
+        # before the task. Returns how many tailor_item says it made and the
+        # sew launches.
+        def tailor_missing(missed, count: 6, stock: nil, old: 0)
+          tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+          allow(tm).to receive(:get_data).and_return(tailoring)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCC).to receive(:check_consumables)
+          rummages = 0
+          bagged = 0
+          game('rummage /C netting in my duffel bag' => lambda do |*|
+            rummages += 1
+            next '' if missed.include?(rummages)
+
+            rummaged_bag('netting', ['some netting instructions'] + Array.new(old + bagged, 'some burlap netting'))
+          end)
+          launches = 0
+          allow(DRC).to receive(:wait_for_script_to_complete) do
+            launches += 1
+            bagged += 1 if stock.nil? || bagged < stock
+          end
+          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches]
+        end
+
+        # Counting the first miss as none started from 0 against 3 old
+        # nettings: "Made 4 of 6" after one netting was made.
+        it 'does not count the 3 nettings already in the bag as made when the first RUMMAGE got no reply' do
+          made, launches = tailor_missing([1], stock: 1, old: 3)
+          expect(made).to eq(1)
+          expect(launches).to eq(2)
+          expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+        end
+
+        it 'launches no sew run, and says why, when the count before the first run gets no reply twice' do
+          made, launches = tailor_missing([1, 2])
+          expect(made).to eq(0)
+          expect(launches).to eq(0)
+          expect(DRC).to have_received(:message).with('Could not count the nettings in duffel bag (no reply to RUMMAGE), so no sew runs.')
+        end
+
+        # Counting the miss as none after run 2 stopped a task where every
+        # run made one: "the last sew run made none" after 2 of 6.
+        it 'keeps sewing when one RUMMAGE after a good run got no reply' do
+          made, launches = tailor_missing([3])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('6 nettings completed')
+        end
+
+        it 'judges the run by the next count when the count after it gets no reply twice' do
+          made, launches = tailor_missing([3, 4])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+        end
+
+        it 'still stops, one run late, when the uncounted run was followed by one that made none' do
+          made, launches = tailor_missing([3, 4], stock: 2)
+          expect(made).to eq(2)
+          expect(launches).to eq(4)
+        end
+
+        it 'counts again after the last run when its count got no reply twice' do
+          made, launches = tailor_missing([7, 8])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('6 nettings completed')
+        end
+
+        it 'says the count is short, not that a run made none, when the last run never got a count' do
+          made, launches = tailor_missing([7, 8, 9, 10])
+          expect(made).to eq(5)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('Counted 5 of 6 nettings made (RUMMAGE did not answer after every sew run).')
+        end
+      end
+
+      context 'with what the run left in hand' do
+        # One sew run that leaves `left` in the right hand and nothing new in
+        # the bag; returns how many tailor_item says it made and the launches.
+        def run_leaving(left, count: 2)
+          tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+          allow(tm).to receive(:get_data).and_return(tailoring)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCC).to receive(:check_consumables)
+          game('rummage /C netting in my duffel bag' => rummaged_bag('netting', ['some netting instructions']))
+          right = nil
+          allow(DRC).to receive(:right_hand) { right }
+          allow(DRC).to receive(:left_hand).and_return(nil)
+          launches = 0
+          allow(DRC).to receive(:wait_for_script_to_complete) do
+            launches += 1
+            right = left if launches == 1
+          end
+          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches]
+        end
+
+        it 'counts a finished netting the bag would not take, still in hand, as made' do
+          expect(run_leaving('burlap netting')).to eq([1, 2])
+        end
+
+        it 'does not count an unfinished netting in hand as made' do
+          expect(run_leaving('unfinished burlap netting')).to eq([0, 1])
+        end
+
+        it 'does not count a held item whose name only contains the noun' do
+          expect(run_leaving('netting needles')).to eq([0, 1])
+        end
       end
 
       it 'skips pins and thread entirely for knitting' do
@@ -1296,8 +2088,63 @@ RSpec.describe TaskMaster do
 
       it 'behaves the same in marathon mode' do
         checks, launches = tailor('cloth', count: 2, marathon: true)
-        expect(checks.map(&:first)).to eq(%w[pins thread])
+        expect(checks.map(&:first)).to eq(['pins', 'cotton thread'])
         expect(launches).to all(satisfy { |_, args| args.include?('skip') })
+      end
+    end
+
+    describe '#forge_item' do
+      # Runs the real forge_item in the task_crafting_room with metal for
+      # `metal` daggers; each forge run that has metal leaves a dagger the
+      # put then bags. Returns how many it says it made and the forge runs.
+      def forge(count, metal)
+        tm = build(crafting_room: 16_936)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:clean_anvil?).and_return(true)
+        bagged = 0
+        held = false
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          held = runs <= metal
+        end
+        allow(DRC).to receive(:bput) do |command, *|
+          next rummaged_bag('dagger', ['some dagger instructions'] + Array.new(bagged, 'a bronze dagger')) if command == 'rummage /C dagger in my duffel bag'
+          # bput returns '' on "What were you referring to?", which it does not list.
+          next '' unless command == 'put my dagger in my duffel bag' && held
+
+          held = false
+          bagged += 1
+          'You put your bronze dagger in your heavy silk duffel bag.'
+        end
+        [tm.forge_item('dagger', count, 'bronze'), runs]
+      end
+
+      it 'stops after the first forge run that made nothing' do
+        expect(forge(5, 2)).to eq([2, 3])
+        expect(DRC).to have_received(:message).with('Made 2 of 5 daggers: no new dagger in duffel bag or in hand after the last forge run, so no more runs.')
+      end
+
+      it 'forges every item while there is metal' do
+        expect(forge(3, 3)).to eq([3, 3])
+        expect(DRC).to have_received(:message).with('3 daggers completed')
+      end
+    end
+
+    describe '#shape_item' do
+      it 'stops after the first shape run that made nothing' do
+        tm = build
+        allow(DRCC).to receive(:find_shaping_room)
+        bagged = 0
+        game('rummage /C bowl in my duffel bag' => ->(*) { rummaged_bag('bowl', Array.new(bagged, 'a balsa bowl') + ['some bowl instructions']) })
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          bagged += 1 if runs == 1
+        end
+        expect(tm.shape_item('bowl', 4, 'lumber', 'balsa')).to eq(1)
+        expect(runs).to eq(2)
+        expect(DRC).to have_received(:message).with('Made 1 of 4 bowls: no new bowl in duffel bag or in hand after the last shape run, so no more runs.')
       end
     end
 
@@ -1348,6 +2195,427 @@ RSpec.describe TaskMaster do
         expect(DRCM).not_to have_received(:deposit_coins)
       end
     end
+
+    describe 'buying task stock (#buy_stackables, #buy_yarn)' do
+      # Stock prices and order numbers mirroring data/base-crafting.yaml.
+      let(:stockdata) do
+        { 'burlap' => { 'stock-value' => 437, 'stock-number' => 8 }, 'rat' => { 'stock-value' => 750, 'stock-number' => 2 },
+          'yarn' => { 'stock-value' => 625, 'stock-number' => 13 }, 'balsa' => { 'stock-value' => 500, 'stock-number' => 4 } }
+      end
+      # Barrask's leftover rat leather, as it sat in his right hand
+      # (Hollow Eve 2026-11-04).
+      let(:leftover_leather) { OpenStruct.new(name: 'rat leather', noun: 'leather', id: '2222485', yards: 10) }
+      let(:hands_full) { 'You realize your hands are full, and stop.' }
+      let(:must_hold_both) { 'You must be holding both substances to combine them.  For more information, see HELP VERB COMBINE.' }
+
+      # The stock shop, the hands and the crafting bag, answering commands by
+      # "#id" the way the game does. Each piece bought goes to the first free
+      # hand with a new id and `yards` yards; with both hands full the sale
+      # gets "You realize your hands are full, and stop." His pack is full, so
+      # any STOW gets "There isn't any more room". bag_room: pieces the
+      # crafting bag still takes. coins: pieces he can pay for. refuse_after:
+      # sales that go through before every later one gets the hands-full line.
+      # lost: the sale goes through but no piece reaches a hand. late_from: from
+      # that sale on (0-based) the piece lands but the clerk's line comes after
+      # bput's timeout, so order_item returns ''. refuse_combine:
+      # COMBINE always answers "You must be holding both". keep_new: a combine
+      # keeps the new piece's id instead of the stack's. new_id_combine (the default, as in game): the
+      # combined stack comes back under an id neither had. hollow_combine:
+      # COMBINE answers "You combine" but both pieces stay in hand.
+      # silent_combine: COMBINE goes unanswered (bput's ''). silent_count: the
+      # first that many COUNTs go unanswered (Float::INFINITY for all).
+      # count_text: COUNT answers with this line instead of the yards.
+      #
+      # DRCT, DRCI and DRCC are harness doubles, so order_item and
+      # put_away_item? stand in for lich-5 v5.23.0 here and send their
+      # commands through the world: order_item asks twice and returns nil on
+      # "you don't have enough coins", else the second reply's match, '' when
+      # none. The clerk's lines other than the hands-full one are stand-ins
+      # carrying the substring order_item matches. stow_crafting_item (the
+      # parent's stow by noun) is taken as landing.
+      #
+      # @return [Hash] :hands, :bag (items in the crafting bag), :orders, :sent
+      def shop(hands: {}, yards: 10, bag_room: 100, coins: 100, refuse_after: nil, lost: false, late_from: nil,
+               refuse_combine: false, keep_new: false, new_id_combine: true, hollow_combine: false, silent_combine: false,
+               silent_count: 0, count_text: nil)
+        world = { hands: { right: nil, left: nil }.merge(hands), bag: [], orders: [], sent: [], sold: 0, asked: false, silenced: 0 }
+        next_id = 3_000_000
+        allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+        allow(GameObj).to receive(:left_hand) { world[:hands][:left] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+        allow(DRC).to receive(:right_hand) { world[:hands][:right]&.name }
+        allow(DRC).to receive(:left_hand) { world[:hands][:left]&.name }
+
+        hand_of = ->(ref) { world[:hands].find { |_, obj| obj && "##{obj.id}" == ref }&.first }
+        sell = lambda do |number|
+          name = { 8 => 'burlap cloth', 2 => 'rat leather', 13 => 'wool yarn', 4 => 'balsa lumber' }.fetch(number)
+          free = world[:hands].find { |_, obj| obj.nil? }&.first
+          next hands_full if free.nil? || (refuse_after && world[:sold] >= refuse_after)
+
+          late = late_from && world[:sold] >= late_from
+          world[:sold] += 1
+          world[:hands][free] = OpenStruct.new(name: name, noun: name.split.last, id: (next_id += 1).to_s, yards: yards) unless lost
+          late ? '' : "The clerk takes some coins from you and hands you some #{name}."
+        end
+        combine = lambda do |first, second|
+          next must_hold_both if refuse_combine || first.nil? || second.nil? || first == second
+          next 'You combine the stacks.' if hollow_combine
+
+          kept, gone = keep_new ? [second, first] : [first, second]
+          world[:hands][kept].yards += world[:hands][gone].yards
+          world[:hands][gone] = nil
+          world[:hands][kept].id = (next_id += 1).to_s if new_id_combine
+          silent_combine ? '' : 'You combine the stacks.'
+        end
+        reply = lambda do |command|
+          case command
+          when /\Aorder (\d+)\z/
+            world[:asked] = !world[:asked]
+            next 'The clerk says, "Just order it again to buy it."' if world[:asked]
+            next "The clerk frowns, since you don't have enough coins." if world[:sold] >= coins
+
+            sell.call(Regexp.last_match(1).to_i)
+          when /\Acombine (#\d+) with (#\d+)\z/
+            combine.call(hand_of.call(Regexp.last_match(1)), hand_of.call(Regexp.last_match(2)))
+          when /\Acombine (\w+)\z/
+            noun = Regexp.last_match(1)
+            held = world[:hands].select { |_, obj| obj&.noun == noun }.keys
+            combine.call(*(held.size == 2 ? held : [nil, nil]))
+          when /\Acount (#\d+)\z/
+            hand = hand_of.call(Regexp.last_match(1))
+            next 'I could not find what you were referring to.' unless hand
+            next '' if (world[:silenced] += 1) <= silent_count
+            next count_text if count_text
+
+            "You count out #{world[:hands][hand].yards} yards of material there."
+          when /\Aput (#\d+) in my duffel bag\z/
+            hand = hand_of.call(Regexp.last_match(1))
+            next 'What were you referring to?' unless hand
+            next "There isn't any more room in the duffel bag for that." if world[:bag].size >= bag_room
+
+            world[:bag] << world[:hands][hand]
+            world[:hands][hand] = nil
+            "You put your #{world[:bag].last.noun} in your duffel bag."
+          when /\Astow /
+            "There isn't any more room in the traveler's pack for that."
+          else
+            ''
+          end
+        end
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          world[:sent] << command
+          line = reply.call(command)
+          patterns.flatten.map { |pattern| line.match(pattern) }.compact.first.to_a.first || ''
+        end
+
+        allow(DRCT).to receive(:order_item) do |room, number|
+          world[:orders] << [room, number]
+          next if DRC.bput("order #{number}", 'Just order it again', "you don't have enough coins") == "you don't have enough coins"
+
+          DRC.bput("order #{number}", 'takes some coins from you')
+        end
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          DRC.bput("put #{item} in my #{container}", /^You put/, /^What were you/, /^There isn't any more room/).start_with?('You put')
+        end
+        allow(DRCC).to receive(:stow_crafting_item) do |noun, *_rest|
+          hand = world[:hands].find { |_, obj| obj&.noun == noun }&.first
+          world[:bag] << world[:hands][hand] if hand
+          world[:hands][hand] = nil if hand
+          true
+        end
+        world
+      end
+
+      def buyer
+        build(stockdata: stockdata, settings: { engineering_belt: nil })
+      end
+
+      # The yards of a stock that went in the crafting bag in one piece.
+      def bagged(world, name)
+        world[:bag].select { |obj| obj.name == name }.map(&:yards)
+      end
+
+      context 'the Hollow Eve replay: leftover leather in the right hand, the pack full' do
+        it 'puts the leather in the crafting bag by its id first, then buys and bags all 60 yards' do
+          world = shop(hands: { right: leftover_leather })
+
+          buyer.buy_stackables('rope', 6, 10, 'cloth')
+
+          expect(bagged(world, 'burlap cloth')).to eq([60])
+          expect(world[:sent].first).to eq('put #2222485 in my duffel bag')
+          expect(bagged(world, 'rat leather')).to eq([10])
+          expect(world[:orders]).to eq([[16_667, 8]] * 6)
+          expect(world[:hands].values.compact).to be_empty
+        end
+
+        it 'stops before ordering anything when the leather will not go in the crafting bag either, naming it and its id' do
+          world = shop(hands: { right: leftover_leather }, bag_room: 0)
+
+          expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+          expect(world[:orders]).to be_empty
+          expect(DRC).to have_received(:message).with(/rat leather \(#2222485\).*Stopping/)
+        end
+
+        it 'empties both hands, the left as well as the right' do
+          shield = OpenStruct.new(name: 'target shield', noun: 'shield', id: '4444', yards: 0)
+          world = shop(hands: { right: leftover_leather, left: shield })
+
+          buyer.buy_stackables('rope', 2, 10, 'cloth')
+
+          expect(world[:sent].first(2)).to eq(['put #2222485 in my duffel bag', 'put #4444 in my duffel bag'])
+          expect(bagged(world, 'burlap cloth')).to eq([20])
+        end
+      end
+
+      it 'stops, without starting the task short, when an order gets "You realize your hands are full, and stop."' do
+        world = shop(refuse_after: 2)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Could not buy burlap cloth: the order did not go through.*Stopping\./)
+        expect(world[:orders].size).to eq(3)
+        expect(bagged(world, 'burlap cloth')).to eq([20])
+      end
+
+      it 'trusts the hands, taking each new piece as bought, when every order comes back empty after paying' do
+        world = shop(late_from: 0)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.not_to raise_error
+        expect(DRC).not_to have_received(:message).with(/Could not buy/)
+        expect(world[:orders].size).to eq(6)
+        expect(world[:hands].values.compact).to be_empty
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'takes the piece in hand as bought when only the last order comes back empty, and bags one 60-yard stack' do
+        world = shop(late_from: 5)
+
+        buyer.buy_stackables('rope', 6, 10, 'cloth')
+
+        expect(world[:orders].size).to eq(6)
+        expect(world[:sent].grep(/\Aput #/).size).to eq(1)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'still stops, saying the order did not go through, when an order comes back empty and no new piece is in hand' do
+        world = shop(late_from: 0, lost: true)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Could not buy burlap cloth: the order did not go through/)
+        expect(world[:orders].size).to eq(1)
+      end
+
+      it 'stops at the first order he cannot pay for (order_item returns nil)' do
+        world = shop(coins: 1)
+
+        expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:orders].size).to eq(2)
+        expect(bagged(world, 'burlap cloth')).to eq([10])
+      end
+
+      it 'stops when the sale goes through but no piece reaches a hand' do
+        shop(lost: true)
+
+        expect { buyer.buy_stackables('rope', 1, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/no new piece is in your hands/)
+      end
+
+      it 'takes "You must be holding both substances" as a failed combine, and puts both pieces back' do
+        world = shop(refuse_combine: true)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:orders].size).to eq(2)
+        expect(DRC).to have_received(:message).with(/Could not combine the burlap cloth \(You must be holding both/)
+        expect(bagged(world, 'burlap cloth')).to eq([10, 10])
+      end
+
+      it 'follows the stack when the combine keeps the new piece\'s id' do
+        world = shop(keep_new: true, new_id_combine: false)
+
+        buyer.buy_stackables('rope', 3, 10, 'cloth')
+
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'follows the stack, counts it and bags it, when "You combine" leaves one id neither piece had' do
+        world = shop(new_id_combine: true)
+
+        expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.not_to raise_error
+
+        expect(world[:sent]).to include('combine #3000003 with #3000004', 'count #3000005', 'put #3000005 in my duffel bag')
+        expect(world[:sent].grep(/\Acombine \w+\z/)).to be_empty
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+        expect(world[:hands].values.compact).to be_empty
+      end
+
+      it 'still stops on the yards counted when a stack under a new id is short' do
+        world = shop(new_id_combine: true, yards: 5)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'says the game claimed a combine the hands do not show, and puts both pieces back, when both stay in hand' do
+        world = shop(hollow_combine: true)
+
+        expect { buyer.buy_stackables('rope', 3, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message)
+          .with(/Could not combine the burlap cloth \(the game said it combined them, but your hands hold #3000001 and #3000002\)\. Stopping\./)
+        expect(world[:orders].size).to eq(2)
+        expect(world[:hands].values.compact).to be_empty
+        expect(bagged(world, 'burlap cloth')).to eq([10, 10])
+      end
+
+      it 'names by id the stock it could not put back when the crafting bag refuses it on a stop' do
+        world = shop(refuse_after: 2, bag_room: 0)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message)
+          .with(/Could not buy burlap cloth: the order did not go through.*\. #3000003 would not go back in your duffel bag and is still in your hands; put it away before starting again\. Stopping\./)
+        expect(world[:hands].values.compact.map(&:yards)).to eq([20])
+      end
+
+      it 'names nothing as left in hand when every put-back on a stop goes through' do
+        shop(refuse_after: 2)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/\A[^#]*full hands\)\. Stopping\.\z/)
+      end
+
+      it 'trusts the hands when a combine goes unanswered but one id, the stack under its new id, is all that is held' do
+        world = shop(silent_combine: true)
+
+        buyer.buy_stackables('rope', 2, 10, 'cloth')
+
+        expect(bagged(world, 'burlap cloth')).to eq([20])
+      end
+
+      it 'follows the stack when the game keeps the stack\'s own id' do
+        world = shop(new_id_combine: false)
+
+        buyer.buy_stackables('rope', 3, 10, 'cloth')
+
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+        expect(world[:hands].values.compact).to be_empty
+      end
+
+      it 'counts the stack by id and stops, saying how much is missing, when it is short' do
+        world = shop(yards: 5)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:sent]).to include(a_string_matching(/\Acount #\d+\z/))
+        expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'asks COUNT twice, never a third time, then goes ahead uncounted, saying so, when COUNT goes unanswered' do
+        world = shop(silent_count: Float::INFINITY)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.not_to raise_error
+        expect(world[:sent].grep(/\Acount #/).size).to eq(2)
+        expect(DRC).to have_received(:message)
+          .with(/\ACould not count the burlap cloth \(#\d+\): COUNT went unanswered twice\. Going ahead uncounted; the task needs 60 yards\.\z/)
+        expect(DRC).not_to have_received(:message).with(/Bought \d+ yards/)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+        expect(world[:hands].values.compact).to be_empty
+      end
+
+      it 'goes on the second COUNT\'s answer, without saying it was not counted, when only the first goes unanswered' do
+        world = shop(silent_count: 1)
+
+        buyer.buy_stackables('rope', 6, 10, 'cloth')
+
+        expect(world[:sent].grep(/\Acount #/).size).to eq(2)
+        expect(DRC).not_to have_received(:message).with(/Could not count/)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'still stops on a short count that only the second COUNT answers' do
+        world = shop(silent_count: 1, yards: 5)
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 30 yards of burlap cloth, but the task needs 60: 30 yards missing/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'stops on a COUNT in other wording, quoting it, without asking again or going ahead, even when the stack is short' do
+        world = shop(yards: 5, count_text: 'You count out 30 pieces of material there.')
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(world[:sent].grep(/\Acount #/).size).to eq(1)
+        expect(DRC).to have_received(:message)
+          .with(/\ACould not read the count of the burlap cloth you bought \(#\d+\): the game said "You count out 30 pieces of material there\.", not yards\. Not starting the task\. Stopping\.\z/)
+        expect(DRC).not_to have_received(:message).with(/Going ahead|unanswered/)
+        expect(bagged(world, 'burlap cloth')).to eq([30])
+      end
+
+      it 'stops on a COUNT in other wording even when the stack is in fact long enough' do
+        world = shop(count_text: 'You count out 60 pieces of material there.')
+
+        expect { buyer.buy_stackables('rope', 6, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/the game said "You count out 60 pieces of material there\.", not yards/)
+        expect(bagged(world, 'burlap cloth')).to eq([60])
+      end
+
+      it 'stops on "That doesn\'t tell you much", quoting it, rather than reading it as no answer' do
+        world = shop(hands: { right: leftover_leather }, count_text: "That doesn't tell you much of anything.")
+
+        expect { buyer.check_yards('2222485', 10, 'rat leather') }.to raise_error(SystemExit)
+        expect(world[:sent].grep(/\Acount #/).size).to eq(1)
+        expect(DRC).to have_received(:message).with(/the game said "That doesn't tell you much of anything\.", not yards/)
+        expect(DRC).not_to have_received(:message).with(/Going ahead/)
+      end
+
+      it 'stops, naming the id, without asking again, when COUNT cannot find the stack' do
+        world = shop
+
+        expect { buyer.check_yards('9999999', 60, 'burlap cloth') }.to raise_error(SystemExit)
+        expect(world[:sent].grep(/\Acount #/)).to eq(['count #9999999'])
+        expect(DRC).to have_received(:message).with(/\ACould not find the burlap cloth you bought \(#9999999\) to count it\. Not starting the task\. Stopping\.\z/)
+        expect(DRC).not_to have_received(:message).with(/Going ahead/)
+      end
+
+      it 'stops when the bought stack will not go in the crafting bag' do
+        world = shop(hands: { right: leftover_leather }, bag_room: 1)
+
+        expect { buyer.buy_stackables('rope', 2, 10, 'cloth') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Could not put the burlap cloth you bought \(#\d+\) in your duffel bag\. Stopping/)
+        expect(world[:hands].values.compact.map(&:yards)).to eq([20])
+      end
+
+      it 'buys rat leather by its own order number for a leather task' do
+        world = shop
+
+        buyer.buy_stackables('belt', 2, 15, 'leather')
+
+        expect(world[:orders]).to eq([[16_667, 2]] * 3)
+        expect(bagged(world, 'rat leather')).to eq([30])
+      end
+
+      it 'buys 100-yard yarn by the yard needed, combines it and checks it' do
+        world = shop(yards: 100)
+
+        buyer.buy_yarn('scarf', 3, 50, 'yarn')
+
+        expect(world[:orders]).to eq([[16_667, 13]] * 2)
+        expect(bagged(world, 'wool yarn')).to eq([200])
+      end
+
+      it 'stops a yarn task short of yards as well' do
+        shop(yards: 40)
+
+        expect { buyer.buy_yarn('scarf', 3, 50, 'yarn') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/Bought 80 yards of wool yarn, but the task needs 150: 70 yards missing/)
+      end
+
+      it 'buys and bags lumber by id without counting it in yards' do
+        world = shop
+
+        buyer.buy_stackables('bowl', 2, 5, 'lumber')
+
+        expect(world[:sent].grep(/\Acount /)).to be_empty
+        expect(bagged(world, 'balsa lumber')).to eq([10])
+      end
+    end
   end
 
   describe 'turning in' do
@@ -1385,6 +2653,68 @@ RSpec.describe TaskMaster do
         expect(tm).not_to have_received(:sort_sack)
       end
 
+      it 'puts back an item the taskmaster does not take and stops, instead of handing it over again' do
+        tm = finisher
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCC).to receive(:stow_crafting_item)
+        gives = 0
+        game('give my rope to zasele' => lambda do |*|
+          gives += 1
+          raise 'gave the refused rope again' if gives > 6
+
+          gives == 1 ? more_needed(1) : ''
+        end)
+
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+        expect(gives).to eq(6)
+        expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil)
+        expect(DRC).to have_received(:message).with('Zasele did not take the rope. Stopping.')
+        expect(tm).not_to have_received(:sort_sack)
+      end
+
+      it 'gives once more after one reply it did not know, and carries on when that one lands' do
+        tm = finisher
+        replies = [more_needed(1), '', sack_handed]
+        allow(tm).to receive(:give_item) { replies.shift }
+        expect(tm).not_to receive(:refused_hand_in)
+
+        tm.complete_task('rope', 2)
+
+        expect(tm).to have_received(:sort_sack).with('rope')
+      end
+
+      it "keeps giving through four replies it did not know, as Zasele's \"Don't be silly.\" on a fleet log, and finishes" do
+        tm = finisher
+        replies = ['', '', '', '', more_needed(1), sack_handed]
+        allow(tm).to receive(:give_item) { replies.shift }
+        expect(tm).not_to receive(:refused_hand_in)
+
+        tm.complete_task('rope', 2)
+
+        expect(tm).to have_received(:sort_sack).with('rope')
+      end
+
+      it 'counts unknown replies in a row only' do
+        tm = finisher
+        # Six in all, but never five in a row.
+        replies = ['', '', '', more_needed(1), '', '', '', sack_handed]
+        allow(tm).to receive(:give_item) { replies.shift }
+        expect(tm).not_to receive(:refused_hand_in)
+
+        tm.complete_task('rope', 3)
+      end
+
+      it 'quotes what the taskmaster said when the reply was one bput knew' do
+        tm = finisher
+        allow(tm).to receive(:give_item).and_return('What is it')
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('Zasele did not take the rope (What is it). Stopping.')
+      end
+
       it 'resets the miss count after a give lands' do
         tm = finisher
         giving([missed_give, missed_give, missed_give, missed_give, more_needed(1), missed_give, missed_give, missed_give, missed_give, sack_handed])
@@ -1392,11 +2722,527 @@ RSpec.describe TaskMaster do
         expect(tm).to have_received(:sort_sack)
       end
 
-      it 'exits when the bag runs out of items' do
+      it 'throws the instructions away in the worn trash can once the task is handed in, and clears the replacement record' do
+        tm = finisher
+        tm.instance_variable_set(:@worn_trashcan, 'bucket')
+        tm.instance_variable_set(:@worn_trashcan_verb, 'tap')
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+        allow(DRCT).to receive(:dispose)
+        giving([more_needed(1), sack_handed])
+        tm.complete_task('rope', 2)
+        expect(DRCT).to have_received(:dispose).with('rope instructions', nil, 'bucket', 'tap')
+        expect(UserVars.taskmaster_replacements).to eq({})
+      end
+
+      it 'keeps the instructions when the items run out before the task is done, for the resume' do
+        tm = finisher
+        allow(DRCT).to receive(:dispose)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        allow(DRCI).to receive(:get_item?).and_return(false)
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+        expect(DRCT).not_to have_received(:dispose)
+      end
+
+      it 'exits when the bag runs out of items, saying the task is not finished' do
         tm = finisher
         allow(DRCI).to receive(:in_hands?).and_return(false)
         allow(DRCI).to receive(:get_item?).and_return(false)
         expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with('Could not get another rope to hand in and the task is not finished, stopping.')
+      end
+    end
+
+    describe '#give_item answering "Don\'t be silly."' do
+      let(:silly) { "Don't be silly." }
+      let(:rope) { OpenStruct.new(name: 'burlap rope', noun: 'rope', id: '3758858') }
+      let(:leather) { OpenStruct.new(name: 'rat-pelt leather', noun: 'leather', id: '2222485') }
+      let(:empty_hand) { OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+
+      # Zasele at the hand-in. named: replies to "give my rope to zasele"
+      # (the game sends "You don't need to specify the object - GIVE <person>
+      # assumes you mean to give the object in your right hand!" before each
+      # "Don't be silly."; bput returns only the matched line);
+      # bare: replies to "give zasele", which hands over whatever is in the
+      # right hand. A taken rope leaves the hand; swap: whether SWAP moves
+      # the hands. Returns :sent (commands), :handed (what Zasele got) and
+      # :hands.
+      def zasele(named:, bare: [], right: nil, left: nil, swap: true)
+        world = { sent: [], handed: [], hands: { right: right, left: left } }
+        allow(GameObj).to receive(:right_hand) { world[:hands][:right] || empty_hand }
+        allow(GameObj).to receive(:left_hand) { world[:hands][:left] || empty_hand }
+        allow(DRCI).to receive(:in_hands?) { |noun| world[:hands].values.compact.any? { |obj| obj.noun == noun } }
+        allow(DRCI).to receive(:get_item?).and_return(false)
+        take = lambda do |reply, side|
+          if reply.match?(TaskMaster::TURN_IN_MORE_NEEDED) || reply.include?('hands you a')
+            world[:handed] << world[:hands][side]
+            world[:hands][side] = nil
+          end
+          reply
+        end
+        allow(DRC).to receive(:bput) do |command, *_|
+          world[:sent] << command
+          case command
+          when 'give my rope to zasele'
+            reply = named.shift || silly
+            reply == silly ? silly : take.call(reply, world[:hands].key(rope) || :right)
+          when 'give zasele'
+            take.call(bare.shift || silly, :right)
+          when 'swap'
+            world[:hands][:right], world[:hands][:left] = world[:hands][:left], world[:hands][:right] if swap
+            'You move a burlap rope to your right hand.'
+          else
+            ''
+          end
+        end
+        world
+      end
+
+      def giver
+        tm = build
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:pause)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        tm
+      end
+
+      it 'hands the rope over from the right hand with a bare GIVE ZASELE, at once' do
+        tm = giver
+        world = zasele(named: [silly], bare: [more_needed(1)], right: rope)
+
+        expect(tm.give_item('rope')).to eq(more_needed(1))
+
+        expect(world[:sent]).to eq(['give my rope to zasele', 'give zasele'])
+        expect(world[:handed]).to eq([rope])
+        expect(tm).not_to have_received(:pause)
+      end
+
+      it 'swaps the rope into the right hand first when it is in the left' do
+        tm = giver
+        world = zasele(named: [silly], bare: [more_needed(1)], right: leather, left: rope)
+
+        tm.give_item('rope')
+
+        expect(world[:sent]).to eq(['give my rope to zasele', 'swap', 'give zasele'])
+        expect(world[:handed]).to eq([rope])
+        expect(world[:hands][:left]).to eq(leather)
+      end
+
+      it 'never sends a bare GIVE while the right hand holds something else (Zasele keeps what she is given)' do
+        tm = giver
+        world = zasele(named: Array.new(70, silly), right: leather, left: rope, swap: false)
+
+        reply = tm.give_item('rope')
+
+        expect(world[:sent]).not_to include('give zasele')
+        expect(world[:handed]).to be_empty
+        expect(reply).to eq(silly)
+      end
+
+      it 'tries both gives again after a pause while the bare GIVE is refused too, then hands the rope in' do
+        tm = giver
+        world = zasele(named: [silly, silly], bare: [silly, more_needed(1)], right: rope)
+
+        expect(tm.give_item('rope')).to eq(more_needed(1))
+
+        expect(world[:sent]).to eq(['give my rope to zasele', 'give zasele', 'give my rope to zasele', 'give zasele'])
+        expect(tm).to have_received(:pause).with(TaskMaster::GIVE_NOT_NOW_PAUSE).once
+        expect(DRC).to have_received(:message).with(/answered "Don't be silly\." to the rope from the right hand too/).once
+      end
+
+      it 'waits at most GIVE_NOT_NOW_MAX_WAIT in all across complete_task\'s retries, then stops' do
+        tm = giver
+        allow(DRCC).to receive(:stow_crafting_item)
+        zasele(named: Array.new(500, silly), bare: Array.new(500, silly), right: rope)
+
+        expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+        expect(tm).to have_received(:pause).exactly(TaskMaster::GIVE_NOT_NOW_MAX_WAIT / TaskMaster::GIVE_NOT_NOW_PAUSE).times
+        expect(DRC).to have_received(:message).with("Zasele did not take the rope (#{silly}). Stopping.")
+      end
+
+      it 'starts the wait over after a give is taken' do
+        tm = giver
+        zasele(named: [silly, silly, more_needed(1)], bare: [silly, silly], right: rope)
+
+        tm.give_item('rope')
+
+        expect(tm.instance_variable_get(:@not_now_waited)).to eq(0)
+      end
+    end
+
+    describe '#bin_task_stock' do
+      def binner(**ivars)
+        build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', bin_leftover_stock: true, **ivars)
+      end
+
+      it 'is off by default: base.yaml declares task_bin_leftover_stock false' do
+        expect(base_yaml).to include('task_bin_leftover_stock' => false)
+      end
+
+      # Marathon restocks once and check_stock reuses the carried stack for
+      # every task; binning it after each hand-in would force a full restock
+      # (up to 100 yards of cloth and leather, 400 of yarn) every time.
+      it "keeps a marathon's carried restock stack, even with the setting on" do
+        world = stock_world({ 'burlap cloth' => 1, 'rat leather' => 1, 'wool yarn' => 1 })
+        expect(binner(marathon: true).bin_task_stock).to eq(0)
+        expect(world[:sent]).to be_empty
+      end
+
+      [nil, false].each do |setting|
+        it "sends nothing when task_bin_leftover_stock is #{setting.inspect}, even with a worn trash can" do
+          world = stock_world({ 'burlap cloth' => 3 })
+          expect(binner(bin_leftover_stock: setting).bin_task_stock).to eq(0)
+          expect(world[:sent]).to be_empty
+        end
+      end
+
+      it "bins every piece of Zasele's stock from the crafting bag into the worn trash can, each by its id, then taps it twice" do
+        world = stock_world({ 'burlap cloth' => 3, 'rat leather' => 1, 'wool yarn' => 2 })
+        expect(binner.bin_task_stock).to eq(6)
+        expect(world[:bag].values).to all(eq(0))
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:sent].reject { |command| command.start_with?('get ') })
+          .to eq((2_222_486..2_222_491).map { |id| "put ##{id} in my bucket" } + ['tap my bucket', 'tap my bucket'])
+        expect(DRC).to have_received(:message).with('Binned 6 piece(s) of leftover task stock')
+      end
+
+      # The incident: Barrask wears "sinuous leathers", so "put my leather in
+      # my bucket" and the fallback "put my leather in my duffel bag" both
+      # answered "Perhaps you should be holding that first.", and the rat
+      # leather stayed in his hand for the next task's STOW.
+      it 'bins a leather by its id while the character wears "sinuous leathers" that "my leather" names' do
+        world = stock_world({ 'rat leather' => 1 }, worn_leathers: true)
+        expect(binner.bin_task_stock).to eq(1)
+        expect(world[:sent]).to include('put #2222486 in my bucket')
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'rat leather' => 0 })
+      end
+
+      it 'sends nothing without a worn trash can, so nothing is ever dropped' do
+        world = stock_world({ 'burlap cloth' => 3 })
+        expect(binner(worn_trashcan: nil).bin_task_stock).to eq(0)
+        expect(world[:sent]).to be_empty
+      end
+
+      it "leaves other taskmasters' stock alone" do
+        world = stock_world({ 'burlap cloth' => 3 })
+        expect(binner(npc: 'poltu').bin_task_stock).to eq(0)
+        expect(world[:sent]).to be_empty
+      end
+
+      it 'neither taps nor reports when there was nothing to bin' do
+        world = stock_world({})
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).not_to include('tap my bucket')
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'does not tap without a trash can verb' do
+        world = stock_world({ 'burlap cloth' => 1 })
+        expect(binner(worn_trashcan_verb: nil).bin_task_stock).to eq(1)
+        expect(world[:sent]).not_to include(a_string_starting_with('tap'))
+      end
+
+      # DRCI.dispose_trash (v5.23.0) drops a piece the worn trash can refuses
+      # on the floor and returns true, so binning through it littered every
+      # leftover piece in Zasele's room and counted it as binned.
+      it 'never drops a piece the full worn trash can refuses: it goes back in the bag by its id' do
+        world = stock_world({ 'burlap cloth' => 3 }, refuse: true)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:floor]).to be_empty
+        expect(world[:sent]).not_to include(a_string_starting_with('drop'))
+        expect(world[:sent]).to include('put #2222486 in my duffel bag')
+        expect(world[:bag]).to eq({ 'burlap cloth' => 3 })
+        expect(DRC).not_to have_received(:message).with(a_string_starting_with('Binned'))
+      end
+
+      it 'puts a refused piece back in the bag by its id, stops that stock and carries on with the next' do
+        world = stock_world({ 'burlap cloth' => 3, 'wool yarn' => 1 }, refuse: true)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].count('get my burlap cloth from my duffel bag')).to eq(1)
+        expect(world[:sent]).to include('put #2222486 in my duffel bag', 'get my wool yarn from my duffel bag', 'put #2222487 in my duffel bag')
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'burlap cloth' => 3, 'wool yarn' => 1 })
+      end
+
+      it 'says which piece is left in hand when it can be neither binned nor put back' do
+        world = stock_world({ 'rat leather' => 2 }, worn_leathers: true, refuse: true, bag_full: true, no_floor: true)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].count('get my rat leather from my duffel bag')).to eq(1)
+        expect(DRC).to have_received(:message).with(a_string_including('rat leather (#2222486)', 'duffel bag', 'Stopping'))
+      end
+
+      # With a piece stuck in one hand, going on to the next stock filled the
+      # other: both hands full, the start of the 2026-11-04 cascade.
+      it 'gets no other stock once a piece may be left in hand, so the other hand stays free' do
+        world = stock_world({ 'burlap cloth' => 2, 'rat leather' => 2, 'wool yarn' => 2 },
+                            refuse: true, bag_full: true, no_floor: true)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].grep(/\Aget /)).to eq(['get my burlap cloth from my duffel bag'])
+        expect(world[:hands][:left]).to be_nil
+        expect(DRC).to have_received(:message).with(a_string_including('burlap cloth (#2222486)', 'Stopping')).once
+        expect(DRC).not_to have_received(:message).with(a_string_including('Both hands are full'))
+      end
+
+      it 'keeps what it binned before a piece got stuck, and still taps and reports it' do
+        world = stock_world({ 'burlap cloth' => 2, 'rat leather' => 1, 'wool yarn' => 1 })
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          landed = item == '#2222486' || item == '#2222487'
+          DRC.bput("put #{item} in my #{container}", /^You (drop|put)/) if landed
+          landed
+        end
+        expect(binner.bin_task_stock).to eq(2)
+        expect(world[:sent].grep(/\Aget /)).to eq(['get my burlap cloth from my duffel bag'] * 3 + ['get my rat leather from my duffel bag'])
+        expect(world[:hands].values.compact.map(&:id)).to eq(['2222488'])
+        expect(world[:sent].last(2)).to eq(['tap my bucket', 'tap my bucket'])
+        expect(DRC).to have_received(:message).with('Binned 2 piece(s) of leftover task stock')
+      end
+
+      it 'stops at TASK_STOCK_BIN_CAP pieces per stock' do
+        cap = described_class::TASK_STOCK_BIN_CAP
+        world = stock_world({ 'burlap cloth' => cap + 5 })
+        expect(binner.bin_task_stock).to eq(cap)
+        expect(world[:sent].count('get my burlap cloth from my duffel bag')).to eq(cap)
+      end
+
+      it 'stops on full hands without putting anything away, says why once, and tries no other stock' do
+        full = OpenStruct.new(name: 'iron chisels', noun: 'chisels', id: '1')
+        world = stock_world({ 'burlap cloth' => 3, 'rat leather' => 1 }, hands: { right: full, left: full })
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(DRC).to have_received(:message).with(a_string_including('Both hands are full', 'burlap cloth')).once
+      end
+
+      # A piece already in hand from an earlier task must not be mistaken
+      # for the one just taken out: the id is the one that newly appeared.
+      it 'bins the piece it just took out, not a same-noun piece already in the other hand' do
+        old = OpenStruct.new(name: 'rat leather', noun: 'leather', id: '2222485')
+        world = stock_world({ 'rat leather' => 1 }, hands: { right: old })
+        binner.bin_task_stock
+        expect(DRCI).to have_received(:put_away_item?).with('#2222486', 'bucket')
+        expect(DRCI).not_to have_received(:put_away_item?).with('#2222485', any_args)
+        expect(world[:hands][:right]).to eq(old)
+      end
+
+      # "You get" with no new id in hand: the same-noun piece in the other
+      # hand was there before, so it is not the one to bin.
+      it 'bins nothing, and says why, when the get shows no new id even with a same-noun piece in the other hand' do
+        old = OpenStruct.new(name: 'burlap cloth', noun: 'cloth', id: '999')
+        world = stock_world({ 'burlap cloth' => 1 }, hands: { left: old })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          command.start_with?('get ') ? 'You get some burlap cloth from inside your duffel bag.' : ''
+        end
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag', 'put my burlap cloth in my duffel bag'])
+        expect(world[:sent]).not_to include(a_string_including('bucket'))
+        expect(DRC).to have_received(:message).with(a_string_including("can't find it in your hands", 'may still be in your hand'))
+      end
+
+      # Hands the stream reports without ids: the get takes the piece out,
+      # but no id appears to bin it by.
+      def hide_hand_ids(world)
+        %i[right left].each do |hand|
+          allow(GameObj).to receive(:"#{hand}_hand") do
+            obj = world[:hands][hand]
+            OpenStruct.new(name: obj&.name || 'Empty', noun: obj&.noun, id: nil)
+          end
+        end
+      end
+
+      # Before, the leather taken out stayed in hand with nothing sent to
+      # clear it. "my rat leather" names the stock piece even while the
+      # character wears "sinuous leathers", which "my leather" would name.
+      it 'puts a piece it took out but cannot find by id back in the bag by its full name, past worn "sinuous leathers"' do
+        world = stock_world({ 'rat leather' => 2 }, worn_leathers: true)
+        hide_hand_ids(world)
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].last(2)).to eq(['get my rat leather from my duffel bag', 'put my rat leather in my duffel bag'])
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'rat leather' => 2 })
+        expect(DRC).to have_received(:message).with(a_string_including('Took out the rat leather', 'went back in your duffel bag', 'Stopping'))
+      end
+
+      it 'says the piece is not in hand, not that it was taken out, when "already holding" shows no such piece' do
+        world = stock_world({})
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          'You are already holding that.'
+        end
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(DRC).to have_received(:message).with(a_string_including('already hold the burlap cloth', 'not in your hands', 'Stopping'))
+        expect(DRC).not_to have_received(:message).with(a_string_including('Took out'))
+      end
+
+      # DRCI.put_away_item? (v5.23.0) waits out bput's timeout on a reply it
+      # does not list and returns false, though the piece went in the can.
+      # Putting it back by id then fails, and binning used to stop with
+      # "It may still be in your hand" and leave the piece out of the count.
+      it 'counts a piece the worn trash can took with a reply it did not know, and carries on' do
+        world = stock_world({ 'burlap cloth' => 2, 'wool yarn' => 1 })
+        can = []
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          piece = world[:hands].values.compact.find { |obj| item == "##{obj.id}" }
+          DRC.bput("put #{item} in my #{container}", /^You (drop|put)/)
+          can << piece.name if piece && container == 'bucket'
+          false
+        end
+        expect(binner.bin_task_stock).to eq(3)
+        expect(can).to eq(['burlap cloth', 'burlap cloth', 'wool yarn'])
+        expect(world[:sent]).not_to include(a_string_ending_with('in my duffel bag'))
+        expect(world[:sent].last(2)).to eq(['tap my bucket', 'tap my bucket'])
+        expect(DRC).not_to have_received(:message).with(a_string_including('Stopping'))
+      end
+
+      it 'carries on when the put-back went in the bag with a reply it did not know' do
+        world = stock_world({ 'burlap cloth' => 3, 'wool yarn' => 1 }, refuse: true)
+        allow(DRCI).to receive(:put_away_item?) do |item, container|
+          landed = DRC.bput("put #{item} in my #{container}", /^You (drop|put)/).start_with?('You')
+          container == 'duffel bag' ? false : landed
+        end
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent].grep(/\Aget /))
+          .to eq(['get my burlap cloth from my duffel bag', 'get my rat leather from my duffel bag', 'get my wool yarn from my duffel bag'])
+        expect(world[:hands].values).to all(be_nil)
+        expect(world[:bag]).to eq({ 'burlap cloth' => 3, 'wool yarn' => 1 })
+        expect(DRC).not_to have_received(:message).with(a_string_including('Stopping'))
+      end
+
+      it 'bins the held piece by its id when the game says it is already held' do
+        held = OpenStruct.new(name: 'burlap cloth', noun: 'cloth', id: '999')
+        world = stock_world({}, hands: { left: held })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my burlap cloth from my duffel bag'
+            world[:hands][:left] ? 'You are already holding that.' : 'What were you referring to?'
+          when 'put #999 in my bucket'
+            world[:hands][:left] = nil
+            'You drop some burlap cloth in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(1)
+        expect(world[:sent]).to include('put #999 in my bucket')
+        expect(world[:hands][:left]).to be_nil
+      end
+
+      # "You are already holding that." adds no id to the hands, so the piece
+      # meant is picked from them. Picked by noun alone, the right hand came
+      # first and the player's own silk cloth went in the trash can.
+      it "bins the held burlap cloth by its id, never the player's silk cloth in the other hand, when the game says it is already held" do
+        silk = OpenStruct.new(name: 'silk cloth', noun: 'cloth', id: '111')
+        burlap = OpenStruct.new(name: 'burlap cloth', noun: 'cloth', id: '222')
+        world = stock_world({}, hands: { right: silk, left: burlap })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my burlap cloth from my duffel bag'
+            world[:hands][:left] ? 'You are already holding that.' : 'What were you referring to?'
+          when 'put #222 in my bucket'
+            world[:hands][:left] = nil
+            'You drop some burlap cloth in a bucket.'
+          when 'put #111 in my bucket'
+            world[:hands][:right] = nil
+            'You drop some silk cloth in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(1)
+        expect(world[:sent]).to include('put #222 in my bucket')
+        expect(world[:sent]).not_to include('put #111 in my bucket')
+        expect(world[:hands]).to eq(right: silk, left: nil)
+      end
+
+      it 'stops without binning anything when "already holding" leaves only the player\'s silk cloth in hand' do
+        silk = OpenStruct.new(name: 'silk cloth', noun: 'cloth', id: '111')
+        world = stock_world({}, hands: { right: silk })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my burlap cloth from my duffel bag'
+            'You are already holding that.'
+          when 'put #111 in my bucket'
+            world[:hands][:right] = nil
+            'You drop some silk cloth in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(0)
+        expect(world[:sent]).to eq(['get my burlap cloth from my duffel bag'])
+        expect(world[:hands]).to eq(right: silk, left: nil)
+        expect(DRC).to have_received(:message).with(a_string_including('already hold the burlap cloth', 'not in your hands', 'Stopping'))
+      end
+
+      # The game names a "rat-pelt leather" by "rat leather": the stock word
+      # only starts a word of the name. Matching the whole stock name against
+      # the end of the item's name would miss every leftover rat-pelt piece.
+      it 'bins a held "rat-pelt leather" by its id when the game says the rat leather is already held' do
+        pelt = OpenStruct.new(name: 'rat-pelt leather', noun: 'leather', id: '333')
+        world = stock_world({}, hands: { left: pelt })
+        allow(DRC).to receive(:bput) do |command, *|
+          world[:sent] << command
+          case command
+          when 'get my rat leather from my duffel bag'
+            world[:hands][:left] ? 'You are already holding that.' : 'What were you referring to?'
+          when 'get my burlap cloth from my duffel bag', 'get my wool yarn from my duffel bag'
+            'What were you referring to?'
+          when 'put #333 in my bucket'
+            world[:hands][:left] = nil
+            'You drop some rat-pelt leather in a bucket.'
+          else
+            ''
+          end
+        end
+        expect(binner.bin_task_stock).to eq(1)
+        expect(world[:sent]).to include('put #333 in my bucket')
+        expect(world[:hands]).to eq(right: nil, left: nil)
+        expect(DRC).not_to have_received(:message).with(a_string_including('Stopping'))
+      end
+    end
+
+    describe 'binning task stock at the hand-in' do
+      before do
+        allow(DRCT).to receive(:dispose)
+      end
+
+      it 'bins after the instructions are thrown away, once complete_task gets the sack' do
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        order = []
+        allow(DRCT).to receive(:dispose) { order << :instructions }
+        allow(tm).to receive(:bin_task_stock) { order << :stock }
+        giving([more_needed(1), sack_handed])
+        tm.complete_task('rope', 2)
+        expect(order).to eq(%i[instructions stock])
+      end
+
+      it 'bins when banked items finish the task' do
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:bin_task_stock)
+        giving([sack_handed], banked: 1)
+        expect(tm.turn_in_banked('rope', 1)).to eq(0)
+        expect(tm).to have_received(:bin_task_stock).once
+      end
+
+      it 'does not bin while items are still owed' do
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:bin_task_stock)
+        allow(DRCC).to receive(:stow_crafting_item)
+        giving([more_needed(2)], banked: 1)
+        expect(tm.turn_in_banked('rope', 3)).to eq(2)
+        expect(tm).not_to have_received(:bin_task_stock)
       end
     end
 
@@ -1502,6 +3348,252 @@ RSpec.describe TaskMaster do
         sort(filtered(task_junk_list: ['dye']), '3 haledroth shards')
         expect(DRC).to have_received(:message).with('Found a keeper: 3 haledroth shards')
       end
+
+      describe 'taking the coins' do
+        # Replies to GET COIN FROM MY SACK as the game prints them (Hollow Eve
+        # 2026 logs): one coin stack per get, then this once none is left.
+        let(:no_coin) { 'What were you referring to?' }
+        # A four-stack sack, of mixed currencies, from Dorhum.
+        let(:four_stacks) { ['You pick up 2 copper Dokoras.', 'You pick up 2 bronze Dokoras.', 'You pick up 2 silver Dokoras.', 'You pick up 1 gold Lirum.'] }
+
+        # Real sacks from Zasele and Dorhum (Hollow Eve 2026 logs) holding one
+        # to four coin stacks, the most any sack has held, with what LOOK
+        # then showed. The old code asked exactly four times.
+        real_sacks = {
+          1 => [['You pick up 1 gold Lirum.'], 'a large iron nugget'],
+          2 => [['You pick up 2 bronze Lirums.', 'You pick up 8 silver Lirums.'], 'a deer-bone stack'],
+          3 => [['You pick up 9 copper Lirums.', 'You pick up 5 bronze Dokoras.', 'You pick up 1 gold Dokora.'], 'a bear-bone stack'],
+          4 => [['You pick up 2 copper Dokoras.', 'You pick up 2 bronze Dokoras.', 'You pick up 2 silver Dokoras.', 'You pick up 1 gold Lirum.'], 'a huge muracite fragment']
+        }.freeze
+
+        # Plays a sack holding the coin stacks `coins` (pickup lines, in
+        # order) through sort_sack. Each get is answered as DRC.bput answers:
+        # the text the first of its matchers finds in the next line, or ''
+        # (a timeout) when none does; `line` overrides what the game says.
+        # Returns every command sent, in order.
+        def sort_coins(coins, contents: 'a huge muracite fragment', line: nil)
+          commands = []
+          coins = coins.dup
+          allow(DRC).to receive(:bput) do |command, *matchers|
+            commands << command
+            reply = if command == 'get coin from my sack'
+                      line || coins.shift || no_coin
+                    elsif command == 'look in my sack'
+                      "In the woven sack you see #{contents}."
+                    else
+                      ''
+                    end
+            matchers.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }.filter_map { |m| reply.match(m)&.[](0) }.first || ''
+          end
+          allow(DRCI).to receive(:put_away_item?)
+          allow(DRCI).to receive(:dispose_trash)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          filtered(task_keep_list: ['shard']).sort_sack('rope')
+          expect(coins).to be_empty
+          commands
+        end
+
+        def gets(commands)
+          commands.count('get coin from my sack')
+        end
+
+        # Every get comes before the LOOK that decides the sack's fate.
+        def looked_after_gets(commands)
+          commands.rindex('get coin from my sack') < commands.index('look in my sack')
+        end
+
+        real_sacks.each do |stacks, (coins, contents)|
+          it "takes every coin of a #{stacks}-stack sack, then sorts the sack as before" do
+            commands = sort_coins(coins, contents: contents)
+            expect(looked_after_gets(commands)).to be(true)
+            expect(commands.uniq).to eq(['get coin from my sack', 'look in my sack'])
+            expect(DRC).to have_received(:message).with("Nothing special: In the woven sack you see #{contents}.")
+            expect(DRCI).to have_received(:dispose_trash).with('sack', nil, nil)
+          end
+
+          it "stops asking for coins at the first empty reply from a #{stacks}-stack sack" do
+            expect(gets(sort_coins(coins, contents: contents))).to eq(stacks + 1)
+          end
+        end
+
+        it 'takes a fifth stack instead of binning the sack with it inside' do
+          commands = sort_coins(four_stacks + ['You pick up 7 silver Lirums.'])
+          expect(gets(commands)).to eq(6)
+          expect(looked_after_gets(commands)).to be(true)
+          expect(DRCI).to have_received(:dispose_trash)
+        end
+
+        it 'asks once for a sack with no coins' do
+          commands = sort_coins([])
+          expect(gets(commands)).to eq(1)
+          expect(commands).to include('look in my sack')
+        end
+
+        it "stops at the cap of gets when the coins never run out, and still sorts the sack" do
+          commands = sort_coins([], line: 'You pick up 2 copper Dokoras.')
+          expect(gets(commands)).to eq(20)
+          expect(described_class::SACK_COIN_GETS_MAX).to eq(20)
+          expect(looked_after_gets(commands)).to be(true)
+          expect(DRCI).to have_received(:dispose_trash)
+        end
+
+        it 'stops asking when a get times out' do
+          commands = sort_coins([], line: 'Kythkani drums his fingers on his bucket rhythmically.')
+          expect(gets(commands)).to eq(1)
+          expect(commands).to include('look in my sack')
+        end
+      end
+    end
+
+    describe '#run version banner' do
+      it 'prints the version (bold, via DRC.message) before anything else' do
+        tm = build
+        order = []
+        allow(DRC).to receive(:message) { |text| order << text }
+        allow(tm).to receive(:shift_to_task_hometown) { order << :hometown }
+        allow(tm).to receive(:find_npc)
+        expect { tm.run(OpenStruct.new(npc: 'zasele', find: true)) }.to raise_error(SystemExit)
+        expect(order.first).to eq("taskmaster version #{described_class::VERSION}")
+        expect(described_class::VERSION).to match(/\A\d{4}\.\d{2}\.\d{2}(\.\d+)?\z/)
+      end
+    end
+
+    describe '#sort_sack with task_unpack_keepers' do
+      let(:sack) { OpenStruct.new(noun: 'sack', id: '63768227') }
+      let(:bar) { OpenStruct.new(noun: 'bar', id: '63768234') }
+      let(:empty_hand) { OpenStruct.new(noun: nil, id: nil) }
+      # Replies from a live run (Hollow Eve 2026, a woven sack holding a large tyrium bar).
+      let(:got_bar) { 'You get a large tyrium bar from inside your woven sack.' }
+      let(:sack_empty) { "There's nothing inside a woven sack!" }
+
+      def unpacker(**settings)
+        build(settings: { task_junk_list: ['dye'], task_unpack_keepers: true }.merge(settings),
+              lootbag: "traveler's.pack", worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+          .tap { |tm| tm.send(:configure_loot_filter) }
+      end
+
+      # Plays a sack holding `contents` through sort_sack. get_replies are the
+      # replies to successive `get <noun> from #<sack>`; a get answered with
+      # got_bar puts the bar in the left hand. disposed is what dispose_trash
+      # returns.
+      def unpack(tm, contents: 'a large tyrium bar', get_replies: [got_bar], inventory: sack_empty, put_ok: true, disposed: true)
+        hands = { right: sack, left: empty_hand }
+        allow(GameObj).to receive(:right_hand) { hands[:right] }
+        allow(GameObj).to receive(:left_hand) { hands[:left] }
+        allow(DRC).to receive(:left_hand) { hands[:left]&.noun }
+        allow(DRC).to receive(:right_hand) { hands[:right]&.noun }
+        allow(tm).to receive(:pause)
+        game('look in my sack'            => "In the woven sack you see #{contents}.",
+             'get coin from my sack'      => 'What were you referring to?',
+             'get '                       => lambda do |*|
+               reply = get_replies.shift
+               hands[:left] = bar if reply == got_bar
+               reply
+             end,
+             'inventory #63768227'        => inventory,
+             'put #63768234 in #63768227' => 'You put your bar in your woven sack.')
+        allow(DRCI).to receive(:put_away_item?) { |item, _bag| item == '#63768234' ? put_ok : true }
+        allow(DRCI).to receive(:dispose_trash).and_return(disposed)
+        UserVars.taskmaster_sacks = { 'zasele' => [] }
+        tm.sort_sack('netting')
+      end
+
+      it 'takes the item out by noun from the sack id, puts it away by its own id, and bins the empty sack by its id' do
+        tm = unpacker
+        unpack(tm)
+        expect(DRC).to have_received(:bput).with('get bar from #63768227', any_args)
+        expect(DRC).to have_received(:bput).with('inventory #63768227', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
+        expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
+      end
+
+      it 'puts the empty sack in the loot bag when it cannot be binned' do
+        tm = unpacker
+        unpack(tm, disposed: false)
+        expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+      end
+
+      it 'puts the sack in the loot bag when dispose_trash finds it no longer in hand' do
+        tm = unpacker
+        unpack(tm, disposed: nil)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+      end
+
+      it 'waits for a free hand and retries once when another script holds it' do
+        tm = unpacker
+        unpack(tm, get_replies: ['You need a free hand to pick that up.', got_bar])
+        expect(DRC).to have_received(:bput).with('get bar from #63768227', any_args).twice
+        expect(DRCI).to have_received(:dispose_trash)
+      end
+
+      it 'keeps the whole sack when the get fails twice for want of a hand' do
+        tm = unpacker
+        unpack(tm, get_replies: ['You need a free hand to pick that up.'] * 2)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the whole sack when the noun does not match the item' do
+        tm = unpacker
+        unpack(tm, contents: '3 haledroth shards', get_replies: ['What were you referring to?'])
+        expect(DRC).to have_received(:bput).with('get shards from #63768227', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'puts the item back in the sack and keeps the sack when the loot bag will not take the item' do
+        tm = unpacker
+        unpack(tm, put_ok: false)
+        expect(DRC).to have_received(:bput).with('put #63768234 in #63768227', any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps a sack that is not empty after the item is out, with whatever is left in it' do
+        tm = unpacker
+        unpack(tm, inventory: 'Inside a woven sack, you see:')
+        expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the sack when INVENTORY gives no recognised reply' do
+        tm = unpacker
+        unpack(tm, inventory: '')
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the sack when the sack in hand has no id' do
+        tm = unpacker
+        allow(tm).to receive(:held_id).and_call_original
+        allow(tm).to receive(:held_id).with('sack').and_return(nil)
+        unpack(tm)
+        expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+      end
+
+      it 'never unpacks junk, which is binned with its sack as before' do
+        tm = unpacker
+        unpack(tm, contents: 'some coral dye')
+        expect(DRC).not_to have_received(:bput).with(/\Aget dye/, any_args)
+        expect(DRCI).to have_received(:dispose_trash).with('sack', 'bucket', 'tap')
+      end
+
+      it 'keeps the whole sack, as before, when task_unpack_keepers is off' do
+        tm = unpacker(task_unpack_keepers: false)
+        unpack(tm)
+        expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'gets task_unpack_keepers as false from base.yaml' do
+        expect(base_yaml).to include('task_unpack_keepers' => false)
+      end
     end
 
     describe '#remember_sack' do
@@ -1533,6 +3625,1093 @@ RSpec.describe TaskMaster do
         build(npc: 'poltu').remember_sack('a bronze bar.')
         expect(UserVars.taskmaster_sacks).to eq('poltu' => ['a bronze bar.'])
       end
+    end
+  end
+
+  # Dorhum, the enchanting taskmaster (Hollow Eve 2026). Lines come from two
+  # task runs: eight spongestones (log 1) and six virga wands (log 2).
+  describe "Dorhum's enchanting tasks" do
+    let(:sigil_stock) do
+      { 'congruence sigil-scroll' => { 'stock-number' => 3, 'stock-value' => 312 },
+        'decay sigil-scroll'      => { 'stock-number' => 10, 'stock-value' => 1575 },
+        'induction sigil-scroll'  => { 'stock-number' => 1, 'stock-value' => 625 } }
+    end
+
+    def dorhum(settings: {}, **ivars)
+      build(settings: settings, npc: 'dorhum', lootbag: 'backpack', stockdata: sigil_stock, rock_room: 793, **ivars)
+    end
+
+    before(:each) do
+      $test_data.crafting = { 'artificing' => { 'Crossing' => { 'stock-room' => 14_753, 'tool-room' => 14_754, 'fount' => 3,
+                                                                'brazier-rooms' => [14_757, 14_758, 14_759, 14_760] } } }
+    end
+
+    # READ of the instructions as Lich::Util.issue_command returns it: raw
+    # lines from the title to the prompt.
+    def instructions_read(*ingredients)
+      ['<output class="mono"/>', '        -=   Instructions for crafting a spongestone    =-', '', ' A list of ingredients is provided:', '',
+       *ingredients.map { |line| "   #{line}" }, '<output class=""/>', '<prompt time="1">&gt;</prompt>']
+    end
+
+    describe '#read_instructions' do
+      before(:each) { allow(DRCI).to receive(:stow_hands) }
+
+      it 'reads congruence and decay off the spongestone instructions (log 1) and stows them' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command)
+          .with('read my spongestone instructions', /Instructions for crafting/)
+          .and_return(instructions_read('(1) a foraged rock', '(1) mana fount', '(1) primary sigil (congruence)', '(1) secondary sigil (decay)'))
+        expect(DRCC).to receive(:stow_crafting_item).with('spongestone instructions', 'duffel bag', nil)
+
+        expect(tm.read_instructions('spongestone', 8)).to eq(['spongestone', 8, %w[congruence decay]])
+      end
+
+      it 'reads induction off the virga wand instructions (log 2)' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command)
+          .and_return(instructions_read('(1) A finished stone, bone or wood wand or rod', '(1) mana fount', '(1) primary sigil (induction)'))
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('wand', 6)).to eq(['wand', 6, %w[induction]])
+      end
+
+      it 'reads a sigil the game wrapped in tags' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command).and_return(instructions_read('(1) primary sigil (<pushBold/>induction<popBold/>)'))
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('wand', 6).last).to eq(%w[induction])
+      end
+
+      it 'repeats a sigil as many times as the instructions count it' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command).and_return(instructions_read('(2) primary sigils (induction)', '(1) secondary sigil (decay)'))
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('wand', 6).last).to eq(%w[induction induction decay])
+      end
+
+      it 'pauses, then stops, when no sigil can be read off them' do
+        tm = dorhum
+        allow(Lich::Util).to receive(:issue_command).and_return([])
+        allow(DRCC).to receive(:stow_crafting_item)
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.read_instructions('spongestone', 8) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/No sigils could be read off the spongestone instructions/)
+      end
+
+      it "leaves the other taskmasters' instructions to the materials line" do
+        tm = build(stockdata: {})
+        expect(Lich::Util).not_to receive(:issue_command)
+        game('read my rope instructions' => 'cloth (8 yards)')
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect(tm.read_instructions('rope', 3).values_at(2, 3)).to eq([8, 'cloth'])
+      end
+    end
+
+    describe "Dorhum's task journal" do
+      it 'reads the item and how many are owed (log 3)' do
+        tm = dorhum
+        game('task' => 'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist his ongoing efforts with the Merelew and others.  ' \
+                       'In particular, he wanted you to craft a spongestone and indicated that 6 would suffice.  So far, you have returned 0 to him.  ' \
+                       'Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Dorhum for another copy.')
+
+        expect(tm.read_task).to eq(['spongestone', 6])
+      end
+    end
+
+    describe '#set_aside_held_base' do
+      it "puts a rock held at a Dorhum resume back with the unworked ones, since nothing says it was finished" do
+        tm = dorhum
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        expect(DRCC).to receive(:stow_crafting_item).with('rock', 'duffel bag', nil)
+
+        tm.set_aside_held_base('spongestone')
+      end
+
+      it 'leaves the hands alone when nothing of the kind is held' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        dorhum.set_aside_held_base('spongestone')
+      end
+
+      it "leaves other taskmasters' resumes alone" do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        build.set_aside_held_base('rope')
+      end
+    end
+
+    describe "cancelling another taskmaster's task" do
+      # Dorhum's replies, Mahtra 2026-11-03 18:45.
+      let(:confirm) { 'Researcher Dorhum looks at you and says, "You wish to end your current task?  If so, ask me again within fifteen seconds."' }
+      let(:cancelled) { 'Researcher Dorhum says, "Very well, I see that you no longer wish to assist me."' }
+      let(:no_task) { 'Researcher Dorhum looks at you and says, "You do not currently have a task."' }
+
+      def zasele_run
+        tm = build(npc: 'zasele', worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', cancel_foreign_tasks: true)
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:pause)
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCT).to receive(:dispose)
+        tm
+      end
+
+      it "asks twice, as the game wants, then throws the instructions away and clears that taskmaster's replacement record" do
+        tm = zasele_run
+        UserVars.taskmaster_replacements = { 'dorhum' => 'shell', 'zasele' => 'rope' }
+        replies = [confirm, cancelled]
+        game('ask dorhum for task cancel' => ->(*) { replies.shift })
+
+        expect { tm.cancel_task('dorhum', 'shell') }.not_to raise_error
+
+        expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).twice
+        expect(DRCT).to have_received(:dispose).with('shell instructions', nil, 'bucket', 'tap')
+        expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+        expect(DRC).to have_received(:message).with('You are on a task for Dorhum, not Zasele: cancelling it (task_cancel_foreign_tasks).')
+      end
+
+      it "takes the cancel replies only from the taskmaster, not from a player saying them" do
+        tm = zasele_run
+        player = 'Mallory says, "Very well, I see that you no longer wish to assist me."'
+        heard = [[player, confirm], [cancelled]]
+        # Like DRC.bput: the first line that one of the matchers takes.
+        game('ask dorhum for task cancel' => ->(_cmd, *matchers) { heard.shift.find { |line| matchers.any? { |m| line.match?(m) } }.to_s })
+
+        expect { tm.cancel_task('dorhum', 'shell') }.not_to raise_error
+
+        expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).twice
+      end
+
+      it 'does not take a player looking at the taskmaster and saying the words' do
+        heard = 'Mallory looks at Researcher Dorhum and says, "Very well, I see that you no longer wish to assist me."'
+        expect(heard).not_to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCELLED))
+        expect(cancelled).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCELLED))
+        expect(confirm).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCEL_CONFIRM))
+        expect(no_task).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCEL_NONE))
+      end
+
+      it 'takes "You do not currently have a task" as done' do
+        tm = zasele_run
+        game('ask dorhum for task cancel' => no_task)
+
+        expect { tm.cancel_task('dorhum', 'shell') }.not_to raise_error
+
+        expect(DRC).to have_received(:bput).with('ask dorhum for task cancel', any_args).once
+      end
+
+      it 'stops when the cancel does not go through, keeping the instructions' do
+        tm = zasele_run
+        game('ask dorhum for task cancel' => '')
+
+        expect { tm.cancel_task('dorhum', 'shell') }.to raise_error(SystemExit)
+
+        expect(DRCT).not_to have_received(:dispose)
+        expect(DRC).to have_received(:message).with("Could not cancel Dorhum's task. Stopping.")
+      end
+
+      it 'waits out the ten-minute cooldown a cancel brings before going back to its own taskmaster' do
+        tm = zasele_run
+        allow(tm).to receive(:cancel_task)
+
+        expect { tm.cancel_foreign_task('dorhum') }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+
+        expect(tm).to have_received(:pause).with(600)
+        expect(DRC).to have_received(:message).with('Waiting 10 minutes: after a cancel, taskmasters call you unreliable for about that long.')
+      end
+
+      it "still pauses on an item it cannot make for its own taskmaster's task" do
+        tm = dorhum(cancel_foreign_tasks: true)
+        expect(tm).not_to receive(:cancel_task)
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.hand_in_noun('bauble') }.to raise_error(SystemExit)
+      end
+
+      it 'returns from finish mode after a cancel, so the run carries on asking its own taskmaster' do
+        tm = build
+        allow(tm).to receive(:reconcile_hands)
+        allow(tm).to receive(:resume_task) { throw TaskMaster::FOREIGN_TASK_CANCELLED }
+
+        expect { tm.finish_task_in_progress }.not_to raise_error
+      end
+    end
+
+    describe '#check_loot_bag' do
+      it 'stops a Dorhum task whose loot bag is the crafting bag, before buying anything' do
+        tm = dorhum(lootbag: 'duffel bag')
+        expect(tm).not_to receive(:buy_sigils)
+
+        expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/need task_loot_bag \(duffel bag\) to be a container other than your crafting bag \(duffel bag\)/)
+      end
+
+      it 'stops a hand-in from the crafting bag too, as after a resume' do
+        expect { dorhum(lootbag: 'Duffel Bag ').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      it 'stops when the two bags differ only by adjective, as PUT would find either' do
+        expect { dorhum(bag: 'sturdy backpack', lootbag: 'backpack').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      {
+        ['sturdy backpack', 'backpack']         => true,
+        ['pack', 'travel.pack']                 => true,
+        ['duffel bag', 'Duffel Bag']            => true,
+        ['travel.pack', "traveler's.pack"]      => false,
+        ['duffel bag', "traveler's.pack"]       => false,
+        ['leather backpack', 'canvas backpack'] => false
+      }.each do |(crafting, loot), same|
+        it "takes #{crafting.inspect} and #{loot.inspect} for #{same ? 'the same bag' : 'two bags'}" do
+          expect(dorhum.same_container?(crafting, loot)).to be(same)
+        end
+      end
+
+      it 'lets a loot bag of its own through' do
+        expect(dorhum.hand_in_bag).to eq('backpack')
+      end
+    end
+
+    describe 'the hand-in' do
+      it 'hands in a spongestone as the rock it still is, out of the loot bag' do
+        tm = dorhum
+        allow(tm).to receive(:find_npc)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect(DRCI).to receive(:get_item?).with('rock', 'backpack').and_return(true)
+        game('give my rock to dorhum' => 'Dorhum holds up his fingers indicating 7 more are needed.')
+
+        expect(tm.give_item('spongestone')).to match(TaskMaster::TURN_IN_MORE_NEEDED)
+        expect(DRC).to have_received(:bput).with('give my rock to dorhum', any_args)
+      end
+
+      def refusal
+        'Researcher Dorhum examines the rock and shakes his head.  "I don\'t sense any hint of enchantment on this.  What are you trying to pull, Pezamus?"'
+      end
+
+      # The loot bag holds `rocks`; Dorhum turns down the ones whose index is
+      # in `bad` and takes the rest.
+      def handing_in(rocks, bad:)
+        state = { held: nil, gets: 0, gives: 0, accepted: 0 }
+        allow(DRCI).to receive(:in_hands?) { state[:held] }
+        allow(DRCI).to receive(:get_item?) do
+          next false if state[:gets] >= rocks
+
+          state[:gets] += 1
+          state[:held] = state[:gets]
+        end
+        allow(DRCI).to receive(:dispose_trash) { state[:held] = nil; true }
+        game('give my rock to dorhum' => lambda do |*|
+          state[:gives] += 1
+          next refusal if bad.include?(state[:held])
+
+          state[:accepted] += 1
+          state[:held] = nil
+          left = rocks - bad.size - state[:accepted]
+          left.positive? ? more_needed(left) : sack_handed
+        end)
+        state
+      end
+
+      it 'trashes a rock Dorhum sees no enchantment on, without giving it again, and hands in the rest' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:task_handed_in)
+        state = handing_in(3, bad: [2])
+
+        expect { tm.complete_task('spongestone', 2) }.not_to raise_error
+
+        expect(state[:gives]).to eq(3)
+        expect(DRCI).to have_received(:dispose_trash).with('rock', 'bucket', 'tap').once
+        expect(DRC).to have_received(:message).with('Dorhum saw no enchantment on a rock, so it went in the trash.')
+        expect(tm).to have_received(:sort_sack)
+      end
+
+      it 'does the same at a resume, then hands in the rest' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        allow(tm).to receive(:find_npc)
+        allow(DRCC).to receive(:stow_crafting_item)
+        state = handing_in(2, bad: [1])
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:task_handed_in)
+
+        expect(tm.turn_in_banked('spongestone', 2)).to eq(0)
+
+        expect(DRCI).to have_received(:dispose_trash).once
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(state[:gives]).to eq(2)
+      end
+
+      it 'puts the rock back and stops when the trash will not take it' do
+        tm = dorhum
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:sort_sack)
+        handing_in(1, bad: [1])
+        allow(DRCI).to receive(:dispose_trash).and_return(false)
+        allow(DRCC).to receive(:stow_crafting_item)
+
+        expect { tm.complete_task('spongestone', 1) }.to raise_error(SystemExit)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('rock', 'backpack', nil)
+        expect(tm).not_to have_received(:sort_sack)
+      end
+
+      it "takes Dorhum's refusal only from Dorhum, not from a player repeating it" do
+        text = %(I don't sense any hint of enchantment on this.  What are you trying to pull, Pezamus?)
+        expect(%(Researcher Dorhum examines the small brazier and shakes his head.  "#{text}")).to match(TaskMaster::GIVE_NOT_ENCHANTED)
+        expect(%(Mallory says, "#{text}")).not_to match(TaskMaster::GIVE_NOT_ENCHANTED)
+        expect(%(Mallory says, "Researcher Dorhum examines the rock and shakes his head.  "#{text}")).not_to match(TaskMaster::GIVE_NOT_ENCHANTED)
+      end
+
+      it 'hands in a virga wand as a wand' do
+        expect(dorhum.hand_in_noun('wand')).to eq('wand')
+      end
+
+      it 'keeps Zasele\'s items in the crafting bag' do
+        tm = build
+        expect([tm.hand_in_noun('rope'), tm.hand_in_bag]).to eq(['rope', 'duffel bag'])
+      end
+
+      it 'puts a refused rock back in the loot bag, not among the unworked rocks' do
+        tm = dorhum
+        expect(DRCC).to receive(:stow_crafting_item).with('rock', 'backpack', nil)
+
+        expect { tm.refused_hand_in('spongestone', '') }.to raise_error(SystemExit)
+      end
+
+      it 'pauses, then stops, on an item taskmaster does not know' do
+        tm = dorhum
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.hand_in_noun('bauble') }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with(/does not know how to make Dorhum's baubles/)
+      end
+    end
+
+    describe '#buy_sigils' do
+      let(:orders) { [] }
+
+      before(:each) do
+        allow(DRCT).to receive(:order_item) { |room, number| orders << [room, number] }
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+      end
+
+      it 'orders one of each sigil per item from the enchanting supplies, by stock number' do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+
+        dorhum.buy_sigils(%w[congruence decay], 8)
+
+        expect(orders.tally).to eq({ [14_753, 3] => 8, [14_753, 10] => 8 })
+        expect(DRCC).to have_received(:stow_crafting_item).with('sigil-scroll', 'duffel bag', nil).exactly(16).times
+      end
+
+      # RUMMAGE's list, as the game words it ("... and see some sepia pins,
+      # some sepia pins and some sepia pins.").
+      def rummaged(*names)
+        return 'You rummage through a heavy silk duffel bag looking for something similar to "sigil-scroll" but there is nothing in there like that.' if names.empty?
+
+        listed = names.map { |name| "an intricate #{name}" }
+        "You rummage through a heavy silk duffel bag looking for something similar to \"sigil-scroll\" and see #{listed[0..-2].join(', ')}#{listed.size > 1 ? ' and ' : ''}#{listed.last}."
+      end
+
+      it 'counts the scrolls already in the crafting bag, with one RUMMAGE for every sigil' do
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged(*Array.new(3, 'congruence sigil-scroll'), *Array.new(11, 'decay sigil-scroll')))
+
+        dorhum.buy_sigils(%w[congruence decay], 8)
+
+        expect(orders.tally).to eq({ [14_753, 3] => 5 })
+        expect(DRC).to have_received(:bput).with('rummage /C sigil-scroll in my duffel bag', any_args).once
+      end
+
+      it 'counts one scroll, the last in the list, and none when the bag has none' do
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged('decay sigil-scroll'))
+        dorhum.buy_sigils(%w[decay], 2)
+        expect(orders.tally).to eq({ [14_753, 10] => 1 })
+
+        orders.clear
+        game('rummage /C sigil-scroll in my duffel bag' => rummaged)
+        dorhum.buy_sigils(%w[decay], 2)
+        expect(orders.tally).to eq({ [14_753, 10] => 2 })
+      end
+
+      it 'carries enough copper for the scrolls, a new fount, the next fee and repairs' do
+        dorhum.buy_sigils(%w[induction], 6)
+
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(6 * 625 + 312 + 7500, anything, 'Crossing')
+      end
+
+      it 'buys two per item of a sigil the instructions list twice' do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+
+        dorhum.buy_sigils(%w[induction induction], 6)
+
+        expect(orders.tally).to eq({ [14_753, 1] => 12 })
+      end
+
+      it 'pauses, then stops, on a sigil not in the crafting data' do
+        tm = dorhum
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.buy_sigils(%w[mystery], 2) }.to raise_error(SystemExit)
+        expect(orders).to eq([])
+      end
+    end
+
+    describe '#buy_wands' do
+      before(:each) do
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+      end
+
+      it 'buys a wand from the steel crate for each virga wand not covered by the wands carried' do
+        allow(DRCI).to receive(:count_items_in_container).with('wand', 'duffel bag').and_return(2)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
+        expect(DRCT).to receive(:buy_item).with(14_753, 'wand').exactly(4).times
+
+        dorhum.buy_wands(6)
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil).exactly(4).times
+      end
+
+      it 'buys nothing when enough are carried' do
+        allow(DRCI).to receive(:count_items_in_container).and_return(6)
+        expect(DRCT).not_to receive(:buy_item)
+
+        dorhum.buy_wands(6)
+      end
+    end
+
+    describe '#forage_rocks' do
+      before(:each) do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCT).to receive(:walk_to)
+      end
+
+      it 'forages a rock per item at the rock room and bags each one (log 3)' do
+        allow(DRC).to receive(:forage?).with('rock').and_return(true)
+
+        dorhum.forage_rocks(6)
+
+        expect(DRCT).to have_received(:walk_to).with(793)
+        expect(DRC).to have_received(:forage?).exactly(6).times
+        expect(DRCC).to have_received(:stow_crafting_item).with('rock', 'duffel bag', nil).exactly(6).times
+      end
+
+      it 'forages at task_rock_room when set' do
+        allow(DRC).to receive(:forage?).and_return(true)
+
+        dorhum(rock_room: 14_137).forage_rocks(1)
+
+        expect(DRCT).to have_received(:walk_to).with(14_137)
+      end
+
+      it 'forages only the rocks the crafting bag does not already hold' do
+        allow(DRCI).to receive(:count_items_in_container).with('rock', 'duffel bag').and_return(4)
+        allow(DRC).to receive(:forage?).and_return(true)
+
+        dorhum.forage_rocks(6)
+
+        expect(DRC).to have_received(:forage?).twice
+      end
+
+      it 'goes nowhere when the crafting bag already holds the rocks' do
+        allow(DRCI).to receive(:count_items_in_container).with('rock', 'duffel bag').and_return(6)
+        expect(DRC).not_to receive(:forage?)
+
+        dorhum.forage_rocks(6)
+
+        expect(DRCT).not_to have_received(:walk_to)
+      end
+
+      it 'stops when a forage finds nothing, without bagging a rock it does not have' do
+        allow(DRC).to receive(:forage?).and_return(true, false)
+
+        expect { dorhum.forage_rocks(3) }.to raise_error(SystemExit)
+
+        expect(DRCC).to have_received(:stow_crafting_item).once
+        expect(DRC).to have_received(:message).with('Could not forage a rock at room 793, stopping. Set task_rock_room to a room where rocks can be found.')
+      end
+    end
+
+    describe 'glow shells' do
+      before(:each) do
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCT).to receive(:walk_to)
+      end
+
+      it 'hands in a glow shell as a shell, out of the loot bag' do
+        expect([dorhum.hand_in_noun('shell'), dorhum.hand_in_bag]).to eq(%w[shell backpack])
+      end
+
+      it 'forages a shell per item at room 793 by default and bags each one' do
+        allow(DRC).to receive(:forage?).with('shell').and_return(true)
+
+        build(npc: 'dorhum', lootbag: 'backpack', shell_room: TaskMaster::DEFAULT_SHELL_ROOM).forage_shells(5)
+
+        expect(DRCT).to have_received(:walk_to).with(793)
+        expect(DRCC).to have_received(:stow_crafting_item).with('shell', 'duffel bag', nil).exactly(5).times
+      end
+
+      it 'forages at task_shell_room when set' do
+        allow(DRC).to receive(:forage?).and_return(true)
+
+        build(npc: 'dorhum', lootbag: 'backpack', shell_room: 712).forage_shells(1)
+
+        expect(DRCT).to have_received(:walk_to).with(712)
+      end
+
+      it 'stops, naming the setting, when no shell can be foraged there' do
+        allow(DRC).to receive(:forage?).and_return(false)
+
+        expect { build(npc: 'dorhum', lootbag: 'backpack', shell_room: 793).forage_shells(3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('Could not forage a shell at room 793, stopping. Set task_shell_room to a room where shells can be found.')
+      end
+
+      it 'reads permutation and paradox off the glow shell instructions (Mahtra, 2026-11-03)' do
+        tm = dorhum
+        allow(DRCI).to receive(:stow_hands)
+        allow(Lich::Util).to receive(:issue_command)
+          .and_return(instructions_read('(1) a foraged shell', '(1) mana fount', '(1) primary sigil (permutation)', '(1) secondary sigil (paradox)'))
+
+        expect(tm.read_instructions('shell', 5)).to eq(['shell', 5, %w[permutation paradox]])
+      end
+
+      # Mahtra, 2026-11-03: t2task's `taskmaster zasele` met this open Dorhum
+      # task ("You are already on a task"), worked it as Zasele's and crashed
+      # in buy_stackables on every relaunch.
+      it "stops on an open glow shell task when started for Zasele, working it neither as hers nor as Dorhum's" do
+        tm = build(npc: 'zasele', lootbag: 'backpack', stockdata: sigil_stock)
+        allow(tm).to receive(:find_npc)
+        game('task' => 'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist his ongoing efforts with the Merelew and others.  ' \
+                       'In particular, he wanted you to craft a glow shell and indicated that 6 would suffice.  So far, you have returned 0 to him.  ' \
+                       'Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Dorhum for another copy.')
+        expect(tm).not_to receive(:turn_in_banked)
+        expect(tm).not_to receive(:zasele)
+        expect(tm).not_to receive(:dorhum)
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message)
+          .with('You are on a task for Dorhum, not Zasele. Finish it with ;taskmaster dorhum, or cancel it with ASK DORHUM FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
+      end
+
+      it 'forages shells for a glow shell task' do
+        tm = dorhum
+        %i[ensure_tools buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:forage_shells).with(5)
+
+        tm.dorhum('shell', 5, %w[permutation paradox])
+      end
+    end
+
+    # A manual run, 2026-11-04 (Pezamus): the journal, the instructions and
+    # the hand-in of a splashstone task.
+    describe 'splashstones' do
+      it 'reads a splashstone task off the journal' do
+        tm = dorhum
+        game('task' => 'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist his ongoing efforts with the Merelew and others.  ' \
+                       'In particular, he wanted you to craft a splashstone and indicated that 8 would suffice.  So far, you have returned 0 to him.  ' \
+                       'Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Dorhum for another copy.')
+
+        expect(tm.read_task).to eq(['splashstone', 8])
+      end
+
+      it 'reads rarefaction and integration off the splashstone instructions' do
+        tm = dorhum
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(Lich::Util).to receive(:issue_command)
+          .with('read my splashstone instructions', /Instructions for crafting/)
+          .and_return(instructions_read('(1) a foraged rock', '(1) mana fount', '(1) primary sigil (rarefaction)', '(1) secondary sigil (integration)'))
+
+        expect(tm.read_instructions('splashstone', 8)).to eq(['splashstone', 8, %w[rarefaction integration]])
+      end
+
+      it 'hands in a splashstone as the rock it still is, out of the loot bag' do
+        expect([dorhum.hand_in_noun('splashstone'), dorhum.hand_in_bag]).to eq(%w[rock backpack])
+      end
+
+      it 'forages rocks for a splashstone task, then enchants them as rocks' do
+        tm = dorhum
+        %i[ensure_tools buy_sigils go_to_enchanting_room repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:forage_rocks).with(8)
+        expect(tm).to receive(:enchant_items).with('splashstone', 'rock', 8)
+
+        tm.dorhum('splashstone', 8, %w[rarefaction integration])
+      end
+    end
+
+    describe '#go_to_enchanting_room' do
+      before(:each) do
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:find_enchanting_room)
+      end
+
+      it 'goes to task_crafting_room first, the room every task crafts in' do
+        dorhum(crafting_room: 1111, settings: { enchanting_room: 2222 }).go_to_enchanting_room
+
+        expect(DRCT).to have_received(:walk_to).with(1111)
+      end
+
+      it 'goes to enchanting_room when task_crafting_room is unset' do
+        dorhum(crafting_room: nil, settings: { enchanting_room: 2222 }).go_to_enchanting_room
+
+        expect(DRCT).to have_received(:walk_to).with(2222)
+      end
+
+      it 'stays put with a brazier of its own' do
+        allow(DRCI).to receive(:exists?).with('small brazier').and_return(true)
+
+        dorhum(crafting_room: nil, settings: { enchanting_tools: ['small brazier', 'burin'] }).go_to_enchanting_room
+
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRCC).not_to have_received(:find_enchanting_room)
+      end
+
+      it 'finds a brazier room in Crossing without one' do
+        allow(DRCI).to receive(:exists?).and_return(false)
+
+        dorhum(crafting_room: nil).go_to_enchanting_room
+
+        expect(DRCC).to have_received(:find_enchanting_room).with('Crossing')
+      end
+    end
+
+    describe '#enchant_items' do
+      let(:enchanted) { "The spell's energies settle upon the rock and seal off the pattern.  With the enchanting process completed, you believe it is safe to collect your things once more." }
+
+      def enchant_runs(*finishes)
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          Flags[TaskMaster::ENCHANTED_FLAG] = finishes.shift ? true : false
+        end
+      end
+
+      it 'enchants each item from the instructions and puts it in the loot bag' do
+        tm = dorhum
+        enchant_runs(true, true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('rock', 'backpack').twice.and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 2)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('enchant', %w[instructions spongestone rock]).twice
+      end
+
+      it 'stops, leaving it alone, when enchant stopped with an unworked wand in hand' do
+        tm = dorhum
+        enchant_runs(true, false)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
+
+        expect(DRCI).to have_received(:put_away_item?).once
+        expect(DRC).to have_received(:message).with('enchant did not finish a wand for the wands; stopping.')
+      end
+
+      it 'puts an unworked base item enchant left in hand back in the crafting bag, not the loot bag' do
+        tm = dorhum
+        enchant_runs(false)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(true)
+        allow(DRCI).to receive(:put_away_item?)
+        expect(DRCC).to receive(:stow_crafting_item).with('wand', 'duffel bag', nil)
+
+        expect { tm.enchant_items('wand', 'wand', 3) }.to raise_error(SystemExit)
+
+        expect(DRCI).not_to have_received(:put_away_item?)
+      end
+
+      it 'trashes a finished item the loot bag will not take, rather than stow it with the unworked ones, and stops' do
+        tm = dorhum(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap')
+        enchant_runs(true, true, true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).with('rock', 'backpack').and_return(false)
+        expect(DRCI).to receive(:dispose_trash).with('rock', 'bucket', 'tap').and_return(true)
+        expect(DRCC).not_to receive(:stow_crafting_item)
+
+        expect { tm.enchant_items('spongestone', 'rock', 3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack, so it went in the trash. Make room in backpack, then start again. Stopping.')
+        expect(DRC).not_to have_received(:message).with('3 spongestones completed')
+      end
+
+      it 'says the item is still in hand when the trash will not take it either' do
+        tm = dorhum
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).with('rock').and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        allow(DRCI).to receive(:dispose_trash).and_return(false)
+
+        expect { tm.enchant_items('spongestone', 'rock', 1) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('The finished rock would not go in backpack, so it is still in your hand. Make room in backpack, then start again. Stopping.')
+      end
+
+      it 'stops when the finished item is not in hand' do
+        tm = dorhum
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+
+        expect { tm.enchant_items('spongestone', 'rock', 1) }.to raise_error(SystemExit)
+      end
+
+      it "catches the game's completion line, not another player's" do
+        tm = dorhum
+        Flags.add(TaskMaster::ENCHANTED_FLAG, TaskMaster::ENCHANTED)
+        expect(TaskMaster::ENCHANTED).to match(enchanted)
+        expect(TaskMaster::ENCHANTED).not_to match(%(Mallory says, "#{enchanted}"))
+        expect(TaskMaster::ENCHANTED).not_to match(%([General][Mallory] "#{enchanted}"))
+        expect(TaskMaster::ENCHANTED).to match('With the enchantment complete, you collect your things.')
+        expect(TaskMaster::ENCHANTED).to match('With enchanting complete, you collect your things.')
+        enchant_runs(true)
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 1)
+
+        expect(Flags.matchers).not_to have_key(TaskMaster::ENCHANTED_FLAG)
+      end
+    end
+
+    # Mahtra's private forge (task_crafting_room 16936), 2026-11-02/03.
+    describe 'the rental of task_crafting_room' do
+      let(:notice) { '[It will expire Thu Dec  3 20:58:13 ET 2026.]' }
+      let(:extended) { '[Your private forge rental has been extended until Thu Dec  3 00:56:41 ET 2026.]' }
+
+      def enchant_runs(count, warn_on: nil)
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          Flags[TaskMaster::RENTAL_WARNING_FLAG] = true if runs == warn_on
+          Flags[TaskMaster::ENCHANTED_FLAG] = true
+        end
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        count
+      end
+
+      it 'reads the expiry off the notice in US Eastern time, standard time in winter and daylight time in summer' do
+        tm = dorhum
+        winter = TaskMaster::RENTAL_EXPIRES.match(notice)
+        summer = TaskMaster::RENTAL_EXPIRES.match('[It will expire Fri Jul 10 12:00:00 ET 2026.]')
+
+        expect(tm.rental_minutes_left(winter, Time.utc(2026, 12, 4, 1, 48, 13))).to eq(10.0)
+        expect(tm.rental_minutes_left(summer, Time.utc(2026, 7, 10, 15, 50, 0))).to eq(10.0)
+      end
+
+      it "puts the sentry's warning at ten minutes before the notice's time (2026-11-02, the day daylight time ended)" do
+        expires = TaskMaster::RENTAL_EXPIRES.match('[It will expire Sun Nov  1 18:58:13 ET 2026.]')
+
+        expect(dorhum.rental_minutes_left(expires, Time.utc(2026, 11, 1, 23, 48, 17))).to be_between(9.9, 10.0)
+      end
+
+      it 'checks the notice before enchanting and leaves a rental with time on it alone' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        game('read notice' => notice)
+        tm.enchant_items('spongestone', 'rock', enchant_runs(2))
+
+        expect(DRC).to have_received(:bput).with('read notice', any_args).once
+        expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
+      end
+
+      it 'renews before the first item when the rental ends within ten minutes' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 12, 4, 1, 52, 0))
+        game('read notice' => notice, 'mark notice' => extended)
+        tm.enchant_items('spongestone', 'rock', enchant_runs(1))
+
+        expect(DRC).to have_received(:bput).with('mark notice', any_args).once
+      end
+
+      it "renews between items once the sentry's warning has come" do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        order = []
+        game('read notice' => notice, 'mark notice' => ->(*) { order << :mark && extended })
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          order << :enchant
+          Flags[TaskMaster::RENTAL_WARNING_FLAG] = true if order.count(:enchant) == 1
+          Flags[TaskMaster::ENCHANTED_FLAG] = true
+        end
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        tm.enchant_items('spongestone', 'rock', 3)
+
+        expect(order).to eq(%i[enchant mark enchant enchant])
+      end
+
+      it 'stops before the next item when the rental is not extended' do
+        tm = dorhum(crafting_room: 16_936)
+        allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 4, 0, 0, 0))
+        game('read notice' => notice, 'mark notice' => '')
+
+        expect { tm.enchant_items('spongestone', 'rock', enchant_runs(3, warn_on: 1)) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).once
+        expect(DRC).to have_received(:message).with('Could not renew the rental of room 16936; stopping before it runs out.')
+      end
+
+      it 'reads no notice and marks nothing where there is no notice, or without task_crafting_room' do
+        unrented = dorhum(crafting_room: 2071)
+        game('read notice' => 'I could not find what you were referring to.')
+        unrented.enchant_items('spongestone', 'rock', enchant_runs(2, warn_on: 1))
+        dorhum.enchant_items('spongestone', 'rock', enchant_runs(1))
+
+        expect(DRC).to have_received(:bput).with('read notice', any_args).once
+        expect(DRC).not_to have_received(:bput).with('mark notice', any_args)
+      end
+
+      it 'takes the warning behind a leading XML tag too' do
+        expect('<pushBold/>[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]').to match(TaskMaster::RENTAL_WARNING)
+      end
+
+      it "takes the sentry's warning, not a player repeating it" do
+        warning = '[You have less than 10 minutes remaining.  If you wish to renew your rental, simply MARK NOTICE to signal the sentry.]'
+        expect(warning).to match(TaskMaster::RENTAL_WARNING)
+        [%(Mallory says, "#{warning}"), %([General][Mallory] "#{warning}"), %(Mallory whispers, "#{warning}")].each do |line|
+          expect(line).not_to match(TaskMaster::RENTAL_WARNING)
+        end
+      end
+    end
+
+    describe '#dorhum' do
+      it 'checks the tools, buys the sigils, gets the base items, checks the fount, finds a room, enchants, then repairs' do
+        tm = dorhum(settings: { enchanting_tools: %w[brazier burin], enchanting_belt: nil })
+        steps = []
+        allow(tm).to receive(:ensure_tools) { |tools, discipline| steps << [:tools, tools, discipline] }
+        allow(tm).to receive(:buy_sigils) { |sigils, count| steps << [:sigils, sigils, count] }
+        allow(tm).to receive(:forage_rocks) { |count| steps << [:rocks, count] }
+        allow(DRCC).to receive(:fount) { |*args| steps << [:fount, *args] }
+        allow(tm).to receive(:go_to_enchanting_room) { steps << :room }
+        allow(tm).to receive(:enchant_items) { |*args| steps << [:enchant, *args] }
+        allow(tm).to receive(:repair) { |*args| steps << [:repair, *args] }
+
+        tm.dorhum('spongestone', 8, %w[congruence decay])
+
+        expect(steps).to eq([[:tools, %w[burin rod], 'enchanting'], [:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
+                             :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
+      end
+
+      it "stops before buying anything when task_loot_bag already holds the task's noun" do
+        tm = dorhum
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a smooth rock, a rock marble deed and a rock.')
+        expect(tm).not_to receive(:buy_sigils)
+
+        expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with('backpack already holds 2 rocks that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. ' \
+                                                    'The hand-in would give those first. Move them out of backpack, then start again.')
+      end
+
+      it 'checks the loot bag right after a resume hand-in, before asking for instructions or going to the bank' do
+        tm = dorhum
+        allow(tm).to receive(:read_task).and_return(['spongestone', 3])
+        allow(tm).to receive(:set_aside_held_base)
+        allow(tm).to receive(:turn_in_banked).and_return(3)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock.')
+        expect(tm).not_to receive(:ensure_instructions)
+        expect(tm).not_to receive(:top_up_copper)
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with(/backpack already holds 1 rock that this task has not made or could not hand in/)
+      end
+
+      it 'checks the loot bag once on a resume, not again in dorhum' do
+        tm = dorhum
+        allow(tm).to receive(:read_task).and_return(['spongestone', 3])
+        allow(tm).to receive(:set_aside_held_base)
+        allow(tm).to receive(:turn_in_banked).and_return(3)
+        %i[ensure_instructions refresh_haste top_up_copper ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items repair complete_task].each { |step| allow(tm).to receive(step) }
+        allow(tm).to receive(:read_instructions).and_return(['spongestone', 3, %w[congruence decay]])
+        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(DRCC).to receive(:fount)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" but there is nothing in there like that.')
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:bput).with('rummage /C rock in my backpack', any_args).once
+        expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 3)
+      end
+
+      it 'carries on when task_loot_bag holds none, and does not count a "rock marble deed"' do
+        tm = dorhum
+        %i[ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        game("rummage /C rock in my backpack" => 'You rummage through a backpack looking for something similar to "rock" and see a rock marble deed.')
+
+        expect { tm.dorhum('spongestone', 5, %w[congruence decay]) }.not_to raise_error
+
+        expect(tm).to have_received(:enchant_items).with('spongestone', 'rock', 5)
+      end
+
+      it 'sends every enchanting tool but the fount for repair' do
+        tm = dorhum(settings: { enchanting_tools: ['brazier', 'fragile fount', 'burin', 'augmenting loop'], enchanting_belt: nil })
+        %i[ensure_tools buy_sigils forage_rocks go_to_enchanting_room enchant_items].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:repair).with(['brazier', 'burin', 'augmenting loop'], nil)
+
+        tm.dorhum('spongestone', 6, %w[congruence decay])
+      end
+
+      it 'buys wands for a virga wand task' do
+        tm = dorhum
+        %i[ensure_tools buy_sigils go_to_enchanting_room enchant_items repair].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        expect(tm).to receive(:buy_wands).with(6)
+
+        tm.dorhum('wand', 6, %w[induction])
+      end
+    end
+
+    describe '#ensure_tools' do
+      it 'carries on when every tool is on you, asking no clerk' do
+        tm = dorhum
+        allow(DRCI).to receive(:exists?).and_return(true)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+
+        expect { tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting') }.not_to raise_error
+      end
+
+      it 'gets a missing tool from the society clerk' do
+        tm = dorhum
+        on_hand = ['burin']
+        allow(DRCI).to receive(:exists?) { |tool| on_hand.include?(tool) }
+        expect(DRC).to receive(:wait_for_script_to_complete).with('clerk-tools', %w[enchanting get]) { on_hand << 'augmenting loop' }
+
+        expect { tm.ensure_tools(['burin', 'augmenting loop'], 'enchanting') }.not_to raise_error
+      end
+
+      it 'stops, naming the tools still missing, before anything is bought' do
+        tm = dorhum
+        allow(DRCI).to receive(:exists?) { |tool| tool == 'burin' }
+        allow(DRC).to receive(:wait_for_script_to_complete)
+
+        expect { tm.ensure_tools(['burin', 'augmenting loop', 'imbuement rod'], 'enchanting') }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message)
+          .with("Can't find augmenting loop, imbuement rod: not on you, and the enchanting clerk didn't have it. Stopping before buying anything.")
+      end
+
+      it 'leaves the fount and brazier out of what a Dorhum task must carry, and adds the imbue rod enchant falls back to' do
+        expect(dorhum(settings: { enchanting_tools: ['small brazier', 'fount', 'burin', 'augmenting loop'] }).dorhum_tools)
+          .to eq(['burin', 'augmenting loop', 'rod'])
+      end
+
+      it 'needs no rod when an Imbue spell is set up, and uses the rod named in enchanting_tools' do
+        spell = dorhum(settings: { enchanting_tools: %w[burin], waggle_sets: { 'imbue' => { 'Imbue' => { 'mana' => 5 } } } })
+        named = dorhum(settings: { enchanting_tools: ['burin', 'imbuement rod'] })
+
+        expect([spell.dorhum_tools, named.dorhum_tools]).to eq([%w[burin], ['burin', 'imbuement rod']])
+      end
+
+      it 'needs your own brazier when enchanting in a set room that is not a Crossing brazier room' do
+        tm = dorhum(crafting_room: 16_936, settings: { enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(['burin', 'rod', 'small brazier'])
+      end
+
+      it 'judges the task room, not enchanting_room, when both are set' do
+        tm = dorhum(crafting_room: 16_936, settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to include('small brazier')
+      end
+
+      it "needs no rod when an Imbue spell is set up, even with the rod in enchanting_tools" do
+        tm = dorhum(settings: { enchanting_tools: ['burin', 'imbuement rod'], waggle_sets: { 'imbue' => { 'Imbue' => { 'mana' => 5 } } } })
+
+        expect(tm.dorhum_tools).to eq(%w[burin])
+      end
+
+      it "needs no brazier of your own in another town's public brazier room" do
+        $test_data.crafting['artificing']['Shard'] = { 'brazier-rooms' => [14_777, 14_778] }
+        tm = dorhum(settings: { enchanting_room: 14_777, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(%w[burin rod])
+      end
+
+      it 'needs no brazier of your own in a Crossing brazier room' do
+        tm = dorhum(settings: { enchanting_room: 14_758, enchanting_tools: ['small brazier', 'burin', 'rod'] })
+
+        expect(tm.dorhum_tools).to eq(%w[burin rod])
+      end
+    end
+
+    describe 'paying for supplies' do
+      before(:each) do
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRCI).to receive(:count_items_in_container).and_return(0)
+      end
+
+      it 'stops before ordering when the bank cannot cover the sigils' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
+        expect(DRCT).not_to receive(:order_item)
+
+        expect { dorhum.buy_sigils(%w[decay], 8) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message).with(/Out of money: #{(8 * 1575) + 312 + 7500} Kronars/)
+      end
+
+      it 'stops when an order does not go through' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:order_item).and_return('takes some coins from you', nil)
+
+        expect { dorhum.buy_sigils(%w[decay], 8) }.to raise_error(SystemExit)
+
+        expect(DRCC).to have_received(:stow_crafting_item).once
+        expect(DRC).to have_received(:message).with('Could not buy a decay sigil-scroll. Stopping.')
+      end
+
+      it 'waits for the wand to reach a hand after the purchase line' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:buy_item)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(false, false, true)
+
+        expect { dorhum.buy_wands(1) }.not_to raise_error
+
+        expect(DRCC).to have_received(:stow_crafting_item).with('wand', 'duffel bag', nil)
+      end
+
+      it 'asks the bank for nothing when every sigil-scroll is already carried' do
+        game('rummage /C sigil-scroll in my duffel bag' => "You rummage through a heavy silk duffel bag looking for something similar to \"sigil-scroll\" and see #{Array.new(8, 'an intricate decay sigil-scroll').join(', ')}.")
+        expect(DRCM).not_to receive(:ensure_copper_on_hand)
+        expect(DRCT).not_to receive(:order_item)
+
+        dorhum.buy_sigils(%w[decay], 8)
+      end
+
+      it 'stops when a wand does not land in hand' do
+        allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+        allow(DRCT).to receive(:buy_item)
+        allow(DRCI).to receive(:in_hands?).with('wand').and_return(false)
+
+        expect { dorhum.buy_wands(6) }.to raise_error(SystemExit)
+
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+    end
+
+    it 'lists the enchanting tools for ;taskmaster dorhum tools' do
+      expect(TaskMaster::TOOLS['dorhum']).to include('brazier', 'burin', 'augmenting loop')
+    end
+
+    it 'takes dorhum as a taskmaster' do
+      expect(TaskMaster::ARG_DEFINITIONS.first.first[:options]).to include('dorhum')
     end
   end
 end

@@ -1,0 +1,639 @@
+{
+  "run": "2026-10-26_11582",
+  "log": "26",
+  "from": 11827,
+  "to": 12435,
+  "recipe": "some eye unguent (chapter 3, page 13): sufil, large mortar, rounded pestle, marked",
+  "source": "the 2026-10-26 game log, lines 11827-12435, timestamped copies with the timestamp removed; each reply line attributed to the command it answers (FIFO plus verb signature) by a transcript exporter, ambient lines dropped",
+  "steps": [
+    {
+      "cmd": "put my sufil in my large mortar",
+      "line": 11827,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your sufil in your large mortar.",
+          "line": 11829
+        }
+      ]
+    },
+    {
+      "cmd": "put my sufil in my smokewood basket",
+      "line": 11832,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 11834
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rounded pestle from my grass toolstrap",
+      "line": 11837,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 11839
+        }
+      ]
+    },
+    {
+      "cmd": "crush my sufil with my pestle",
+      "line": 11842,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 11844
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 11846
+        },
+        {
+          "text": "You need another splash of water to continue crafting some unfinished sufil unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 11849
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 11851
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11870,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another splash of water to continue crafting some unfinished sufil unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 11873
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 11875
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 11878,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 11880
+        }
+      ]
+    },
+    {
+      "cmd": "get my water from my botanist's toolbag",
+      "line": 11883,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some water from inside your botanist's toolbag.",
+          "line": 11885
+        }
+      ]
+    },
+    {
+      "cmd": "pour part water in my large mortar",
+      "line": 11888,
+      "user": false,
+      "responses": [
+        {
+          "text": "You toss the water into the mortar and mix it in thoroughly.",
+          "line": 11905
+        }
+      ]
+    },
+    {
+      "cmd": "put my water in my botanist's toolbag",
+      "line": 11908,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your water in your botanist's toolbag.",
+          "line": 11910
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 11913,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 11915
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my unguent",
+      "line": 11921,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the sufil unguent and smile knowingly to yourself (6/6).",
+          "line": 11923
+        },
+        {
+          "text": "When crafting is complete this will be a type of external eyes wound remedy.",
+          "line": 11925
+        },
+        {
+          "text": "The unguent appears free of defects that would impede further preparation.",
+          "line": 11927
+        },
+        {
+          "text": "From the progress so far, it looks like the unguent is masterfully-crafted (13/13).",
+          "line": 11929
+        },
+        {
+          "text": "The unguent is a challenging piece to make (7/12).",
+          "line": 11931
+        },
+        {
+          "text": "You estimate that it is one-tenth done.",
+          "line": 11933
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 11935
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11941,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 11943
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 11945
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11964,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 11966
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 11968
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 11987,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 11989
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 11991
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12011,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 12013
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 12016
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 12018
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 12037,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 12039
+        }
+      ]
+    },
+    {
+      "cmd": "untie my turtle-shaped sieve from my grass toolstrap",
+      "line": 12042,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a turtle-shaped sieve forged from blackened ka'hurst from the straps of your grass toolstrap.",
+          "line": 12044
+        }
+      ]
+    },
+    {
+      "cmd": "push my unguent with my turtle-shaped sieve",
+      "line": 12047,
+      "user": false,
+      "responses": [
+        {
+          "text": "You slowly filter some unfinished sufil unguent through your sieve and toss away the accumulated debris.",
+          "line": 12049
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 12051
+        }
+      ]
+    },
+    {
+      "cmd": "tie my turtle-shaped sieve to my grass toolstrap",
+      "line": 12070,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a turtle-shaped sieve forged from blackened ka'hurst to a strap on your grass toolstrap.",
+          "line": 12087
+        }
+      ]
+    },
+    {
+      "cmd": "untie rounded pestle from my grass toolstrap",
+      "line": 12090,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 12092
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12095,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 12097
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 12100
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 12102
+        }
+      ]
+    },
+    {
+      "cmd": "smell my unguent",
+      "line": 12122,
+      "user": false,
+      "responses": [
+        {
+          "text": "You sniff the mortar and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to grind it with slow strokes.",
+          "line": 12124
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 12126
+        },
+        {
+          "text": "You need another catalyst material to continue crafting some unfinished sufil unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 12129
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 12131
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12150,
+      "user": false,
+      "responses": [
+        {
+          "text": "You need another catalyst material to continue crafting some unfinished sufil unguent.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 12153
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 12155
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 12158,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 12160
+        }
+      ]
+    },
+    {
+      "cmd": "get my pewter ingot from my botanist's toolbag",
+      "line": 12163,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get a pewter ingot from inside your botanist's toolbag.",
+          "line": 12165
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my large mortar",
+      "line": 12168,
+      "user": false,
+      "responses": [
+        {
+          "text": "You vigorously rub the ingot alongside the mortar to scrape some shavings into the mixture.",
+          "line": 12170
+        }
+      ]
+    },
+    {
+      "cmd": "put my pewter ingot in my botanist's toolbag",
+      "line": 12173,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your ingot in your botanist's toolbag.",
+          "line": 12175
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rounded pestle from my grass toolstrap",
+      "line": 12178,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a rounded pestle traced with luminous starshine filigree from the straps of your grass toolstrap.",
+          "line": 12180
+        }
+      ]
+    },
+    {
+      "cmd": "analyze my unguent",
+      "line": 12183,
+      "user": false,
+      "responses": [
+        {
+          "text": "You analyze every minute detail of the sufil unguent and smile knowingly to yourself (6/6).",
+          "line": 12185
+        },
+        {
+          "text": "When crafting is complete this will be a type of external eyes wound remedy.",
+          "line": 12187
+        },
+        {
+          "text": "The unguent appears free of defects that would impede further preparation.",
+          "line": 12189
+        },
+        {
+          "text": "From the progress so far, it looks like the unguent is masterfully-crafted (13/13).",
+          "line": 12191
+        },
+        {
+          "text": "The unguent is a challenging piece to make (7/12).",
+          "line": 12193
+        },
+        {
+          "text": "You estimate that it is half done.",
+          "line": 12195
+        },
+        {
+          "text": "When finished the unguent has a potential for great potency (8/9) and exceptional efficacy (8/9).  It may also be very soluble (8/9) and extremely toxic (8/9).",
+          "line": 12197
+        },
+        {
+          "text": "Roundtime: 4 sec.",
+          "line": 12199
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12216,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 12218
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 12220
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12239,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 12241
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 12243
+        }
+      ]
+    },
+    {
+      "cmd": "send solit Enelne Bless!",
+      "line": 12262,
+      "user": true,
+      "responses": [
+        {
+          "text": "You project your thoughts to Solitudines.",
+          "line": 12266
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12269,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 12271
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 12273
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12293,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 12295
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 12297
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12317,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 12319
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 12321
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12340,
+      "user": false,
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished sufil unguent with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 12342
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 12345
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 12347
+        }
+      ]
+    },
+    {
+      "cmd": "smell my unguent",
+      "line": 12367,
+      "user": false,
+      "responses": [
+        {
+          "text": "You sniff the mortar and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to grind it with slow strokes.",
+          "line": 12369
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 12371
+        },
+        {
+          "text": "Applying the final touches, you complete working on some sufil unguent.",
+          "line": 12373
+        }
+      ]
+    },
+    {
+      "cmd": "crush my unguent with my rounded pestle",
+      "line": 12392,
+      "user": false,
+      "responses": [
+        {
+          "text": "Interesting thought really... but no.",
+          "line": 12394
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pestle to my grass toolstrap",
+      "line": 12397,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a rounded pestle traced with luminous starshine filigree to a strap on your grass toolstrap.",
+          "line": 12399
+        }
+      ]
+    },
+    {
+      "cmd": "tie my large mortar to my grass toolstrap",
+      "line": 12402,
+      "user": false,
+      "responses": [
+        {
+          "text": "You attach a diamondique large mortar carved with delicate flowers to a strap on your grass toolstrap.",
+          "line": 12404
+        }
+      ]
+    },
+    {
+      "cmd": "untie my applewood stamp from my grass toolstrap",
+      "line": 12421,
+      "user": false,
+      "responses": [
+        {
+          "text": "You untie a Siksrajan applewood-handled stamp with a jadeleaf-wrapped grip from the straps of your grass toolstrap.",
+          "line": 12423
+        }
+      ]
+    },
+    {
+      "cmd": "get my unguent from my large mortar",
+      "line": 12426,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some sufil unguent from inside a diamondique large mortar carved with delicate flowers which is on your grass toolstrap.",
+          "line": 12428
+        }
+      ]
+    },
+    {
+      "cmd": "mark my unguent with my applewood stamp",
+      "line": 12431,
+      "user": false,
+      "responses": [
+        {
+          "text": "You hold the unguent steady and score the surface with the stamp.",
+          "line": 12433
+        },
+        {
+          "text": "Roundtime: 21 sec.",
+          "line": 12435
+        }
+      ]
+    }
+  ]
+}
