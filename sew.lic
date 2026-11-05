@@ -163,25 +163,13 @@ class Sew
     end
   end
 
+  # The material comes first: each study of the instructions uses one of
+  # their uses, so a missing material must stop the run before the study.
   def prep
     DRCA.crafting_magic_routine(@settings)
-    if @instructions
-      DRCC.get_crafting_item("#{@noun} instructions", @bag, @bag_items, @belt)
-      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      end
-    elsif @settings.master_crafting_book
-      DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
-    else
-      DRCC.get_crafting_item('tailoring book', @bag, @bag_items, @belt)
-      Lich::Messaging.msg('bold', 'You will need to upgrade to a journeyman or master book before 176 ranks!') if DRSkill.getrank('Outfitting') == 175
-      DRCC.find_recipe2(@chapter, @recipe_name)
-      DRCC.stow_crafting_item('tailoring book', @bag, @belt)
-    end
-
     if @knit || @chapter == 5 # knitting
-      DRCC.get_crafting_item('yarn', @bag, @bag_items, @belt)
-      check_hand('yarn') unless DRCI.in_left_hand?('yarn')
+      hold_material('yarn', 'yarn')
+      read_recipe('yarn')
       swap_tool('knitting needles')
       @home_tool = 'knitting needles'
       @home_command = 'knit my needles'
@@ -189,6 +177,7 @@ class Sew
     elsif @recipe_name.include?('tailored armor') # enhancements
       @stamp = false
       check_hand(@noun) unless DRCI.in_left_hand?(@noun)
+      read_recipe(nil)
       if @recipe_name.include?('seal')
         swap_tool('sealing wax')
         @home_tool = 'sealing wax'
@@ -201,22 +190,90 @@ class Sew
         "cut my #{@noun} with my scissors"
       end
     elsif @cloth.include?(@mat_type) # any cloth products
-      DRCC.get_crafting_item("#{@mat_type} cloth", @bag, @bag_items, @belt)
-      check_hand('cloth') unless DRCI.in_left_hand?('cloth')
+      hold_material("#{@mat_type} cloth", 'cloth')
+      read_recipe("#{@mat_type} cloth")
       swap_tool('scissors')
       @home_tool = 'sewing needles'
       @home_command = "push my #{@noun} with my needles"
       @offcut = 'cloth'
       "cut my #{@mat_type} cloth with my scissors"
     else # any leather products
-      DRCC.get_crafting_item("#{@mat_type} leather", @bag, @bag_items, @belt)
-      check_hand('leather') unless DRCI.in_left_hand?('leather')
+      hold_material("#{@mat_type} leather", 'leather')
+      read_recipe("#{@mat_type} leather")
       swap_tool('scissors')
       @home_tool = 'sewing needles'
       @home_command = "push my #{@noun} with my needles"
       @offcut = 'leather'
       "cut my #{@mat_type} leather with my scissors"
     end
+  end
+
+  # Gets the material into the left hand, or stops the run when the get
+  # fails (missing, or no free hand), before check_hand can blame the hand.
+  def hold_material(name, noun)
+    unless DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
+      Lich::Messaging.msg('bold', "sew: Could not get '#{name}'. Stopping before the recipe is studied.")
+      magic_cleanup
+      exit
+    end
+    check_hand(noun) unless DRCI.in_left_hand?(noun)
+    @material_id = GameObj.left_hand.id
+  end
+
+  # Reads the recipe once +material+ is in the left hand. +material+ is
+  # nil for an enhancement, whose piece was in hand before the run.
+  def read_recipe(material)
+    if @instructions
+      get_recipe_item("#{@noun} instructions", material)
+      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+      end
+    elsif @settings.master_crafting_book
+      DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
+    else
+      get_recipe_item('tailoring book', material)
+      Lich::Messaging.msg('bold', 'You will need to upgrade to a journeyman or master book before 176 ranks!') if DRSkill.getrank('Outfitting') == 175
+      DRCC.find_recipe2(@chapter, @recipe_name)
+      DRCC.stow_crafting_item('tailoring book', @bag, @belt)
+    end
+  end
+
+  # Gets the instructions or the tailoring book. When the get fails (the
+  # item is missing, or the reply times out with no free hand), puts the
+  # material back and stops before any study, so the run leaves neither the
+  # material in hand nor a study sent with nothing to study.
+  #
+  # A failed put-back names the hand only while the piece is still in the
+  # left hand (material_in_left_hand?): put_away_item? returns false on
+  # every failure reply, including "Perhaps you should be holding that
+  # first.", which means the piece is no longer held.
+  def get_recipe_item(name, material)
+    return if DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
+
+    message = "sew: Could not get '#{name}'. Stopping before the recipe is studied."
+    message += " The #{material} is still in your left hand." if material && !put_back_material(material) && material_in_left_hand?(material)
+    Lich::Messaging.msg('bold', message)
+    magic_cleanup
+    exit
+  end
+
+  # Puts the held material back in the bag. By id when hold_material saw
+  # one, so the put reaches the piece in hand and a full bag fails at once
+  # instead of after a 15 second timeout. Returns false when the put
+  # failed; the caller checks the hand to see whether the piece is still
+  # held. By name, the stow's result says nothing (it returns true even
+  # after its "stow" fallback fails), so the left hand decides.
+  def put_back_material(material)
+    return DRCI.put_away_item?("##{@material_id}", @bag) if @material_id
+
+    DRCC.stow_crafting_item(material, @bag, @belt)
+    !material_in_left_hand?(material)
+  end
+
+  # Whether the material is still in the left hand: by the id hold_material
+  # saw, or by name when it saw none.
+  def material_in_left_hand?(material)
+    DRCI.in_left_hand?(@material_id ? "##{@material_id}" : material)
   end
 
   def assemble_part
