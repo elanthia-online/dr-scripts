@@ -1727,7 +1727,8 @@ RSpec.describe WorkOrders do
 
       allow(workorders).to receive(:find_recipe).and_return([recipe])
       allow(DRCM).to receive(:ensure_copper_on_hand)
-      allow(DRCT).to receive(:order_item)
+      # order_item returns nil when the purchase fails
+      allow(DRCT).to receive(:order_item).and_return('takes some coins from you')
       allow(DRCT).to receive(:dispose)
       allow(DRC).to receive(:wait_for_script_to_complete)
       allow(workorders).to receive(:bundle_item)
@@ -1764,6 +1765,119 @@ RSpec.describe WorkOrders do
       allow(workorders).to receive(:logbook_remaining).and_return(2, 1, 1, 0, 0)
       expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword']).exactly(3).times
       workorders.send(:forge_items, info, materials_info, item, 2)
+    end
+
+    # Stock ingots of 50 volume and up are sold at the town's bulk materials
+    # shop under their own numbers. Ordered at the stock shop, immense
+    # bronze's number 1 bought Crossing's tiny coal nugget instead.
+    context 'with a bulk ingot as metal_type' do
+      let(:crafting) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true) }
+      let(:info) { crafting['blacksmithing']['Crossing'].merge('logbook' => 'forging') }
+      let(:materials_info) { crafting['stock']['bronze50'] }
+
+      before { allow(DRCC).to receive(:stow_crafting_item) }
+
+      it 'reads the rooms and the ingot these examples rely on from the data' do
+        expect(info.values_at('stock-room', 'bingots-room')).to eq([8775, 17118])
+        expect(materials_info.values_at('stock-number', 'stock-volume', 'stock-value')).to eq([1, 50, 6250])
+      end
+
+      it 'orders it at the bulk materials shop' do
+        expect(DRCT).to receive(:order_item).with(17118, 1)
+        workorders.send(:forge_items, info, materials_info, item, 1)
+      end
+
+      it 'carries enough copper to buy one, priced in the town currency' do
+        # crafting_cost: 6250 for the ingot plus 1000 for consumables, in Kronars
+        expect(DRCC).to receive(:crafting_cost).with(recipe, 'Crossing', nil, 1, materials_info).and_return(7250)
+        # once up front, over the 5000 floor, and again before ordering it
+        expect(DRCM).to receive(:ensure_copper_on_hand).with(7250, anything, 'Crossing').twice
+        workorders.send(:forge_items, info, materials_info, item, 1)
+      end
+
+      # 3 greatswords of 18 volume need 54, two immense ingots. Funding only
+      # up front left about 1000 after the first, so Bulk Materials refused
+      # the second order and smith ran with no ingot. (smith tops up to just
+      # 3000 when it's handed the ingot, so it doesn't make up the difference.)
+      context 'when the order needs a second one' do
+        let(:recipe) do
+          YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes']
+              .find { |r| r['name'] == 'a metal greatsword' }
+        end
+        let(:item) { { 'name' => recipe['name'] } }
+
+        it 'pays for each ingot' do
+          expect(recipe['volume']).to eq(18)
+          on_hand = 0
+          refused = 0
+          allow(DRCC).to receive(:crafting_cost).and_return(7250)
+          allow(DRCM).to receive(:ensure_copper_on_hand) { |copper, *| on_hand = [on_hand, copper].max }
+          allow(DRCT).to receive(:order_item) do
+            if on_hand < materials_info['stock-value']
+              refused += 1
+              nil # "you don't have enough coins"
+            else
+              on_hand -= materials_info['stock-value']
+              'takes some coins from you'
+            end
+          end
+          allow(workorders).to receive(:logbook_remaining).and_return(3, 2, 1, 0, 0)
+
+          workorders.send(:forge_items, info, materials_info, item, 3)
+
+          expect(refused).to eq(0)
+          expect(DRCT).to have_received(:order_item).with(17118, 1).twice
+          expect(DRC).to have_received(:wait_for_script_to_complete).exactly(3).times
+        end
+      end
+
+      it 'stops without buying in a town with no bulk materials shop' do
+        ratha = crafting['blacksmithing']['Ratha'].merge('logbook' => 'forging')
+        workorders.instance_variable_set(:@hometown, 'Ratha')
+        expect(ratha['bingots-room']).to be_nil
+        expect(DRCT).not_to receive(:order_item)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: bronze ingots of 50 volume are sold at a bulk materials shop, and Ratha has none. Set workorders_materials metal_type to a smaller ingot.')
+        expect(workorders).to receive(:exit).and_raise(SystemExit)
+
+        expect { workorders.send(:forge_items, ratha, materials_info, item, 1) }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'still carries the default 5000 copper for a huge bronze ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCC).to receive(:crafting_cost).and_return(1562)
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(5000, anything, 'Crossing')
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+
+    # smith leaves about 3000, so topping up to the 5000 floor before every
+    # small ingot would send each reorder to the bank.
+    it 'tops up to one ingot, not the floor, before each ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCC).to receive(:crafting_cost).and_return(1562)
+      # 3 items of 5 volume from 10-volume ingots: two ingots
+      allow(workorders).to receive(:logbook_remaining).and_return(3, 2, 1, 0, 0)
+
+      workorders.send(:forge_items, info, materials_info, item, 3)
+
+      expect(DRCT).to have_received(:order_item).twice
+      expect(DRCM).to have_received(:ensure_copper_on_hand).with(5000, anything, 'Crossing').once
+      expect(DRCM).to have_received(:ensure_copper_on_hand).with(1562, anything, 'Crossing').twice
+    end
+
+    it 'stops the order instead of forging when an ingot cannot be bought' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCT).to receive(:order_item).and_return(nil)
+      allow(workorders).to receive(:logbook_remaining).and_return(1, 1)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: Could not buy a bronze ingot, so not forging the rest of this order.')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: Forging finished but logbook still needs 1 more')
+
+      workorders.send(:forge_items, info, materials_info, item, 1)
+
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+      expect(DRC).not_to have_received(:wait_for_script_to_complete)
+      expect(DRCT).not_to have_received(:dispose)
     end
   end
 
