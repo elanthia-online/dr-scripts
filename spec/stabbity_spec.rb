@@ -20,17 +20,6 @@ RSpec.describe Stabbity do
     allow(creature_registry).to receive(:in_room).with(no_args).and_return(live + dead)
   end
 
-  # A Lich release without lich-5#1817: no DRRoom.unignored_npcs.
-  def without_unignored_npcs
-    allow(DRRoom).to receive(:respond_to?).and_call_original
-    allow(DRRoom).to receive(:respond_to?).with(:unignored_npcs).and_return(false)
-    allow(DRRoom).to receive(:unignored_npcs).and_raise(NoMethodError)
-  end
-
-  # A roster creature from a Lich release without CreatureInstance#matches?;
-  # a Struct, unlike an OpenStruct, raises NoMethodError on it.
-  let(:pre_matches_creature) { Struct.new(:id, :noun, :name) }
-
   def build(mode: nil, ignored: [])
     s = Stabbity.allocate
     s.instance_variable_set(:@mode, mode)
@@ -92,28 +81,6 @@ RSpec.describe Stabbity do
       DRRoom.npcs = []
 
       expect(build(ignored: ['goblin']).get_npcs).to eq([])
-    end
-
-    context 'on a Lich without DRRoom.unignored_npcs' do
-      before { without_unignored_npcs }
-
-      it 'drops ignored nouns only' do
-        DRRoom.npcs = %w[goblin moradu moradu]
-
-        expect(build(ignored: ['goblin']).get_npcs).to eq(%w[moradu moradu])
-      end
-
-      it 'leaves a full-name entry without effect, as before' do
-        DRRoom.npcs = %w[moradu moradu]
-
-        expect(build(ignored: ['jeol moradu']).get_npcs).to eq(%w[moradu moradu])
-      end
-
-      it 'tolerates a nil ignore list' do
-        DRRoom.npcs = ['moradu']
-
-        expect(build(ignored: nil).get_npcs).to eq(['moradu'])
-      end
     end
   end
 
@@ -179,17 +146,6 @@ RSpec.describe Stabbity do
       seed_roster(live: [Lich::DragonRealms::CreatureInstance.new(40, nil, nil, noun_from_server: false)])
 
       expect(run_one_pass(build)).to include('advance moradu')
-    end
-
-    it 'advances by noun on a Lich without DRRoom.unignored_npcs or CreatureInstance#matches?' do
-      without_unignored_npcs
-      DRRoom.npcs = %w[goblin moradu]
-      seed_roster(live: [pre_matches_creature.new(80, 'moradu', 'a moradu')])
-
-      commands = run_one_pass(build(ignored: ['goblin']))
-
-      expect(commands).to include('advance moradu')
-      expect(commands.grep(/#/)).to be_empty
     end
 
     it 'falls back to the noun when the only same-noun creature is ignored by name' do

@@ -1787,7 +1787,7 @@ class Trade
       return
     end
     if @loot_nouns.find { |thing| item_long.include?(thing) && !item_long.include?('sunstone runestone') }
-      message = DRC.bput("stow my #{item}", '^You put', '^You open', '^You think the .* pouch is too full to fit', '^You\'d better tie it up before putting')
+      message = DRC.bput("stow my #{item}", '^You put', '^You open', '^You think the .* pouch is too full to fit', /^[^"]*?You'd better tie it up before putting/i)
       return if ['You put', 'You open'].include?(message)
 
       fput("drop #{item}")

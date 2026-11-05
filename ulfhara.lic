@@ -871,10 +871,6 @@ class UlfHara
   # when the roster can't be trusted for the room, each is its noun instead.
   def unhandled_npcs
     skip = @baddies + @ignore
-    # Lich releases before DRRoom.unignored_npcs (and CreatureInstance#matches?)
-    # only have the noun list.
-    return DRRoom.npcs - skip unless DRRoom.respond_to?(:unignored_npcs)
-
     creatures = Lich::DragonRealms::Creature.in_room(:not_dead)
     return DRRoom.unignored_npcs(skip) unless roster_covers_room?(creatures)
 

@@ -2,6 +2,7 @@
 
 require 'ostruct'
 require 'time'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -619,11 +620,13 @@ RSpec.describe WorkOrders do
       before do
         allow(workorders).to receive(:count_combine_rem)
         allow(workorders).to receive(:stow_tool)
+        # remedy left the salve in hand, its success signal.
+        allow(DRCI).to receive(:in_hands?).with('salve').and_return(true)
       end
 
       it 'still disposes and stops on the game line' do
         reply('bundle', [failure_text])
-        workorders.send(:remedy_items, info, {}, recipe, 1)
+        expect { workorders.send(:remedy_items, info, {}, recipe, 1) }.not_to raise_error
         expect(DRCI).to have_received(:dispose_trash).with('salve', nil, nil)
       end
 
@@ -631,10 +634,98 @@ RSpec.describe WorkOrders do
         (player_lines(failure_text) + player_lines('you put it where?')).each do |line|
           reply_queues.clear
           reply('bundle', [line, 'You notate the salve in the logbook then bundle it up for delivery.'])
-          workorders.send(:remedy_items, info, {}, recipe, 1)
+          expect { workorders.send(:remedy_items, info, {}, recipe, 1) }.not_to raise_error
         end
         expect(DRCI).not_to have_received(:dispose_trash).with('salve', any_args)
         expect(DRCI).to have_received(:put_away_item?).with('logbook').exactly(6).times
+      end
+    end
+
+    # remedy.lic gives no exit status; the product it leaves in hand is its
+    # success signal. Hand names are DRC's: the product
+    # line 25:52559 ("You get some plovik unguent from inside a diamondique
+    # large mortar ...") and the tools remedy holds while it crafts.
+    describe '#remedy_items when remedy leaves no product in hand' do
+      let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+      let(:chest_unguent) { recipes.find { |recipe| recipe['name'] == 'some chest unguent' } }
+      let(:blister_cream) { recipes.find { |recipe| recipe['name'] == 'some blister cream' } }
+      let(:info) { { 'stock-room' => 100, 'logbook' => 'alchemy', 'catalyst' => 'coal nugget' } }
+      # CODE-DERIVED: no log has a bundle reply; this one only has to match
+      # '^You notate' (workorders.lic:843).
+      let(:notated) { ReplayGame.code('You notate the unguent in the logbook then bundle it up for delivery.', from: 'workorders.lic:843').text }
+      let(:remedy_hands) { [] }
+
+      before do
+        allow(workorders).to receive(:count_combine_rem)
+        allow(workorders).to receive(:stow_tool)
+        allow(workorders).to receive(:exit).and_raise(SystemExit)
+        allow(DRCI).to receive(:in_hands?) { |item| ReplayCommons.held?(item) }
+        # Each remedy run leaves the next hands of remedy_hands.
+        allow(DRC).to receive(:wait_for_script_to_complete) do |_name, _args|
+          $left_hand, $right_hand = remedy_hands.shift
+        end
+        reply('bundle', [notated])
+      end
+
+      it 'bundles the product when remedy leaves it in hand, with the remedy arguments of today' do
+        remedy_hands << ['plovik unguent', nil]
+        # A guard that fires here would exit; not_to raise_error turns that
+        # into a failure instead of a silent end of the whole run.
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.not_to raise_error
+
+        expect(DRC).to have_received(:wait_for_script_to_complete)
+          .with('remedy', ['remedies', 3, 'some chest unguent', 'plovik', 'na', 'coal nugget', 'mortar', 'unguent'])
+        expect(sent?('bundle my unguent with logbook')).to be(true)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not leave/)
+      end
+
+      it 'bundles the product from the right hand too, with a tool in the left' do
+        remedy_hands << ['diamondique mortar', 'plovik unguent']
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.not_to raise_error
+
+        expect(sent?('bundle my unguent with logbook')).to be(true)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not leave/)
+      end
+
+      it 'stops before the logbook when remedy leaves only its tools in hand' do
+        remedy_hands << %w[pestle diamondique\ mortar]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.to raise_error(SystemExit)
+
+        expect(Lich::Messaging).to have_received(:msg)
+          .with('bold', 'WorkOrders: remedy did not leave some chest unguent (unguent) in hand. Stopping.')
+        expect(DRCI).not_to have_received(:get_item?)
+        expect(bput_log).to be_empty
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'stops when remedy leaves both hands empty' do
+        remedy_hands << [nil, nil]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.to raise_error(SystemExit)
+        expect(bput_log).to be_empty
+      end
+
+      it 'checks the two-herb call (workorders.lic:833) the same way' do
+        remedy_hands << [nil, nil]
+        expect { workorders.send(:remedy_items, info, {}, blister_cream, 1) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete)
+          .with('remedy', ['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'coal nugget', 'mortar', 'cream'])
+        expect(Lich::Messaging).to have_received(:msg)
+          .with('bold', 'WorkOrders: remedy did not leave some blister cream (cream) in hand. Stopping.')
+      end
+
+      it 'bundles the first remedy of a batch and stops when the second leaves nothing' do
+        remedy_hands << ['plovik unguent', nil] << [nil, 'mixing stick'] << ['plovik unguent', nil]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 3) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:wait_for_script_to_complete).with('remedy', anything).twice
+        expect(bput_log.map(&:first)).to eq(['bundle my unguent with logbook'])
+        expect(DRCI).to have_received(:put_away_item?).with('logbook').once
+      end
+
+      it 'does not take a different remedy in hand for the product' do
+        remedy_hands << ['belradi elixir', nil]
+        expect { workorders.send(:remedy_items, info, {}, chest_unguent, 1) }.to raise_error(SystemExit)
       end
     end
 
@@ -867,6 +958,103 @@ RSpec.describe WorkOrders do
         workorders.send(:knit_items, info, materials_info, recipe, 1)
         expect(sent?('count my yarn')).to be false
       end
+    end
+  end
+
+  # ===========================================================================
+  # #work_order_recipes - which base-recipes a work order may name
+  # ===========================================================================
+  # base-recipes.yaml holds remedies made from stand-alone instructions
+  # (`instructions: true`, no chapter). remedy_items calls remedy.lic with the
+  # 8-argument book form and the recipe's chapter, so a work order must never
+  # pick one, even when a workorder_recipes pattern matches its name.
+  describe '#work_order_recipes' do
+    let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
+    let(:instructions_names) { recipes.select { |recipe| recipe['instructions'] }.map { |recipe| recipe['name'] } }
+    let(:disciplines) { %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing tinkering] }
+
+    before do
+      workorders.instance_variable_set(:@recipe_overrides, {})
+      workorders.instance_variable_set(:@carving_type, 'stone')
+    end
+
+    # The recipe names work_order_recipes picks with the given data and
+    # workorder_recipes setting.
+    #
+    # @param discipline [String]
+    # @param data [Array<Hash>] the crafting_recipes get_data hands back
+    # @param overrides [Hash{String => Array<String>}] workorder_recipes
+    # @return [Array<String>]
+    def picked(discipline, data: recipes, overrides: {})
+      $test_data.recipes = OpenStruct.new(crafting_recipes: data)
+      workorders.instance_variable_set(:@recipe_overrides, overrides)
+      workorders.send(:work_order_recipes, discipline).map { |recipe| recipe['name'] }
+    end
+
+    it 'reads the four instructions remedies from base-recipes.yaml, so these examples test something' do
+      expect(instructions_names).to eq(['a clubmoss liniment', 'a woundwort curative', 'a marram salve', 'a flamestalk potion'])
+    end
+
+    it 'never picks an instructions remedy, whatever workorder_recipes pattern matches its name' do
+      [['salve'], ['marram'], ['liniment', 'curative', 'potion'], ['a '], ['.']].each do |patterns|
+        names = picked('remedies', overrides: { 'remedies' => patterns })
+        expect(names & instructions_names).to eq([])
+      end
+    end
+
+    it 'still picks the book remedies a workorder_recipes pattern matches' do
+      expect(picked('remedies', overrides: { 'remedies' => ['salve'] }))
+        .to eq(recipes.select { |recipe| recipe['type'] == 'remedies' && recipe['chapter'] && recipe['name'] =~ /salve/i }.map { |recipe| recipe['name'] })
+      expect(picked('remedies', overrides: { 'remedies' => ['salve'] })).to include('some itch salve', 'some wart salve')
+    end
+
+    it 'picks the work_order recipes of a discipline without workorder_recipes' do
+      expect(picked('remedies')).to include('some blister cream')
+      expect(picked('remedies')).not_to include('some wart salve')
+    end
+
+    # The selection workorders.lic:152-158 made inline at 03f11b54, before
+    # this layer moved it into #work_order_recipes, copied verbatim with the
+    # instance variables as parameters. It is the oracle the extracted code is
+    # held to, on base-recipes.yaml as it was then (without the instructions
+    # recipes).
+    #
+    # @param discipline [String]
+    # @param recipe_overrides [Hash{String => Array<String>}] workorder_recipes
+    # @param carving_type [String] carving_workorder_material_type
+    # @return [Array<String>] the recipe names
+    def picked_at_03f11b54(discipline, recipe_overrides, carving_type)
+      crafting_recipes = recipes.reject { |recipe| recipe['instructions'] }
+      selected = if recipe_overrides[discipline]
+                   crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
+                 else
+                   crafting_recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /#{discipline}/i }
+                 end
+      selected = selected.select { |x| x['material'] == carving_type } if discipline == 'carving'
+      selected.map { |recipe| recipe['name'] }
+    end
+
+    it 'picks for every discipline and pattern what workorders.lic picked before the instructions remedies were added' do
+      overrides_tried = [{}, { 'remedies' => ['salve'] }, { 'remedies' => ['.'] }, disciplines.to_h { |discipline| [discipline, ['a ']] },
+                         disciplines.to_h { |discipline| [discipline, ['.']] }]
+      overrides_tried.each do |overrides|
+        disciplines.each do |discipline|
+          expect(picked(discipline, overrides: overrides)).to eq(picked_at_03f11b54(discipline, overrides, 'stone')), "#{discipline} #{overrides}"
+        end
+      end
+    end
+
+    it 'keeps a workorder_recipes pattern to its own discipline, though it matches names of others' do
+      everything = { 'remedies' => ['.'] }
+      expect(picked('remedies', overrides: everything)).to eq(recipes.select { |recipe| recipe['type'] == 'remedies' && !recipe['instructions'] }.map { |recipe| recipe['name'] })
+      expect(picked('shaping', overrides: { 'shaping' => ['salve'] })).to be_empty
+    end
+
+    it 'keeps only the carving_workorder_material_type material for carving' do
+      names = picked('carving', overrides: {})
+      stone = recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /carving/i && recipe['material'] == 'stone' }
+      expect(names).to eq(stone.map { |recipe| recipe['name'] })
+      expect(names).not_to be_empty
     end
   end
 
@@ -1539,7 +1727,8 @@ RSpec.describe WorkOrders do
 
       allow(workorders).to receive(:find_recipe).and_return([recipe])
       allow(DRCM).to receive(:ensure_copper_on_hand)
-      allow(DRCT).to receive(:order_item)
+      # order_item returns nil when the purchase fails
+      allow(DRCT).to receive(:order_item).and_return('takes some coins from you')
       allow(DRCT).to receive(:dispose)
       allow(DRC).to receive(:wait_for_script_to_complete)
       allow(workorders).to receive(:bundle_item)
@@ -1576,6 +1765,119 @@ RSpec.describe WorkOrders do
       allow(workorders).to receive(:logbook_remaining).and_return(2, 1, 1, 0, 0)
       expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword']).exactly(3).times
       workorders.send(:forge_items, info, materials_info, item, 2)
+    end
+
+    # Stock ingots of 50 volume and up are sold at the town's bulk materials
+    # shop under their own numbers. Ordered at the stock shop, immense
+    # bronze's number 1 bought Crossing's tiny coal nugget instead.
+    context 'with a bulk ingot as metal_type' do
+      let(:crafting) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true) }
+      let(:info) { crafting['blacksmithing']['Crossing'].merge('logbook' => 'forging') }
+      let(:materials_info) { crafting['stock']['bronze50'] }
+
+      before { allow(DRCC).to receive(:stow_crafting_item) }
+
+      it 'reads the rooms and the ingot these examples rely on from the data' do
+        expect(info.values_at('stock-room', 'bingots-room')).to eq([8775, 17118])
+        expect(materials_info.values_at('stock-number', 'stock-volume', 'stock-value')).to eq([1, 50, 6250])
+      end
+
+      it 'orders it at the bulk materials shop' do
+        expect(DRCT).to receive(:order_item).with(17118, 1)
+        workorders.send(:forge_items, info, materials_info, item, 1)
+      end
+
+      it 'carries enough copper to buy one, priced in the town currency' do
+        # crafting_cost: 6250 for the ingot plus 1000 for consumables, in Kronars
+        expect(DRCC).to receive(:crafting_cost).with(recipe, 'Crossing', nil, 1, materials_info).and_return(7250)
+        # once up front, over the 5000 floor, and again before ordering it
+        expect(DRCM).to receive(:ensure_copper_on_hand).with(7250, anything, 'Crossing').twice
+        workorders.send(:forge_items, info, materials_info, item, 1)
+      end
+
+      # 3 greatswords of 18 volume need 54, two immense ingots. Funding only
+      # up front left about 1000 after the first, so Bulk Materials refused
+      # the second order and smith ran with no ingot. (smith tops up to just
+      # 3000 when it's handed the ingot, so it doesn't make up the difference.)
+      context 'when the order needs a second one' do
+        let(:recipe) do
+          YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes']
+              .find { |r| r['name'] == 'a metal greatsword' }
+        end
+        let(:item) { { 'name' => recipe['name'] } }
+
+        it 'pays for each ingot' do
+          expect(recipe['volume']).to eq(18)
+          on_hand = 0
+          refused = 0
+          allow(DRCC).to receive(:crafting_cost).and_return(7250)
+          allow(DRCM).to receive(:ensure_copper_on_hand) { |copper, *| on_hand = [on_hand, copper].max }
+          allow(DRCT).to receive(:order_item) do
+            if on_hand < materials_info['stock-value']
+              refused += 1
+              nil # "you don't have enough coins"
+            else
+              on_hand -= materials_info['stock-value']
+              'takes some coins from you'
+            end
+          end
+          allow(workorders).to receive(:logbook_remaining).and_return(3, 2, 1, 0, 0)
+
+          workorders.send(:forge_items, info, materials_info, item, 3)
+
+          expect(refused).to eq(0)
+          expect(DRCT).to have_received(:order_item).with(17118, 1).twice
+          expect(DRC).to have_received(:wait_for_script_to_complete).exactly(3).times
+        end
+      end
+
+      it 'stops without buying in a town with no bulk materials shop' do
+        ratha = crafting['blacksmithing']['Ratha'].merge('logbook' => 'forging')
+        workorders.instance_variable_set(:@hometown, 'Ratha')
+        expect(ratha['bingots-room']).to be_nil
+        expect(DRCT).not_to receive(:order_item)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: bronze ingots of 50 volume are sold at a bulk materials shop, and Ratha has none. Set workorders_materials metal_type to a smaller ingot.')
+        expect(workorders).to receive(:exit).and_raise(SystemExit)
+
+        expect { workorders.send(:forge_items, ratha, materials_info, item, 1) }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'still carries the default 5000 copper for a huge bronze ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCC).to receive(:crafting_cost).and_return(1562)
+      expect(DRCM).to receive(:ensure_copper_on_hand).with(5000, anything, 'Crossing')
+      workorders.send(:forge_items, info, materials_info, item, 1)
+    end
+
+    # smith leaves about 3000, so topping up to the 5000 floor before every
+    # small ingot would send each reorder to the bank.
+    it 'tops up to one ingot, not the floor, before each ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCC).to receive(:crafting_cost).and_return(1562)
+      # 3 items of 5 volume from 10-volume ingots: two ingots
+      allow(workorders).to receive(:logbook_remaining).and_return(3, 2, 1, 0, 0)
+
+      workorders.send(:forge_items, info, materials_info, item, 3)
+
+      expect(DRCT).to have_received(:order_item).twice
+      expect(DRCM).to have_received(:ensure_copper_on_hand).with(5000, anything, 'Crossing').once
+      expect(DRCM).to have_received(:ensure_copper_on_hand).with(1562, anything, 'Crossing').twice
+    end
+
+    it 'stops the order instead of forging when an ingot cannot be bought' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCT).to receive(:order_item).and_return(nil)
+      allow(workorders).to receive(:logbook_remaining).and_return(1, 1)
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: Could not buy a bronze ingot, so not forging the rest of this order.')
+      expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: Forging finished but logbook still needs 1 more')
+
+      workorders.send(:forge_items, info, materials_info, item, 1)
+
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+      expect(DRC).not_to have_received(:wait_for_script_to_complete)
+      expect(DRCT).not_to have_received(:dispose)
     end
   end
 

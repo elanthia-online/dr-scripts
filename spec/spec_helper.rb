@@ -19,6 +19,11 @@
 #     load_lic_module for a class or module body, load_lic_constant for a
 #     single-line constant, or load_lic_methods for the top-level defs of a
 #     class-less script (returned wrapped in a module).
+#   - To drive a whole script the way a user runs it, load its class, then
+#     run_lic_entry evals the code after the class (its entry point). Pair it
+#     with the replay support in test/ (ReplayGame answers DRC.bput and fput
+#     from real log lines, ReplayCommons models the commons helpers,
+#     $parse_args_model = true parses $script_vars like lich-5's ArgParser).
 #
 # Shared game doubles -- READ THIS before adding or copying a spec:
 #   The game/commons layer is stubbed ONCE, centrally, so the whole suite can run
@@ -56,14 +61,18 @@
 #     Harness::UserVars to add just that default (see combat_trainer_spec).
 #   - If a .lic method calls exit on a guard, drive it with
 #     `expect { ... }.to raise_error(SystemExit)` (or stub exit on the instance).
-#     A stray unwrapped exit terminates the whole run, not just the example.
+#     RSpec itself does not rescue SystemExit: an unwrapped exit would end the
+#     whole run there, counting only the examples run so far and leaving with
+#     the exit's own status (0 for a bare exit, even after failures). The
+#     global around hook at the bottom of this file turns such an exit into a
+#     failure of that example instead, so the rest of the suite still runs.
 #
 # Shared setup / why reset_data lives here (do not move it):
 #   - This file is loaded before every spec via .rspec (--require spec_helper). It
 #     loads the test harness, includes Harness at the top level, provides the
 #     load_lic_class / load_lic_module / load_lic_constant / load_lic_methods
 #     extraction helpers, and registers the single global before(:each)
-#     { reset_data } hook.
+#     { reset_data } hook and the global around(:each) exit guard.
 #   - Do NOT register a global RSpec.configure { config.before } in a spec.
 #     Same-scope before(:each) hooks run in the order they are registered, so a
 #     config.before(:each) runs before a group's own before hooks only when it
@@ -179,21 +188,9 @@ def load_lic_class(filename, class_name)
   lines = File.readlines(filepath)
   prime_lic_coverage(filepath, lines.size)
 
-  start_idx = lines.index { |l| l =~ /^class\s+#{class_name}\b/ }
-  raise "Could not find 'class #{class_name}' in #{filename}" unless start_idx
-
-  end_idx = nil
-  (start_idx + 1...lines.size).each do |i|
-    if lines[i] =~ /^end\s*$/
-      end_idx = i
-      break
-    end
-  end
-  raise "Could not find matching end for 'class #{class_name}' in #{filename}" unless end_idx
-
-  class_source = lines[start_idx..end_idx].join
-  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
-  eval(class_source, TOPLEVEL_BINDING, filepath, start_idx + 1)
+  range = lic_definition_range(lines, 'class', class_name, filename)
+  LIC_EVAL_RANGES[filepath] << range
+  eval(lines[range].join, TOPLEVEL_BINDING, filepath, range.begin + 1)
 end
 
 # Module counterpart to load_lic_class, with the same strategy and guard.
@@ -207,14 +204,64 @@ def load_lic_module(filename, module_name)
   lines = File.readlines(filepath)
   prime_lic_coverage(filepath, lines.size)
 
-  start_idx = lines.index { |l| l =~ /^module\s+#{module_name}\b/ }
-  raise "Could not find 'module #{module_name}' in #{filename}" unless start_idx
+  range = lic_definition_range(lines, 'module', module_name, filename)
+  LIC_EVAL_RANGES[filepath] << range
+  eval(lines[range].join, TOPLEVEL_BINDING, filepath, range.begin + 1)
+end
+
+# The 0-based, inclusive line range of a column-0 `class Name` / `module Name`
+# body: from its opening line through the first column-0 `end` after it.
+# Shared by load_lic_class, load_lic_module and run_lic_entry.
+#
+# @param lines [Array<String>] the .lic's lines
+# @param keyword [String] 'class' or 'module'
+# @param name [String] the class or module name
+# @param filename [String] the .lic, for the error message
+# @return [Range<Integer>] 0-based, inclusive
+# @raise [RuntimeError] when the definition or its `end` is not found
+def lic_definition_range(lines, keyword, name, filename)
+  start_idx = lines.index { |l| l =~ /^#{keyword}\s+#{name}\b/ }
+  raise "Could not find '#{keyword} #{name}' in #{filename}" unless start_idx
 
   end_idx = (start_idx + 1...lines.size).find { |i| lines[i] =~ /^end\s*$/ }
-  raise "Could not find matching end for 'module #{module_name}' in #{filename}" unless end_idx
+  raise "Could not find matching end for '#{keyword} #{name}' in #{filename}" unless end_idx
 
-  LIC_EVAL_RANGES[filepath] << (start_idx..end_idx)
-  eval(lines[start_idx..end_idx].join, TOPLEVEL_BINDING, filepath, start_idx + 1)
+  start_idx..end_idx
+end
+
+# Run a script's entry point: eval every line after the closing `end` of
+# `class <class_name>` (the before_dying block, `Klass.new`, argument parsing
+# ...) as the script would run it, so a spec can drive the whole script the
+# way a user's `;script args` does, without reaching into its internals.
+#
+#   load_lic_class('remedy.lic', 'Remedy')
+#   expect { run_lic_entry('remedy.lic', 'Remedy') }.to raise_error(SystemExit)
+#
+# Unlike the loaders it is not idempotent: every call runs the entry again.
+# The class must be loaded first (with load_lic_class), so the entry never
+# re-evals the class body. The code is eval'd at its real line numbers, so
+# backtraces and coverage point at the .lic, in a fresh copy of
+# TOPLEVEL_BINDING: `self` is still `main`, but a local the entry assigns (an
+# `args = parse_args(...)`) stays inside that run instead of leaking into the
+# next one. Same `^end` limitation as the loaders.
+#
+# @param filename [String] the .lic, relative to the repo root
+# @param class_name [String] the class the entry code follows
+# @return [Object] what the entry code returns (a script usually exits first)
+# @raise [RuntimeError] when the class is not loaded, or no code follows it
+# @raise [SystemExit] when the script exits, as most do when they finish
+def run_lic_entry(filename, class_name)
+  raise "run_lic_entry: load #{class_name} with load_lic_class before running its entry" unless Object.const_defined?(class_name)
+
+  filepath = lic_path(filename)
+  lines = File.readlines(filepath)
+  prime_lic_coverage(filepath, lines.size)
+
+  first = lic_definition_range(lines, 'class', class_name, filename).end + 1
+  raise "run_lic_entry: #{filename} has no code after 'class #{class_name}'" if lines[first..].to_a.all? { |l| l.strip.empty? }
+
+  LIC_EVAL_RANGES[filepath] << (first..lines.size - 1)
+  eval(lines[first..].join, TOPLEVEL_BINDING.dup, filepath, first + 1)
 end
 
 # Extract and eval a single top-level constant assignment (CONST = ...) from a
@@ -307,5 +354,22 @@ end
 RSpec.configure do |config|
   config.before(:each) do
     reset_data
+  end
+
+  # RSpec rescues everything an example raises except SystemExit (and signals
+  # and NoMemoryError: rspec-support AVOID_RESCUING),
+  # so code under test that calls exit (or abort) would end the whole process
+  # here: the examples after it never run, and the process leaves with the
+  # exit's status (0 for a bare exit, even when earlier examples failed), so a
+  # truncated run reads as green. Re-raise it as an ordinary error,
+  # which RSpec records as this example's failure; the SystemExit stays
+  # attached as the cause, so the report shows where exit was called. An
+  # example that asserts its exit with raise_error(SystemExit) catches it
+  # itself and never gets here.
+  config.around(:each) do |example|
+    example.run
+  rescue SystemExit => e
+    raise "the code under test called exit (status #{e.status}), which would end the whole " \
+          'rspec run here; assert it with expect { ... }.to raise_error(SystemExit), or stub exit'
   end
 end

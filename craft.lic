@@ -611,6 +611,20 @@ class Craft
     DRCI.dispose_trash(DRC.left_hand, @worn_trashcan, @worn_trashcan_verb) if DRC.left_hand && full_name.sub("metal ", "").include?(DRC.left_hand)
   end
 
+  # Trains Alchemy with one remedy: buys or forages the herbs, runs
+  # remedy.lic, then throws the product away.
+  #
+  # @param recipe [Hash, nil] the base-recipes.yaml remedies entry; nil
+  #   returns at once
+  # @param copper_needed [Integer] copper to have on hand before buying
+  # @param herb2 [String, nil] remedy's herb2 argument, overriding the
+  #   recipe's herb2 ('na' for a one-herb recipe)
+  # @param forage [Hash{String => Integer}] herb => count to forage instead
+  #   of 25
+  # @return [void]
+  # @raise [SystemExit] when remedy.lic leaves no product in hand: Lich gives
+  #   no exit status, and the product in hand is remedy's success signal
+  #   (remedy.lic header)
   def brew(recipe, copper_needed, herb2: nil, forage: {})
     unless recipe
       echo('Craft: brew aborted - recipe not found') if @debug
@@ -678,6 +692,12 @@ class Craft
     echo("Craft: brew starting remedy chapter=#{recipe['chapter']} container=#{recipe['container']} noun=#{recipe['noun']} room=#{@training_room}") if @debug
     DRCT.walk_to(@training_room)
     DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2_arg, catalyst, recipe['container'], recipe['noun']])
+    # dispose_trash gets the noun from a container when no hand holds it, so
+    # without this stop a failed remedy would throw away a stored remedy.
+    unless DRCI.in_hands?(recipe['noun'])
+      echo("Craft: remedy did not leave #{recipe['name']} (#{recipe['noun']}) in hand. Stopping.")
+      exit
+    end
     DRCI.dispose_trash(recipe['noun'], @worn_trashcan, @worn_trashcan_verb)
     echo('Craft: brew complete') if @debug
   end

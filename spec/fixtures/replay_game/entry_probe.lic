@@ -1,0 +1,17 @@
+# A probe script for run_lic_entry's self-test
+# (spec/test_harness_replay_game_spec.rb), shaped like a real script: a class,
+# then top-level entry code that parses the arguments and runs. Not a script
+# to run in Lich.
+
+# Records each run of the entry code below.
+class ReplayEntryProbe
+  # @return [Array<Array(String, Integer)>] the word parsed and the line it
+  #   was recorded on, one entry per run
+  def self.runs
+    @runs ||= []
+  end
+end
+
+probe_args = parse_args([[{ name: 'word', regex: /\w+/i, variable: true, description: 'Any word.' }]])
+ReplayEntryProbe.runs << [probe_args.word, __LINE__]
+raise ArgumentError, 'the probe was asked to fail' if probe_args.word == 'fail'

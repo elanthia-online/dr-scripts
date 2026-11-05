@@ -665,7 +665,7 @@ class SellLoot
   # the pouch back, so a sale is read from the sale line, not from our hands.
   # ===========================================================================
 
-  DEFAULT_TRADER_NOUNS = %w[kiosk plinth].freeze
+  DEFAULT_TRADER_NOUNS = %w[kiosk plinth booth lectern pedestal stand].freeze
   ORDINALS = $ORDINALS # Lich global: first..twentieth
 
   # STUDY has three reply shapes and this phrase is in all of them; it is also

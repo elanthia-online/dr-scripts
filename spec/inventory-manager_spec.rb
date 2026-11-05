@@ -170,6 +170,81 @@ RSpec.describe InventoryManager do
       expect(messages).to include('Match 1): a red gem pouch (character)')
     end
   end
+
+  describe '#add_vault_standard' do
+    let(:manager) do
+      described_class.allocate.tap do |m|
+        m.instance_variable_set(:@active_character, :Alpha)
+        m.instance_variable_set(:@item_data, { Alpha: ['a sack of rocks (vault)'] })
+        m.instance_variable_set(:@inventory_ignores, [])
+        m.instance_variable_set(:@vault_surfaces, [])
+      end
+    end
+    let(:messages) { [] }
+    let(:rent_due) { "You can't access your vault at this time.  Rent is due." }
+
+    before do
+      allow(DRC).to receive(:message) { |text| messages << text }
+      allow(manager).to receive(:save_item_data)
+    end
+
+    it 'waits for the rent refusal too, so it is not retried as a timeout' do
+      sent = nil
+      allow(Lich::Util).to receive(:issue_command) do |_command, start_pattern, **|
+        sent = start_pattern
+        [rent_due]
+      end
+
+      expect { manager.add_vault_standard }.to raise_error(SystemExit)
+      expect(Lich::Util).to have_received(:issue_command).once
+      expect(rent_due).to match(sent)
+      expect('Vault Inventory:').to match(sent)
+    end
+
+    it 'exits with the rent note and saves nothing' do
+      allow(manager).to receive(:capture_command).and_return([rent_due])
+
+      expect { manager.add_vault_standard }.to raise_error(SystemExit)
+      expect(messages).to eq(['Pay yer rent, ya slob!'])
+      expect(manager).not_to have_received(:save_item_data)
+    end
+
+    it 'spots the refusal when the line carries XML' do
+      allow(manager).to receive(:capture_command).and_return(["<pushBold/>#{rent_due}<popBold/>"])
+
+      expect { manager.add_vault_standard }.to raise_error(SystemExit)
+      expect(messages).to eq(['Pay yer rent, ya slob!'])
+    end
+
+    it 'restarts sorter before exiting' do
+      $running_scripts << 'sorter'
+      allow(manager).to receive(:stop_script) { $running_scripts.delete('sorter') }
+      allow(manager).to receive(:capture_command).and_return([rent_due])
+
+      expect { manager.add_vault_standard }.to raise_error(SystemExit)
+      expect($started_scripts).to eq([['sorter']])
+    end
+
+    it 'saves a normal listing' do
+      allow(manager).to receive(:capture_command)
+        .and_return(['Vault Inventory:', '  a steel box'].map(&:dup))
+
+      manager.add_vault_standard
+
+      expect(messages).to be_empty
+      expect(manager).to have_received(:save_item_data).with('vault')
+      expect(manager.instance_variable_get(:@item_data)[:Alpha]).to eq(['Vault Inventory: (vault)', 'a steel box (vault)'])
+    end
+
+    it 'does not treat an item named like the refusal as one' do
+      allow(manager).to receive(:capture_command)
+        .and_return(['Vault Inventory:', "  a note reading \"#{rent_due}\""].map(&:dup))
+
+      manager.add_vault_standard
+
+      expect(manager).to have_received(:save_item_data).with('vault')
+    end
+  end
 end
 
 RSpec.describe InventoryManagerGui do

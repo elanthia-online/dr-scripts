@@ -40,6 +40,10 @@ class WorkOrders
   # Extra forge attempts beyond asked quantity to cover quality rejects / failed crafts
   FORGE_ATTEMPT_BUFFER = 5
 
+  # Stock ingots this size and larger are sold at the town's bulk materials
+  # shop (bingots-room), not its stock shop. smith.lic has the same constant.
+  BULK_INGOT_VOLUME = 50
+
   REPAIR_GIVE_PATTERNS = [
     "I don't repair those here",
     'What is it',
@@ -149,13 +153,7 @@ class WorkOrders
     # Tinkering uses the Engineering guild (shaping) NPC and logbook
     info = crafting_data['shaping'][@hometown] if discipline == 'tinkering'
 
-    recipes = if @recipe_overrides[discipline]
-                get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && @recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
-              else
-                get_data('recipes').crafting_recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /#{discipline}/i }
-              end
-
-    recipes = recipes.select { |x| x['material'] == @carving_type } if discipline == 'carving'
+    recipes = work_order_recipes(discipline)
 
     unless info
       Lich::Messaging.msg('bold', "WorkOrders: No crafting settings found for discipline: #{discipline}")
@@ -462,6 +460,27 @@ class WorkOrders
     unless DRCI.put_away_item?('ticket')
       Lich::Messaging.msg('bold', 'WorkOrders: Failed to stow repair ticket')
     end
+  end
+
+  # The base-recipes.yaml recipes a work order for the discipline may name:
+  # those whose name matches one of the user's workorder_recipes patterns for
+  # it, or else every recipe marked work_order. Carving keeps only the
+  # carving_workorder_material_type material. Recipes made from stand-alone
+  # instructions (`instructions: true`) are never chosen: they have no book
+  # chapter, and remedy_items calls remedy.lic with the 8-argument book form.
+  #
+  # @param discipline [String] the work order discipline, e.g. 'remedies'
+  # @return [Array<Hash>] the recipes, in base-recipes.yaml order
+  def work_order_recipes(discipline)
+    book_recipes = get_data('recipes').crafting_recipes.reject { |recipe| recipe['instructions'] }
+    recipes = if @recipe_overrides[discipline]
+                book_recipes.select { |recipe| recipe['type'] =~ /#{discipline}/i && @recipe_overrides[discipline].find { |name| recipe['name'] =~ /#{name}/i } }
+              else
+                book_recipes.select { |recipe| recipe['work_order'] && recipe['type'] =~ /#{discipline}/i }
+              end
+    return recipes unless discipline == 'carving'
+
+    recipes.select { |x| x['material'] == @carving_type }
   end
 
   def find_recipe(materials_info, recipe, quantity)
@@ -796,6 +815,19 @@ class WorkOrders
     stow_tool(DRC.right_hand)
   end
 
+  # Makes and bundles +quantity+ remedies for an alchemy work order: buys or
+  # gathers the herbs, then runs remedy.lic once per item and bundles each
+  # product with the logbook.
+  #
+  # @param info [Hash] the hometown's alchemy work order data (stock-room,
+  #   logbook, catalyst)
+  # @param _materials_info [Hash] unused
+  # @param recipe [Hash] the base-recipes.yaml remedies entry
+  # @param quantity [Integer] how many remedies the work order needs
+  # @return [void]
+  # @raise [SystemExit] when remedy.lic leaves no product in hand: Lich gives
+  #   no exit status, and the product in hand is remedy's success signal
+  #   (remedy.lic header)
   def remedy_items(info, _materials_info, recipe, quantity)
     DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
     herb2_needed = ''
@@ -818,6 +850,10 @@ class WorkOrders
         DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2_needed, info['catalyst'], recipe['container'], recipe['noun']])
       else
         DRC.wait_for_script_to_complete('remedy', ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], recipe['herb2'], info['catalyst'], recipe['container'], recipe['noun']])
+      end
+      unless DRCI.in_hands?(recipe['noun'])
+        Lich::Messaging.msg('bold', "WorkOrders: remedy did not leave #{recipe['name']} (#{recipe['noun']}) in hand. Stopping.")
+        exit
       end
       unless DRCI.get_item?("#{info['logbook']} logbook")
         Lich::Messaging.msg('bold', "WorkOrders: Failed to get #{info['logbook']} logbook for bundling remedy")
@@ -869,9 +905,18 @@ class WorkOrders
     recipe = find_recipe(materials_info, item, quantity).first
     remaining_volume = 0
 
+    shop = ingot_shop(info, materials_info)
+    unless shop
+      Lich::Messaging.msg('bold', "WorkOrders: #{materials_info['stock-name']} ingots of #{materials_info['stock-volume']} volume are sold at a bulk materials shop, and #{@hometown} has none. Set workorders_materials metal_type to a smaller ingot.")
+      exit
+    end
+
     info['trash-room'] = nil if @worn_trashcan && @worn_trashcan_verb
 
-    DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
+    # A bulk ingot can cost more than the default copper on hand. crafting_cost
+    # is one ingot's price (plus consumables) in the town's currency.
+    ingot_cost = DRCC.crafting_cost(recipe, @hometown, nil, 1, materials_info)
+    DRCM.ensure_copper_on_hand([@cash_on_hand || 5000, ingot_cost].max, @settings, @hometown)
 
     max_attempts = quantity + FORGE_ATTEMPT_BUFFER
     attempts = 0
@@ -885,7 +930,15 @@ class WorkOrders
 
       if remaining_volume < recipe['volume']
         DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
-        DRCT.order_item(info['stock-room'], materials_info['stock-number'])
+        remaining_volume = 0 # so a failed purchase below doesn't dispose of it again
+        # The copper above can run out after one ingot, so top up before each
+        # one. Only to one ingot's cost: topping up to the floor would send
+        # every small-ingot reorder to the bank.
+        DRCM.ensure_copper_on_hand(ingot_cost, @settings, @hometown)
+        unless DRCT.order_item(shop, materials_info['stock-number'])
+          Lich::Messaging.msg('bold', "WorkOrders: Could not buy a #{materials_info['stock-name']} ingot, so not forging the rest of this order.")
+          break
+        end
         DRCC.stow_crafting_item("#{materials_info['stock-name']} ingot", @bag, @belt)
         remaining_volume = materials_info['stock-volume']
       end
@@ -903,6 +956,18 @@ class WorkOrders
     end
 
     DRCT.dispose("#{materials_info['stock-name']} ingot", info['trash-room'], @worn_trashcan, @worn_trashcan_verb) if remaining_volume.positive?
+  end
+
+  # The room of the shop that sells a stock ingot. Ingots of BULK_INGOT_VOLUME
+  # and up (immense, gigantic, colossal) are sold at the town's bulk materials
+  # shop, bingots-room, under their own numbers: Crossing's Supplies lists
+  # immense bronze's number, 1, as a tiny coal nugget.
+  #
+  # @param info [Hash] the town's blacksmithing data
+  # @param ingot [Hash] the stock entry
+  # @return [Integer, nil] nil for a bulk ingot in a town without a bulk shop
+  def ingot_shop(info, ingot)
+    ingot['stock-volume'] >= BULK_INGOT_VOLUME ? info['bingots-room'] : info['stock-room']
   end
 
   def ingot_volume

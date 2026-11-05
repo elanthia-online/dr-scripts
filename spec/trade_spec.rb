@@ -292,9 +292,12 @@ RSpec.describe Trade do
       allow(DRCI).to receive(:dispose_trash)
     end
 
+    # Records the reply loot_item got for each bput command, so a spec can see
+    # which reply the stow matched ('' is a 15-second timeout in the game).
     def loot(get_lines, stow_lines)
+      @replies = {}
       allow(DRC).to receive(:bput) do |command, *patterns|
-        model_bput(command.start_with?('get ') ? get_lines : stow_lines, patterns)
+        @replies[command] = model_bput(command.start_with?('get ') ? get_lines : stow_lines, patterns)
       end
       trade.loot_item('ruby', 'strongbox')
     end
@@ -319,6 +322,29 @@ RSpec.describe Trade do
 
     it "does not drop the gem on another player's \"you put\"" do
       loot([got_ruby], player_lines('did you put it in your hair') + [stowed])
+      expect(sent).not_to include('drop ruby')
+    end
+
+    # The game puts the tie sentence after a lead-in on the same line, so a
+    # '^You'd better' matcher never sees it and the stow times out.
+    let(:needs_tie) { "You've already got a wealth of gems in there!  You'd better tie it up before putting more gems inside." }
+
+    it "matches the game's needs-tie reply after its lead-in" do
+      loot([got_ruby], [needs_tie])
+      expect(@replies['stow my ruby']).to match(/tie it up/)
+    end
+
+    it 'takes the needs-tie branch (closes the spare pouch) when a spare is configured' do
+      trade.instance_variable_set(:@settings, OpenStruct.new(loot_specials: [], spare_gem_pouch_container: 'backpack'))
+      trade.instance_variable_set(:@gem_pouch_adjective, 'gem')
+      loot([got_ruby], [needs_tie])
+      expect(sent).to include('drop ruby', 'close my pouch')
+      expect(@replies).not_to have_key('tie my pouch')
+    end
+
+    it "keeps the gem when another player speaks the needs-tie line" do
+      loot([got_ruby], player_lines(needs_tie) + [stowed])
+      expect(@replies['stow my ruby']).to eq('You put')
       expect(sent).not_to include('drop ruby')
     end
   end
