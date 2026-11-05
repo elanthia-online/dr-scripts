@@ -44,6 +44,16 @@ RSpec.describe TaskMaster do
     end
   end
 
+  # RUMMAGE /C <noun> in the duffel bag as the game prints it, listing
+  # `names` (each with its article).
+  def rummaged_bag(noun, names)
+    lead = "You rummage through a heavy silk duffel bag looking for something similar to \"#{noun}\""
+    return "#{lead} but there is nothing in there like that." if names.empty?
+
+    listed = names.size > 1 ? "#{names[0..-2].join(', ')} and #{names.last}" : names.first
+    "#{lead} and see #{listed}."
+  end
+
   # Zasele's task journal entry as TASK prints it (2025 Hollow Eve logs). With
   # no returned count the "So far" sentence is left out, as the game sometimes
   # prints it.
@@ -1839,17 +1849,28 @@ RSpec.describe TaskMaster do
     describe '#tailor_item' do
       let(:tailoring) { { 'tailoring' => { 'Crossing' => { 'tool-room' => 16666, 'stock-room' => 16667 } } } }
 
-      # Runs the real tailor_item and records consumable checks and sew launches.
-      def tailor(base, count: 6, marathon: false)
+      # Runs the real tailor_item; returns the consumable checks, the sew launches
+      # and how many it says it made.
+      # Each sew run stows one finished netting in the bag while there is stock
+      # for one (stock: how many, every item when nil); a run without stock
+      # makes nothing, as sew exits in check_hand once it has studied. The
+      # bag also holds the task's netting instructions, which RUMMAGE /C
+      # netting lists too.
+      def tailor(base, count: 6, marathon: false, stock: nil)
         tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936, marathon: marathon)
         allow(tm).to receive(:get_data).and_return(tailoring)
         allow(DRCT).to receive(:walk_to)
         checks = []
         allow(DRCC).to receive(:check_consumables) { |name, room, number, *rest| checks << [name, room, number, rest.last] }
+        bagged = 0
+        game('rummage /C netting in my duffel bag' => ->(*) { rummaged_bag('netting', ['some netting instructions'] + Array.new(bagged, 'some burlap netting')) })
         launches = []
-        allow(DRC).to receive(:wait_for_script_to_complete) { |name, args| launches << [name, args] }
-        tm.tailor_item('netting', count, base, 'burlap')
-        [checks, launches]
+        allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+          launches << [name, args]
+          bagged += 1 if stock.nil? || bagged < stock
+        end
+        made = tm.tailor_item('netting', count, base, 'burlap')
+        [checks, launches, made]
       end
 
       it 'checks pins once for the whole task, enough for every item' do
@@ -1870,6 +1891,195 @@ RSpec.describe TaskMaster do
         expect(launches).to all(satisfy { |name, args| name == 'sew' && args.include?('skip') })
       end
 
+      # Barrask, 2026-11-04: a 6-netting task with 10 of the 60 yards. Run 1
+      # made one netting; runs 2-6 each studied (one instruction use each),
+      # found no burlap and exited, and taskmaster said "6 nettings completed".
+      it 'stops launching sew after the first run that made nothing, when there is stock for only one of six' do
+        _, launches, made = tailor('cloth', count: 6, stock: 1)
+        expect(launches.size).to eq(2)
+        expect(made).to eq(1)
+      end
+
+      it 'says how many were made of how many, never that all six were completed' do
+        tailor('cloth', count: 6, stock: 1)
+        expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+        expect(DRC).not_to have_received(:message).with('6 nettings completed')
+      end
+
+      it 'launches sew only once when the very first run makes nothing' do
+        _, launches = tailor('cloth', count: 6, stock: 0)
+        expect(launches.size).to eq(1)
+        expect(DRC).to have_received(:message).with('Made 0 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+      end
+
+      it 'counts from what the bag already held: nettings left from before the task are not made by this one' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        game('rummage /C netting in my duffel bag' => rummaged_bag('netting', Array.new(3, 'some burlap netting') + ['some netting instructions']))
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
+        expect(tm.tailor_item('netting', 4, 'cloth', 'burlap')).to eq(0)
+        expect(launches).to eq(1)
+      end
+
+      it 'reports every item when every run made one' do
+        _, launches, made = tailor('leather', count: 4)
+        expect(launches.size).to eq(4)
+        expect(made).to eq(4)
+        expect(DRC).to have_received(:message).with('4 nettings completed')
+      end
+
+      # The last study uses up the instructions, so the run that makes the
+      # last netting also takes "some netting instructions" out of the bag.
+      # Counting every " netting" in the reply saw no change on that run.
+      it 'counts the last netting as made when that run also used up the instructions' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        bagged = 0
+        uses = 6
+        game('rummage /C netting in my duffel bag' => lambda do |*|
+          rummaged_bag('netting', Array.new(bagged, 'some reinforced cloth netting') + (uses.positive? ? ['some netting instructions'] : []))
+        end)
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          launches += 1
+          uses -= 1
+          bagged += 1
+        end
+        expect(tm.tailor_item('netting', 6, 'cloth', 'reinforced')).to eq(6)
+        expect(launches).to eq(6)
+        expect(DRC).to have_received(:message).with('6 nettings completed')
+        expect(DRC).not_to have_received(:message).with(/^Made 5 of 6/)
+      end
+
+      it 'counts none made when the bag lists the same unfinished netting, instructions and netting after the run' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:check_consumables)
+        game('rummage /C netting in my duffel bag' => rummaged_bag('netting', ['an unfinished burlap netting', 'some netting instructions', 'some burlap netting']))
+        launches = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) { launches += 1 }
+        expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(0)
+        expect(launches).to eq(1)
+      end
+
+      context 'when RUMMAGE gets no reply' do
+        # Like tailor, but bput returns '' (no reply matched within its
+        # timeout) for the RUMMAGE calls numbered in `missed`; call 1 is the
+        # count before the first run. The bag starts with `old` nettings from
+        # before the task. Returns how many tailor_item says it made and the
+        # sew launches.
+        def tailor_missing(missed, count: 6, stock: nil, old: 0)
+          tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+          allow(tm).to receive(:get_data).and_return(tailoring)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCC).to receive(:check_consumables)
+          rummages = 0
+          bagged = 0
+          game('rummage /C netting in my duffel bag' => lambda do |*|
+            rummages += 1
+            next '' if missed.include?(rummages)
+
+            rummaged_bag('netting', ['some netting instructions'] + Array.new(old + bagged, 'some burlap netting'))
+          end)
+          launches = 0
+          allow(DRC).to receive(:wait_for_script_to_complete) do
+            launches += 1
+            bagged += 1 if stock.nil? || bagged < stock
+          end
+          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches]
+        end
+
+        # Counting the first miss as none started from 0 against 3 old
+        # nettings: "Made 4 of 6" after one netting was made.
+        it 'does not count the 3 nettings already in the bag as made when the first RUMMAGE got no reply' do
+          made, launches = tailor_missing([1], stock: 1, old: 3)
+          expect(made).to eq(1)
+          expect(launches).to eq(2)
+          expect(DRC).to have_received(:message).with('Made 1 of 6 nettings: no new netting in duffel bag or in hand after the last sew run, so no more runs.')
+        end
+
+        it 'launches no sew run, and says why, when the count before the first run gets no reply twice' do
+          made, launches = tailor_missing([1, 2])
+          expect(made).to eq(0)
+          expect(launches).to eq(0)
+          expect(DRC).to have_received(:message).with('Could not count the nettings in duffel bag (no reply to RUMMAGE), so no sew runs.')
+        end
+
+        # Counting the miss as none after run 2 stopped a task where every
+        # run made one: "the last sew run made none" after 2 of 6.
+        it 'keeps sewing when one RUMMAGE after a good run got no reply' do
+          made, launches = tailor_missing([3])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('6 nettings completed')
+        end
+
+        it 'judges the run by the next count when the count after it gets no reply twice' do
+          made, launches = tailor_missing([3, 4])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+        end
+
+        it 'still stops, one run late, when the uncounted run was followed by one that made none' do
+          made, launches = tailor_missing([3, 4], stock: 2)
+          expect(made).to eq(2)
+          expect(launches).to eq(4)
+        end
+
+        it 'counts again after the last run when its count got no reply twice' do
+          made, launches = tailor_missing([7, 8])
+          expect(made).to eq(6)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('6 nettings completed')
+        end
+
+        it 'says the count is short, not that a run made none, when the last run never got a count' do
+          made, launches = tailor_missing([7, 8, 9, 10])
+          expect(made).to eq(5)
+          expect(launches).to eq(6)
+          expect(DRC).to have_received(:message).with('Counted 5 of 6 nettings made (RUMMAGE did not answer after every sew run).')
+        end
+      end
+
+      context 'with what the run left in hand' do
+        # One sew run that leaves `left` in the right hand and nothing new in
+        # the bag; returns how many tailor_item says it made and the launches.
+        def run_leaving(left, count: 2)
+          tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+          allow(tm).to receive(:get_data).and_return(tailoring)
+          allow(DRCT).to receive(:walk_to)
+          allow(DRCC).to receive(:check_consumables)
+          game('rummage /C netting in my duffel bag' => rummaged_bag('netting', ['some netting instructions']))
+          right = nil
+          allow(DRC).to receive(:right_hand) { right }
+          allow(DRC).to receive(:left_hand).and_return(nil)
+          launches = 0
+          allow(DRC).to receive(:wait_for_script_to_complete) do
+            launches += 1
+            right = left if launches == 1
+          end
+          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches]
+        end
+
+        it 'counts a finished netting the bag would not take, still in hand, as made' do
+          expect(run_leaving('burlap netting')).to eq([1, 2])
+        end
+
+        it 'does not count an unfinished netting in hand as made' do
+          expect(run_leaving('unfinished burlap netting')).to eq([0, 1])
+        end
+
+        it 'does not count a held item whose name only contains the noun' do
+          expect(run_leaving('netting needles')).to eq([0, 1])
+        end
+      end
+
       it 'skips pins and thread entirely for knitting' do
         checks, launches = tailor('yarn')
         expect(checks).to be_empty
@@ -1880,6 +2090,61 @@ RSpec.describe TaskMaster do
         checks, launches = tailor('cloth', count: 2, marathon: true)
         expect(checks.map(&:first)).to eq(['pins', 'cotton thread'])
         expect(launches).to all(satisfy { |_, args| args.include?('skip') })
+      end
+    end
+
+    describe '#forge_item' do
+      # Runs the real forge_item in the task_crafting_room with metal for
+      # `metal` daggers; each forge run that has metal leaves a dagger the
+      # put then bags. Returns how many it says it made and the forge runs.
+      def forge(count, metal)
+        tm = build(crafting_room: 16_936)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:clean_anvil?).and_return(true)
+        bagged = 0
+        held = false
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          held = runs <= metal
+        end
+        allow(DRC).to receive(:bput) do |command, *|
+          next rummaged_bag('dagger', ['some dagger instructions'] + Array.new(bagged, 'a bronze dagger')) if command == 'rummage /C dagger in my duffel bag'
+          # bput returns '' on "What were you referring to?", which it does not list.
+          next '' unless command == 'put my dagger in my duffel bag' && held
+
+          held = false
+          bagged += 1
+          'You put your bronze dagger in your heavy silk duffel bag.'
+        end
+        [tm.forge_item('dagger', count, 'bronze'), runs]
+      end
+
+      it 'stops after the first forge run that made nothing' do
+        expect(forge(5, 2)).to eq([2, 3])
+        expect(DRC).to have_received(:message).with('Made 2 of 5 daggers: no new dagger in duffel bag or in hand after the last forge run, so no more runs.')
+      end
+
+      it 'forges every item while there is metal' do
+        expect(forge(3, 3)).to eq([3, 3])
+        expect(DRC).to have_received(:message).with('3 daggers completed')
+      end
+    end
+
+    describe '#shape_item' do
+      it 'stops after the first shape run that made nothing' do
+        tm = build
+        allow(DRCC).to receive(:find_shaping_room)
+        bagged = 0
+        game('rummage /C bowl in my duffel bag' => ->(*) { rummaged_bag('bowl', Array.new(bagged, 'a balsa bowl') + ['some bowl instructions']) })
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          bagged += 1 if runs == 1
+        end
+        expect(tm.shape_item('bowl', 4, 'lumber', 'balsa')).to eq(1)
+        expect(runs).to eq(2)
+        expect(DRC).to have_received(:message).with('Made 1 of 4 bowls: no new bowl in duffel bag or in hand after the last shape run, so no more runs.')
       end
     end
 
@@ -2478,11 +2743,12 @@ RSpec.describe TaskMaster do
         expect(DRCT).not_to have_received(:dispose)
       end
 
-      it 'exits when the bag runs out of items' do
+      it 'exits when the bag runs out of items, saying the task is not finished' do
         tm = finisher
         allow(DRCI).to receive(:in_hands?).and_return(false)
         allow(DRCI).to receive(:get_item?).and_return(false)
         expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with('Could not get another rope to hand in and the task is not finished, stopping.')
       end
     end
 
