@@ -1659,9 +1659,15 @@ sell_loot_trader: false
 # unsold after that goes to the gemshop and tannery.
 sell_loot_trader_room:
 # Nouns to look for there. Kiosks can be altered, the noun included.
+# Note that if you have already set this to kiosk and plinth in your user profile
+# then you will never use the new types.
 sell_loot_trader_nouns:
   - kiosk
   - plinth
+  - booth
+  - lectern
+  - pedestal
+  - stand
 # Lowest markup percent a kiosk must advertise before selling to it. Its owner
 # can set anywhere from -10 to 80, so this defaults to 0 -- never sell below
 # base price. Set it to -10 to sell to any kiosk in the room.
