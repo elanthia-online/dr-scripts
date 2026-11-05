@@ -1376,10 +1376,16 @@ RSpec.describe Sew do
       # From here the material is already in hand when the recipe item is
       # fetched, so a failed get must put it back before stopping.
       context 'when the recipe item fails after the material is held' do
+        let(:stowed) { [] }
+
+        # The material is in the left hand until the stow puts it away.
         before do
           allow(DRCC).to receive(:stow_crafting_item) do |name, bag, _belt|
             sent << "put my #{name} in my #{bag}"
+            stowed << name
+            true
           end
+          allow(DRCI).to receive(:in_left_hand?) { stowed.empty? }
         end
 
         it 'puts the cloth back and sends no study when the instructions are gone' do
@@ -1415,6 +1421,59 @@ RSpec.describe Sew do
           expect { sew.send(:prep) }.to raise_error(SystemExit)
 
           expect(sent.last).to eq('put my yarn in my duffel bag')
+        end
+
+        # No id was seen, so the put-back goes by name and its result says
+        # nothing: v5.23.0 stow_crafting_item returns true even after its
+        # "stow" fallback fails. The left hand decides, matched by name as
+        # v5.23.0 in_left_hand? does for a plain noun.
+        context 'when the put-back by name leaves the material in hand' do
+          before do
+            replies['get my rucksack instructions'] = 'What were you referring to?'
+            allow(DRCC).to receive(:get_crafting_item) do |name, *|
+              reply = DRC.bput("get my #{name}", /^You get/, /^What were you/)
+              next false if reply.start_with?('What were you')
+
+              $left_hand = name
+              true
+            end
+            allow(DRCI).to receive(:in_left_hand?) { |item| DRC.left_hand.to_s.include?(item.to_s) }
+          end
+
+          it 'names the cloth still in hand' do
+            expect(Lich::Messaging).to receive(:msg)
+              .with('bold', "sew: Could not get 'rucksack instructions'. Stopping before the recipe is studied. " \
+                            'The burlap cloth is still in your left hand.')
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
+
+          it 'names the leather still in hand' do
+            sew.instance_variable_set(:@mat_type, 'rat')
+            expect(Lich::Messaging).to receive(:msg)
+              .with('bold', "sew: Could not get 'rucksack instructions'. Stopping before the recipe is studied. " \
+                            'The rat leather is still in your left hand.')
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
+
+          it 'names no hand once the stow empties it' do
+            allow(DRCC).to receive(:stow_crafting_item) do |name, bag, _belt|
+              sent << "put my #{name} in my #{bag}"
+              $left_hand = nil
+              true
+            end
+            expect(Lich::Messaging).to receive(:msg)
+              .with('bold', "sew: Could not get 'rucksack instructions'. Stopping before the recipe is studied.")
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
+
+          it 'never asks about the hand with an empty id reference' do
+            expect(DRCI).not_to receive(:in_left_hand?).with('#')
+
+            expect { sew.send(:prep) }.to raise_error(SystemExit)
+          end
         end
 
         it 'puts the cloth back and reads no recipe when the tailoring book is gone' do

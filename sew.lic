@@ -232,14 +232,14 @@ class Sew
   # material in hand nor a study sent with nothing to study.
   #
   # A failed put-back names the hand only while the piece is still in the
-  # left hand by id: put_away_item? returns false on every failure reply,
-  # including "Perhaps you should be holding that first.", which means the
-  # piece is no longer held.
+  # left hand (material_in_left_hand?): put_away_item? returns false on
+  # every failure reply, including "Perhaps you should be holding that
+  # first.", which means the piece is no longer held.
   def get_recipe_item(name, material)
     return if DRCC.get_crafting_item(name, @bag, @bag_items, @belt, true)
 
     message = "sew: Could not get '#{name}'. Stopping before the recipe is studied."
-    message += " The #{material} is still in your left hand." if material && !put_back_material(material) && DRCI.in_left_hand?("##{@material_id}")
+    message += " The #{material} is still in your left hand." if material && !put_back_material(material) && material_in_left_hand?(material)
     Lich::Messaging.msg('bold', message)
     magic_cleanup
     exit
@@ -249,12 +249,19 @@ class Sew
   # one, so the put reaches the piece in hand and a full bag fails at once
   # instead of after a 15 second timeout. Returns false when the put
   # failed; the caller checks the hand to see whether the piece is still
-  # held.
+  # held. By name, the stow's result says nothing (it returns true even
+  # after its "stow" fallback fails), so the left hand decides.
   def put_back_material(material)
     return DRCI.put_away_item?("##{@material_id}", @bag) if @material_id
 
     DRCC.stow_crafting_item(material, @bag, @belt)
-    true
+    !material_in_left_hand?(material)
+  end
+
+  # Whether the material is still in the left hand: by the id hold_material
+  # saw, or by name when it saw none.
+  def material_in_left_hand?(material)
+    DRCI.in_left_hand?(@material_id ? "##{@material_id}" : material)
   end
 
   def assemble_part
