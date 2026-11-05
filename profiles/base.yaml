@@ -1659,6 +1659,8 @@ sell_loot_trader: false
 # unsold after that goes to the gemshop and tannery.
 sell_loot_trader_room:
 # Nouns to look for there. Kiosks can be altered, the noun included.
+# Note that if you have already set this to kiosk and plinth in your user profile
+# then you will never use the new types.
 sell_loot_trader_nouns:
   - kiosk
   - plinth
