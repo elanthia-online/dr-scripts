@@ -694,6 +694,148 @@ RSpec.describe 'test harness replay support' do
       expect(commons.release('stick')).to be_nil
     end
 
+    # Two items of one name (two stacks of one remedy) need ids of their
+    # own; the ids are made up (code-derived), as the logs carry none.
+    describe 'items with ids of their own' do
+      it 'gives GameObj the id of what each hand holds, over the ids: table, and not once the hand holds something else' do
+        commons = ReplayCommons.new(game: game, ids: { 'gill glop' => '1' }).install(self)
+        commons.hold('gill glop', id: '7001')
+        commons.hold('gill glop', id: '7002')
+        expect([GameObj.right_hand.id, GameObj.left_hand.id]).to eq(%w[7001 7002])
+        $right_hand = 'other glop'
+        $left_hand = 'gill glop'
+        $hand_item_ids[:left] = ['healing potion', '9']
+        expect([GameObj.right_hand.id, GameObj.left_hand.id]).to eq([nil, '1'])
+      end
+
+      it 'keeps an id with its item into a bag and back, and finds only that item by "#<id>"' do
+        commons = ReplayCommons.new(game: game, inventory: [['gill glop', bag, '7001'], ['gill glop', bag, '7002']]).install(self)
+        expect(DRCI.get_item?('#7002', bag)).to be(true)
+        expect([GameObj.right_hand.id, commons.location_of('#7001'), commons.location_of('#7002')]).to eq(['7002', bag, 'right'])
+        expect(DRCI.put_away_item?('#7002', 'velvet backpack')).to be(true)
+        expect(commons.inventory.map(&:to_a)).to eq([['gill glop', bag, '7001'], ['gill glop', 'velvet backpack', '7002']])
+        expect(DRCI.get_item?('#7003', bag)).to be(false)
+      end
+
+      it 'holds an item in the hand asked for, only when that hand is empty' do
+        commons = commons_for(:current)
+        expect(commons.hold('gill glop', id: '7001', hand: :left)).to eq(:left)
+        expect(commons.hold('woven sack', hand: :left)).to be_nil
+        expect(commons.hold('woven sack')).to eq(:right)
+        expect([$right_hand, $left_hand, GameObj.left_hand.id]).to eq(['woven sack', 'gill glop', '7001'])
+      end
+    end
+
+    describe 'DRCI.get_item? from a container with container_gets (the game: 6100:9365-9368)' do
+      it 'takes a second one out of the container while one is held' do
+        commons = ReplayCommons.new(game: game, inventory: [['gill glop', bag, '7002']], container_gets: true).install(self)
+        commons.hold('gill glop', id: '7001')
+        expect(DRCI.get_item?('gill glop', bag)).to be(true)
+        expect([GameObj.right_hand.id, GameObj.left_hand.id, commons.inventory]).to eq(['7001', '7002', []])
+      end
+
+      it 'answers true, moving nothing, when the container has none but one is held (lich-5 reads in_hands?)' do
+        commons = ReplayCommons.new(game: game, container_gets: true).install(self)
+        commons.hold('gill glop', id: '7001')
+        expect(DRCI.get_item?('gill glop', bag)).to be(true)
+        expect([$left_hand, commons.moves]).to eq([nil, ['gill glop: game -> hand']])
+      end
+
+      it 'keeps the older answer by default: one held is got, and nothing moves' do
+        commons = ReplayCommons.new(game: game, inventory: [['gill glop', bag, '7002']]).install(self)
+        commons.hold('gill glop', id: '7001')
+        expect(DRCI.get_item?('gill glop', bag)).to be(true)
+        expect([$left_hand, commons.inventory.size]).to eq([nil, 1])
+      end
+    end
+
+    describe 'DRCI.count_item_parts (model of common-items.rb:968-999)' do
+      it 'counts first, second ... through the game, adding number words, until "I could not find" (6100:10343-10349)' do
+        commons = ReplayCommons.new(game: game).install(self)
+        game.script('count my first brine', ReplayGame.log('6100:10343'))
+        game.script('count my second brine', ReplayGame.log('6100:10345'))
+        game.script('count my third brine', ReplayGame.log('6100:10347'))
+        game.script('count my fourth brine', ReplayGame.log('6100:10349'))
+        expect(DRCI.count_item_parts('brine')).to eq(26)
+        expect(game.sent).to eq(['count my first brine', 'count my second brine', 'count my third brine', 'count my fourth brine'])
+        expect(commons.calls).to eq([['DRCI.count_item_parts', 'brine']])
+      end
+
+      it 'reads "only one part" and herb pieces in digits (6100:8665, 6100:4595)' do
+        ReplayCommons.new(game: game).install(self)
+        game.script('count my first brine', ReplayGame.log('6100:8665'))
+        game.script('count my second brine', ReplayGame.log('6100:4595'))
+        game.script('count my third brine', ReplayGame.log('6100:8793'))
+        expect(DRCI.count_item_parts('brine')).to eq(26)
+      end
+
+      it 'goes on to the next ordinal after a reply it cannot read, as lich-5 does' do
+        ReplayCommons.new(game: game).install(self)
+        game.script('count my second brine', ReplayGame.log('6100:8800'))
+        game.script('count my third brine', ReplayGame.log('6100:8793'))
+        expect(DRCI.count_item_parts('brine')).to eq(10)
+        expect(game.diagnostics.size).to eq(1)
+      end
+
+      it 'counts nothing without a game' do
+        expect(ReplayCommons.new.install(self).count_item_parts('brine')).to eq(0)
+      end
+    end
+
+    describe "shops answered through the game (shop: :game, lich-5 common-travel.rb:97-129)" do
+      it 'orders with two ORDERs, the quote then the sale, and hands the item over on the sale (6100:8888, 8890)' do
+        commons = ReplayCommons.new(game: game, shop: :game, orders: { 7 => 'dried georin' }).install(self)
+        game.script('order 7', ReplayGame.log('6100:8888'))
+        game.script('order 7', ReplayGame.log('6100:8890'))
+        expect(DRCT.order_item(8862, 7)).to eq('takes some coins from you')
+        expect([$right_hand, game.sent, commons.calls.first(2)]).to eq(['dried georin', ['order 7', 'order 7'], [['DRCT.order_item', 8862, 7], ['DRCT.walk_to', 8862]]])
+      end
+
+      # Crossing's forging supplies sell a coal nugget as 2 (6100:4250-4252),
+      # its alchemy supplies grain alcohol: a [room, number] key wins over
+      # the number alone, in both shop modes.
+      it 'hands over what a [room, number] key names, else what the number names (6100:4250, 4252)' do
+        orders = { [8775, 2] => 'massive coal nugget', 2 => 'grain alcohol' }
+        ReplayCommons.new(game: game, shop: :game, orders: orders).install(self)
+        game.script('order 2', ReplayGame.log('6100:4250'))
+        game.script('order 2', ReplayGame.log('6100:4252'))
+        expect(DRCT.order_item(8775, 2)).to eq('takes some coins from you')
+        expect($right_hand).to eq('massive coal nugget')
+
+        ReplayCommons.new(orders: orders).install(self)
+        DRCT.order_item(8862, 2)
+        expect($left_hand).to eq('grain alcohol')
+      end
+
+      it 'returns nil after one ORDER without coins, and nothing comes to hand' do
+        ReplayCommons.new(game: game, shop: :game, orders: { 7 => 'dried georin' }).install(self)
+        game.script('order 7', ReplayGame.code("The attendant says, \"I'm sorry, but you don't have enough coins.\"", from: "lich-5 common-travel.rb:126, the reply order_item waits for"))
+        expect(DRCT.order_item(8862, 7)).to be_nil
+        expect([$right_hand, game.sent]).to eq([nil, ['order 7']])
+      end
+
+      it 'buys with BUY and hands the item over on "You decide to purchase" (6100:8718-8719)' do
+        commons = ReplayCommons.new(game: game, shop: :game, buys: { 'brine' => "brewer's brine" }).install(self)
+        game.script('buy brine', ReplayGame.log('6100:8718'))
+        expect(DRCT.buy_item(51_102, 'brine')).to be_nil
+        expect([$right_hand, commons.calls]).to eq(["brewer's brine", [['DRCT.buy_item', 51_102, 'brine'], ['DRCT.walk_to', 51_102]]])
+      end
+
+      it 'hands nothing over when the BUY gets no sale, and the model shop sends nothing' do
+        ReplayCommons.new(game: game, shop: :game, buys: { 'brine' => "brewer's brine" }).install(self)
+        DRCT.buy_item(51_102, 'brine')
+        expect($right_hand).to be_nil
+        modelled = ReplayGame.new.install(self)
+        ReplayCommons.new(game: modelled, buys: { 'brine' => "brewer's brine" }).install(self)
+        DRCT.buy_item(51_102, 'brine')
+        expect([$right_hand, modelled.sent]).to eq(["brewer's brine", []])
+      end
+
+      it 'refuses an unknown shop' do
+        expect { ReplayCommons.new(shop: :mall) }.to raise_error(ArgumentError, /shop: must be one of/)
+      end
+    end
+
     describe '#moves' do
       it 'records each item a helper moves by its full name, whatever name it was asked by' do
         commons = commons_for(:current, 'luminescent starshine mixing stick' => 'grass toolstrap', 'nemoih' => bag)
@@ -990,6 +1132,15 @@ RSpec.describe 'test harness replay support' do
       expect(DRC.bput(mix, 'Roundtime:')).to eq('Roundtime:')
       expect(game.sent).to eq([mix] * 4)
       expect(game.diagnostics.size).to eq(2)
+    end
+
+    it 'runs an after: hook once a step\'s reply has arrived, and refuses one on a step not scripted' do
+      seen = []
+      transcript.script(game, commands: /\Amix /, after: { 6736 => ->(replay) { seen << replay.trace.last.label } })
+      DRC.bput(mix, 'Roundtime:')
+      DRC.bput(mix, 'Roundtime:')
+      expect(seen).to eq(['26:6742'])
+      expect { transcript.script(ReplayGame.new, commands: /\Amix /, skip: [6736], after: { 6736 => ->(_) {} }) }.to raise_error(ArgumentError, /6736 is not a scripted step/)
     end
 
     it 'replaces the reply of a step' do
