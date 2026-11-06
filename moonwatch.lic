@@ -120,11 +120,11 @@
   is untested, not confirmed: the non-Moon-Mage never observed a new moon.
 
   v4.5.6 opens the alias service's DB (alias.db3, read once at startup) with
-  Lich.open_sqlite_db when Lich has it, and holds a ;kill back until the
+  Lich.open_sqlite_db on Lich 5.23.0+, and holds a ;kill back until the
   connection is closed, so a kill can't land inside a SQLite call on Windows
-  (lich-5#2254). With alias.db3 locked, startup now waits for the lock (Lich's
-  5 s busy timeout) before it skips the alias upgrade, where it used to skip it
-  at once.
+  (lich-5#2254). On 5.23.0+, with alias.db3 locked, startup now waits for the
+  lock (Lich's 5 s busy timeout per lock wait, about 10 s at most) before it
+  skips the alias upgrade, where it used to skip it at once.
 
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
@@ -1243,9 +1243,9 @@ module MoonwatchAlias
   # landed inside a SQLite call would unwind through its C frames and leave the
   # connection's mutex locked (lich-5#2254). A kill during a lock wait still
   # ends the wait at once (Lich's busy handler gives up). One that arrives
-  # before the query starts makes it wait for the lock first, up to Lich's busy
-  # timeout (5 s), since the helper reads an already-pending kill as a request
-  # to finish.
+  # before the query starts makes it wait for the lock first, since the helper
+  # reads an already-pending kill as a request to finish: up to Lich's busy
+  # timeout (5 s) per lock wait, and the query can wait twice (prepare, step).
   #
   # @param trigger [String] the alias trigger to look up (default 'moon')
   # @param db_path [String] override the DB path (for testing)
@@ -1270,15 +1270,19 @@ module MoonwatchAlias
     nil
   end
 
-  # Open the alias DB with Lich's SQLite helper (lich-5 5.17.3+), which waits
-  # out a lock with a Ruby busy handler and defers interrupts around each SQLite
-  # call. Older Lich gets a plain connection.
+  # Open the alias DB with Lich's SQLite helper when it has the Ruby busy
+  # handler (Lich::SQLiteBusyWait, lich-5 5.23.0+), which waits out a lock
+  # without holding the GVL and defers interrupts around each SQLite call.
+  # Lich 5.17.3-5.22.0 also has Lich.open_sqlite_db, but there it only sets
+  # SQLite's C busy timeout, which holds the GVL and would freeze every thread
+  # for up to 5 s on a locked DB; those versions, and older ones, get a plain
+  # connection, which gives up on a lock at once.
   #
   # @param path [String]
   # @return [SQLite3::Database]
   #
   def self.open_alias_db(path)
-    return Lich.open_sqlite_db(path) if Lich.respond_to?(:open_sqlite_db)
+    return Lich.open_sqlite_db(path) if defined?(Lich::SQLiteBusyWait) && Lich.respond_to?(:open_sqlite_db)
 
     SQLite3::Database.new(path)
   end
