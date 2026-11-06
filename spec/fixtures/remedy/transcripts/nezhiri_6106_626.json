@@ -1,0 +1,1872 @@
+{
+  "run": "nezhiri_6106_626",
+  "log": "6106",
+  "from": 626,
+  "to": 1090,
+  "recipe": "some gill glop (glop instructions): dried georin, rustic mortar, rustic pestle, coal nugget, brewer's brine, marked",
+  "source": "another player's Hollow Eve 2026 Nezhiri task logs (log key 6106), Lich text capture, prompts and stamps removed; message5.txt lines 626-1090: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept; a command the player typed after a roundtime prompt (\"R>cmd\", lines 864) split out as its own user step",
+  "steps": [
+    {
+      "cmd": ";remedy instructions georin \"\"coal nugget\"\" mortar glop 25",
+      "line": 626,
+      "user": true,
+      "script": "user",
+      "responses": []
+    },
+    {
+      "cmd": "tap my water",
+      "line": 628,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some water inside your haversack.",
+          "line": 629
+        }
+      ]
+    },
+    {
+      "cmd": "tap my alcohol",
+      "line": 630,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some grain alcohol inside your haversack.",
+          "line": 632
+        }
+      ]
+    },
+    {
+      "cmd": "tap my coal nugget",
+      "line": 633,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap a massive coal nugget inside your haversack.",
+          "line": 635
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 639,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 640
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 642,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 644
+        }
+      ]
+    },
+    {
+      "cmd": "prepare BLESS 7",
+      "line": 645,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Bless spell.  Casting rationality aside, you prepare to yoke unseen mana streams to fuel your sorcery.",
+          "line": 647
+        }
+      ]
+    },
+    {
+      "cmd": "put my glop instructions in my haversack",
+      "line": 648,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your instructions in your haversack.",
+          "line": 650
+        }
+      ]
+    },
+    {
+      "cmd": "get my glop instructions",
+      "line": 651,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some gill glop instructions from inside your haversack.",
+          "line": 653
+        }
+      ]
+    },
+    {
+      "cmd": "study my glop instructions",
+      "line": 654,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "The delicate nature of the instructions will cause them to wear out with use.",
+          "line": 656
+        },
+        {
+          "text": "",
+          "line": 657
+        },
+        {
+          "text": "[These instructions have only 13 uses remaining.  Study them again to proceed.]",
+          "line": 658
+        }
+      ]
+    },
+    {
+      "cmd": "study my glop instructions",
+      "line": 659,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You scan the glop instructions with a glance and completely understand all facets of the design.",
+          "line": 661
+        },
+        {
+          "text": "You now feel ready to begin the crafting process.",
+          "line": 662
+        },
+        {
+          "text": "Roundtime: 7 sec.",
+          "line": 663
+        },
+        {
+          "text": "DRExpMonitor: Scholarship(+1)",
+          "line": 664
+        }
+      ]
+    },
+    {
+      "cmd": "put my glop instructions in my haversack",
+      "line": 666,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your instructions in your haversack.",
+          "line": 668
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic mortar from my grass toolstrap",
+      "line": 671,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic mortar of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 672
+        }
+      ]
+    },
+    {
+      "cmd": "lower ground right",
+      "line": 673,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You lower the mortar and place it on the ground at your feet.",
+          "line": 675
+        }
+      ]
+    },
+    {
+      "cmd": "tap my georin from my haversack",
+      "line": 676,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some dried georin inside your haversack.",
+          "line": 678
+        }
+      ]
+    },
+    {
+      "cmd": "get my georin from my haversack",
+      "line": 679,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some dried georin from inside your haversack.",
+          "line": 681
+        }
+      ]
+    },
+    {
+      "cmd": "count my georin",
+      "line": 682,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You count out 25 pieces of material there.",
+          "line": 684
+        }
+      ]
+    },
+    {
+      "cmd": "combine my georin",
+      "line": 685,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You must be holding both substances to combine them.  For more information, see HELP VERB COMBINE.",
+          "line": 687
+        }
+      ]
+    },
+    {
+      "cmd": "put #920805 in my rustic mortar",
+      "line": 688,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your georin in your rustic mortar.",
+          "line": 690
+        }
+      ]
+    },
+    {
+      "cmd": "put my georin in my haversack",
+      "line": 691,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 693
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic mortar from my grass toolstrap",
+      "line": 694,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "Untie what?",
+          "line": 696
+        }
+      ]
+    },
+    {
+      "cmd": "get my rustic mortar",
+      "line": 697,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You pick up the mortar lying at your feet.",
+          "line": 699
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic pestle from my grass toolstrap",
+      "line": 700,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 702
+        }
+      ]
+    },
+    {
+      "cmd": "crush my georin with my rustic pestle",
+      "line": 703,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  Peering at the mixture reveals an even distribution of materials.",
+          "line": 705
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 706
+        },
+        {
+          "text": "",
+          "line": 707
+        },
+        {
+          "text": "You need another splash of brewer's brine to continue crafting some unfinished gill glop.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 708
+        },
+        {
+          "text": "",
+          "line": 709
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 710
+        },
+        {
+          "text": "DRExpMonitor: Alchemy(+1)",
+          "line": 711
+        },
+        {
+          "text": "",
+          "line": 712
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 713
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 715,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 717
+        },
+        {
+          "text": "You twist the mana streams of your Bless spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 718
+        },
+        {
+          "text": "A brilliant silver glow enwreathes your body.",
+          "line": 719
+        },
+        {
+          "text": "Emotional pain and exhaustion lingers in your mind, even after you regain rational control.",
+          "line": 720
+        },
+        {
+          "text": "DRExpMonitor: Sorcery(+3)",
+          "line": 721
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 723,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 724
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 725,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 727
+        }
+      ]
+    },
+    {
+      "cmd": "prepare MAF 55",
+      "line": 728,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Manifest Force spell.",
+          "line": 730
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 731,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You need another splash of brewer's brine to continue crafting some unfinished gill glop.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 734
+        },
+        {
+          "text": "",
+          "line": 735
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 736
+        },
+        {
+          "text": "Elusive Asab came down a trodden dirt path.",
+          "line": 737
+        },
+        {
+          "text": "",
+          "line": 738
+        },
+        {
+          "text": "Elusive Asab runs south.",
+          "line": 739
+        },
+        {
+          "text": "",
+          "line": 740
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 741
+        },
+        {
+          "text": "",
+          "line": 742
+        },
+        {
+          "text": "You feel fully attuned to the mana streams again.",
+          "line": 743
+        },
+        {
+          "text": "[Arrivals]  * Phantom Dhamer joins the adventure.",
+          "line": 744
+        }
+      ]
+    },
+    {
+      "cmd": ";pa",
+      "line": 745,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "War Healer Drakomar came down a trodden dirt path.",
+          "line": 747
+        },
+        {
+          "text": "",
+          "line": 748
+        },
+        {
+          "text": "War Healer Drakomar runs south.",
+          "line": 749
+        },
+        {
+          "text": "",
+          "line": 750
+        },
+        {
+          "text": "You sense an overall decrease in Lunar mana.",
+          "line": 751
+        },
+        {
+          "text": "",
+          "line": 752
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 753
+        }
+      ]
+    },
+    {
+      "cmd": "tie my pest to my tools",
+      "line": 755,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You attach a rustic pestle of unpolished diamondique to a strap on your grass toolstrap.",
+          "line": 756
+        }
+      ]
+    },
+    {
+      "cmd": "get my brine",
+      "line": 757,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You get some brewer's brine from inside your haversack.",
+          "line": 758
+        }
+      ]
+    },
+    {
+      "cmd": "put my brine in my mortar",
+      "line": 759,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You toss the brine into the mortar and mix it in thoroughly.",
+          "line": 760
+        }
+      ]
+    },
+    {
+      "cmd": "put brine in my haver",
+      "line": 761,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You put your brine in your haversack.",
+          "line": 762
+        }
+      ]
+    },
+    {
+      "cmd": "untie my pest",
+      "line": 763,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 764
+        }
+      ]
+    },
+    {
+      "cmd": ";ua",
+      "line": 765,
+      "user": true,
+      "script": "user",
+      "responses": []
+    },
+    {
+      "cmd": "cast",
+      "line": 801,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 802
+        },
+        {
+          "text": "You twist the mana streams of your Manifest Force spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 803
+        },
+        {
+          "text": "The air around you shimmers with a bright yellow glow.  The scintillating light writhes and twists, abruptly coalescing into a translucent field before blinking out of sight.",
+          "line": 804
+        },
+        {
+          "text": "DRExpMonitor: Attunement(+1), Lunar Magic(+3), Warding(+3)",
+          "line": 805
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 807,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 808
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 809,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 811
+        }
+      ]
+    },
+    {
+      "cmd": "prepare GAF 55",
+      "line": 813,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Gauge Flow spell.",
+          "line": 815
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 816,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 818
+        },
+        {
+          "text": "",
+          "line": 819
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 820
+        },
+        {
+          "text": "Roundtime: 18 sec.",
+          "line": 821
+        },
+        {
+          "text": "DRExpMonitor: Alchemy(+1)",
+          "line": 822
+        },
+        {
+          "text": "",
+          "line": 823
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 824
+        },
+        {
+          "text": "",
+          "line": 825
+        },
+        {
+          "text": "Trauma Prodigy Keltinar came down a trodden dirt path.",
+          "line": 826
+        },
+        {
+          "text": "",
+          "line": 827
+        },
+        {
+          "text": "Trauma Prodigy Keltinar runs southwest.",
+          "line": 828
+        },
+        {
+          "text": "",
+          "line": 829
+        },
+        {
+          "text": "[Arrivals]  * Bylur joins the adventure.",
+          "line": 830
+        }
+      ]
+    },
+    {
+      "cmd": "smell my glop",
+      "line": 831,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You sniff the mortar and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to grind it with slow strokes.",
+          "line": 833
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 834
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 835
+        },
+        {
+          "text": "",
+          "line": 836
+        },
+        {
+          "text": "[Arrivals]  * Ephayen joins the adventure.",
+          "line": 837
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 838,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "Stym came down a trodden dirt path.",
+          "line": 840
+        },
+        {
+          "text": "Stym runs southwest.",
+          "line": 841
+        },
+        {
+          "text": "",
+          "line": 842
+        },
+        {
+          "text": "DRExpMonitor: Lunar Magic(+2), Utility(+3)",
+          "line": 843
+        },
+        {
+          "text": "",
+          "line": 844
+        },
+        {
+          "text": "You gesture.",
+          "line": 845
+        },
+        {
+          "text": "You twist the mana streams of your Gauge Flow spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 846
+        },
+        {
+          "text": "A distracting flurry of cold white mana momentarily blinds you.  As your eyes adjust, you notice local fluctuations in mana are being represented by white graphs and sigils in the corners of your sight.",
+          "line": 847
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 848,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 850
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 851,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 853
+        }
+      ]
+    },
+    {
+      "cmd": "prepare FIN 55",
+      "line": 854,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Finesse spell.",
+          "line": 856
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 857,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 859
+        },
+        {
+          "text": "Roundtime: 13 sec.",
+          "line": 860
+        },
+        {
+          "text": "[Arrivals]  * Etheras Delthiar joins the adventure.",
+          "line": 861
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 862
+        }
+      ]
+    },
+    {
+      "cmd": "count brine in my haver",
+      "line": 864,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "...wait 2 seconds.",
+          "line": 865
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 866,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 868
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 869
+        },
+        {
+          "text": "Tempest Knight Saragos just arrived.",
+          "line": 870
+        },
+        {
+          "text": "",
+          "line": 871
+        },
+        {
+          "text": "Tempest Knight Saragos strides southwest.",
+          "line": 872
+        },
+        {
+          "text": "",
+          "line": 873
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 874
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 876,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 878
+        },
+        {
+          "text": "You twist the mana streams of your Finesse spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 879
+        },
+        {
+          "text": "Sharpened beneath the spell pattern's lens, your proprioception and social instincts burgeon in phrenic harmony.  The consequence of each tiny movement and mannerism is suddenly easier to anticipate, leaving you feeling empowered with outward grace and charm.",
+          "line": 880
+        },
+        {
+          "text": "DRExpMonitor: Augmentation(+3), Lunar Magic(+2)",
+          "line": 881
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 883,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 884
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 885,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 887
+        }
+      ]
+    },
+    {
+      "cmd": "prepare BLESS 7",
+      "line": 888,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Bless spell.  Casting rationality aside, you prepare to yoke unseen mana streams to fuel your sorcery.",
+          "line": 890
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 891,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 893
+        },
+        {
+          "text": "Roundtime: 11 sec.",
+          "line": 894
+        },
+        {
+          "text": "",
+          "line": 895
+        },
+        {
+          "text": "You need another catalyst material to continue crafting some unfinished gill glop.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside.",
+          "line": 896
+        },
+        {
+          "text": "",
+          "line": 897
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 898
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 899
+        }
+      ]
+    },
+    {
+      "cmd": "tie my rustic pestle to my grass toolstrap",
+      "line": 901,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a rustic pestle of unpolished diamondique to a strap on your grass toolstrap.",
+          "line": 903
+        }
+      ]
+    },
+    {
+      "cmd": "get my coal nugget",
+      "line": 904,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get a massive coal nugget from inside your haversack.",
+          "line": 906
+        }
+      ]
+    },
+    {
+      "cmd": "put my coal nugget in my rustic mortar",
+      "line": 907,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You vigorously rub the nugget alongside the mortar to scrape some shavings into the mixture.",
+          "line": 909
+        }
+      ]
+    },
+    {
+      "cmd": "put my coal nugget in my haversack",
+      "line": 910,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your nugget in your haversack.",
+          "line": 912
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic pestle from my grass toolstrap",
+      "line": 913,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 915
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 916,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 918
+        },
+        {
+          "text": "Roundtime: 16 sec.",
+          "line": 919
+        },
+        {
+          "text": "Strawberry Nurse Illiya just arrived.",
+          "line": 920
+        },
+        {
+          "text": "",
+          "line": 921
+        },
+        {
+          "text": "Strawberry Nurse Illiya goes west.",
+          "line": 922
+        },
+        {
+          "text": "",
+          "line": 923
+        },
+        {
+          "text": "[Arrivals]  * Mahalae joins the adventure.",
+          "line": 924
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 925
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 927,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 929
+        },
+        {
+          "text": "You twist the mana streams of your Bless spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 930
+        },
+        {
+          "text": "Your body tingles as the brilliant silver glow fades from around you.",
+          "line": 931
+        },
+        {
+          "text": "A brilliant silver glow enwreathes your body.",
+          "line": 932
+        },
+        {
+          "text": "Emotional pain and exhaustion lingers in your mind, even after you regain rational control.",
+          "line": 933
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 934,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 936
+        },
+        {
+          "text": "DRExpMonitor: Sorcery(+2)",
+          "line": 937
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 939,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 940
+        }
+      ]
+    },
+    {
+      "cmd": "prepare MAF 55",
+      "line": 941,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Manifest Force spell.",
+          "line": 943
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 944,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 946
+        },
+        {
+          "text": "Roundtime: 12 sec.",
+          "line": 947
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 948
+        },
+        {
+          "text": "",
+          "line": 949
+        },
+        {
+          "text": "Ice Knight Chrysaor came down a trodden dirt path.",
+          "line": 950
+        },
+        {
+          "text": "",
+          "line": 951
+        },
+        {
+          "text": "Ice Knight Chrysaor runs southwest.",
+          "line": 952
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 954,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The mixing continues exceptionally well and free of mistakes.",
+          "line": 956
+        },
+        {
+          "text": "",
+          "line": 957
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 958
+        },
+        {
+          "text": "Roundtime: 19 sec.",
+          "line": 959
+        },
+        {
+          "text": "[Thoughts] [General] Your mind hears Ezathiel thinking, \"Teaching circle starting up at the Grove in 15 rois. Directions are, from outside the Crossing west gate, go trail, go northeast, go east. Teachers and students of all kinds are welcome!\"",
+          "line": 960
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 961
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 963,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 965
+        },
+        {
+          "text": "You twist the mana streams of your Manifest Force spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 966
+        },
+        {
+          "text": "The force previously protecting you shudders as it is displaced.",
+          "line": 967
+        },
+        {
+          "text": "The air around you shimmers with a bright yellow glow.  The scintillating light writhes and twists, abruptly coalescing into a translucent field before blinking out of sight.",
+          "line": 968
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 969,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 971
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 972,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "[Arrivals]  * Cheryt joins the adventure.",
+          "line": 974
+        },
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 975
+        }
+      ]
+    },
+    {
+      "cmd": "prepare GAF 55",
+      "line": 977,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "DRExpMonitor: Attunement(+1), Lunar Magic(+2), Warding(+2)",
+          "line": 979
+        },
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Gauge Flow spell.",
+          "line": 980
+        }
+      ]
+    },
+    {
+      "cmd": "tie my rustic pestle to my grass toolstrap",
+      "line": 981,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a rustic pestle of unpolished diamondique to a strap on your grass toolstrap.",
+          "line": 983
+        }
+      ]
+    },
+    {
+      "cmd": "untie my sieve from my grass toolstrap",
+      "line": 984,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a mesh sieve with a polished silverwillow handle from the straps of your grass toolstrap.",
+          "line": 986
+        }
+      ]
+    },
+    {
+      "cmd": "push my glop with my sieve",
+      "line": 987,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You slowly filter some unfinished gill glop through your sieve and toss away the accumulated debris.",
+          "line": 989
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 990
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 991
+        }
+      ]
+    },
+    {
+      "cmd": "tie my mesh sieve to my grass toolstrap",
+      "line": 993,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a mesh sieve with a polished silverwillow handle to a strap on your grass toolstrap.",
+          "line": 995
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic pestle from my grass toolstrap",
+      "line": 997,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 999
+        }
+      ]
+    },
+    {
+      "cmd": "crush my glop with my rustic pestle",
+      "line": 1000,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With short strokes you crush some unfinished gill glop with your pestle.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 1002
+        },
+        {
+          "text": "",
+          "line": 1003
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 1004
+        },
+        {
+          "text": "Roundtime: 24 sec.",
+          "line": 1005
+        },
+        {
+          "text": "Long streamers of clouds turn shades of salmon and umber as the sun nears the horizon.",
+          "line": 1006
+        },
+        {
+          "text": "",
+          "line": 1007
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 1008
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 1010,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "...wait 1 seconds.",
+          "line": 1012
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 1013,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "...wait 1 seconds.",
+          "line": 1015
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 1016,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 1018
+        },
+        {
+          "text": "You twist the mana streams of your Gauge Flow spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 1019
+        },
+        {
+          "text": "A distracting flurry of cold white mana momentarily blinds you.  As your eyes adjust, you notice local fluctuations in mana are being represented by white graphs and sigils in the corners of your sight.",
+          "line": 1020
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 1021,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 1023
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 1024,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 1026
+        }
+      ]
+    },
+    {
+      "cmd": "prepare FIN 55",
+      "line": 1027,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "DRExpMonitor: Lunar Magic(+2), Utility(+2)",
+          "line": 1029
+        },
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Finesse spell.",
+          "line": 1030
+        }
+      ]
+    },
+    {
+      "cmd": "tie my rustic pestle to my grass toolstrap",
+      "line": 1031,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a rustic pestle of unpolished diamondique to a strap on your grass toolstrap.",
+          "line": 1033
+        }
+      ]
+    },
+    {
+      "cmd": "untie my sieve from my grass toolstrap",
+      "line": 1035,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a mesh sieve with a polished silverwillow handle from the straps of your grass toolstrap.",
+          "line": 1037
+        }
+      ]
+    },
+    {
+      "cmd": "push my glop with my sieve",
+      "line": 1038,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You slowly filter some unfinished gill glop through your sieve and toss away the accumulated debris.",
+          "line": 1040
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 1041
+        },
+        {
+          "text": "Applying the final touches, you complete working on some gill glop.",
+          "line": 1042
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 1043
+        }
+      ]
+    },
+    {
+      "cmd": "tie my mesh sieve to my grass toolstrap",
+      "line": 1045,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a mesh sieve with a polished silverwillow handle to a strap on your grass toolstrap.",
+          "line": 1047
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic pestle from my grass toolstrap",
+      "line": 1048,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 1050
+        }
+      ]
+    },
+    {
+      "cmd": "tie my rustic pestle to my grass toolstrap",
+      "line": 1051,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a rustic pestle of unpolished diamondique to a strap on your grass toolstrap.",
+          "line": 1053
+        }
+      ]
+    },
+    {
+      "cmd": "get my glop from my rustic mortar",
+      "line": 1054,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some gill glop from inside your rustic mortar.",
+          "line": 1056
+        }
+      ]
+    },
+    {
+      "cmd": "tie my rustic mortar to my grass toolstrap",
+      "line": 1057,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a rustic mortar of unpolished diamondique to a strap on your grass toolstrap.",
+          "line": 1059
+        }
+      ]
+    },
+    {
+      "cmd": "get my stamp",
+      "line": 1060,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get a basic steel stamp from inside your haversack.",
+          "line": 1062
+        }
+      ]
+    },
+    {
+      "cmd": "mark my glop with my stamp",
+      "line": 1063,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You hold the glop steady and score the surface with the stamp.",
+          "line": 1065
+        },
+        {
+          "text": "Roundtime: 19 sec.",
+          "line": 1066
+        },
+        {
+          "text": "[Arrivals]  * Chaid Ruhita Aishiteru vin'Rofakaha joins the adventure.",
+          "line": 1067
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 1068
+        }
+      ]
+    },
+    {
+      "cmd": "put my stamp in my haversack",
+      "line": 1070,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your stamp in your haversack.",
+          "line": 1072
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 1073,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You count out 6 uses remaining.",
+          "line": 1075
+        }
+      ]
+    },
+    {
+      "cmd": "release spell",
+      "line": 1078,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "Sylni just arrived.",
+          "line": 1079
+        },
+        {
+          "text": "You let your concentration lapse and feel the spell's energies dissipate.",
+          "line": 1080
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 1082,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 1084
+        }
+      ]
+    },
+    {
+      "cmd": "release symb",
+      "line": 1086,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You pause for a moment as the details of the Chaos symbiosis fade from your mind.",
+          "line": 1088
+        },
+        {
+          "text": "You release the Chaos symbiosis.",
+          "line": 1089
+        }
+      ]
+    }
+  ],
+  "dropped": [
+    {
+      "line": 627,
+      "why": "lich",
+      "text": "--- Lich: remedy active."
+    },
+    {
+      "line": 636,
+      "why": "lich",
+      "text": "--- Lich: buff active."
+    },
+    {
+      "line": 638,
+      "why": "lich",
+      "text": "--- Lich: buff has exited."
+    },
+    {
+      "line": 669,
+      "why": "script",
+      "text": "Remedy: 12 uses left on the glop instructions."
+    },
+    {
+      "line": 746,
+      "why": "lich",
+      "text": "--- Lich: remedy paused."
+    },
+    {
+      "line": 766,
+      "why": "lich",
+      "text": "--- Lich: remedy unpaused."
+    },
+    {
+      "line": 767,
+      "why": "script",
+      "text": "DRC: No match was found after 15 seconds for command 'crush my glop with my rustic pestle'"
+    },
+    {
+      "line": 768,
+      "why": "script",
+      "text": "DRC: Messages seen: 31"
+    },
+    {
+      "line": 769,
+      "why": "script",
+      "text": "DRC: > You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap."
+    },
+    {
+      "line": 770,
+      "why": "script",
+      "text": "DRC: > Prosperity in Absentia  (98 roisaen)"
+    },
+    {
+      "line": 771,
+      "why": "script",
+      "text": "DRC: > Noumena  (7 roisaen)"
+    },
+    {
+      "line": 772,
+      "why": "script",
+      "text": "DRC: > Bless  (12 roisaen)"
+    },
+    {
+      "line": 773,
+      "why": "script",
+      "text": "DRC: > You put your brine in your haversack."
+    },
+    {
+      "line": 774,
+      "why": "script",
+      "text": "DRC: > You toss the brine into the mortar and mix it in thoroughly."
+    },
+    {
+      "line": 775,
+      "why": "script",
+      "text": "DRC: > Prosperity in Absentia  (99 roisaen)"
+    },
+    {
+      "line": 776,
+      "why": "script",
+      "text": "DRC: > Noumena  (7 roisaen)"
+    },
+    {
+      "line": 777,
+      "why": "script",
+      "text": "DRC: > Bless  (12 roisaen)"
+    },
+    {
+      "line": 778,
+      "why": "script",
+      "text": "DRC: > You get some brewer's brine from inside your haversack."
+    },
+    {
+      "line": 779,
+      "why": "script",
+      "text": "DRC: > You attach a rustic pestle of unpolished diamondique to a strap on your grass toolstrap."
+    },
+    {
+      "line": 780,
+      "why": "script",
+      "text": "DRC: > Prosperity in Absentia  (99 roisaen)"
+    },
+    {
+      "line": 781,
+      "why": "script",
+      "text": "DRC: > Noumena  (7 roisaen)"
+    },
+    {
+      "line": 782,
+      "why": "script",
+      "text": "DRC: > Bless  (12 roisaen)"
+    },
+    {
+      "line": 783,
+      "why": "script",
+      "text": "DRC: > You feel fully prepared to cast your spell."
+    },
+    {
+      "line": 784,
+      "why": "script",
+      "text": "DRC: > Prosperity in Absentia  (99 roisaen)"
+    },
+    {
+      "line": 785,
+      "why": "script",
+      "text": "DRC: > Noumena  (7 roisaen)"
+    },
+    {
+      "line": 786,
+      "why": "script",
+      "text": "DRC: > Bless  (12 roisaen)"
+    },
+    {
+      "line": 787,
+      "why": "script",
+      "text": "DRC: > You sense an overall decrease in Lunar mana."
+    },
+    {
+      "line": 788,
+      "why": "script",
+      "text": "DRC: > War Healer Drakomar runs south."
+    },
+    {
+      "line": 789,
+      "why": "script",
+      "text": "DRC: > War Healer Drakomar came down a trodden dirt path."
+    },
+    {
+      "line": 790,
+      "why": "script",
+      "text": "DRC: > Prosperity in Absentia  (99 roisaen)"
+    },
+    {
+      "line": 791,
+      "why": "script",
+      "text": "DRC: > Noumena  (7 roisaen)"
+    },
+    {
+      "line": 792,
+      "why": "script",
+      "text": "DRC: > Bless  (12 roisaen)"
+    },
+    {
+      "line": 793,
+      "why": "script",
+      "text": "DRC: >  * Phantom Dhamer joins the adventure."
+    },
+    {
+      "line": 794,
+      "why": "script",
+      "text": "DRC: > You feel fully attuned to the mana streams again."
+    },
+    {
+      "line": 795,
+      "why": "script",
+      "text": "DRC: > You feel fully rested."
+    },
+    {
+      "line": 796,
+      "why": "script",
+      "text": "DRC: > Elusive Asab runs south."
+    },
+    {
+      "line": 797,
+      "why": "script",
+      "text": "DRC: > Elusive Asab came down a trodden dirt path."
+    },
+    {
+      "line": 798,
+      "why": "script",
+      "text": "DRC: > [Ingredients can be added by putting them with the unfinished item and continuing to craft.]"
+    },
+    {
+      "line": 799,
+      "why": "script",
+      "text": "DRC: > You need another splash of brewer's brine to continue crafting some unfinished gill glop.  You believe you can just pour or put it inside the mortar and continue crushing the unfinished remedy inside."
+    },
+    {
+      "line": 800,
+      "why": "script",
+      "text": "DRC: Checked against: [/^Applying the final touches/i, /^[^\"]*?Interesting thought really... but no./i, /^[^\"]*?you just can't mix/i, /^[^\"]*?Try as you might/i, /^[^\"]*?That craftable requires more pieces of that plant to begin/i, /^[^\"]*?You need a more suitable type of herb/i, /^[^\"]*?Roundtime:/i]"
+    },
+    {
+      "line": 1076,
+      "why": "script",
+      "text": "Remedy: made 6 uses of gill glop."
+    },
+    {
+      "line": 1090,
+      "why": "lich",
+      "text": "--- Lich: remedy has exited."
+    }
+  ]
+}
