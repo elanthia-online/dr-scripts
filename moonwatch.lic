@@ -1241,9 +1241,11 @@ module MoonwatchAlias
   # A ;kill (Thread#kill) is held back from the open until the close returns.
   # On Windows the sqlite3 gem's SQLite sleeps through Ruby, so a kill that
   # landed inside a SQLite call would unwind through its C frames and leave the
-  # connection's mutex locked (lich-5#2254). The cost: a kill that arrives
-  # while alias.db3 is locked waits out Lich's busy timeout (5 s) for each
-  # statement still to run, instead of ending the wait at once.
+  # connection's mutex locked (lich-5#2254). A kill during a lock wait still
+  # ends the wait at once (Lich's busy handler gives up). One that arrives
+  # before the query starts makes it wait for the lock first, up to Lich's busy
+  # timeout (5 s), since the helper reads an already-pending kill as a request
+  # to finish.
   #
   # @param trigger [String] the alias trigger to look up (default 'moon')
   # @param db_path [String] override the DB path (for testing)
