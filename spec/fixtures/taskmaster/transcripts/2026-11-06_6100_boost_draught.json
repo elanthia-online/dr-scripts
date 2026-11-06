@@ -1,0 +1,213 @@
+{
+  "run": "2026-11-06_6100_boost_draught",
+  "log": "6100",
+  "from": 10291,
+  "to": 10338,
+  "source": "nezhiri.txt lines 10291-10338: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept. Another player's Hollow Eve 2026 Nezhiri task log; the \"script\" key per step and the dropped-lines list were removed.",
+  "steps": [
+    {
+      "cmd": "wealth kronars",
+      "line": 10291,
+      "user": false,
+      "responses": [
+        {
+          "text": "  80 platinum, 2 gold, 3 silver, 15 bronze, and 8 copper Kronars (802458 copper Kronars).",
+          "line": 10292
+        }
+      ]
+    },
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 10293,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri says, \"I am sorry, you must wait before I can give you a task.\"",
+          "line": 10294
+        }
+      ]
+    },
+    {
+      "cmd": "boost task",
+      "line": 10295,
+      "user": false,
+      "responses": [
+        {
+          "text": "You've activated the Task Master boost for 2 hours!  Check INFO to see your time remaining.",
+          "line": 10296
+        }
+      ]
+    },
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 10297,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri's eyes twinkle enthusiastically.  \"You wish to help me grow my business?  Oh, I am so pleased to hear it!  Your kind efforts will not go unrewarded, but I'm afraid I must ask for an up-front investment of 5 gold Kronars to cover the base costs of this next venture.  If you agree, just ask again and I'll make a record of our arrangement.\"",
+          "line": 10298
+        },
+        {
+          "text": "",
+          "line": 10299
+        },
+        {
+          "text": "\"I'm also running low on raw ingredients, so you will have to track down your own supplies.  The Merelew have been kind enough to share their stock of brewer's brine with us, however.  You can purchase as much as you need at the local Craftsmen's Academy.\"  The peddler pauses and scratches her scaly chin.  \"I suppose that's all there is to it.  If you give me the coin to finalize our deal and then craft the requested compounds, I'll reward you with whatever knowledge and material trinkets I can spare.\"",
+          "line": 10300
+        },
+        {
+          "text": "[ASK NEZHIRI FOR TASK again if you agree to her terms.]",
+          "line": 10301
+        }
+      ]
+    },
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 10303,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri beams at you, her tail rolling up and down in a smooth undulation.  \"I'm pleased that you've decided to hear my proposal!  It's been quite difficult keeping up with demand while still learning these local recipes, so I'll take all the help I can get.  You won't go uncompensated for your assistance, of course!\"",
+          "line": 10304
+        },
+        {
+          "text": "",
+          "line": 10305
+        },
+        {
+          "text": "Should you agree to my terms, you'll need to make 13 doses of some deep-sea draught,\" Nezhiri explains.  \"It's been selling well today, and that's what I need to restock next.  Please COMBINE the doses into a single product before you turn them in, and make sure anything you give me is well-made or better, because I certainly can't build a business on shoddy merchandise.  And speaking of business, I can't guarantee a profitable return on your investment either, but I'll pay you what I can spare.  If the risk bothers you, then perhaps this arrangement is not for you...but nothing ventured, nothing gained, right?\"  The peddler winks.",
+          "line": 10306
+        },
+        {
+          "text": "",
+          "line": 10307
+        },
+        {
+          "text": "Nezhiri concludes, \"If you proceed, I'll ask you for that fee and set you to work.\"",
+          "line": 10308
+        },
+        {
+          "text": "",
+          "line": 10309
+        },
+        {
+          "text": "[You may accept by typing ACCEPT TASK, or decline by typing DECLINE TASK.  You have 30 seconds to decide.]",
+          "line": 10310
+        }
+      ]
+    },
+    {
+      "cmd": "accept task",
+      "line": 10311,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri smiles at you.  She holds out a hand and says, \"I'll have those 5 gold coins now, if I may.\"",
+          "line": 10312
+        },
+        {
+          "text": "Potion Peddler Nezhiri accepts your coins and slips them away.  \"Splendid!  We have ourselves a deal.\"",
+          "line": 10313
+        },
+        {
+          "text": "Trilling cheerfully, the peddler hands you some deep-sea draught instructions.  \"This is the recipe I need you to follow.  It should be pretty straightforward, but as a measure of quality control I must insist that you make the concoction with your own hands.  Return to me when the requisite number of doses is complete.  I'll be peddling my wares here on Andreshlew until it sinks back into the ocean, so please be sure to conclude our business before then.  Good luck, and no refunds!\"",
+          "line": 10314
+        },
+        {
+          "text": "[You can check your progress with the TASK verb.]",
+          "line": 10315
+        }
+      ]
+    },
+    {
+      "cmd": "task",
+      "line": 10316,
+      "user": false,
+      "responses": [
+        {
+          "text": "You look in your task journal and see the following entry:",
+          "line": 10317
+        },
+        {
+          "text": "",
+          "line": 10318
+        },
+        {
+          "text": "While visiting Andreshlew for the Hollow Eve festivities, Nezhiri has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  In particular, she wanted you to craft some deep-sea draught and indicated that 13 doses would suffice.  So far, you have returned 0 to her.  Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Nezhiri for another copy.",
+          "line": 10319
+        },
+        {
+          "text": "",
+          "line": 10320
+        },
+        {
+          "text": "You have performed the following tasks:",
+          "line": 10321
+        },
+        {
+          "text": "3528 crafting tasks",
+          "line": 10322
+        }
+      ]
+    },
+    {
+      "cmd": "read my draught instructions",
+      "line": 10325,
+      "user": false,
+      "responses": [
+        {
+          "text": "These instructions appear to be very fragile and will wear out quickly when studied.  They have only 14 uses remaining.",
+          "line": 10326
+        },
+        {
+          "text": "",
+          "line": 10327
+        },
+        {
+          "text": "        -=   Instructions for crafting some deep-sea draught    =-",
+          "line": 10328
+        },
+        {
+          "text": "",
+          "line": 10329
+        },
+        {
+          "text": "  Some deep-sea draught is a craftable item in the Alchemy society under the Remedies crafting discipline.  This is considered to be an extremely easy piece to make, though knowledge of the Internal Body Remedies technique will be beneficial to the crafter.",
+          "line": 10330
+        },
+        {
+          "text": "",
+          "line": 10331
+        },
+        {
+          "text": "  This item is listed as a \"custom wound remedy\" ingredient type and is created using a mortar and pestle to crush or a cooking pot and stirring rod to mix.  A crafter may also find it helpful to have a sieve, some water and alcohol, and a fire if mixing on hand.",
+          "line": 10332
+        },
+        {
+          "text": "",
+          "line": 10333
+        },
+        {
+          "text": " A list of ingredients is provided:",
+          "line": 10334
+        },
+        {
+          "text": "",
+          "line": 10335
+        },
+        {
+          "text": "   (5) prepared herb (pieces per use, known to heal internal wounds of the back)",
+          "line": 10336
+        },
+        {
+          "text": "   (1) splash of brewer's brine",
+          "line": 10337
+        },
+        {
+          "text": "   (1) catalyst material",
+          "line": 10338
+        }
+      ]
+    }
+  ]
+}

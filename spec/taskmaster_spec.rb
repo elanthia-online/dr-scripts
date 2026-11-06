@@ -653,12 +653,13 @@ RSpec.describe TaskMaster do
         expect(start(npc: 'zasele', reset_output: true)).to eq([[:respond, "<clearStream id='Task Master'/>"], :exit])
       end
 
-      it 'loot_history prints each taskmaster\'s sacks and exits, Dorhum\'s empty when an older history has none' do
+      it 'loot_history prints each taskmaster\'s sacks and exits, Dorhum\'s and Nezhiri\'s empty when an older history has none' do
         UserVars.taskmaster_sacks = { 'poltu' => ['a bronze bar.'], 'bradyn' => [], 'zasele' => ['some coral dye.', 'a large haledroth shard.'] }
         expect(start(npc: 'zasele', loot_history: true)).to eq([[:message, 'Sack history for Taskmaster Poltu:'], [:message, 'a bronze bar.'],
                                                                 [:message, 'Sack history for Taskmaster Bradyn:'],
                                                                 [:message, 'Sack history for Taskmaster Zasele:'], [:message, 'some coral dye.'], [:message, 'a large haledroth shard.'],
                                                                 [:message, 'Sack history for Taskmaster Dorhum:'],
+                                                                [:message, 'Sack history for Taskmaster Nezhiri:'],
                                                                 :exit])
       end
 
@@ -1376,16 +1377,18 @@ RSpec.describe TaskMaster do
             .with('You are on a task for Zasele, not Dorhum. Finish it with ;taskmaster zasele, or cancel it with ASK ZASELE FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
         end
 
+        # A made-up taskmaster: every crafting taskmaster in the Hollow Eve
+        # 2026 logs is one this script does.
         it "stops on a task from a taskmaster it doesn't do, saying to finish it by hand" do
           tm = reader(npc: 'zasele')
-          game('task' => zasele_journal.sub('Zasele has asked', 'Nezhiri has asked'))
+          game('task' => zasele_journal.sub('Zasele has asked', 'Ozemir has asked'))
           expect(tm).not_to receive(:turn_in_banked)
           expect(tm).not_to receive(:cancel_task)
 
           expect { tm.resume_task }.to raise_error(SystemExit)
 
           expect(DRC).to have_received(:message)
-            .with('You are on a task for Nezhiri, not Zasele. Nezhiri is not a taskmaster this script does, so finish it yourself, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
+            .with('You are on a task for Ozemir, not Zasele. Ozemir is not a taskmaster this script does, so finish it yourself, or cancel it with ASK OZEMIR FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
         end
 
         it "with task_cancel_foreign_tasks, cancels another taskmaster's task, waits out the cooldown and goes back to its own" do
@@ -4712,6 +4715,422 @@ RSpec.describe TaskMaster do
 
     it 'takes dorhum as a taskmaster' do
       expect(TaskMaster::ARG_DEFINITIONS.first.first[:options]).to include('dorhum')
+    end
+  end
+
+  # Nezhiri's alchemy tasks, replayed from another player's Hollow Eve 2026
+  # Nezhiri task logs (cite keys 6100..6106, see
+  # spec/fixtures/taskmaster/log_lines.json). Every game reply is a logged
+  # line, ReplayGame.log, or a whole logged window from a transcript; the few
+  # lines no log has are ReplayGame.code and say where they come from. The
+  # commands were sent by the logging player's client script.
+  describe "Nezhiri's alchemy tasks" do
+    # The real stock table, so the order numbers and prices are the ones
+    # taskmaster reads in game (get_data('crafting')['stock']).
+    let(:stock) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__))['stock'] }
+
+    # What read_remedy_instructions returns for each product, from the logs.
+    let(:moisturizer_recipe) do
+      { noun: 'moisturizer', herb: 'red flower', stock: 'red flowers', vessel: 'mortar', heals: 'provide minor external healing over the entire body',
+        product: 'scale moisturizer', order: 13, price: 343, pieces: 5 }
+    end
+    let(:draught_recipe) do
+      { noun: 'draught', herb: 'junliar', stock: 'junliar', vessel: 'bowl', heals: 'heal internal wounds of the back',
+        product: 'deep-sea draught', order: 9, price: 531, pieces: 5 }
+    end
+    let(:glop_recipe) do
+      { noun: 'glop', herb: 'georin', stock: 'georin', vessel: 'mortar', heals: 'heal external wounds of the neck',
+        product: 'gill glop', order: 7, price: 437, pieces: 5 }
+    end
+    let(:potion_recipe) do
+      { noun: 'potion', herb: 'aevaes', stock: 'aevaes', vessel: 'bowl', heals: 'heal internal wounds of the eyes',
+        product: 'landsickness potion', order: 10, price: 537, pieces: 5 }
+    end
+
+    def nezhiri_tm(**ivars)
+      build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, **ivars)
+    end
+
+    # A replay for the example: the game answers DRC.bput, fput and
+    # Lich::Util.issue_command from log lines, the commons helpers move
+    # things in a model of the bags and hands, and Nezhiri stands in the
+    # room, so find_npc walks nowhere (a walk would show in the timeline).
+    def replay(inventory: {})
+      game = ReplayGame.new.install(self)
+      commons = ReplayCommons.new(game: game, inventory: inventory).install(self)
+      DRRoom.npcs = ['Nezhiri']
+      [game, commons]
+    end
+
+    def transcript(run)
+      ReplayTranscript.load(File.expand_path("fixtures/taskmaster/transcripts/#{run}.json", __dir__))
+    end
+
+    # The logged lines of one log from one line to another (log lines not in
+    # the fixture, the commands, are skipped).
+    def logged(log, from, to)
+      (from..to).filter_map { |line| ReplayGame.log("#{log}:#{line}") if ReplayGame.log_lines.key?("#{log}:#{line}") }
+    end
+
+    # Logged READs of each product's instructions: uses line, title,
+    # description and ingredients.
+    let(:reads) do
+      { 'moisturizer' => logged(6100, 208, 220), 'potion' => logged(6100, 3915, 3927), 'draught' => logged(6100, 6126, 6138), 'glop' => logged(6100, 8648, 8660) }
+    end
+
+    describe 'the task journal' do
+      it "reads every logged Nezhiri journal as doses of a whole product, and Dorhum's and Zasele's journals as before" do
+        tm = nezhiri_tm
+        journals = { '6100:154' => ['moisturizer', 12, 'scale moisturizer'], '6100:3908' => ['potion', 15, 'landsickness potion'],
+                     '6100:6119' => ['draught', 14, 'deep-sea draught'], '6100:8641' => ['glop', 13, 'gill glop'],
+                     '6101:24' => ['moisturizer', 12, 'scale moisturizer'], '6102:23' => ['draught', 14, 'deep-sea draught'],
+                     '6103:49' => ['potion', 15, 'landsickness potion'], '6104:28' => ['glop', 14, 'gill glop'],
+                     '6105:74' => ['draught', 15, 'deep-sea draught'], '6106:56' => ['glop', 12, 'gill glop'] }
+        read = journals.keys.map do |cite|
+          game = replay.first
+          game.script('task', ReplayGame.log(cite))
+          [*tm.read_task, tm.instance_variable_get(:@task_product), tm.instance_variable_get(:@task_giver)]
+        end
+        expect(read).to eq(journals.values.map { |entry| [*entry, 'nezhiri'] })
+        expect(DRC).to have_received(:message).with('Making 12 doses of scale moisturizer').twice
+
+        # Dorhum's real journal (same log) and Zasele's (her test journal) keep
+        # their captures: no "doses", so the count is the number before
+        # "would suffice", as it always was.
+        dorhum = build(npc: 'dorhum')
+        replay.first.script('task', ReplayGame.log('6100:12881'))
+        expect([*dorhum.read_task, dorhum.instance_variable_get(:@task_product)]).to eq(['spongestone', 6, 'spongestone'])
+        expect(DRC).to have_received(:message).with('Making 6 spongestones')
+        expect(TaskMaster::TASK_JOURNAL.match(journal('a coil of reinforced cloth rope', 5, 2)).captures).to eq([nil, 'a coil of reinforced cloth rope', '5', '2'])
+        expect(TaskMaster::TASK_JOURNAL.match(journal('a coil of reinforced cloth rope', 5)).captures).to eq([nil, 'a coil of reinforced cloth rope', '5', nil])
+      end
+
+      it "says to finish Nezhiri's task with ;taskmaster nezhiri when another taskmaster's run finds it" do
+        tm = build(npc: 'zasele')
+        allow(tm).to receive(:find_npc)
+        replay.first.script('task', ReplayGame.log('6100:154'))
+        expect(tm).not_to receive(:turn_in_banked)
+
+        expect { tm.resume_task }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message)
+          .with('You are on a task for Nezhiri, not Zasele. Finish it with ;taskmaster nezhiri, or cancel it with ASK NEZHIRI FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
+      end
+    end
+
+    describe '#get_task' do
+      it 'asks twice, accepts, reads the journal and the instructions, all from one logged task (6100:132-220)' do
+        tm = nezhiri_tm
+        game, = replay
+        transcript('2026-11-06_6100_accept_moisturizer')
+          .script(game, commands: /\A(?:ask nezhiri for task|accept task|task|read my moisturizer instructions)\z/, skip: [183, 192])
+
+        item, count, recipe = tm.get_task
+
+        expect([item, count, recipe]).to eq(['moisturizer', 12, moisturizer_recipe.merge(uses: 13)])
+        expect(game.timeline).to eq(['>> ask nezhiri for task', '>> ask nezhiri for task', '>> accept task', '>> task', '>> read my moisturizer instructions',
+                                     '** DRCC.stow_crafting_item("moisturizer instructions", "duffel bag", nil)'])
+        # Her accept prints "[You can check your progress with the TASK verb.]"
+        # (6100:150): no reply was waited out.
+        expect([game.clock, game.diagnostics]).to eq([0.0, []])
+      end
+
+      it 'boosts past "you must wait", then asks twice and accepts (6100:10293-10338)' do
+        tm = nezhiri_tm(boost: true, cooldown_poll: 15)
+        game, = replay
+        transcript('2026-11-06_6100_boost_draught')
+          .script(game, commands: /\A(?:ask nezhiri for task|boost task|accept task|task|read my draught instructions)\z/)
+
+        item, count, recipe = tm.get_task
+
+        expect([item, count, recipe]).to eq(['draught', 13, draught_recipe.merge(uses: 14)])
+        expect(game.timeline(calls: false)).to eq(['>> ask nezhiri for task', '>> boost task', '>> ask nezhiri for task', '>> ask nezhiri for task',
+                                                   '>> accept task', '>> task', '>> read my draught instructions'])
+        expect([game.clock, game.diagnostics, tm.instance_variable_get(:@boost)]).to eq([2.0, [], false])
+      end
+
+      it 'waits the poll interval instead when it has no boost, then takes the same offer' do
+        tm = nezhiri_tm(boost: false, cooldown_poll: 15)
+        game, = replay
+        transcript('2026-11-06_6100_boost_draught')
+          .script(game, commands: /\A(?:ask nezhiri for task|accept task|task|read my draught instructions)\z/)
+
+        expect(tm.get_task.first(2)).to eq(['draught', 13])
+        expect(game.sent).not_to include('boost task')
+        expect(game.clock).to eq(15.0)
+      end
+    end
+
+    describe '#read_instructions' do
+      it "reads each product's logged instructions and returns its recipe, with order number and price from base-crafting.yaml" do
+        recipes = { 'moisturizer' => moisturizer_recipe.merge(uses: 13), 'potion' => potion_recipe.merge(uses: 16),
+                    'draught' => draught_recipe.merge(uses: 15), 'glop' => glop_recipe.merge(uses: 14) }
+        recipes.each do |noun, recipe|
+          tm = nezhiri_tm(task_product: recipe[:product])
+          game, = replay
+          game.script("read my #{noun} instructions", *reads[noun])
+
+          expect(tm.read_instructions(noun, 12)).to eq([noun, 12, recipe])
+          expect(game.timeline).to eq([">> read my #{noun} instructions", "** DRCC.stow_crafting_item(\"#{noun} instructions\", \"duffel bag\", nil)"])
+        end
+      end
+
+      # A roundtime refusal before the READ ("...wait 6 seconds.", 6100:14245,
+      # after a study) is sat out inside issue_command's timeout. At its
+      # default 5 s the READ came back empty and the run paused and stopped.
+      it 'reads the set after a "...wait" longer than issue_command\'s default 5 s, since the READ waits as long as bput (6100:14245)' do
+        tm = nezhiri_tm(task_product: 'gill glop')
+        game, = replay
+        game.script('read my glop instructions', ReplayGame.log('6100:14245'))
+        game.script('read my glop instructions', *reads['glop'])
+        expect(tm).not_to receive(:pause_script)
+
+        expect(tm.read_instructions('glop', 13)).to eq(['glop', 13, glop_recipe.merge(uses: 14)])
+        expect([game.sent, game.clock]).to eq([['read my glop instructions'] * 2, 6.0])
+      end
+
+      it 'still pauses when the READ is not answered within those 15 s' do
+        tm = nezhiri_tm(task_product: 'gill glop')
+        game, = replay
+        game.script('read my glop instructions', ReplayGame.log('6100:14245'))
+        game.script('read my glop instructions', ReplayGame.log('6100:13450'))
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.read_instructions('glop', 13) }.to raise_error(SystemExit)
+        expect(game.clock).to eq(15.0)
+        expect(DRC).to have_received(:message).with(a_string_including('no title was read'))
+      end
+
+      it 'takes the product from the title when no journal was read' do
+        tm = nezhiri_tm
+        replay.first.script('read my glop instructions', *reads['glop'])
+
+        expect(tm.read_instructions('glop', 13).last).to eq(glop_recipe.merge(uses: 14))
+      end
+
+      it 'pins every Nezhiri product to an herb the Crossing alchemy supplies sell, at the order number and price on its menu (6102:72-78)' do
+        menu = %w[6102:72 6102:74 6102:75 6102:78].to_h do |cite|
+          number, name, price = ReplayGame.log(cite).text.match(/(\d+)\)\.\s+\(25 pieces\) (.+?)\.{2,}\s*(\d+) Kronars/).captures
+          [name, [number.to_i, price.to_i]]
+        end
+        shop_names = { 'georin' => 'dried georin', 'red flowers' => 'dried red flowers', 'aevaes' => 'crushed aevaes', 'junliar' => 'crushed junliar' }
+        stocked = TaskMaster::NEZHIRI_ITEMS.values.to_h { |recipe| [shop_names.fetch(recipe[:stock]), stock.fetch(recipe[:stock]).values_at('stock-number', 'stock-value')] }
+        expect(stocked).to eq(menu)
+      end
+
+      describe 'instructions that are not what taskmaster expects' do
+        # Each pauses with a message, then stops when unpaused, after the
+        # instructions are stowed.
+        def refused(tm, noun, reply, message)
+          game, = replay
+          game.script("read my #{noun} instructions", *reply)
+          expect(tm).to receive(:pause_script)
+
+          expect { tm.read_instructions(noun, 13) }.to raise_error(SystemExit)
+
+          expect(game.timeline).to include("** DRCC.stow_crafting_item(\"#{noun} instructions\", \"duffel bag\", nil)")
+          expect(DRC).to have_received(:message).with("#{message} Pausing; make them yourself, or kill the script. Unpausing stops it.")
+          game
+        end
+
+        it "pauses on a product taskmaster does not know (Dorhum's real spongestone instructions)" do
+          refused(nezhiri_tm(task_product: 'spongestone'), 'spongestone', logged(6100, 12888, 12901),
+                  "taskmaster does not know how to make Nezhiri's spongestone yet.")
+        end
+
+        it 'pauses when the instructions are for another product than the journal names' do
+          refused(nezhiri_tm(task_product: 'gill glop'), 'glop', reads['draught'],
+                  'The glop instructions do not read as taskmaster expects for gill glop: they are for deep-sea draught.')
+        end
+
+        it "pauses when the title's product has another noun than the one asked for" do
+          refused(nezhiri_tm, 'potion', reads['glop'], 'The potion instructions are for gill glop, which is not a potion.')
+        end
+
+        # Real lines, in a combination no log has: the gill glop READ with the
+        # deep-sea draught's herb line (6100:6136) in place of its own.
+        it 'pauses when the herb heals something else than the product needs' do
+          reply = reads['glop'].map { |line| line.cite == '6100:8658' ? ReplayGame.log('6100:6136') : line }
+          refused(nezhiri_tm(task_product: 'gill glop'), 'glop', reply,
+                  'The glop instructions do not read as taskmaster expects for gill glop: the herb is known to heal internal wounds of the back, not to heal external wounds of the neck.')
+        end
+
+        it 'pauses when each use takes another number of herb pieces' do
+          four = ReplayGame.code('   (4) prepared herb (pieces per use, known to heal external wounds of the neck)', from: '6100:8658 with another piece count')
+          reply = reads['glop'].map { |line| line.cite == '6100:8658' ? four : line }
+          refused(nezhiri_tm(task_product: 'gill glop'), 'glop', reply,
+                  'The glop instructions do not read as taskmaster expects for gill glop: each use takes 4 herb pieces, not 5.')
+        end
+
+        it 'pauses when the brine line is missing' do
+          reply = reads['glop'].reject { |line| line.cite == '6100:8659' }
+          refused(nezhiri_tm(task_product: 'gill glop'), 'glop', reply,
+                  'The glop instructions do not read as taskmaster expects for gill glop: no brine line was read.')
+        end
+
+        it 'pauses when no herb line was read' do
+          reply = reads['glop'].reject { |line| line.cite == '6100:8658' }
+          refused(nezhiri_tm(task_product: 'gill glop'), 'glop', reply,
+                  'The glop instructions do not read as taskmaster expects for gill glop: no herb line was read.')
+        end
+
+        it 'pauses after the READ times out when no instructions are carried' do
+          game = refused(nezhiri_tm(task_product: 'gill glop'), 'glop', [ReplayGame.log('6100:202')],
+                         'The glop instructions do not read as taskmaster expects for gill glop: no title was read.')
+          expect(game.clock).to eq(15.0) # TaskMaster::NEZHIRI_READ_TIMEOUT
+        end
+
+        it "pauses when base-crafting.yaml has no stock entry for the product's herb" do
+          refused(nezhiri_tm(task_product: 'gill glop', stockdata: stock.except('georin')), 'glop', reads['glop'],
+                  "base-crafting.yaml has no stock entry 'georin' for gill glop's herb.")
+        end
+      end
+    end
+
+    describe '#ensure_instructions' do
+      it 'asks Nezhiri for a replacement when no set is carried, which has a use per dose owed (6100:2944-2963)' do
+        tm = nezhiri_tm(task_product: 'scale moisturizer')
+        game, = replay
+        transcript('2026-11-06_6100_replacement_moisturizer')
+          .script(game, commands: /\A(?:ask nezhiri for instructions|read my moisturizer instructions)\z/)
+
+        tm.ensure_instructions('moisturizer', 12)
+        recipe = tm.read_instructions('moisturizer', 12).last
+
+        expect(game.timeline(calls: false)).to eq(['>> ask nezhiri for instructions', '>> read my moisturizer instructions'])
+        expect(UserVars.taskmaster_replacements).to eq('nezhiri' => 'moisturizer')
+        expect(recipe[:uses]).to eq(12)
+      end
+
+      # The set carried at 6100:3780 had 10 uses left with 12 doses owed
+      # (6100:3546): two crafts' worth.
+      it 'keeps a set with fewer uses than doses owed while it has a use for each craft still to make' do
+        tm = nezhiri_tm
+        game, commons = replay(inventory: { 'scale moisturizer instructions' => 'duffel bag' })
+        game.script('read my moisturizer instructions', ReplayGame.log('6100:3780'))
+
+        tm.ensure_instructions('moisturizer', 12)
+
+        expect(game.sent).to eq(['read my moisturizer instructions'])
+        expect([$right_hand, commons.inventory]).to eq(['scale moisturizer instructions', []])
+        expect(UserVars.taskmaster_replacements).to be_nil
+      end
+
+      # The set at 6100:1576 had one use left: enough for 6 doses (one craft),
+      # not for 7 (two).
+      it 'asks for a replacement only when the uses left are fewer than the crafts still to make' do
+        outcomes = [6, 7].map do |doses|
+          UserVars.taskmaster_replacements = nil
+          tm = nezhiri_tm
+          game, = replay(inventory: { 'scale moisturizer instructions' => 'duffel bag' })
+          $right_hand = nil
+          game.script('read my moisturizer instructions', ReplayGame.log('6100:1576'))
+          game.script('ask nezhiri for instructions', ReplayGame.log('6100:2949')) # her replacement reply, later in the same log
+          tm.ensure_instructions('moisturizer', doses)
+          game.timeline
+        end
+        expect(outcomes).to eq([['** DRCI.get_item?("moisturizer instructions", "duffel bag")', '>> read my moisturizer instructions'],
+                                ['** DRCI.get_item?("moisturizer instructions", "duffel bag")', '>> read my moisturizer instructions',
+                                 '** DRCC.stow_crafting_item("moisturizer instructions", "duffel bag", nil)', '>> ask nezhiri for instructions']])
+      end
+
+      it 'counts the crafts as doses over six, rounded up, and none for no doses' do
+        tm = nezhiri_tm
+        expect([-3, 0, 1, 6, 7, 12, 13, 18, 19].map { |doses| tm.nezhiri_crafts(doses) }).to eq([0, 0, 1, 1, 2, 2, 3, 3, 4])
+      end
+    end
+
+    describe 'cancelling her task' do
+      # Her cancel replies are in no log. Built from TASK_CANCEL_CONFIRM and
+      # TASK_CANCELLED in Dorhum's logged wording, with her title as she says
+      # "you must wait" (6100:10294).
+      let(:confirm) do
+        ReplayGame.code('Potion Peddler Nezhiri looks at you and says, "You wish to end your current task?  If so, ask me again within fifteen seconds."',
+                        from: 'taskmaster.lic TASK_CANCEL_CONFIRM, with the title of 6100:10294')
+      end
+      let(:cancelled) do
+        ReplayGame.code('Potion Peddler Nezhiri says, "Very well, I see that you no longer wish to assist me."', from: 'taskmaster.lic TASK_CANCELLED, with the title of 6100:10294')
+      end
+
+      it 'takes the replies of a taskmaster with a two-word title, asking twice as the game wants' do
+        tm = build(npc: 'zasele', worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', rooms: TaskMaster::ROOMS)
+        game, = replay
+        game.script('ask nezhiri for task cancel', confirm)
+        game.script('ask nezhiri for task cancel', cancelled)
+        allow(DRCT).to receive(:dispose)
+
+        expect { tm.cancel_task('nezhiri', 'glop') }.not_to raise_error
+
+        expect(game.sent).to eq(['ask nezhiri for task cancel'] * 2)
+        expect(DRCT).to have_received(:dispose).with('glop instructions', nil, 'bucket', 'tap')
+      end
+
+      it 'matches her real line by its two-word title, still a one-word title, and not a player looking at her' do
+        tm = build
+        player = 'Mallory looks at Potion Peddler Nezhiri and says, "Very well, I see that you no longer wish to assist me."'
+        expect(tm.cancel_reply('nezhiri', 'you must wait before I can give you a task')).to match(ReplayGame.log('6100:10294').text)
+        expect(tm.cancel_reply('dorhum', TaskMaster::TASK_CANCELLED)).to match('Researcher Dorhum says, "Very well, I see that you no longer wish to assist me."')
+        expect(tm.cancel_reply('nezhiri', TaskMaster::TASK_CANCELLED)).not_to match(player)
+      end
+    end
+
+    describe 'taking her as a taskmaster' do
+      it 'offers nezhiri as a taskmaster, with her tools and a sack history, but never picks her for cycle' do
+        expect(TaskMaster::ARG_DEFINITIONS.first.first[:options]).to include('nezhiri')
+        expect(TaskMaster::TASKMASTERS).to include('nezhiri')
+        expect(TaskMaster::TOOLS['nezhiri']).to eq(['mortar', 'pestle', 'bowl', 'mixing stick'])
+
+        tm = described_class.allocate
+        allow(tm).to receive(:get_settings).and_return(OpenStruct.new)
+        allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
+        UserVars.taskmaster_sacks = nil
+        tm.send(:initialize)
+        expect(UserVars.taskmaster_sacks).to include('nezhiri' => [])
+
+        source = File.read(File.expand_path('../taskmaster.lic', __dir__))
+        expect(source.scan(/\[[^\]]*\]\.sample/)).to all(eq("['poltu', 'bradyn', 'zasele'].sample"))
+      end
+
+      it 'pauses with what her task needs and how to cut the stack to size, since it cannot make or hand in remedies yet, and stops when unpaused' do
+        tm = nezhiri_tm
+        expect(tm).to receive(:pause_script)
+
+        expect { tm.nezhiri('glop', 13, glop_recipe) }.to raise_error(SystemExit)
+
+        expect(DRC).to have_received(:message)
+          .with("taskmaster cannot make or hand in Nezhiri's remedies yet. Make 13 doses of gill glop (georin in a mortar) and combine them into one glop of exactly 13 doses " \
+                '(MARK MY GLOP AT 13, then BREAK MY GLOP, cuts off any extra). Then GIVE MY GLOP TO NEZHIRI. ' \
+                'Pausing; make them yourself, or kill the script. Unpausing stops it.')
+      end
+
+      # ;taskmaster nezhiri finish on a logged task. A give by noun would take
+      # whatever the bag holds of it: another item of the noun, or a stack she
+      # turns down for its size ("The amount here looks off.", 6106:1811),
+      # which bput does not know, so it waited 15 s each, five times. So
+      # nothing is given: the run reads the task and the set, then pauses as
+      # a new task does.
+      {
+        'a healing potion on a landsickness potion task (6100:3908)'                => ['6100:3908', 'potion', 15, 3915..3927, 'small healing potion'],
+        'a 12-dose gill glop stack she would turn down as the wrong size (6106:56)' => ['6106:56', 'glop', 12, 8648..8660, 'gill glop']
+      }.each do |what, (journal, noun, doses, read, bagged)|
+        it "gives Nezhiri nothing on finish with #{what} in the bag, and pauses with what her task needs" do
+          tm = nezhiri_tm
+          game, commons = replay(inventory: [["#{noun} instructions", 'duffel bag'], [bagged, 'duffel bag']])
+          game.script('task', ReplayGame.log(journal))
+          game.script("read my #{noun} instructions", *logged(6100, read.first, read.last))
+          game.script("read my #{noun} instructions", *logged(6100, read.first, read.last))
+          %i[refresh_haste top_up_copper].each { |step| allow(tm).to receive(step) }
+          expect(tm).to receive(:pause_script)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(game.sent.grep(/\Agive/)).to be_empty
+          expect(game.sent).to eq(['task', "read my #{noun} instructions", "read my #{noun} instructions"])
+          expect(commons.moves.grep(/\A#{Regexp.escape(bagged)}:/)).to be_empty
+          expect(DRC).to have_received(:message).with(a_string_starting_with("taskmaster cannot make or hand in Nezhiri's remedies yet. Make #{doses} doses of "))
+          expect(game.clock).to eq(0.0)
+        end
+      end
     end
   end
 end
