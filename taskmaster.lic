@@ -34,7 +34,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.4'
+  VERSION = '2026.11.07.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1010,13 +1010,15 @@ class TaskMaster
   # @param amount [Integer]
   # @param keep_hands [Boolean] leave the hands as they are on the stop (a
   #   held vessel with an unfinished remedy in it stays in hand)
+  # @param note [String, nil] said before the stop (what to do about a
+  #   vessel kept in hand)
   # @return [void]
   # @raise [SystemExit] when the bank cannot cover it
-  def afford(amount, keep_hands: false)
+  def afford(amount, keep_hands: false, note: nil)
     return if DRCM.ensure_copper_on_hand(amount, @settings, "Crossing")
 
     DRCI.stow_hands unless keep_hands
-    DRC.message("Out of money: #{amount} Kronars (copper) needed and the Crossing bank could not cover it. Stopping before buying anything more.")
+    DRC.message("Out of money: #{amount} Kronars (copper) needed and the Crossing bank could not cover it. #{note && "#{note} "}Stopping before buying anything more.")
     exit
   end
 
@@ -1038,11 +1040,22 @@ class TaskMaster
   # A purchase that did not go through (not enough coins, or the shop could
   # not be reached) stops the run before the supplies run short mid-task.
   #
+  # Ids in keep stay in hand and everything else held goes in the crafting
+  # bag by id (a Nezhiri continue keeps the vessel with the unfinished
+  # remedy in it); with keep empty the hands are stowed as always. note is
+  # said before the stop.
+  #
   # @param what [String] e.g. 'a decay sigil-scroll'
+  # @param keep [Array<String>] ids to leave in hand
+  # @param note [String, nil] said before the stop
   # @raise [SystemExit] always
-  def stop_buying(what)
-    DRCI.stow_hands
-    DRC.message("Could not buy #{what}. Stopping.")
+  def stop_buying(what, keep: [], note: nil)
+    if keep.empty?
+      DRCI.stow_hands
+    else
+      (hand_ids - keep).each { |id| DRCI.put_away_item?("##{id}", @bag) }
+    end
+    DRC.message("Could not buy #{what}. #{note && "#{note} "}Stopping.")
     exit
   end
 
@@ -2085,10 +2098,27 @@ class TaskMaster
     supplies = missing_remedy_supplies(crafts)
     stacks = herbs ? [crafts - (DRCI.count_item_parts(recipe[:stock]) / NEZHIRI_HERB_STACK), 0].max : 0
     cost = (brines * BRINE_PRICE) + (stacks * recipe[:price].to_i) + supplies.sum { |supply| supply[:price] }
-    afford(cost + NEZHIRI_SPARE_COPPER, keep_hands: !keep.empty?) if cost.positive?
-    buy_brines(brines)
-    supplies.each { |supply| order_remedy_supply(supply[:room], supply[:number], supply[:name], keep: keep) }
+    note = kept_vessel_note(recipe) unless keep.empty?
+    afford(cost + NEZHIRI_SPARE_COPPER, keep_hands: !keep.empty?, note: note) if cost.positive?
+    buy_brines(brines, keep: keep, note: note)
+    supplies.each { |supply| order_remedy_supply(supply[:room], supply[:number], supply[:name], keep: keep, note: note) }
     stacks.times { order_remedy_supply(remedy_shop['stock-room'], recipe[:order], recipe[:stock]) }
+  end
+
+  # What to do about the vessel a continue keeps in hand when a purchase
+  # stops the run: the unfinished remedy is still in it, and remedy's
+  # continue form finishes it once the supplies are there. A purchase stop
+  # that put the vessel away would leave the unfinished remedy in the bag,
+  # where clear_held_vessel, which looks only at a held vessel, never finds
+  # it again.
+  #
+  # @param recipe [Hash] the task's recipe; reads :vessel and :noun
+  # @return [String]
+  def kept_vessel_note(recipe)
+    vessel = recipe[:vessel]
+    name = held_vessel(recipe)&.name || vessel
+    "Your #{name} is left in your hands with the unfinished #{recipe[:noun]} in it: once you have the supplies, " \
+      "finish it with ;remedy continue na \"#{NEZHIRI_CATALYST}\" #{vessel} #{recipe[:noun]}, then run ;taskmaster nezhiri finish."
   end
 
   # Brines to buy so the parts carried cover a splash for each craft.
@@ -2145,12 +2175,14 @@ class TaskMaster
   # purchase", so the hand says whether it was bought.
   #
   # @param count [Integer] brines to buy
+  # @param keep [Array<String>] ids the stop leaves in hand (stop_buying)
+  # @param note [String, nil] said before the stop
   # @return [void]
   # @raise [SystemExit] when one was not bought
-  def buy_brines(count)
+  def buy_brines(count, keep: [], note: nil)
     count.times do
       DRCT.buy_item(NEZHIRI_BRINE_ROOM, 'brine')
-      stop_buying("brewer's brine at Andreshlew (room #{NEZHIRI_BRINE_ROOM})") unless held_soon?('brine')
+      stop_buying("brewer's brine at Andreshlew (room #{NEZHIRI_BRINE_ROOM})", keep: keep, note: note) unless held_soon?('brine')
       DRCC.stow_crafting_item('brine', @bag, nil)
     end
   end
@@ -2161,16 +2193,17 @@ class TaskMaster
   # @param room [Integer] the shop's room
   # @param number [Integer] the order number
   # @param name [String] what it is, for messages
-  # @param keep [Array<String>] ids to keep in hand
+  # @param keep [Array<String>] ids to keep in hand, on a stop too
+  # @param note [String, nil] said before a stop
   # @return [void]
   # @raise [SystemExit] when no hand is free, the order fails or it would
   #   not go in the bag
-  def order_remedy_supply(room, number, name, keep: [])
+  def order_remedy_supply(room, number, name, keep: [], note: nil)
     free_hands_for(name, keep: keep)
-    piece = order_stock_piece(room, number, name)
+    piece = order_stock_piece(room, number, name, keep: keep, note: note)
     return if DRCI.put_away_item?("##{piece}", @bag) || left_hands?("##{piece}")
 
-    stop_stock("Could not put the #{name} you bought (##{piece}) in your #{@bag}.")
+    stop_stock("Could not put the #{name} you bought (##{piece}) in your #{@bag}.", keep: keep, note: note)
   end
 
   # Crafts the remedy with remedy's instructions form, once per craft, and
@@ -2848,16 +2881,18 @@ class TaskMaster
   # @param room [Integer] the shop's room
   # @param number [Integer] the stock's order number
   # @param stock [String] e.g. 'burlap cloth'
+  # @param keep [Array<String>] ids the stop leaves in hand (stop_stock)
+  # @param note [String, nil] said before the stop
   # @return [String] id of the new piece
   # @raise [SystemExit] when the order fails or no new piece is in hand
-  def order_stock_piece(room, number, stock)
+  def order_stock_piece(room, number, stock, keep: [], note: nil)
     before = hand_ids
     bought = DRCT.order_item(room, number)
     piece = (hand_ids - before).first
     return piece if piece
 
     why = bought.to_s.empty? ? 'the order did not go through (not enough coins, no way to the shop, or full hands)' : 'no new piece is in your hands'
-    stop_stock("Could not buy #{stock}: #{why}.")
+    stop_stock("Could not buy #{stock}: #{why}.", keep: keep, note: note)
   end
 
   # Combines a newly bought piece into the stack, both named by id. In game
@@ -2930,14 +2965,17 @@ class TaskMaster
   # nor named.
   #
   # @param text [String] why
+  # @param keep [Array<String>] ids to leave in hand, and out of the
+  #   "would not go back" text (a vessel a Nezhiri continue keeps)
+  # @param note [String, nil] said before the stop
   # @raise [SystemExit] always
-  def stop_stock(text)
-    kept = hand_ids.reject { |id| DRCI.put_away_item?("##{id}", @bag) || left_hands?("##{id}") }
+  def stop_stock(text, keep: [], note: nil)
+    kept = (hand_ids - keep).reject { |id| DRCI.put_away_item?("##{id}", @bag) || left_hands?("##{id}") }
     unless kept.empty?
       refs = kept.map { |id| "##{id}" }.join(' and ')
       text = "#{text} #{refs} would not go back in your #{@bag} and #{kept.size == 1 ? 'is' : 'are'} still in your hands; put #{kept.size == 1 ? 'it' : 'them'} away before starting again."
     end
-    DRC.message("#{text} Stopping.")
+    DRC.message("#{text}#{note && " #{note}"} Stopping.")
     exit
   end
 

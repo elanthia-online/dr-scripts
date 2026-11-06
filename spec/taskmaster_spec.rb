@@ -5138,6 +5138,36 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # Review of #7974 (mrhoribu): stop_buying puts the hands away as it
+    # always has for every taskmaster, and leaves only ids in keep in hand.
+    describe '#stop_buying' do
+      it 'stows the hands before stopping, as for every taskmaster' do
+        tm = build
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCI).to receive(:put_away_item?)
+
+        expect { tm.stop_buying('a decay sigil-scroll') }.to raise_error(SystemExit)
+
+        expect(DRCI).to have_received(:stow_hands)
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(DRC).to have_received(:message).with('Could not buy a decay sigil-scroll. Stopping.')
+      end
+
+      it 'leaves the kept ids in hand, puts the rest in the bag by id, and says the note' do
+        tm = build
+        allow(tm).to receive(:hand_ids).and_return(%w[6001 8105])
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        expect { tm.stop_buying('brine', keep: ['6001'], note: 'Mind the mortar.') }.to raise_error(SystemExit)
+
+        expect(DRCI).not_to have_received(:stow_hands)
+        expect(DRCI).to have_received(:put_away_item?).with('#8105', 'duffel bag')
+        expect(DRCI).not_to have_received(:put_away_item?).with('#6001', anything)
+        expect(DRC).to have_received(:message).with('Could not buy brine. Mind the mortar. Stopping.')
+      end
+    end
+
     describe 'making her remedies' do
       let(:crafting) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__)) }
       # The logging player's tools: mortar, pestle and sieve on a grass
@@ -6066,10 +6096,86 @@ RSpec.describe TaskMaster do
 
             expect(game.sent).to eq(['rummage /C moisturizer in my duffel bag', 'look in my mortar', 'count my first brine', 'tap my first coal nugget'])
             expect(DRCM).to have_received(:ensure_copper_on_hand).with(50 + 7500, anything, 'Crossing')
-            expect(DRC).to have_received(:message).with('Out of money: 7550 Kronars (copper) needed and the Crossing bank could not cover it. Stopping before buying anything more.')
+            expect(DRC).to have_received(:message)
+              .with('Out of money: 7550 Kronars (copper) needed and the Crossing bank could not cover it. Your polished belzune stone mortar is left in your hands ' \
+                    'with the unfinished moisturizer in it: once you have the supplies, finish it with ;remedy continue na "coal nugget" mortar moisturizer, ' \
+                    'then run ;taskmaster nezhiri finish. Stopping before buying anything more.')
             expect(runs).to be_empty
             expect(commons.location_of('#6001')).to eq('right')
             expect(DRCI).not_to have_received(:stow_hands)
+          end
+
+          # Review of #7974 (mrhoribu): a purchase that fails while the vessel
+          # is kept in hand must leave it there too, not only afford's stop.
+          # Otherwise the unfinished remedy goes in the bag with no continue
+          # line, and clear_held_vessel (which looks only at a held vessel)
+          # never finds it again.
+          describe 'a purchase that fails while carrying an unfinished remedy on' do
+            let(:kept_note) do
+              'Your polished belzune stone mortar is left in your hands with the unfinished moisturizer in it: once you have the supplies, ' \
+                'finish it with ;remedy continue na "coal nugget" mortar moisturizer, then run ;taskmaster nezhiri finish.'
+            end
+
+            it 'keeps the mortar in hand and names the continue line when the brine is not bought' do
+              tm = maker(task_product: 'scale moisturizer')
+              game, commons = holding(mortar, '6001')
+              runs = remedy_does(commons, 'scale moisturizer', 'mortar', %w[7001])
+              game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+              game.script('look in my mortar', unfinished)
+              game.script('count my first brine', ReplayGame.log('6100:8793')) # none
+              game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+              allow(DRCI).to receive(:stow_hands)
+
+              expect { tm.remedy_doses_on_hand(moisturizer_recipe) }.to raise_error(SystemExit)
+
+              expect(commons.calls).to include(['DRCT.buy_item', 51_102, 'brine'])
+              expect(runs).to be_empty
+              expect(commons.location_of('#6001')).to eq('right')
+              expect(DRCI).not_to have_received(:stow_hands)
+              expect(DRC).to have_received(:message).with("Could not buy brewer's brine at Andreshlew (room 51102). #{kept_note} Stopping.")
+            end
+
+            it 'keeps the mortar in hand and names the continue line when the coal nugget order does not go through' do
+              tm = maker(task_product: 'scale moisturizer')
+              game, commons = holding(mortar, '6001')
+              runs = remedy_does(commons, 'scale moisturizer', 'mortar', %w[7001])
+              game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+              game.script('look in my mortar', unfinished)
+              game.script('count my first brine', ReplayGame.log('6100:8800'))
+              game.script('count my second brine', ReplayGame.log('6100:8793'))
+              game.script('tap my first coal nugget', ReplayGame.log('6100:225')) # none carried
+
+              expect { tm.remedy_doses_on_hand(moisturizer_recipe) }.to raise_error(SystemExit)
+
+              expect(commons.calls).to include(['DRCT.order_item', 8775, 2])
+              expect(commons.calls).not_to include(['DRCI.put_away_item?', '#6001', 'duffel bag'])
+              expect(runs).to be_empty
+              expect(commons.location_of('#6001')).to eq('right')
+              expect(DRC).to have_received(:message).with(/\ACould not buy coal nugget: the order did not go through .*\. #{Regexp.escape(kept_note)} Stopping\.\z/)
+            end
+
+            it 'keeps the mortar in hand, and leaves it out of the stop text, when the bought coal nugget will not go in the bag (6100:4250, 4252)' do
+              tm = maker(task_product: 'scale moisturizer')
+              game, commons = holding(mortar, '6001')
+              runs = remedy_does(commons, 'scale moisturizer', 'mortar', %w[7001])
+              game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+              game.script('look in my mortar', unfinished)
+              game.script('count my first brine', ReplayGame.log('6100:8800'))
+              game.script('count my second brine', ReplayGame.log('6100:8793'))
+              game.script('tap my first coal nugget', ReplayGame.log('6100:225')) # none carried
+              game.script('order 2', ReplayGame.log('6100:4250'))
+              game.script('order 2', ReplayGame.log('6100:4252'))
+              allow(DRCI).to receive(:put_away_item?).and_call_original
+              allow(DRCI).to receive(:put_away_item?).with('#8105', 'duffel bag').and_return(false) # the bag refuses the new nugget
+
+              expect { tm.remedy_doses_on_hand(moisturizer_recipe) }.to raise_error(SystemExit)
+
+              expect(DRCI).not_to have_received(:put_away_item?).with('#6001', anything)
+              expect(runs).to be_empty
+              expect(commons.location_of('#6001')).to eq('right')
+              expect(DRC).to have_received(:message)
+                .with("Could not put the coal nugget you bought (#8105) in your duffel bag. #8105 would not go back in your duffel bag and is still in your hands; put it away before starting again. #{kept_note} Stopping.")
+            end
           end
 
           it 'runs remedy at most once: a continue that again leaves no remedy stops, the mortar left in hand (6101:3436)' do
