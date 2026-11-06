@@ -23,7 +23,7 @@
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
-  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. Keep no other item with the remedy's noun (another potion, say) in crafting_container: a task stops before buying anything if it finds one. remedy.lic must handle the brine prompt (a remedy that does not stops each craft part way) ##
+  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. Keep no other item with the remedy's noun (another potion, say) in crafting_container: a task stops before buying anything if it finds one. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -34,7 +34,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.3'
+  VERSION = '2026.11.07.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1008,12 +1008,14 @@ class TaskMaster
   # Carries amount copper (Kronars), from the bank when short, or stops.
   #
   # @param amount [Integer]
+  # @param keep_hands [Boolean] leave the hands as they are on the stop (a
+  #   held vessel with an unfinished remedy in it stays in hand)
   # @return [void]
   # @raise [SystemExit] when the bank cannot cover it
-  def afford(amount)
+  def afford(amount, keep_hands: false)
     return if DRCM.ensure_copper_on_hand(amount, @settings, "Crossing")
 
-    DRCI.stow_hands
+    DRCI.stow_hands unless keep_hands
     DRC.message("Out of money: #{amount} Kronars (copper) needed and the Crossing bank could not cover it. Stopping before buying anything more.")
     exit
   end
@@ -1642,7 +1644,10 @@ class TaskMaster
   # crafts each with remedy's instructions form, combining every new stack
   # into one, and leaves the mortar and pestle (or bowl and stick) with
   # Rangu. The hand-in (give_item) makes the stack the size she asked for.
-  # With the doses already on hand it buys and crafts nothing.
+  # With the doses already on hand it buys and crafts nothing. The remedy's
+  # vessel left in hand by a remedy run that stopped is looked in first
+  # (clear_held_vessel), and an unfinished remedy in it carried on; so is
+  # one a craft leaves (remedy_left_in_vessel).
   #
   # @param item [String] the remedy's noun, e.g. 'glop'
   # @param doses [Integer] doses owed
@@ -1650,7 +1655,9 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when the bag holds another item of the same noun,
   #   the instructions have too few uses, a tool is missing, money or a
-  #   purchase runs short, or a craft does not end with the remedy in hand
+  #   purchase runs short, the held vessel holds something it does not
+  #   carry on, or a craft (or its one continue run) does not end with the
+  #   remedy in hand
   def nezhiri(item, doses, recipe, _base = nil, _type = nil)
     on_hand = remedy_doses_on_hand(recipe)
     crafts = nezhiri_crafts(doses - on_hand)
@@ -1661,7 +1668,7 @@ class TaskMaster
     tools = remedy_tools(recipe)
     ensure_tools(tools, 'alchemy')
     buy_remedy_supplies(recipe, crafts)
-    DRCT.walk_to(@settings.alchemy_room || remedy_shop['stock-room'])
+    DRCT.walk_to(remedy_room)
     brew_remedies(recipe, doses, crafts)
     repair(tools.grep(REMEDY_VESSEL_TOOLS[recipe[:vessel]]), @settings.alchemy_belt)
   end
@@ -1672,6 +1679,14 @@ class TaskMaster
   # @return [Hash]
   def remedy_shop
     get_data('crafting')['remedies'][NEZHIRI_SUPPLY_TOWN]
+  end
+
+  # Where her remedies are crafted: alchemy_room, else the Crossing alchemy
+  # supplies, where the herbs are bought.
+  #
+  # @return [Integer]
+  def remedy_room
+    @settings.alchemy_room || remedy_shop['stock-room']
   end
 
   # The alchemy_tools a remedy needs: all of them but the other vessel's
@@ -1723,17 +1738,20 @@ class TaskMaster
   # those already held, then each one RUMMAGE lists in the crafting bag. The
   # stack noted in @remedy_stack is got by its id first. Anything else held
   # is put in the crafting bag first, so a hand is free for each get. The
-  # remedy's vessel in hand stops it first (stop_for_held_vessel).
+  # remedy's vessel in hand is dealt with after the RUMMAGE and before the
+  # hands are freed (clear_held_vessel): an unfinished remedy in it is
+  # carried on, a finished one taken out, and either then counts with the
+  # rest.
   #
   # @param recipe [Hash] the task's recipe
   # @return [String, nil] the id of the stack, held; nil when there is none
-  # @raise [SystemExit] when the remedy's vessel is held, the bag holds
-  #   another item of the remedy's noun (remedy_stacks_in_bag), or a stack
-  #   can't be got or combined
+  # @raise [SystemExit] when the bag holds another item of the remedy's
+  #   noun (remedy_stacks_in_bag), the held vessel can't be cleared
+  #   (clear_held_vessel), or a stack can't be got or combined
   def gather_remedy(recipe)
     product = recipe[:product]
-    stop_for_held_vessel(recipe)
     bagged = remedy_stacks_in_bag(recipe)
+    clear_held_vessel(recipe)
     held = held_remedy_ids(product)
     free_hands_for(product, keep: held)
     stack = held.reduce { |kept, piece| combine_stock(kept, piece, product) }
@@ -1744,23 +1762,196 @@ class TaskMaster
     stack
   end
 
+  # LOOK IN the remedy's vessel: what it holds, "In the stone mortar you
+  # see some unfinished scale moisturizer." (6101:3436), "... some scale
+  # moisturizer." (6101:2017) or "... some crushed aevaes." (6101:4236).
+  # Captures what it holds. The logs looked with the vessel's noun ("l in
+  # mort" 6101:2016, "look in mort" 6105:613, "l in bowl" 6101:5692); no
+  # log looks in anything by id.
+  VESSEL_HOLDS = /^In the [^"]+? you see (.+?)\.?$/
+  # LOOK IN an empty vessel: "There is nothing in there." (6101:5693, the
+  # bowl just back from Rangu).
+  VESSEL_EMPTY = /^There is nothing in there\./
+  # Every reply LOOK IN the vessel waits for.
+  VESSEL_LOOK_REPLIES = [VESSEL_HOLDS, VESSEL_EMPTY, /^I could not find/, /^What were you referring to/].freeze
+  # GET <item> FROM the vessel: "You get some scale moisturizer from inside
+  # a polished belzune stone mortar which is on your grass toolstrap."
+  # (6101:2020), "You get some crushed junliar from inside your rustic
+  # mortar." (6105:616). The new id in hand decides, not the reply.
+  VESSEL_GET_REPLIES = [/^You get /, /^What were you referring to/, /^I could not find/, /^You need a free hand/].freeze
+
+  # The remedy's vessel (a mortar or a bowl) when a hand holds it.
+  #
+  # @param recipe [Hash] the task's recipe; reads :vessel
+  # @return [OpenStruct, nil] the hand's object, or nil
+  def held_vessel(recipe)
+    vessel = /\b#{Regexp.escape(recipe[:vessel])}\z/i
+    [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.name.to_s.match?(vessel) }
+  end
+
   # remedy, when it stops part way, leaves the vessel in hand with the
   # unfinished remedy in it, and so does a crash. Freeing the hands would
   # put it in the crafting bag, and the run would buy and craft afresh with
-  # the unfinished one forgotten. So with the remedy's vessel (a mortar or a
-  # bowl) in hand the run stops, leaving it held, and names remedy's
-  # continue line.
+  # the unfinished one forgotten. So with the remedy's vessel in hand it is
+  # looked in first, and what it holds decides:
+  # - an unfinished remedy of the task: carried on with remedy's continue
+  #   form (continue_remedy); the remedy it makes is left in hand;
+  # - the finished remedy (left in it, never tilted out: TILT destroys it,
+  #   6101:620-626): taken out and left in hand;
+  # - the herb alone, crafting never begun: the herb goes in the crafting
+  #   bag, where it counts as a stack carried, and the vessel is put away;
+  # - nothing: the vessel is put away.
+  # Anything else, or no answer, stops the run with the vessel in hand.
   #
-  # @param recipe [Hash] the task's recipe; reads :vessel and :noun
+  # @param recipe [Hash] the task's recipe
   # @return [void]
-  # @raise [SystemExit] when either hand holds the vessel
-  def stop_for_held_vessel(recipe)
-    vessel = recipe[:vessel]
-    held = [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.name.to_s.match?(/\b#{Regexp.escape(vessel)}\z/i) }
+  # @raise [SystemExit] when the vessel holds something else or does not
+  #   answer, a continue run ends without the remedy, or a get or a put
+  #   away fails
+  def clear_held_vessel(recipe)
+    held = held_vessel(recipe)
     return unless held
 
+    contents = look_in_vessel(recipe)
+    case vessel_state(recipe, contents)
+    when :unfinished
+      continue_remedy(recipe, held, contents, 1)
+    when :finished
+      take_from_vessel(recipe, held, recipe[:noun])
+      put_vessel_away(recipe, held)
+    when :herb
+      put_away_remedy(take_from_vessel(recipe, held, recipe[:stock]), recipe[:stock])
+      put_vessel_away(recipe, held)
+    when :empty
+      put_vessel_away(recipe, held)
+    else
+      stop_for_vessel(recipe, held, contents)
+    end
+  end
+
+  # LOOK IN the remedy's vessel, asked once more when unanswered.
+  #
+  # @param recipe [Hash] the task's recipe; reads :vessel
+  # @return [String] the reply, '' when unanswered twice
+  def look_in_vessel(recipe)
+    look = "look in my #{recipe[:vessel]}"
+    reply = DRC.bput(look, *VESSEL_LOOK_REPLIES)
+    reply = DRC.bput(look, *VESSEL_LOOK_REPLIES) if reply.empty?
+    reply
+  end
+
+  # What a LOOK IN the vessel shows, for this task's remedy.
+  #
+  # @param recipe [Hash] the task's recipe; reads :product and :stock
+  # @param contents [String] the LOOK reply
+  # @return [Symbol] :unfinished, :finished, :herb, :empty, or :other for
+  #   anything else (another remedy, more than one thing, no answer)
+  def vessel_state(recipe, contents)
+    return :empty if contents.match?(VESSEL_EMPTY)
+
+    what = contents[VESSEL_HOLDS, 1].to_s
+    product = Regexp.escape(recipe[:product])
+    return :other if what.empty? || what.include?(' and ') || what.include?(',')
+    return :unfinished if what.match?(/\A(?:some |an? )?unfinished #{product}\z/i)
+    return :finished if what.match?(/\A(?:some |an? )?#{product}\z/i)
+    return :herb if what.match?(/\A(?:some |an? )?(?:\w+ )?#{Regexp.escape(recipe[:stock])}\z/i)
+
+    :other
+  end
+
+  # Carries an unfinished remedy in the held vessel on, once: makes sure the
+  # brine and the coal nugget it may still ask for are on hand (buying them
+  # as buy_remedy_supplies does, the vessel kept in hand), walks to where
+  # remedies are crafted and runs ;remedy continue na "coal nugget"
+  # <vessel> <noun>. remedy gets the stirrer, starts with "analyze my
+  # <noun>" (6105:724-731) and crafts on, adding what the game asks for; it
+  # ends with the remedy in hand and the vessel put away (put away here if
+  # remedy left it in hand). A run that ends without the remedy stops:
+  # remedy's own Remedy: line says why, and a second continue would only
+  # meet the same trouble.
+  #
+  # @param recipe [Hash] the task's recipe
+  # @param held [OpenStruct] the vessel, held
+  # @param contents [String] the LOOK reply, for the message
+  # @param crafts [Integer] crafts the supplies must cover, this one first
+  # @return [String] the id of the remedy made
+  # @raise [SystemExit] when a purchase fails or remedy leaves no remedy in
+  #   hand
+  def continue_remedy(recipe, held, contents, crafts)
+    product = recipe[:product]
+    keep = [held.id].compact
+    free_hands_for(product, keep: keep)
+    buy_remedy_supplies(recipe, crafts, herbs: false, keep: keep)
+    DRCT.walk_to(remedy_room)
+    DRC.message("#{contents} Carrying it on with ;remedy continue.")
+    DRC.wait_for_script_to_complete('remedy', remedy_continue_args(recipe))
+    made = held_remedy_ids(product).first
+    if made
+      put_vessel_away(recipe, held) if held.id && hand_ids.include?(held.id)
+      return made
+    end
+
+    DRC.message("remedy's continue run left no #{product} in your hands either; its Remedy: line says why. taskmaster carries an unfinished remedy on only once. Once that is sorted, run ;taskmaster nezhiri finish. Stopping.")
+    exit
+  end
+
+  # What remedy's continue form is run with: herb2 na, the coal nugget, the
+  # vessel and the noun (remedy.lic CONTINUE_FORM).
+  #
+  # @param recipe [Hash] the task's recipe
+  # @return [Array<String>]
+  def remedy_continue_args(recipe)
+    ['continue', 'na', NEZHIRI_CATALYST, recipe[:vessel], recipe[:noun]]
+  end
+
+  # Gets something out of the held vessel into the other hand: GET MY
+  # <item> FROM MY <vessel>, as the logs did ("get moist from mort",
+  # 6101:2019; "get jun in my mort", 6105:615).
+  #
+  # @param recipe [Hash] the task's recipe; reads :vessel
+  # @param held [OpenStruct] the vessel, held
+  # @param item [String] what to get, e.g. 'moisturizer' or 'red flowers'
+  # @return [String] the id of what came into a hand
+  # @raise [SystemExit] when no hand can be freed or nothing new is held
+  def take_from_vessel(recipe, held, item)
+    free_hands_for(item, keep: [held.id].compact)
+    before = hand_ids
+    DRC.bput("get my #{item} from my #{recipe[:vessel]}", *VESSEL_GET_REPLIES)
+    piece = (hand_ids - before).first
+    return piece if piece
+
+    DRC.message("Could not get the #{item} out of your #{held.name}, which is left in your hands. Stopping.")
+    exit
+  end
+
+  # Puts the vessel away as remedy does: tied to alchemy_belt when it lists
+  # it, else in the crafting bag.
+  #
+  # @param recipe [Hash] the task's recipe; reads :vessel
+  # @param held [OpenStruct] the vessel, held
+  # @return [void]
+  # @raise [SystemExit] when it is still in hand
+  def put_vessel_away(recipe, held)
+    DRCC.stow_crafting_item(recipe[:vessel], @bag, @settings.alchemy_belt)
+    return unless held.id ? hand_ids.include?(held.id) : held_vessel(recipe)
+
+    DRC.message("Could not put your #{held.name} away. Stopping.")
+    exit
+  end
+
+  # Stops with the vessel in hand when what it holds is not something
+  # taskmaster carries on, naming remedy's continue line.
+  #
+  # @param recipe [Hash] the task's recipe
+  # @param held [OpenStruct] the vessel, held
+  # @param contents [String] the LOOK reply, '' for none
+  # @param why [String] what came before, to start the message with
+  # @raise [SystemExit] always
+  def stop_for_vessel(recipe, held, contents, why = '')
+    vessel = recipe[:vessel]
     noun = recipe[:noun]
-    DRC.message("Your #{held.name} is in your hands, and may still hold an unfinished #{noun} from a remedy run that stopped. If it does, finish it with ;remedy continue na \"#{NEZHIRI_CATALYST}\" #{vessel} #{noun}; if it is empty, put it away. Then run ;taskmaster nezhiri finish. Stopping, with the #{vessel} left in hand.")
+    seen = contents.empty? ? 'LOOK IN went unanswered twice' : "the game said \"#{contents}\""
+    DRC.message("#{why}Your #{held.name} is in your hands, and taskmaster can't carry on what is in it (#{seen}). If it holds an unfinished #{noun}, finish it with ;remedy continue na \"#{NEZHIRI_CATALYST}\" #{vessel} #{noun}; if not, empty it or put it away. Then run ;taskmaster nezhiri finish. Stopping, with the #{vessel} left in hand.")
     exit
   end
 
@@ -1772,7 +1963,9 @@ class TaskMaster
   # instructions") are not of the noun and do not count. A RUMMAGE with no
   # answer is asked once more; unanswered twice it stops the run, since
   # taking it for an empty bag would craft doses already made, or leave
-  # them out of the hand-in.
+  # them out of the hand-in. On the stop the hands are emptied, but for the
+  # remedy's vessel, which may hold an unfinished remedy the next run
+  # carries on (clear_held_vessel).
   #
   # @param recipe [Hash] the task's recipe
   # @return [Integer] stacks of the remedy in the bag
@@ -1787,7 +1980,7 @@ class TaskMaster
     others = count_listed(contents, noun) - ours
     return ours if others.zero?
 
-    DRCI.stow_hands
+    DRCI.stow_hands unless held_vessel(recipe)
     DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.")
     exit
   end
@@ -1881,17 +2074,21 @@ class TaskMaster
   #
   # @param recipe [Hash] the task's recipe; reads :stock, :order, :price
   # @param crafts [Integer] crafts to make
+  # @param herbs [Boolean] false to buy no herbs (a continue run: the herb
+  #   is already in the vessel)
+  # @param keep [Array<String>] ids to keep in hand while buying (the
+  #   vessel with an unfinished remedy in it)
   # @return [void]
   # @raise [SystemExit] when the money can't be had or a purchase fails
-  def buy_remedy_supplies(recipe, crafts)
+  def buy_remedy_supplies(recipe, crafts, herbs: true, keep: [])
     brines = brines_to_buy(crafts)
     supplies = missing_remedy_supplies(crafts)
-    herbs = [crafts - (DRCI.count_item_parts(recipe[:stock]) / NEZHIRI_HERB_STACK), 0].max
-    cost = (brines * BRINE_PRICE) + (herbs * recipe[:price].to_i) + supplies.sum { |supply| supply[:price] }
-    afford(cost + NEZHIRI_SPARE_COPPER) if cost.positive?
+    stacks = herbs ? [crafts - (DRCI.count_item_parts(recipe[:stock]) / NEZHIRI_HERB_STACK), 0].max : 0
+    cost = (brines * BRINE_PRICE) + (stacks * recipe[:price].to_i) + supplies.sum { |supply| supply[:price] }
+    afford(cost + NEZHIRI_SPARE_COPPER, keep_hands: !keep.empty?) if cost.positive?
     buy_brines(brines)
-    supplies.each { |supply| order_remedy_supply(supply[:room], supply[:number], supply[:name]) }
-    herbs.times { order_remedy_supply(remedy_shop['stock-room'], recipe[:order], recipe[:stock]) }
+    supplies.each { |supply| order_remedy_supply(supply[:room], supply[:number], supply[:name], keep: keep) }
+    stacks.times { order_remedy_supply(remedy_shop['stock-room'], recipe[:order], recipe[:stock]) }
   end
 
   # Brines to buy so the parts carried cover a splash for each craft.
@@ -1964,11 +2161,12 @@ class TaskMaster
   # @param room [Integer] the shop's room
   # @param number [Integer] the order number
   # @param name [String] what it is, for messages
+  # @param keep [Array<String>] ids to keep in hand
   # @return [void]
   # @raise [SystemExit] when no hand is free, the order fails or it would
   #   not go in the bag
-  def order_remedy_supply(room, number, name)
-    free_hands_for(name)
+  def order_remedy_supply(room, number, name, keep: [])
+    free_hands_for(name, keep: keep)
     piece = order_stock_piece(room, number, name)
     return if DRCI.put_away_item?("##{piece}", @bag) || left_hands?("##{piece}")
 
@@ -1979,22 +2177,24 @@ class TaskMaster
   # combines each new stack into the one made before (or the doses on hand),
   # counting the doses after each and putting the stack back in the
   # crafting bag so remedy has both hands. Stops crafting once the doses
-  # cover the task. Notes the stack in @remedy_stack and its doses in
-  # @remedy_doses.
+  # cover the task. A craft that ends without the remedy in hand is looked
+  # after by remedy_left_in_vessel: an unfinished remedy is carried on
+  # once. Notes the stack in @remedy_stack and its doses in @remedy_doses.
   #
   # @param recipe [Hash] the task's recipe
   # @param owed [Integer] doses owed
   # @param crafts [Integer] crafts to make
   # @return [void]
-  # @raise [SystemExit] when a craft leaves no remedy in hand, a stack can't
-  #   be combined or counted, or the crafts made fewer doses than owed
+  # @raise [SystemExit] when a craft leaves no remedy in hand and none can
+  #   be had from the vessel, a stack can't be combined or counted, or the
+  #   crafts made fewer doses than owed
   def brew_remedies(recipe, owed, crafts)
     product = recipe[:product]
     stack = @remedy_stack
     doses = @remedy_doses.to_i
     crafts.times do |craft|
       DRC.wait_for_script_to_complete('remedy', remedy_args(recipe))
-      made = held_remedy_ids(product).first || remedy_not_made(recipe, craft + 1, crafts)
+      made = held_remedy_ids(product).first || remedy_left_in_vessel(recipe, craft + 1, crafts)
       stack = stack ? combine_remedy(stack, made, product) : made
       doses = count_remedy(stack, product)
       put_away_remedy(stack, product)
@@ -2033,18 +2233,39 @@ class TaskMaster
     combine_stock(stack, made, product)
   end
 
-  # remedy ended without the remedy in hand: it stopped and said why. The
-  # unfinished remedy, if it got that far, is still in the vessel, which
-  # remedy's continue form finishes.
+  # remedy ended without the remedy in hand: it stopped and said why in its
+  # Remedy: line. When it stopped part way it left the vessel in hand, the
+  # unfinished remedy in it: that is looked in, and an unfinished remedy is
+  # carried on once (continue_remedy), with brine and coal for this craft
+  # and the ones still to come; a finished one left in it is taken out.
+  # Anything else stops the run: the vessel not in hand (remedy stopped
+  # before it got that far), empty, or holding only the herb (crafting
+  # never began, and running remedy again would meet the same trouble).
   #
   # @param recipe [Hash] the task's recipe
   # @param craft [Integer] which craft it was
   # @param crafts [Integer] crafts to make
-  # @raise [SystemExit] always
-  def remedy_not_made(recipe, craft, crafts)
-    noun = recipe[:noun]
-    DRC.message("remedy did not leave any #{recipe[:product]} in your hands (craft #{craft} of #{crafts}). If it stopped part way, the unfinished #{noun} is in your #{recipe[:vessel]}: finish it with ;remedy continue na \"#{NEZHIRI_CATALYST}\" #{recipe[:vessel]} #{noun}, then run ;taskmaster nezhiri finish. Stopping.")
-    exit
+  # @return [String] the id of the remedy, held
+  # @raise [SystemExit] unless a remedy could be had from the vessel
+  def remedy_left_in_vessel(recipe, craft, crafts)
+    why = "remedy did not leave any #{recipe[:product]} in your hands (craft #{craft} of #{crafts}); its Remedy: line says why. "
+    held = held_vessel(recipe)
+    unless held
+      DRC.message("#{why}Once that is sorted, run ;taskmaster nezhiri finish. Stopping.")
+      exit
+    end
+
+    contents = look_in_vessel(recipe)
+    case vessel_state(recipe, contents)
+    when :unfinished
+      continue_remedy(recipe, held, contents, crafts - craft + 1)
+    when :finished
+      made = take_from_vessel(recipe, held, recipe[:noun])
+      put_vessel_away(recipe, held)
+      made
+    else
+      stop_for_vessel(recipe, held, contents, why)
+    end
   end
 
   # Makes the hand-in ready: every stack of the remedy, held or in the
