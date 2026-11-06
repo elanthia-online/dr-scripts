@@ -44,6 +44,20 @@
 # their last use and the game tossed them. No book is opened.
 #   ;remedy instructions marram "pewter ingot" mortar salve
 #
+# == Brewer's brine
+# Some instructions (Nezhiri's Hollow Eve 2026 recipes) list a splash of
+# brewer's brine, and the game asks for it while crafting ("You need another
+# splash of brewer's brine to continue crafting ..."). remedy then puts the
+# stirrer away, gets the brine (`get my brine`, or `get my brine from my
+# <crafting_container>` when crafting_items_in_container lists brine), puts
+# it in the vessel (`put brine in my <vessel>`), puts it back in
+# crafting_container and gets the stirrer back, in every form. Keep the
+# brine in crafting_container or herb_container: the plain get finds it in
+# any container you wear. remedy never buys brine, and there is no brine
+# vessel setting: with none on hand it stops, saying so, and prints the
+# ;remedy continue line.
+#   ;remedy instructions georin "coal nugget" mortar glop 25
+#
 # == Callers
 # workorders.lic:846/848, craft.lic:694 and create_remedies.lic:54 run the
 # book form with a base-recipes.yaml recipe; create_remedies runs the
@@ -65,7 +79,10 @@
 # for a second herb and herb2 is na, none or "not used" (or the order is
 # the instructions form, which takes none), when the finished
 # remedy is not in hand after it is taken out of the vessel or after a
-# stamp repair (remedy_repair_stamp), or when water, alcohol or a coal
+# stamp repair (remedy_repair_stamp), when the game asks for brewer's brine
+# and none can be got, when the game says the herb needs a cooking pot and
+# mixing stick (it is crushed in a mortar and must be mixed in a bowl: run
+# remedy again with bowl as the vessel), or when water, alcohol or a coal
 # nugget must be bought and base-crafting.yaml knows no alchemy shop in the
 # crafting town or hometown. A stop leaves the vessel
 # in hand and puts the stirrer away; when the vessel holds a remedy the
@@ -101,7 +118,7 @@
 # hometown; hometown's shop when base-crafting.yaml has none for the
 # crafting town), with coins from that town's bank, then walks to
 # alchemy_room, or back to the room it was started in when alchemy_room is
-# not set.
+# not set. remedy never buys brewer's brine.
 
 # Crafts one alchemy remedy from a recipe book or from crafting
 # instructions, or resumes one in progress.
@@ -121,7 +138,9 @@ class Remedy
   # Every game line remedy reads, named.
   #
   # Log cites are "<log>:<line>" in the Genie client game logs of 2026-10-25
-  # (25) and 2026-10-26 (26), the timestamped copy of the line. A pattern no log
+  # (25) and 2026-10-26 (26), the timestamped copy of the line, and in
+  # another player's Hollow Eve 2026 Nezhiri task logs (6100 to 6106, Lich
+  # text captures, the prompts and stamps removed). A pattern no log
   # shows is marked code-derived (unverified) and kept as a working path:
   # its absence from 84 logged runs does not prove the game never sends it.
   #
@@ -141,6 +160,16 @@ class Remedy
     # "You need another splash of alcohol to continue crafting an unfinished
     # clubmoss liniment. ..." (25:10873, 26:5918).
     NEED_ALCOHOL = [/#{NO_QUOTE}You need another splash of alcohol/i].freeze
+
+    # "You need another splash of brewer's brine to continue crafting some
+    # unfinished deep-sea draught.  You believe you can pour or put it into
+    # the bowl, pot or cauldron and continue mixing the unfinished brew
+    # inside." (6102:221) and, in a mortar, "... You believe you can just
+    # pour or put it inside the mortar and continue crushing the unfinished
+    # remedy inside." (6106:708). Nezhiri's Hollow Eve recipes ask for it;
+    # in the replayed crafts it came once, after the first crafting
+    # command's Roundtime (6102:219-221, 6106:706-708).
+    NEED_BRINE = [/#{NO_QUOTE}You need another splash of brewer's brine/i].freeze
 
     # "You need another catalyst material to continue crafting an unfinished
     # clubmoss liniment. ..." (25:11049, 26:39150).
@@ -249,6 +278,13 @@ class Remedy
     # @note code-derived (unverified): "can only hold" appears in no log.
     HERB_PUT_AGAIN_REPLIES = [/You put/i, /can only hold/i].freeze
 
+    # "You stop, realizing that type of plant requires a cooking pot and
+    # mixing stick." (6105:605): the whole reply to the first crush, `crush
+    # my junliar with my rustic pestle` (6105:603). The herb in the mortar
+    # must be mixed in a bowl; the game does not begin the remedy. No
+    # Roundtime follows it, and nothing else answers the command.
+    WRONG_VESSEL = [/^[^"]*?You stop, realizing that type of plant requires a cooking pot and mixing stick/i].freeze
+
     # Replies to a crafting command (`crush ...`, `mix ...`, `analyze ...`):
     # - "Applying the final touches, you complete working on a belradi
     #   elixir." (26:6742);
@@ -260,14 +296,26 @@ class Remedy
     # - "You need a more suitable type of herb if you want to craft that."
     #   (25:50933), the whole reply to `crush my georin with my pestle`
     #   (25:50932): the game refuses the herb;
-    # - "Roundtime: 7 sec." (25:10825): the step is done, craft on.
+    # - "Roundtime: 7 sec." (25:10825): the step is done, craft on;
+    # - {WRONG_VESSEL} (6105:605): the herb needs a bowl, not the mortar;
+    # - {NEED_BRINE} alone, the game's refusal of a crafting command while
+    #   it waits for brine: "You need another splash of brewer's brine ..."
+    #   (6106:734), the whole reply to `crush my glop with my rustic pestle`
+    #   (6106:731); also 6102:229 (a mix), 6104:1031 and 6106:1241. Its Flag
+    #   is set as the line arrives, so the next pass adds the brine at once
+    #   instead of after bput's 15 s. In the seven Nezhiri logs the cue came
+    #   91 times within two lines after a Roundtime and 6 times alone, never
+    #   before a Roundtime, so bput still returns on the Roundtime of a
+    #   command that was done.
     CRAFT_REPLIES = [/^Applying the final touches/i,
                      /^[^"]*?Interesting thought really... but no./i,
                      /^[^"]*?you just can't mix/i,
                      /^[^"]*?Try as you might/i,
                      /^[^"]*?That craftable requires more pieces of that plant to begin/i,
                      /^[^"]*?You need a more suitable type of herb/i,
-                     /^[^"]*?Roundtime:/i].freeze
+                     /^[^"]*?Roundtime:/i,
+                     *WRONG_VESSEL,
+                     *NEED_BRINE].freeze
 
     # "Pour what?" (26:22405): the game finds nothing to pour. It answered
     # `pour part alcohol in my heavy cauldron` (26:22403) with an empty
@@ -283,8 +331,9 @@ class Remedy
     # (26:22405).
     POUR_WHAT_REPLY = 'Pour what'.freeze
 
-    # Replies to adding water or alcohol: "You toss the alcohol into the
-    # mortar and mix it in thoroughly." (25:10905), Roundtime, or
+    # Replies to adding water, alcohol or brine: "You toss the alcohol into
+    # the mortar and mix it in thoroughly." (25:10905), "You toss the brine
+    # into the bowl and mix it in thoroughly." (6102:250), Roundtime, or
     # {POUR_WHAT} when the vessel poured from is empty (26:22405).
     #
     # @note code-derived (unverified): "You cannot find a way to add that as
@@ -328,7 +377,7 @@ class Remedy
     # In the logs a need cue answers a push, turn or smell 50 times alone and
     # 22 times after the step's Roundtime line, never before it, so bput
     # still returns on the Roundtime of a step that was done.
-    STEP_REPLIES = [/Roundtime/i, *STEP_UNSUITABLE, *NEED_WATER, *NEED_ALCOHOL, *NEED_CATALYST, *NEED_HERB].freeze
+    STEP_REPLIES = [/Roundtime/i, *STEP_UNSUITABLE, *NEED_WATER, *NEED_ALCOHOL, *NEED_CATALYST, *NEED_HERB, *NEED_BRINE].freeze
 
     # "You struggle to recall the crafting instructions you last studied as
     # they fade from your mind." (25:37919, 25:51002). It answers no command:
@@ -419,6 +468,7 @@ class Remedy
   FLAGS = {
     'remedy-water'    => Patterns::NEED_WATER,
     'remedy-alcohol'  => Patterns::NEED_ALCOHOL,
+    'remedy-brine'    => Patterns::NEED_BRINE,
     'remedy-catalyst' => Patterns::NEED_CATALYST,
     'remedy-herb'     => Patterns::NEED_HERB,
     'remedy-sieve'    => Patterns::NEED_SIEVE,
@@ -1115,14 +1165,17 @@ class Remedy
     end
 
     # Gets an item as {#fetch?} does, and stops remedy when it is not in
-    # hand afterwards: "Remedy: could not get <name>. Stopping."
+    # hand afterwards: "Remedy: could not get <name>. Stopping.", or the
+    # caller's own reason when it gives one.
     #
     # @param name [String] the item, as {#fetch?}
     # @param at_feet [Boolean] the item is the vessel, lowered to the ground
+    # @param missing [String, nil] why remedy stops when the item is not in
+    #   hand, as a sentence; nil for "could not get <name>."
     # @return [true] when the item is in hand
     # @raise [SystemExit] when it is not ({Remedy.stop}), or as {#fetch?}
-    def fetch!(name, at_feet: false)
-      fetch?(name, at_feet: at_feet) || Remedy.stop("could not get #{name}.")
+    def fetch!(name, at_feet: false, missing: nil)
+      fetch?(name, at_feet: at_feet) || Remedy.stop(missing || "could not get #{name}.")
     end
 
     # Whether a hand holds the item, found by the last word of its name.
@@ -1455,16 +1508,18 @@ class Remedy
     end
   end
 
-  # Water or alcohol: where it comes from, and the command that adds it to
-  # the vessel.
+  # Water, alcohol or brewer's brine: where it comes from, and the command
+  # that adds it to the vessel.
   #
   # With a vessel setting (water_container, alcohol_container) whose count
   # finds the liquid, or finds it once the vessel is rubbed and filled from
   # the crafting container, remedy pours from that vessel. Otherwise it puts
   # the plain liquid ("water", "alcohol") the crafting container holds.
+  # Brine is always the plain liquid ({.plain}): there is no setting for a
+  # vessel of it.
   #
   # @!attribute [r] kind
-  #   @return [String] 'water' or 'alcohol'
+  #   @return [String] 'water', 'alcohol' or 'brine'
   # @!attribute [r] source
   #   @return [String] the vessel poured from, or the plain liquid (equal to
   #     {#kind}) put in
@@ -1491,6 +1546,16 @@ class Remedy
     # @note code-derived (unverified): no log shows this reply.
     REFUSED = 'You cannot find a way to add that as an ingredient'
 
+    # The plain liquid, put in by its own name: `put water in my <vessel>`,
+    # or `put brine in my <vessel>` ("You toss the brine into the bowl and
+    # mix it in thoroughly.", 6102:250). Sends nothing.
+    #
+    # @param kind [String] 'water', 'alcohol' or 'brine'
+    # @return [Liquid]
+    def self.plain(kind)
+      new(kind: kind, source: kind, verb: PUT)
+    end
+
     # Finds where the liquid comes from, then puts the vessel away.
     #
     # With no vessel setting, sends nothing and answers the plain liquid.
@@ -1515,14 +1580,13 @@ class Remedy
     #   `get <liquid> from <bag>` and `put <liquid> in my <vessel>` (both
     #   without "my" before the bag or the liquid) are in no log.
     def self.find(kind, vessel, inventory)
-      plain = new(kind: kind, source: kind, verb: PUT)
-      return plain unless vessel
+      return plain(kind) unless vessel
 
       poured = new(kind: kind, source: vessel, verb: POUR)
       inventory.get(vessel)
       found = poured.holds? || poured.refill?(inventory)
       inventory.stow(vessel)
-      found ? poured : plain
+      found ? poured : plain(kind)
     end
 
     # Whether the vessel's count finds the liquid.
@@ -1555,7 +1619,7 @@ class Remedy
 
     # The Flag the game's request for this liquid sets ({FLAGS}).
     #
-    # @return [String] 'remedy-water' or 'remedy-alcohol'
+    # @return [String] 'remedy-water', 'remedy-alcohol' or 'remedy-brine'
     def flag
       "remedy-#{kind}"
     end
@@ -2401,8 +2465,8 @@ class Remedy
   # Each method resets its own Flag just before it sends its command, so a
   # cue that comes in the command's own reply is kept for the next pass.
   # One that brings an ingredient or the sieve puts away the stirrer, gets
-  # the item, and gets the stirrer back afterwards. Every get but a
-  # liquid's is guarded ({Inventory#fetch!}); the catalyst and herb2 puts
+  # the item, and gets the stirrer back afterwards. Every get but water's
+  # and alcohol's is guarded ({Inventory#fetch!}); the catalyst and herb2 puts
   # stop remedy when the game finds no such item.
   #
   # @api private
@@ -2412,6 +2476,7 @@ class Remedy
     TABLE = {
       'remedy-water'    => :add_water,
       'remedy-alcohol'  => :add_alcohol,
+      'remedy-brine'    => :add_brine,
       'remedy-catalyst' => :add_catalyst,
       'remedy-herb'     => :add_herb,
       'remedy-sieve'    => :sieve,
@@ -2427,12 +2492,15 @@ class Remedy
     # @param inventory [Inventory] the gets and stows
     # @param water [Liquid] where water comes from
     # @param alcohol [Liquid] where alcohol comes from
-    def initialize(order:, tools:, inventory:, water:, alcohol:)
+    # @param brine [Liquid, nil] where brewer's brine comes from; nil for the
+    #   plain brine ({Liquid.plain}), the only kind there is
+    def initialize(order:, tools:, inventory:, water:, alcohol:, brine: nil)
       @order = order
       @tools = tools
       @inventory = inventory
       @water = water
       @alcohol = alcohol
+      @brine = brine || Liquid.plain('brine')
     end
 
     # The first Flag in {TABLE} order that is set.
@@ -2468,6 +2536,35 @@ class Remedy
     # @return [void]
     def add_alcohol
       add_liquid(@alcohol)
+    end
+
+    # Adds brewer's brine ({Patterns::NEED_BRINE}): gets it (`get my brine`
+    # -> "You get some brewer's brine from inside your haversack.",
+    # 6106:757-758), puts it in (`put brine in my <vessel>` -> "You toss the
+    # brine into the mortar and mix it in thoroughly.", 6106:760), puts it
+    # back and gets the stirrer back.
+    #
+    # Unlike water and alcohol, the get is guarded: "brewer's brine" in hand
+    # ends in "brine", so the hands can say whether the get worked. With no
+    # brine on hand remedy stops, saying so, and prints the ;remedy
+    # continue line. The stop comes after the hands are looked at for
+    # {Inventory::LATE_GET_LOOKS} seconds, as after every guarded get (a get
+    # answered late still crafts on), and after the commons helper's own
+    # `pause 2` on "not found" in real lich-5; without the guard every pass
+    # would send a put that finds nothing, until
+    # {CraftLoop::MAX_CRAFT_STEPS}. remedy never buys brine.
+    #
+    # @return [void]
+    # @raise [SystemExit] when no brine can be got, or when
+    #   DRCC.get_crafting_item stops the script
+    # @note The brine is put back by the name the hand shows, "brewer's
+    #   brine" (`put my brewer's brine in my <bag>` through
+    #   DRCC.stow_crafting_item), as every item remedy stows by hand; no log
+    #   shows that wording, the logged player typed `put brine in my haver`
+    #   (6106:761).
+    def add_brine
+      missing = "the game asks for brewer's brine, and none could be got. remedy does not buy brine; keep some in your #{@inventory.bag}."
+      with_item(@brine.source, @brine.flag, missing: missing) { @brine.add(@tools.container, @inventory) }
     end
 
     # Adds the catalyst ({Patterns::NEED_CATALYST}): "You vigorously rub the
@@ -2518,8 +2615,8 @@ class Remedy
       step('remedy-smell') { DRC.bput("smell my #{@order.noun}", *Patterns::STEP_REPLIES) }
     end
 
-    # Gets the liquid's source and adds it ({Liquid#add}). The source's get
-    # is not guarded: the plain liquid's name ("water",
+    # Gets water's or alcohol's source and adds it ({Liquid#add}). The
+    # source's get is not guarded: the plain liquid's name ("water",
     # "alcohol") is not proven to be in the name a hand shows, and the
     # add's reply already says whether it worked.
     #
@@ -2550,15 +2647,17 @@ class Remedy
     # @param item [String] what the block uses
     # @param flag [String] the Flag being answered
     # @param guarded [Boolean] stop when the item is not in hand after its
-    #   get ({Inventory#fetch!}); false for a liquid's source
+    #   get ({Inventory#fetch!}); false for water's or alcohol's source
+    # @param missing [String, nil] why remedy stops when a guarded get
+    #   brings nothing; nil for "could not get <item>."
     # @yield sends the command
     # @return [void]
     # @raise [SystemExit] when the item (guarded) or the stirrer cannot be
     #   got, or when DRCC.get_crafting_item stops the script
-    def with_item(item, flag, guarded: true)
+    def with_item(item, flag, guarded: true, missing: nil)
       waitrt?
       @inventory.stow_beside(@tools.container)
-      guarded ? @inventory.fetch!(item) : @inventory.get(item)
+      guarded ? @inventory.fetch!(item, missing: missing) : @inventory.get(item)
       Flags.reset(flag)
       yield
       waitrt?
@@ -2666,13 +2765,20 @@ class Remedy
     #   fade, 25:51002).
     UNSUITABLE_HERB = /You need a more suitable type of herb\z/
 
+    # The end of the text bput returns for "You stop, realizing that type of
+    # plant requires a cooking pot and mixing stick." (6105:605): the herb
+    # in the mortar must be mixed in a bowl. remedy used not to wait for the
+    # line, so it sent the crush 4 times, 15 s apart, then stopped saying
+    # the game did not answer.
+    WRONG_VESSEL = /You stop, realizing that type of plant requires a cooking pot and mixing stick\z/
+
     # The end of the text bput returns for "Roundtime: 7 sec." (25:10825).
     ROUNDTIME = /Roundtime:\z/
 
     # The outcomes of {#run} that leave a begun remedy unfinished in the
     # vessel ({#resumable?}): the game stopped answering, or the step bound
-    # was reached. :done, :unsuitable_herb, :more_pieces and :faded leave
-    # nothing to carry on.
+    # was reached. :done, :unsuitable_herb, :more_pieces, :wrong_vessel and
+    # :faded leave nothing to carry on.
     OUTCOMES_LEFT_UNFINISHED = %i[unanswered too_long].freeze
 
     # The crafting command the loop sends next. After {#run} returns
@@ -2727,7 +2833,9 @@ class Remedy
     # @return [Symbol] :done when the remedy is done (the final-touches line
     #   arrived, or the reply was {FINAL_TOUCHES} or {ALREADY_FINISHED});
     #   :unsuitable_herb or
-    #   :more_pieces when the game refused the herb; :faded when the studied
+    #   :more_pieces when the game refused the herb; :wrong_vessel when the
+    #   game said the herb needs a cooking pot and mixing stick
+    #   ({WRONG_VESSEL}); :faded when the studied
     #   instructions faded before crafting began; :unanswered when more than
     #   {MAX_SILENT_REPLIES} commands in a row went unanswered; :too_long
     #   after {MAX_CRAFT_STEPS} crafting commands
@@ -2774,7 +2882,7 @@ class Remedy
         return :faded if !@begun && Flags[FADED_FLAG]
 
         case (reply = classify(DRC.bput(@command, *Patterns::CRAFT_REPLIES)))
-        when :done, :unsuitable_herb, :more_pieces
+        when :done, :unsuitable_herb, :more_pieces, :wrong_vessel
           return reply
         when :progress
           waitrt?
@@ -2806,13 +2914,16 @@ class Remedy
     #
     # @param reply [String] the text bput returned for {Patterns::CRAFT_REPLIES}
     # @return [Symbol] :done (finished now or before), :unsuitable_herb or
-    #   :more_pieces (the herb refused), :progress (Roundtime) or :silent (no
-    #   reply: '' after bput's 15 s)
+    #   :more_pieces (the herb refused), :wrong_vessel (the herb needs a
+    #   bowl), :progress (Roundtime) or :silent (no reply: '' after bput's
+    #   15 s, or the brine cue alone, {Patterns::NEED_BRINE}, which the
+    #   next pass answers)
     def classify(reply)
       case reply
       when FINAL_TOUCHES, *ALREADY_FINISHED then :done
       when UNSUITABLE_HERB then :unsuitable_herb
       when MORE_PIECES then :more_pieces
+      when WRONG_VESSEL then :wrong_vessel
       when ROUNDTIME then :progress
       else :silent
       end
@@ -3705,6 +3816,7 @@ class Remedy
 
     @water = Liquid.find('water', @settings.water_container, @inventory)
     @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
+    @brine = Liquid.plain('brine')
     supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst)
     DRC.wait_for_script_to_complete('buff', ['remedy']) if buff_set?
 
@@ -3853,13 +3965,16 @@ class Remedy
   # @raise [SystemExit] when the remedy is finished, when remedy stops, or
   #   when a commons helper stops the script
   def craft(command, studied: false)
-    handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol)
+    handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol, brine: @brine)
     @craft_loop = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic)
     case @craft_loop.run(command, studied: studied)
     when :unsuitable_herb
       stop("the game wants a more suitable type of herb than #{herb_in_vessel}: it refused #{@craft_loop.command.inspect}.")
     when :more_pieces
       stop("the #{@order.noun} needs more pieces of #{herb_in_vessel} to begin: the game refused #{@craft_loop.command.inspect}.")
+    when :wrong_vessel
+      stop("the game says #{herb_in_vessel} needs a cooking pot and mixing stick, not the #{@tools.container}: it refused #{@craft_loop.command.inspect}. " \
+           "Take the herb out of the #{@tools.container} and run remedy again with bowl as the vessel (a bowl or cauldron, mixed with a mixing stick).")
     when :faded
       stop("#{@recipe.studied_instructions} faded from memory before crafting began; run remedy again to study them.")
     when :unanswered

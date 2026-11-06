@@ -1,0 +1,1370 @@
+{
+  "run": "nezhiri_6102_144",
+  "log": "6102",
+  "from": 144,
+  "to": 471,
+  "recipe": "some deep-sea draught (draught instructions): crushed junliar, sleek steel mixing bowl, mixing stick, coal nugget, brewer's brine, not marked",
+  "source": "another player's Hollow Eve 2026 Nezhiri task logs (log key 6102), Lich text capture, prompts and stamps removed; message1.txt lines 144-471: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept; a command the player typed after a roundtime prompt (\"R>cmd\", lines 260, 281) split out as its own user step",
+  "steps": [
+    {
+      "cmd": ";remedy instructions junliar \"\"coal nugget\"\" bowl draught 25",
+      "line": 144,
+      "user": true,
+      "script": "user",
+      "responses": []
+    },
+    {
+      "cmd": "tap my water",
+      "line": 146,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some water inside your haversack.",
+          "line": 147
+        }
+      ]
+    },
+    {
+      "cmd": "tap my alcohol",
+      "line": 149,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some grain alcohol inside your haversack.",
+          "line": 150
+        }
+      ]
+    },
+    {
+      "cmd": "tap my coal nugget",
+      "line": 152,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap a large coal nugget inside your haversack.",
+          "line": 153
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 158,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 159
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 161,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 162
+        }
+      ]
+    },
+    {
+      "cmd": "prepare BLESS 7",
+      "line": 164,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Bless spell.  Casting rationality aside, you prepare to yoke unseen mana streams to fuel your sorcery.",
+          "line": 165
+        }
+      ]
+    },
+    {
+      "cmd": "get my draught instructions",
+      "line": 167,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some deep-sea draught instructions from inside your haversack.",
+          "line": 168
+        }
+      ]
+    },
+    {
+      "cmd": "study my draught instructions",
+      "line": 170,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "The delicate nature of the instructions will cause them to wear out with use.",
+          "line": 171
+        },
+        {
+          "text": "",
+          "line": 172
+        },
+        {
+          "text": "[These instructions have only 15 uses remaining.  Study them again to proceed.]",
+          "line": 173
+        }
+      ]
+    },
+    {
+      "cmd": "study my draught instructions",
+      "line": 175,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You scan the draught instructions with a glance and completely understand all facets of the design.",
+          "line": 176
+        },
+        {
+          "text": "You now feel ready to begin the crafting process.",
+          "line": 177
+        },
+        {
+          "text": "Roundtime: 5 sec.",
+          "line": 178
+        },
+        {
+          "text": "",
+          "line": 179
+        },
+        {
+          "text": "DRExpMonitor: Scholarship(+1)",
+          "line": 180
+        }
+      ]
+    },
+    {
+      "cmd": "put my draught instructions in my haversack",
+      "line": 182,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your instructions in your haversack.",
+          "line": 183
+        }
+      ]
+    },
+    {
+      "cmd": "get my mixing bowl",
+      "line": 186,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get a sleek steel mixing bowl from inside your haversack.",
+          "line": 187
+        }
+      ]
+    },
+    {
+      "cmd": "lower ground right",
+      "line": 189,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You lower the bowl and place it on the ground at your feet.",
+          "line": 190
+        }
+      ]
+    },
+    {
+      "cmd": "tap my junliar from my haversack",
+      "line": 192,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some crushed junliar inside your haversack.",
+          "line": 193
+        }
+      ]
+    },
+    {
+      "cmd": "get my junliar from my haversack",
+      "line": 195,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some crushed junliar from inside your haversack.",
+          "line": 196
+        }
+      ]
+    },
+    {
+      "cmd": "count my junliar",
+      "line": 198,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You count out 25 pieces of material there.",
+          "line": 199
+        }
+      ]
+    },
+    {
+      "cmd": "combine my junliar",
+      "line": 201,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You must be holding both substances to combine them.  For more information, see HELP VERB COMBINE.",
+          "line": 202
+        }
+      ]
+    },
+    {
+      "cmd": "put #8189291 in my mixing bowl",
+      "line": 204,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your junliar in your mixing bowl.",
+          "line": 205
+        }
+      ]
+    },
+    {
+      "cmd": "put my junliar in my haversack",
+      "line": 207,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 209
+        }
+      ]
+    },
+    {
+      "cmd": "get my mixing bowl",
+      "line": 211,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You pick up the bowl lying at your feet.",
+          "line": 212
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 214,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a grooved covellite mixing stick from the straps of your grass toolstrap.",
+          "line": 215
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 217,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 218
+        },
+        {
+          "text": "Roundtime: 8 sec.",
+          "line": 219
+        },
+        {
+          "text": "",
+          "line": 220
+        },
+        {
+          "text": "You need another splash of brewer's brine to continue crafting some unfinished deep-sea draught.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 221
+        },
+        {
+          "text": "",
+          "line": 222
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 223
+        },
+        {
+          "text": "",
+          "line": 224
+        },
+        {
+          "text": "DRExpMonitor: Alchemy(+1)",
+          "line": 225
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 227,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You need another splash of brewer's brine to continue crafting some unfinished deep-sea draught.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 229
+        },
+        {
+          "text": "",
+          "line": 230
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 231
+        }
+      ]
+    },
+    {
+      "cmd": ";pa",
+      "line": 232,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 234
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 235,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 236
+        },
+        {
+          "text": "You twist the mana streams of your Bless spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 237
+        },
+        {
+          "text": "A brilliant silver glow enwreathes your body.",
+          "line": 238
+        },
+        {
+          "text": "Emotional pain and exhaustion lingers in your mind, even after you regain rational control.",
+          "line": 239
+        },
+        {
+          "text": "",
+          "line": 240
+        },
+        {
+          "text": "DRExpMonitor: Sorcery(+3)",
+          "line": 241
+        }
+      ]
+    },
+    {
+      "cmd": "stow stick",
+      "line": 242,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You put your stick in your black backpack.",
+          "line": 243
+        }
+      ]
+    },
+    {
+      "cmd": "get my brine",
+      "line": 244,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You get some brewer's brine from inside your haversack.",
+          "line": 245
+        },
+        {
+          "text": "",
+          "line": 246
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 247
+        },
+        {
+          "text": "You feel fully attuned to the mana streams again.",
+          "line": 248
+        }
+      ]
+    },
+    {
+      "cmd": "put brine in my bowl",
+      "line": 249,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You toss the brine into the bowl and mix it in thoroughly.",
+          "line": 250
+        }
+      ]
+    },
+    {
+      "cmd": "put brine in my haver",
+      "line": 251,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You put your brine in your haversack.",
+          "line": 252
+        }
+      ]
+    },
+    {
+      "cmd": "get my mix stick",
+      "line": 253,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "You get a grooved covellite mixing stick from inside your black backpack.",
+          "line": 254
+        }
+      ]
+    },
+    {
+      "cmd": "mix my bowl with my mix stick",
+      "line": 255,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 256
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 257
+        },
+        {
+          "text": "",
+          "line": 258
+        },
+        {
+          "text": "DRExpMonitor: Alchemy(+1)",
+          "line": 259
+        }
+      ]
+    },
+    {
+      "cmd": ";ua",
+      "line": 260,
+      "user": true,
+      "script": "user",
+      "responses": []
+    },
+    {
+      "cmd": "release mana",
+      "line": 263,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 264
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 266,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 267
+        }
+      ]
+    },
+    {
+      "cmd": "prepare MAF 55",
+      "line": 269,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Manifest Force spell.",
+          "line": 270
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 272,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 273
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 274
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 276,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 277
+        },
+        {
+          "text": "",
+          "line": 278
+        },
+        {
+          "text": "As you finish, the mixture begins to transition colors.",
+          "line": 279
+        },
+        {
+          "text": "Roundtime: 18 sec.",
+          "line": 280
+        }
+      ]
+    },
+    {
+      "cmd": "look in my backpack",
+      "line": 281,
+      "user": true,
+      "script": "user",
+      "responses": [
+        {
+          "text": "In the black backpack you see a piece of crumbling foil, an adderstone band, a huge fire opal, a cambrinth circlet, a large freshwater pearl, a huge gold-encrusted quartz, a huge cube of speckled lapis lazuli, a huge bloodgem, a green gold anklet, a vibrant sun coral fragment, an eye-shaped lens, a huge scratched emerald, a huge gleaming ivory tooth, a Rangu ticket, a Rangu ticket, a Rangu ticket, a primrose chamois cloth, a ingot silversteel deed, a stout cord, a small ceramic jar, a small ceramic jar, an aureate fire lily, a patchwork korograth, a burnished razaksel twig, a plush dinanla slug, a warty-nosed Goblin, a Gnome pirate, a leather bank book, a lion-shaped pillow, a soft woven sack, a flame red towel, a silver vial, a bottle, an ojhenik elixir, an agonite token, a design codex, an ojhenik elixir, a large quartzite bowl, a clear white bolus, some celestial charts, a vinaceous battle cassock, a pocket-sized kaleidoscope, an ugly grey sack, a long cord, an ivory stylus, a writing quill, some junliar tonic, some junliar tonic, some junliar tonic, a sophisticated mistsilk fan, some stamp instructions, a small hunter-green guide, a circle of colorful wool with a wool rug on it, a tool case, a telescope case, some plush stuffed hamsters, a silk fan, a dainty sana'ati comb, an embroidery needle, a silver diadem, a small hand mirror, a memory orb, a bodice dagger, a jade thumb ring, a dark brown earthworm, a pair of silver spoons, an origami-paper envelope, a pair of ivory-framed spectacles, some ship instructions, an orichalcum brooch, an agate ring, an origami-paper envelope, a fat turnip, a leather bridle, a meat cleaver, a tarnished cambrinth ring, a blue-eyed Kaldaren doll and a lot of other stuff.",
+          "line": 282
+        },
+        {
+          "text": "",
+          "line": 283
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 284
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 286,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 287
+        },
+        {
+          "text": "You twist the mana streams of your Manifest Force spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 288
+        },
+        {
+          "text": "The air around you shimmers with a bright yellow glow.  The scintillating light writhes and twists, abruptly coalescing into a translucent field before blinking out of sight.",
+          "line": 289
+        },
+        {
+          "text": "",
+          "line": 290
+        },
+        {
+          "text": "DRExpMonitor: Attunement(+1), Lunar Magic(+2), Warding(+3)",
+          "line": 291
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 292,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 293
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 295,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 296
+        }
+      ]
+    },
+    {
+      "cmd": "prepare GAF 55",
+      "line": 298,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Gauge Flow spell.",
+          "line": 299
+        }
+      ]
+    },
+    {
+      "cmd": "smell my draught",
+      "line": 301,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You sniff the bowl and determine it needs some time to set itself up.  Patiently you wait a few moments and then proceed to mix it with slow strokes.",
+          "line": 302
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 303
+        },
+        {
+          "text": "",
+          "line": 304
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 305
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 307,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  The solution continues exceptionally well and free of mistakes.",
+          "line": 308
+        },
+        {
+          "text": "",
+          "line": 309
+        },
+        {
+          "text": "Once finished you notice clumps of material forming on the edge of the bowl.",
+          "line": 310
+        },
+        {
+          "text": "Roundtime: 13 sec.",
+          "line": 311
+        },
+        {
+          "text": "",
+          "line": 312
+        },
+        {
+          "text": "You need another catalyst material to continue crafting some unfinished deep-sea draught.  You believe you can pour or put it into the bowl, pot or cauldron and continue mixing the unfinished brew inside.",
+          "line": 313
+        },
+        {
+          "text": "",
+          "line": 314
+        },
+        {
+          "text": "[Ingredients can be added by putting them with the unfinished item and continuing to craft.]",
+          "line": 315
+        },
+        {
+          "text": "",
+          "line": 316
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 317
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 319,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 320
+        },
+        {
+          "text": "You twist the mana streams of your Gauge Flow spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 321
+        },
+        {
+          "text": "A distracting flurry of cold white mana momentarily blinds you.  As your eyes adjust, you notice local fluctuations in mana are being represented by white graphs and sigils in the corners of your sight.",
+          "line": 322
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 324,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "DRExpMonitor: Lunar Magic(+3), Utility(+3)",
+          "line": 325
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 326
+        },
+        {
+          "text": "",
+          "line": 327
+        },
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 328
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 330,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 331
+        }
+      ]
+    },
+    {
+      "cmd": "prepare FIN 55",
+      "line": 333,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Finesse spell.",
+          "line": 334
+        }
+      ]
+    },
+    {
+      "cmd": "tie my mixing stick to my grass toolstrap",
+      "line": 336,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a grooved covellite mixing stick to a strap on your grass toolstrap.",
+          "line": 337
+        }
+      ]
+    },
+    {
+      "cmd": "get my coal nugget",
+      "line": 339,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get a large coal nugget from inside your haversack.",
+          "line": 340
+        }
+      ]
+    },
+    {
+      "cmd": "put my coal nugget in my mixing bowl",
+      "line": 342,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You vigorously rub the nugget alongside the bowl to scrape some shavings into the mixture.",
+          "line": 343
+        }
+      ]
+    },
+    {
+      "cmd": "put my coal nugget in my haversack",
+      "line": 345,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your nugget in your haversack.",
+          "line": 346
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 348,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a grooved covellite mixing stick from the straps of your grass toolstrap.",
+          "line": 349
+        }
+      ]
+    },
+    {
+      "cmd": "turn my mixing bowl",
+      "line": 351,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You spin your bowl about while scraping the draught off the sides.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 352
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 353
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 355,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 356
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 357
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 359,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 360
+        },
+        {
+          "text": "You twist the mana streams of your Finesse spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 361
+        },
+        {
+          "text": "Sharpened beneath the spell pattern's lens, your proprioception and social instincts burgeon in phrenic harmony.  The consequence of each tiny movement and mannerism is suddenly easier to anticipate, leaving you feeling empowered with outward grace and charm.",
+          "line": 362
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 364,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 365
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 367,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "DRExpMonitor: Augmentation(+3), Lunar Magic(+2)",
+          "line": 368
+        },
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 369
+        }
+      ]
+    },
+    {
+      "cmd": "prepare BLESS 7",
+      "line": 371,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Bless spell.  Casting rationality aside, you prepare to yoke unseen mana streams to fuel your sorcery.",
+          "line": 372
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 374,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 375
+        },
+        {
+          "text": "Roundtime: 9 sec.",
+          "line": 376
+        },
+        {
+          "text": "",
+          "line": 377
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 378
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 380,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  Peering at the solution reveals it is mixing correctly.",
+          "line": 381
+        },
+        {
+          "text": "",
+          "line": 382
+        },
+        {
+          "text": "Upon completion you see some particulate clouding up the mixture.",
+          "line": 383
+        },
+        {
+          "text": "Roundtime: 15 sec.",
+          "line": 384
+        },
+        {
+          "text": "",
+          "line": 385
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 386
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 388,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 389
+        },
+        {
+          "text": "You twist the mana streams of your Bless spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 390
+        },
+        {
+          "text": "Your body tingles as the brilliant silver glow fades from around you.",
+          "line": 391
+        },
+        {
+          "text": "A brilliant silver glow enwreathes your body.",
+          "line": 392
+        },
+        {
+          "text": "Emotional pain and exhaustion lingers in your mind, even after you regain rational control.",
+          "line": 393
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 395,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 396
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 398,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 399
+        }
+      ]
+    },
+    {
+      "cmd": "prepare FIN 55",
+      "line": 401,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "DRExpMonitor: Sorcery(+2)",
+          "line": 402
+        },
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Finesse spell.",
+          "line": 403
+        }
+      ]
+    },
+    {
+      "cmd": "tie my mixing stick to my grass toolstrap",
+      "line": 405,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a grooved covellite mixing stick to a strap on your grass toolstrap.",
+          "line": 406
+        }
+      ]
+    },
+    {
+      "cmd": "untie my sieve from my grass toolstrap",
+      "line": 408,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a mesh sieve with a polished silverwillow handle from the straps of your grass toolstrap.",
+          "line": 409
+        }
+      ]
+    },
+    {
+      "cmd": "push my draught with my sieve",
+      "line": 411,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You filter some unfinished deep-sea draught through your sieve and toss away the accumulated debris.",
+          "line": 412
+        },
+        {
+          "text": "Roundtime: 10 sec.",
+          "line": 413
+        },
+        {
+          "text": "",
+          "line": 414
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 415
+        }
+      ]
+    },
+    {
+      "cmd": "tie my mesh sieve to my grass toolstrap",
+      "line": 417,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a mesh sieve with a polished silverwillow handle to a strap on your grass toolstrap.",
+          "line": 418
+        }
+      ]
+    },
+    {
+      "cmd": "untie my mixing stick from my grass toolstrap",
+      "line": 420,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a grooved covellite mixing stick from the straps of your grass toolstrap.",
+          "line": 421
+        }
+      ]
+    },
+    {
+      "cmd": "mix my mixing bowl with my mixing stick",
+      "line": 423,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "With wide strokes you mix some unfinished deep-sea draught with your stick.  The work proceeds as planned without any mistakes whatsoever.",
+          "line": 424
+        },
+        {
+          "text": "Roundtime: 13 sec.",
+          "line": 425
+        },
+        {
+          "text": "Applying the final touches, you complete working on some deep-sea draught.",
+          "line": 426
+        },
+        {
+          "text": "",
+          "line": 427
+        },
+        {
+          "text": "You feel fully prepared to cast your spell.",
+          "line": 428
+        }
+      ]
+    },
+    {
+      "cmd": "cast",
+      "line": 430,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You gesture.",
+          "line": 431
+        },
+        {
+          "text": "You twist the mana streams of your Finesse spell in a chaotic motion, inciting them into unpredictable patterns.",
+          "line": 432
+        },
+        {
+          "text": "Your enhanced situational awareness wavers for a moment, then feels refreshed.",
+          "line": 433
+        },
+        {
+          "text": "",
+          "line": 434
+        },
+        {
+          "text": "DRExpMonitor: Attunement(+1), Augmentation(+3), Lunar Magic(+3)",
+          "line": 435
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 436,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 437
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 439,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 440
+        }
+      ]
+    },
+    {
+      "cmd": "prepare MAF 55",
+      "line": 442,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You feel intense strain as you try to manipulate the mana streams to form this pattern, and you are not certain that you will have enough mental stamina to complete it.",
+          "line": 443
+        },
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Manifest Force spell.",
+          "line": 444
+        }
+      ]
+    },
+    {
+      "cmd": "tie my mixing stick to my grass toolstrap",
+      "line": 446,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You attach a grooved covellite mixing stick to a strap on your grass toolstrap.",
+          "line": 447
+        }
+      ]
+    },
+    {
+      "cmd": "get my draught from my mixing bowl",
+      "line": 449,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some deep-sea draught from inside your mixing bowl.",
+          "line": 450
+        }
+      ]
+    },
+    {
+      "cmd": "put my mixing bowl in my haversack",
+      "line": 452,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your bowl in your haversack.",
+          "line": 453
+        }
+      ]
+    },
+    {
+      "cmd": "count my draught",
+      "line": 455,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You count out 6 uses remaining.",
+          "line": 456
+        }
+      ]
+    },
+    {
+      "cmd": "release spell",
+      "line": 459,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You let your concentration lapse and feel the spell's energies dissipate.",
+          "line": 460
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 462,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 463
+        }
+      ]
+    },
+    {
+      "cmd": "release symb",
+      "line": 465,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You pause for a moment as the details of the Chaos symbiosis fade from your mind.",
+          "line": 466
+        },
+        {
+          "text": "You release the Chaos symbiosis.",
+          "line": 467
+        },
+        {
+          "text": "",
+          "line": 468
+        },
+        {
+          "text": "You feel fully rested.",
+          "line": 469
+        }
+      ]
+    }
+  ],
+  "dropped": [
+    {
+      "line": 145,
+      "why": "lich",
+      "text": "--- Lich: remedy active."
+    },
+    {
+      "line": 155,
+      "why": "lich",
+      "text": "--- Lich: buff active."
+    },
+    {
+      "line": 156,
+      "why": "lich",
+      "text": "--- Lich: buff has exited."
+    },
+    {
+      "line": 185,
+      "why": "script",
+      "text": "Remedy: 14 uses left on the draught instructions."
+    },
+    {
+      "line": 233,
+      "why": "lich",
+      "text": "--- Lich: remedy paused."
+    },
+    {
+      "line": 261,
+      "why": "lich",
+      "text": "--- Lich: remedy unpaused."
+    },
+    {
+      "line": 458,
+      "why": "script",
+      "text": "Remedy: made 6 uses of deep-sea draught."
+    },
+    {
+      "line": 471,
+      "why": "lich",
+      "text": "--- Lich: remedy has exited."
+    }
+  ]
+}
