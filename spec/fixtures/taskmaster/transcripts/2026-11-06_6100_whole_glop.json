@@ -1,0 +1,669 @@
+{
+  "run": "2026-11-06_6100_whole_glop",
+  "log": "6100",
+  "from": 8619,
+  "to": 10292,
+  "source": "nezhiri.txt lines 8619-10292: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept. Another player's Hollow Eve 2026 Nezhiri task log. Only the steps of the commands taskmaster sends itself are kept (the client script's crafting commands, which remedy sends in taskmaster's place, are left out); the client script's own messages among the replies (lines 9230, 9372, 9540, 9686) and the \"script\" key and dropped-lines list were removed.",
+  "steps": [
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 8619,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri's eyes twinkle enthusiastically.  \"You wish to help me grow my business?  Oh, I am so pleased to hear it!  Your kind efforts will not go unrewarded, but I'm afraid I must ask for an up-front investment of 5 gold Kronars to cover the base costs of this next venture.  If you agree, just ask again and I'll make a record of our arrangement.\"",
+          "line": 8620
+        },
+        {
+          "text": "",
+          "line": 8621
+        },
+        {
+          "text": "\"I'm also running low on raw ingredients, so you will have to track down your own supplies.  The Merelew have been kind enough to share their stock of brewer's brine with us, however.  You can purchase as much as you need at the local Craftsmen's Academy.\"  The peddler pauses and scratches her scaly chin.  \"I suppose that's all there is to it.  If you give me the coin to finalize our deal and then craft the requested compounds, I'll reward you with whatever knowledge and material trinkets I can spare.\"",
+          "line": 8622
+        },
+        {
+          "text": "[ASK NEZHIRI FOR TASK again if you agree to her terms.]",
+          "line": 8623
+        }
+      ]
+    },
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 8625,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri beams at you, her tail rolling up and down in a smooth undulation.  \"I'm pleased that you've decided to hear my proposal!  It's been quite difficult keeping up with demand while still learning these local recipes, so I'll take all the help I can get.  You won't go uncompensated for your assistance, of course!\"",
+          "line": 8626
+        },
+        {
+          "text": "",
+          "line": 8627
+        },
+        {
+          "text": "Should you agree to my terms, you'll need to make 13 doses of some gill glop,\" Nezhiri explains.  \"It's been selling well today, and that's what I need to restock next.  Please COMBINE the doses into a single product before you turn them in, and make sure anything you give me is well-made or better, because I certainly can't build a business on shoddy merchandise.  And speaking of business, I can't guarantee a profitable return on your investment either, but I'll pay you what I can spare.  If the risk bothers you, then perhaps this arrangement is not for you...but nothing ventured, nothing gained, right?\"  The peddler winks.",
+          "line": 8628
+        },
+        {
+          "text": "",
+          "line": 8629
+        },
+        {
+          "text": "Nezhiri concludes, \"If you proceed, I'll ask you for that fee and set you to work.\"",
+          "line": 8630
+        },
+        {
+          "text": "",
+          "line": 8631
+        },
+        {
+          "text": "[You may accept by typing ACCEPT TASK, or decline by typing DECLINE TASK.  You have 30 seconds to decide.]",
+          "line": 8632
+        }
+      ]
+    },
+    {
+      "cmd": "accept task",
+      "line": 8633,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri smiles at you.  She holds out a hand and says, \"I'll have those 5 gold coins now, if I may.\"",
+          "line": 8634
+        },
+        {
+          "text": "Potion Peddler Nezhiri accepts your coins and slips them away.  \"Splendid!  We have ourselves a deal.\"",
+          "line": 8635
+        },
+        {
+          "text": "Trilling cheerfully, the peddler hands you some gill glop instructions.  \"This is the recipe I need you to follow.  It should be pretty straightforward, but as a measure of quality control I must insist that you make the concoction with your own hands.  Return to me when the requisite number of doses is complete.  I'll be peddling my wares here on Andreshlew until it sinks back into the ocean, so please be sure to conclude our business before then.  Good luck, and no refunds!\"",
+          "line": 8636
+        },
+        {
+          "text": "[You can check your progress with the TASK verb.]",
+          "line": 8637
+        }
+      ]
+    },
+    {
+      "cmd": "task",
+      "line": 8638,
+      "user": false,
+      "responses": [
+        {
+          "text": "You look in your task journal and see the following entry:",
+          "line": 8639
+        },
+        {
+          "text": "",
+          "line": 8640
+        },
+        {
+          "text": "While visiting Andreshlew for the Hollow Eve festivities, Nezhiri has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  In particular, she wanted you to craft some gill glop and indicated that 13 doses would suffice.  So far, you have returned 0 to her.  Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Nezhiri for another copy.",
+          "line": 8641
+        },
+        {
+          "text": "",
+          "line": 8642
+        },
+        {
+          "text": "You have performed the following tasks:",
+          "line": 8643
+        },
+        {
+          "text": "3527 crafting tasks",
+          "line": 8644
+        }
+      ]
+    },
+    {
+      "cmd": "read my glop instructions",
+      "line": 8647,
+      "user": false,
+      "responses": [
+        {
+          "text": "These instructions appear to be very fragile and will wear out quickly when studied.  They have only 14 uses remaining.",
+          "line": 8648
+        },
+        {
+          "text": "",
+          "line": 8649
+        },
+        {
+          "text": "        -=   Instructions for crafting some gill glop    =-",
+          "line": 8650
+        },
+        {
+          "text": "",
+          "line": 8651
+        },
+        {
+          "text": "  Some gill glop is a craftable item in the Alchemy society under the Remedies crafting discipline.  This is considered to be an extremely easy piece to make, though knowledge of the External Body Remedies technique will be beneficial to the crafter.",
+          "line": 8652
+        },
+        {
+          "text": "",
+          "line": 8653
+        },
+        {
+          "text": "  This item is listed as a \"custom wound remedy\" ingredient type and is created using a mortar and pestle to crush or a cooking pot and stirring rod to mix.  A crafter may also find it helpful to have a sieve, some water and alcohol, and a fire if mixing on hand.",
+          "line": 8654
+        },
+        {
+          "text": "",
+          "line": 8655
+        },
+        {
+          "text": " A list of ingredients is provided:",
+          "line": 8656
+        },
+        {
+          "text": "",
+          "line": 8657
+        },
+        {
+          "text": "   (5) prepared herb (pieces per use, known to heal external wounds of the neck)",
+          "line": 8658
+        },
+        {
+          "text": "   (1) splash of brewer's brine",
+          "line": 8659
+        },
+        {
+          "text": "   (1) catalyst material",
+          "line": 8660
+        }
+      ]
+    },
+    {
+      "cmd": "count my first brine",
+      "line": 8664,
+      "user": false,
+      "responses": [
+        {
+          "text": "There is only one part left of the brewer's brine.",
+          "line": 8665
+        },
+        {
+          "text": "A tiny teacup pig trots into the room.",
+          "line": 8666
+        }
+      ]
+    },
+    {
+      "cmd": "buy brine",
+      "line": 8717,
+      "user": false,
+      "responses": [
+        {
+          "text": "You decide to purchase the brine, and pay the sales clerk 50 Kronars.",
+          "line": 8718
+        },
+        {
+          "text": "The sales clerk hands you your brewer's brine.",
+          "line": 8719
+        }
+      ]
+    },
+    {
+      "cmd": "count my first glop",
+      "line": 8792,
+      "user": false,
+      "responses": [
+        {
+          "text": "I could not find what you were referring to.",
+          "line": 8793
+        }
+      ]
+    },
+    {
+      "cmd": "count my first brine",
+      "line": 8799,
+      "user": false,
+      "responses": [
+        {
+          "text": "There are ten parts left of the brewer's brine.",
+          "line": 8800
+        }
+      ]
+    },
+    {
+      "cmd": "count my second brine",
+      "line": 8801,
+      "user": false,
+      "responses": [
+        {
+          "text": "There is only one part left of the brewer's brine.",
+          "line": 8802
+        },
+        {
+          "text": "A tiny teacup pig trots into the room.",
+          "line": 8803
+        },
+        {
+          "text": "Student Drachekrieger just arrived.",
+          "line": 8804
+        },
+        {
+          "text": "Drachekrieger lets loose with a surprisingly piercing whistle!",
+          "line": 8805
+        }
+      ]
+    },
+    {
+      "cmd": "count my first georin",
+      "line": 8814,
+      "user": false,
+      "responses": [
+        {
+          "text": "I could not find what you were referring to.",
+          "line": 8815
+        }
+      ]
+    },
+    {
+      "cmd": "order 7",
+      "line": 8887,
+      "user": false,
+      "responses": [
+        {
+          "text": "The attendant says, \"You can purchase (25 pieces) dried georin for 437 Kronars.  Just order it again and we'll see it done!\"",
+          "line": 8888
+        }
+      ]
+    },
+    {
+      "cmd": "order 7",
+      "line": 8889,
+      "user": false,
+      "responses": [
+        {
+          "text": "The attendant takes some coins from you and hands you (25 pieces) dried georin.",
+          "line": 8890
+        }
+      ]
+    },
+    {
+      "cmd": "order 7",
+      "line": 8893,
+      "user": false,
+      "responses": [
+        {
+          "text": "The attendant says, \"You can purchase (25 pieces) dried georin for 437 Kronars.  Just order it again and we'll see it done!\"",
+          "line": 8894
+        }
+      ]
+    },
+    {
+      "cmd": "order 7",
+      "line": 8895,
+      "user": false,
+      "responses": [
+        {
+          "text": "The attendant takes some coins from you and hands you (25 pieces) dried georin.",
+          "line": 8896
+        }
+      ]
+    },
+    {
+      "cmd": "order 7",
+      "line": 8899,
+      "user": false,
+      "responses": [
+        {
+          "text": "The attendant says, \"You can purchase (25 pieces) dried georin for 437 Kronars.  Just order it again and we'll see it done!\"",
+          "line": 8900
+        }
+      ]
+    },
+    {
+      "cmd": "order 7",
+      "line": 8901,
+      "user": false,
+      "responses": [
+        {
+          "text": "The attendant takes some coins from you and hands you (25 pieces) dried georin.",
+          "line": 8902
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9222,
+      "user": false,
+      "responses": [
+        {
+          "text": "You count out 6 uses remaining.",
+          "line": 9223
+        }
+      ]
+    },
+    {
+      "cmd": "combine my glop with my other glop",
+      "line": 9228,
+      "user": false,
+      "responses": [
+        {
+          "text": "You must be holding both substances to combine them.  For more information, see HELP VERB COMBINE.",
+          "line": 9229
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9360,
+      "user": false,
+      "responses": [
+        {
+          "text": "You count out 6 uses remaining.",
+          "line": 9361
+        }
+      ]
+    },
+    {
+      "cmd": "combine my glop with my other glop",
+      "line": 9367,
+      "user": false,
+      "responses": [
+        {
+          "text": "You combine the stacks of remedies together.",
+          "line": 9368
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9369,
+      "user": false,
+      "responses": [
+        {
+          "text": "Rhadyn stares intently at his rope instructions.",
+          "line": 9370
+        },
+        {
+          "text": "You count out 12 uses remaining.",
+          "line": 9371
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9530,
+      "user": false,
+      "responses": [
+        {
+          "text": "You count out 6 uses remaining.",
+          "line": 9531
+        }
+      ]
+    },
+    {
+      "cmd": "combine my glop with my other glop",
+      "line": 9536,
+      "user": false,
+      "responses": [
+        {
+          "text": "You combine the stacks of remedies together.",
+          "line": 9537
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9538,
+      "user": false,
+      "responses": [
+        {
+          "text": "You count out 18 uses remaining.",
+          "line": 9539
+        }
+      ]
+    },
+    {
+      "cmd": "give Rangu",
+      "line": 9658,
+      "user": false,
+      "responses": [
+        {
+          "text": "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"",
+          "line": 9659
+        }
+      ]
+    },
+    {
+      "cmd": "give Rangu",
+      "line": 9660,
+      "user": false,
+      "responses": [
+        {
+          "text": "You hand Rangu 240 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.  Don't lose this ticket!  You must have it to reclaim your mortar.\"",
+          "line": 9661
+        }
+      ]
+    },
+    {
+      "cmd": "stow ticket",
+      "line": 9662,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your ticket in your velvet backpack.",
+          "line": 9663
+        }
+      ]
+    },
+    {
+      "cmd": "give Rangu",
+      "line": 9666,
+      "user": false,
+      "responses": [
+        {
+          "text": "Rangu looks over the pestle and says, \"That will cost 290 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"",
+          "line": 9667
+        }
+      ]
+    },
+    {
+      "cmd": "give Rangu",
+      "line": 9668,
+      "user": false,
+      "responses": [
+        {
+          "text": "You hand Rangu 290 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.  Don't lose this ticket!  You must have it to reclaim your pestle.\"",
+          "line": 9669
+        }
+      ]
+    },
+    {
+      "cmd": "stow ticket",
+      "line": 9670,
+      "user": false,
+      "responses": [
+        {
+          "text": "You put your ticket in your velvet backpack.",
+          "line": 9671
+        }
+      ]
+    },
+    {
+      "cmd": "task",
+      "line": 9672,
+      "user": false,
+      "responses": [
+        {
+          "text": "A tiny teacup pig trots into the room.",
+          "line": 9673
+        },
+        {
+          "text": "You look in your task journal and see the following entry:",
+          "line": 9674
+        },
+        {
+          "text": "",
+          "line": 9675
+        },
+        {
+          "text": "While visiting Andreshlew for the Hollow Eve festivities, Nezhiri has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  In particular, she wanted you to craft some gill glop and indicated that 13 doses would suffice.  So far, you have returned 0 to her.  Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Nezhiri for another copy.",
+          "line": 9676
+        },
+        {
+          "text": "",
+          "line": 9677
+        },
+        {
+          "text": "You have performed the following tasks:",
+          "line": 9678
+        },
+        {
+          "text": "3527 crafting tasks",
+          "line": 9679
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9684,
+      "user": false,
+      "responses": [
+        {
+          "text": "You count out 18 uses remaining.",
+          "line": 9685
+        }
+      ]
+    },
+    {
+      "cmd": "mark my glop at 13",
+      "line": 9687,
+      "user": false,
+      "responses": [
+        {
+          "text": "You measure out 13 usable portions from the stack and mark it for cutting.",
+          "line": 9688
+        }
+      ]
+    },
+    {
+      "cmd": "break my glop",
+      "line": 9689,
+      "user": false,
+      "responses": [
+        {
+          "text": "You carefully break off 13 pieces from the stack.",
+          "line": 9690
+        }
+      ]
+    },
+    {
+      "cmd": "count my glop",
+      "line": 9691,
+      "user": false,
+      "responses": [
+        {
+          "text": "You count out 13 uses remaining.",
+          "line": 9692
+        }
+      ]
+    },
+    {
+      "cmd": "give my glop to nezhiri",
+      "line": 10257,
+      "user": false,
+      "responses": [
+        {
+          "text": "Accepting your gill glop, Nezhiri looks it over and emits a satisfied trill.  \"Yes, this is a fine concoction indeed.  Well done, my friend!\"",
+          "line": 10258
+        },
+        {
+          "text": "",
+          "line": 10259
+        },
+        {
+          "text": "\"This will sell nicely, I'm sure.  Thank you for your help!\" Nezhiri exclaims, bowing.  \"Business is still picking up, so I can't promise there's a full return on your investment inside this, but I've paid what I can this time.  Hopefully it suffices.  There will be more profits to be made in the future, so let's work together again soon!\"",
+          "line": 10260
+        },
+        {
+          "text": "Potion Peddler Nezhiri hands you a woven sack.",
+          "line": 10261
+        }
+      ]
+    },
+    {
+      "cmd": "get coin from my sack",
+      "line": 10271,
+      "user": false,
+      "responses": [
+        {
+          "text": "You pick up 2 copper Dokoras.",
+          "line": 10272
+        }
+      ]
+    },
+    {
+      "cmd": "get coin from my sack",
+      "line": 10273,
+      "user": false,
+      "responses": [
+        {
+          "text": "You pick up 8 bronze Dokoras.",
+          "line": 10274
+        }
+      ]
+    },
+    {
+      "cmd": "get coin from my sack",
+      "line": 10275,
+      "user": false,
+      "responses": [
+        {
+          "text": "You pick up 8 silver Dokoras.",
+          "line": 10276
+        }
+      ]
+    },
+    {
+      "cmd": "get coin from my sack",
+      "line": 10277,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 10278
+        }
+      ]
+    },
+    {
+      "cmd": "look in my sack",
+      "line": 10279,
+      "user": false,
+      "responses": [
+        {
+          "text": "In the woven sack you see some azure-scale leather.",
+          "line": 10280
+        }
+      ]
+    },
+    {
+      "cmd": "look in my sack",
+      "line": 10281,
+      "user": false,
+      "responses": [
+        {
+          "text": "In the woven sack you see some azure-scale leather.",
+          "line": 10282
+        }
+      ]
+    },
+    {
+      "cmd": "dump junk",
+      "line": 10285,
+      "user": false,
+      "responses": [
+        {
+          "text": "[You have marked this room to be cleaned by the janitor.  It should arrive shortly.]",
+          "line": 10286
+        }
+      ]
+    }
+  ]
+}

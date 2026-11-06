@@ -5078,7 +5078,7 @@ RSpec.describe TaskMaster do
       it 'offers nezhiri as a taskmaster, with her tools and a sack history, but never picks her for cycle' do
         expect(TaskMaster::ARG_DEFINITIONS.first.first[:options]).to include('nezhiri')
         expect(TaskMaster::TASKMASTERS).to include('nezhiri')
-        expect(TaskMaster::TOOLS['nezhiri']).to eq(['mortar', 'pestle', 'bowl', 'mixing stick'])
+        expect(TaskMaster::TOOLS['nezhiri']).to eq(['mortar', 'pestle', 'bowl', 'mixing stick', 'sieve'])
 
         tm = described_class.allocate
         allow(tm).to receive(:get_settings).and_return(OpenStruct.new)
@@ -5090,45 +5090,809 @@ RSpec.describe TaskMaster do
         source = File.read(File.expand_path('../taskmaster.lic', __dir__))
         expect(source.scan(/\[[^\]]*\]\.sample/)).to all(eq("['poltu', 'bradyn', 'zasele'].sample"))
       end
+    end
 
-      it 'pauses with what her task needs and how to cut the stack to size, since it cannot make or hand in remedies yet, and stops when unpaused' do
-        tm = nezhiri_tm
-        expect(tm).to receive(:pause_script)
-
-        expect { tm.nezhiri('glop', 13, glop_recipe) }.to raise_error(SystemExit)
-
-        expect(DRC).to have_received(:message)
-          .with("taskmaster cannot make or hand in Nezhiri's remedies yet. Make 13 doses of gill glop (georin in a mortar) and combine them into one glop of exactly 13 doses " \
-                '(MARK MY GLOP AT 13, then BREAK MY GLOP, cuts off any extra). Then GIVE MY GLOP TO NEZHIRI. ' \
-                'Pausing; make them yourself, or kill the script. Unpausing stops it.')
+    # Layer 3: taskmaster makes her remedies. Whole logged tasks are replayed
+    # from ask to reward sack: every game reply is a logged line (from a
+    # transcript, or ReplayGame.log), except RUMMAGE, which the logging
+    # player's client script never sent (its replies are code-derived, in the
+    # wording taskmaster's rummage reads). remedy itself is not run: a stub
+    # leaves the product in hand with an id of its own, as remedy leaves it
+    # (6 uses each time, as every logged craft counted). The ids are made up
+    # (code-derived): the logs carry none. Commands taskmaster words by id
+    # ("count #7001") are answered with the logged reply to the client
+    # script's wording ("count my glop").
+    describe 'making her remedies' do
+      let(:crafting) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__)) }
+      # The logging player's tools: mortar, pestle and sieve on a grass
+      # toolstrap (6100:8794-8797), the bowl and stick in the bag.
+      let(:belt) { { 'name' => 'grass toolstrap', 'items' => %w[mortar pestle sieve] } }
+      let(:settings) { { alchemy_tools: ['bowl', 'mixing stick', 'mortar', 'pestle', 'sieve'], alchemy_belt: belt, alchemy_room: 7896 } }
+      # Tools and supplies as the logs show them (6100:8794-8797,
+      # 6100:8905-8910).
+      let(:kit) do
+        [['polished belzune stone mortar', 'grass toolstrap'], ['smooth belzune pestle', 'grass toolstrap'], ['trapezoidal darkstone wire sieve', 'grass toolstrap'],
+         ["khor'vela medicine bowl", 'duffel bag'], ['purpleheart mixing stick', 'duffel bag'],
+         ['water', 'duffel bag'], ['grain alcohol', 'duffel bag'], ['large coal nugget', 'duffel bag']]
       end
 
-      # ;taskmaster nezhiri finish on a logged task. A give by noun would take
-      # whatever the bag holds of it: another item of the noun, or a stack she
-      # turns down for its size ("The amount here looks off.", 6106:1811),
-      # which bput does not know, so it waited 15 s each, five times. So
-      # nothing is given: the run reads the task and the set, then pauses as
-      # a new task does.
-      {
-        'a healing potion on a landsickness potion task (6100:3908)'                => ['6100:3908', 'potion', 15, 3915..3927, 'small healing potion'],
-        'a 12-dose gill glop stack she would turn down as the wrong size (6106:56)' => ['6106:56', 'glop', 12, 8648..8660, 'gill glop']
-      }.each do |what, (journal, noun, doses, read, bagged)|
-        it "gives Nezhiri nothing on finish with #{what} in the bag, and pauses with what her task needs" do
-          tm = nezhiri_tm
-          game, commons = replay(inventory: [["#{noun} instructions", 'duffel bag'], [bagged, 'duffel bag']])
-          game.script('task', ReplayGame.log(journal))
-          game.script("read my #{noun} instructions", *logged(6100, read.first, read.last))
-          game.script("read my #{noun} instructions", *logged(6100, read.first, read.last))
+      before { $test_data.crafting = crafting }
+
+      def maker(settings: self.settings, **ivars)
+        build(settings: settings, npc: 'nezhiri', stockdata: crafting['stock'], rooms: TaskMaster::ROOMS, lootbag: 'velvet backpack',
+              keeplist_regex: /leather|stack/, **ivars)
+      end
+
+      # The game, the commons model with shops answered through the game,
+      # and Nezhiri in the room.
+      def shop_world(inventory, shop: :game)
+        game = ReplayGame.new(send_budget: 200).install(self)
+        commons = ReplayCommons.new(game: game, inventory: inventory, shop: shop, container_gets: true, buys: { 'brine' => "brewer's brine" },
+                                    orders: { 7 => 'dried georin', 9 => 'crushed junliar', 1 => 'water', 2 => 'grain alcohol', [8775, 2] => 'massive coal nugget' },
+                                    ids: { 'dried georin' => '8101', 'crushed junliar' => '8102', 'water' => '8103', 'grain alcohol' => '8104',
+                                           'massive coal nugget' => '8105' }).install(self)
+        DRRoom.npcs = ['Nezhiri']
+        [game, commons]
+      end
+
+      # remedy, stubbed: each run leaves the next id's stack of the product
+      # in hand, until the ids run out (then nothing, as when remedy stops).
+      def remedy_makes(commons, product, ids)
+        runs = []
+        allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+          commons.wait_for_script_to_complete(name, args)
+          runs << [name, args]
+          commons.hold(product, id: ids.shift) if name == 'remedy' && !ids.empty?
+        end
+        runs
+      end
+
+      # A COMBINE the game took: both stacks leave the hands and one comes
+      # back under a new id, as cloth did (combine_stock).
+      def merges(commons, product, *ids, into:, hand: nil)
+        lambda do |_game|
+          ids.each { |id| commons.release("##{id}") }
+          commons.hold(product, id: into, hand: hand)
+        end
+      end
+
+      # A BREAK the game took: the held stack becomes two. Which hand holds
+      # the marked piece is not in the logs: kept_hand says.
+      def breaks(commons, product, id, kept:, rest:, kept_hand: :left)
+        lambda do |_game|
+          commons.release("##{id}")
+          commons.hold(product, id: kept, hand: kept_hand)
+          commons.hold(product, id: rest)
+        end
+      end
+
+      # SWAP of the left hand's stack to the right.
+      def swaps(commons, product, id)
+        lambda do |_game|
+          commons.release("##{id}")
+          commons.hold(product, id: id, hand: :right)
+        end
+      end
+
+      def rummaged(noun, listed)
+        ReplayGame.code("You rummage through a duffel bag looking for something similar to \"#{noun}\" and see #{listed}.",
+                        from: "RUMMAGE /C reply, as taskmaster.lic#rummage reads it (the logging player's client script never rummaged)")
+      end
+
+      def rummaged_none(noun)
+        ReplayGame.code("You rummage through a duffel bag looking for something similar to \"#{noun}\" but there is nothing in there like that.",
+                        from: "RUMMAGE /C reply, as taskmaster.lic#rummage reads it (the logging player's client script never rummaged)")
+      end
+
+      describe 'a whole logged task' do
+        # 6100:8619-10292: 13 doses of gill glop, nothing on hand. One part of
+        # brine is carried (6100:8665), so a brine is bought (6100:8718);
+        # three crafts make 6, 12 and 18 doses (6100:9223, 9371, 9539); the
+        # mortar and pestle go to Rangu (6100:9659-9671); the 18 are cut to 13
+        # (6100:9688-9692) and handed in for a woven sack (6100:10258-10261).
+        it 'asks, accepts, buys brine and herbs, crafts three times, combines, cuts to 13 and hands in (6100:8619-10292)' do
+          tm = maker
+          game, commons = shop_world(kit)
+          allow(tm).to receive(:prepare_for_task)
+          runs = remedy_makes(commons, 'gill glop', %w[7001 7002 7004])
+          commands = /\A(?:ask nezhiri for task|accept task|task|read my glop instructions|count my first brine|count my first georin|buy brine|order 7|give Rangu|stow ticket|mark my glop at 13|break my glop|give my glop to nezhiri|get coin from my sack|look in my sack|dump junk)\z/
+          hooks = { 9660 => ->(_) { commons.release('mortar') }, 9668 => ->(_) { commons.release('pestle') },
+                    9689 => breaks(commons, 'gill glop', '7005', kept: '7007', rest: '7006'),
+                    10257 => lambda { |_|
+                      commons.release('#7007')
+                      commons.hold('woven sack')
+                    } }
+          transcript('2026-11-06_6100_whole_glop').script(game, commands: commands, skip: [8799, 9672, 10281], after: hooks)
+          game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop instructions'))
+          game.script('count my second brine', ReplayGame.log('6100:8793'))
+          # The client script tapped "my coal nugget" (6100:8909): a large one,
+          # 4 rubs, enough for the 3 crafts, so none is bought.
+          game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+          game.script('count #7001', ReplayGame.log('6100:9223'))
+          game.script('combine #7001 with #7002', ReplayGame.log('6100:9368'), after: merges(commons, 'gill glop', '7001', '7002', into: '7003'))
+          game.script('count #7003', ReplayGame.log('6100:9371'))
+          game.script('combine #7003 with #7004', ReplayGame.log('6100:9537'), after: merges(commons, 'gill glop', '7003', '7004', into: '7005'))
+          game.script('count #7005', ReplayGame.log('6100:9539'))
+          game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop instructions and some gill glop'))
+          game.script('count #7005', ReplayGame.log('6100:9685'))
+          game.script('count #7006', ReplayGame.log('6100:28265')) # the 5 left over (6100:28265 counts a 5-dose gill glop)
+          game.script('count #7007', ReplayGame.log('6100:9692'))
+          game.script('swap', ReplayGame.log('6106:1805'), after: swaps(commons, 'gill glop', '7007'))
+
+          tm.run_tasks(OpenStruct.new)
+
+          expect(game.timeline(calls: false)).to eq(
+            ['>> ask nezhiri for task', '>> ask nezhiri for task', '>> accept task', '>> task', '>> read my glop instructions',
+             '>> rummage /C glop in my duffel bag', '>> count my first brine', '>> count my second brine', '>> tap my first coal nugget', '>> count my first georin',
+             '>> buy brine', '>> order 7', '>> order 7', '>> order 7', '>> order 7', '>> order 7', '>> order 7',
+             '>> count #7001', '>> combine #7001 with #7002', '>> count #7003', '>> combine #7003 with #7004', '>> count #7005',
+             '>> give Rangu', '>> give Rangu', '>> stow ticket', '>> give Rangu', '>> give Rangu', '>> stow ticket',
+             '>> rummage /C glop in my duffel bag', '>> count #7005', '>> mark my glop at 13', '>> break my glop', '>> count #7006', '>> count #7007',
+             '>> swap', '>> give my glop to nezhiri',
+             '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> look in my sack', '>> dump junk']
+          )
+          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25']]] * 3)
+          calls = commons.calls.map(&:first)
+          expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (1 * 50) + (3 * 437) + 7500, 'Crossing'], ['DRCT.buy_item', 51_102, 'brine'],
+                                           ['DRCT.walk_to', 7896], ['DRCT.walk_to', 19_209])
+          expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 7]] * 3)
+          # Bought before the walk to the crafting room, crafted there, then
+          # the tools went to Rangu before the hand-in.
+          expect(calls.index('DRCT.buy_item')).to be < commons.calls.index(['DRCT.walk_to', 7896])
+          expect(commons.calls.index(['DRCT.walk_to', 7896])).to be < calls.index('DRC.wait_for_script_to_complete')
+          # The 5 left over went back in the bag; the 13 were handed in.
+          expect(commons.inventory.select { |item| item.name == 'gill glop' }.map(&:to_a)).to eq([['gill glop', 'duffel bag', '7006']])
+          expect(commons.moves).to include('gill glop: hand -> game', 'woven sack: hand -> velvet backpack')
+          expect(UserVars.taskmaster_sacks['nezhiri']).to eq(['azure-scale leather'])
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        # 6100:10293-11330: 13 doses of deep-sea draught, after a must-wait
+        # and BOOST TASK. A 4-dose draught is left from the 14-dose task
+        # before (6100:10519), and 26 parts of brine are carried
+        # (6100:10343-10349): no brine is bought, two crafts make 10 and 16
+        # doses (6100:10914, 11038), the bowl and stick go to Rangu
+        # (6100:11156-11168), and the 16 are cut to 13 (6100:11183-11187).
+        # The coal nugget carried is tiny (6100:10599), one rub, and two
+        # crafts need two: a massive one is bought at the forging supplies
+        # (the logged purchase, 6100:4250-4252). The client script used the
+        # tiny one up in the first craft (6100:10850-10852), and its second
+        # craft happened to add no catalyst; under remedy every craft asked
+        # for one (6102:313, 690, 1024).
+        it 'counts the 4 doses left from an earlier task, buys no brine with 26 parts carried, crafts twice and hands in 13 of 16 (6100:10293-11330)' do
+          tm = maker(boost: true, cooldown_poll: 15)
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
+          allow(tm).to receive(:prepare_for_task)
+          runs = remedy_makes(commons, 'deep-sea draught', %w[7102 7104])
+          commands = /\A(?:ask nezhiri for task|boost task|accept task|task|read my draught instructions|count my (?:first|second|third|fourth) brine|count my first junliar|order 9|give Rangu|stow ticket|mark my draught at 13|break my draught|give my draught to nezhiri|get coin from my sack|look in my sack|dump junk)\z/
+          hooks = { 11157 => ->(_) { commons.release('bowl') }, 11165 => ->(_) { commons.release('stick') },
+                    11184 => breaks(commons, 'deep-sea draught', '7105', kept: '7106', rest: '7105', kept_hand: :right),
+                    11300 => lambda { |_|
+                      commons.release('#7106')
+                      commons.hold('woven sack')
+                    } }
+          transcript('2026-11-06_6100_leftover_draught').script(game, commands: commands, skip: [10502, 10512, 10527, 10529, 10531, 10533, 11169, 11323], after: hooks)
+          game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught instructions and some deep-sea draught'))
+          game.script('count #7101', ReplayGame.log('6100:10519'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:10599'))
+          game.script('tap my second coal nugget', ReplayGame.log('6100:225')) # a TAP that found nothing (tap my brine, 6100:224)
+          game.script('order 2', ReplayGame.log('6100:4250'))
+          game.script('order 2', ReplayGame.log('6100:4252'))
+          game.script('combine #7101 with #7102', ReplayGame.log('6100:10912'), after: merges(commons, 'deep-sea draught', '7101', '7102', into: '7103'))
+          game.script('count #7103', ReplayGame.log('6100:10914'))
+          game.script('combine #7103 with #7104', ReplayGame.log('6100:11036'), after: merges(commons, 'deep-sea draught', '7103', '7104', into: '7105'))
+          game.script('count #7105', ReplayGame.log('6100:11038'))
+          game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught instructions and some deep-sea draught'))
+          game.script('count #7105', ReplayGame.log('6100:11180'))
+          game.script('count #7106', ReplayGame.log('6100:11187'))
+
+          tm.run_tasks(OpenStruct.new)
+
+          expect(game.timeline(calls: false)).to eq(
+            ['>> ask nezhiri for task', '>> boost task', '>> ask nezhiri for task', '>> ask nezhiri for task', '>> accept task', '>> task',
+             '>> read my draught instructions', '>> rummage /C draught in my duffel bag', '>> count #7101',
+             '>> count my first brine', '>> count my second brine', '>> count my third brine', '>> count my fourth brine',
+             '>> tap my first coal nugget', '>> tap my second coal nugget', '>> count my first junliar',
+             '>> order 2', '>> order 2', '>> order 9', '>> order 9', '>> order 9', '>> order 9',
+             '>> combine #7101 with #7102', '>> count #7103', '>> combine #7103 with #7104', '>> count #7105',
+             '>> give Rangu', '>> give Rangu', '>> stow ticket', '>> give Rangu', '>> give Rangu', '>> stow ticket',
+             '>> rummage /C draught in my duffel bag', '>> count #7105', '>> mark my draught at 13', '>> break my draught', '>> count #7106',
+             '>> give my draught to nezhiri',
+             '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> look in my sack', '>> dump junk']
+          )
+          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'junliar', 'coal nugget', 'bowl', 'draught', '25']]] * 2)
+          expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')
+          expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 531) + 212 + 7500, 'Crossing'])
+          expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8775, 2]] + ([['DRCT.order_item', 8862, 9]] * 2))
+          expect(commons.inventory.map(&:to_a)).to include(['massive coal nugget', 'duffel bag', nil])
+          expect(commons.calls.select { |name, *| name == 'DRCC.get_crafting_item' }.map { |call| call[1] }).to eq(['bowl', 'mixing stick'])
+          # The leftover stack's id is not known at the start, so it is got
+          # by the noun, as the logs got remedies ("get my glop from my
+          # leather satchel", 6100:9365); no log gets one by its whole name.
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call[1] }.grep_v(/\A#|instructions/)).to eq(['draught'])
+          expect(commons.inventory.select { |item| item.name == 'deep-sea draught' }.map(&:to_a)).to eq([['deep-sea draught', 'duffel bag', '7105']])
+          expect(UserVars.taskmaster_sacks['nezhiri']).to eq(['horse-bone stack'])
+          # The boost's 2 s pause; no reply was waited out.
+          expect([game.clock, game.diagnostics]).to eq([2.0, []])
+        end
+      end
+
+      describe '#nezhiri' do
+        let(:moisturizer) { moisturizer_recipe.merge(uses: 13) }
+        let(:glop) { glop_recipe.merge(uses: 14) }
+
+        it 'buys and crafts nothing when the doses on hand cover the task, and the hand-in cuts them down (6100:11038, 11180-11187)' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7105']])
+          runs = remedy_makes(commons, 'deep-sea draught', [])
+          2.times { game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught')) }
+          game.script('count #7105', ReplayGame.log('6100:11038'))
+          game.script('count #7105', ReplayGame.log('6100:11180'))
+          game.script('mark my draught at 13', ReplayGame.log('6100:11183'))
+          game.script('break my draught', ReplayGame.log('6100:11185'), after: breaks(commons, 'deep-sea draught', '7105', kept: '7106', rest: '7105', kept_hand: :right))
+          game.script('count #7106', ReplayGame.log('6100:11187'))
+          game.script('give my draught to nezhiri', ReplayGame.log('6100:11301'), ReplayGame.log('6100:11304'), after: ->(_) { commons.release('#7106') })
+          allow(tm).to receive(:sort_sack)
+          game.fallback('dump junk', ReplayGame.log('6100:10286'))
+
+          tm.nezhiri('draught', 13, draught_recipe.merge(uses: 14))
+          tm.complete_task('draught', 13)
+
+          expect(game.sent).to eq(['rummage /C draught in my duffel bag', 'count #7105', 'rummage /C draught in my duffel bag', 'count #7105',
+                                   'mark my draught at 13', 'break my draught', 'count #7106', 'give my draught to nezhiri', 'dump junk'])
+          expect(runs).to be_empty
+          expect(commons.calls.map(&:first)).not_to include('DRCM.ensure_copper_on_hand', 'DRCI.count_item_parts', 'DRCT.walk_to', 'DRCC.get_crafting_item')
+          expect(DRC).to have_received(:message).with('13 doses of deep-sea draught owed, 16 on hand: 0 crafts to make.')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        it "stops before buying anything when the bag holds another item of the remedy's noun" do
+          tm = maker(task_product: 'landsickness potion')
+          game, commons = shop_world(kit + [['healing potion', 'duffel bag']])
+          game.script('rummage /C potion in my duffel bag', rummaged('potion', 'some landsickness potion instructions and a healing potion'))
+
+          expect { tm.nezhiri('potion', 15, potion_recipe.merge(uses: 16)) }.to raise_error(SystemExit)
+
+          expect(game.sent).to eq(['rummage /C potion in my duffel bag'])
+          expect(commons.calls.map(&:first)).not_to include('DRCI.count_item_parts', 'DRCM.ensure_copper_on_hand', 'DRC.wait_for_script_to_complete')
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag holds 1 potion that is not landsickness potion. remedy and the hand-in find the landsickness potion by its noun, so they could take it instead. ' \
+                  'Move it out of your duffel bag, then start again. Stopping before buying anything.')
+        end
+
+        it 'stops rather than take a RUMMAGE unanswered twice for an empty bag' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit + [['gill glop', 'duffel bag', '7001']])
+
+          expect { tm.nezhiri('glop', 13, glop) }.to raise_error(SystemExit)
+
+          expect(game.sent).to eq(['rummage /C glop in my duffel bag'] * 2)
+          expect(commons.calls.map(&:first)).not_to include('DRCI.count_item_parts', 'DRCM.ensure_copper_on_hand')
+          expect(DRC).to have_received(:message).with('Could not look for gill glop in your duffel bag: RUMMAGE went unanswered twice. Stopping.')
+        end
+
+        it "counts a remedy whose name ends in the product's as the remedy, and its instructions as nothing" do
+          tm = maker(task_product: 'landsickness potion')
+          game, = shop_world(kit + [['landsickness potion', 'duffel bag', '7301']])
+          game.script('rummage /C potion in my duffel bag', rummaged('potion', 'some landsickness potion instructions and some landsickness potion'))
+          game.script('count #7301', ReplayGame.log('6100:6040')) # 15 doses
+          expect(tm.remedy_doses_on_hand(potion_recipe)).to eq(15)
+          expect(game.sent).to eq(['rummage /C potion in my duffel bag', 'count #7301'])
+        end
+
+        it 'stops before buying anything when the instructions have fewer uses than crafts' do
+          tm = maker(task_product: 'scale moisturizer')
+          game, commons = shop_world(kit)
+          game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+
+          expect { tm.nezhiri('moisturizer', 12, moisturizer.merge(uses: 1)) }.to raise_error(SystemExit)
+
+          expect(commons.calls.map(&:first)).not_to include('DRCI.count_item_parts', 'DRCM.ensure_copper_on_hand')
+          expect(DRC).to have_received(:message)
+            .with('The moisturizer instructions have 1 use left, and 2 crafts are needed. Ask Nezhiri for another copy (ASK NEZHIRI FOR INSTRUCTIONS), then run ;taskmaster nezhiri finish. Stopping before buying anything.')
+        end
+
+        # Found by a mutation sweep: no example had exactly as many uses as
+        # crafts, or crafts that make exactly the doses owed.
+        it 'goes on when the instructions have exactly as many uses as crafts' do
+          tm = maker(task_product: 'scale moisturizer')
+          allow(tm).to receive(:exit) { raise 'stopped' }
+
+          expect { tm.check_remedy_uses('moisturizer', moisturizer.merge(uses: 2), 2) }.not_to raise_error
+
+          expect(DRC).not_to have_received(:message)
+        end
+
+        # 6100:9361-9371: two gill glop crafts of 6, combined into 12; 12 owed.
+        it 'stops crafting without a stop when two crafts make exactly the 12 doses owed (6100:9361, 9368, 9371)' do
+          tm = maker(task_product: 'gill glop', remedy_stack: nil, remedy_doses: 0)
+          game, commons = shop_world(kit)
+          runs = remedy_makes(commons, 'gill glop', %w[7001 7002])
+          game.script('count #7001', ReplayGame.log('6100:9361'))
+          game.script('combine #7001 with #7002', ReplayGame.log('6100:9368'), after: merges(commons, 'gill glop', '7001', '7002', into: '7003'))
+          game.script('count #7003', ReplayGame.log('6100:9371'))
+
+          tm.brew_remedies(glop_recipe, 12, 2)
+
+          expect(runs.count { |name, _| name == 'remedy' }).to eq(2)
+          expect(game.sent).to eq(['count #7001', 'combine #7001 with #7002', 'count #7003'])
+          expect(commons.location_of('#7003')).to eq('duffel bag')
+          expect(tm.instance_variable_get(:@remedy_doses)).to eq(12)
+          expect(DRC).to have_received(:message).with('12 doses of gill glop made and combined into one.')
+          expect(DRC).not_to have_received(:message).with(/short of the/)
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        it 'stops before buying anything when the bank cannot cover the supplies' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit)
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count my first brine', ReplayGame.log('6100:8665'))
+          game.script('count my second brine', ReplayGame.log('6100:8793'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+          game.script('count my first georin', ReplayGame.log('6100:8793'))
+          allow(DRCM).to receive(:ensure_copper_on_hand).and_return(false)
+
+          expect { tm.nezhiri('glop', 13, glop) }.to raise_error(SystemExit)
+
+          expect(DRCM).to have_received(:ensure_copper_on_hand).with(1361 + 7500, anything, 'Crossing')
+          expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item', 'DRCT.order_item', 'DRC.wait_for_script_to_complete')
+          expect(DRC).to have_received(:message).with('Out of money: 8861 Kronars (copper) needed and the Crossing bank could not cover it. Stopping before buying anything more.')
+        end
+
+        it 'buys only the herb stacks not carried, counting 25 pieces as a stack (6100:4595)' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit + [['dried georin', 'duffel bag']], shop: :model)
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count my first brine', ReplayGame.log('6100:8800'))
+          game.script('count my second brine', ReplayGame.log('6100:8793'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+          game.script('count my first georin', ReplayGame.log('6100:4595'))
+          game.script('count my second georin', ReplayGame.log('6100:8793'))
+          allow(tm).to receive(:brew_remedies)
+          allow(tm).to receive(:repair)
+
+          tm.nezhiri('glop', 13, glop)
+
+          expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 7]] * 2)
+          expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 437) + 7500, 'Crossing'])
+          expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')
+        end
+
+        it 'buys the coal nugget at the forging supplies, then water and alcohol at the alchemy supplies, only when none is carried' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit.reject { |name, _| name =~ /water|alcohol|coal/ }, shop: :model)
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count my first brine', ReplayGame.log('6100:8800'))
+          game.script('count my second brine', ReplayGame.log('6100:8793'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:225'))
+          game.script('count my first georin', ReplayGame.log('6100:8793'))
+          sold = { [8775, 2] => ['large coal nugget', '8105'], [8862, 1] => ['water', '8103'], [8862, 2] => ['grain alcohol', '8104'], [8862, 7] => ['dried georin', '8101'] }
+          orders = []
+          allow(DRCT).to receive(:order_item) do |room, number|
+            orders << [room, number]
+            name, id = sold.fetch([room, number])
+            commons.hold(name, id: id)
+            nil
+          end
+          allow(tm).to receive(:brew_remedies)
+          allow(tm).to receive(:repair)
+
+          tm.nezhiri('glop', 13, glop)
+
+          expect(orders).to eq([[8775, 2], [8862, 1], [8862, 2]] + ([[8862, 7]] * 3))
+          expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', 212 + 62 + 81 + (3 * 437) + 7500, 'Crossing'])
+          expect(commons.inventory.map(&:name)).to include('large coal nugget', 'water', 'grain alcohol', 'dried georin')
+        end
+
+        it 'leaves water and alcohol to remedy when water_container and alcohol_container name vessels' do
+          tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
+          game, = shop_world([])
+          game.script('tap my first coal nugget', ReplayGame.log('6100:225'))
+          allow(DRCI).to receive(:exists?).and_return(false)
+          expect(tm.missing_remedy_supplies(1).map { |supply| supply[:name] }).to eq(['coal nugget'])
+        end
+
+        # A coal nugget shrinks a size a rub and a tiny one is used up
+        # (6100:3370-3372, then 6100:3501): one too small for the crafts runs
+        # out part way, and remedy then buys one at the hometown's shop.
+        it 'buys a coal nugget when the one carried is tiny and two crafts need two rubs, and none for one craft (6100:10599)' do
+          tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
+          game, = shop_world([])
+          game.script('tap my first coal nugget', ReplayGame.log('6100:10599'))
+          game.script('tap my second coal nugget', ReplayGame.log('6100:225'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:10599'))
+
+          expect(tm.missing_remedy_supplies(2)).to eq([{ name: 'coal nugget', room: 8775, number: 2, stock: 'coal', price: 212 }])
+          expect(tm.missing_remedy_supplies(1)).to eq([])
+          expect([game.sent, game.clock]).to eq([['tap my first coal nugget', 'tap my second coal nugget', 'tap my first coal nugget'], 0.0])
+        end
+
+        it 'adds up the rubs of every nugget carried, and taps no further once they cover the crafts (6100:2445, 3154)' do
+          tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
+          game, = shop_world([])
+          game.script('tap my first coal nugget', ReplayGame.log('6100:2445')) # small: 2
+          game.script('tap my second coal nugget', ReplayGame.log('6100:3154')) # tiny: 1
+
+          expect(tm.missing_remedy_supplies(3)).to eq([])
+          expect(game.sent).to eq(['tap my first coal nugget', 'tap my second coal nugget'])
+        end
+
+        it 'buys a coal nugget when the TAP goes unanswered, rather than run out part way' do
+          tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
+          game, = shop_world([])
+
+          expect(tm.missing_remedy_supplies(1).map { |supply| supply[:name] }).to eq(['coal nugget'])
+          expect([game.sent, game.clock]).to eq([['tap my first coal nugget'], 15.0])
+        end
+
+        it 'needs the vessel of the remedy and its tool, the sieve, and not the other vessel' do
+          tm = maker
+          expect([tm.remedy_tools(glop_recipe), tm.remedy_tools(draught_recipe)]).to eq([%w[mortar pestle sieve], ['bowl', 'mixing stick', 'sieve']])
+        end
+
+        it 'stops, naming the remedy continue line, when remedy leaves no remedy in hand' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit)
+          runs = remedy_makes(commons, 'gill glop', [])
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count my first brine', ReplayGame.log('6100:8800'))
+          game.script('count my second brine', ReplayGame.log('6100:8793'))
+          game.script('count my first georin', ReplayGame.log('6100:4595'))
+          game.script('count my second georin', ReplayGame.log('6100:8793'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+          2.times { game.script('order 7', ReplayGame.log('6100:8888')).script('order 7', ReplayGame.log('6100:8890')) }
+
+          expect { tm.nezhiri('glop', 13, glop) }.to raise_error(SystemExit)
+
+          expect(runs.count { |name, _| name == 'remedy' }).to eq(1)
+          expect(game.sent.grep(/\Acount #|\Acombine /)).to be_empty
+          expect(DRC).to have_received(:message)
+            .with('remedy did not leave any gill glop in your hands (craft 1 of 3). If it stopped part way, the unfinished glop is in your mortar: ' \
+                  'finish it with ;remedy continue na "coal nugget" mortar glop, then run ;taskmaster nezhiri finish. Stopping.')
+        end
+
+        it 'stops, both stacks back in the bag, when the game will not combine them (6100:9229)' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit)
+          allow(tm).to receive(:buy_remedy_supplies)
+          remedy_makes(commons, 'gill glop', %w[7001 7002])
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count #7001', ReplayGame.log('6100:9223'))
+          game.script('combine #7001 with #7002', ReplayGame.log('6100:9229'))
+
+          expect { tm.nezhiri('glop', 13, glop) }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with('Could not combine the gill glop (You must be holding both). Stopping.')
+          expect(commons.inventory.select { |item| item.name == 'gill glop' }.map(&:id)).to contain_exactly('7001', '7002')
+          expect(commons.calls.map(&:first)).not_to include('DRCC.get_crafting_item') # no repair after a stop
+        end
+
+        it 'stops after the crafts planned when they make fewer doses than owed, and says how to make the rest' do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit)
+          allow(tm).to receive(:buy_remedy_supplies)
+          remedy_makes(commons, 'gill glop', %w[7001])
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count #7001', ReplayGame.log('6100:28265')) # 5 doses of gill glop, fewer than the 6 a craft made in every log
+
+          expect { tm.nezhiri('glop', 6, glop) }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with('That is short of the 6 doses owed. Run ;taskmaster nezhiri finish to make the rest. Stopping.')
+          expect(commons.inventory.map(&:to_a)).to include(['gill glop', 'duffel bag', '7001'])
+        end
+      end
+
+      describe 'the hand-in' do
+        def handing_in(tm, inventory, owed)
+          game, commons = shop_world(inventory)
+          allow(tm).to receive(:sort_sack)
+          allow(tm).to receive(:task_handed_in)
+          game.fallback('dump junk', ReplayGame.log('6100:10286'))
+          [game, commons, -> { tm.complete_task(tm.instance_variable_get(:@task_item), owed) }]
+        end
+
+        # 6105:1886-1911: 18 doses given for 15; she asks to CUT; MARK at 15,
+        # BREAK and the 15 are taken. Here taskmaster believed 18 were owed.
+        it 'cuts the stack to the doses she asks for when she says CUT, then hands it in (6105:1886-1911)' do
+          tm = maker(task_product: 'deep-sea draught', task_item: 'draught')
+          game, commons, hand_in = handing_in(tm, kit + [['deep-sea draught', 'duffel bag', '7401']], 18)
+          game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught'))
+          game.script('count #7401', ReplayGame.log('6100:6980')) # 18 doses of deep-sea draught
+          game.script('give my draught to nezhiri', ReplayGame.log('6105:1886'))
+          game.script('rummage /C draught in my duffel bag', rummaged_none('draught'))
+          game.script('count #7401', ReplayGame.log('6100:7123'))
+          game.script('mark my draught at 15', ReplayGame.log('6105:1892'))
+          game.script('break my draught', ReplayGame.log('6105:1896'), after: breaks(commons, 'deep-sea draught', '7401', kept: '7402', rest: '7401', kept_hand: :right))
+          game.script('count #7402', ReplayGame.log('6105:1900'))
+          game.script('give my draught to nezhiri', ReplayGame.log('6105:1908'), ReplayGame.log('6105:1911'), after: ->(_) { commons.release('#7402') })
+
+          hand_in.call
+
+          expect(game.sent).to eq(['rummage /C draught in my duffel bag', 'count #7401', 'give my draught to nezhiri', 'rummage /C draught in my duffel bag', 'count #7401',
+                                   'mark my draught at 15', 'break my draught', 'count #7402', 'give my draught to nezhiri', 'dump junk'])
+          expect(commons.inventory.select { |item| item.name == 'deep-sea draught' }.map(&:to_a)).to eq([['deep-sea draught', 'duffel bag', '7401']])
+          expect(tm).to have_received(:task_handed_in).with('draught')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        # 6101:3610-3626: a 6-dose moisturizer given for 12; she asks to
+        # COMBINE; the other 6 are got and combined, SWAP, and the 12 are
+        # taken. Here taskmaster believed 6 were owed and cut 12 down to 6
+        # (that MARK and BREAK at 6 are in no log). Her refusal (6101:3611)
+        # answered a bare GIVE NEZ (6101:3610), which gives the right hand:
+        # the moisturizer, as here.
+        it 'combines the rest back in when she says COMBINE, then hands in (6101:3610-3626)' do
+          tm = maker(task_product: 'scale moisturizer', task_item: 'moisturizer')
+          game, commons, hand_in = handing_in(tm, kit + [['scale moisturizer', 'duffel bag', '7501']], 6)
+          game.script('rummage /C moisturizer in my duffel bag', rummaged('moisturizer', 'some scale moisturizer'))
+          game.script('count #7501', ReplayGame.log('6100:22475')) # 12 doses of scale moisturizer
+          game.script('mark my moisturizer at 6', ReplayGame.code('You measure out 6 usable portions from the stack and mark it for cutting.', from: '6100:9688 with 6 portions'))
+          game.script('break my moisturizer', ReplayGame.code('You carefully break off 6 pieces from the stack.', from: '6100:9690 with 6 pieces'),
+                      after: breaks(commons, 'scale moisturizer', '7501', kept: '7502', rest: '7501', kept_hand: :right))
+          game.script('count #7502', ReplayGame.log('6101:3613'))
+          game.script('give my moisturizer to nezhiri', ReplayGame.log('6101:3611'))
+          game.script('rummage /C moisturizer in my duffel bag', rummaged('moisturizer', 'some scale moisturizer'))
+          game.script('combine #7502 with #7501', ReplayGame.log('6101:3619'), after: merges(commons, 'scale moisturizer', '7502', '7501', into: '7503', hand: :left))
+          game.script('count #7503', ReplayGame.log('6100:22617'))
+          game.script('swap', ReplayGame.log('6101:3621'), after: swaps(commons, 'scale moisturizer', '7503'))
+          game.script('give my moisturizer to nezhiri', ReplayGame.log('6101:3623'), ReplayGame.log('6101:3626'), after: ->(_) { commons.release('#7503') })
+
+          hand_in.call
+
+          expect(game.sent).to eq(['rummage /C moisturizer in my duffel bag', 'count #7501', 'mark my moisturizer at 6', 'break my moisturizer', 'count #7502',
+                                   'give my moisturizer to nezhiri', 'rummage /C moisturizer in my duffel bag', 'combine #7502 with #7501', 'count #7503',
+                                   'swap', 'give my moisturizer to nezhiri', 'dump junk'])
+          expect(commons.inventory.map(&:name)).not_to include('scale moisturizer')
+          expect(DRC).to have_received(:message).with('Nezhiri wants 12 doses turned in as a single moisturizer; making it that size.')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        # 6106:1811: 6 doses given for 12, and nothing more on hand.
+        it 'stops at once when she says COMBINE and no more doses are on hand, without giving again (6106:1811)' do
+          tm = maker(task_product: 'gill glop', task_item: 'glop')
+          game, commons, hand_in = handing_in(tm, kit + [['gill glop', 'duffel bag', '7601']], 6)
+          game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop'))
+          game.script('count #7601', ReplayGame.log('6100:9223'))
+          game.script('give my glop to nezhiri', ReplayGame.log('6106:1811'))
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+          game.script('count #7601', ReplayGame.log('6100:9361')) # 6 doses of gill glop
+
+          expect { hand_in.call }.to raise_error(SystemExit)
+
+          expect(game.sent.count('give my glop to nezhiri')).to eq(1)
+          expect(commons.inventory.map(&:to_a)).to include(['gill glop', 'duffel bag', '7601'])
+          expect(DRC).to have_received(:message).with('6 of the 12 doses of gill glop owed are on hand: not enough to hand in yet.')
+          expect(DRC).to have_received(:message).with('Could not get another glop to hand in and the task is not finished, stopping.')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        # 6100:5593 then 6101:5463: she says CUT to a landsickness potion
+        # given with GIVE MY POTION TO NEZHIRI, twice.
+        it 'stops after a second wrong-amount refusal instead of giving the same stack again and again (6100:5593, 6101:5463)' do
+          tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+          game, commons, hand_in = handing_in(tm, kit + [['landsickness potion', 'duffel bag', '7701']], 15)
+          game.script('rummage /C potion in my duffel bag', rummaged('potion', 'some landsickness potion'))
+          game.script('count #7701', ReplayGame.log('6100:6040'))
+          game.script('give my potion to nezhiri', ReplayGame.log('6100:5593'))
+          game.script('rummage /C potion in my duffel bag', rummaged_none('potion'))
+          game.script('count #7701', ReplayGame.log('6101:5910')) # 15 doses of landsickness potion
+          game.script('give my potion to nezhiri', ReplayGame.log('6101:5463'))
+
+          expect { hand_in.call }.to raise_error(SystemExit)
+
+          expect(game.sent.count('give my potion to nezhiri')).to eq(2)
+          expect(commons.inventory.map(&:to_a)).to include(['landsickness potion', 'duffel bag', '7701'])
+          expect(DRC).to have_received(:message)
+            .with('Nezhiri still says the amount is off: she asked for 15 doses as a single potion, and taskmaster could not hand her that. The potion is back in your duffel bag. Stopping.')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        # The same two refusals, met by ;taskmaster nezhiri finish
+        # (turn_in_banked) rather than at the end of a run: made ready once
+        # more, then a stop. Found by a mutation sweep.
+        it 'stops after a second wrong-amount refusal at a finish too (6100:5593, 6101:5463)' do
+          tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+          game, commons, = handing_in(tm, kit + [['landsickness potion', 'duffel bag', '7701']], 15)
+          game.script('rummage /C potion in my duffel bag', rummaged('potion', 'some landsickness potion'))
+          game.script('count #7701', ReplayGame.log('6100:6040'))
+          game.script('give my potion to nezhiri', ReplayGame.log('6100:5593'))
+          game.script('rummage /C potion in my duffel bag', rummaged_none('potion'))
+          game.script('count #7701', ReplayGame.log('6101:5910')) # 15 doses of landsickness potion
+          game.script('give my potion to nezhiri', ReplayGame.log('6101:5463'))
+
+          expect { tm.turn_in_banked('potion', 15) }.to raise_error(SystemExit)
+
+          expect(game.sent.count('give my potion to nezhiri')).to eq(2)
+          expect(commons.inventory.map(&:to_a)).to include(['landsickness potion', 'duffel bag', '7701'])
+          expect(DRC).to have_received(:message).with('Nezhiri wants 15 doses turned in as a single potion; making it that size.')
+          expect(DRC).to have_received(:message)
+            .with('Nezhiri still says the amount is off: she asked for 15 doses as a single potion, and taskmaster could not hand her that. The potion is back in your duffel bag. Stopping.')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        # 6106:1800-1839: "ignores your offer", then the same stack is given
+        # from the right hand with a bare GIVE and taken.
+        it 'gives from the right hand with a bare GIVE when she ignores the offer (6106:1800, 1836-1839)' do
+          tm = maker(task_product: 'gill glop', task_item: 'glop')
+          game, commons, hand_in = handing_in(tm, kit + [['gill glop', 'duffel bag', '7801']], 12)
+          game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop'))
+          game.script('count #7801', ReplayGame.log('6100:9371'))
+          game.script('give my glop to nezhiri', ReplayGame.log('6106:1800'))
+          game.script('give nezhiri', ReplayGame.log('6106:1836'), ReplayGame.log('6106:1839'), after: ->(_) { commons.release('#7801') })
+
+          hand_in.call
+
+          expect(game.sent).to eq(['rummage /C glop in my duffel bag', 'count #7801', 'give my glop to nezhiri', 'give nezhiri', 'dump junk'])
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        it 'counts the right hand first after the break, keeps the stack of the doses owed, and puts the other one back' do
+          tm = maker
+          game, commons = shop_world(kit)
+          commons.hold('gill glop', id: '7901')
+          game.script('mark my glop at 13', ReplayGame.log('6100:9688'))
+          game.script('break my glop', ReplayGame.log('6100:9690'), after: breaks(commons, 'gill glop', '7901', kept: '7903', rest: '7902'))
+          game.script('count #7902', ReplayGame.log('6100:28265'))
+          game.script('count #7903', ReplayGame.log('6100:9692'))
+
+          expect(tm.trim_remedy('7901', 13, glop_recipe)).to eq('7903')
+          expect(game.sent).to eq(['mark my glop at 13', 'break my glop', 'count #7902', 'count #7903'])
+          expect([commons.location_of('#7902'), commons.location_of('#7903'), tm.instance_variable_get(:@remedy_stack)]).to eq(['duffel bag', 'left', '7902'])
+        end
+
+        it 'stops, both pieces back in the bag, when neither counts the doses owed after the break' do
+          tm = maker
+          game, commons = shop_world(kit)
+          commons.hold('gill glop', id: '7901')
+          game.script('mark my glop at 13', ReplayGame.log('6100:9688'))
+          game.script('break my glop', ReplayGame.log('6100:9690'), after: breaks(commons, 'gill glop', '7901', kept: '7903', rest: '7902'))
+          game.script('count #7902', ReplayGame.log('6100:28265'))
+          game.script('count #7903', ReplayGame.log('6100:28616'))
+
+          expect { tm.trim_remedy('7901', 13, glop_recipe) }.to raise_error(SystemExit)
+          expect(DRC).to have_received(:message).with('After the break, no gill glop in your hands counts 13 doses. Stopping.')
+          expect(commons.inventory.select { |item| item.name == 'gill glop' }.map(&:id)).to contain_exactly('7902', '7903')
+        end
+
+        it 'stops when MARK is not answered, the stack back in the bag' do
+          tm = maker
+          game, commons = shop_world(kit)
+          commons.hold('gill glop', id: '7901')
+
+          expect { tm.trim_remedy('7901', 13, glop_recipe) }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['mark my glop at 13'])
+          expect(DRC).to have_received(:message).with('Could not mark the gill glop (#7901) at 13 doses. Stopping.')
+          expect(commons.location_of('#7901')).to eq('duffel bag')
+        end
+
+        it 'stops when a count cannot be read, asking twice before calling it unanswered' do
+          tm = maker
+          game, = shop_world(kit)
+
+          expect { tm.count_remedy('7901', 'gill glop') }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['count #7901'] * 2)
+          expect(DRC).to have_received(:message).with('Could not count the gill glop (#7901): COUNT went unanswered twice. Stopping.')
+        end
+      end
+
+      describe 'finishing her task after a stop' do
+        it 'hands nothing in with too few doses on hand, and asks for instructions only for the doses still to make' do
+          tm = maker(npc: 'nezhiri')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
+          transcript('2026-11-06_6100_leftover_draught').script(game, commands: /\Atask\z/, skip: [11169])
+          game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught'))
+          game.script('count #7101', ReplayGame.log('6100:10519'))
+          expect(tm).to receive(:ensure_instructions).with('draught', 9)
+          expect(tm).to receive(:read_instructions).with('draught', 13).and_return(['draught', 13, draught_recipe])
           %i[refresh_haste top_up_copper].each { |step| allow(tm).to receive(step) }
-          expect(tm).to receive(:pause_script)
+          expect(tm).to receive(:nezhiri).with('draught', 13, draught_recipe, nil, nil)
+          expect(tm).to receive(:complete_task).with('draught', 13)
+          allow(tm).to receive(:find_npc)
 
           expect { tm.resume_task }.to raise_error(SystemExit)
 
-          expect(game.sent.grep(/\Agive/)).to be_empty
-          expect(game.sent).to eq(['task', "read my #{noun} instructions", "read my #{noun} instructions"])
-          expect(commons.moves.grep(/\A#{Regexp.escape(bagged)}:/)).to be_empty
-          expect(DRC).to have_received(:message).with(a_string_starting_with("taskmaster cannot make or hand in Nezhiri's remedies yet. Make #{doses} doses of "))
-          expect(game.clock).to eq(0.0)
+          expect(game.sent).to eq(['task', 'rummage /C draught in my duffel bag', 'count #7101'])
+          expect(tm).not_to have_received(:find_npc) # not looked for with nothing to give
+          expect(commons.location_of('#7101')).to eq('duffel bag')
+        end
+
+        # ;taskmaster nezhiri repeat: a gill glop task is cut from 18 to 13,
+        # the 5 left noted by id; the next task is deep-sea draught, with a
+        # 4-dose draught in the bag. The glop's id must not be taken for the
+        # draught.
+        it "does not take the leftover of another remedy, noted by id at an earlier task's cut, for this task's remedy (6100:9688-9692, 10519)" do
+          tm = maker
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
+          commons.hold('gill glop', id: '7005')
+          game.script('mark my glop at 13', ReplayGame.log('6100:9688'))
+          game.script('break my glop', ReplayGame.log('6100:9690'), after: breaks(commons, 'gill glop', '7005', kept: '7007', rest: '7006'))
+          game.script('count #7006', ReplayGame.log('6100:28265'))
+          game.script('count #7007', ReplayGame.log('6100:9692'))
+          expect(tm.trim_remedy('7005', 13, glop_recipe)).to eq('7007')
+          commons.release('#7007') # handed in
+          expect(tm.instance_variable_get(:@remedy_stack)).to eq('7006')
+
+          game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught'))
+          game.script('count #7101', ReplayGame.log('6100:10519'))
+
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(4)
+          expect(game.sent.last(2)).to eq(['rummage /C draught in my duffel bag', 'count #7101'])
+          expect([commons.location_of('#7006'), commons.location_of('#7101'), tm.instance_variable_get(:@remedy_stack)]).to eq(['duffel bag', 'duffel bag', '7101'])
+        end
+
+        # remedy leaves the vessel in hand, the unfinished remedy in it, when
+        # it stops part way; a crash does the same. ;taskmaster nezhiri finish
+        # used to put the mortar in the bag and craft afresh.
+        it 'stops on finish with the remedy\'s vessel in hand, leaving it there, and names the remedy continue line (6100:8641)' do
+          tm = maker
+          game, commons = shop_world(kit.reject { |name, _| name.include?('mortar') })
+          commons.hold('polished belzune stone mortar', id: '6001')
+          game.script('task', ReplayGame.log('6100:8641'))
+          allow(tm).to receive(:find_npc)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(game.sent).to eq(['task'])
+          expect(commons.location_of('#6001')).to eq('right')
+          expect(commons.moves.grep(/mortar/)).to eq(['polished belzune stone mortar: game -> hand']) # held, never put away
+          expect(DRC).to have_received(:message)
+            .with('Your polished belzune stone mortar is in your hands, and may still hold an unfinished glop from a remedy run that stopped. If it does, finish it with ' \
+                  ';remedy continue na "coal nugget" mortar glop; if it is empty, put it away. Then run ;taskmaster nezhiri finish. Stopping, with the mortar left in hand.')
+        end
+
+        it "goes on with the other vessel in hand, which is not the remedy's, putting it away" do
+          tm = maker(task_product: 'gill glop')
+          game, commons = shop_world(kit.reject { |name, _| name.include?('bowl') })
+          commons.hold("khor'vela medicine bowl", id: '6002')
+          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+
+          expect(tm.remedy_doses_on_hand(glop_recipe)).to eq(0)
+          expect(commons.location_of('#6002')).to eq('duffel bag')
+        end
+
+        # The healing potion that, with a give by noun, went to her five times
+        # (6100:3908 journal): the hand-in looks in the bag first and stops.
+        it 'gives Nezhiri nothing on finish when the bag holds another item of the noun (6100:3908)' do
+          tm = maker
+          game, commons = shop_world(kit + [['small healing potion', 'duffel bag']])
+          game.script('task', ReplayGame.log('6100:3908'))
+          game.script('rummage /C potion in my duffel bag', rummaged('potion', 'some landsickness potion instructions and a small healing potion'))
+          allow(tm).to receive(:find_npc)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(game.sent).to eq(['task', 'rummage /C potion in my duffel bag'])
+          expect(commons.location_of('small healing potion')).to eq('duffel bag')
+        end
+
+        it 'puts a stack left in hand together with the ones in the bag before counting' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
+          commons.hold('deep-sea draught', id: '7102')
+          game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught'))
+          game.script('combine #7102 with #7101', ReplayGame.log('6100:10912'), after: merges(commons, 'deep-sea draught', '7101', '7102', into: '7103'))
+          game.script('count #7103', ReplayGame.log('6100:10914'))
+
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(10)
+          expect(commons.location_of('#7103')).to eq('duffel bag')
+          expect(tm.instance_variable_get(:@remedy_stack)).to eq('7103')
+        end
+      end
+
+      describe 'the game lines it reads' do
+        it 'reads the logged COUNT, MARK, BREAK, COMBINE and refusal lines' do
+          expect(%w[6100:9223 6100:9371 6100:9539 6100:10519].map { |cite| ReplayGame.log(cite).text[TaskMaster::REMEDY_COUNT, 1] }).to eq(%w[6 12 18 4])
+          expect(ReplayGame.log('6100:9688').text).to match(TaskMaster::REMEDY_MARKED)
+          expect(ReplayGame.log('6100:9690').text).to match(TaskMaster::REMEDY_BROKEN)
+          expect(%w[6101:5463 6101:3611 6105:1886 6106:1811].map { |cite| ReplayGame.log(cite).text[TaskMaster::GIVE_WRONG_AMOUNT, 1] }).to eq(%w[15 12 15 12])
+          expect(ReplayGame.log('6106:1800').text).to match(TaskMaster::GIVE_IGNORED)
+          replies = Regexp.union(TaskMaster::COMBINE_REPLIES)
+          expect(%w[6100:9368 6100:9229 6100:9169].map { |cite| ReplayGame.log(cite).text[replies] })
+            .to eq(['You combine', 'You must be holding both', 'Those items cannot be combined'])
+          # Nothing else a give gets back reads as a wrong amount.
+          expect(ReplayGame.log('6100:10258').text).not_to match(Regexp.union(TaskMaster::GIVE_REPLIES))
+          expect(ReplayGame.log('6100:10261').text).to match(/hands you a/)
         end
       end
     end

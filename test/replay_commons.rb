@@ -27,10 +27,20 @@
 # installed, GameObj.left_hand.id and GameObj.right_hand.id (the harness's
 # $hand_ids) answer the id of the item a hand holds, by its full name. The
 # ids are made up for a spec (code-derived): Genie client logs carry no ids.
+# Two items of one name (two stacks of one remedy) can each have an id of
+# their own instead: an inventory entry [name, location, id], or {#hold}
+# with id:. That id moves with the item and wins over `ids:` (the harness's
+# $hand_item_ids).
 # A helper given a "#<id>" reference (DRCI.get_item?("#41782305"), as
 # lich-5's item_ref passes it through, 480bdee3 common-items.rb:50-58)
-# finds the item, held or owned, whose full name has that id, and nothing
-# else; the game's own by-id commands do the same.
+# finds the item, held or owned, that has that id, and nothing else; the
+# game's own by-id commands do the same.
+#
+# == Shops
+# By default DRCT.order_item puts the ordered item in hand and sends
+# nothing. With `shop: :game` it sends lich-5's two ORDER commands through
+# the game, and DRCT.buy_item sends its BUY, so a replay answers them from
+# log lines (see {#order_item}, {#buy_item}).
 #
 # == Not modelled: ordinals
 # An item named by its place, such as "second nemoih" (remedy.lic:239 and
@@ -67,7 +77,45 @@ class ReplayCommons
   #   @return [String] the full item name, as it shows in a hand
   # @!attribute [r] location
   #   @return [String] where it is: a container, the belt's name, or 'ground'
-  Item = Struct.new(:name, :location)
+  # @!attribute [r] id
+  #   @return [String, nil] its own game id, for an item whose name another
+  #     item shares; nil to use the `ids:` table
+  Item = Struct.new(:name, :location, :id)
+
+  # How {#order_item} and {#buy_item} answer: :model puts the item in hand
+  # and sends nothing; :game sends lich-5's commands through the game.
+  SHOPS = %i[model game].freeze
+
+  # The replies lich-5's DRCT.order_item waits for (6f126888
+  # common-travel.rb:126-128): the price quote, no coins, and the sale.
+  ORDER_QUOTE = 'Just order it again'
+  ORDER_NO_COINS = "you don't have enough coins"
+  ORDER_SOLD = 'takes some coins from you'
+
+  # The replies DRCT.buy_item waits for without a price (6f126888
+  # common-travel.rb:62-65): the sale, and nothing of that name.
+  BUY_SOLD = 'You decide to purchase'
+  BUY_NONE = 'Buy what'
+
+  # COUNT replies DRCI.count_item_parts reads a count from (6f126888
+  # common-items.rb:947-955), the two the logs show: brine parts ("There
+  # are ten parts left of the brewer's brine.", 6100:8800; "There is only
+  # one part left ...", 6100:8665) and herb pieces ("You count out 25
+  # pieces of material there.", 6100:4595).
+  COUNT_PARTS = [/There (?:is|are) (?:only )?(?<count>.+) parts? left/, /You count out (?<count>.+) pieces? of material there/].freeze
+
+  # COUNT's reply when no item of that ordinal is found
+  # (common-items.rb:975), which ends DRCI.count_item_parts.
+  COUNT_NONE = 'I could not find what you were referring to.'
+
+  # The ordinals DRCI.count_item_parts counts with, in order (lich-5
+  # $ORDINALS).
+  ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth].freeze
+
+  # Number words the game spells counts with, for DRC.text2num's part of
+  # count_item_parts (the harness's text2num returns the text unchanged).
+  NUMBER_WORDS = %w[zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen
+                    sixteen seventeen eighteen nineteen twenty].freeze
 
   # The lich-5 releases the model can answer as.
   LICH5_RELEASES = %i[v5_21 v5_22 current].freeze
@@ -170,17 +218,31 @@ class ReplayCommons
   # @param lich5 [Symbol] one of {LICH5_RELEASES}
   # @param inventory [Hash{String => String}] full item name => location
   # @param orders [Hash{Object => String}] DRCT.order_item number => the full
-  #   name of the item it puts in hand
+  #   name of the item it puts in hand; a [room, number] key wins over the
+  #   number alone, for two shops that sell different things under one
+  #   number (Crossing's alchemy supplies sell alcohol as 2, its forging
+  #   supplies a coal nugget, 6100:4250)
   # @param ids [Hash{String => String}] full item name => the game id
   #   GameObj shows for it in a hand (none by default)
-  # @raise [ArgumentError] for an unknown release
-  def initialize(game: nil, lich5: :current, inventory: {}, orders: {}, ids: {})
+  # @param shop [Symbol] one of {SHOPS}
+  # @param buys [Hash{String => String}] DRCT.buy_item item => the full name
+  #   of the item it puts in hand
+  # @param container_gets [Boolean] model a get from a container as the
+  #   game does it (see {#get_item?})
+  # @raise [ArgumentError] for an unknown release or shop
+  # @note inventory may also be an Array of [name, location] or [name,
+  #   location, id], for two items of one name.
+  def initialize(game: nil, lich5: :current, inventory: {}, orders: {}, ids: {}, shop: :model, buys: {}, container_gets: false)
     raise ArgumentError, "lich5: must be one of #{LICH5_RELEASES.inspect}, not #{lich5.inspect}" unless LICH5_RELEASES.include?(lich5)
+    raise ArgumentError, "shop: must be one of #{SHOPS.inspect}, not #{shop.inspect}" unless SHOPS.include?(shop)
 
     @game = game
     @lich5 = lich5
-    @inventory = inventory.map { |name, location| Item.new(name, location) }
+    @inventory = inventory.map { |name, location, id| Item.new(name, location, id) }
     @orders = orders
+    @shop = shop
+    @buys = buys
+    @container_gets = container_gets
     @ids = ids
     @calls = []
     @messages = []
@@ -195,6 +257,7 @@ class ReplayCommons
   def install(example)
     commons = self
     $hand_ids = @ids
+    $hand_item_ids = {}
     example.instance_exec do
       allow(DRCC).to receive(:get_crafting_item) { |*args| commons.get_crafting_item(*args) }
       allow(DRCC).to receive(:stow_crafting_item) { |*args| commons.stow_crafting_item(*args) }
@@ -207,7 +270,9 @@ class ReplayCommons
       allow(DRCI).to receive(:in_hands?) { |*args| commons.in_hands?(*args) }
       allow(DRCI).to receive(:in_left_hand?) { |*args| commons.in_left_hand?(*args) }
       allow(DRCI).to receive(:in_right_hand?) { |*args| commons.in_right_hand?(*args) }
+      allow(DRCI).to receive(:count_item_parts) { |*args| commons.count_item_parts(*args) }
       allow(DRCT).to receive(:order_item) { |*args| commons.order_item(*args) }
+      allow(DRCT).to receive(:buy_item) { |*args| commons.buy_item(*args) }
       allow(DRCT).to receive(:walk_to) { |*args| commons.walk_to(*args) }
       allow(DRCM).to receive(:ensure_copper_on_hand) { |*args| commons.ensure_copper_on_hand(*args) }
       allow(DRCM).to receive(:get_money_from_bank) { |*args| commons.get_money_from_bank(*args) }
@@ -230,12 +295,17 @@ class ReplayCommons
   # reply's `after:` hook. Recorded in {#moves} as coming from {GAME}.
   #
   # @param name [String] the full item name
-  # @return [Symbol, nil] the hand (:right or :left), or nil when both are full
-  def hold(name)
-    hand = free_hand
+  # @param id [String, nil] its own game id (for an item whose name another
+  #   item shares); nil to use the `ids:` table
+  # @param hand [Symbol, nil] :right or :left to put it in that hand (it
+  #   must be empty); nil for the right hand when empty, else the left
+  # @return [Symbol, nil] the hand (:right or :left), or nil when no hand
+  #   was free
+  def hold(name, id: nil, hand: nil)
+    hand = hand ? (held_name(hand).nil? ? hand : nil) : free_hand
     return nil unless hand
 
-    put_in_hand(hand, name)
+    put_in_hand(hand, name, id)
     move(name, GAME, HAND)
     hand
   end
@@ -249,7 +319,7 @@ class ReplayCommons
     hand = hand_holding(name)
     return nil unless hand
 
-    full_name = take_from_hand(hand)
+    full_name, = take_from_hand(hand)
     move(full_name, HAND, GAME)
     full_name
   end
@@ -307,7 +377,7 @@ class ReplayCommons
     end
 
     take_from_inventory(item)
-    put_in_hand(hand, item.name)
+    put_in_hand(hand, item.name, item.id)
     move(item.name, item.location, HAND)
     got
   end
@@ -350,22 +420,31 @@ class ReplayCommons
   end
 
   # Model of DRCI.get_item?: already held counts as success (the game's "You
-  # are already holding" is a success pattern, 480bdee3 common-items.rb:135);
-  # else the item, from +container+ when given, goes to a free hand.
+  # are already holding" is a success pattern, 480bdee3 common-items.rb:135)
+  # and nothing moves; else the item, from +container+ when given, goes to a
+  # free hand.
   #
-  # @param item [String] the item asked for
+  # With `container_gets: true` a get from a container is the game's
+  # instead: it names the container ("get my glop from my satchel"), so one
+  # in the container goes to a free hand even with another already held (the
+  # game did so with a second remedy stack, 6100:9365-9368); with none
+  # there, the answer is still true when one is held, since lich-5 judges
+  # the get by in_hands? (6f126888 common-items.rb:1249-1265). Off by
+  # default: remedy's specs pin the older answer.
+  #
+  # @param item [String] the item asked for, or a "#<id>" reference
   # @param container [String, nil] where to get it from
   # @return [Boolean] true when the item ends in hand
   def get_item?(item, container = nil)
     record('DRCI.get_item?', item, container)
-    return true if hand_holding(item)
+    return true if (container.nil? || !@container_gets) && hand_holding(item)
 
     found = find_item(item, container)
     hand = free_hand
-    return false unless found && hand
+    return !hand_holding(item).nil? unless found && hand
 
     take_from_inventory(found)
-    put_in_hand(hand, found.name)
+    put_in_hand(hand, found.name, found.id)
     move(found.name, found.location, HAND)
     true
   end
@@ -452,16 +531,69 @@ class ReplayCommons
   # Model of DRCT.order_item: the ordered item, when {#initialize}'s orders
   # names one for +number+, goes to a free hand.
   #
+  # With `shop: :game` it is lich-5's DRCT.order_item (6f126888
+  # common-travel.rb:123-129) instead: a walk to the room, then
+  # `order <number>` through the game, which returns nil on "you don't have
+  # enough coins", else `order <number>` again, whose matched text it
+  # returns ('' when the sale line did not come). The item goes to a hand
+  # only on the sale line ("The attendant takes some coins from you and
+  # hands you (25 pieces) dried georin.", 6100:8890).
+  #
   # @param room [Object] the shop room
   # @param number [Object] the order number
-  # @return [nil]
+  # @return [String, nil] nil by default; with `shop: :game` what lich-5
+  #   returns
   def order_item(room, number)
     record('DRCT.order_item', room, number)
-    if @orders.key?(number) && (hand = free_hand)
-      put_in_hand(hand, @orders[number])
-      move(@orders[number], SHOP, HAND)
-    end
+    return order_through_game(room, number) if @shop == :game
+
+    item = ordered(room, number)
+    hand_over(item, SHOP) if item
     nil
+  end
+
+  # Model of DRCT.buy_item (6f126888 common-travel.rb:97-107): recorded, a
+  # walk to the room, then with `shop: :game` `buy <item>` through the game
+  # (no price is ever offered: the brine's reply, "You decide to purchase
+  # the brine, and pay the sales clerk 50 Kronars.", 6100:8718, names
+  # none). On that sale line the item {#initialize}'s buys names goes to a
+  # free hand. By default nothing is sent and the item goes to a hand.
+  #
+  # @param room [Object] the shop room
+  # @param item [String] what to buy
+  # @return [nil]
+  def buy_item(room, item)
+    record('DRCT.buy_item', room, item)
+    walk_to(room)
+    sold = @shop == :model || @game.bput("buy #{item}", BUY_SOLD, BUY_NONE) == BUY_SOLD
+    hand_over(@buys[item], SHOP) if sold && @buys.key?(item)
+    nil
+  end
+
+  # Model of DRCI.count_item_parts (6f126888 common-items.rb:968-999):
+  # `count my <ordinal> <item>` through the game, first, second and so on,
+  # until "I could not find what you were referring to."; each
+  # {COUNT_PARTS} reply adds its count, read as a number or a number word.
+  # A reply that is neither (bput's '' on a timeout) adds nothing and the
+  # next ordinal is counted, as in lich-5. A "#<id>" reference is counted
+  # once.
+  #
+  # @param item [String] e.g. 'brine', 'georin'
+  # @return [Integer] the parts or pieces counted; 0 without a game
+  def count_item_parts(item)
+    record('DRCI.count_item_parts', item)
+    return 0 unless @game
+
+    refs = item.start_with?('#') ? [item] : ORDINALS.map { |ordinal| "my #{ordinal} #{item}" }
+    total = 0
+    refs.each do |ref|
+      reply = @game.bput("count #{ref}", COUNT_NONE, *COUNT_PARTS)
+      break if reply == COUNT_NONE
+
+      count = COUNT_PARTS.lazy.filter_map { |pattern| reply.match(pattern)&.[](:count) }.first
+      total += count.match?(/\A\d+\z/) ? count.to_i : NUMBER_WORDS.index(count).to_i if count
+    end
+    total
   end
 
   # Model of DRCT.walk_to: recorded; always arrives.
@@ -561,22 +693,25 @@ class ReplayCommons
   # @return [Item, nil]
   def find_item(name, container = nil)
     @inventory.find do |item|
-      named?(item.name, name) && (container.nil? || self.class.matches?(item.location, container))
+      named?(item.name, name, item.id) && (container.nil? || self.class.matches?(item.location, container))
     end
   end
 
   # Whether a requested name finds an item: a "#<id>" reference ({ID_REF})
-  # finds only the item whose full name has that id in the `ids:` table;
-  # any other name finds it as {.matches?} does.
+  # finds only the item with that id, its own id when it has one, else its
+  # full name's id in the `ids:` table; any other name finds it as
+  # {.matches?} does.
   #
   # @param full_name [String, nil] the item's full name
   # @param requested [String, nil] the name a helper was given
+  # @param own_id [String, nil] the item's own id
   # @return [Boolean]
-  def named?(full_name, requested)
+  def named?(full_name, requested, own_id = nil)
     id = requested.to_s[ID_REF, 1]
     return self.class.matches?(full_name, requested) unless id
+    return false if full_name.nil?
 
-    !full_name.nil? && @ids[full_name] == id
+    (own_id || @ids[full_name]) == id
   end
 
   # The hand holding an item: an exact name first, then a name that finds it
@@ -590,10 +725,64 @@ class ReplayCommons
     return nil if name.nil?
     return :right if $right_hand == name
     return :left if $left_hand == name
-    return :right if named?($right_hand, name)
-    return :left if named?($left_hand, name)
+    return :right if named?($right_hand, name, held_id(:right))
+    return :left if named?($left_hand, name, held_id(:left))
 
     nil
+  end
+
+  # @param hand [Symbol] :right or :left
+  # @return [String, nil] the name of what the hand holds
+  def held_name(hand)
+    hand == :right ? $right_hand : $left_hand
+  end
+
+  # The own id of what a hand holds ($hand_item_ids), while it still holds
+  # the item that id was given for.
+  #
+  # @param hand [Symbol] :right or :left
+  # @return [String, nil]
+  def held_id(hand)
+    name, id = ($hand_item_ids || {})[hand]
+    id if name && name == held_name(hand)
+  end
+
+  # Puts a shop's item in a free hand, recording where it came from.
+  #
+  # @param name [String, nil] the full item name; nil does nothing
+  # @param from [String] e.g. {SHOP}
+  # @return [void]
+  def hand_over(name, from)
+    hand = free_hand
+    return unless name && hand
+
+    put_in_hand(hand, name)
+    move(name, from, HAND)
+  end
+
+  # lich-5's DRCT.order_item, through the game ({#order_item}).
+  #
+  # @param room [Object]
+  # @param number [Object]
+  # @return [String, nil]
+  def order_through_game(room, number)
+    walk_to(room)
+    return nil if @game.bput("order #{number}", ORDER_QUOTE, ORDER_NO_COINS) == ORDER_NO_COINS
+
+    reply = @game.bput("order #{number}", ORDER_SOLD)
+    item = ordered(room, number)
+    hand_over(item, SHOP) if reply == ORDER_SOLD && item
+    reply
+  end
+
+  # The item an order hands over: {#initialize}'s orders for [room, number],
+  # else for the number alone.
+  #
+  # @param room [Object] the shop room
+  # @param number [Object] the order number
+  # @return [String, nil] its full name; nil when orders names none
+  def ordered(room, number)
+    @orders.fetch([room, number]) { @orders[number] }
   end
 
   # @return [Symbol, nil] the right hand when empty, else the left, else nil
@@ -619,8 +808,8 @@ class ReplayCommons
   # @param location [String] where it goes
   # @return [void]
   def stow_from_hand(hand, location)
-    name = take_from_hand(hand)
-    @inventory << Item.new(name, location)
+    name, id = take_from_hand(hand)
+    @inventory << Item.new(name, location, id)
     move(name, HAND, location)
   end
 
@@ -635,18 +824,22 @@ class ReplayCommons
   end
 
   # @param hand [Symbol] :right or :left
-  # @param name [String]
+  # @param name [String, nil]
+  # @param id [String, nil] the item's own id, if it has one
   # @return [void]
-  def put_in_hand(hand, name)
+  def put_in_hand(hand, name, id = nil)
     hand == :right ? $right_hand = name : $left_hand = name
+    $hand_item_ids ||= {}
+    id ? $hand_item_ids[hand] = [name, id] : $hand_item_ids.delete(hand)
   end
 
   # @param hand [Symbol] :right or :left
-  # @return [String] the name the hand held
+  # @return [Array(String, String)] the name the hand held and its own id
+  #   (nil when it had none)
   def take_from_hand(hand)
-    name = hand == :right ? $right_hand : $left_hand
+    taken = [held_name(hand), held_id(hand)]
     put_in_hand(hand, nil)
-    name
+    taken
   end
 
   # Records a call, and adds it to the game's timeline.
