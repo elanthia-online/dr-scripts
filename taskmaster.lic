@@ -34,7 +34,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.5'
+  VERSION = '2026.11.07.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2657,17 +2657,46 @@ class TaskMaster
   # replacement, one more item lost after its study stops the task here for a
   # person to look at, where asking on every relaunch could go on for hours.
   #
+  # The request is remembered only once a set was handed over. A request the
+  # taskmaster turned down is not the task's one replacement: with both hands
+  # full Zasele answers "Zasele glances at your full hands." and hands nothing
+  # over (Barrask, 2026-11-04 22:06:35). Remembered anyway, that request
+  # stopped every later run with "Already asked", though no replacement had
+  # ever come, and the task could never be finished. So a request that got
+  # no set stops this run without being remembered, and the next run asks
+  # again.
+  #
   # @param item [String] the task item's noun
   # @return [void]
-  # @raise [SystemExit] when instructions were already requested for this task
+  # @raise [SystemExit] when instructions were already requested for this
+  #   task, or this request got none
   def request_replacement(item)
     UserVars.taskmaster_replacements ||= {}
     if UserVars.taskmaster_replacements[@npc] == item
       DRC.message("Already asked #{@npc} for #{item} instructions on this task, and they were used up again. Stopping instead of asking again; check why the #{item}s aren't being made.")
       exit
     end
-    UserVars.taskmaster_replacements[@npc] = item
-    get_instructions
+    reply = get_instructions(item)
+    if instructions_handed_over?(reply, item)
+      UserVars.taskmaster_replacements[@npc] = item
+      return
+    end
+
+    said = reply.empty? ? 'no answer' : "\"#{reply}\""
+    DRC.message("Asked #{@npc} for #{item} instructions, but none were handed over (#{said}). That does not count as this task's one replacement. Stopping; the next run asks again.")
+    exit
+  end
+
+  # Whether a set of instructions came from the taskmaster: the reply says she
+  # handed them over ("Seamstress Zasele frowns.  She holds up one of her
+  # signs while handing you some reinforced rope instructions:"), or, when the
+  # reply was missed, the set is in hand.
+  #
+  # @param reply [String] what get_instructions read
+  # @param item [String] the task item's noun
+  # @return [Boolean]
+  def instructions_handed_over?(reply, item)
+    INSTRUCTIONS_HANDED_OVER.any? { |pattern| reply.match?(pattern) } || DRCI.in_hands?("#{item} instructions")
   end
 
   # Put the instructions just read into the crafting bag by name, where the
@@ -2682,12 +2711,28 @@ class TaskMaster
     DRCI.stow_hands
   end
 
-  # Finds the taskmaster and asks for a fresh set of instructions.
+  # The taskmaster's replies to ASK <taskmaster> FOR INSTRUCTIONS that hand a
+  # set over: "... while handing you some reinforced rope instructions:"
+  # (Alexzander, 2026-11-05 10:38:27), "... hands you some scale moisturizer
+  # instructions" (Nezhiri).
+  INSTRUCTIONS_HANDED_OVER = [/hands you/i, /gives you/i, /handing you/i].freeze
+  # Zasele's reply when both hands are full: nothing is handed over
+  # ("Zasele glances at your full hands.", Barrask, 2026-11-04 22:06:35).
+  INSTRUCTIONS_HANDS_FULL = /glances at your full hands/
+
+  # Finds the taskmaster, puts whatever is in either hand in the crafting bag
+  # by its id (free_hands_for), so the set has a hand to land in, and asks
+  # for a fresh set of instructions. By id, so a held leftover is never taken
+  # for a worn item of the same noun (Barrask's "put my leather" hit his worn
+  # leathers, and both hands stayed full).
   #
-  # @return [String] the reply
-  def get_instructions
+  # @param item [String] the task item's noun
+  # @return [String] the reply, '' when none came
+  # @raise [SystemExit] when a hand can't be emptied (free_hands_for)
+  def get_instructions(item)
     find_npc(@rooms, @npc)
-    DRC.bput("ask #{@npc} for instructions", "hands you", "gives you", "handing you")
+    free_hands_for("#{item} instructions")
+    DRC.bput("ask #{@npc} for instructions", *INSTRUCTIONS_HANDED_OVER, INSTRUCTIONS_HANDS_FULL)
   end
 
   # Asks the taskmaster for a task until one is offered, waiting out
@@ -2850,10 +2895,12 @@ class TaskMaster
   end
 
   # Puts whatever is in either hand in the crafting bag by its id, so the
-  # orders that follow have a hand to land in. Items whose ids are in keep
-  # stay in hand (the remedy stacks a hand-in gathers).
+  # orders that follow (or a taskmaster's replacement instructions) have a
+  # hand to land in. Items whose ids are in keep stay in hand (the remedy
+  # stacks a hand-in gathers).
   #
-  # @param stock [String] what is about to be bought, e.g. 'burlap cloth'
+  # @param stock [String] what is about to come into a hand, e.g. 'burlap
+  #   cloth' or 'rope instructions'
   # @param keep [Array<String>] ids to leave in hand
   # @return [void]
   # @raise [SystemExit] when a hand can't be emptied
@@ -2865,7 +2912,7 @@ class TaskMaster
       ref = "##{obj.id}"
       next if DRCI.put_away_item?(ref, @bag) || left_hands?(ref)
 
-      DRC.message("Could not put your #{obj.name} (#{ref}) in your #{@bag}, so there is no free hand to buy #{stock} into. Empty your hands, then start again. Stopping.")
+      DRC.message("Could not put your #{obj.name} (#{ref}) in your #{@bag}, so there is no free hand for the #{stock}. Empty your hands, then start again. Stopping.")
       exit
     end
   end

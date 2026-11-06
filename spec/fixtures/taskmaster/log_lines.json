@@ -1,5 +1,5 @@
 {
-  "_source": "Real game lines cited <log>:<line>: 6100..6106 = another player's Hollow Eve 2026 Nezhiri task logs, Lich text captures, prompts and stamps removed (6100 = the long Nezhiri log; 6101 = a second log; 6102..6106 = five shorter logs, numbered as their files). The logging player's client script sent the commands; each text is the game line as logged, with the leading prompt (\"> \", \"R> \") and any [hh:mm:ss] stamp removed, and is used verbatim. Empty texts are the blank lines the game sent.",
+  "_source": "Real game lines cited <log>:<line>: 6100..6106 = another player's Hollow Eve 2026 Nezhiri task logs, Lich text captures, prompts and stamps removed (6100 = the long Nezhiri log; 6101 = a second log; 6102..6106 = five shorter logs, numbered as their files). The logging player's client script sent the commands; each text is the game line as logged, with the leading prompt (\"> \", \"R> \") and any [hh:mm:ss] stamp removed, and is used verbatim. Empty texts are the blank lines the game sent. 6200 = Barrask's 2026-11-04_16-53-57.log and 6201 = Alexzander's 2026-11-05_05-30-44.log (the user's Hollow Eve 2026 Zasele task logs, Lich text logs with the 'YYYY-MM-DD HH:MM:SS NZDT: ' stamp removed).",
   "6100:133": "Potion Peddler Nezhiri's eyes twinkle enthusiastically.  \"You wish to help me grow my business?  Oh, I am so pleased to hear it!  Your kind efforts will not go unrewarded, but I'm afraid I must ask for an up-front investment of 5 gold Kronars to cover the base costs of this next venture.  If you agree, just ask again and I'll make a record of our arrangement.\"",
   "6100:134": "",
   "6100:135": "\"I'm also running low on raw ingredients, so you will have to track down your own supplies.  The Merelew have been kind enough to share their stock of brewer's brine with us, however.  You can purchase as much as you need at the local Craftsmen's Academy.\"  The peddler pauses and scratches her scaly chin.  \"I suppose that's all there is to it.  If you give me the coin to finalize our deal and then craft the requested compounds, I'll reward you with whatever knowledge and material trinkets I can spare.\"",
@@ -262,5 +262,8 @@
   "6106:1831": "Potion Peddler Nezhiri ignores your offer.",
   "6106:1834": "You move some gill glop to your right hand.",
   "6106:1836": "Accepting your gill glop, Nezhiri looks it over and emits a satisfied trill.  \"Yes, this is a fine concoction indeed.  Well done, my friend!\"",
-  "6106:1839": "Potion Peddler Nezhiri hands you a woven sack."
+  "6106:1839": "Potion Peddler Nezhiri hands you a woven sack.",
+  "6200:49169": "You need a free hand to pick that up.",
+  "6200:49190": "Zasele glances at your full hands.",
+  "6201:47608": "Seamstress Zasele frowns.  She holds up one of her signs while handing you some reinforced rope instructions:"
 }
