@@ -1496,9 +1496,13 @@ RSpec.describe 'moonwatch.lic' do
               described_class.existing_target('moon', db_path: @path)
               returned = true
             end
-            expect(entered.pop).to eq(window)
-            reader.kill
-            resume << true
+            begin
+              # A reader that never reaches the window fails here, not hangs.
+              expect(entered.pop(timeout: 5)).to eq(window)
+              reader.kill
+            ensure
+              resume << true # never leave the reader parked, even on a failed expectation
+            end
             expect(reader.join(5)).to eq(reader)
 
             expect(finished).to eq([window])
