@@ -20,6 +20,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
+  ## Nezhiri's alchemy tasks are read (which remedy, herb and vessel each needs) but not made or handed in yet: taskmaster pauses with what to make. Combine the doses into one stack of exactly the doses she asked for (MARK and BREAK cut off the extra) and give it to her yourself; ;taskmaster nezhiri finish gives her nothing ##
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -30,7 +31,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.05.7'
+  VERSION = '2026.11.06.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -49,6 +50,7 @@ class TaskMaster
     'bradyn'  => ['bone saw', 'chisels', 'wood shaper', 'rasp', 'carving knife', 'drawknife', 'forging hammer', 'bellows', 'tongs', 'stirring rod', 'shovel'],
     'zasele'  => ['knitting needles', 'sewing needles', 'awl', 'slickstone', 'yardstick', 'scissors'],
     'dorhum'  => ['brazier', 'burin', 'augmenting loop', 'mana fount', 'imbuement rod (or the Imbue spell)'],
+    'nezhiri' => ['mortar', 'pestle', 'bowl', 'mixing stick'],
     'shaping' => ['wood shaper', 'rasp', 'carving knife', 'drawknife']
   }.freeze
 
@@ -56,7 +58,7 @@ class TaskMaster
   # of the other modes.
   ARG_DEFINITIONS = [
     [
-      { name: 'npc', options: %w[poltu bradyn zasele dorhum], variable: true, description: "Task npc's name, in full" },
+      { name: 'npc', options: %w[poltu bradyn zasele dorhum nezhiri], variable: true, description: "Task npc's name, in full" },
       { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
       { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
       { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
@@ -107,7 +109,7 @@ class TaskMaster
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
     Flags.add("wrap-up", /^You say, "Finish your tasks."/)
-    UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [], 'dorhum' => [] }
+    UserVars.taskmaster_sacks ||= { 'zasele' => [], 'bradyn' => [], 'poltu' => [], 'dorhum' => [], 'nezhiri' => [] }
   end
 
   # Makes task_hometown the hometown every script in this session sees
@@ -217,7 +219,7 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] always
   def print_loot_history
-    ['poltu', 'bradyn', 'zasele', 'dorhum'].each do |npc|
+    ['poltu', 'bradyn', 'zasele', 'dorhum', 'nezhiri'].each do |npc|
       DRC.message("Sack history for Taskmaster #{npc.capitalize}:")
       Array(UserVars.taskmaster_sacks[npc]).each do |sack|
         DRC.message(sack)
@@ -1342,10 +1344,12 @@ class TaskMaster
   # The game names the taskmaster first: "Zasele has asked you to craft some
   # items ... In particular, she wanted you to craft a reinforced rope and
   # indicated that 5 would suffice." Groups: taskmaster (when named), item,
-  # how many, how many returned.
-  TASK_JOURNAL = /(?:(\w+) has asked you to craft .*?)?wanted you to craft (.*) and indicated that (\d+) would suffice\.(?:\s+So far, you have returned (\d+))?/
+  # how many, how many returned. Nezhiri counts doses, not items: "she
+  # wanted you to craft some gill glop and indicated that 12 doses would
+  # suffice." The word "doses" is skipped, so the count group is the same.
+  TASK_JOURNAL = /(?:(\w+) has asked you to craft .*?)?wanted you to craft (.*) and indicated that (\d+)(?: doses)? would suffice\.(?:\s+So far, you have returned (\d+))?/
   # The taskmasters this script works for.
-  TASKMASTERS = %w[poltu bradyn zasele dorhum].freeze
+  TASKMASTERS = %w[poltu bradyn zasele dorhum nezhiri].freeze
   # TASK reply when not on a task.
   NOT_ON_TASK = /^You are not currently on a task/
   # The materials line of READ INSTRUCTIONS: the stock and its volume, or
@@ -1370,7 +1374,10 @@ class TaskMaster
 
   # Reads the task journal and returns the item noun and how many are still
   # owed, or nil when not on a task. Notes the taskmaster the journal names
-  # in @task_giver (nil when it names none).
+  # in @task_giver (nil when it names none), and the item's whole name,
+  # without "some" or "a", in @task_product: Nezhiri's recipe depends on it,
+  # since the noun alone ("potion") does not say which remedy she wants.
+  # For Nezhiri, how many owed counts doses.
   #
   # @return [Array(String, Integer), nil] item noun and how many are owed
   def read_task
@@ -1381,10 +1388,15 @@ class TaskMaster
     @task_giver = match[1]&.downcase
     item = match[2].split.last
     @task_item = item
+    @task_product = match[2].sub(ITEM_ARTICLE, '')
     remaining = [match[3].to_i - match[4].to_i, 0].max
-    DRC.message("Making #{remaining} #{item}s")
+    DRC.message(@npc == 'nezhiri' ? "Making #{remaining} doses of #{@task_product}" : "Making #{remaining} #{item}s")
     return item, remaining
   end
+
+  # The article the journal and the instructions put before an item's name:
+  # "some gill glop", "a spongestone".
+  ITEM_ARTICLE = /\A(?:some|an?|the)\s+/i
 
   # Reads the item's instructions for its material and volume, then stows
   # them, returning everything the worker methods need.
@@ -1397,6 +1409,7 @@ class TaskMaster
   #   item, count, volume per item ('boulder' for stone), base and type
   def read_instructions(item, count)
     return read_enchanting_instructions(item, count) if @npc == 'dorhum'
+    return read_remedy_instructions(item, count) if @npc == 'nezhiri'
 
     case DRC.bput("read my #{item} instructions", INSTRUCTION_MATERIALS)
     when /(cloth|bone|yarn|wood|leather|metal).* \(((\d+) .*)\)/
@@ -1419,11 +1432,158 @@ class TaskMaster
   # READ INSTRUCTIONS line giving the uses left.
   INSTRUCTION_USES = /They have only (\d+) uses? remaining/
 
+  # Nezhiri's remedies, by the name her task journal gives them. Her
+  # instructions never name the herb; they say what it heals: "(5) prepared
+  # herb (pieces per use, known to heal external wounds of the neck)". So
+  # each product carries the herb that heals that, as remedy's instructions
+  # form takes it, and the heal phrase to check the instructions against.
+  # - :noun is the word the game knows the remedy by (GIVE, COUNT, remedy);
+  # - :herb is remedy's herb argument ('red flower': remedy uses its dried
+  #   flower);
+  # - :stock is the herb's key in base-crafting.yaml stock: (order number and
+  #   price come from there);
+  # - :vessel is the mortar or the bowl. The mortar crushes dried herbs; it
+  #   refuses crushed ones ("You stop, realizing that type of plant requires
+  #   a cooking pot and mixing stick.");
+  # - :heals is the heal phrase on the instructions' herb line.
+  # All four were made by these herbs and vessels in the Hollow Eve 2026 logs.
+  # Any other product pauses the script.
+  NEZHIRI_ITEMS = {
+    'gill glop'           => { noun: 'glop', herb: 'georin', stock: 'georin', vessel: 'mortar', heals: 'heal external wounds of the neck' },
+    'scale moisturizer'   => { noun: 'moisturizer', herb: 'red flower', stock: 'red flowers', vessel: 'mortar',
+                               heals: 'provide minor external healing over the entire body' },
+    'landsickness potion' => { noun: 'potion', herb: 'aevaes', stock: 'aevaes', vessel: 'bowl', heals: 'heal internal wounds of the eyes' },
+    'deep-sea draught'    => { noun: 'draught', herb: 'junliar', stock: 'junliar', vessel: 'bowl', heals: 'heal internal wounds of the back' }
+  }.freeze
+  # Where Nezhiri's READ is captured from: the uses line, which comes first,
+  # or the title when the uses line is missing.
+  NEZHIRI_READ_START = /They have only \d+ uses? remaining|Instructions for crafting/
+  # Seconds the READ of her instructions may take, as long as DRC.bput
+  # waits. Lich::Util.issue_command gives up after 5 s by default, and the
+  # roundtime the game makes you wait out ("...wait 6 seconds.", after a
+  # study) counts toward it.
+  NEZHIRI_READ_TIMEOUT = 15
+  # The title of a set of instructions: "-=   Instructions for crafting some
+  # gill glop    =-". Captures the product, without "some".
+  INSTRUCTION_TITLE = /Instructions for crafting (?:(?:some|an?|the)\s+)?(?<product>.+?)\s*=-/
+  # Nezhiri's herb line: how many pieces each use takes, and what the herb
+  # heals.
+  NEZHIRI_HERB_LINE = /\((?<pieces>\d+)\) prepared herb \(pieces per use, known to (?<heals>[^)]+)\)/
+  # Nezhiri's brine line: "(1) splash of brewer's brine".
+  NEZHIRI_BRINE_LINE = /\(\d+\) splash of brewer's brine/
+  # Herb pieces each use takes on every set of Nezhiri's instructions in the
+  # logs. The craft counts below assume it.
+  NEZHIRI_HERB_PIECES = 5
+  # Doses one craft makes: one 25-piece herb stack, one splash of brine, one
+  # catalyst and one study of the instructions give "You count out 6 uses
+  # remaining." in every logged craft.
+  NEZHIRI_DOSES_PER_CRAFT = 6
+
+  # Reads Nezhiri's instructions with one READ, checks them against
+  # NEZHIRI_ITEMS, then stows them. The product is the one the journal named
+  # (@task_product), else the one the title names. The script pauses, then
+  # stops, when taskmaster does not know the product, when the title names
+  # another product than the journal, or when the herb line (what the herb
+  # heals, pieces per use) or the brine line is not what the table expects.
+  # The READ waits up to NEZHIRI_READ_TIMEOUT seconds for its answer.
+  #
+  # @param item [String] the remedy's noun, e.g. 'glop'
+  # @param count [Integer] how many doses are owed
+  # @return [Array(String, Integer, Hash)] item, count and the recipe: the
+  #   NEZHIRI_ITEMS entry plus :product, :order and :price (the herb's
+  #   order number and price from base-crafting.yaml), :pieces (herb pieces
+  #   per use) and :uses (uses left on the set; nil when the uses line was
+  #   not read)
+  # @raise [SystemExit] once unpaused, for an unknown product or
+  #   instructions that do not match it
+  def read_remedy_instructions(item, count)
+    lines = Array(Lich::Util.issue_command("read my #{item} instructions", NEZHIRI_READ_START, timeout: NEZHIRI_READ_TIMEOUT)).map { |line| line.gsub(/<[^>]+>/, '') }
+    stow_instructions(item)
+    title = lines.filter_map { |line| line[INSTRUCTION_TITLE, :product] }.first
+    product = @task_product || title
+    recipe = nezhiri_recipe(product, item)
+    herb = lines.filter_map { |line| line.match(NEZHIRI_HERB_LINE) }.first
+    problem = remedy_instructions_problem(product, recipe, title, herb, lines)
+    pause_for_unknown_item("The #{item} instructions do not read as taskmaster expects for #{product}: #{problem}.") if problem
+    stock = @stockdata[recipe[:stock]]
+    pause_for_unknown_item("base-crafting.yaml has no stock entry '#{recipe[:stock]}' for #{product}'s herb.") unless stock
+    uses = lines.filter_map { |line| line[INSTRUCTION_USES, 1] }.first&.to_i
+    DRC.message("Each craft of #{product} needs #{recipe[:herb]} in a #{recipe[:vessel]}")
+    return item, count, recipe.merge(product: product, order: stock['stock-number'], price: stock['stock-value'], pieces: herb[:pieces].to_i, uses: uses)
+  end
+
+  # NEZHIRI_ITEMS' entry for a product, checked against the journal's noun.
+  # A product taskmaster does not know, or one whose noun is not the
+  # journal's, pauses the script with a message, then stops when unpaused.
+  #
+  # @param product [String, nil] the product's whole name, e.g. 'gill glop'
+  # @param item [String] the noun the journal gave
+  # @return [Hash] the NEZHIRI_ITEMS entry
+  # @raise [SystemExit] once unpaused, for an unknown product or one with
+  #   another noun
+  def nezhiri_recipe(product, item)
+    recipe = NEZHIRI_ITEMS[product.to_s.downcase]
+    pause_for_unknown_item("taskmaster does not know how to make Nezhiri's #{product || item} yet.") unless recipe
+    pause_for_unknown_item("The #{item} instructions are for #{product}, which is not a #{item}.") unless recipe[:noun] == item
+    recipe
+  end
+
+  # What is wrong with a READ of Nezhiri's instructions, or nil when they are
+  # what NEZHIRI_ITEMS expects.
+  #
+  # @param product [String] the product the task is for
+  # @param recipe [Hash] its NEZHIRI_ITEMS entry
+  # @param title [String, nil] the product the title names
+  # @param herb [MatchData, nil] the herb line, NEZHIRI_HERB_LINE
+  # @param lines [Array<String>] every line read, tags removed
+  # @return [String, nil] the problem, in words
+  def remedy_instructions_problem(product, recipe, title, herb, lines)
+    return 'no title was read' unless title
+    return "they are for #{title}" unless title.casecmp?(product)
+    return 'no herb line was read' unless herb
+    return "the herb is known to #{herb[:heals]}, not to #{recipe[:heals]}" unless herb[:heals] == recipe[:heals]
+    return "each use takes #{herb[:pieces]} herb pieces, not #{NEZHIRI_HERB_PIECES}" unless herb[:pieces].to_i == NEZHIRI_HERB_PIECES
+    return 'no brine line was read' unless lines.any? { |line| line.match?(NEZHIRI_BRINE_LINE) }
+
+    nil
+  end
+
+  # Crafts needed to make some doses of a Nezhiri remedy: one study of the
+  # instructions each, NEZHIRI_DOSES_PER_CRAFT doses each.
+  #
+  # @param doses [Integer] doses still to make
+  # @return [Integer] crafts, 0 when none are left to make
+  def nezhiri_crafts(doses)
+    return 0 unless doses.positive?
+
+    (doses + NEZHIRI_DOSES_PER_CRAFT - 1) / NEZHIRI_DOSES_PER_CRAFT
+  end
+
+  # Nezhiri's tasks are read but not made or handed in yet: this pauses with
+  # what the task needs, so you can make the remedy and give it to her
+  # yourself, then stops when unpaused. She takes only one stack of exactly
+  # the doses she asked for ("The amount here looks off. I asked for 15
+  # doses turned in as a single product.", 6101:5463), so the message says
+  # how to cut it to size.
+  #
+  # @param item [String] the remedy's noun
+  # @param count [Integer] doses owed
+  # @param recipe [Hash] what read_remedy_instructions returns
+  # @return [void]
+  # @raise [SystemExit] once unpaused
+  def nezhiri(item, count, recipe, _base = nil, _type = nil)
+    noun = item.upcase
+    pause_for_unknown_item("taskmaster cannot make or hand in Nezhiri's remedies yet. Make #{count} doses of #{recipe[:product]} " \
+                           "(#{recipe[:herb]} in a #{recipe[:vessel]}) and combine them into one #{item} of exactly #{count} doses " \
+                           "(MARK MY #{noun} AT #{count}, then BREAK MY #{noun}, cuts off any extra). Then GIVE MY #{noun} TO NEZHIRI.")
+  end
+
   # Finishes a task already in progress, for instance after a crash or a
   # reconnect: hand in any finished items already in the bag, make sure the
   # instructions have a use for every item still owed (asking the taskmaster
   # only when they don't, since replacements are limited), then make and hand
-  # in the rest.
+  # in the rest. For Nezhiri nothing is handed in: the run pauses with what
+  # her task needs, as a new task does.
   #
   # @return [void]
   # @raise [SystemExit] when not on a task, when the banked items finish it,
@@ -1440,7 +1600,11 @@ class TaskMaster
     end
     check_task_giver
     set_aside_held_base(item)
-    owed = turn_in_banked(item, owed)
+    # Nothing is given to Nezhiri yet: her remedy is made and handed in by
+    # hand (nezhiri). A give by noun could hand her another item of the
+    # noun (a healing potion for a landsickness potion) or a stack of the
+    # wrong size, five times over.
+    owed = turn_in_banked(item, owed) unless @npc == 'nezhiri'
     exit if owed.zero?
 
     # Before new instructions or a bank trip: anything of the task's noun
@@ -1560,11 +1724,12 @@ class TaskMaster
   # @param giver [String] the taskmaster
   # @param text [String] one of the TASK_CANCEL_* replies
   # @return [Regexp] the reply, said by the taskmaster: the line starts with
-  #   its name (after a title such as "Researcher"), then "says," or "looks
-  #   at you and says," before the quote, as every logged reply does. So
-  #   "Mallory looks at Researcher Dorhum and says, ..." does not count.
+  #   its name (after a title of one or two words, such as "Researcher" or
+  #   "Potion Peddler"), then "says," or "looks at you and says," before the
+  #   quote, as every logged reply does. So "Mallory looks at Researcher
+  #   Dorhum and says, ..." does not count.
   def cancel_reply(giver, text)
-    /^(?:[\w'-]+ )?#{Regexp.escape(giver)} (?:looks at you and )?says, "[^"]*#{Regexp.escape(text)}/i
+    /^(?:[\w'-]+ ){0,2}#{Regexp.escape(giver)} (?:looks at you and )?says, "[^"]*#{Regexp.escape(text)}/i
   end
 
   # Hands in finished items already in the bag and returns how many are still
@@ -1611,11 +1776,19 @@ class TaskMaster
   # uses than items owed (each item takes one study). Sets written for
   # someone else are thrown away on the way, up to MAX_CARRIED_SETS.
   #
+  # Nezhiri counts doses, and one study makes NEZHIRI_DOSES_PER_CRAFT of
+  # them, so her sets need a use per craft still to make, not per dose. Her
+  # task's set has one use more than the doses (13 for 12), a replacement
+  # exactly the doses owed (12 for 12): after a craft or two the uses fall
+  # below the doses while plenty are left for the crafts.
+  #
   # @param item [String] item noun
-  # @param owed [Integer] items still to make, one study each
+  # @param owed [Integer] items still to make, one study each (for Nezhiri,
+  #   doses still to make)
   # @return [void]
   def ensure_instructions(item, owed)
     name = "#{item} instructions"
+    uses_needed = @npc == 'nezhiri' ? nezhiri_crafts(owed) : owed
     sets = 0
     while sets < MAX_CARRIED_SETS && DRCI.get_item?(name, @bag)
       sets += 1
@@ -1625,7 +1798,7 @@ class TaskMaster
         # next time: bin it and look at the next set carried.
         DRC.message("These #{name} were written for someone else; throwing them away.")
         next if DRCI.dispose_trash(name, @worn_trashcan, @worn_trashcan_verb)
-      elsif reply[INSTRUCTION_USES, 1].to_i >= owed
+      elsif reply[INSTRUCTION_USES, 1].to_i >= uses_needed
         return
       end
 

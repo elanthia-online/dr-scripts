@@ -316,6 +316,105 @@ RSpec.describe 'test harness replay support' do
     end
   end
 
+  describe 'ReplayGame#issue_command (model of Lich::Util.issue_command, util.rb:157-224)' do
+    before { game } # installed even where nothing is scripted (silence)
+
+    # The real reply to `read my moisturizer instructions` at 6100:207: the
+    # uses line, then the title, the description and the ingredients.
+    let(:moisturizer_read) { (208..220).map { |line| ReplayGame.log("6100:#{line}") } }
+
+    it 'is what Lich::Util.issue_command answers once installed, skipping the lines before the start line (:202) and ending with the reply (:205-208)' do
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      lines = Lich::Util.issue_command('read my moisturizer instructions', /Instructions for crafting/)
+      expect(lines.first).to eq('        -=   Instructions for crafting some scale moisturizer    =-')
+      expect(lines.last).to eq('   (1) catalyst material')
+      expect(lines.size).to eq(11)
+      expect([game.clock, game.timeline]).to eq([0.0, ['>> read my moisturizer instructions']])
+    end
+
+    it 'right-strips each line and keeps the empty ones (:203, :206)' do
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      lines = game.issue_command('read my moisturizer instructions', /They have only/)
+      expect(lines[0..2]).to eq(['These instructions appear to be very fragile and will wear out quickly when studied.  They have only 13 uses remaining.', '',
+                                 '        -=   Instructions for crafting some scale moisturizer    =-'])
+    end
+
+    it 'stops at another end pattern, without the end line unless include_end (:205, :209-213)' do
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      with_end = game.issue_command('read my moisturizer instructions', /Instructions for crafting/, /A list of ingredients/)
+      without_end = game.issue_command('read my moisturizer instructions', /Instructions for crafting/, /A list of ingredients/, include_end: false)
+      expect(with_end.last).to eq(' A list of ingredients is provided:')
+      expect(without_end).to eq(with_end[0..-2])
+    end
+
+    it 'keeps only the start line with end pattern :ignore (:160, :204)' do
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      expect(game.issue_command('read my moisturizer instructions', /Instructions for crafting/, :ignore))
+        .to eq(['        -=   Instructions for crafting some scale moisturizer    =-'])
+    end
+
+    it 'returns no lines after the timeout when no line starts the capture (:171, :215-216)' do
+      game.script('read my glop instructions', ReplayGame.log('6100:202'))
+      expect(Lich::Util.issue_command('read my glop instructions', /Instructions for crafting/, timeout: 3)).to eq([])
+      expect(game.clock).to eq(3.0)
+    end
+
+    it 'returns the lines kept so far after the timeout when another end pattern never comes' do
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      lines = game.issue_command('read my moisturizer instructions', /Instructions for crafting/, /never sent/)
+      expect([lines.size, game.clock]).to eq([11, 5.0])
+    end
+
+    it 'resends after a "...wait" line before the start line, as fput does (global_defs.rb:1560-1568)' do
+      game.script('read my moisturizer instructions', ReplayGame.log('25:11582'))
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      expect(game.issue_command('read my moisturizer instructions', /Instructions for crafting/).size).to eq(11)
+      expect([game.sent.size, game.clock]).to eq([2, 1.0])
+    end
+
+    # fput sleeps out a "...wait N" inside issue_command's Timeout (:171), so
+    # a wait as long as the timeout ends the capture empty (:215-216). The
+    # waits are real roundtime refusals: 6 s (6100:14245) and 5 s
+    # (6100:22299), both after a study.
+    it 'returns nothing when a "...wait" before the start line reaches the timeout, the clock stopped at the timeout (:171, :215-216)' do
+      game.script('read my moisturizer instructions', ReplayGame.log('6100:14245'))
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      expect(game.issue_command('read my moisturizer instructions', /Instructions for crafting/)).to eq([])
+      expect([game.sent, game.clock]).to eq([['read my moisturizer instructions'], 5.0])
+    end
+
+    it 'counts every wait against the timeout, and a wait exactly at the timeout ends it too' do
+      game.script('read my moisturizer instructions', ReplayGame.log('25:11582'))
+      game.script('read my moisturizer instructions', ReplayGame.log('6100:22299'))
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      expect(game.issue_command('read my moisturizer instructions', /Instructions for crafting/, timeout: 6)).to eq([])
+      expect([game.sent.size, game.clock]).to eq([2, 6.0])
+
+      game.script('read my glop instructions', ReplayGame.log('6100:22299'))
+      expect(game.issue_command('read my glop instructions', /Instructions for crafting/)).to eq([])
+      expect(game.clock).to eq(11.0)
+    end
+
+    it 'reads past a wait shorter than a longer timeout, and a later timeout counts only what is left' do
+      game.script('read my moisturizer instructions', ReplayGame.log('6100:14245'))
+      game.script('read my moisturizer instructions', *moisturizer_read)
+      expect(game.issue_command('read my moisturizer instructions', /Instructions for crafting/, timeout: 15).size).to eq(11)
+      expect(game.clock).to eq(6.0)
+
+      game.script('read my glop instructions', ReplayGame.log('6100:14245'))
+      game.script('read my glop instructions', ReplayGame.log('6100:202'))
+      expect(game.issue_command('read my glop instructions', /Instructions for crafting/, timeout: 15)).to eq([])
+      expect(game.clock).to eq(21.0)
+    end
+
+    it 'drops lines left over from an earlier command (fput clears, :200)' do
+      game.script('look', *moisturizer_read)
+      game.bput('look', 'They have only')
+      expect(game.issue_command('read my glop instructions', /Instructions for crafting/, timeout: 1)).to eq([])
+    end
+  end
+
   describe 'harness fput without a replay' do
     it 'records the command, as before' do
       fput('look')
