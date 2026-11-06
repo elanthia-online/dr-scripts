@@ -175,7 +175,7 @@ class ScrollSorter
     DRCI.get_item_safe?("#{ord} #{@stacker}", @stacker_container)
     spells = Array.new
 
-    capture = Lich::Util.issue_command("flip my #{@stacker}", /^You flip through the #{@stacker.split.last}, checking each section before closing it.$/)
+    capture = Lich::Util.issue_command("flip my #{@stacker}", /^You flip through the <a exist="\d+" noun="\w+">\w+<\/a>, checking each section before closing it.$/)
     capture.each do |line|
       case line
       when /The (.+) section/
