@@ -1402,6 +1402,80 @@ RSpec.describe 'moonwatch.lic' do
           expect(described_class.existing_target('moon', db_path: path)).to be_nil
         end
       end
+
+      context 'with an alias DB holding a moon alias' do
+        around do |example|
+          require 'sqlite3'
+          Dir.mktmpdir do |dir|
+            @path = File.join(dir, 'alias.db3')
+            SQLite3::Database.new(@path) do |db|
+              db.execute('CREATE TABLE global (trigger TEXT NOT NULL, target TEXT NOT NULL, UNIQUE(trigger));')
+              db.execute('INSERT INTO global (trigger, target) VALUES (?, ?);', ['moon', ';eq respond("hi")'])
+            end
+            example.run
+          end
+        end
+
+        it "opens the DB with Lich.open_sqlite_db when Lich has it, and closes it" do
+          opened = []
+          allow(Lich).to receive(:open_sqlite_db) do |path|
+            SQLite3::Database.new(path).tap { |db| opened << db }
+          end
+          expect(SQLite3::Database).to receive(:new).once.and_call_original # only the stub's
+
+          expect(described_class.existing_target('MOON', db_path: @path)).to eq(';eq respond("hi")')
+          expect(Lich).to have_received(:open_sqlite_db).with(@path)
+          expect(opened.size).to eq(1)
+          expect(opened.first).to be_closed
+        end
+
+        it 'opens a plain connection when Lich has no open_sqlite_db' do
+          expect(Lich.respond_to?(:open_sqlite_db)).to be false
+          expect(SQLite3::Database).to receive(:new).with(@path).once.and_call_original
+          expect(described_class.existing_target('moon', db_path: @path)).to eq(';eq respond("hi")')
+        end
+
+        it 'returns nil after waiting out a lock the alias service holds' do
+          allow(Lich).to receive(:open_sqlite_db) do |path|
+            SQLite3::Database.new(path).tap { |db| db.busy_timeout(200) }
+          end
+          locker = SQLite3::Database.new(@path)
+          locker.execute('BEGIN EXCLUSIVE')
+          begin
+            started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            expect(described_class.existing_target('moon', db_path: @path)).to be_nil
+            expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be >= 0.15
+          ensure
+            locker.execute('ROLLBACK')
+            locker.close
+          end
+        end
+
+        # On Windows SQLite can sleep through Ruby inside open, query or close;
+        # a Thread#kill delivered there unwinds through SQLite's C frames. The
+        # sleep inside the stubbed open stands in for that window.
+        it 'holds a kill that lands mid-read until the connection is closed' do
+          events = Queue.new
+          db = nil
+          allow(Lich).to receive(:open_sqlite_db) do |path|
+            db = SQLite3::Database.new(path)
+            events << :opened
+            sleep 0.3
+            db
+          end
+
+          reader = Thread.new do
+            result = described_class.existing_target('moon', db_path: @path)
+            events << [:returned, result]
+          end
+          expect(events.pop).to eq(:opened)
+          reader.kill
+          expect(reader.join(5)).to eq(reader)
+
+          expect(db).to be_closed
+          expect(events.size).to eq(0) # the kill landed when the mask ended, before the method returned
+        end
+      end
     end
 
     describe '.ours?' do

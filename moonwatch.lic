@@ -3,7 +3,7 @@
 =begin
   Documentation: https://github.com/elanthia-online/dr-scripts/wiki/Documentation-for-moonwatch.lic
 
-  Moonwatch v4.5.5 - Bresenham Moons + Empirical Sun Table + Lunar Phase
+  Moonwatch v4.5.6 - Bresenham Moons + Empirical Sun Table + Lunar Phase
   ======================================================================
 
   This script provides real-time tracking of DragonRealms moons (Katamba, Xibar, Yavash)
@@ -119,6 +119,13 @@
   because it spans several phases. That the dark-moon readings are Moon-Mage-only
   is untested, not confirmed: the non-Moon-Mage never observed a new moon.
 
+  v4.5.6 opens the alias service's DB (alias.db3, read once at startup) with
+  Lich.open_sqlite_db when Lich has it, and holds a ;kill back until the
+  connection is closed, so a kill can't land inside a SQLite call on Windows
+  (lich-5#2254). With alias.db3 locked, startup now waits for the lock (Lich's
+  5 s busy timeout) before it skips the alias upgrade, where it used to skip it
+  at once.
+
   Architecture (SOLID principles applied):
   - DRTime: Single responsibility for DR calendar calculations
   - Moons: Single responsibility for moon position calculations
@@ -159,7 +166,7 @@
 no_pause_all
 no_kill_all
 
-$MOONWATCH_VERSION = '4.5.5'
+$MOONWATCH_VERSION = '4.5.6'
 
 # =============================================================================
 # CONSTANTS: Game Event Patterns
@@ -1231,6 +1238,13 @@ module MoonwatchAlias
   # nil if the DB, table, or row is absent, or on any error (the alias service is
   # optional and its storage is not ours to depend on hard).
   #
+  # A ;kill (Thread#kill) is held back from the open until the close returns.
+  # On Windows the sqlite3 gem's SQLite sleeps through Ruby, so a kill that
+  # landed inside a SQLite call would unwind through its C frames and leave the
+  # connection's mutex locked (lich-5#2254). The cost: a kill that arrives
+  # while alias.db3 is locked waits out Lich's busy timeout (5 s) for each
+  # statement still to run, instead of ending the wait at once.
+  #
   # @param trigger [String] the alias trigger to look up (default 'moon')
   # @param db_path [String] override the DB path (for testing)
   # @return [String, nil] the stored target, or nil
@@ -1239,15 +1253,32 @@ module MoonwatchAlias
     require 'sqlite3'
     return nil unless File.exist?(db_path)
 
-    db = SQLite3::Database.new(db_path)
-    db.get_first_value(
-      "SELECT target FROM global WHERE trigger=? COLLATE NOCASE;",
-      trigger.to_s.encode('UTF-8')
-    )
+    Thread.handle_interrupt(Object => :never) do
+      db = open_alias_db(db_path)
+      db.get_first_value(
+        "SELECT target FROM global WHERE trigger=? COLLATE NOCASE;",
+        trigger.to_s.encode('UTF-8')
+      )
+    rescue StandardError
+      nil
+    ensure
+      db&.close
+    end
   rescue StandardError, LoadError
     nil
-  ensure
-    db&.close
+  end
+
+  # Open the alias DB with Lich's SQLite helper (lich-5 5.17.3+), which waits
+  # out a lock with a Ruby busy handler and defers interrupts around each SQLite
+  # call. Older Lich gets a plain connection.
+  #
+  # @param path [String]
+  # @return [SQLite3::Database]
+  #
+  def self.open_alias_db(path)
+    return Lich.open_sqlite_db(path) if Lich.respond_to?(:open_sqlite_db)
+
+    SQLite3::Database.new(path)
   end
 
   # Does this stored alias target look like one moonwatch installed (vs. a user's
