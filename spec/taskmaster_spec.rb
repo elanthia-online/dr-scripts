@@ -1319,7 +1319,10 @@ RSpec.describe TaskMaster do
         allow(tm).to receive(:fput)
         allow(tm).to receive(:zasele) { |item, count, *_| events << [:make, item, count] }
         allow(tm).to receive(:complete_task) { |item, count| events << [:complete, item, count] }
-        allow(tm).to receive(:get_instructions) { events << :asked_for_instructions }
+        allow(tm).to receive(:get_instructions) do
+          events << :asked_for_instructions
+          ReplayGame.log('6201:47608').text # Zasele handing over a set
+        end
         allow(DRCC).to receive(:stow_crafting_item) { |name, *_| events << [:stowed, name] }
         allow(DRCI).to receive(:exists?).and_return(false)
         allow(DRCI).to receive(:get_item?) do |name, _bag|
@@ -1433,6 +1436,127 @@ RSpec.describe TaskMaster do
         it 'still asks when the earlier request was for a different item' do
           UserVars.taskmaster_replacements = { 'zasele' => 'netting' }
           expect(resume(owed: 3, uses: nil)).to include(:asked_for_instructions)
+        end
+
+        # Barrask, 2026-11-04: a leftover rat-pelt leather and the burlap cloth
+        # filled both hands; ASK ZASELE FOR INSTRUCTIONS got "Zasele glances
+        # at your full hands." (6200:49190) and no set, yet the request was
+        # remembered, so every later run stopped with "Already asked" and the
+        # task could never be finished (24,275 stops over 2.6 days).
+        describe 'a request the taskmaster does not answer with a set' do
+          let(:leather) { OpenStruct.new(name: 'rat-pelt leather', noun: 'leather', id: '758600') }
+          let(:cloth) { OpenStruct.new(name: 'burlap cloth', noun: 'cloth', id: '758601') }
+          let(:empty) { OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+
+          # Zasele as the logs show her: with both hands full she glances at
+          # them and hands nothing over (6200:49190); with a hand free she
+          # hands the set over (6201:47608). Puts by id land in the bag unless
+          # put_ok is false.
+          def zasele_world(hands, put_ok: true)
+            world = { hands: { right: nil, left: nil }.merge(hands), sent: [] }
+            allow(GameObj).to receive(:right_hand) { world[:hands][:right] || empty }
+            allow(GameObj).to receive(:left_hand) { world[:hands][:left] || empty }
+            allow(DRCI).to receive(:put_away_item?) do |ref, bag|
+              world[:sent] << "put #{ref} in my #{bag}"
+              hand = world[:hands].find { |_, obj| obj && "##{obj.id}" == ref }&.first
+              next false unless put_ok && hand
+
+              world[:hands][hand] = nil
+              true
+            end
+            allow(DRCI).to receive(:in_hands?) { |name| world[:hands].values.compact.any? { |obj| obj.name.end_with?(name) } }
+            allow(DRC).to receive(:bput) do |command, *patterns|
+              world[:sent] << command
+              free = world[:hands].find { |_, obj| obj.nil? }&.first
+              line = if free.nil?
+                       ReplayGame.log('6200:49190').text
+                     else
+                       world[:hands][free] = OpenStruct.new(name: 'reinforced rope instructions', noun: 'instructions', id: '758700')
+                       ReplayGame.log('6201:47608').text
+                     end
+              patterns.flatten.any? { |pattern| line.match?(pattern) } ? line : ''
+            end
+            world
+          end
+
+          it "empties both hands by id before asking, so Zasele hands the set over and the request is remembered (6201:47608)" do
+            tm = reader
+            world = zasele_world({ right: leather, left: cloth })
+
+            tm.request_replacement('rope')
+
+            expect(world[:sent]).to eq(['put #758600 in my duffel bag', 'put #758601 in my duffel bag', 'ask zasele for instructions'])
+            expect(world[:hands][:right]&.name).to eq('reinforced rope instructions')
+            expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+          end
+
+          it 'stops without remembering the request when Zasele glances at full hands and hands nothing over (6200:49190)' do
+            tm = reader
+            allow(tm).to receive(:get_instructions).with('rope').and_return(ReplayGame.log('6200:49190').text)
+            allow(DRCI).to receive(:in_hands?).and_return(false)
+
+            expect { tm.request_replacement('rope') }.to raise_error(SystemExit)
+
+            expect(UserVars.taskmaster_replacements).to eq({})
+            expect(DRC).to have_received(:message)
+              .with('Asked zasele for rope instructions, but none were handed over ("Zasele glances at your full hands."). That does not count as this task\'s one replacement. Stopping; the next run asks again.')
+          end
+
+          it 'asks again on the next run after a request that got no set, and remembers the one that does' do
+            tm = reader
+            replies = [ReplayGame.log('6200:49190').text, ReplayGame.log('6201:47608').text]
+            allow(tm).to receive(:get_instructions) { replies.shift }
+            allow(DRCI).to receive(:in_hands?).and_return(false)
+
+            expect { tm.request_replacement('rope') }.to raise_error(SystemExit)
+            tm.request_replacement('rope')
+
+            expect(tm).to have_received(:get_instructions).twice
+            expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+            expect(DRC).not_to have_received(:message).with(/Already asked/)
+          end
+
+          it 'stops without remembering the request when the ask goes unanswered and no set is in hand' do
+            tm = reader
+            allow(tm).to receive(:get_instructions).and_return('')
+            allow(DRCI).to receive(:in_hands?).with('rope instructions').and_return(false)
+
+            expect { tm.request_replacement('rope') }.to raise_error(SystemExit)
+
+            expect(UserVars.taskmaster_replacements).to eq({})
+            expect(DRC).to have_received(:message).with(/none were handed over \(no answer\)/)
+          end
+
+          it 'remembers the request when the reply was missed but the set is in hand' do
+            tm = reader
+            allow(tm).to receive(:get_instructions).and_return('')
+            allow(DRCI).to receive(:in_hands?).with('rope instructions').and_return(true)
+
+            tm.request_replacement('rope')
+
+            expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+          end
+
+          it "reads Zasele's full-hands reply at once instead of waiting out the ask (6200:49190)" do
+            tm = reader
+            allow(GameObj).to receive(:right_hand).and_return(empty)
+            allow(GameObj).to receive(:left_hand).and_return(empty)
+            refusal = ReplayGame.log('6200:49190').text
+            allow(DRC).to receive(:bput) { |_command, *patterns| patterns.flatten.any? { |pattern| refusal.match?(pattern) } ? refusal : '' }
+
+            expect(tm.get_instructions('rope')).to eq(refusal)
+          end
+
+          it 'stops before asking when a hand cannot be emptied, and remembers nothing' do
+            tm = reader
+            world = zasele_world({ right: leather, left: cloth }, put_ok: false)
+
+            expect { tm.request_replacement('rope') }.to raise_error(SystemExit)
+
+            expect(world[:sent]).not_to include('ask zasele for instructions')
+            expect(UserVars.taskmaster_replacements).to eq({})
+            expect(DRC).to have_received(:message).with(/Could not put your rat-pelt leather \(#758600\) in your duffel bag, so there is no free hand for the rope instructions/)
+          end
         end
 
         it 'does not ask at all while the carried set has a use for every item owed' do
