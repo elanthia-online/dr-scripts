@@ -1465,19 +1465,21 @@ RSpec.describe 'moonwatch.lic' do
         end
 
         # On Windows SQLite can sleep through Ruby inside open, query or close;
-        # a Thread#kill delivered there unwinds through SQLite's C frames. A
-        # sleep inside each of those calls stands in for that window: the kill
-        # must wait until the call has finished and the connection is closed.
+        # a Thread#kill delivered there unwinds through SQLite's C frames. The
+        # reader parks inside each of those calls (a blocking Queue#pop stands
+        # in for SQLite's sleep) until the main thread has sent the kill: the
+        # kill must wait until the call has finished and the connection is closed.
         %i[open query close].each do |window|
           it "holds a kill that lands during the #{window} until the connection is closed" do
             entered = Queue.new
+            resume = Queue.new
             finished = []
             db = nil
             slow = lambda do |name, &call|
               return call.call unless name == window
 
               entered << name
-              sleep 0.3
+              resume.pop
               call.call.tap { finished << name }
             end
             stub_busy_wait_helper do |path|
@@ -1496,6 +1498,7 @@ RSpec.describe 'moonwatch.lic' do
             end
             expect(entered.pop).to eq(window)
             reader.kill
+            resume << true
             expect(reader.join(5)).to eq(reader)
 
             expect(finished).to eq([window])
