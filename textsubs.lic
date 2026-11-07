@@ -123,7 +123,9 @@ class TextSubs
     #
     # @param key [Regexp] the pattern
     # @param result [String] the gsub replacement (a frozen copy is kept)
-    # @param requires_any [Array<String>, nil] the key's gate, as for add
+    # @param requires_any [Array<String>, nil] the key's gate, as for add (the
+    #   change records the frozen copy add keeps, so later edits to the
+    #   caller's list or words do not reach it)
     # @return [String] result, as given
     # @raise [ArgumentError] as add does; nothing is added or recorded
     # @example
@@ -131,7 +133,7 @@ class TextSubs
     #   registry.changes # => {/cat/=>[:add, "dog", nil]} (frozen)
     def add_change(key, result, requires_any: nil)
       add(key, result, requires_any: requires_any)
-      record(key, [:add, result.dup.freeze, requires_any].freeze)
+      record(key, [:add, @entries[key], @gates[key]].freeze)
       result
     end
 
@@ -160,8 +162,9 @@ class TextSubs
     # The changes made through add_change and drop, the last one for each
     # key, with the added keys in the order they took their places here.
     #
-    # @return [Hash{Regexp=>Array}] frozen: key => [:add, result, requires_any]
-    #   or [:drop]; empty for a catalog nothing has changed since it was built
+    # @return [Hash{Regexp=>Array}] frozen, down to each change, its result
+    #   and its gate words: key => [:add, result, requires_any] or [:drop];
+    #   empty for a catalog nothing has changed since it was built
     def changes
       @changes.dup.freeze
     end

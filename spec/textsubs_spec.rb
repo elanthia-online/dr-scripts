@@ -2683,14 +2683,30 @@ RSpec.describe 'textsubs.lic' do
     describe 'changes' do
       it 'records an add_change with a frozen copy of its value and its gate, but not a plain add' do
         value = +'dog'
+        word = +'cat'
+        gate = [word]
         registry.add(/built/, 'in')
-        expect(registry.add_change(/cat/, value, requires_any: ['cat'])).to equal(value)
+        expect(registry.add_change(/cat/, value, requires_any: gate)).to equal(value)
         value << 'gone'
+        word << 's'
+        gate << ''
 
         expect(registry.snapshot).to eq(/built/ => 'in', /cat/ => 'dog')
         expect(registry.gates).to eq(/cat/ => ['cat'])
         expect(registry.changes).to eq(/cat/ => [:add, 'dog', ['cat']])
         expect(registry.changes[/cat/][1]).to be_frozen
+        expect(registry.changes[/cat/][2]).to be_frozen
+        expect(registry.changes[/cat/][2]).to all(be_frozen)
+      end
+
+      it 'replays a recorded gate even after the caller edits the list it passed' do
+        gate = ['cat']
+        registry.add_change(/cat/, 'dog', requires_any: gate)
+        gate << ''
+
+        rebuilt = TextSubs::Registry.new
+        expect { rebuilt.replay(registry.changes) }.not_to raise_error
+        expect(rebuilt.gates).to eq(/cat/ => ['cat'])
       end
 
       it 'hands out a frozen copy that later changes do not reach' do
