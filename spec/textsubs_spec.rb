@@ -1167,6 +1167,24 @@ RSpec.describe 'textsubs.lic' do
           .to eq("A bare flicker of starlight plays within your aura (1/9).\r\n")
       end
     end
+
+    # Three rungs of the crafted-quality ladder wrote a fixed 'is' in place
+    # of the verb and 'of' they matched, so plural items read 'They is
+    # finely-crafted (8/12) quality.' Like the other rungs, they write back
+    # what they matched and add the counter.
+    describe 'the crafted-quality notes' do
+      [['finely-crafted', 8], ['well-crafted', 7], ['poorly-crafted', 2]].each do |quality, tier|
+        it "keeps 'are of' on a plural #{quality} item and adds (#{tier}/12)" do
+          expect(hooked("They are of #{quality} quality."))
+            .to eq("They are of #{quality} (#{tier}/12) quality.\r\n")
+        end
+
+        it "keeps 'is of' on a single #{quality} item and adds (#{tier}/12)" do
+          expect(hooked("It is of #{quality} quality."))
+            .to eq("It is of #{quality} (#{tier}/12) quality.\r\n")
+        end
+      end
+    end
   end
 
   describe 'reference-engine oracle' do
