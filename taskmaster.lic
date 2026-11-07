@@ -1493,14 +1493,15 @@ class TaskMaster
   # @return [void]
   def find_npc(rooms, npc)
     UserVars.taskmaster_last_seen ||= {}
+    looked_in = []
     found = false
     search_order(rooms, UserVars.taskmaster_last_seen[npc]).each do |room_id|
-      break if (found = npc_here?(npc))
+      break if (found = npc_here?(npc, looked_in))
 
       DRCT.walk_to(room_id)
     end
-    # Each room is checked once: the last room walked to is checked here.
-    found ||= npc_here?(npc)
+    # The last room walked to is checked here.
+    found ||= npc_here?(npc, looked_in)
     UserVars.taskmaster_last_seen[npc] = Room.current.id if found
   end
 
@@ -1514,22 +1515,33 @@ class TaskMaster
   # marker: 'other stuff' or 'lot of other stuff'.
   ROOM_OBJS_CUT_SHORT = /\A(?:lot of )?other stuff\z/
 
-  # LOOK lists the whole room on one line. A room with nothing in it has no
-  # such line, and the exits line ends the look instead.
-  LOOK_ROOM_LISTING = /You also see .*/
+  # LOOK lists the whole room on one line: at the start of the line, or after
+  # the room description and two spaces. A room with nothing in it has no
+  # such line, and the exits line ends the look instead. The game quotes what
+  # players say, whisper and think, so a line with a double quote before the
+  # words is not the listing. \K leaves the description out of the match.
+  LOOK_ROOM_LISTING = /\A(?:[^"]*\s{2})?\s*\KYou also see .*/
   LOOK_ROOM_EXITS = /^Obvious (?:exits|paths):/
 
   # Whether the taskmaster is in this room. When DRRoom.npcs does not list
   # them and the room objects data was cut short, LOOK's full listing
-  # decides; otherwise no command is sent.
+  # decides, once per room per search; otherwise no command is sent.
   #
   # @param npc [String] taskmaster name, lower case
+  # @param looked_in [Array<Integer>] rooms already looked in this search; a
+  #   room looked in is added. A search checks its first room twice when it
+  #   starts in the last-seen room (search_order puts it first and walking
+  #   there stays put), and keeps checking one room when walking fails.
   # @return [Boolean]
-  def npc_here?(npc)
+  def npc_here?(npc, looked_in = [])
     name = npc.capitalize
     return true if DRRoom.npcs.include?(name)
     return false unless DRRoom.room_objs.last.to_s.match?(ROOM_OBJS_CUT_SHORT)
 
+    room = Room.current.id
+    return false if room && looked_in.include?(room)
+
+    looked_in << room if room
     # Not followed by ' or -, so an item named for them ("Zasele's ...") is not taken for them.
     DRC.bput('look', LOOK_ROOM_LISTING, LOOK_ROOM_EXITS).match?(/\b#{Regexp.escape(name)}\b(?!['-])/)
   end
