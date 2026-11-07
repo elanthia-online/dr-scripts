@@ -25,6 +25,16 @@
 # replacement: preresult, then a link to prelink + guild + poslink, then
 # posresult. It gives no sub while the guild is not known.
 #
+# The ladder kind writes a scale of messages once: each step is
+# [n, 'phrase'], and its sub matches the phrase and adds ' (n/of)' after it
+# (style 'append', the default) or before the full stop it ends with (style
+# 'before_period'). anchor: '^' goes before each phrase in the pattern only;
+# prefix: 'text' goes before each phrase, with a space, in both. The phrase
+# is the pattern as written and the replacement is its text with each
+# backslash taken out, so write it as literal text: escape every regex
+# metacharacter but '.', and nothing else. Each n is used once, from -of to
+# of. A message that does not fit stays a pair in a subs section.
+#
 # Each spell is written once, in the spells: table at the end of the file:
 #   name       the spell's name (regex source, as in a pattern)
 #   guild      its guild, as DRStats names it
@@ -156,43 +166,55 @@ textsubs:
     - name: 'Necromancer butchery'
       when:
         guilds: ['Necromancer']
-      subs:
-        - ['manage to extract a perfect', 'manage to extract a perfect (10/10)']
-        - ['manage to extract a flawless', 'manage to extract a flawless (9/10)']
-        - ['manage to extract a superior', 'manage to extract a superior (8/10)']
-        - ['manage to extract a very good', 'manage to extract a very good (7/10)']
-        - ['manage to extract a decent', 'manage to extract a decent (6/10)']
-        - ['manage to extract a fair', 'manage to extract a fair (5/10)']
-        - ['manage to extract a mediocre', 'manage to extract a mediocre (4/10)']
-        - ['manage to extract a passable', 'manage to extract a passable (3/10)']
-        - ['manage to extract a shoddy', 'manage to extract a shoddy (2/10)']
-        - ['manage to extract a poor', 'manage to extract a poor (1/10)']
+      kind: 'ladder'
+      prefix: 'manage to extract a'
+      of: 10
+      steps:
+        - [10, 'perfect']
+        - [9, 'flawless']
+        - [8, 'superior']
+        - [7, 'very good']
+        - [6, 'decent']
+        - [5, 'fair']
+        - [4, 'mediocre']
+        - [3, 'passable']
+        - [2, 'shoddy']
+        - [1, 'poor']
 
     # Bard play and dance assessment (the song ladder is the later Bard block)
-    - name: 'Bard play and dance assessment'
+    - name: 'Bard play assessment'
       when:
         guilds: ['Bard']
-      subs:
-        - ['the simplest musical phrase in your current state of mind.', 'the simplest musical phrase in your current state of mind. (1/10)']
-        - ['feel very sure of your ability to perform just now.', 'feel very sure of your ability to perform just now. (2/10)']
-        - ['you give up in exasperation and stop trying to play altogether.', 'you give up in exasperation and stop trying to play altogether. (3/10)']
-        - ['you realize that you''re not quite up to a true performance.', 'you realize that you''re not quite up to a true performance. (4/10)']
-        - ['produced from your efforts is both clear and precise.', 'produced from your efforts is both clear and precise. (5/10)']
-        - ['displaying the surety you hold in your ability to perform.', 'displaying the surety you hold in your ability to perform. (6/10)']
-        - ['adeptness with which you perform your craft is evident in each movement.', 'adeptness with which you perform your craft is evident in each movement. (7/10)']
-        - ['skill and confidence of one talented in their craft.', 'skill and confidence of one talented in their craft. (8/10)']
-        - ['evocative rhythms you send to float gently upon the air.', 'evocative rhythms you send to float gently upon the air. (9/10)']
-        - ['Leth Deriel during the full throes of Spring.', 'Leth Deriel during the full throes of Spring. (10/10)']
-        - ['you decide not to attempt that again, and get back to your feet.', 'you decide not to attempt that again, and get back to your feet. (1/10)']
-        - ['but decide that now may not be the best time for dancing.', 'but decide that now may not be the best time for dancing. (2/10)']
-        - ['You can''t seem to recall what to do next, despite your best efforts.', 'You can''t seem to recall what to do next, despite your best efforts. (3/10)']
-        - ['entirety of the dance without too much trouble.', 'entirety of the dance without too much trouble. (4/10)']
-        - ['dance flawlessly, wrapping up with a flourish.', 'dance flawlessly, wrapping up with a flourish. (5/10)']
-        - ['leave you breathless, you wrap up with a flourish.', 'leave you breathless, you wrap up with a flourish. (6/10)']
-        - ['reaches its conclusion, a grin lights up your face.', 'reaches its conclusion, a grin lights up your face. (7/10)']
-        - ['and when they finally come to rest again, you cannot help but smile.', 'and when they finally come to rest again, you cannot help but smile. (8/10)']
-        - ['When you finally come to rest again, you are still smiling.', 'When you finally come to rest again, you are still smiling. (9/10)']
-        - ['you wrap up with a flourish and pose, a wide smile upon your face.', 'you wrap up with a flourish and pose, a wide smile upon your face. (10/10)']
+      kind: 'ladder'
+      of: 10
+      steps:
+        - [1, 'the simplest musical phrase in your current state of mind.']
+        - [2, 'feel very sure of your ability to perform just now.']
+        - [3, 'you give up in exasperation and stop trying to play altogether.']
+        - [4, 'you realize that you''re not quite up to a true performance.']
+        - [5, 'produced from your efforts is both clear and precise.']
+        - [6, 'displaying the surety you hold in your ability to perform.']
+        - [7, 'adeptness with which you perform your craft is evident in each movement.']
+        - [8, 'skill and confidence of one talented in their craft.']
+        - [9, 'evocative rhythms you send to float gently upon the air.']
+        - [10, 'Leth Deriel during the full throes of Spring.']
+
+    - name: 'Bard dance assessment'
+      when:
+        guilds: ['Bard']
+      kind: 'ladder'
+      of: 10
+      steps:
+        - [1, 'you decide not to attempt that again, and get back to your feet.']
+        - [2, 'but decide that now may not be the best time for dancing.']
+        - [3, 'You can''t seem to recall what to do next, despite your best efforts.']
+        - [4, 'entirety of the dance without too much trouble.']
+        - [5, 'dance flawlessly, wrapping up with a flourish.']
+        - [6, 'leave you breathless, you wrap up with a flourish.']
+        - [7, 'reaches its conclusion, a grin lights up your face.']
+        - [8, 'and when they finally come to rest again, you cannot help but smile.']
+        - [9, 'When you finally come to rest again, you are still smiling.']
+        - [10, 'you wrap up with a flourish and pose, a wide smile upon your face.']
 
     # Moonmage Shards associated locations
     - name: 'Moon Mage shard locations'
@@ -292,37 +314,60 @@ textsubs:
         - [' and (it is|is|they are|are|it has|has|have|contains?) in good condition\.', ' and \1 in good condition (80-89%).']
         - [' and (it is|is|they are|are|it has|has|have|contains?) practically in mint condition\.', ' and \1 practically in mint condition (90-97%).']
         - [' and (it is|is|they are|are|it has|has|have|contains?) in pristine condition\.', ' and \1 in pristine condition (98-100%).']
-        # Appraise focus progress levels
-        - ['^You feel like it will be awhile before you make progress\.', 'You feel like it will be awhile before you make progress. (1/4)']
-        - ['^You feel like you have made some progress toward your goal\.', 'You feel like you have made some progress toward your goal. (2/4)']
-        - ['^You feel like you''ve made good progress toward your goal\.', 'You feel like you''ve made good progress toward your goal. (3/4)']
-        - ['^You feel like you are on the verge of learning something useful\.', 'You feel like you are on the verge of learning something useful. (4/4)']
+
+    # Appraise focus progress levels
+    - name: 'appraise focus progress'
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'You feel like'
+      of: 4
+      steps:
+        - [1, 'it will be awhile before you make progress\.']
+        - [2, 'you have made some progress toward your goal\.']
+        - [3, 'you''ve made good progress toward your goal\.']
+        - [4, 'you are on the verge of learning something useful\.']
+
+    - name: 'hit tier 0'
+      subs:
         - ['(a|an) (benign|brushing|gentle|grazing|harmless|ineffective|skimming) (blow|hit|strike)', '\1 \2 (0/23) \3']
         # correction for bad glancing blow label receiving a glancing (0/23) blow
         - ['(?<!receiving )(a|an) (glancing) (blow|hit|strike)', '\1 \2 (0/23) \3']
-        - ['a light hit', 'a light hit (1/23)']
-        - ['a good hit', 'a good hit (2/23)']
-        - ['a good strike', 'a good strike (3/23)']
-        - ['a solid hit', 'a solid hit (4/23)']
-        - ['a hard hit', 'a hard hit (5/23)']
-        - ['a strong hit', 'a strong hit (6/23)']
-        - ['a heavy strike', 'a heavy strike (7/23)']
-        - ['a very heavy hit', 'a very heavy hit (8/23)']
-        - ['an extremely heavy hit', 'an extremely heavy hit (9/23)']
-        - ['a powerful strike', 'a powerful strike (10/23)']
-        - ['a massive strike', 'a massive strike (11/23)']
-        - ['an awesome strike', 'an awesome strike (12/23)']
-        - ['a vicious strike', 'a vicious strike (13/23)']
-        - ['an earth-shaking strike', 'an earth-shaking strike (14/23)']
-        - ['a demolishing hit', 'a demolishing hit (15/23)']
-        - ['a spine-rattling strike', 'a spine-rattling strike (16/23)']
+
+    - name: 'hit tiers 1-16'
+      kind: 'ladder'
+      of: 23
+      steps:
+        - [1, 'a light hit']
+        - [2, 'a good hit']
+        - [3, 'a good strike']
+        - [4, 'a solid hit']
+        - [5, 'a hard hit']
+        - [6, 'a strong hit']
+        - [7, 'a heavy strike']
+        - [8, 'a very heavy hit']
+        - [9, 'an extremely heavy hit']
+        - [10, 'a powerful strike']
+        - [11, 'a massive strike']
+        - [12, 'an awesome strike']
+        - [13, 'a vicious strike']
+        - [14, 'an earth-shaking strike']
+        - [15, 'a demolishing hit']
+        - [16, 'a spine-rattling strike']
+
+    - name: 'hit tier 17'
+      subs:
         - ['a devastating hit(?! \(That''ll leave a mark!\))', 'a devastating hit (17/23)']
-        - ['a devastating hit \(That''ll leave a mark!\)', 'a devastating hit (That''ll leave a mark!) (18/23)']
-        - ['an overwhelming strike', 'an overwhelming strike (19/23)']
-        - ['an obliterating hit', 'an obliterating hit (20/23)']
-        - ['an annihilating strike', 'an annihilating strike (21/23)']
-        - ['a cataclysmic strike', 'a cataclysmic strike (22/23)']
-        - ['an apocalyptic strike', 'an apocalyptic strike (23/23)']
+
+    - name: 'hit tiers 18-23'
+      kind: 'ladder'
+      of: 23
+      steps:
+        - [18, 'a devastating hit \(That''ll leave a mark!\)']
+        - [19, 'an overwhelming strike']
+        - [20, 'an obliterating hit']
+        - [21, 'an annihilating strike']
+        - [22, 'a cataclysmic strike']
+        - [23, 'an apocalyptic strike']
 
     # mana tuners
     - name: 'mana tuners'
@@ -335,48 +380,74 @@ textsubs:
         - ['streams of golden mana echo through your body.', 'streams of golden mana echo through your body. (Holy)']
         - ['streams of unholy black mana leave you feeling feverish.', 'streams of unholy black mana leave you feeling feverish. (Arcane)']
 
-    - name: 'Cleric'
+    - name: 'Cleric devotion 1-14'
+      when:
+        guilds: ['Cleric']
+      kind: 'ladder'
+      anchor: '^'
+      of: 16
+      steps:
+        - [1, 'You feel unclean and unworthy\.']
+        - [2, 'You close your eyes and start to concentrate\. In a moment a vision appears of a barren garden, parched and thirsting for nourishment\. You have an intense desire to tend it\.']
+        - [3, 'You call out to your god, but there is no answer\.']
+        - [4, 'After a moment, you sense that your god is barely aware of you\.']
+        - [5, 'After a moment, you sense that your efforts have not gone unnoticed\.']
+        - [6, 'After a moment, you sense a distinct link between you and your god\.']
+        - [7, 'After a moment, you sense that your god is aware of your devotion\.']
+        - [8, 'After a moment, you sense that your god is pleased with your devotion\.']
+        - [9, 'After a moment, you sense that your god knows your name\.']
+        - [10, 'After a moment, you see a vision of your god, though the visage is cloudy and impossible to make out clearly\.']
+        - [11, 'After a moment, you sense a slight pressure on your shoulder, leaving the feeling that your efforts have been acknowledged\.']
+        - [12, 'After a moment, you see a silent vision of your god, radiating forth with a powerful divine brilliance\.']
+        - [13, 'After a moment, you see a vision of your god who calls to you by name, "Come here, my child, and I will show you things of wonder\."']
+        - [14, 'After a moment, you see a vision of your god who calls to you by name, "My child, though you may not always see my face, I am pleased with thee and thy efforts\."']
+
+    - name: 'Cleric devotion 15-16'
       when:
         guilds: ['Cleric']
       subs:
-        - ['^You feel unclean and unworthy\.', 'You feel unclean and unworthy. (1/16)']
-        - ['^You close your eyes and start to concentrate\. In a moment a vision appears of a barren garden, parched and thirsting for nourishment\. You have an intense desire to tend it\.', 'You close your eyes and start to concentrate. In a moment a vision appears of a barren garden, parched and thirsting for nourishment. You have an intense desire to tend it. (2/16)']
-        - ['^You call out to your god, but there is no answer\.', 'You call out to your god, but there is no answer. (3/16)']
-        - ['^After a moment, you sense that your god is barely aware of you\.', 'After a moment, you sense that your god is barely aware of you. (4/16)']
-        - ['^After a moment, you sense that your efforts have not gone unnoticed\.', 'After a moment, you sense that your efforts have not gone unnoticed. (5/16)']
-        - ['^After a moment, you sense a distinct link between you and your god\.', 'After a moment, you sense a distinct link between you and your god. (6/16)']
-        - ['^After a moment, you sense that your god is aware of your devotion\.', 'After a moment, you sense that your god is aware of your devotion. (7/16)']
-        - ['^After a moment, you sense that your god is pleased with your devotion\.', 'After a moment, you sense that your god is pleased with your devotion. (8/16)']
-        - ['^After a moment, you sense that your god knows your name\.', 'After a moment, you sense that your god knows your name. (9/16)']
-        - ['^After a moment, you see a vision of your god, though the visage is cloudy and impossible to make out clearly\.', 'After a moment, you see a vision of your god, though the visage is cloudy and impossible to make out clearly. (10/16)']
-        - ['^After a moment, you sense a slight pressure on your shoulder, leaving the feeling that your efforts have been acknowledged\.', 'After a moment, you sense a slight pressure on your shoulder, leaving the feeling that your efforts have been acknowledged. (11/16)']
-        - ['^After a moment, you see a silent vision of your god, radiating forth with a powerful divine brilliance\.', 'After a moment, you see a silent vision of your god, radiating forth with a powerful divine brilliance. (12/16)']
-        - ['^After a moment, you see a vision of your god who calls to you by name, "Come here, my child, and I will show you things of wonder\."', 'After a moment, you see a vision of your god who calls to you by name, "Come here, my child, and I will show you things of wonder." (13/16)']
-        - ['^After a moment, you see a vision of your god who calls to you by name, "My child, though you may not always see my face, I am pleased with thee and thy efforts\."', 'After a moment, you see a vision of your god who calls to you by name, "My child, though you may not always see my face, I am pleased with thee and thy efforts." (14/16)']
         - ['^After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, (\w+)\.\s+Go forth and continue your works, and you shall only attain a greater level of purity\."', 'After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, \1.  Go forth, and continue your works and you shall only attain a greater level of purity." (15/16)']
         - ['^After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana''ati tree.', 'After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana''ati tree. (16/16)']
-        # Osrel Meraud power / capacity messaging for Clerics (seen when you 'focus orb')
-        - ['^The strength of the sensation evokes the image of a pile of cold ashes.', 'The strength of the sensation evokes the image of a pile of cold ashes. (1/10)']
-        - ['^The strength of the sensation evokes the image of a pile of smoldering ashes.', 'The strength of the sensation evokes the image of a pile of smoldering ashes. (2/10)']
-        - ['^The strength of the sensation evokes the image of a nearly burnt-out candle wick.', 'The strength of the sensation evokes the image of a nearly burnt-out candle wick. (3/10)']
-        - ['^The strength of the sensation evokes the image of a half-melted burning candle.', 'The strength of the sensation evokes the image of a half-melted burning candle. (4/10)']
-        - ['^The strength of the sensation evokes the image of a tall burning candle.', 'The strength of the sensation evokes the image of a tall burning candle. (5/10)']
-        - ['^The strength of the sensation evokes the image of a blazing torch.', 'The strength of the sensation evokes the image of a blazing torch. (6/10)']
-        - ['^The strength of the sensation evokes the image of a small campfire.', 'The strength of the sensation evokes the image of a small campfire. (7/10)']
-        - ['^The strength of the sensation evokes the image of a roaring bonfire.', 'The strength of the sensation evokes the image of a roaring bonfire. (8/10)']
-        - ['^The strength of the sensation evokes the image of flaming magma pouring through a volcanic crevasse.', 'The strength of the sensation evokes the image of flaming magma pouring through a volcanic crevasse. (9/10)']
-        - ['^The strength of the sensation evokes the image of torrents of fiery rain falling upon Elanthia from the World Dragon''s maw.', 'The strength of the sensation evokes the image of torrents of fiery rain falling upon Elanthia from the World Dragon''s maw. (10/10)']
-        - ['^The pervasiveness of the sensation evokes the image of a stream in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of a stream in your mind''s eye. (1/11)']
-        - ['^The pervasiveness of the sensation evokes the image of a pond in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of a pond in your mind''s eye. (2/11)']
-        - ['^The pervasiveness of the sensation evokes the image of a river in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of a river in your mind''s eye. (3/11)']
-        - ['^The pervasiveness of the sensation evokes the image of a lake in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of a lake in your mind''s eye. (4/11)']
-        - ['^The pervasiveness of the sensation evokes the image of a sea in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of a sea in your mind''s eye. (5/11)']
-        - ['^The pervasiveness of the sensation evokes the image of an ocean in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of an ocean in your mind''s eye. (6/11)']
-        - ['^The pervasiveness of the sensation evokes the image of Drogor''s deeps in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of Drogor''s deeps in your mind''s eye. (7/11)']
-        - ['^The pervasiveness of the sensation evokes the image of Elanthia''s tides rising toward Katamba in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of Elanthia''s tides rising toward Katamba in your mind''s eye. (8/11)']
-        - ['^The pervasiveness of the sensation evokes the image of the sapphirine planet Merewalda in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of the sapphirine planet Merewalda in your mind''s eye. (9/11)']
-        - ['^The pervasiveness of the sensation evokes the image of Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye. (10/11)']
-        - ['^The pervasiveness of the sensation evokes the image of the fathomless ebon abysms of the Starry Road in your mind''s eye.', 'The pervasiveness of the sensation evokes the image of the fathomless ebon abysms of the Starry Road in your mind''s eye. (11/11)']
+
+    # Osrel Meraud power / capacity messaging for Clerics (seen when you 'focus orb')
+    - name: 'Cleric Osrel Meraud power'
+      when:
+        guilds: ['Cleric']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'The strength of the sensation evokes the image of'
+      of: 10
+      steps:
+        - [1, 'a pile of cold ashes.']
+        - [2, 'a pile of smoldering ashes.']
+        - [3, 'a nearly burnt-out candle wick.']
+        - [4, 'a half-melted burning candle.']
+        - [5, 'a tall burning candle.']
+        - [6, 'a blazing torch.']
+        - [7, 'a small campfire.']
+        - [8, 'a roaring bonfire.']
+        - [9, 'flaming magma pouring through a volcanic crevasse.']
+        - [10, 'torrents of fiery rain falling upon Elanthia from the World Dragon''s maw.']
+
+    - name: 'Cleric Osrel Meraud capacity'
+      when:
+        guilds: ['Cleric']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'The pervasiveness of the sensation evokes the image of'
+      of: 11
+      steps:
+        - [1, 'a stream in your mind''s eye.']
+        - [2, 'a pond in your mind''s eye.']
+        - [3, 'a river in your mind''s eye.']
+        - [4, 'a lake in your mind''s eye.']
+        - [5, 'a sea in your mind''s eye.']
+        - [6, 'an ocean in your mind''s eye.']
+        - [7, 'Drogor''s deeps in your mind''s eye.']
+        - [8, 'Elanthia''s tides rising toward Katamba in your mind''s eye.']
+        - [9, 'the sapphirine planet Merewalda in your mind''s eye.']
+        - [10, 'Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye.']
+        - [11, 'the fathomless ebon abysms of the Starry Road in your mind''s eye.']
 
     # Ranger pace messaging substitutions, these show the wilderness level of the room so you can determine how much the room will raise or decrease your bonus.
     # Neutral messaging is purposefully not reported here because non-rangers would see it.
@@ -396,28 +467,50 @@ textsubs:
         - ['^You open your mouth to howl, but you merely sigh like the softest wind through the trees\.(\s+)Sadly, not even a leaf flutters with your "mighty" breath\.', 'You open your mouth to howl, but you merely sigh like the softest wind through the trees.\1Sadly, not even a leaf flutters with your "mighty" breath. (5/15)']
         - ['^You take in a deep breath to howl loudly, but instead cough and choke on the air around you\.', 'You take in a deep breath to howl loudly, but instead cough and choke on the air around you. (6/15)']
         - ['^You howl quietly to yourself, echoing a soft, desolate sound that doesn''t sound quite right\.(?=\r?$)', 'You howl quietly to yourself, echoing a soft, desolate sound that doesn''t sound quite right. (7/15)']
-        - ['^You take in a deep breath to howl, but it comes out as a whimper, like a lost wolf looking for his pack\.', 'You take in a deep breath to howl, but it comes out as a whimper, like a lost wolf looking for his pack. (8/15)']
-        - ['^You howl meekly, unsure of yourself\.', 'You howl meekly, unsure of yourself. (9/15)']
-        - ['^You take in a deep breath of air and howl softly\.', 'You take in a deep breath of air and howl softly. (10/15)']
-        - ['^You open your mouth and throw back your head, howling with a tentative but fairly resonant tone that wavers only slightly\.', 'You open your mouth and throw back your head, howling with a tentative but fairly resonant tone that wavers only slightly. (11/15)']
-        - ['^You howl like a wolf calling the pack!', 'You howl like a wolf calling the pack! (12/15)']
-        - ['^You inhale and howl strongly, the cacophonous sounds reverberating around you\.', 'You inhale and howl strongly, the cacophonous sounds reverberating around you. (13/15)']
+
+    - name: 'Ranger howl 8-13'
+      when:
+        guilds: ['Ranger']
+      kind: 'ladder'
+      anchor: '^'
+      of: 15
+      steps:
+        - [8, 'You take in a deep breath to howl, but it comes out as a whimper, like a lost wolf looking for his pack\.']
+        - [9, 'You howl meekly, unsure of yourself\.']
+        - [10, 'You take in a deep breath of air and howl softly\.']
+        - [11, 'You open your mouth and throw back your head, howling with a tentative but fairly resonant tone that wavers only slightly\.']
+        - [12, 'You howl like a wolf calling the pack!']
+        - [13, 'You inhale and howl strongly, the cacophonous sounds reverberating around you\.']
+
+    - name: 'Ranger howl 14-15'
+      when:
+        guilds: ['Ranger']
+      subs:
         - ['^You howl strongly, like that of a wolf calling its kin to assemble for a hunt\.(\s+)The sound echoes commandingly through the area\.', 'You howl strongly, like that of a wolf calling its kin to assemble for a hunt.\1The sound echoes commandingly through the area. (14/15)']
         - ['^You inhale deeply, a resounding howl breaking forth from within you, resonating strongly into the distance as if to announce your mastery of the wilds!', 'You inhale deeply, a resounding howl breaking forth from within you, resonating strongly into the distance as if to announce your mastery of the wilds! (15/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel like a true master of the wilds!', 'Taking silent stock of your connection to the natural world, you feel like a true master of the wilds! (15/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel in command of the wilds.', 'Taking silent stock of your connection to the natural world, you feel in command of the wilds. (14/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel strongly connected to the wilds.', 'Taking silent stock of your connection to the natural world, you feel strongly connected to the wilds. (13/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel like a wolf among sheep.', 'Taking silent stock of your connection to the natural world, you feel like a wolf among sheep. (12/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel your connection to the wilds wavering slightly.', 'Taking silent stock of your connection to the natural world, you feel your connection to the wilds wavering slightly. (11/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel a strain in your connection to the wilds.', 'Taking silent stock of your connection to the natural world, you feel a strain in your connection to the wilds. (10/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel unsure of yourself.', 'Taking silent stock of your connection to the natural world, you feel unsure of yourself. (9/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel like a lost wolf looking for its pack.', 'Taking silent stock of your connection to the natural world, you feel like a lost wolf looking for its pack. (8/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel desolate and not quite right.', 'Taking silent stock of your connection to the natural world, you feel desolate and not quite right. (7/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel choked by the clutches of civilization.', 'Taking silent stock of your connection to the natural world, you feel choked by the clutches of civilization. (6/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel aimless and adrift in life.', 'Taking silent stock of your connection to the natural world, you feel aimless and adrift in life. (5/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel as vulnerable as a baby robin, dependent upon others for its security.', 'Taking silent stock of your connection to the natural world, you feel as vulnerable as a baby robin, dependent upon others for its security. (4/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel practically domesticated.', 'Taking silent stock of your connection to the natural world, you feel practically domesticated. (3/15)']
-        - ['^Taking silent stock of your connection to the natural world, you feel like just another face in the crowd.', 'Taking silent stock of your connection to the natural world, you feel like just another face in the crowd. (2/15)']
+
+    - name: 'Ranger connection to the wilds'
+      when:
+        guilds: ['Ranger']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'Taking silent stock of your connection to the natural world, you feel'
+      of: 15
+      steps:
+        - [15, 'like a true master of the wilds!']
+        - [14, 'in command of the wilds.']
+        - [13, 'strongly connected to the wilds.']
+        - [12, 'like a wolf among sheep.']
+        - [11, 'your connection to the wilds wavering slightly.']
+        - [10, 'a strain in your connection to the wilds.']
+        - [9, 'unsure of yourself.']
+        - [8, 'like a lost wolf looking for its pack.']
+        - [7, 'desolate and not quite right.']
+        - [6, 'choked by the clutches of civilization.']
+        - [5, 'aimless and adrift in life.']
+        - [4, 'as vulnerable as a baby robin, dependent upon others for its security.']
+        - [3, 'practically domesticated.']
+        - [2, 'like just another face in the crowd.']
 
     - name: 'Empath'
       when:
@@ -442,26 +535,47 @@ textsubs:
         - ['A relatively healthy presence nearby\.', 'A relatively healthy presence nearby. (critter)']
         - ['A wavering life essence nearby\.', 'A wavering life essence nearby. (critter with vitality under 50%)']
         - ['A malicious presence screeching in the far dark corner of your mind causes you to quickly open your eyes!', 'A malicious presence screeching in the far dark corner of your mind causes you to quickly open your eyes! (undead/cursed critter)']
-        - ['^You sense you are just at the beginning of', 'You sense you are just at the beginning of (1/7)']
-        - ['^You sense you are only a short way through', 'You sense you are only a short way through (2/7)']
-        - ['^You sense you are a fair portion of the way through with', 'You sense you are a fair portion of the way through with (3/7)']
-        - ['^You sense you are half-way done with', 'You sense you are half-way done with (4/7)']
-        - ['^You sense you are a good portion of the way through with', 'You sense you are a good portion of the way through with (5/7)']
-        - ['^You sense you are almost done with', 'You sense you are almost done with (6/7)']
-        - ['^You sense you are on the verge of completing', 'You sense you are on the verge of completing (7/7)']
-        - ['\-\- insignificant', '-- insignificant (1/13)']
-        - ['\-\- negligible', '-- negligible (2/13)']
-        - ['\-\- minor', '-- minor (3/13)']
-        - ['\-\- more than minor', '-- more than minor (4/13)']
-        - ['\-\- harmful', '-- harmful (5/13)']
-        - ['\-\- very harmful', '-- very harmful (6/13)']
-        - ['\-\- damaging', '-- damaging (7/13)']
-        - ['\-\- very damaging', '-- very damaging (8/13)']
-        - ['\-\- severe', '-- severe (9/13)']
-        - ['\-\- very severe', '-- very severe (10/13)']
-        - ['\-\- devastating', '-- devastating (11/13)']
-        - ['\-\- very devastating', '-- very devastating (12/13)']
-        - ['\-\- useless', '-- useless (13/13)']
+
+    - name: 'Empath progress'
+      when:
+        guilds: ['Empath']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'You sense you are'
+      of: 7
+      steps:
+        - [1, 'just at the beginning of']
+        - [2, 'only a short way through']
+        - [3, 'a fair portion of the way through with']
+        - [4, 'half-way done with']
+        - [5, 'a good portion of the way through with']
+        - [6, 'almost done with']
+        - [7, 'on the verge of completing']
+
+    - name: 'Empath severity'
+      when:
+        guilds: ['Empath']
+      kind: 'ladder'
+      of: 13
+      steps:
+        - [1, '\-\- insignificant']
+        - [2, '\-\- negligible']
+        - [3, '\-\- minor']
+        - [4, '\-\- more than minor']
+        - [5, '\-\- harmful']
+        - [6, '\-\- very harmful']
+        - [7, '\-\- damaging']
+        - [8, '\-\- very damaging']
+        - [9, '\-\- severe']
+        - [10, '\-\- very severe']
+        - [11, '\-\- devastating']
+        - [12, '\-\- very devastating']
+        - [13, '\-\- useless']
+
+    - name: 'Empath life force'
+      when:
+        guilds: ['Empath']
+      subs:
         - ['Your (.*)''s life force is brimming with unblemished vigor!', 'Your \1''s life force is brimming with unblemished vigor! (0/9)']
         - ['Your (.*)''s life force remains unblemished save for a single, tiny deadened speck.', 'Your \1''s life force remains unblemished save for a single, tiny deadened speck. (1/9)']
         - ['Your (.*)''s life force remains largely robust, though several small deadened areas have formed.', 'Your \1''s life force remains largely robust, though several small deadened areas have formed. (2/9)']
@@ -472,12 +586,20 @@ textsubs:
         - ['Your (.*)''s life force is significantly weakened, with large portions of it numbed and deadened completely.', 'Your \1''s life force is significantly weakened, with large portions of it numbed and deadened completely. (7/9)']
         - ['Your (.*)''s life force is imperceptible.', 'Your \1''s life force is imperceptible. (8/9)']
         - ['You thumb your (.*)\.', 'You thumb your \1. (9/9)']
-        - ['^The plant appears to be in good condition', 'The plant appears to be in good condition (5/5)']
-        - ['^The plant has some scrapes and discolorations along the leaves and stem', 'The plant has some scrapes and discolorations along the leaves and stem (4/5)']
-        - ['^The plant has several torn leaves, and the main stem bears some cuts that are leaking green sap', 'The plant has several torn leaves, and the main stem bears some cuts that are leaking green sap (3/5)']
-        - ['^The plant shivers periodically, torn leaves and broken stems hanging limply as sap drips from its wounds', 'The plant shivers periodically, torn leaves and broken stems hanging limply as sap drips from its wounds (2/5)']
-        - ['^The plant has pulled into itself under shredded leaves and oozing stems', 'The plant has pulled into itself under shredded leaves and oozing stems (1/5)']
-        - ['^The plant has coiled itself into a tight ball, the remains of its shredded leaves sticking to sap encrusted stems', 'The plant has coiled itself into a tight ball, the remains of its shredded leaves sticking to sap encrusted stems (0/5)']
+
+    - name: 'Empath plant condition'
+      when:
+        guilds: ['Empath']
+      kind: 'ladder'
+      anchor: '^'
+      of: 5
+      steps:
+        - [5, 'The plant appears to be in good condition']
+        - [4, 'The plant has some scrapes and discolorations along the leaves and stem']
+        - [3, 'The plant has several torn leaves, and the main stem bears some cuts that are leaking green sap']
+        - [2, 'The plant shivers periodically, torn leaves and broken stems hanging limply as sap drips from its wounds']
+        - [1, 'The plant has pulled into itself under shredded leaves and oozing stems']
+        - [0, 'The plant has coiled itself into a tight ball, the remains of its shredded leaves sticking to sap encrusted stems']
 
     - name: 'crafting quality, speed and resources'
       subs:
@@ -536,70 +658,112 @@ textsubs:
         - ['decent (quantity|number) remains to be found', 'decent \1 (2/5) remains to be found']
         - ['small (quantity|number) remains to be found', 'small \1 (1/5) remains to be found']
         - ['scattering of (resources|trees) remains to be found', 'scattering of \1 (0/5) remains to be found']
-        - ['Encumbrance : None', 'Encumbrance : None (0/11)']
-        - ['Encumbrance : Light Burden', 'Encumbrance : Light Burden (1/11)']
-        - ['Encumbrance : Somewhat Burdened', 'Encumbrance : Somewhat Burdened (2/11)']
-        - ['Encumbrance : Burdened', 'Encumbrance : Burdened (3/11)']
-        - ['Encumbrance : Heavy Burden', 'Encumbrance : Heavy Burden (4/11)']
-        - ['Encumbrance : Very Heavy Burden', 'Encumbrance : Very Heavy Burden (5/11)']
-        - ['Encumbrance : Overburdened', 'Encumbrance : Overburdened (6/11)']
-        - ['Encumbrance : Very Overburdened', 'Encumbrance : Very Overburdened (7/11)']
-        - ['Encumbrance : Extremely Overburdened', 'Encumbrance : Extremely Overburdened (8/11)']
-        - ['Encumbrance : Tottering Under Burden', 'Encumbrance : Tottering Under Burden (9/11)']
+
+    - name: 'encumbrance 0-9'
+      kind: 'ladder'
+      prefix: 'Encumbrance :'
+      of: 11
+      steps:
+        - [0, 'None']
+        - [1, 'Light Burden']
+        - [2, 'Somewhat Burdened']
+        - [3, 'Burdened']
+        - [4, 'Heavy Burden']
+        - [5, 'Very Heavy Burden']
+        - [6, 'Overburdened']
+        - [7, 'Very Overburdened']
+        - [8, 'Extremely Overburdened']
+        - [9, 'Tottering Under Burden']
+
+    - name: 'encumbrance 10-11'
+      subs:
         - ['Encumbrance : Are you even able to move?', 'Encumbrance : Are you even able to move? (10/11)']
         - ['Encumbrance : It''s amazing you aren''t squashed!', 'Encumbrance : It''s amazing you aren''t squashed! (11/11)']
-        - ['You feel completely empty and unable to grasp inspiration\.', 'You feel completely empty and unable to grasp inspiration (0/3).']
-        - ['You feel depleted and less than inspired\.', 'You feel depleted and less than inspired (1/3).']
-        - ['You feel worn but still ready to meet a challenge\.', 'You feel worn but still ready to meet a challenge (2/3).']
-        - ['You feel ready to defeat all challengers\.', 'You feel ready to defeat all challengers (3/3).']
 
-    - name: 'Thief'
+    - name: 'inspiration'
+      kind: 'ladder'
+      style: 'before_period'
+      of: 3
+      steps:
+        - [0, 'You feel completely empty and unable to grasp inspiration\.']
+        - [1, 'You feel depleted and less than inspired\.']
+        - [2, 'You feel worn but still ready to meet a challenge\.']
+        - [3, 'You feel ready to defeat all challengers\.']
+
+    - name: 'Thief steal difficulty'
       when:
         guilds: ['Thief']
-      subs:
-        - ['it would be taking candy from a baby\.', 'it would be taking candy from a baby (1/13).']
-        - ['it would be stealable even with your eyes closed\.', 'it would be stealable even with your eyes closed (2/13).']
-        - ['it should be trivial for one of your skills\.', 'it should be trivial for one of your skills (3/13).']
-        - ['it should be an easy target for you\.', 'it should be an easy target for you (4/13).']
-        - ['it should not prove difficult for you\.', 'it should not prove difficult for you (5/13).']
-        - ['it should be more likely liftable than not\.', 'it should be more likely liftable than not (6/13).']
-        - ['it should be about even odds\.', 'it should be about even odds (7/13).']
-        - ['it may give you some difficulty to lift\.', 'it may give you some difficulty to lift (8/13).']
-        - ['it may be troublesome to lift\.', 'it may be troublesome to lift (9/13).']
-        - ['you don''t think well of your chances to lift it\.', 'you don''t think well of your chances to lift it (10/13).']
-        - ['it may be quite the struggle to nab\.', 'it may be quite the struggle to nab (11/13).']
-        - ['it would likely be futile to bother\.', 'it would likely be futile to bother (12/13).']
-        - ['you can already feel the taste of bitter failure\.', 'you can already feel the taste of bitter failure (13/13).']
-        - ['nobody will ever miss it\.', 'nobody will ever miss it (1/13).']
-        - ['you could just waltz on out with it\.', 'you could just waltz on out with it (2/13).']
-        - ['it should be trivial to avoid attention\.', 'it should be trivial to avoid attention (3/13).']
-        - ['it should be easy to avoid attention\.', 'it should be easy to avoid attention (4/13).']
-        - ['it should not prove too difficult\.', 'it should not prove too difficult (5/13).']
-        - ['it should be possible\.', 'it should be possible (6/13).']
-        - ['it''s about even odds\.', 'it''s about even odds (7/13).']
-        - ['perhaps it''s a little risky\.', 'perhaps it''s a little risky (8/13).']
-        - ['it''ll be troublesome to be unnoticed\.', 'it''ll be troublesome to be unnoticed (9/13).']
-        - ['it''s somewhat of a long shot\.', 'it''s somewhat of a long shot (10/13).']
-        - ['you''re pretty sure you''ll be caught\.', 'you''re pretty sure you''ll be caught (11/13).']
-        - ['the shopkeep is paying far too much attention to it\.', 'the shopkeep is paying far too much attention to it (12/13).']
-        - ['the heavy \*THUD\* of a judge''s gavel echoes through your mind\.', 'the heavy *THUD* of a judge''s gavel echoes through your mind (13/13).']
-        - ['shouldn''t really affect you\.', 'shouldn''t really affect you (1/6).']
-        - ['hinders your chances slightly\.', 'hinders your chances slightly (2/6).']
-        - ['has closer eye on you\.', 'has closer eye on you (3/6).']
-        - ['looks your way suspiciously\.', 'looks your way suspiciously (4/6).']
-        - ['looking for an excuse to call the guards\.', 'looking for an excuse to call the guards (5/6).']
-        - ['beyond foolish to keep at it\.', 'beyond foolish to keep at it (6/6).']
-        - ['don''t see how things could get any worse\.', 'don''t see how things could get any worse (-5/5).']
-        - ['but you know you aren''t fooling anyone\.', 'but you know you aren''t fooling anyone (-4/5).']
-        - ['but cannot shake the thoughts of your recent screw-ups\.', 'but cannot shake the thoughts of your recent screw-ups (-3/5).']
-        - ['but have to force it\.', 'but have to force it (-2/5).']
-        - ['but feel slightly uncomfortable\.', 'but feel slightly uncomfortable (-1/5).']
-        - ['but can only muster up average confidence\.', 'but can only muster up average confidence (0/5).']
-        - ['feeling a little above average\.', 'feeling a little above average (1/5).']
-        - ['feeling rather confident about things\.', 'feeling rather confident about things (2/5).']
-        - ['feeling quite good about how you''re doing\.', 'feeling quite good about how you''re doing (3/5).']
-        - ['the way only a stylish Thief can\.', 'the way only a stylish Thief can (4/5).']
-        - ['knowing you are at the absolute top of your game\.', 'knowing you are at the absolute top of your game (5/5).']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 13
+      steps:
+        - [1, 'it would be taking candy from a baby\.']
+        - [2, 'it would be stealable even with your eyes closed\.']
+        - [3, 'it should be trivial for one of your skills\.']
+        - [4, 'it should be an easy target for you\.']
+        - [5, 'it should not prove difficult for you\.']
+        - [6, 'it should be more likely liftable than not\.']
+        - [7, 'it should be about even odds\.']
+        - [8, 'it may give you some difficulty to lift\.']
+        - [9, 'it may be troublesome to lift\.']
+        - [10, 'you don''t think well of your chances to lift it\.']
+        - [11, 'it may be quite the struggle to nab\.']
+        - [12, 'it would likely be futile to bother\.']
+        - [13, 'you can already feel the taste of bitter failure\.']
+
+    - name: 'Thief steal attention'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 13
+      steps:
+        - [1, 'nobody will ever miss it\.']
+        - [2, 'you could just waltz on out with it\.']
+        - [3, 'it should be trivial to avoid attention\.']
+        - [4, 'it should be easy to avoid attention\.']
+        - [5, 'it should not prove too difficult\.']
+        - [6, 'it should be possible\.']
+        - [7, 'it''s about even odds\.']
+        - [8, 'perhaps it''s a little risky\.']
+        - [9, 'it''ll be troublesome to be unnoticed\.']
+        - [10, 'it''s somewhat of a long shot\.']
+        - [11, 'you''re pretty sure you''ll be caught\.']
+        - [12, 'the shopkeep is paying far too much attention to it\.']
+        - [13, 'the heavy \*THUD\* of a judge''s gavel echoes through your mind\.']
+
+    - name: 'Thief shop attention'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 6
+      steps:
+        - [1, 'shouldn''t really affect you\.']
+        - [2, 'hinders your chances slightly\.']
+        - [3, 'has closer eye on you\.']
+        - [4, 'looks your way suspiciously\.']
+        - [5, 'looking for an excuse to call the guards\.']
+        - [6, 'beyond foolish to keep at it\.']
+
+    - name: 'Thief confidence'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 5
+      steps:
+        - [-5, 'don''t see how things could get any worse\.']
+        - [-4, 'but you know you aren''t fooling anyone\.']
+        - [-3, 'but cannot shake the thoughts of your recent screw-ups\.']
+        - [-2, 'but have to force it\.']
+        - [-1, 'but feel slightly uncomfortable\.']
+        - [0, 'but can only muster up average confidence\.']
+        - [1, 'feeling a little above average\.']
+        - [2, 'feeling rather confident about things\.']
+        - [3, 'feeling quite good about how you''re doing\.']
+        - [4, 'the way only a stylish Thief can\.']
+        - [5, 'knowing you are at the absolute top of your game\.']
 
     - name: 'Warrior Mage'
       when:
@@ -616,28 +780,53 @@ textsubs:
         - ['(conditions|surroundings) are detrimental', '\1 are detrimental (-3/5)']
         - ['(conditions|surroundings) are moderately detrimental', '\1 are moderately detrimental (-2/5)']
         - ['(conditions|surroundings) are slightly detrimental', '\1 are slightly detrimental (-1/5)']
-        - ['cold-based Water spells and overwhelmingly favorable', 'cold-based Water spells and overwhelmingly favorable (5/5)']
-        - ['cold-based Water spells and strongly favorable', 'cold-based Water spells and strongly favorable (4/5)']
-        - ['cold-based Water spells and favorable', 'cold-based Water spells and favorable (3/5)']
-        - ['cold-based Water spells and moderately favorable', 'cold-based Water spells and moderately favorable (2/5)']
-        - ['cold-based Water spells and slightly favorable', 'cold-based Water spells and slightly favorable (1/5)']
-        - ['cold-based Water spells and neutral', 'cold-based Water spells and neutral (0/5)']
-        - ['cold-based Water spells and overwhelmingly detrimental', 'cold-based Water spells and overwhelmingly detrimental (-5/5)']
-        - ['cold-based Water spells and strongly detrimental', 'cold-based Water spells and strongly detrimental (-4/5)']
-        - ['cold-based Water spells and detrimental', 'cold-based Water spells and detrimental (-3/5)']
-        - ['cold-based Water spells and moderately detrimental', 'cold-based Water spells and moderately detrimental (-2/5)']
-        - ['cold-based Water spells and slightly detrimental', 'cold-based Water spells and slightly detrimental (-1/5)']
+
+    - name: 'Warrior Mage cold-based Water'
+      when:
+        guilds: ['Warrior Mage']
+      kind: 'ladder'
+      prefix: 'cold-based Water spells and'
+      of: 5
+      steps:
+        - [5, 'overwhelmingly favorable']
+        - [4, 'strongly favorable']
+        - [3, 'favorable']
+        - [2, 'moderately favorable']
+        - [1, 'slightly favorable']
+        - [0, 'neutral']
+        - [-5, 'overwhelmingly detrimental']
+        - [-4, 'strongly detrimental']
+        - [-3, 'detrimental']
+        - [-2, 'moderately detrimental']
+        - [-1, 'slightly detrimental']
+
+    - name: 'Warrior Mage charge 1'
+      when:
+        guilds: ['Warrior Mage']
+      subs:
         - ['You sense nothing out of the ordinary\.  Only magic could detect the useless trace of (.*) still in your system\.', 'You sense nothing out of the ordinary. Only magic could detect the useless trace of \1 still in your system. (1/12)']
-        - ['A small charge lingers within your body, just above the threshold of perception\.', 'A small charge lingers within your body, just above the threshold of perception. (2/12)']
-        - ['A small charge lingers within your body\.', 'A small charge lingers within your body. (3/12)']
-        - ['A charge dances through your body\.', 'A charge dances through your body. (4/12)']
-        - ['A charge dances just below the threshold of discomfort\.', 'A charge dances just below the threshold of discomfort. (5/12)']
-        - ['A charge circulates through your body, causing a low hum to vibrate through your bones\.', 'A charge circulates through your body, causing a low hum to vibrate through your bones. (6/12)']
-        - ['Elemental essence floats freely within your body, leaving little untouched\.', 'Elemental essence floats freely within your body, leaving little untouched. (7/12)']
-        - ['Elemental essence has infused every inch of your body\.  While you could contain more, you''d do so at the risk of your health\.', 'Elemental essence has infused every inch of your body.  While you could contain more, you''d do so at the risk of your health. (8/12)']
-        - ['Extraplanar power crackles within your body, leaving you feeling mildly feverish\.', 'Extraplanar power crackles within your body, leaving you feeling mildly feverish. (9/12)']
-        - ['Extraplanar power crackles within your body, leaving you feeling acutely ill\.', 'Extraplanar power crackles within your body, leaving you feeling acutely ill. (10/12)']
-        - ['Your body sings and crackles with a barely contained charge, destroying what little cenesthesia you had left\.', 'Your body sings and crackles with a barely contained charge, destroying what little cenesthesia you had left. (11/12)']
+
+    - name: 'Warrior Mage charge 2-11'
+      when:
+        guilds: ['Warrior Mage']
+      kind: 'ladder'
+      of: 12
+      steps:
+        - [2, 'A small charge lingers within your body, just above the threshold of perception\.']
+        - [3, 'A small charge lingers within your body\.']
+        - [4, 'A charge dances through your body\.']
+        - [5, 'A charge dances just below the threshold of discomfort\.']
+        - [6, 'A charge circulates through your body, causing a low hum to vibrate through your bones\.']
+        - [7, 'Elemental essence floats freely within your body, leaving little untouched\.']
+        - [8, 'Elemental essence has infused every inch of your body\.  While you could contain more, you''d do so at the risk of your health\.']
+        - [9, 'Extraplanar power crackles within your body, leaving you feeling mildly feverish\.']
+        - [10, 'Extraplanar power crackles within your body, leaving you feeling acutely ill\.']
+        - [11, 'Your body sings and crackles with a barely contained charge, destroying what little cenesthesia you had left\.']
+
+    - name: 'Warrior Mage charge 12'
+      when:
+        guilds: ['Warrior Mage']
+      subs:
         - ['You have reached the limits of your body''s capacity to store a charge\.  The laws of the Elemental Plane of (.*) scream demands upon your physiology, threatening your life\.', 'You have reached the limits of your body''s capacity to store a charge.  The laws of the Elemental Plane of \1 scream demands upon your physiology, threatening your life. (12/12)']
 
     # Soul State
@@ -651,16 +840,43 @@ textsubs:
         - ['dull, chalky color\.', 'dull, chalky color (4/7).']
         - ['pallid grey', 'pallid grey (3/7)']
         - ['sinister black streaks\.', 'sinister black streaks (2/7).']
-        # Soul Pool
-        - ['It brightens with a powerful inner light that, somehow, manages to not cast shadows\.', 'It brightens with a powerful inner light that, somehow, manages to not cast shadows (11/11).']
-        - ['It brightens with a powerful inner light, which lingers before returning to its normal state\.', 'It brightens with a powerful inner light, which lingers before returning to its normal state (10/11).']
-        - ['It brightens with an inner light, which lingers for a few moments before returning to its normal state\.', 'It brightens with an inner light, which lingers for a few moments before returning to its normal state (9/11).']
-        - ['It brightens with an inner light, which lingers for a moment\.', 'It brightens with an inner light, which lingers for a moment (8/11).']
+
+    # Soul Pool
+    - name: 'Paladin soul pool 8-11'
+      when:
+        guilds: ['Paladin']
+      kind: 'ladder'
+      style: 'before_period'
+      prefix: 'It brightens with'
+      of: 11
+      steps:
+        - [11, 'a powerful inner light that, somehow, manages to not cast shadows\.']
+        - [10, 'a powerful inner light, which lingers before returning to its normal state\.']
+        - [9, 'an inner light, which lingers for a few moments before returning to its normal state\.']
+        - [8, 'an inner light, which lingers for a moment\.']
+
+    - name: 'Paladin soul pool 7'
+      when:
+        guilds: ['Paladin']
+      subs:
         - ['It pulses rapidly with an inner light\.', 'It pulses rapidly with an inner light. (7/11).']
-        - ['It pulses with an inner light\.', 'It pulses with an inner light (6/11).']
-        - ['It pulses briefly with an inner light\.', 'It pulses briefly with an inner light (5/11).']
-        - ['It flickers with an inner light\.', 'It flickers with an inner light (4/11).']
-        - ['It briefly flickers with an inner light\.', 'It briefly flickers with an inner light (3/11).']
+
+    - name: 'Paladin soul pool 3-6'
+      when:
+        guilds: ['Paladin']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 11
+      steps:
+        - [6, 'It pulses with an inner light\.']
+        - [5, 'It pulses briefly with an inner light\.']
+        - [4, 'It flickers with an inner light\.']
+        - [3, 'It briefly flickers with an inner light\.']
+
+    - name: 'Paladin soul pool 1-2'
+      when:
+        guilds: ['Paladin']
+      subs:
         - ['You catch the faintest flicker of light\.', 'You catch the faintest flicker of light. (2/11).']
         - ['You believe you catch the faintest flicker of light. You might have imagined it\.', 'You believe you catch the faintest flicker of light. You might have imagined it (1/11).']
 
@@ -670,10 +886,23 @@ textsubs:
         guilds: ['Bard']
       subs:
         - ['You stop only after those first few lines, however, unable to remember any more\.', 'You stop only after those first few lines, however, unable to remember any more (1/7).']
-        - ['Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway\.', 'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway (1/7).']
-        - ['At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, but pick it up a moment later and bring it to a strong conclusion\.', 'At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, but pick it up a moment later and bring it to a strong conclusion (2/7).']
-        - ['You feel a bit tired as you finish, but grin despite that for the ease at which you sang\.', 'You feel a bit tired as you finish, but grin despite that for the ease at which you sang (3/7).']
-        - ['You bring the song to a close, bowing your head\.', 'You bring the song to a close, bowing your head (4/7).']
+
+    - name: 'Bard song assessment 1-4'
+      when:
+        guilds: ['Bard']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 7
+      steps:
+        - [1, 'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway\.']
+        - [2, 'At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, but pick it up a moment later and bring it to a strong conclusion\.']
+        - [3, 'You feel a bit tired as you finish, but grin despite that for the ease at which you sang\.']
+        - [4, 'You bring the song to a close, bowing your head\.']
+
+    - name: 'Bard song assessment 5-7'
+      when:
+        guilds: ['Bard']
+      subs:
         # The message names the song's language; the key takes any language name
         # spelled with letters, apostrophes, hyphens and spaces (S'Kra Mur)
         - ['(Your voice carries strongly on the air as you effortlessly recite the [A-Za-z'' -]+ words so that all may hear, bowing your head as they come to a close)\.', '\1 (5/7).']
@@ -929,18 +1158,26 @@ textsubs:
         - ['Worm''s Mist']
         - ['Butcher''s Eye', 'Philosopher''s Preservation', 'Kura-Silma', 'Ivory Mask']
 
-    - name: 'Trader'
+    - name: 'Trader starlight 0-7'
+      when:
+        guilds: ['Trader']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 9
+      steps:
+        - [0, 'The smallest hint of starlight flickers within your aura.']
+        - [1, 'A bare flicker of starlight plays within your aura.']
+        - [2, 'A faint amount of starlight illuminates your aura.']
+        - [3, 'Your aura pulses slowly with starlight.']
+        - [4, 'A steady pulse of starlight runs through your aura.']
+        - [5, 'Starlight dances vividly across the confines of your aura.']
+        - [6, 'Strong pulses of starlight flare within your aura.']
+        - [7, 'Your aura seethes with brilliant starlight.']
+
+    - name: 'Trader starlight 8-9'
       when:
         guilds: ['Trader']
       subs:
-        - ['The smallest hint of starlight flickers within your aura.', 'The smallest hint of starlight flickers within your aura (0/9).']
-        - ['A bare flicker of starlight plays within your aura.', 'A bare flicker of starlight plays within your aura (1/9).']
-        - ['A faint amount of starlight illuminates your aura.', 'A faint amount of starlight illuminates your aura (2/9).']
-        - ['Your aura pulses slowly with starlight.', 'Your aura pulses slowly with starlight (3/9).']
-        - ['A steady pulse of starlight runs through your aura.', 'A steady pulse of starlight runs through your aura (4/9).']
-        - ['Starlight dances vividly across the confines of your aura.', 'Starlight dances vividly across the confines of your aura (5/9).']
-        - ['Strong pulses of starlight flare within your aura.', 'Strong pulses of starlight flare within your aura (6/9).']
-        - ['Your aura seethes with brilliant starlight.', 'Your aura seethes with brilliant starlight (7/9).']
         - ['Your aura is blinding!', 'Your aura is blinding (8/9)!']
         - ['The power contained in your aura defies visual metaphor.', 'The power contained in your aura defies visual metaphor (9/9).']
 
@@ -974,15 +1211,22 @@ textsubs:
         - ['a tiny aura of beautiful flames', 'a tiny aura of beautiful flames (2/13)']
         - ['a small aura of beautiful flames', 'a small aura of beautiful flames (3/13)']
         - ['a bright aura of beautiful flames\.', 'a bright aura of beautiful flames (4/13).']
-        - ['a bright aura of beautiful flames extending a quarter of your height above you', 'a bright aura of beautiful flames extending a quarter of your height above you (5/13)']
-        - ['a bright aura of beautiful flames extending out around you just beyond the reach of your arms', 'a bright aura of beautiful flames extending out around you just beyond the reach of your arms (6/13)']
-        - ['a brilliant aura of beautiful flames extending out around you about half again your height', 'a brilliant aura of beautiful flames extending out around you about half again your height (7/13)']
-        - ['a brilliant aura of beautiful flames extending a little over half your height again above you', 'a brilliant aura of beautiful flames extending a little over half your height again above you (8/13)']
-        - ['a brilliant aura of flames that extends nearly your full height again above you', 'a brilliant aura of flames that extends nearly your full height again above you (9/13)']
-        - ['a brilliant aura of flames that extends over your height again above you', 'a brilliant aura of flames that extends over your height again above you (10/13)']
-        - ['a brilliant aura of beautiful flames extending a little more than one and half times your height above your body', 'a brilliant aura of beautiful flames extending a little more than one and half times your height above your body (11/13)']
-        - ['a brilliant aura of beautiful flames extending nearly twice your height above your body', 'a brilliant aura of beautiful flames extending nearly twice your height above your body (12/13)']
-        - ['a brilliant aura of pristine quality burning outward at twice your height', 'a brilliant aura of pristine quality burning outward at twice your height (13/13)']
+
+    - name: 'Barbarian inner fire 5-13'
+      when:
+        guilds: ['Barbarian']
+      kind: 'ladder'
+      of: 13
+      steps:
+        - [5, 'a bright aura of beautiful flames extending a quarter of your height above you']
+        - [6, 'a bright aura of beautiful flames extending out around you just beyond the reach of your arms']
+        - [7, 'a brilliant aura of beautiful flames extending out around you about half again your height']
+        - [8, 'a brilliant aura of beautiful flames extending a little over half your height again above you']
+        - [9, 'a brilliant aura of flames that extends nearly your full height again above you']
+        - [10, 'a brilliant aura of flames that extends over your height again above you']
+        - [11, 'a brilliant aura of beautiful flames extending a little more than one and half times your height above your body']
+        - [12, 'a brilliant aura of beautiful flames extending nearly twice your height above your body']
+        - [13, 'a brilliant aura of pristine quality burning outward at twice your height']
 
     # Commas when dealing with coins
     - name: 'coin commas with platinum grouping'
@@ -1348,12 +1592,20 @@ textsubs:
         - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*--', ':  18/20']
         - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*-', ':  19/20']
         - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*', ':  20/20']
-        - ['\.\.\.a trivial', '...a trivial (1/5)']
-        - ['\.\.\.a straightforward', '...a straightforward (2/5)']
-        - ['\.\.\.a formidable', '...a formidable (3/5)']
-        - ['\.\.\.a challenging', '...a challenging (4/5)']
-        - ['\.\.\.a difficult', '...a difficult (5/5)']
-        # Runestones in Sierack's Reagents shop in Shard
+
+    - name: 'sigil difficulty'
+      kind: 'ladder'
+      of: 5
+      steps:
+        - [1, '\.\.\.a trivial']
+        - [2, '\.\.\.a straightforward']
+        - [3, '\.\.\.a formidable']
+        - [4, '\.\.\.a challenging']
+        - [5, '\.\.\.a difficult']
+
+    # Runestones in Sierack's Reagents shop in Shard
+    - name: 'runestones, prestige and supply volumes'
+      subs:
         - ['^ Electrum Runestone', ' Electrum Runestone   (Eagle''s Cry)']
         - ['^ Topaz Runestone', ' Topaz Runestone      (Protection from Evil)']
         - ['^ Quartz Runestone', ' Quartz Runestone     (Refresh)']

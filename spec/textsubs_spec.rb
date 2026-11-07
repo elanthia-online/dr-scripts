@@ -568,15 +568,25 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # The value scalars written plain on purpose: the number under a schema
-    # key, and a spell's `signature: true`, written exactly so.
+    # key, a spell's `signature: true`, written exactly so, and the whole
+    # numbers of a ladder: its `of:` and the n that starts each of its steps.
     #
     # @param tree [Psych::Nodes::Node]
     # @return [Set<Psych::Nodes::Scalar>] compared by identity, as
     #   value_scalars compares the keys
     def plain_by_design(tree)
+      whole = ->(node) { node.is_a?(Psych::Nodes::Scalar) && node.value.match?(/\A-?\d+\z/) }
       plain = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
-        mapping.children.each_slice(2).filter_map do |key, value|
-          value if key.value == 'schema' || (key.value == 'signature' && value.is_a?(Psych::Nodes::Scalar) && value.value == 'true')
+        mapping.children.each_slice(2).flat_map do |key, value|
+          case key.value
+          when 'schema' then [value]
+          when 'signature' then value.is_a?(Psych::Nodes::Scalar) && value.value == 'true' ? [value] : []
+          when 'of' then whole.call(value) ? [value] : []
+          when 'steps'
+            steps = value.is_a?(Psych::Nodes::Sequence) ? value.children.grep(Psych::Nodes::Sequence) : []
+            steps.map { |step| step.children.first }.select(&whole)
+          else []
+          end
         end
       end
       Set.new.compare_by_identity.merge(plain)
@@ -622,6 +632,25 @@ RSpec.describe 'textsubs.lic' do
             - {name: 'Burden', signature: yes}
       YAML
       expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1', 'line 12: basic', 'line 13: yes'])
+    end
+
+    it "takes a ladder's of and step numbers written plain, but not a plain phrase, a plain word for a number or a number elsewhere" do
+      tree = Psych.parse(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'ladder'
+              kind: 'ladder'
+              of: 5
+              steps:
+                - [-5, 'worst']
+                - [0, plain]
+                - [five, 'top']
+                - ['1', 2]
+            - name: 'not a ladder'
+              of: ten
+      YAML
+      expect(unquoted_values(tree)).to eq(['line 9: plain', 'line 10: five', 'line 11: 2', 'line 13: ten'])
     end
 
     it 'repeats no key in any mapping' do
@@ -4801,6 +4830,31 @@ RSpec.describe 'textsubs.lic' do
       it "refuses a ladder missing of or steps, naming what it lacks" do
         expect { ladder_pairs('steps' => [[1, 'a']]) }.to raise_error(ArgumentError, 'section 1 (scale) has no of')
         expect { ladder_pairs('of' => 5) }.to raise_error(ArgumentError, 'section 1 (scale) has no steps')
+      end
+
+      # The acceptance check for every ladder the data file ships: written
+      # out as a game line, the text of a step is matched by that step alone
+      # within its ladder and comes back with that step's counter and nothing
+      # else changed.
+      it 'gives each shipped step, sent as its own line, its own counter and no other step of its ladder' do
+        ladders = shipped_catalog['textsubs']['sections'].select { |section| section['kind'] == 'ladder' }
+        checked = 0
+        ladders.each do |section|
+          subs = TextSubs::Generators::Ladder.expand(section, nil, nil)
+          keys = subs.map { |source, _| Regexp.new(source) }
+          section['steps'].each_with_index do |(n, phrase), index|
+            line = [section['prefix'], phrase].compact.join(' ').gsub(/\\(.)/, '\1')
+            counter = "(#{n}/#{section['of']})"
+            expected = section['style'] == 'before_period' ? "#{line.delete_suffix('.')} #{counter}." : "#{line} #{counter}"
+            label = "#{section['name']} step #{index + 1} (#{line.inspect})"
+
+            expect(keys.each_index.select { |key| keys[key].match?(line) }).to eq([index]), label
+            expect(TextSubs::Engine.apply(keys.zip(subs.map(&:last)).to_h, line)).to eq(expected), label
+            checked += 1
+          end
+        end
+        expect(ladders.size).to be >= 25
+        expect(checked).to be > 200
       end
     end
   end
