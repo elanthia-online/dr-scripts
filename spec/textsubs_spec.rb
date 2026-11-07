@@ -768,6 +768,36 @@ RSpec.describe 'textsubs.lic' do
       }
     end
 
+    # Keys are unanchored and gsub! replaces only what they match, so a
+    # leading '.*' outside every group swallows whatever came before the
+    # message on the line (XML tags, other text), and a value that does not
+    # put the whole match back (\0 or \&) deletes it.
+    it "holds no key in any catalog that starts with a '.*' or '.+' its value drops" do
+      offenders = combinations.flat_map do |combination|
+        build_combination(combination).filter_map do |source, _options, replacement|
+          [combination['guild'], source] if source.match?(/\A\^?\.[*+]/) && !replacement.match?(/\\[0&]/)
+        end
+      end
+      expect(offenders.uniq).to be_empty, -> { "keys that drop the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
+    end
+
+    describe 'the RoC/RoG aura notes' do
+      [['Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame.',
+        ' (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)'],
+       ['You feel a wave of filth wash over you, heralding the renewed health of your internal gauges.',
+        ' (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from ' \
+        'Clerics/Moon Mages. Recast with more mana.)']].each do |message, note|
+        it "keeps the tags before \"#{message[0, 30]}...\" and adds the note after it" do
+          prefix = '<roundTime value="1"/><pushStream id="combat"/>'
+          expect(hooked("#{prefix}#{message}<popStream/>")).to eq("#{prefix}#{message}#{note}<popStream/>\r\n")
+        end
+
+        it "keeps the text before \"#{message[0, 30]}...\" on the same line" do
+          expect(hooked("You feel fine.  #{message}")).to eq("You feel fine.  #{message}#{note}\r\n")
+        end
+      end
+    end
+
     describe 'the Holy-area Divine Outrage warning' do
       note = ' (DO gained from being in a Holy area. Move away to avoid this hit.)'
       ['The back of your neck prickles.', 'You feel judged and hated.', 'Muddled thoughts of paranoia nag at you.',
