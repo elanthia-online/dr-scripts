@@ -194,7 +194,9 @@ RSpec.describe 'textsubs.lic' do
   # builds: any stub on DRStats (the guild predicates), File (run_lic_entry
   # reads the script through it, and the shit-list branch reads a file), or the
   # top-level object (get_settings), and any stub on TextSubs except
-  # client_attached?, which the script reads only inside the hook.
+  # client_attached?, which the script reads only inside the hook, and watch,
+  # which the entry point calls only after it has built the catalog (and which
+  # the before block above stubs for every example alike).
   #
   # @return [Array<String>] one label per stubbed object or TextSubs method;
   #   empty when nothing that catalog building reads is stubbed
@@ -205,7 +207,7 @@ RSpec.describe 'textsubs.lic' do
     return stubbed unless space.registered?(TextSubs)
 
     proxy = space.proxy_for(TextSubs)
-    stubbed + (TextSubs.singleton_methods - [:client_attached?])
+    stubbed + (TextSubs.singleton_methods - %i[client_attached? watch])
               .select { |name| proxy.method_double_if_exists_for_message(name) }
               .map { |name| "TextSubs.#{name}" }
   end
