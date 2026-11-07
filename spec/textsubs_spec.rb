@@ -708,19 +708,69 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'private_textsubs' do
-    it 'adds each private pair, in order, ahead of the built-in catalog' do
+    include_context 'with a front end attached'
+
+    it 'adds each private pair, in order, ahead of the built-in catalog, saying nothing' do
       private_subs = { 'You feel fine' => 'You feel FINE', 'a (\w+) widget' => 'a \1 gadget' }
       catalog = build_catalog('Commoner', 'private_textsubs' => private_subs)
+      expect(displayed_messages).to be_empty
       expect(catalog.first(2)).to eq([['You feel fine', 0, 'You feel FINE'], ['a (\w+) widget', 0, 'a \1 gadget']])
       expect(catalog.drop(2)).to eq(build_catalog('Commoner'))
     end
 
-    it 'puts shit-list entries before private ones' do
-      Dir.mktmpdir('textsubs-shit-list') do |dir|
-        File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
-        settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
-        catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
-        expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+    it 'compiles each private key with a one-second match timeout, and no built-in key' do
+      build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      keys = TextSubs.subs.keys
+      expect(keys.first).to eq(/You feel fine/)
+      expect(keys.first.timeout).to eq(1.0)
+      expect(keys.drop(1).map(&:timeout).uniq).to eq([nil])
+    end
+
+    it 'adds nothing and says nothing when private_textsubs is unset, as base.yaml leaves it (nil)' do
+      catalog = build_catalog('Commoner', 'private_textsubs' => nil)
+      said = displayed_messages.dup
+      expect(DownstreamHook.list).to include('textsub')
+      expect(said).to be_empty
+      expect(catalog).to eq(build_catalog('Commoner'))
+    end
+
+    # Each bad entry sits beside a good one, and the line sent through the
+    # hook holds text the bad key matches, so a bad entry that got in would
+    # either corrupt the line or raise in the hook.
+    {
+      'a blank value (Bob:)'           => [{ 'Bob' => nil }, 'Bob waves.',
+                                           "private_textsubs \"Bob\" is skipped: its replacement is empty (nil); write '' to delete the text it matches."],
+      'an Integer value (health: 100)' => [{ 'health' => 100 }, 'Your health is good.',
+                                           'private_textsubs "health" is skipped: its replacement 100 is an Integer, not a quoted string; quote it in your YAML.'],
+      'a key that is not valid regex'  => [{ '(' => 'y' }, 'You smile (warmly).',
+                                           'private_textsubs "(" is skipped: it is not a valid regex (end pattern with unmatched parenthesis: /(/).'],
+      'a key YAML reads as an Integer' => [{ 100 => 'a hundred' }, 'You count 100 coins.',
+                                           'private_textsubs 100 is skipped: it is an Integer, not a quoted string; quote it in your YAML.'],
+      'an empty key'                   => [{ '' => '-' }, 'Bob waves.',
+                                           'private_textsubs "" is skipped: an empty pattern matches between every two characters of every line.']
+    }.each do |label, (bad, line, warning)|
+      it "skips #{label} with one warning, keeps the good entry first, and keeps the hook on a line the key matches" do
+        catalog = build_catalog('Commoner', 'private_textsubs' => bad.merge('You feel fine' => 'You feel FINE'))
+
+        expect(displayed_messages).to eq([warning])
+        expect(DownstreamHook.list).to include('textsub')
+        expect(run_hooks("#{line} You feel fine.\r\n".b)).to eq("#{line} You feel FINE.\r\n")
+        expect(DownstreamHook.list).to include('textsub')
+        expect(displayed_messages).to eq([warning])
+        expect(catalog.first).to eq(['You feel fine', 0, 'You feel FINE'])
+        expect(catalog.drop(1)).to eq(build_catalog('Commoner'))
+      end
+    end
+
+    {
+      'a String'                             => ['Bob', 'private_textsubs is a String'],
+      'a list, which YAML gives for - lines' => [%w[Bob Alice], 'private_textsubs is an Array']
+    }.each do |label, (value, warning)|
+      it "ignores a private_textsubs that is #{label}, not a mapping, with one warning" do
+        catalog = build_catalog('Commoner', 'private_textsubs' => value)
+        expect(displayed_messages).to eq(["#{warning}, not a mapping of 'old text': 'new text'; it is ignored."])
+        expect(DownstreamHook.list).to include('textsub')
+        expect(catalog).to eq(build_catalog('Commoner'))
       end
     end
   end
@@ -1073,16 +1123,6 @@ RSpec.describe 'textsubs.lic' do
         expect(run_hooks("foo. You feel fine.\r\n".b)).to eq("foo. You feel FINE.\r\n")
         expect(reports_of('foo').size).to eq(1)
         expect(TextSubs.subs.keys).not_to include(/foo/)
-      end
-
-      it 'drops a nil private_textsubs value set ahead of the other subs, as a blank YAML value gives' do
-        build_catalog('Commoner', 'private_textsubs' => { 'Bob' => nil, 'You feel fine' => 'You feel FINE' })
-
-        expect(run_hooks("Bob nods. You feel fine.\r\n".b)).to eq("Bob nods. You feel FINE.\r\n")
-        expect(run_hooks("Bob waves.\r\n".b)).to eq("Bob waves.\r\n")
-        expect(DownstreamHook.list).to include('textsub')
-        expect(reports_of('Bob').size).to eq(1)
-        expect(lich_removals).to be_empty
       end
 
       it 'drops a UTF-8 key on the first binary line with high bytes, keeping the hook and the other subs' do
@@ -3122,6 +3162,55 @@ RSpec.describe 'textsubs.lic' do
     it 'lets an error that is not about the data through' do
       allow(TextSubs::Catalog).to receive(:keyed_entries).and_raise(NoMethodError, 'a bug, not bad data')
       expect { TextSubs.add_catalog(good, context, file: 'f') }.to raise_error(NoMethodError, 'a bug, not bad data')
+    end
+  end
+
+  describe 'TextSubs::Sources::PrivateSubs.entries' do
+    # @param value [Object] a private_textsubs value
+    # @return [Array(Array, Array)] [entries, warnings]
+    def private_entries(value)
+      TextSubs::Sources::PrivateSubs.entries(value)
+    end
+
+    it 'compiles each usable key with the timeout, in order, around the skipped ones' do
+      entries, warnings = private_entries('a(\d)' => 'A\1', 'Bob' => nil, '[' => 'x', 'c' => '')
+      expect(entries).to eq([[/a(\d)/, 'A\1'], [/c/, '']])
+      expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0])
+      expect(warnings.size).to eq(2)
+      expect(warnings.first).to start_with('private_textsubs "Bob" is skipped:')
+      expect(warnings.last).to start_with('private_textsubs "[" is skipped: it is not a valid regex (')
+    end
+
+    it 'answers nil with nothing to add and nothing to say' do
+      expect(private_entries(nil)).to eq([[], []])
+    end
+
+    it 'answers an empty mapping with nothing to add and nothing to say' do
+      expect(private_entries({})).to eq([[], []])
+    end
+
+    it 'names the class of a value that is not a String, with the right article' do
+      _, warnings = private_entries('one' => 1.5, 'two' => :sym, 'three' => ['x'], 'four' => { 'x' => 'y' })
+      expect(warnings).to eq([
+                               'private_textsubs "one" is skipped: its replacement 1.5 is a Float, not a quoted string; quote it in your YAML.',
+                               'private_textsubs "two" is skipped: its replacement :sym is a Symbol, not a quoted string; quote it in your YAML.',
+                               'private_textsubs "three" is skipped: its replacement ["x"] is an Array, not a quoted string; quote it in your YAML.',
+                               "private_textsubs \"four\" is skipped: its replacement #{{ 'x' => 'y' }.inspect} is a Hash, not a quoted string; " \
+                               'quote it in your YAML.'
+                             ])
+    end
+
+    it 'reports a key that is not a String before looking at its value' do
+      expect(private_entries(nil => nil).last).to eq(['private_textsubs nil is skipped: it is a NilClass, not a quoted string; quote it in your YAML.'])
+    end
+
+    it 'returns frozen lists of frozen entries and reads a frozen mapping without changing it' do
+      value = { 'fine' => 'FINE' }.freeze
+      result = private_entries(value)
+      expect(result).to be_frozen
+      expect(result).to all(be_frozen)
+      expect(result.first).to all(be_frozen)
+      expect(value).to eq('fine' => 'FINE')
     end
   end
 
