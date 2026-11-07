@@ -799,6 +799,21 @@ RSpec.describe 'textsubs.lic' do
           .to eq("The punch lands a devastating hit (That'll leave a mark!) (18/23) to the goblin's chest.\r\n")
       end
     end
+
+    # The game wraps the gavel's sound in literal asterisks, so the key has to
+    # escape them: unescaped, ' *' and 'D*' are quantifiers.
+    describe 'the Thief (13/13) gavel warning' do
+      gavel = "the heavy *THUD* of a judge's gavel echoes through your mind"
+
+      it 'labels the line with the literal *THUD* (13/13)' do
+        expect(hooked("Glancing about, #{gavel}.", guild: 'Thief')).to eq("Glancing about, #{gavel} (13/13).\r\n")
+      end
+
+      it 'leaves the line alone when the asterisks are missing' do
+        line = "Glancing about, the heavy THUD of a judge's gavel echoes through your mind."
+        expect(hooked(line, guild: 'Thief')).to eq("#{line}\r\n")
+      end
+    end
   end
 
   describe 'reference-engine oracle' do

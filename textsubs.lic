@@ -1047,7 +1047,7 @@ if DRStats.thief?
   TextSubs.add('it\'s somewhat of a long shot\.', 'it\'s somewhat of a long shot (10/13).')
   TextSubs.add('you\'re pretty sure you\'ll be caught\.', 'you\'re pretty sure you\'ll be caught (11/13).')
   TextSubs.add('the shopkeep is paying far too much attention to it\.', 'the shopkeep is paying far too much attention to it (12/13).')
-  TextSubs.add('the heavy *THUD* of a judge\'s gavel echoes through your mind\.', 'the heavy *THUD* of a judge\'s gavel echoes through your mind (13/13).')
+  TextSubs.add('the heavy \*THUD\* of a judge\'s gavel echoes through your mind\.', 'the heavy *THUD* of a judge\'s gavel echoes through your mind (13/13).')
 
   TextSubs.add('shouldn\'t really affect you\.', 'shouldn\'t really affect you (1/6).')
   TextSubs.add('hinders your chances slightly\.', 'hinders your chances slightly (2/6).')
