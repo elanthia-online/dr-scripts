@@ -21,16 +21,10 @@ RSpec.describe ShitListRecorder do
     $running_scripts << 'textsubs'
   end
 
-  after { $running_scripts.delete('textsubs') }
-
   # Runs the script with the arguments as typed.
   def shit_list(*argv)
     $script_vars = [argv.join(' '), *argv]
     run_lic_entry('shit-list.lic', 'ShitListRecorder')
-  end
-
-  def restarted_textsubs?
-    $stopped_scripts == ['textsubs'] && $started_scripts == [['textsubs']]
   end
 
   describe ';shit-list rem' do
@@ -40,7 +34,8 @@ RSpec.describe ShitListRecorder do
       shit_list('rem', 'bob')
 
       expect(File.read(list_file)).to eq("quimble, rude\n")
-      expect(restarted_textsubs?).to be(true)
+      expect($stopped_scripts).to eq(['textsubs'])
+      expect($started_scripts).to eq([['textsubs']])
     end
 
     it 'stops textsubs before starting it again, with a pause between' do
@@ -100,7 +95,8 @@ RSpec.describe ShitListRecorder do
       shit_list('clear', 'confirm')
 
       expect(list_at_start).to eq('')
-      expect(restarted_textsubs?).to be(true)
+      expect($stopped_scripts).to eq(['textsubs'])
+      expect($started_scripts).to eq([['textsubs']])
     end
   end
 
@@ -109,7 +105,8 @@ RSpec.describe ShitListRecorder do
       shit_list('add', 'bob', 'stole my kill')
 
       expect(File.read(list_file)).to start_with('bob, ')
-      expect(restarted_textsubs?).to be(true)
+      expect($stopped_scripts).to eq(['textsubs'])
+      expect($started_scripts).to eq([['textsubs']])
     end
 
     it 'leaves textsubs alone when the name is already listed' do
