@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.10'
+  VERSION = '2026.11.07.11'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2764,9 +2764,14 @@ class TaskMaster
   end
 
   # Leaves the item's instructions in hand, asking the taskmaster for a fresh
-  # set only when no usable set is carried: none at all, or one with fewer
-  # uses than items owed (each item takes one study). Sets written for
-  # someone else are thrown away on the way, up to MAX_CARRIED_SETS.
+  # set only when no usable set is carried: none at all, or none with as many
+  # uses as items owed (each item takes one study). Every set carried is
+  # read, up to MAX_CARRIED_SETS, not only the first: a replacement sits in
+  # front of the task's own set, and once it ran short the set behind it was
+  # never read, though it had a use for each item owed (a 1-use replacement
+  # in front of the task's 2-use set, 2 ropes owed, stopped with "Already
+  # asked", 2026-11-07). Sets written for someone else are thrown away on
+  # the way.
   #
   # Nezhiri counts doses, and one study makes NEZHIRI_DOSES_PER_CRAFT of
   # them, so her sets need a use per craft still to make, not per dose. Her
@@ -2781,25 +2786,31 @@ class TaskMaster
   def ensure_instructions(item, owed)
     name = "#{item} instructions"
     uses_needed = @npc == 'nezhiri' ? nezhiri_crafts(owed) : owed
+    # A craft that stopped after its study leaves the set in hand, where the
+    # gets below would never look.
+    DRCC.stow_crafting_item(name, @bag, nil) if DRCI.in_hands?(name)
+    most = nil
+    put_back = 0
     sets = 0
-    while sets < MAX_CARRIED_SETS && DRCI.get_item?(name, @bag)
+    while sets < MAX_CARRIED_SETS && DRCI.get_item?(put_back.zero? ? name : "#{$ORDINALS[put_back]} #{name}", @bag)
       sets += 1
       reply = DRC.bput("read my #{name}", INSTRUCTION_USES, FOREIGN_INSTRUCTIONS, /What were you referring/)
       if reply.match?(FOREIGN_INSTRUCTIONS)
-        # Never usable, and put back it would be the first set picked up
-        # next time: bin it and look at the next set carried.
+        # Never usable: bin it rather than read it again on every run.
         DRC.message("These #{name} were written for someone else; throwing them away.")
         next if DRCI.dispose_trash(name, @worn_trashcan, @worn_trashcan_verb)
-      elsif reply[INSTRUCTION_USES, 1].to_i >= uses_needed
-        return
+      elsif (uses = reply[INSTRUCTION_USES, 1])
+        return if uses.to_i >= uses_needed
+
+        most = [most.to_i, uses.to_i].max
       end
 
-      # Put the short, unreadable or unbinnable set back so only the new one
-      # is in hand.
+      # A set put back goes in front of the others (a GET takes the set put
+      # away last), so the next one unread comes after every set put back.
       DRCC.stow_crafting_item(name, @bag, nil)
-      break
+      put_back += 1
     end
-    request_replacement(item)
+    request_replacement(item, needed: uses_needed, most: most)
   end
 
   # READ reply for instructions written for another character, which can
@@ -2830,13 +2841,17 @@ class TaskMaster
   # again.
   #
   # @param item [String] the task item's noun
+  # @param needed [Integer, nil] uses the task still needs, for the stop
+  #   message
+  # @param most [Integer, nil] the most uses left on a set carried; nil when
+  #   no set's uses were read
   # @return [void]
   # @raise [SystemExit] when instructions were already requested for this
   #   task, or this request got none
-  def request_replacement(item)
+  def request_replacement(item, needed: nil, most: nil)
     UserVars.taskmaster_replacements ||= {}
     if UserVars.taskmaster_replacements[@npc] == item
-      DRC.message("Already asked #{@npc} for #{item} instructions on this task, and they were used up again. Stopping instead of asking again; check why the #{item}s aren't being made.")
+      DRC.message("Already asked #{@npc} for #{item} instructions on this task, and #{carried_uses(needed, most)}. Stopping instead of asking again; check why the #{item}s aren't being made.")
       exit
     end
     reply = get_instructions(item)
@@ -2848,6 +2863,18 @@ class TaskMaster
     said = reply.empty? ? 'no answer' : "\"#{reply}\""
     DRC.message("Asked #{@npc} for #{item} instructions, but none were handed over (#{said}). That does not count as this task's one replacement. Stopping; the next run asks again.")
     exit
+  end
+
+  # What the sets carried had, for the "Already asked" stop.
+  #
+  # @param needed [Integer, nil] uses the task still needs
+  # @param most [Integer, nil] the most uses left on a set carried
+  # @return [String]
+  def carried_uses(needed, most)
+    return 'they were used up again' unless needed
+
+    best = most ? "the best has #{most}" : 'you carry none with a use left'
+    "no set you carry has the #{needed} use#{needed == 1 ? '' : 's'} still needed (#{best})"
   end
 
   # Whether a set of instructions came from the taskmaster: the reply says she

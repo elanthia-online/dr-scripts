@@ -1341,8 +1341,10 @@ RSpec.describe TaskMaster do
         allow(DRCC).to receive(:stow_crafting_item) { |name, *_| events << [:stowed, name] }
         allow(DRCI).to receive(:exists?).and_return(false)
         allow(DRCI).to receive(:get_item?) do |name, _bag|
+          # One set at most: a get by ordinal ("second rope instructions")
+          # finds none.
           if name.end_with?('instructions')
-            !uses.nil?
+            name == 'rope instructions' && !uses.nil?
           elsif bag_items.positive?
             bag_items -= 1
             true
@@ -1445,7 +1447,8 @@ RSpec.describe TaskMaster do
           events = resume(owed: 3, uses: nil)
           expect(events).not_to include(:asked_for_instructions)
           expect(events).not_to include([:make, 'rope', 3])
-          expect(DRC).to have_received(:message).with(/Already asked zasele for rope instructions/)
+          expect(DRC).to have_received(:message)
+            .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (you carry none with a use left). Stopping instead of asking again; check why the ropes aren't being made.")
         end
 
         it 'still asks when the earlier request was for a different item' do
@@ -1661,7 +1664,7 @@ RSpec.describe TaskMaster do
           tm.ensure_instructions('rope', 2)
 
           expect(DRCC).not_to have_received(:stow_crafting_item)
-          expect(tm).to have_received(:request_replacement).with('rope')
+          expect(tm).to have_received(:request_replacement).with('rope', needed: 2, most: nil)
         end
 
         it 'uses a good set carried behind a foreign one, asking for nothing' do
@@ -1673,13 +1676,14 @@ RSpec.describe TaskMaster do
           expect(tm).not_to have_received(:request_replacement)
         end
 
-        it 'puts a foreign set back when the trash will not take it, and asks once' do
+        it 'puts each foreign set back when the trash will not take it, reads the next one, and asks once' do
           tm = carrying([foreign, foreign])
           allow(DRCI).to receive(:dispose_trash).and_return(false)
 
           tm.ensure_instructions('rope', 2)
 
-          expect(DRCC).to have_received(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).once
+          expect(DRCI).to have_received(:get_item?).with('second rope instructions', 'duffel bag')
+          expect(DRCC).to have_received(:stow_crafting_item).with('rope instructions', 'duffel bag', nil).twice
           expect(tm).to have_received(:request_replacement).once
         end
 
@@ -1691,6 +1695,98 @@ RSpec.describe TaskMaster do
 
           expect(DRCI).to have_received(:dispose_trash).exactly(TaskMaster::MAX_CARRIED_SETS).times
           expect(tm).to have_received(:request_replacement).once
+        end
+      end
+
+      # A replacement goes in the bag in front of the task's own set. Once it
+      # ran short, the set behind it was never read, though it had a use for
+      # each item owed: a 1-use replacement in front of the task's 2-use set,
+      # 2 ropes owed, stopped with "Already asked" (2026-11-07).
+      describe 'several sets carried' do
+        # The bag as the game keeps it, each set given as its uses left, or
+        # :foreign for one written for someone else, which the trash takes: a
+        # GET takes the set at the front, or by ordinal the one that many
+        # places in ("get my second rope instructions from my duffel bag"),
+        # and a set put back goes to the front (the next GET took the set put
+        # away last, 2026-11-07). With two sets held, READ reads the first one
+        # taken (which one the game reads is not in the logs).
+        def carried(bag, held: [])
+          tm = reader
+          world = { bag: bag.dup, hands: held.dup }
+          allow(DRCI).to receive(:in_hands?) { |name| name == 'rope instructions' && !world[:hands].empty? }
+          allow(DRCI).to receive(:get_item?) do |name, _bag|
+            ordinal = name[/\A(\w+) rope instructions\z/, 1]
+            index = ordinal ? $ORDINALS.index(ordinal) : 0
+            next false if world[:hands].size == 2 || index.nil? || index >= world[:bag].size
+
+            world[:hands] << world[:bag].delete_at(index)
+            true
+          end
+          allow(DRCC).to receive(:stow_crafting_item) do
+            world[:bag].unshift(world[:hands].shift) unless world[:hands].empty?
+            true
+          end
+          allow(DRCI).to receive(:dispose_trash) { !world[:hands].shift.nil? }
+          game('read my rope instructions' => lambda do |*|
+            next "You can't read the ink printed on the rope instructions.  They were written by or for someone else." if world[:hands].first == :foreign
+
+            "These instructions appear to be very fragile and will wear out quickly when studied.  They have only #{world[:hands].first} uses remaining."
+          end)
+          [tm, world]
+        end
+
+        it "uses the task's set carried behind a short replacement, asking for nothing" do
+          tm, world = carried([1, 2])
+          expect(tm).not_to receive(:request_replacement)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCI).to have_received(:get_item?).with('second rope instructions', 'duffel bag')
+          expect(world).to eq(bag: [1], hands: [2])
+        end
+
+        # Review of #7988: a binned set leaves the bag, so it must not move the
+        # ordinal on. Counted, the next get asked for a third set that was not
+        # there, missed the good one behind and asked Zasele again.
+        it 'reads on past a short set and a binned foreign set to the good set behind them' do
+          tm, world = carried([1, :foreign, 2])
+          expect(tm).not_to receive(:request_replacement)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCI).to have_received(:dispose_trash).once
+          expect(DRCI).to have_received(:get_item?).with('second rope instructions', 'duffel bag').twice
+          expect(DRCI).not_to have_received(:get_item?).with('third rope instructions', 'duffel bag')
+          expect(world).to eq(bag: [1], hands: [2])
+        end
+
+        it 'puts a set left in hand in the bag first, so it is read with the rest' do
+          tm, world = carried([1], held: [2])
+          expect(tm).not_to receive(:request_replacement)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(world).to eq(bag: [1], hands: [2])
+        end
+
+        it 'reads every set, then asks with the most uses seen, when all of them run short' do
+          tm, world = carried([1, 1, 0])
+          allow(tm).to receive(:request_replacement)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(tm).to have_received(:request_replacement).with('rope', needed: 2, most: 1)
+          expect(world).to eq(bag: [0, 1, 1], hands: [])
+        end
+
+        it 'says in the stop how many uses the best set has and how many are needed' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          tm, = carried([1, 2])
+
+          expect { tm.ensure_instructions('rope', 3) }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message)
+            .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (the best has 2). Stopping instead of asking again; check why the ropes aren't being made.")
         end
       end
 
@@ -5499,9 +5595,12 @@ RSpec.describe TaskMaster do
           tm.ensure_instructions('moisturizer', doses)
           game.timeline
         end
-        expect(outcomes).to eq([['** DRCI.get_item?("moisturizer instructions", "duffel bag")', '>> read my moisturizer instructions'],
-                                ['** DRCI.get_item?("moisturizer instructions", "duffel bag")', '>> read my moisturizer instructions',
-                                 '** DRCC.stow_crafting_item("moisturizer instructions", "duffel bag", nil)', '>> ask nezhiri for instructions']])
+        # With 7 doses the short set goes back, and the bag holds no second set.
+        expect(outcomes).to eq([['** DRCI.in_hands?("moisturizer instructions")', '** DRCI.get_item?("moisturizer instructions", "duffel bag")',
+                                 '>> read my moisturizer instructions'],
+                                ['** DRCI.in_hands?("moisturizer instructions")', '** DRCI.get_item?("moisturizer instructions", "duffel bag")',
+                                 '>> read my moisturizer instructions', '** DRCC.stow_crafting_item("moisturizer instructions", "duffel bag", nil)',
+                                 '** DRCI.get_item?("second moisturizer instructions", "duffel bag")', '>> ask nezhiri for instructions']])
       end
 
       it 'counts the crafts as doses over six, rounded up, and none for no doses' do
