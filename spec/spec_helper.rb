@@ -206,8 +206,10 @@ end
 # with run_lic_entry to drive a restart the way Lich runs one.
 #
 # Methods the body defines replace the ones it defined before, and with them
-# any RSpec stub of those methods active at the time, so call it before an
-# example stubs the class.
+# any RSpec stub of those methods, which RSpec could then not stub again in
+# the same example. So it first ends every RSpec stub on the class, a stub
+# made by a before hook included, and an example stubs again, after it, what
+# the rest of the example needs stubbed.
 #
 # @param filename [String] the .lic, relative to the repo root
 # @param class_name [String] the class whose body runs again
@@ -217,6 +219,8 @@ end
 def reload_lic_class(filename, class_name)
   raise "reload_lic_class: load #{class_name} with load_lic_class before reloading it" unless Object.const_defined?(class_name)
 
+  klass = Object.const_get(class_name)
+  RSpec::Mocks.space.proxy_for(klass).reset if RSpec::Mocks.space.registered?(klass)
   eval_lic_definition(filename, 'class', class_name)
 end
 

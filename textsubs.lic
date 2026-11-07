@@ -14,7 +14,8 @@ no_kill_all
 # then registers a 'textsub' DownstreamHook (persist: false, so Lich removes it
 # when the script ends) that hands every server line to apply while a front
 # end is attached. Until the install, apply serves the empty catalog the class
-# body installed when the start evaluated it.
+# body installed when the start evaluated it. The script then waits in watch,
+# which ends it once that hook is gone.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
@@ -435,6 +436,30 @@ class TextSubs
     true
   end
   private_class_method :drop
+
+  # Keeps the script alive exactly as long as its hook is registered, so
+  # ;list and Script.running?('textsubs') tell the truth: Lich removes a
+  # hook that raises (and another script may remove it by name), and a
+  # script still running without its hook would never be restarted by the
+  # helpers that start textsubs only when it is not running.
+  #
+  # The script reads no game lines itself, so it stops Lich from buffering
+  # them for it, then checks the hook list every interval seconds. Lich
+  # kills the script during a pause as it would during any wait.
+  #
+  # @param hook [String] the DownstreamHook name to watch
+  # @param script [#want_downstream=] the running script
+  # @param interval [Numeric] seconds between checks
+  # @return [nil] once hook is no longer registered, after saying so
+  # @example The last line of the entry point
+  #   TextSubs.watch('textsub') # returns when the hook goes, ending the script
+  def self.watch(hook, script: Script.current, interval: 5)
+    script.want_downstream = false
+    pause(interval) while DownstreamHook.list.include?(hook)
+    echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
+         "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
+    nil
+  end
 
   # The matching engine behind TextSubs.apply, kept apart from the catalog so
   # it can run on any ordered Hash of keys.
@@ -1568,4 +1593,6 @@ end
 # re-registered 'textsub' keeps its hook when an older one dies.
 DownstreamHook.add('textsub', action, persist: false)
 
-clear until script.gets.nil?
+# Runs until the hook is gone, then ends the script, so restart helpers see
+# that textsubs is no longer running.
+TextSubs.watch('textsub')

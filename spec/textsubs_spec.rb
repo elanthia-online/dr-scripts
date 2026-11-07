@@ -120,9 +120,14 @@ RSpec.describe 'textsubs.lic' do
   # Every example starts as a fresh install: get_data('textsubs') answers with
   # the shipped file, as an OpenStruct of its top-level keys like lich-5's, and
   # SCRIPT_DIR points nowhere, so there is no data/custom copy.
+  #
+  # The entry point ends in TextSubs.watch, which waits as long as the
+  # 'textsub' hook is registered: stubbed here so run_lic_entry returns with
+  # the hook still in place. 'TextSubs.watch' runs the real one.
   before do
     stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
     $test_data[:textsubs] = OpenStruct.new(shipped_catalog)
+    allow(TextSubs).to receive(:watch)
   end
 
   # Each key's tier, as the real TokenIndex.tier gave it the first time any
@@ -935,6 +940,40 @@ RSpec.describe 'textsubs.lic' do
       expect(run_hooks("You pick some nilos.\r\n".b)).to eq("You pick some nilos.\r\n")
     end
 
+    it "ends by watching 'textsub', once, after the hook is registered" do
+      events = []
+      allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, *args, **options|
+        events << [:hook, name]
+        original.call(name, *args, **options)
+      end)
+      allow(TextSubs).to receive(:watch) { |hook, **options| events << [:watch, hook, options] }
+
+      build_catalog('Commoner')
+
+      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', {}]])
+    end
+
+    it 'ends the script, saying so, once Lich removes the hook because it raised' do
+      allow(TextSubs).to receive(:watch).and_call_original
+      allow(TextSubs).to receive(:apply).and_raise(ArgumentError, 'invalid byte sequence')
+      pauses = 0
+      # Each poll sends a line through the hooks, as the game would between
+      # two polls: the first one raises, and Lich removes the hook.
+      allow(TextSubs).to receive(:pause) do
+        pauses += 1
+        raise 'TextSubs.watch kept waiting after the hook was gone' if pauses > 3
+
+        run_hooks("You feel fine.\r\n".b)
+      end
+
+      build_catalog('Commoner')
+
+      expect(pauses).to eq(1)
+      expect(DownstreamHook.list).not_to include('textsub')
+      expect(displayed_messages.grep(/--- Lich: DownstreamHook: invalid byte sequence/).size).to eq(1)
+      expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+    end
+
     # DownstreamHook.run removes a hook that raises, for good, and every sub
     # goes with it. A sub that raises is the one thing dropped instead.
     describe 'a sub that raises' do
@@ -1006,13 +1045,15 @@ RSpec.describe 'textsubs.lic' do
 
   # Lich evaluates the whole of textsubs.lic on every start, so the class body
   # runs again (reload_lic_class) before the entry point. That redefines every
-  # TextSubs method, and with them any stub of one, so these examples stub
-  # TextSubs only after it.
+  # TextSubs method, and reload_lic_class ends every stub on TextSubs first,
+  # so these examples stub TextSubs only after it: watch again, as the
+  # file-wide before hook did, so the next start returns.
   describe 'a start in Lich, which evaluates the class body before the entry point' do
     it 'leaves a hook of the run before passing every line through untouched until the new catalog is installed' do
       build_catalog('Ranger', 'herb_textsubs' => true)
       expect(TextSubs.apply(+"You pick some nilos.\r\n")).to eq("You pick some nilos (abdo-EW).\r\n")
       reload_lic_class('textsubs.lic', 'TextSubs')
+      allow(TextSubs).to receive(:watch)
       allow(TextSubs).to receive(:client_attached?).and_return(true)
       lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
       seen = []
@@ -1042,6 +1083,7 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.subs).not_to be_empty
 
       reload_lic_class('textsubs.lic', 'TextSubs')
+      allow(TextSubs).to receive(:watch)
       emptied = TextSubs.generation
       expect(TextSubs.subs).to eq({})
       expect(emptied).to eq(first + 1)
@@ -1224,6 +1266,78 @@ RSpec.describe 'textsubs.lic' do
       rescue ArgumentError
         run_hooks("You feel fine.\r\n".b)
       end.to raise_error(hook_error, 'from the hook')
+    end
+  end
+
+  # The poll seam is stubbed: DownstreamHook.list where a sequence of lists
+  # is wanted, and pause everywhere, counting calls so a watch that never
+  # returns fails instead of hanging the run.
+  describe 'TextSubs.watch' do
+    let(:script) { OpenStruct.new(want_downstream: true) }
+    let(:pauses) { [] }
+
+    before do
+      allow(TextSubs).to receive(:watch).and_call_original
+      allow(TextSubs).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+      end
+    end
+
+    it 'returns nil once the hook leaves DownstreamHook.list, pausing the interval between checks' do
+      allow(DownstreamHook).to receive(:list).and_return(%w[other textsub], %w[textsub other], %w[other])
+
+      expect(TextSubs.watch('textsub', script: script, interval: 7)).to be_nil
+      expect(pauses).to eq([7, 7])
+      expect(DownstreamHook).to have_received(:list).exactly(3).times
+    end
+
+    it 'pauses five seconds by default' do
+      allow(DownstreamHook).to receive(:list).and_return(%w[textsub], [])
+      TextSubs.watch('textsub', script: script)
+      expect(pauses).to eq([5])
+    end
+
+    it 'stops Lich buffering game lines for the script before it waits' do
+      allow(DownstreamHook).to(receive(:list).and_wrap_original do
+        expect(script.want_downstream).to be(false)
+        []
+      end)
+      TextSubs.watch('textsub', script: script)
+      expect(script.want_downstream).to be(false)
+    end
+
+    it 'says the hook is gone, and how to start textsubs again, when it returns' do
+      allow(DownstreamHook).to receive(:list).and_return([])
+      TextSubs.watch('textsub', script: script)
+      expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+      expect(displayed_messages.last).to end_with('Start it again with ;textsubs.')
+    end
+
+    it 'returns at once, without pausing, when the hook was never registered' do
+      allow(DownstreamHook).to receive(:list).and_return(%w[textsubs textsub-old Textsub])
+      expect(TextSubs.watch('textsub', script: script)).to be_nil
+      expect(pauses).to be_empty
+    end
+
+    it 'keeps waiting while the real hook list holds the hook, and returns the poll after it is removed' do
+      DownstreamHook.add('textsub', proc { |line| line }, persist: false)
+      allow(TextSubs).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+
+        DownstreamHook.remove('textsub') if pauses.size == 3
+      end
+
+      TextSubs.watch('textsub', script: script)
+      expect(pauses.size).to eq(3)
+    end
+
+    it 'reads the running script from Script.current by default' do
+      allow(Script).to receive(:current).and_return(script)
+      allow(DownstreamHook).to receive(:list).and_return([])
+      TextSubs.watch('textsub')
+      expect(script.want_downstream).to be(false)
     end
   end
 
