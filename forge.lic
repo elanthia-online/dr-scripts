@@ -108,7 +108,10 @@ class Forge
   # which has text inside its tags. Leading tags and whole <inv> elements
   # (text, no tags, inside) are allowed before the text, but no other text,
   # so player speech, whispers and ESP (a name and a quote first) can't fake
-  # it. Every stow <inv> element in the raw logs holds text only.
+  # it. In the legacy stream every stow <inv> element holds text only. Under
+  # the Saga stream (Lich's default since 5.23.0) the items carry <a exist>
+  # links, which DRParser strips before Flags match (DRParser.match_line,
+  # lich-5 #1702, also 5.23.0), so the elements are text only here too.
   # Captures the container the game names, without the period.
   # @return [Regexp]
   INGOT_RESTOW_PATTERN = %r{^(?:<inv\b[^>]*>[^<]*</inv>|<[^>]+>)*You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your ([^.]+)\.}

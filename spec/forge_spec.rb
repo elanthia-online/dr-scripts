@@ -1586,6 +1586,17 @@ RSpec.describe Forge do
         expect(Flags['ingot-restow']).to be(false)
       end
 
+      # The Saga stream's stow feed (lich-5 spec/fixtures/streams/
+      # dr_saga_login.xml) links each item: <inv id='stow'> a <a exist="198537323"
+      # noun="dagesse">kertig dagesse ...</a></inv>. Flags see it after
+      # DRParser.match_line has stripped the <a> tags, as below; the pattern
+      # relies on that strip.
+      it 'sets ingot-restow behind a Saga stow feed once its links are stripped' do
+        saga_feed = %(<clearContainer id="stow"/><inv id='stow'>In the pack:</inv><inv id='stow'> a kertig dagesse fitted with a pattern welded hilt guard</inv><inv id='stow'> a spiderweb jasper</inv><inv id='stow'> some blunt-tipped bolts with black chevrons</inv>)
+        deliver("#{saga_feed}#{restow_line}")
+        expect(Flags['ingot-restow'][1]).to eq('pack')
+      end
+
       it "captures a stow container's whole name, and nothing after the period" do
         deliver(restow_line.sub('your pack.', "your traveler's pack.  Following solid heating in the forge, you fold the metal."))
         expect(Flags['ingot-restow'][1]).to eq("traveler's pack")
