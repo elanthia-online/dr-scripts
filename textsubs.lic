@@ -1715,6 +1715,31 @@ class TextSubs
       template.gsub(/\{(\w+)\}/) { values.fetch(Regexp.last_match(1), Regexp.last_match(0)) }
     end
 
+    # Checks the pattern and replacement templates of a scroll_labels or
+    # spell_recognition section.
+    #
+    # @param section [Hash] a template section
+    # @param placeholder [String] the placeholder its pattern must hold
+    # @return [nil]
+    # @raise [ArgumentError] when a template is not a String or the pattern
+    #   lacks the placeholder
+    def self.check_templates(section, placeholder)
+      check_strings(section, %w[pattern replacement])
+      check_template(section, 'pattern', placeholder)
+    end
+
+    # @param section [Hash] a checked template section
+    # @param values [Hash{String=>String}] each placeholder and its text
+    # @return [Array(String, String)] the section's pattern and replacement,
+    #   both filled with values
+    # @example
+    #   section = { 'pattern' => '^(It is labeled) "{name}."', 'replacement' => '\1 ({label})' }
+    #   TextSubs::Generators.fill_pair(section, 'name' => 'Burden', 'label' => 'Analogous Patterns')
+    #   # => ["^(It is labeled) \"Burden.\"", "\\1 (Analogous Patterns)"]
+    def self.fill_pair(section, values)
+      [fill(section['pattern'], values), fill(section['replacement'], values)]
+    end
+
     # The 'pairs' kind: subs written out as they apply.
     #
     # @example
@@ -1794,7 +1819,7 @@ class TextSubs
         guild = context.guild
         return [] if guild.nil?
 
-        link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
+        link = TextSubs.wiki_link(LinkBuilder.page(section['prelink'], guild, section['poslink']), guild)
         [[section['pattern'], section['preresult'] + link + section['posresult']]]
       end
     end
@@ -1927,8 +1952,7 @@ class TextSubs
       #   spell name nor an override, a name is not in spells or has no label,
       #   a name is listed twice, or a pattern does not compile
       def self.check(section, spells)
-        Generators.check_strings(section, %w[pattern replacement])
-        Generators.check_template(section, 'pattern', 'name')
+        Generators.check_templates(section, 'name')
         names = section['names']
         raise ArgumentError, "'names' must be a non-empty list" unless names.is_a?(Array) && !names.empty?
 
@@ -1970,10 +1994,7 @@ class TextSubs
       # @param labelled [Array<Array(String, String)>] [name, label] pairs
       # @return [Array<Array(String, String)>] one sub per pair
       def self.subs(section, labelled)
-        labelled.map do |name, label|
-          values = { 'name' => name, 'label' => label }
-          [Generators.fill(section['pattern'], values), Generators.fill(section['replacement'], values)]
-        end
+        labelled.map { |name, label| Generators.fill_pair(section, 'name' => name, 'label' => label) }
       end
       private_class_method :labels, :override?, :subs
     end
@@ -2009,8 +2030,7 @@ class TextSubs
       #   give different labels, a name is listed twice, or a pattern does not
       #   compile
       def self.check(section, spells)
-        Generators.check_strings(section, %w[pattern replacement])
-        Generators.check_template(section, 'pattern', 'names')
+        Generators.check_templates(section, 'names')
         groups = section['groups']
         raise ArgumentError, "'groups' must be a non-empty list" unless groups.is_a?(Array) && !groups.empty?
 
@@ -2028,8 +2048,7 @@ class TextSubs
       # @return [Array<Array(String, String)>] one sub per group, in list order
       def self.expand(section, _context, spells)
         section['groups'].map do |group|
-          values = { 'names' => group.join('|'), 'label' => spells.recognition_label(group.first) }
-          [Generators.fill(section['pattern'], values), Generators.fill(section['replacement'], values)]
+          Generators.fill_pair(section, 'names' => group.join('|'), 'label' => spells.recognition_label(group.first))
         end
       end
 
@@ -2196,8 +2215,17 @@ class TextSubs
     #   TextSubs::LinkBuilder.pair('Fae Arts', pretext: '^', postext: ':', prelink: 'Category:', poslink: '_spellbook')
     #   # => ["(^)(Fae Arts)(:)", "\\1<a href=\"https://elanthipedia.play.net/Category:Fae_Arts_spellbook\">Fae Arts</a>\\3"]
     def self.pair(text, pretext: '', postext: '', prelink: '', poslink: '', preresult: '\1', posresult: '\3')
-      page = prelink + text.gsub(' ', '_') + poslink
-      ["(#{pretext})(#{text})(#{postext})", preresult + TextSubs.wiki_link(page, text) + posresult]
+      ["(#{pretext})(#{text})(#{postext})", preresult + TextSubs.wiki_link(page(prelink, text, poslink), text) + posresult]
+    end
+
+    # @param prelink [String] prefix of the page path
+    # @param text [String] the page's name, spaces turned into underscores
+    # @param poslink [String] suffix of the page path
+    # @return [String] the page path after the Elanthipedia root
+    # @example
+    #   TextSubs::LinkBuilder.page('Category:', 'Moon Mage', '_spells') # => "Category:Moon_Mage_spells"
+    def self.page(prelink, text, poslink)
+      prelink + text.tr(' ', '_') + poslink
     end
   end
 
