@@ -34,7 +34,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.8'
+  VERSION = '2026.11.07.9'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -766,8 +766,13 @@ class TaskMaster
 
   # Buys the metal for a forging task and returns the metal to forge with.
   # Items of exactly one ingot each need no smelting; anything else gets
-  # enough bronze ingots for the whole task, or one steel ingot for small
-  # items, and sets @remainder so trash throws away what is left.
+  # enough bronze ingots for the whole task, or one steel ingot (10 volumes)
+  # when the whole task fits in it (small items, or one item of 6 to 9
+  # volumes), and sets @remainder so trash throws away what is left. A task of
+  # 50 volumes or less that doesn't fit in one steel ingot gets the 50-volume
+  # bronze one: small items used to get one steel ingot whatever the count,
+  # which ran out part way, so forge stopped and the next run bought another
+  # that ran out the same way.
   #
   # @param count [Integer] how many items to make
   # @param volume_per_item [Integer] volumes of metal per item
@@ -785,7 +790,7 @@ class TaskMaster
     elsif count * volume_per_item > 50
       @remainder = (count * volume_per_item) % 100 > 0 ? true : false
       bingots(2)
-    elsif volume_per_item < 5
+    elsif count * volume_per_item <= @stockdata['steel']['stock-volume']
       type = 'steel'
       @remainder = true
       buy_ingots(1, type)

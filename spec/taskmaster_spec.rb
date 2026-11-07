@@ -2020,6 +2020,8 @@ RSpec.describe TaskMaster do
     describe 'Poltu and Bradyn tasks' do
       let(:forging_belt) { { 'name' => 'forging belt', 'items' => [] } }
       let(:engineering_belt) { { 'name' => 'engineering belt', 'items' => [] } }
+      # The real stock table: buy_metal reads the steel ingot's volume from it.
+      let(:shop_stock) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['stock'] }
 
       # Runs the taskmaster's real task method with buying, crafting, repair and
       # disposal stubbed to record their calls, each with the @remainder flag as
@@ -2027,7 +2029,7 @@ RSpec.describe TaskMaster do
       # made: how many items forge_item reports (every one when nil).
       def run_task(npc, item, count, volume_per_item, base, type, remainder: false, made: nil)
         tm = build(settings: { forging_tools: ['forging hammer'], forging_belt: forging_belt, engineering_belt: engineering_belt, shaping_tools: ['wood shaper'] },
-                   remainder: remainder)
+                   remainder: remainder, stockdata: shop_stock)
         calls = []
         %i[buy_ingots bingots buy_rocks buy_stackables forge_item carve_stone carve_bone shape_item repair trash].each do |step|
           allow(tm).to receive(step) { |*step_args| calls << [step, *step_args, tm.instance_variable_get(:@remainder)] }
@@ -2061,8 +2063,17 @@ RSpec.describe TaskMaster do
             [17, 3]  => [[:bingots, 2], 'bronze', true],
             [9, 6]   => [[:bingots, 2], 'bronze', true],
             [1, 51]  => [[:bingots, 2], 'bronze', true],
-            [25, 2]  => [[:buy_ingots, 1, 'steel'], 'steel', true],
-            [3, 4]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [5, 2]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [2, 4]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [1, 1]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [1, 7]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [1, 9]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [2, 6]   => [[:bingots, 1], 'bronze', true],
+            # Small items that don't fit in one 10-volume steel ingot: the
+            # 50-volume bronze one, not a steel ingot that runs out.
+            [11, 1]  => [[:bingots, 1], 'bronze', true],
+            [3, 4]   => [[:bingots, 1], 'bronze', true],
+            [25, 2]  => [[:bingots, 1], 'bronze', true],
             [8, 6]   => [[:bingots, 1], 'bronze', true],
             [3, 6]   => [[:bingots, 1], 'bronze', true],
             [1, 50]  => [[:bingots, 1], 'bronze', true]
@@ -2079,7 +2090,7 @@ RSpec.describe TaskMaster do
           end
 
           it "counts the bag's ingots before it buys any" do
-            tm = build(settings: { forging_tools: [], forging_belt: forging_belt })
+            tm = build(settings: { forging_tools: [], forging_belt: forging_belt }, stockdata: shop_stock)
             order = []
             allow(tm).to receive(:carried_ingots) { order << :count && { 'bronze ingot' => 1, 'steel ingot' => 0 } }
             allow(tm).to receive(:bingots) { order << :buy }
