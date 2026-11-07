@@ -4794,6 +4794,12 @@ RSpec.describe 'textsubs.lic' do
           .to raise_error(ArgumentError, 'section 1 (scale) uses step number(s) 1, 2 more than once')
       end
 
+      it 'names a step number used three times once, beside one used only once' do
+        steps = [[1, 'first'], [2, 'second'], [1, 'again'], [1, 'and again']]
+        expect { ladder_pairs('of' => 5, 'steps' => steps) }
+          .to raise_error(ArgumentError, 'section 1 (scale) uses step number(s) 1 more than once')
+      end
+
       # Two subs with one pattern share one key, so the later one alone
       # survives; and when one step's pattern also matches another step's
       # text, both counters land on that line. Either way a step loses its
