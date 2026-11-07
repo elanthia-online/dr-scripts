@@ -618,15 +618,35 @@ RSpec.describe 'textsubs.lic' do
   # profiles/base.yaml is where a player looks up what a setting does, and
   # what get_settings answers for a key the player has not set, and the
   # script's own header lists the settings it reads. Every key textsubs reads
-  # has to be in both: those the entry point reads by name (settings.<key>)
-  # and those a section's when: gate in the data file names.
+  # has to be in both: those the entry point reads by name (settings.<key>,
+  # settings['<key>'], settings[:<key>] or get_settings.<key>) and those a
+  # section's when: gate in the data file names. Context's own read,
+  # @settings[name], names no key, so the scan passes it by.
   describe 'the settings textsubs reads' do
+    settings_keys_in = lambda do |source|
+      source.scan(/\b(?:get_)?settings(?:\.(\w+)|\[\s*(?:'(\w+)'|"(\w+)"|:(\w+))\s*\])/).flatten.compact.uniq
+    end
     base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
     script_source = File.read(File.expand_path('../textsubs.lic', __dir__))
-    read_by_entry_point = script_source.scan(/\bsettings\.(\w+)/).flatten.uniq
+    read_by_entry_point = settings_keys_in.call(script_source)
     gates = shipped_catalog['textsubs']['sections'].filter_map { |section| section['when'] }
     read_by_gates = gates.flat_map { |gate| gate.values_at('setting', 'setting_off') }.compact.uniq
     read = (read_by_entry_point | read_by_gates).freeze
+
+    it 'finds a key read by method, by string or symbol index, or straight off get_settings, and no other' do
+      source = <<~RUBY
+        a = settings.by_method
+        b = settings['single_quoted']
+        c = settings["double_quoted"]
+        d = settings[:by_symbol]
+        e = get_settings.off_get_settings
+        f = @settings[name]
+        g = TextSubs::Context.new(guild: nil, settings: settings)
+        h = my_settings.not_a_read
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('by_method', 'single_quoted', 'double_quoted', 'by_symbol', 'off_get_settings')
+    end
 
     it 'finds the keys textsubs reads in the script and in the data file' do
       expect([read_by_entry_point, read_by_gates])
