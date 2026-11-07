@@ -12,6 +12,7 @@
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
   task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks)
+  task_bin_metal_from: <container> # before the first metal task (Poltu, Bradyn) of a run, bin every bronze and steel ingot in this container: a one-time sweep of leftover task metal that forge used to leave in the stow container. Bins your own ingots there too; unset it once it says none are left (until then it tries again before each metal task). Ignored when it has the same noun as crafting_container
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
@@ -34,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.7'
+  VERSION = '2026.11.07.11'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -583,7 +584,8 @@ class TaskMaster
   TRASH_CAP = 100
 
   # Throws away what a task leaves over: with @remainder set, every leftover
-  # ingot or piece of stock in the crafting bag.
+  # piece of stock in the crafting bag, or for a metal task only the task's
+  # own leftover ingots (see trash_task_ingots).
   #
   # @param item [String] item noun, unused
   # @param base [String] stock base; ingots go to a different bin
@@ -593,30 +595,175 @@ class TaskMaster
     return unless @remainder
 
     if base == 'ingot'
-      dispose_leftovers("#{type} #{base}", 793)
+      trash_task_ingots("#{type} #{base}")
     else
       dispose_leftovers("#{@stackmap[base].first} #{base}", 14886)
     end
   end
 
+  # The ingots of each metal taskmaster buys, as RUMMAGE lists them.
+  TASK_METAL_INGOTS = ['bronze ingot', 'steel ingot'].freeze
+
+  # How many ingots of each task metal a container (the crafting bag unless
+  # given) holds, from one RUMMAGE /C ingot (asked twice when it goes
+  # unanswered).
+  #
+  # @param from [String] the container
+  # @return [Hash{String => Integer}, nil] e.g. {'bronze ingot' => 2,
+  #   'steel ingot' => 0}; nil when RUMMAGE went unanswered twice
+  def carried_ingots(from = @bag)
+    contents = rummage(from, 'ingot')
+    contents = rummage(from, 'ingot') if contents.to_s.empty?
+    return nil if contents.to_s.empty?
+
+    TASK_METAL_INGOTS.to_h { |name| [name, count_listed(contents, name)] }
+  end
+
+  # Throws away a metal task's own leftover ingots of one metal (see
+  # leftover_ingots), then says once a run when ingots of that metal stay in
+  # the bag: they were there before the metal was bought, so they count as
+  # the player's, and that includes any a stopped run left behind.
+  #
+  # @param stock [String] e.g. 'bronze ingot'
+  # @return [void]
+  def trash_task_ingots(stock)
+    before = @ingots_before&.fetch(stock, nil)
+    now = before && carried_ingots&.fetch(stock, nil)
+    binned = dispose_leftovers(stock, 793, leftover_ingots(before, now))
+    note_kept_ingots(stock, now - binned) if now
+  end
+
+  # How many leftover ingots of a metal are the task's own to throw away:
+  # those the bag holds beyond what it held before the metal was bought
+  # (the player's own), and never more than the task bought (@ingots_bought),
+  # since each ingot bought leaves at most one piece. Without both counts, at
+  # most the ingots the task bought. The pieces go newest first, which spares
+  # the older ones: the game lists a container's newest item first (551 of 556
+  # PUTs in the 2026 logs were listed first by the next RUMMAGE; the other 5
+  # merged into a stack), and GET is taken to get the first listed, which no
+  # log shows either way.
+  #
+  # @param before [Integer, nil] ingots of the metal before buying
+  # @param now [Integer, nil] ingots of the metal after forging
+  # @return [Integer]
+  def leftover_ingots(before, now)
+    bought = @ingots_bought.to_i
+    return bought unless before && now
+
+    (now - before).clamp(0, bought)
+  end
+
+  # Says, once a run, how many ingots of a task metal stay in the bag after a
+  # metal task. They count as the player's (they were there before the metal
+  # was bought), so they are never thrown away, including any a stopped or
+  # crashed run left behind; taskmaster can't tell those from the player's.
+  #
+  # @param stock [String] e.g. 'bronze ingot'
+  # @param kept [Integer] how many stay
+  # @return [void]
+  def note_kept_ingots(stock, kept)
+    return if kept <= 0 || @kept_ingots_noted
+
+    @kept_ingots_noted = true
+    DRC.message("#{kept} #{stock}#{kept == 1 ? ' stays' : 's stay'} in your #{@bag}. They were there before the task bought its metal, so taskmaster keeps them as yours. If any are leftovers from a run that stopped, throw them away by hand.")
+  end
+
   # Takes each piece of stock out of the crafting bag and disposes of it in
   # the given room by the id of the piece in hand, until the bag has none
-  # left or TRASH_CAP pieces are gone. A piece that can't be disposed of goes
-  # back in the bag by its id and ends the loop; one that has left both
-  # hands went in the bin, whatever the reply.
+  # left, `limit` pieces are gone, or TRASH_CAP pieces are gone. A piece that
+  # can't be disposed of goes back in the bag by its id and ends the loop;
+  # one that has left both hands went in the bin, whatever the reply.
   #
   # @param stock [String] e.g. 'burlap cloth' or 'bronze ingot'
   # @param room [Integer] room with the bin
-  # @return [void]
-  def dispose_leftovers(stock, room)
-    TRASH_CAP.times do
-      ref = take_stock_piece(stock, stock.split.last)
+  # @param limit [Integer] most pieces to throw away
+  # @param from [String] the container, the crafting bag unless given
+  # @return [Integer] how many pieces went in the bin
+  def dispose_leftovers(stock, room, limit = TRASH_CAP, from: @bag)
+    binned = 0
+    [limit, TRASH_CAP].min.times do
+      ref = take_stock_piece(stock, stock.split.last, from)
       break unless ref.is_a?(String)
-      next if DRCT.dispose(ref, room) || left_hands?(ref)
 
-      put_back_stock(ref, stock)
+      if DRCT.dispose(ref, room) || left_hands?(ref)
+        binned += 1
+        next
+      end
+
+      put_back_stock(ref, stock, from)
       break
     end
+    binned
+  end
+
+  # With task_bin_metal_from set, throws away every bronze and steel ingot in
+  # that container before the first metal task of a run: leftover task metal
+  # forge used to leave in the stow container, where nothing else looks for
+  # it. It bins the player's own ingots there too, which is why it is a
+  # setting to set once and unset. The sweep stops at the first ingot it
+  # can't throw away, and counts what is left with RUMMAGE: only an empty
+  # container ends it for the run (and says to unset the setting); otherwise
+  # it says so and tries again before the next metal task. A swept ingot
+  # still in hand stops the run before any metal is bought. A container with
+  # the same noun as crafting_container is left alone, as it may be the same
+  # one: the task's leftovers there are thrown away after each task.
+  #
+  # @return [void]
+  # @raise [SystemExit] when a swept ingot is still in hand
+  def bin_stray_ingots
+    container = @settings.task_bin_metal_from.to_s.strip.sub(/\Amy\s+/i, '')
+    return if container.empty? || @stray_ingots_binned
+
+    if same_noun?(container, @bag)
+      @stray_ingots_binned = true
+      DRC.message("task_bin_metal_from (#{container}) has the same noun as your crafting_container (#{@bag}) and may be the same container, so nothing is swept: the task's leftover metal there is thrown away after each task.")
+      return
+    end
+
+    held = hand_ids
+    binned = 0
+    left = nil
+    TASK_METAL_INGOTS.each do |stock|
+      binned += dispose_leftovers(stock, 793, from: container)
+      left = carried_ingots(container)
+      break unless left && left[stock].zero? && (hand_ids - held).empty?
+    end
+    report_sweep(container, binned, left, hand_ids - held)
+  end
+
+  # What bin_stray_ingots says at the end, and whether the sweep is done for
+  # the run: only when RUMMAGE counted no bronze or steel ingot left.
+  #
+  # @param container [String] the swept container
+  # @param binned [Integer] ingots thrown away
+  # @param left [Hash{String => Integer}, nil] carried_ingots of the container
+  # @param stray [Array<String>] ids newly in hand since the sweep began
+  # @return [void]
+  # @raise [SystemExit] when stray is not empty
+  def report_sweep(container, binned, left, stray)
+    swept = "task_bin_metal_from: threw away #{binned} bronze and steel ingot#{binned == 1 ? '' : 's'} from your #{container}"
+    unless stray.empty?
+      DRC.message("#{swept}, but a swept ingot may still be in your hand (#{stray.map { |id| "##{id}" }.join(', ')}). Stopping before buying any metal.")
+      exit
+    end
+
+    if left && left.values.sum.zero?
+      @stray_ingots_binned = true
+      DRC.message("#{swept}; none are left there. Unset it now, or it bins your own ingots there on every run.")
+    else
+      DRC.message("#{swept}, and could not finish (see above, or check that you carry a #{container}). It tries again before the next metal task.")
+    end
+  end
+
+  # Whether two container names have the same noun (the last word; DR's dot
+  # form, "travel.pack", counts as words): such names may be one container.
+  #
+  # @param one [String]
+  # @param other [String]
+  # @return [Boolean]
+  def same_noun?(one, other)
+    noun = ->(name) { name.to_s.downcase.split(/[\s.]+/).reject(&:empty?).last }
+    !noun.call(one).nil? && noun.call(one) == noun.call(other)
   end
 
   # Works one of Poltu's metal tasks.
@@ -666,7 +813,15 @@ class TaskMaster
   end
 
   # A Poltu or Bradyn metal task: buy the metal, forge the items, send the
-  # forging tools for repair and throw away any metal left over.
+  # forging tools for repair and throw away any metal left over. When forging
+  # stops short, the metal is thrown away even on a task of whole ingots (one
+  # per item, which leaves nothing on a full run): the run hands in what was
+  # made and exits, and the next run buys metal for every item still owed,
+  # so unused ingots kept now would only pile up in crafting_container. The
+  # ingots in crafting_container are counted before buying, so the player's
+  # own are not thrown away with the task's (trash_task_ingots), and a short
+  # count after a full run (RUMMAGE unanswered) throws away nothing: the
+  # task's ingots were all used.
   #
   # @param item [String] item noun from the task journal
   # @param count [Integer] how many items to make
@@ -675,16 +830,24 @@ class TaskMaster
   # @param type [String] the task's metal, e.g. 'bronze'
   # @return [void]
   def forge_metal_task(item, count, volume_per_item, base, type)
+    bin_stray_ingots
+    @ingots_before = carried_ingots
     type = buy_metal(count, volume_per_item, type)
-    forge_item(item, count, type)
+    made = forge_item(item, count, type)
+    @remainder = true if made.to_i < count
     repair(@settings.forging_tools, @settings.forging_belt)
     trash(item, base, type)
   end
 
   # Buys the metal for a forging task and returns the metal to forge with.
   # Items of exactly one ingot each need no smelting; anything else gets
-  # enough bronze ingots for the whole task, or one steel ingot for small
-  # items, and sets @remainder so trash throws away what is left.
+  # enough bronze ingots for the whole task, or one steel ingot (10 volumes)
+  # when the whole task fits in it (small items, or one item of 6 to 9
+  # volumes), and sets @remainder so trash throws away what is left. A task of
+  # 50 volumes or less that doesn't fit in one steel ingot gets the 50-volume
+  # bronze one: small items used to get one steel ingot whatever the count,
+  # which ran out part way, so forge stopped and the next run bought another
+  # that ran out the same way.
   #
   # @param count [Integer] how many items to make
   # @param volume_per_item [Integer] volumes of metal per item
@@ -702,7 +865,7 @@ class TaskMaster
     elsif count * volume_per_item > 50
       @remainder = (count * volume_per_item) % 100 > 0 ? true : false
       bingots(2)
-    elsif volume_per_item < 5
+    elsif count * volume_per_item <= @stockdata['steel']['stock-volume']
       type = 'steel'
       @remainder = true
       buy_ingots(1, type)
@@ -2816,12 +2979,13 @@ class TaskMaster
   end
 
   # Buys ingots of one metal from room 8775 and puts each in the crafting
-  # bag.
+  # bag, noting how many in @ingots_bought (see leftover_ingots).
   #
   # @param count [Integer] how many ingots
   # @param type [String] metal, e.g. 'steel'
   # @return [void]
   def buy_ingots(count, type)
+    @ingots_bought = count
     cost = count * @stockdata[type]['stock-value'] + 7500 # 5 gold for the next task, 2500 for repair monies
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
     count.times do
@@ -2832,11 +2996,12 @@ class TaskMaster
 
   # Orders bronze ingot number order from the shop in room 17118 (buy_metal
   # picks 1, 2 or 3 by the task's total volume) and puts it in the crafting
-  # bag.
+  # bag, noting the one ingot in @ingots_bought.
   #
   # @param order [Integer] order number: 1, 2 or 3
   # @return [void]
   def bingots(order)
+    @ingots_bought = 1
     cost = order * 8000 + 7500
     DRCM.ensure_copper_on_hand(cost, @settings, "Crossing")
     DRCT.order_item(17118, order)
@@ -3611,16 +3776,17 @@ class TaskMaster
   #
   # @param stock [String] e.g. 'rat leather'
   # @param noun [String] the stock's noun, e.g. 'leather'
+  # @param from [String] the container, the crafting bag unless given
   # @return [String, Symbol, nil] "#id" of the piece in hand; nil when the
   #   bag has none left (or the get went unanswered); :stuck, after saying
   #   why, when the hands are full or the piece can't be found in hand (a
   #   piece taken out but not found goes back in the bag by its full name)
-  def take_stock_piece(stock, noun)
+  def take_stock_piece(stock, noun, from = @bag)
     before = hand_ids
-    got = DRC.bput("get my #{stock} from my #{@bag}", /^You get/, /^You are already/, /^You're already/,
+    got = DRC.bput("get my #{stock} from my #{from}", /^You get/, /^You are already/, /^You're already/,
                    /^What were you referring to/, /^I could not find/, /^You need a free hand/)
     if got.start_with?('You need a free hand')
-      DRC.message("Both hands are full, so the leftover #{stock} stays in your #{@bag}. Empty your hands to get rid of it.")
+      DRC.message("Both hands are full, so the leftover #{stock} stays in your #{from}. Empty your hands to get rid of it.")
       return :stuck
     end
     return unless got.match?(/^You (get|are already|'re already)/)
@@ -3632,7 +3798,7 @@ class TaskMaster
     id ||= held_stock_id(stock, noun) if got.include?('already')
     return "##{id}" if id
 
-    stock_not_found(stock, got)
+    stock_not_found(stock, got, from)
   end
 
   # Says why a piece of stock can't be thrown away when its id is not in
@@ -3642,17 +3808,18 @@ class TaskMaster
   #
   # @param stock [String] e.g. 'rat leather'
   # @param got [String] the get's reply
+  # @param from [String] the container it came from
   # @return [Symbol] :stuck
-  def stock_not_found(stock, got)
+  def stock_not_found(stock, got, from = @bag)
     unless got.start_with?('You get')
       DRC.message("The game says you already hold the #{stock}, but it is not in your hands, so nothing was thrown away. Stopping.")
       return :stuck
     end
 
-    if DRCI.put_away_item?(stock, @bag)
-      DRC.message("Took out the #{stock} but can't find it in your hands, so it went back in your #{@bag}. Stopping.")
+    if DRCI.put_away_item?(stock, from)
+      DRC.message("Took out the #{stock} but can't find it in your hands, so it went back in your #{from}. Stopping.")
     else
-      DRC.message("Took out the #{stock} but can't find it in your hands or put it back in your #{@bag}. It may still be in your hand. Stopping.")
+      DRC.message("Took out the #{stock} but can't find it in your hands or put it back in your #{from}. It may still be in your hand. Stopping.")
     end
     :stuck
   end
@@ -3663,11 +3830,12 @@ class TaskMaster
   #
   # @param ref [String] "#id" of the piece
   # @param stock [String] e.g. 'rat leather'
+  # @param from [String] the container it came from
   # @return [Boolean] true when the piece is no longer in hand
-  def put_back_stock(ref, stock)
-    return true if DRCI.put_away_item?(ref, @bag) || left_hands?(ref)
+  def put_back_stock(ref, stock, from = @bag)
+    return true if DRCI.put_away_item?(ref, from) || left_hands?(ref)
 
-    DRC.message("Could not throw away the #{stock} (#{ref}) or put it back in your #{@bag}. It may still be in your hand. Stopping.")
+    DRC.message("Could not throw away the #{stock} (#{ref}) or put it back in your #{from}. It may still be in your hand. Stopping.")
     false
   end
 

@@ -5,6 +5,9 @@
   Output all lines that match.
 
   Label deeds in a deed register.
+    ;register label <page>   label one page
+    ;register label all      label every page that has no note yet
+    ;register label force    relabel every page, replacing existing notes
 =end
 
 class Register
@@ -21,6 +24,10 @@ class Register
         [
           { name: 'label', regex: /label/i },
           { name: 'all', regex: /all/, variable: true, description: 'Label all unlabeled deeds' }
+        ],
+        [
+          { name: 'label', regex: /label/i },
+          { name: 'force', regex: /force/i, variable: true, description: 'Relabel every deed page, ignoring any existing notes' }
         ]
       ]
     args = parse_args(arg_definitions)
@@ -36,9 +43,9 @@ class Register
         DRC.message("Labeling page #{args.page}")
         label_page if turn_register?(args.page)
       else
-        DRC.message("Labeling all unlabeled pages!")
+        DRC.message(args.force ? "Refreshing every page, ignoring existing notes!" : "Labeling all unlabeled pages!")
         turn_register?('contents')
-        find_unlabeled
+        find_unlabeled(args.force)
       end
       stow_item(@pen)
       turn_register?('contents')
@@ -144,8 +151,9 @@ class Register
     fput("write #{write}")
   end
 
-  def find_unlabeled
-    results = search('^\s*.*([A-z]+|\|\s+\|)$')
+  def find_unlabeled(force = false)
+    # When forcing, grab every page listed in the contents; otherwise only the unlabeled ones.
+    results = search(force ? '^\|?\s+\d+' : '^\s*.*([A-z]+|\|\s+\|)$')
     pages = Array.new
     results.each do |line|
       if line =~ /^\|?\s+(\d+)/
