@@ -736,14 +736,14 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'still tags the other names when a hand edit left a byte that is not UTF-8' do
-        catalog = catalog_with_shit_list("\xE9lise,note\nbob\nzorvex,stole my kill\n".b, integrate: true)
-        expect(catalog.first(3).map(&:last)).to eq(["\xE9lise (SL)".b, 'Bob (SL)', 'Zorvex (SL)'])
+        catalog = catalog_with_shit_list("#{0xE9.chr}lise,note\nbob\nzorvex,stole my kill\n", integrate: true)
+        expect(catalog.first(3).map(&:last)).to eq(["#{0xE9.chr}lise (SL)", 'Bob (SL)', 'Zorvex (SL)'])
         expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
         expect(run_hooks("Zorvex just arrived.\r\n".b)).to eq("Zorvex (SL) just arrived.\r\n")
       end
 
       it 'drops a UTF-8 byte order mark in front of the first name' do
-        catalog = catalog_with_shit_list("\xEF\xBB\xBFbob,stole my kill\nzorvex\n".b, integrate: true)
+        catalog = catalog_with_shit_list("#{[0xEF, 0xBB, 0xBF].pack('C*')}bob,stole my kill\nzorvex\n", integrate: true)
         expect(catalog.first(2).map(&:first)).to eq(['\\bBob\\b', '\\bZorvex\\b'])
         expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
       end

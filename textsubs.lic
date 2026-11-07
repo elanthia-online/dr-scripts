@@ -1399,7 +1399,7 @@ class TextSubs
       #
       # @return [String] frozen
       def self.byte_order_mark
-        "\xEF\xBB\xBF".b.freeze
+        [0xEF, 0xBB, 0xBF].pack('C*').freeze
       end
       private_class_method :byte_order_mark
 
