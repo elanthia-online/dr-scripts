@@ -278,11 +278,12 @@ RSpec.describe Smith do
   # walks back before forging.
   describe "'here' with a part missing from the bag" do
     let(:instance) { build_smith }
-
+    # A room that is not the town's private forge (Shard's is 51058).
+    let(:start_room) { 8_775 }
     let(:events) { [] }
 
     before do
-      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: start_room))
       allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }.and_return(true)
       allow(DRCT).to receive(:buy_item) { |room, part| events << [:buy, room, part] }
       allow(DRCC).to receive(:stow_crafting_item)
@@ -304,7 +305,7 @@ RSpec.describe Smith do
 
       it 'carries the parts budget, buys the part, walks back, then forges there' do
         expect(DRCM).to have_received(:ensure_copper_on_hand).with(Smith::PARTS_COPPER, settings, 'Shard')
-        expect(events).to eq([[:buy, 4436, 'haft'], [:walk, 51_058], [:forge]])
+        expect(events).to eq([[:buy, 4436, 'haft'], [:walk, start_room], [:forge]])
         expect(forge_runs.first).to include('skip', 'here')
       end
 
@@ -322,7 +323,7 @@ RSpec.describe Smith do
       include_examples 'a run that stops before forging'
 
       it "walks back to the room 'here' started in and says what failed" do
-        expect(DRCT).to have_received(:walk_to).with(51_058)
+        expect(DRCT).to have_received(:walk_to).with(start_room)
         expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not buy a haft/)
       end
     end
@@ -350,7 +351,7 @@ RSpec.describe Smith do
 
       instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
 
-      expect(events).to eq([[:buy, 4436, 'haft'], [:order, 17_119, 13], [:walk, 51_058], [:forge]])
+      expect(events).to eq([[:buy, 4436, 'haft'], [:order, 17_119, 13], [:walk, start_room], [:forge]])
     end
 
     it 'still fetches the ingot and walks back with buy when every part is in the bag' do
@@ -362,7 +363,7 @@ RSpec.describe Smith do
 
       instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
 
-      expect(events).to eq([[:order, 17_119, 13], [:walk, 51_058], [:forge]])
+      expect(events).to eq([[:order, 17_119, 13], [:walk, start_room], [:forge]])
     end
 
     it 'buys the leather strip reinforce needs' do
@@ -373,7 +374,7 @@ RSpec.describe Smith do
 
       strip_shop = SmithSpecData.crafting.dig('recipe_parts', 'leather strip', 'Shard', 'part-room')
       # The item run, then the reinforce run.
-      expect(events).to eq([[:buy, strip_shop, 'leather strip'], [:walk, 51_058], [:forge], [:forge]])
+      expect(events).to eq([[:buy, strip_shop, 'leather strip'], [:walk, start_room], [:forge], [:forge]])
     end
 
     # forge.lic gets each part with DRCI.get_item?(part), from anywhere.
@@ -404,6 +405,49 @@ RSpec.describe Smith do
       end
     end
 
+    # mrhoribu, #7979: a brigandine hauberk needs a large padding and two
+    # small paddings. With one of each in the bag, 'tap my small padding'
+    # finds the bagged one, so the tap can't stand for the second.
+    it 'buys the second of a doubled part when the bag holds one' do
+      hauberk = SmithSpecData.recipe('a brigandine hauberk')
+      expect(hauberk['part']).to eq(['large padding', 'small padding', 'small padding'])
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['large padding', 'small padding'])
+      allow(DRCI).to receive(:exists?).with('small padding').and_return(true)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+
+      instance.smith(smith_args(here: 'here'), hauberk)
+
+      # Shard's leather shop sells small padding as order 11 (base-crafting recipe_parts).
+      expect(events).to eq([[:order, 10_939, 11], [:walk, start_room], [:forge]])
+    end
+
+    # Kurtus, 2026-08-28: go2 walked back into the Shard private forge
+    # through the guarded archway ("The sentry nods and allows you to pass.").
+    context "when 'here' started in the town's private forge" do
+      before do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCC).to receive(:go_to_private_forge) { events << [:private_forge] }.and_return(true)
+      end
+
+      it 'goes back in through DRCC.go_to_private_forge, which tries the door and carries the rental cost' do
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(DRCC).to have_received(:go_to_private_forge).with('Shard', settings)
+        expect(events).to eq([[:buy, 4436, 'haft'], [:private_forge], [:forge]])
+      end
+
+      it 'stops when that does not get back in' do
+        allow(DRCC).to receive(:go_to_private_forge).and_return(false)
+
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(forge_runs).to be_empty
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 51058 after shopping/)
+      end
+    end
+
     context 'when the walk back does not get there' do
       before do
         allow(DRCI).to receive(:in_hands?).and_return(true)
@@ -414,7 +458,7 @@ RSpec.describe Smith do
       include_examples 'a run that stops before forging'
 
       it 'says so instead of forging where the walk ended' do
-        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 51058 after shopping/)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 8775 after shopping/)
       end
     end
   end

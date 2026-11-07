@@ -239,9 +239,10 @@ class Smith
 
   # The parts 'here' still has to buy. forge.lic takes a part from anywhere
   # in the inventory, so a part the crafting container lacks counts as
-  # carried when 'tap my <part>' finds it elsewhere. A part needed more than
-  # once is bought by the container count alone: a tap can't count. Lists
-  # nothing when the recipe has no parts.
+  # carried when 'tap my <part>' finds it elsewhere. A part the recipe needs
+  # more than once is bought by the container count alone: a tap can't
+  # count, and would find the one already in the container. Lists nothing
+  # when the recipe has no parts.
   #
   # @param parts [Array<String>] part names from the recipe (may repeat)
   # @return [Array<String>] the parts to buy
@@ -249,7 +250,7 @@ class Smith
     return [] if parts.empty?
 
     missing = missing_parts(parts)
-    missing.reject { |part| missing.count(part) == 1 && DRCI.exists?(part) }
+    missing.reject { |part| parts.count(part) == 1 && DRCI.exists?(part) }
   end
 
   # The parts the crafting container doesn't hold yet, one entry per part
@@ -326,12 +327,20 @@ class Smith
   end
 
   # Walk back to the room 'here' started in. forge.lic is told to stay put,
-  # so smith stops rather than forge wherever the walk ended.
+  # so smith stops rather than forge wherever the walk ended. Back into the
+  # town's private forge, DRCC.go_to_private_forge carries the rental cost
+  # (the entrance charges it again once the rental has lapsed), walks, and
+  # tries the door when the walk ends outside, as forge.lic does.
   #
   # @param room [Integer] the room id 'here' started in
   # @return [Boolean] false (with a message) when the walk didn't get there
   def walked_back?(room)
-    return true if DRCT.walk_to(room)
+    back = if room == DRCC.private_forge_room(@hometown)
+             DRCC.go_to_private_forge(@hometown, @settings)
+           else
+             DRCT.walk_to(room)
+           end
+    return true if back
 
     Lich::Messaging.msg('bold', "smith: Could not get back to room #{room} after shopping, so smith stops rather than forge somewhere else. Go back and run smith with 'here' again; what was bought is in your #{@bag}.")
     false
