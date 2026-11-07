@@ -1962,16 +1962,19 @@ class TextSubs
       #   patterns compiled
       # @return [nil]
       # @raise [ArgumentError] naming the first step whose text another
-      #   step's pattern matches, and those steps
+      #   step's pattern matches, and those steps, each by its place in the
+      #   list and its n
       def self.check_distinct(section, subs)
         patterns = subs.map { |pattern, _| Regexp.new(pattern) }
-        section['steps'].each_with_index do |(_, phrase), index|
+        steps = section['steps']
+        label = ->(index) { "steps #{index + 1} (n #{steps[index].first})" }
+        steps.each_with_index do |(_, phrase), index|
           text = literal(phrase_source(section, phrase))
           others = patterns.each_index.select { |other| other != index && patterns[other].match?(text) }
           next if others.empty?
 
-          raise ArgumentError, "steps #{index + 1} phrase #{phrase.inspect} is also matched by steps " \
-                               "#{others.map(&:succ).join(', ')}, so one of them would lose its counter"
+          raise ArgumentError, "#{label.call(index)} phrase #{phrase.inspect} is also matched by " \
+                               "#{others.map(&label).join(', ')}, so one of them would lose its counter"
         end
         nil
       end
