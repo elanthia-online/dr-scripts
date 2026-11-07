@@ -800,19 +800,21 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'counts a new key only after the key is in the catalog, so a reader never sees the count run ahead' do
-      TextSubs.clear
+      registry = TextSubs::Registry.new
+      TextSubs.install(registry)
       TextSubs.add('cat', 'dog')
       before_write = TextSubs.generation
       seen = []
-      # A reader that runs at the moment the key is written, as the hook thread
-      # can while the entry point is still adding. The singleton lives on this
-      # catalog Hash only; the after hook's clear drops it.
-      TextSubs.subs.define_singleton_method(:[]=) do |key, value|
+      # A reader that runs the moment the key is written, as the hook thread
+      # can. The singleton lives on this Registry only; the after hook's clear
+      # installs another.
+      registry.define_singleton_method(:add) do |key, value|
+        result = super(key, value)
         seen << [TextSubs.generation, TextSubs.subs.keys.map(&:source)]
-        super(key, value)
+        result
       end
       expect(TextSubs.add('bird', 'fish')).to eq('fish')
-      expect(seen).to eq([[before_write, ['cat']]])
+      expect(seen).to eq([[before_write, %w[cat bird]]])
       expect(TextSubs.generation).to eq(before_write + 1)
       expect(TextSubs.subs.keys.map(&:source)).to eq(%w[cat bird])
     end
@@ -822,17 +824,20 @@ RSpec.describe 'textsubs.lic' do
       old_catalog = TextSubs.subs
       before_clear = TextSubs.generation
       seen = []
-      # A reader before every line of clear and at its return, as the hook
-      # thread can run between any two of them. It records each new state:
-      # the count, and whether subs is still the catalog clear replaces. The
-      # probe sees only the gaps between lines of clear, so two writes on one
-      # line, or in one parallel assignment, show up as the start state and
-      # the end state with no step between.
-      probe = TracePoint.new(:line, :return) do
+      # A reader before every line of textsubs.lic that clear runs, install
+      # included, and at each return, as the hook thread can run between any
+      # two of them. It records each new state: the count, and whether subs
+      # is still the catalog clear replaces. The probe sees only the gaps
+      # between lines, so two writes on one line, or in one parallel
+      # assignment, show up as the start state and the end state with no
+      # step between.
+      probe = TracePoint.new(:line, :return) do |event|
+        next unless File.basename(event.path) == 'textsubs.lic'
+
         state = [TextSubs.generation, TextSubs.subs.equal?(old_catalog) ? :old : :new]
         seen << state unless seen.last == state
       end
-      expect(probe.enable(target: TextSubs.method(:clear)) { TextSubs.clear }).to eq({})
+      expect(probe.enable(target_thread: Thread.current) { TextSubs.clear }).to eq({})
       expect(seen.first).to eq([before_clear, :old])
       expect(seen).not_to include([before_clear + 1, :old])
       expect(seen.last).to eq([before_clear + 1, :new])
@@ -844,19 +849,20 @@ RSpec.describe 'textsubs.lic' do
       before_clear = TextSubs.generation
       seen = []
       # A count that records, at the moment clear works out the next number
-      # from it, whether subs is still the catalog clear replaces. The line
-      # probe above cannot split two writes on one line; this reader can. A
-      # class variable write cannot be hooked, so it watches the step that
-      # feeds the write: + / - / succ / next on the count, coerce when clear
-      # puts the count on the right of the +, and to_i / to_int when clear
-      # turns the count into a plain Integer first (.to_i + 1, Integer() + 1).
-      # That is a stronger rule than the write order alone, and it is the rule
-      # here by design: clear must work out the next count after the swap, so a
-      # parallel assignment (its right side runs before either write) or a
-      # count worked out ahead of the swap is red even when the writes land in
-      # the right order. It forwards everything else to the real count without
-      # recording, so a clear that reaches the next count by any step not
-      # listed here never records and is red by design too.
+      # from it, whether subs is still the catalog clear replaces; clear makes
+      # its swap through install. The line probe above cannot split two writes
+      # on one line; this reader can. A class variable write cannot be hooked,
+      # so it watches the step that feeds the write: + / - / succ / next on
+      # the count, coerce when install puts the count on the right of the +,
+      # and to_i / to_int when install turns the count into a plain Integer
+      # first (.to_i + 1, Integer() + 1). That is a stronger rule than the
+      # write order alone, and it is the rule here by design: install must
+      # work out the next count after the swap, so a parallel assignment (its
+      # right side runs before either write) or a count worked out ahead of
+      # the swap is red even when the writes land in the right order. It
+      # forwards everything else to the real count without recording, so an
+      # install that reaches the next count by any step not listed here never
+      # records and is red by design too.
       counter = SimpleDelegator.new(before_clear)
       note_catalog = -> { seen << (TextSubs.subs.equal?(old_catalog) ? :old : :new) }
       %i[+ succ next].each do |step|
@@ -896,6 +902,130 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.add('cat', 'dog')).to eq('dog')
       expect(TextSubs.elanthipedia('Fae Arts')).to eq('\1<a href="https://elanthipedia.play.net/Fae_Arts">Fae Arts</a>\3')
       expect(TextSubs.clear).to eq({})
+    end
+  end
+
+  describe 'TextSubs::Registry' do
+    subject(:registry) { TextSubs::Registry.new }
+
+    it 'keeps the first position of a key added twice and takes the value of the last add' do
+      registry.add(/cat/, 'dog')
+      registry.add(/c/, 'k')
+      registry.add(/cat/, 'lion')
+      expect(registry.snapshot.to_a).to eq([[/cat/, 'lion'], [/c/, 'k']])
+    end
+
+    it 'treats the same source with other options as another key' do
+      registry.add(/cat/, 'dog')
+      registry.add(/cat/i, 'lion')
+      expect(registry.snapshot.to_a).to eq([[/cat/, 'dog'], [/cat/i, 'lion']])
+    end
+
+    it 'returns the value it was given, but keeps a frozen copy the caller cannot change' do
+      value = +'dog'
+      expect(registry.add(/cat/, value)).to equal(value)
+      value << 'gone'
+      expect(registry.snapshot[/cat/]).to eq('dog')
+      expect(registry.snapshot[/cat/]).to be_frozen
+    end
+
+    it 'hands out a frozen snapshot, the same one until the next add' do
+      registry.add(/cat/, 'dog')
+      first = registry.snapshot
+      expect(first).to be_frozen
+      expect(registry.snapshot).to equal(first)
+      expect { first[/bird/] = 'fish' }.to raise_error(FrozenError)
+
+      registry.add(/bird/, 'fish')
+      expect(registry.snapshot).not_to equal(first)
+      expect(registry.snapshot.keys).to eq([/cat/, /bird/])
+      expect(first.keys).to eq([/cat/])
+    end
+
+    it 'takes a new snapshot when an add only changes the value of a key it holds' do
+      registry.add(/cat/, 'dog')
+      first = registry.snapshot
+      registry.add(/cat/, 'lion')
+      expect(registry.snapshot).to eq(/cat/ => 'lion')
+      expect(first).to eq(/cat/ => 'dog')
+    end
+
+    it 'starts empty and frozen' do
+      expect(registry.snapshot).to eq({})
+      expect(registry.snapshot).to be_frozen
+    end
+
+    it 'refuses a key that is not a Regexp and keeps what it holds' do
+      registry.add(/cat/, 'dog')
+      expect { registry.add('cat', 'lion') }.to raise_error(ArgumentError, /Regexps, not String/)
+      expect { registry.add(nil, 'lion') }.to raise_error(ArgumentError, /not NilClass/)
+      expect(registry.snapshot).to eq(/cat/ => 'dog')
+    end
+  end
+
+  describe 'TextSubs.install' do
+    it 'makes the given Registry the catalog that subs, add and apply use' do
+      registry = TextSubs::Registry.new
+      registry.add(/cat/, 'dog')
+      expect(TextSubs.install(registry)).to equal(registry)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+
+      TextSubs.add('bird', 'fish')
+      expect(registry.snapshot.keys).to eq([/cat/, /bird/])
+      expect(TextSubs.apply(+'The cat and the bird.')).to eq('The dog and the fish.')
+    end
+
+    it 'drops every key of the catalog it replaces' do
+      TextSubs.add('cat', 'dog')
+      TextSubs.install(TextSubs::Registry.new)
+      expect(TextSubs.subs).to be_empty
+      expect(TextSubs.apply(+'The cat.')).to eq('The cat.')
+    end
+
+    it 'goes up by exactly one generation, whatever the new Registry holds' do
+      registry = TextSubs::Registry.new
+      registry.add(/cat/, 'dog')
+      registry.add(/bird/, 'fish')
+      start = TextSubs.generation
+      TextSubs.install(registry)
+      expect(TextSubs.generation).to eq(start + 1)
+    end
+
+    it 'refuses anything but a Registry and leaves the catalog and the generation alone' do
+      TextSubs.add('cat', 'dog')
+      start = TextSubs.generation
+      [nil, {}, { /cat/ => 'lion' }].each do |not_a_registry|
+        expect { TextSubs.install(not_a_registry) }.to raise_error(ArgumentError, /TextSubs::Registry/)
+      end
+      expect(TextSubs.generation).to eq(start)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+    end
+  end
+
+  describe 'TextSubs.subs' do
+    it 'is a frozen snapshot, in the order the keys were first added, that cannot change the catalog' do
+      TextSubs.add('cat', 'dog')
+      TextSubs.add('bird', 'fish')
+      TextSubs.add('cat', 'lion')
+      subs = TextSubs.subs
+
+      expect(subs.to_a).to eq([[/cat/, 'lion'], [/bird/, 'fish']])
+      expect(subs).to be_frozen
+      expect(subs.values).to all(be_frozen)
+      expect { subs[/eel/] = 'ray' }.to raise_error(FrozenError)
+      expect { subs.delete(/cat/) }.to raise_error(FrozenError)
+      expect { subs[/cat/] << '!' }.to raise_error(FrozenError)
+      expect(TextSubs.apply(+'The cat.')).to eq('The lion.')
+    end
+
+    it 'keeps an earlier snapshot as it was after later adds and a clear' do
+      TextSubs.add('cat', 'dog')
+      before = TextSubs.subs
+      TextSubs.add('bird', 'fish')
+      TextSubs.clear
+      expect(before).to eq(/cat/ => 'dog')
+      expect(TextSubs.subs).to eq({})
+      expect(TextSubs.subs).to be_frozen
     end
   end
 

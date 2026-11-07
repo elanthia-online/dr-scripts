@@ -8,27 +8,86 @@ no_kill_all
 
 # The text substitution catalog and the engine that applies it to game lines.
 #
-# The script's entry point fills the catalog through add and elanthipedia at
-# start, then registers a 'textsub' DownstreamHook that hands every server line
-# to apply while a front end is attached.
+# The script's entry point installs a fresh, empty Registry on every start,
+# fills it through add and elanthipedia, and only then registers a 'textsub'
+# DownstreamHook (persist: false, so Lich removes it when the script ends) that
+# hands every server line to apply while a front end is attached.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
 # nested classes: re-running the body would warn "already initialized
 # constant" for any other.
 class TextSubs
-  @@subs = {}
+  # An ordered catalog of substitutions: a Regexp key and the gsub replacement
+  # it applies. A key added again keeps its first position and takes the last
+  # value, exactly as a Hash does.
+  #
+  # One thread writes a Registry while others may read it, so readers never
+  # see the entries themselves, only a frozen snapshot of them.
+  #
+  # @example
+  #   registry = TextSubs::Registry.new
+  #   registry.add(/cat/, 'dog')
+  #   registry.add(/c/, 'k')
+  #   registry.add(/cat/, 'lion')
+  #   registry.snapshot # => {/cat/=>"lion", /c/=>"k"} (frozen)
+  class Registry
+    # @return [Registry] an empty registry
+    def initialize
+      @entries = {}
+      @version = 0
+      @snapshot = nil
+    end
+
+    # Adds one substitution, or gives a key already present its new value in
+    # the position it already holds.
+    #
+    # @param key [Regexp] the pattern
+    # @param result [String] the gsub replacement; the registry keeps a frozen
+    #   copy, so changing the caller's String later does not reach it
+    # @return [String] result, as given
+    # @raise [ArgumentError] when key is not a Regexp
+    def add(key, result)
+      raise ArgumentError, "TextSubs::Registry keys are Regexps, not #{key.class}" unless key.is_a?(Regexp)
+
+      @entries[key] = result.dup.freeze
+      @version += 1
+      result
+    end
+
+    # The entries as they stand, in order, as a frozen Hash. The same Hash
+    # comes back until the next add, so a reader calling once per line copies
+    # the catalog only after it changes.
+    #
+    # The version is read before the entries are copied: an add that lands in
+    # between leaves a snapshot that holds more than its version says, which
+    # is thrown away on the next call, never one that holds less.
+    #
+    # @return [Hash{Regexp=>String}] frozen, with frozen values
+    def snapshot
+      version = @version
+      cached = @snapshot
+      return cached.last if cached && cached.first == version
+
+      entries = @entries.dup.freeze
+      @snapshot = [version, entries].freeze
+      entries
+    end
+  end
+
+  @@registry = Registry.new
   @@generation = 0
 
   # The catalog, in the order its keys were first added.
   #
-  # @return [Hash{Regexp=>String}] each key and the gsub replacement it applies
+  # @return [Hash{Regexp=>String}] a frozen snapshot of the installed Registry:
+  #   each key and the gsub replacement it applies
   def self.subs
-    @@subs
+    @@registry.snapshot
   end
 
   # How many times the catalog has changed since the class body last ran: add,
-  # elanthipedia and clear each count once.
+  # elanthipedia, install and clear each count once.
   #
   # The count rises only after the change is visible in subs, so a reader on
   # another thread that sees a new generation also sees the catalog it counts.
@@ -41,15 +100,36 @@ class TextSubs
     @@generation
   end
 
-  # Empties the catalog. It swaps in the new, empty Hash first and counts the
-  # change after, the same order store keeps, so the generation never runs
-  # ahead of subs.
+  # Makes registry the catalog that add, elanthipedia, subs and apply use, in
+  # one assignment, so a reader sees either the old catalog or the new one.
+  # It swaps the catalog in first and counts the change after, the same order
+  # store keeps, so the generation never runs ahead of subs. The entry point
+  # installs a fresh Registry on every start, so a restart never inherits the
+  # keys of the run before it.
   #
-  # @return [Hash] the new, empty catalog
-  def self.clear
-    @@subs = {}
+  # An add that runs on another thread while install swaps the catalog may
+  # land in the Registry being replaced.
+  #
+  # @param registry [TextSubs::Registry] the catalog to use from now on
+  # @return [TextSubs::Registry] registry
+  # @raise [ArgumentError] when registry is not a TextSubs::Registry; the
+  #   installed catalog and the generation are left as they were
+  # @example Start over with an empty catalog
+  #   TextSubs.install(TextSubs::Registry.new)
+  def self.install(registry)
+    raise ArgumentError, "TextSubs.install needs a TextSubs::Registry, not #{registry.class}" unless registry.is_a?(Registry)
+
+    @@registry = registry
     @@generation += 1
-    @@subs
+    registry
+  end
+
+  # Empties the catalog by installing a fresh Registry.
+  #
+  # @return [Hash] the new, empty catalog (frozen)
+  def self.clear
+    install(Registry.new)
+    subs
   end
 
   # Adds one substitution. A target already in the catalog keeps its place and
@@ -163,9 +243,9 @@ class TextSubs
     store(target, result)
   end
 
-  # The one writer of the catalog, shared by add and elanthipedia so a call to
-  # either is one key and one generation. It writes the key first and counts
-  # it after, so the generation never runs ahead of the catalog.
+  # The one writer of the installed catalog, shared by add and elanthipedia so
+  # a call to either is one key and one generation. It writes the key first
+  # and counts it after, so the generation never runs ahead of the catalog.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
@@ -174,7 +254,7 @@ class TextSubs
   #   and the generation are left as they were
   def self.store(target, result)
     key = /#{target}/
-    @@subs[key] = result
+    @@registry.add(key, result)
     @@generation += 1
     result
   end
