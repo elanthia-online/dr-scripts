@@ -1566,6 +1566,166 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # The index picks the keys that may match a line, so a wrong tier would
+  # silently drop a sub. These examples hold each tier, the tokenizer and
+  # every construct the parser refuses to read to what the regex itself does
+  # on a line.
+  describe 'TextSubs::TokenIndex' do
+    # @param source [String] regex source
+    # @return [Array(Symbol, Object)] the tier of Regexp.new(source)
+    def tier_of(source)
+      TextSubs::TokenIndex.tier(Regexp.new(source))
+    end
+
+    {
+      'You feel fine'                                           => [:words, ['feel']],
+      '^Roundtime: \d+ sec'                                     => [:words, ['Roundtime']],
+      'You feel (fine|good)\.'                                  => [:words, ['feel']],
+      ' (fine|good|well) '                                      => [:words, %w[fine good well]],
+      ' cat | dog '                                             => [:words, %w[cat dog]],
+      '\d+ coins'                                               => [:prefix, 'coi'],
+      ' glow\w*'                                                => [:prefix, 'glo'],
+      'Kronars? '                                               => [:trigram, 'Kro'],
+      '\w+ing '                                                 => [:suffix, 'ing'],
+      '\wbcd\w'                                                 => [:trigram, 'bcd'],
+      ':\s+\*\*--------'                                        => [:include, '**--------'],
+      '[!-~]foo bar'                                            => [:suffix, 'foo'],
+      'a.b'                                                     => [:always],
+      '\d+'                                                     => [:always],
+      '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d).*(Kronar|Dokora|Lirum))' => [:always]
+    }.each do |source, tier|
+      it "files /#{source}/ under #{tier.inspect}" do
+        expect(tier_of(source)).to eq(tier)
+      end
+    end
+
+    it 'returns a frozen tier, frozen word lists included' do
+      expect(tier_of('You feel fine')).to be_frozen
+      expect(tier_of('You feel fine').last).to be_frozen
+      expect(tier_of('a.b')).to be_frozen
+    end
+
+    it 'names a word-tier key only for a line that holds the word as a whole token' do
+      index = TextSubs::TokenIndex.new([/You feel fine/])
+      expect(index.candidates("You feel fine.\r\n")).to eq([/You feel fine/])
+      expect(index.candidates("You feeling fine.\r\n")).to eq([])
+      expect(index.candidates("You refeel fine.\r\n")).to eq([])
+    end
+
+    it 'names prefix, suffix and trigram keys for a token that starts with, ends with or holds the letters' do
+      index = TextSubs::TokenIndex.new([/\d+ coins/, /\w+ing /, /\wbcd\w/])
+      expect(index.candidates('7 coinage')).to eq([/\d+ coins/])
+      expect(index.candidates('7 recoins')).to eq([])
+      expect(index.candidates('a thing')).to eq([/\w+ing /])
+      expect(index.candidates('a ingot')).to eq([])
+      expect(index.candidates('xabcdx')).to eq([/\wbcd\w/])
+      expect(index.candidates('abc dx')).to eq([])
+    end
+
+    it 'reads a class with a range as possibly a letter, however plain its ends are' do
+      # '!' to '~' spans every letter, so the class can glue one to "foo".
+      key = /[!-~]foo bar/
+      expect(key).to match('Xfoo bar')
+      expect(TextSubs::TokenIndex.new([key]).candidates('Xfoo bar')).to eq([key])
+    end
+
+    it 'names an include-tier key when the line holds its literal anywhere, between letters too' do
+      index = TextSubs::TokenIndex.new([/:\s+\*\*--------/])
+      expect(index.candidates('Quality:  **--------')).to eq([/:\s+\*\*--------/])
+      expect(index.candidates('x**--------y')).to eq([/:\s+\*\*--------/])
+      expect(index.candidates('Quality:  *---------')).to eq([])
+    end
+
+    it 'splits tokens at digits, underscores and high bytes, which the parser reads as non-letters' do
+      # A tokenizer that kept digits or underscores in a token would see
+      # "x_foo", "9foo" or "foo7" and miss the key all three lines match.
+      key = /[_\d]foo[_\d]/
+      expect(tier_of(key.source)).to eq([:words, ['foo']])
+      index = TextSubs::TokenIndex.new([key])
+      lines = ['x_foo_', '9foo7', "#{0xFE.chr}9foo7#{0xFE.chr}"]
+      expect(lines).to all(match(key))
+      expect(lines.map { |line| index.candidates(line) }).to eq([[key]] * 3)
+    end
+
+    it 'returns the candidates in insertion order, whichever tier and token found them' do
+      keys = [/zeta/, /\d+ alpha/, /a.b/, /beta/, / mid/]
+      index = TextSubs::TokenIndex.new(keys)
+      expect(index.candidates('beta alpha zeta 7 alphas mid acb')).to eq(keys)
+    end
+
+    it 'leaves the line it reads alone, frozen or not, and is frozen itself' do
+      index = TextSubs::TokenIndex.new([/cat/, /a.b/])
+      line = 'The cat.'.b.freeze
+      expect(index.candidates(line)).to eq([/cat/, /a.b/])
+      expect(line).to eq('The cat.')
+      expect(index).to be_frozen
+    end
+
+    it 'names nothing for an empty catalog' do
+      expect(TextSubs::TokenIndex.new([]).candidates('The cat.')).to eq([])
+    end
+
+    # Each construct below makes the parser give up and check the key on
+    # every line. Next to each is a line the key matches that does not hold,
+    # as a whole token, the word a naive reading of the source would key it
+    # on, so an index built on that reading would skip the line.
+    {
+      'a hex escape'                    => ['\x41bc def', 'Abc def', 'bc'],
+      'an octal escape'                 => ['\101bc def', 'Abc def', 'bc'],
+      'a \C- control escape'            => ['\C-abc def', "\x01bc def", 'abc'],
+      'an escaped alphanumeric'         => ['\u0041bc def', 'Abc def', 'bc'],
+      'a \c escape inside a class'      => ['[\c]a]bc def', 'abc def', 'bc'],
+      'a \k<name> back-reference'       => ['(?<n>x)\k<n>bc def', 'xxbc def', 'bc'],
+      'a \g<1> subexpression call'      => ['(x)\g<1>bc def', 'xxbc def', 'bc'],
+      'a numbered back-reference'       => ['(\w+) \1zap ', 'ab abzap ', 'zap'],
+      'an extended-mode flag'           => ['(?x) foo bar ', 'foobar', 'foo'],
+      'a case-insensitive flag'         => ['(?i) Bar baz ', ' bar BAZ ', 'Bar'],
+      'a scoped case-insensitive group' => [' (?i:Bar) baz ', ' bAR baz ', 'Bar'],
+      'a nested class'                  => ['[a-z&&[^q]]foo bar', 'xfoo bar', 'foo'],
+      'a POSIX class'                   => ['[[:alpha:]]foo bar', 'xfoo bar', 'foo'],
+      'an optional fixed interval {n}?' => [',ab{1}?,', ',a,', 'ab'],
+      'a repeated fixed interval {n}+'  => [',ab{1}+,', ',abbb,', 'ab']
+    }.each do |construct, (source, line, naive)|
+      it "checks a key with #{construct} on every line" do
+        key = Regexp.new(source)
+        expect(TextSubs::TokenIndex.tier(key)).to eq([:always])
+        expect(key).to match(line)
+        expect(line.scan(/[A-Za-z]+/)).not_to include(naive)
+        expect(TextSubs::Engine.apply({ key => '<\0>' }, line.dup)).to eq(reference_apply({ key => '<\0>' }, line))
+      end
+    end
+
+    it 'checks a key compiled with options on every line' do
+      key = Regexp.new('Bar baz', Regexp::IGNORECASE)
+      expect(TextSubs::TokenIndex.tier(key)).to eq([:always])
+      expect(TextSubs::Engine.apply({ key => 'X' }, +'BAR BAZ')).to eq('X')
+    end
+
+    # A naive reading of 'cafe bar' with an accented e keys it on "bar", and skips it on a
+    # binary line without that word. But a UTF-8 key raises on a binary line
+    # with high bytes, as reference_apply does, so skipping it would change
+    # what the engine does with the line.
+    it 'checks a key with a non-ASCII source on every line, so it fails on a binary line as reference_apply does' do
+      key = Regexp.new("caf#{0xE9.chr(Encoding::UTF_8)} bar")
+      line = "#{0xFE.chr}lunch\r\n".b
+      expect(TextSubs::TokenIndex.tier(key)).to eq([:always])
+      expect { reference_apply({ key => 'X' }, line) }.to raise_error(Encoding::CompatibilityError)
+      expect { TextSubs::Engine.apply({ key => 'X' }, line.dup) }.to raise_error(Encoding::CompatibilityError)
+    end
+
+    it 'checks only the three gated coin-comma rules of every guild catalog on every line' do
+      always = guilds.product([false, true]).flat_map do |guild, plat|
+        build_catalog(guild, 'textsubs_spell_links' => true, 'herb_textsubs' => true, 'textsubs_use_plat_grouping' => plat)
+        TextSubs.subs.keys.select { |key| TextSubs::TokenIndex.tier(key) == [:always] }.map(&:source)
+      end
+      expect(always.uniq).to contain_exactly(
+        '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d).*(Kronar|Dokora|Lirum))',
+        '(?!.*>)\d{1,3}(?=((\d{3})*(\d{4}))(?!\d)(?! platinum).*(Kronar|Dokora|Lirum))',
+        '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d) platinum.*(Kronar|Dokora|Lirum))'
+      )
+    end
+  end
+
   describe 'TextSubs.install' do
     it 'makes the given Registry the catalog that subs, add and apply use' do
       registry = TextSubs::Registry.new

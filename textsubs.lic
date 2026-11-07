@@ -394,6 +394,505 @@ class TextSubs
     end
   end
 
+  # Picks, for a line, the keys that could match it, so the engine runs a
+  # handful of regexes per line instead of every key of the catalog.
+  #
+  # Each key gets one tier from TokenIndex::Pattern (most selective first):
+  # - :words, words: a matching line holds one of the words as a whole token;
+  # - :prefix / :suffix, three letters: a token of the line starts (ends)
+  #   with them;
+  # - :trigram, three letters: a token of the line holds them;
+  # - :include, a literal of three or more characters, none three letters in
+  #   a row: the line holds it;
+  # - :always: the key is checked on every line.
+  # A token is a maximal run of ASCII letters, A-Z and a-z, of the line as it
+  # came, before any key rewrote it.
+  #
+  # The index only ever leaves out a key that cannot match the line: each
+  # tier is a promise Pattern proves from the regex source, and a pattern it
+  # cannot read in full is checked always. A key with a requires_any gate (see
+  # Registry) is also left out when the line holds none of its words.
+  #
+  # @example
+  #   index = TextSubs::TokenIndex.new([/You feel fine/, /\d+ coins/, /.+/])
+  #   index.candidates('You feel fine.') # => [/You feel fine/, /.+/]
+  #   index.candidates('7 coins')        # => [/\d+ coins/, /.+/]
+  class TokenIndex
+    # The tier one key goes in; see the class comment.
+    #
+    # @param key [Regexp]
+    # @return [Array(Symbol, Object)] frozen [tier, value]: [:words,
+    #   Array<String>], [:prefix, String], [:suffix, String], [:trigram,
+    #   String], [:include, String], or [:always]
+    # @example
+    #   TextSubs::TokenIndex.tier(/You feel (fine|good)\./) # => [:words, ["feel"]]
+    #   TextSubs::TokenIndex.tier(/(?i)fine/)               # => [:always]
+    def self.tier(key)
+      Pattern.new(key).tier
+    end
+
+    # @param keys [Array<Regexp>] the catalog's keys, in insertion order
+    # @param gates [Hash{Regexp=>Array<String>}] gated keys and their words
+    #   (Registry#gates); a gate for a key not in keys is ignored
+    # @return [TokenIndex] frozen
+    def initialize(keys, gates = {})
+      @keys = keys.dup.freeze
+      @always = []
+      @included = []
+      @gates = {}
+      @tables = { words: {}, prefix: {}, suffix: {}, trigram: {} }
+      @keys.each_with_index { |key, position| file(key, position, gates[key]) }
+      [@always, @included, @gates, *@tables.values].each(&:freeze)
+      @tables.freeze
+      freeze
+    end
+
+    # The keys that may match line, in insertion order. Every key that
+    # matches line is among them, unless its gate leaves it out.
+    #
+    # @param line [String] the line as it came; not changed
+    # @return [Array<Regexp>]
+    # @raise [ArgumentError] when line is a String with invalid bytes for its
+    #   encoding, as Regexp#match? would
+    def candidates(line)
+      found = @always.dup
+      @included.each { |position, literal| found << position if line.include?(literal) }
+      line.scan(/[A-Za-z]+/).uniq.each { |token| collect(found, token) }
+      found.uniq!
+      found.sort!
+      found.reject! { |position| (words = @gates[position]) && words.none? { |word| line.include?(word) } } unless @gates.empty?
+      found.map! { |position| @keys[position] }
+    end
+
+    private
+
+    # @param key [Regexp]
+    # @param position [Integer] its place in insertion order
+    # @param gate [Array<String>, nil] its requires_any words
+    # @return [void]
+    def file(key, position, gate)
+      @gates[position] = gate if gate
+      tier, value = self.class.tier(key)
+      case tier
+      when :words then value.each { |word| slot(:words, word) << position }
+      when :include then @included << [position, value].freeze
+      when :always then @always << position
+      else slot(tier, value) << position
+      end
+    end
+
+    # @param table [Symbol] :words, :prefix, :suffix or :trigram
+    # @param token [String]
+    # @return [Array<Integer>] the positions filed under token, created empty
+    def slot(table, token)
+      @tables[table].fetch(token) { @tables[table][token] = [] }
+    end
+
+    # Adds the positions every table files under token, or a piece of it.
+    #
+    # @param found [Array<Integer>] positions so far; appended to
+    # @param token [String] one token of the line
+    # @return [void]
+    def collect(found, token)
+      words, prefix, suffix, trigram = @tables.values_at(:words, :prefix, :suffix, :trigram)
+      (hit = words[token]) && found.concat(hit)
+      return if token.size < 3
+
+      (hit = prefix[token[0, 3]]) && found.concat(hit)
+      (hit = suffix[token[-3, 3]]) && found.concat(hit)
+      return if trigram.empty?
+
+      0.upto(token.size - 3) { |at| (hit = trigram[token[at, 3]]) && found.concat(hit) }
+    end
+
+    # Reads one regex source and proves what text a match of it must hold.
+    # It is a whitelist: anything it does not fully understand (options and
+    # inline flags, a non-ASCII source, back-references and subexpression
+    # calls, an escape it does not know, a nested or POSIX class, a {n}? or
+    # {n}+ suffix, comments, conditionals) makes the key :always.
+    #
+    # The source is read into a mandatory path of symbols: [:lit, char] for a
+    # literal character, :N for one or more characters none of which is a
+    # letter, :B for a zero-width edge whose far side is no letter (^ $ \b \A
+    # \z \Z), and :A for anything else (possibly letters, possibly empty).
+    # Lookarounds are zero-width and dropped from the path; a letter run on
+    # the path with :N, :B or a literal non-letter on both sides is a whole
+    # token of any matching line.
+    #
+    # @example
+    #   TextSubs::TokenIndex::Pattern.new(/^Roundtime: \d+ sec/).tier # => [:words, ["Roundtime"]]
+    class Pattern
+      # @return [Array<String>] the alphanumeric escapes a character class may
+      #   hold, frozen; each stands for exactly one character
+      def self.class_escapes
+        %w[d s w h D S W H n t r f v e a].freeze
+      end
+
+      # @param key [Regexp]
+      # @return [Pattern]
+      def initialize(key)
+        @key = key
+        @source = key.source
+        @chars = @source.chars
+        @at = 0
+      end
+
+      # @return [Array(Symbol, Object)] frozen; see TokenIndex.tier
+      def tier
+        found = catch(:bail) do
+          throw :bail unless (@key.options & ~(Regexp::NOENCODING | Regexp::FIXEDENCODING)).zero? && @source.ascii_only?
+
+          alternatives = parse
+          alternatives.size == 1 ? sequence_tier(alternatives.first) : any_of_tier(alternatives)
+        end
+        (found || [:always]).freeze
+      end
+
+      private
+
+      # @param items [Array<Array>] the source's one top-level alternative
+      # @return [Array(Symbol, Object), nil] its tier, nil for :always
+      def sequence_tier(items)
+        sets = []
+        path = [:A, *flatten(items, sets), :A]
+        words = words_of(path)
+        sets.unshift([words.max_by(&:size)]) unless words.empty?
+        best = sets.min_by { |set| [set.size, -set.map(&:size).min] }
+        return [:words, best.freeze] if best
+
+        edge_tier(path) || literal_tier(path)
+      end
+
+      # @param alternatives [Array<Array>] two or more top-level alternatives
+      # @return [Array(Symbol, Object), nil] [:words, set] when every one
+      #   holds a whole word
+      def any_of_tier(alternatives)
+        per = alternatives.map { |items| words_of([:A, *flatten(items, []), :A]) }
+        [:words, per.flatten.uniq.freeze] if per.none?(&:empty?)
+      end
+
+      # The longest letter run of three or more with an edge on one side: a
+      # token of the line starts (left edge) or ends (right edge) with it.
+      #
+      # @param path [Array] a padded path
+      # @return [Array(Symbol, String), nil]
+      def edge_tier(path)
+        best = nil
+        letter_runs(path).each do |first, last|
+          run = path[first..last].map(&:last).join
+          next if run.size < 3 || (best && best[2] >= run.size)
+
+          if first.positive? && nonletter?(path[first - 1]) then best = [:prefix, run[0, 3], run.size]
+          elsif nonletter?(path[last + 1]) then best = [:suffix, run[-3, 3], run.size]
+          end
+        end
+        best&.first(2)
+      end
+
+      # The longest run of consecutive literal characters, when it is three
+      # or more long: its first three letters in a row, else the run itself.
+      #
+      # @param path [Array] a padded path
+      # @return [Array(Symbol, String), nil]
+      def literal_tier(path)
+        literal = path.chunk_while { |a, b| a.is_a?(Array) && b.is_a?(Array) }
+                      .select { |run| run.first.is_a?(Array) }
+                      .map { |run| run.map(&:last).join }
+                      .max_by(&:size)
+        return nil unless literal && literal.size >= 3
+
+        trigram = literal[/[A-Za-z]{3}/]
+        trigram ? [:trigram, trigram] : [:include, literal.freeze]
+      end
+
+      # @param path [Array]
+      # @return [Array<Array(Integer, Integer)>] [first, last] indexes of each
+      #   maximal run of literal letters in path
+      def letter_runs(path)
+        runs = []
+        path.each_with_index do |symbol, at|
+          next unless letter?(symbol)
+
+          if runs.last && runs.last[1] == at - 1 then runs.last[1] = at
+          else runs << [at, at]
+          end
+        end
+        runs
+      end
+
+      # Letter runs with a non-letter on both sides: whole tokens.
+      #
+      # @param path [Array]
+      # @return [Array<String>]
+      def words_of(path)
+        letter_runs(path).filter_map do |first, last|
+          path[first..last].map(&:last).join if first.positive? && nonletter?(path[first - 1]) && nonletter?(path[last + 1])
+        end
+      end
+
+      # @param symbol [Object] a path symbol
+      # @return [Boolean] whether it is a literal ASCII letter
+      def letter?(symbol)
+        return false unless symbol.is_a?(Array)
+
+        code = symbol[1].ord
+        (65..90).cover?(code) || (97..122).cover?(code) # A-Z, a-z
+      end
+
+      # @param symbol [Object, nil] a path symbol, or nil past either end
+      # @return [Boolean] whether it is certainly no letter: :N, :B or a
+      #   literal non-letter
+      def nonletter?(symbol)
+        symbol == :N || symbol == :B || (symbol.is_a?(Array) && !letter?(symbol))
+      end
+
+      # Flattens one alternative's items into its mandatory path, and adds to
+      # sets the word sets of each group of alternatives on it that must
+      # match once: a matching line holds one word of each such set.
+      #
+      # @param items [Array<Array(Object, Integer, Numeric)>] [atom, min, max]
+      # @param sets [Array<Array<String>>] appended to
+      # @return [Array] the path
+      def flatten(items, sets)
+        path = []
+        items.each_with_index do |(atom, min, max), at|
+          if min.zero?
+            path << :A
+          elsif atom.is_a?(Array) && atom.first == :group
+            path.concat(group_path(atom[1], max, path.last, items[at + 1], sets))
+          elsif atom == :look
+            next
+          elsif max == 1
+            path << atom
+          else
+            path << (nonletter?(atom) ? :N : :A)
+          end
+        end
+        path
+      end
+
+      # The path of a group that must match at least once. A group of
+      # alternatives that matches exactly once adds to sets the words one of
+      # which each alternative holds, judged with the symbols on either side.
+      #
+      # @param alternatives [Array<Array>] the group's alternatives
+      # @param max [Numeric] its quantifier's upper bound
+      # @param left [Object, nil] the path symbol before it
+      # @param right_item [Array, nil] the item after it
+      # @param sets [Array<Array<String>>] appended to
+      # @return [Array] the path
+      def group_path(alternatives, max, left, right_item, sets)
+        return flatten(alternatives.first, sets) if max == 1 && alternatives.size == 1
+
+        if max == 1
+          right = right_item && right_item[1] >= 1 && simple(right_item[0]) || :A
+          per = alternatives.map { |items| words_of([left || :A, *flatten(items, []), right]) }
+          sets << per.flatten.uniq if per.none?(&:empty?)
+        end
+        [alternatives.all? { |items| nonletter_only?(items) } ? :N : :A]
+      end
+
+      # @return [Object, nil] atom when it is one path symbol, else nil
+      def simple(atom)
+        atom if atom == :N || atom == :B || (atom.is_a?(Array) && atom.first == :lit)
+      end
+
+      # @param items [Array<Array>] one alternative's items
+      # @return [Boolean] whether it matches one or more characters, none a letter
+      def nonletter_only?(items)
+        !items.empty? && items.all? { |atom, min, _| min >= 1 && (atom == :N || (atom.is_a?(Array) && atom.first == :lit && !letter?(atom))) }
+      end
+
+      # --- the parser: [atom, min, max] items, atoms [:lit, c], :N, :A, :B,
+      # :look and [:group, alternatives]; anything unknown throws :bail.
+
+      # @return [String, nil] the character at the read position
+      def peek
+        @chars[@at]
+      end
+
+      # @return [Array<Array>] the alternatives of the whole source
+      def parse
+        alternatives = parse_alternatives
+        throw :bail unless @at == @chars.size
+        alternatives
+      end
+
+      # @return [Array<Array>] alternatives up to the next ) or the end
+      def parse_alternatives
+        alternatives = [parse_sequence]
+        while peek == '|'
+          @at += 1
+          alternatives << parse_sequence
+        end
+        alternatives
+      end
+
+      # @return [Array<Array>] the items of one alternative
+      def parse_sequence
+        items = []
+        until sequence_end?
+          atom = parse_atom
+          min, max = parse_quantifier
+          throw :bail if (atom == :look || atom == :B) && (min != 1 || max != 1)
+          items << [atom, min, max]
+        end
+        items
+      end
+
+      # @return [Array(Integer, Numeric)] the [min, max] of the quantifier
+      #   at the read position, [1, 1] when there is none
+      def parse_quantifier
+        bounds = case peek
+                 when '?' then [0, 1]
+                 when '*' then [0, Float::INFINITY]
+                 when '+' then [1, Float::INFINITY]
+                 when '{' then return parse_interval
+                 else return [1, 1]
+                 end
+        @at += 1
+        @at += 1 if peek == '?' || peek == '+' # lazy or possessive
+        throw :bail if stacked?
+        bounds
+      end
+
+      # @return [Array(Integer, Numeric)] the [min, max] of {n}, {n,}, {,m}
+      #   or {n,m}. Ruby reads a ? or + after an interval
+      # unlike after ?, * or + (x{2}? is an optional x{2}), so either bails.
+      def parse_interval
+        interval = /\G\{(\d*)(,?)(\d*)\}/.match(@source, @at)
+        throw :bail unless interval && !(interval[1].empty? && interval[3].empty?)
+        @at += interval[0].size
+        throw :bail if stacked?
+        low = interval[1].to_i
+        high = if interval[2].empty? then low
+               elsif interval[3].empty? then Float::INFINITY
+               else interval[3].to_i
+               end
+        [low, high]
+      end
+
+      # @return [Boolean] whether another quantifier follows the one just read
+      def stacked?
+        case peek
+        when '?', '*', '+', '{' then true
+        else false
+        end
+      end
+
+      # @return [Boolean] whether the sequence being read ends here
+      def sequence_end?
+        case peek
+        when '|', ')', nil then true
+        else false
+        end
+      end
+
+      # @return [Object] the atom at the read position
+      def parse_atom
+        char = peek
+        case char
+        when '\\' then parse_escape
+        when '[' then parse_class
+        when '(' then parse_group
+        when ')', '*', '+', '?', '{' then throw :bail
+        when '.' then step(:A)
+        when '^', '$' then step(:B)
+        else step([:lit, char])
+        end
+      end
+
+      # @return [Array, Symbol] [:group, alternatives], or :look for a
+      #   lookaround
+      def parse_group
+        @at += 1
+        rest = @source[@at, 4]
+        if rest.start_with?('?:', '?>') then @at += 2
+        elsif (name = /\G\?<[A-Za-z_]\w*>/.match(@source, @at)) then @at += name[0].size
+        elsif rest.start_with?('?=', '?!', '?<=', '?<!')
+          @at += rest.start_with?('?<') ? 3 : 2
+          parse_alternatives
+          close_group
+          return :look
+        elsif rest.start_with?('?') then throw :bail # (?i) (?x) (?#...) (?~...) (?(cond)...)
+        end
+        alternatives = parse_alternatives
+        close_group
+        [:group, alternatives]
+      end
+
+      # @return [void]
+      def close_group
+        throw :bail unless peek == ')'
+        @at += 1
+      end
+
+      # @return [Object] the atom a backslash escape reads as
+      def parse_escape
+        char = @chars[@at + 1]
+        throw :bail unless char
+        @at += 2
+        return [:lit, char] unless char.match?(/[0-9A-Za-z]/)
+
+        case char
+        when 'd', 's', 'W', 'n', 't', 'r', 'f', 'v', 'e', 'a' then :N
+        when 'b', 'A', 'z', 'Z' then :B
+        when 'D', 'S', 'w', 'h', 'H' then :A
+        else throw :bail # back-references, \k \g \x \u \c \C \M \p \R \X \K \G \B, octal
+        end
+      end
+
+      # Moves past the one character just read.
+      #
+      # @param atom [Object] what it reads as
+      # @return [Object] atom
+      def step(atom)
+        @at += 1
+        atom
+      end
+
+      # A class is :N when each member is a plain non-letter character, \d or
+      # \s, with no range, else :A; a negated class is :A.
+      #
+      # @return [Symbol] :N or :A
+      def parse_class
+        @at += 1
+        negated = peek == '^'
+        @at += 1 if negated
+        members = []
+        until peek == ']' && !members.empty?
+          member = class_member
+          members << member
+          @at += member.size
+        end
+        @at += 1
+        return :A if negated || members.each_cons(2).any? { |pair| pair == ['&', '&'] }
+        return :A if members.each_index.any? { |at| members[at] == '-' && at.positive? && at < members.size - 1 }
+
+        members.all? { |member| nonletter_member?(member) } ? :N : :A
+      end
+
+      # @return [String] the next member of a class: one character, or a
+      #   backslash and the character it escapes
+      def class_member
+        char = peek
+        throw :bail if char.nil? || char == '[' || char == ']'
+        return char unless char == '\\'
+
+        member = @chars[@at, 2].join
+        throw :bail if member.size < 2 || (member[1].match?(/[0-9A-Za-z]/) && !self.class.class_escapes.include?(member[1]))
+        member
+      end
+
+      # @return [Boolean] whether a class member only ever matches a non-letter
+      def nonletter_member?(member)
+        return true if member == '\\d' || member == '\\s'
+
+        member.size == 2 ? !member[1].match?(/[0-9A-Za-z]/) : !letter?([:lit, member])
+      end
+    end
+  end
+
   # What a catalog section's `when:` gate is checked against: the guild and
   # the character settings at the time the catalog is built, so the catalog
   # itself never reads DRStats or get_settings.
