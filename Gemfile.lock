@@ -269,6 +269,7 @@ DEPENDENCIES
   rake
   rbs
   redis
+  regexp_parser
   resolv
   rexml
   rspec

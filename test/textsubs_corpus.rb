@@ -16,7 +16,6 @@ require 'regexp_parser'
 #
 # Regenerate both with
 #   TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
-# The regexp_parser gem comes with rubocop, which the Gemfile pins.
 module TextsubsCorpus
   # Turns a regex source into one concrete string the regex is meant to match.
   # Each choice the source leaves open is fixed by the strategy given to new:

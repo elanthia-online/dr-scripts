@@ -37,6 +37,7 @@ group :development do
   gem "guard-rspec"
   gem "webmock"
   gem "rack"
+  gem "regexp_parser" # spec/textsubs_spec.rb expands catalog regexes with it (test/textsubs_corpus.rb)
 end
 
 group :vscode do
