@@ -517,18 +517,64 @@ RSpec.describe 'textsubs.lic' do
     stream_without_big_line = stream - [big_line]
     every_flag_on = { 'textsubs_spell_links' => true, 'herb_textsubs' => true }.freeze
 
-    # Sends each line through the registered hooks and through reference_apply
-    # with the current TextSubs.subs.
+    # The lines the catalog sweeps run: every sample, then every stream line
+    # but the 49 KB one. A sample's index here is its index in `samples`.
+    corpus = samples + stream_without_big_line
+    # reference_apply's select step, run once per distinct key: the indexes of
+    # the corpus lines each key matches (key.match?(line) is true exactly when
+    # key =~ line is), worked out the first time an example asks for the key.
+    # The guild catalogs share most of their keys, so the sweeps run each key
+    # over the corpus once instead of once per catalog. A key built again by a
+    # later example finds its entry: Regexp#eql? compares source and options.
+    corpus_matches = Hash.new { |cache, key| cache[key] = corpus.each_index.select { |at| key.match?(corpus[at]) } }
+
+    # For each corpus line, the keys of `subs` that match it, in catalog order:
+    # what reference_apply's select step gives for the line.
+    #
+    # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
+    # @param corpus_matches [Hash{Regexp=>Array<Integer>}] corpus line indexes per key
+    # @param size [Integer] number of corpus lines
+    # @return [Array<Array<Regexp>>] one ordered key list per corpus line
+    def selected_keys(subs, corpus_matches, size)
+      selected = Array.new(size) { [] }
+      subs.each_key { |key| corpus_matches[key].each { |at| selected[at] << key } }
+      selected
+    end
+
+    # reference_apply's apply step: gsub! each selected key, in the order
+    # given, on the line as it changes.
+    #
+    # @param subs [Hash{Regexp=>String}] the catalog the keys come from
+    # @param keys [Array<Regexp>] the selected keys, in the order they run
+    # @param line [String] a server line; not modified
+    # @return [String] the line after substitution
+    def apply_selected(subs, keys, line)
+      keys.each_with_object(line.dup) { |key, output| output.gsub!(key, subs[key]) }
+    end
+
+    # reference_apply's output for every corpus line, with its select step
+    # looked up in corpus_matches.
+    #
+    # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
+    # @param corpus [Array<String>] the corpus lines
+    # @param corpus_matches [Hash{Regexp=>Array<Integer>}] corpus line indexes per key
+    # @return [Array<String>] the reference output for each corpus line
+    def looked_up_reference(subs, corpus, corpus_matches)
+      selected_keys(subs, corpus_matches, corpus.size).each_with_index.map { |keys, at| apply_selected(subs, keys, corpus[at]) }
+    end
+
+    # Sends each line through the registered hooks and compares the output
+    # with the reference output for that line.
     #
     # @param lines [Array<String>] binary server lines
+    # @param expected [Array<String>] the reference output for each line;
+    #   reference_apply with the current TextSubs.subs unless given
     # @return [Array<Array(String, String, String)>] [line, hook output,
     #   reference output] for each line where the two differ
-    def oracle_mismatches(lines)
-      subs = TextSubs.subs
-      lines.filter_map do |line|
+    def oracle_mismatches(lines, expected = lines.map { |line| reference_apply(TextSubs.subs, line) })
+      lines.each_with_index.filter_map do |line, at|
         hooked = run_hooks(line)
-        expected = reference_apply(subs, line)
-        [line, hooked, expected] unless hooked == expected
+        [line, hooked, expected[at]] unless hooked == expected[at]
       end
     end
 
@@ -611,13 +657,13 @@ RSpec.describe 'textsubs.lic' do
     guilds.each do |guild|
       it "gives reference_apply's output for every sample and stream line with the #{guild} catalog" do
         build_catalog(guild, every_flag_on)
-        mismatches = oracle_mismatches(samples + stream_without_big_line)
+        mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
         expect(mismatches).to be_empty, -> { mismatch_report(guild, mismatches) }
       end
 
       it "matches every key of the #{guild} catalog with at least one sample" do
         build_catalog(guild, every_flag_on)
-        unmatched = TextSubs.subs.keys.reject { |key| samples.any? { |sample| key.match?(sample) } }
+        unmatched = TextSubs.subs.keys.reject { |key| corpus_matches[key].any? { |at| at < samples.size } }
         expect(unmatched.map(&:source)).to eq([]), lambda {
           "#{unmatched.size} #{guild} key(s) match no line of samples.jsonl; add a sample for each:\n" \
             "#{unmatched.map { |key| "  #{key.source}" }.join("\n")}"
@@ -629,11 +675,15 @@ RSpec.describe 'textsubs.lic' do
       # own and a reordered engine would still pass it. Running reference_apply
       # over the catalog reversed is exactly such an engine.
       it "holds lines that two or more #{guild} keys match, in some of which the key order changes the output" do
+        # reference_apply over the reversed catalog selects the same keys and
+        # runs them in reverse order.
         build_catalog(guild, every_flag_on)
         subs = TextSubs.subs
-        reversed = subs.to_a.reverse.to_h
-        shared = samples.select { |sample| subs.keys.count { |key| key.match?(sample) } >= 2 }
-        order_sensitive = shared.reject { |line| reference_apply(reversed, line) == reference_apply(subs, line) }
+        selected = selected_keys(subs, corpus_matches, corpus.size).first(samples.size)
+        shared = samples.each_index.select { |at| selected[at].size >= 2 }
+        order_sensitive = shared.reject do |at|
+          apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
+        end
         expect(shared.size).to be >= 50, "only #{shared.size} sample(s) are matched by two or more #{guild} keys"
         expect(order_sensitive.size).to be >= 4,
                                         "only #{order_sensitive.size} sample(s) give another output with the #{guild} keys reversed"
@@ -650,8 +700,23 @@ RSpec.describe 'textsubs.lic' do
       # The 49 KB line is left out: through the two platinum-aware coin rules it
       # costs ~3.5 s, and the coin rules see it in the default-rule example above.
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
-      mismatches = oracle_mismatches(samples + stream_without_big_line)
+      mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
       expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping on)', mismatches) }
+    end
+
+    # The sweeps above take reference_apply's select step from corpus_matches.
+    # Here reference_apply itself runs on every corpus line, after another
+    # catalog has filled the lookup, so a fault in the lookup (a key missed, a
+    # wrong order, a stale entry) fails this example.
+    it 'looks up the same select step reference_apply runs, on every corpus line' do
+      build_catalog('Bard', every_flag_on)
+      looked_up_reference(TextSubs.subs, corpus, corpus_matches)
+      build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
+      subs = TextSubs.subs
+      looked_up = looked_up_reference(subs, corpus, corpus_matches)
+      differ = corpus.each_index.reject { |at| looked_up[at] == reference_apply(subs, corpus[at]) }
+      expect(looked_up.each_index.count { |at| looked_up[at] != corpus[at] }).to be > 1_000
+      expect(differ.map { |at| corpus[at] }).to eq([])
     end
 
     it 'keeps the \r\n ending on every stream line the Empath catalog rewrites' do
