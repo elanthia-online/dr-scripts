@@ -125,7 +125,7 @@ if settings.textsubs_spell_links
   ### 1. Guild Spells ###
   TextSubs.add("You recall the spells you have learned from your training.", "You recall the spells you have learned from your <a href=\"https://elanthipedia.play.net/Category:#{DRStats.guild.gsub(" ", "_")}_spells\">#{DRStats.guild}</a> training.")
   ### 2. Magic Feats ###
-  TextSubs.add('You recall proficiency with the magic feats of', "You recall proficiency with the <a href=\"https://elanthipedia.play.net/Magical_feats\">magical feats</a>:")
+  TextSubs.add('You recall proficiency with the magic feats of', "You recall proficiency with the <a href=\"https://elanthipedia.play.net/Magical_feats\">magic feats</a> of")
   ### 3. SPELLBOOKS ###
   # spellbook_pre_text_capture = '^'
   # spellbook_post_text_capture = ':'

@@ -820,7 +820,7 @@
 ["genich",0,"genich (body-ES)"]
 ["ojhenik",0,"ojhenik (body-IS)"]
 ["You recall the spells you have learned from your training.",0,"You recall the spells you have learned from your <a href=\"https://elanthipedia.play.net/Category:Barbarian_spells\">Barbarian</a> training."]
-["You recall proficiency with the magic feats of",0,"You recall proficiency with the <a href=\"https://elanthipedia.play.net/Magical_feats\">magical feats</a>:"]
+["You recall proficiency with the magic feats of",0,"You recall proficiency with the <a href=\"https://elanthipedia.play.net/Magical_feats\">magic feats</a> of"]
 ["(^)(Analogous Patterns)(:)",0,"\\1<a href=\"https://elanthipedia.play.net/Category:Analogous_Patterns_spellbook\">Analogous Patterns</a>\\3"]
 ["(^)(Elemental Invocations)(:)",0,"\\1<a href=\"https://elanthipedia.play.net/Category:Elemental_Invocations_spellbook\">Elemental Invocations</a>\\3"]
 ["(^)(Emotion Control)(:)",0,"\\1<a href=\"https://elanthipedia.play.net/Category:Emotion_Control_spellbook\">Emotion Control</a>\\3"]

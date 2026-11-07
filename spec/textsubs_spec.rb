@@ -1137,6 +1137,27 @@ RSpec.describe 'textsubs.lic' do
           .to eq(%(It is labeled "Demrris' Resolve." (Bard)\r\n))
       end
     end
+
+    # With textsubs_spell_links on, the magic feats list gets a wiki link.
+    # The link used to replace the game's 'magic feats of' with
+    # 'magical feats:', so the list read 'magical feats: Sorcerous
+    # Patterns, ...'. It wraps the game's own words now.
+    describe 'the magic feats link' do
+      feats = 'Sorcerous Patterns, Alternate Preparation and Augmentation Mastery.'
+      link = '<a href="https://elanthipedia.play.net/Magical_feats">magic feats</a>'
+
+      it "links the game's 'magic feats' and keeps the 'of' before the list" do
+        build_catalog('Commoner', 'textsubs_spell_links' => true)
+        expect(run_hooks("You recall proficiency with the magic feats of #{feats}\r\n".b))
+          .to eq("You recall proficiency with the #{link} of #{feats}\r\n")
+      end
+
+      it 'adds no second colon when the game ends the line with one' do
+        build_catalog('Commoner', 'textsubs_spell_links' => true)
+        expect(run_hooks("You recall proficiency with the magic feats of:\r\n".b))
+          .to eq("You recall proficiency with the #{link} of:\r\n")
+      end
+    end
   end
 
   describe 'reference-engine oracle' do
