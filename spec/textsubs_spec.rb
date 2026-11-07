@@ -665,7 +665,8 @@ RSpec.describe 'textsubs.lic' do
             selected = selected_keys(TextSubs.subs, composite_matches, composites.size)
             composites.each_index.reject { |at| selected[at].size >= 2 }.map { |at| [combination['guild'], composites[at]] }
           end
-          expect(thin).to eq([]), 'each composite sample must be matched by two or more keys of every catalog with spell links and herbs on'
+          expect(thin).to eq([]), 'each composite sample must be matched by two or more keys of every catalog with spell links and ' \
+                                  "herbs on; [guild, composite] pairs where it is not: #{thin.inspect}"
 
           lines = TextsubsCorpus.samples_lines(generated, hand_added)
           # Names every line the rewrite drops, so a line added straight to
@@ -795,8 +796,8 @@ RSpec.describe 'textsubs.lic' do
         order_sensitive = shared.reject do |at|
           apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
         end
-        thin = corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }
-        expect(thin.map { |at| samples[at] }).to eq([]), "every composite sample must be matched by two or more #{guild} keys"
+        thin = corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }
+        expect(thin).to eq([]), "every composite sample must be matched by two or more #{guild} keys; these are not: #{thin.inspect}"
         expect(shared.size).to be >= 50, "only #{shared.size} sample(s) are matched by two or more #{guild} keys"
         expect(order_sensitive.size).to be >= 4,
                                         "only #{order_sensitive.size} sample(s) give another output with the #{guild} keys reversed"
