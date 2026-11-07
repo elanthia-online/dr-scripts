@@ -8,7 +8,8 @@
   with no front end attached every line is left alone.
 
   The built-in subs live in data/base-textsubs.yaml. A copy at
-  data/custom/base-textsubs.yaml replaces that file whole.
+  data/custom/base-textsubs.yaml replaces that file whole. Either is read
+  once, when textsubs starts, so an edit takes effect only after a restart.
 
   The settings it reads from your character's YAML (profiles/base.yaml has
   each one with its default) are read once, when textsubs starts, so a
@@ -20,9 +21,9 @@
     herb_textsubs - heal and remedy subs by ingredient name
     textsubs_use_plat_grouping - coin commas split at the platinum
 
-  A sub another script adds with TextSubs.add lasts only until textsubs
-  restarts, as every start builds the subs from nothing. Put a sub you want
-  to keep in private_textsubs instead.
+  A sub another script adds with TextSubs.add or TextSubs.elanthipedia
+  lasts only until textsubs restarts, as every start builds the subs from
+  nothing. Put a sub you want to keep in private_textsubs instead.
 =end
 
 no_pause_all
