@@ -131,34 +131,39 @@ module TextsubsCorpus
   # Samples kept per catalog entry.
   SAMPLES_PER_ENTRY = 2
 
+  # Each composite part below is a pattern, and the part is the first expanded
+  # sample the pattern matches, so a catalog change that rewords the sample
+  # (the tier-18 hit gaining its parentheses, jadice splitting into flower and
+  # pollen) changes the composite line instead of breaking the generator.
+
   # Composite lines put a line-start family first: scroll labels
   # ('^(It is labeled)') and spell recognition ('^(You recognize|You decipher)')
   # only match at the start of a line.
   COMPOSITE_LEADS = [
-    ['It is labeled "Absolution."', 'It is labeled "Aether Cloak."'],
-    ['You decipher the telltale signs of the Ignite spell.', 'You recognize the familiar mnemonics of the Ignite spell.']
+    [/\AIt is labeled "Absolution\b/, /\AIt is labeled "Aether Cloak\b/],
+    [/\AYou decipher .*\bIgnite spell\b/, /\AYou recognize .*\bIgnite spell\b/]
   ].freeze
 
   # Key families joined pairwise, in the order they sit on a composite line;
-  # coin amounts go last. 55555 because plat grouping adds no comma to a
+  # coin amounts go last. Five digits because plat grouping adds no comma to a
   # four-digit amount.
   COMPOSITE_FAMILIES = [
-    ['Encumbrance : Burdened'],
-    ['a light hit', 'a devastating hit'],
-    %w[jadice yelith],
-    ["........  Damaris' Lullaby..()", '........  Awaken..()'],
-    ['class on basiccompared to'],
-    ['55555Kronar', '55555Dokora', '5555 platinumKronar']
+    [/\AEncumbrance : Burdened\b/],
+    [/\Aa light hit\z/, /\Aa devastating hit\z/],
+    [/\Ajadice\b/, /\Ayelith\b/],
+    [/\A\.+ +Damaris' Lullaby\.\.\(\)\z/, /\A\.+ +Awaken\.\.\(\)\z/],
+    [/\Aclass on basic/],
+    [/\A5{5}Kronar\z/, /\A5{5}Dokora\z/, /\A5+ platinumKronar\z/]
   ].freeze
 
   # Joins whose output depends on the key order: a spell link after a coin
   # amount (the link's '>' turns the coin rule's (?!.*>) off when the link
-  # runs first), and the two "a devastating hit" keys.
+  # runs first), and the two "a devastating hit" keys (tier 18, then tier 17).
   ORDER_SENSITIVE_JOINS = [
-    ['55555Kronar', '........  Awaken..()'],
-    ['55555Dokora', "........  Damaris' Lullaby..()"],
-    ['5555 platinumKronar', '........  Awaken..()'],
-    ["a devastating hit That'll leave a mark!", 'a devastating hit']
+    [/\A5{5}Kronar\z/, /\A\.+ +Awaken\.\.\(\)\z/],
+    [/\A5{5}Dokora\z/, /\A\.+ +Damaris' Lullaby\.\.\(\)\z/],
+    [/\A5+ platinumKronar\z/, /\A\.+ +Awaken\.\.\(\)\z/],
+    [/\Aa devastating hit\b.*\bmark\b/, /\Aa devastating hit\z/]
   ].freeze
 
   # For every distinct catalog entry, up to SAMPLES_PER_ENTRY expansions its
@@ -211,20 +216,34 @@ module TextsubsCorpus
 
   # Lines that two or more keys match: each lead with each family, each
   # family with every later family (alternatives zipped, the shorter list
-  # cycled), then ORDER_SENSITIVE_JOINS. Every part is an expanded sample.
+  # cycled), then ORDER_SENSITIVE_JOINS. Every part is the first expanded
+  # sample its pattern matches.
   #
   # @param samples [Array<String>] the expanded samples
-  # @return [Array<String>] distinct composite lines
-  # @raise [ArgumentError] when a part is not among `samples` (a catalog change
-  #   rewrote the pattern it came from: pick a sample of the new pattern here)
+  # @return [Array<String>] distinct composite lines, none of them in `samples`
+  # @raise [ArgumentError] naming the constant and the pattern, when a pattern
+  #   matches no sample (a catalog change removed what it picked: widen the
+  #   pattern to match a sample of the new wording)
   def self.composite_samples(samples)
-    known = samples.to_set
-    pick = ->(part) { known.include?(part) ? part : raise(ArgumentError, "composite part #{part.inspect} is not an expanded sample") }
-    leads = COMPOSITE_LEADS.map { |family| family.map(&pick) }
-    families = COMPOSITE_FAMILIES.map { |family| family.map(&pick) }
+    leads = COMPOSITE_LEADS.map { |family| family.map { |pattern| composite_part(samples, pattern, 'COMPOSITE_LEADS') } }
+    families = COMPOSITE_FAMILIES.map { |family| family.map { |pattern| composite_part(samples, pattern, 'COMPOSITE_FAMILIES') } }
     pairs = leads.product(families) + families.combination(2).to_a
     joined = pairs.flat_map { |first, second| first.zip(second.cycle).map { |a, b| "#{a} #{b}" } }
-    (joined + ORDER_SENSITIVE_JOINS.map { |first, second| "#{pick[first]} #{pick[second]}" }).uniq
+    order_sensitive = ORDER_SENSITIVE_JOINS.map do |join|
+      join.map { |pattern| composite_part(samples, pattern, 'ORDER_SENSITIVE_JOINS') }.join(' ')
+    end
+    (joined + order_sensitive).uniq - samples
+  end
+
+  # @param samples [Array<String>] the expanded samples
+  # @param pattern [Regexp] a pattern from `constant`
+  # @param constant [String] the constant `pattern` sits in, for the error
+  # @return [String] the first of `samples` that `pattern` matches
+  # @raise [ArgumentError] when `pattern` matches none of them
+  def self.composite_part(samples, pattern, constant)
+    samples.find { |sample| pattern.match?(sample) } or
+      raise ArgumentError, "#{constant} pattern #{pattern.inspect} matches no expanded sample; " \
+                           'widen it in test/textsubs_corpus.rb to match a sample of the new wording'
   end
 
   # @param entries [Array<Array(String, Integer, String)>] catalog_entries.jsonl rows

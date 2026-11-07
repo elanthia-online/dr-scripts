@@ -642,6 +642,16 @@ RSpec.describe 'textsubs.lic' do
           }
         end
       end
+
+      it 'takes each composite part as the first expanded sample its pattern matches' do
+        expect(TextsubsCorpus.composite_part(['a hit', 'a light hit', 'a light hit (grazing)'], /\Aa light hit\b/, 'COMPOSITE_FAMILIES'))
+          .to eq('a light hit')
+      end
+
+      it 'names the constant and the pattern when no expanded sample is left for a composite part' do
+        expect { TextsubsCorpus.composite_samples(TextsubsCorpus.expanded_samples(catalog_entries.call).grep_v(/\AEncumbrance : /)) }
+          .to raise_error(ArgumentError, %r{\ACOMPOSITE_FAMILIES pattern /\\AEncumbrance : Burdened\\b/ matches no expanded sample})
+      end
     end
 
     it 'reads a synthetic stream of \r\n lines holding one 49 KB digit-heavy line with no currency word' do
