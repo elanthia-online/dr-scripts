@@ -1763,6 +1763,7 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.await_guild).to be_nil
       expect(pauses).to be_empty
       expect(warnings.size).to eq(1)
+      expect(warnings.first).to include('(a login while dead skips INFO)')
       expect(warnings.first).to end_with('textsubs adds them by itself once your guild is known.')
     end
 
@@ -1782,11 +1783,21 @@ RSpec.describe 'textsubs.lic' do
       expect(warnings.size).to eq(1)
     end
 
-    it 'gives up after timeout seconds and warns once' do
+    it 'gives up after timeout seconds and warns once, blaming the slow DRInfomon rather than a dead login' do
       DRInfomon._set_startup_complete(false)
       expect(TextSubs.await_guild(timeout: 2, interval: 0.5)).to be_nil
       expect(pauses).to eq([0.5] * 4)
       expect(warnings.size).to eq(1)
+      expect(warnings.first).to include('(DRInfomon had not finished its login commands after 2 seconds)')
+      expect(warnings.first).not_to include('dead')
+    end
+
+    # The reason is read once the wait is over, not when it began.
+    it 'blames a dead login when DRInfomon finishes during the wait without a guild' do
+      DRInfomon._set_startup_complete(false)
+      count_pauses { |count| DRInfomon._set_startup_complete(true) if count == 1 }
+      TextSubs.await_guild(timeout: 2)
+      expect(warnings.first).to include('(a login while dead skips INFO)')
     end
 
     it 'waits ten seconds at most by default, checking every half second' do

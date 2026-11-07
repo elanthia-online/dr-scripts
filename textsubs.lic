@@ -577,8 +577,10 @@ class TextSubs
   # It stops waiting as soon as the guild is known, or DRInfomon says its
   # login commands are done (they skip INFO on a login while dead, so the
   # guild stays nil until a later INFO), or timeout seconds have gone by.
-  # A guild still not known then is said once; watch rebuilds the catalog
-  # when the guild turns up later.
+  # A guild still not known then is said once, with the likely reason: a
+  # login while dead when DRInfomon is done, else that DRInfomon had not
+  # finished in time. watch rebuilds the catalog when the guild turns up
+  # later.
   #
   # @param timeout [Numeric] the most seconds to wait
   # @param interval [Numeric] seconds between checks
@@ -595,7 +597,12 @@ class TextSubs
     # startup check above.
     guild = DRStats.guild
     unless guild
-      echo 'DRStats does not know your guild yet (a login while dead skips INFO), so the guild subs and the ' \
+      reason = if DRInfomon.startup_complete?
+                 'a login while dead skips INFO'
+               else
+                 "DRInfomon had not finished its login commands after #{timeout} seconds"
+               end
+      echo "DRStats does not know your guild yet (#{reason}), so the guild subs and the " \
            'guild spell list link are off for now; textsubs adds them by itself once your guild is known.'
     end
     guild
