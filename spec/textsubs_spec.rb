@@ -1573,6 +1573,16 @@ RSpec.describe 'textsubs.lic' do
           expect(errors).to be_empty
         end
 
+        # Only StandardError is a key's fault; NoMemoryError, Interrupt or
+        # SystemExit belong to the process and must not drop a sub.
+        it 'lets out an error that is not a StandardError, without handing it to on_error' do
+          replacement = Object.new
+          def replacement.to_str = raise(NoMemoryError, 'from to_str')
+          subs = { /cat/ => replacement, /dog/ => 'fox' }.freeze
+          expect { TextSubs::Engine.apply(subs, +'cat dog', on_error: on_error) }.to raise_error(NoMemoryError, 'from to_str')
+          expect(errors).to be_empty
+        end
+
         it 'lets out the KeyError of an index that names a key subs does not hold' do
           index = TextSubs::TokenIndex.new([/cat/])
           expect { TextSubs::Engine.apply({}, +'cat', index: index, on_error: on_error) }.to raise_error(KeyError)
