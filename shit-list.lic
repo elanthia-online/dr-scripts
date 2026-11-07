@@ -54,11 +54,7 @@ class ShitListRecorder
 
     respond "Added #{format("%s\, %s", name, desc)} to your shit list!"
 
-    if get_settings.integrate_shit_list_with_textsubs && Script.running?('textsubs')
-      stop_script('textsubs')
-      pause 2
-      start_script('textsubs')
-    end
+    restart_textsubs
   end
 
   def find_shitter_in_list(name_in)
@@ -93,7 +89,11 @@ class ShitListRecorder
       end
     end
 
-    respond 'Could not find in your shit list!' unless name_removed
+    if name_removed
+      restart_textsubs
+    else
+      respond 'Could not find in your shit list!'
+    end
   end
 
   def print_shit_list
@@ -113,6 +113,25 @@ class ShitListRecorder
     File.open(@file_name, 'w') {}
 
     echo 'List cleared!'
+
+    restart_textsubs
+  end
+
+  private
+
+  # Restarts textsubs so it rereads the list: textsubs tags the listed names
+  # only when it starts, so without a restart an added name goes untagged and
+  # a removed or cleared one keeps its (SL) tag until textsubs next starts.
+  # Does nothing unless integrate_shit_list_with_textsubs is on and textsubs
+  # is running (a textsubs that is not running reads the list when it starts).
+  #
+  # @return [void]
+  def restart_textsubs
+    return unless get_settings.integrate_shit_list_with_textsubs && Script.running?('textsubs')
+
+    stop_script('textsubs')
+    pause 2
+    start_script('textsubs')
   end
 end
 
