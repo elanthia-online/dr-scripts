@@ -2024,12 +2024,17 @@ RSpec.describe TaskMaster do
       # Runs the taskmaster's real task method with buying, crafting, repair and
       # disposal stubbed to record their calls, each with the @remainder flag as
       # it stood then. remainder: the flag before the task.
-      def run_task(npc, item, count, volume_per_item, base, type, remainder: false)
+      # made: how many items forge_item reports (every one when nil).
+      def run_task(npc, item, count, volume_per_item, base, type, remainder: false, made: nil)
         tm = build(settings: { forging_tools: ['forging hammer'], forging_belt: forging_belt, engineering_belt: engineering_belt, shaping_tools: ['wood shaper'] },
                    remainder: remainder)
         calls = []
         %i[buy_ingots bingots buy_rocks buy_stackables forge_item carve_stone carve_bone shape_item repair trash].each do |step|
           allow(tm).to receive(step) { |*step_args| calls << [step, *step_args, tm.instance_variable_get(:@remainder)] }
+        end
+        allow(tm).to receive(:forge_item) do |*step_args|
+          calls << [:forge_item, *step_args, tm.instance_variable_get(:@remainder)]
+          made || count
         end
         allow(DRC).to receive(:right_hand).and_return('iron chisels')
         tm.send(npc, item, count, volume_per_item, base, type)
@@ -2084,6 +2089,61 @@ RSpec.describe TaskMaster do
             tm.send(npc, 'dagger', 3, 6, 'ingot', 'bronze')
             expect(order).to eq(%i[count buy])
             expect(tm.instance_variable_get(:@ingots_before)).to eq({ 'bronze ingot' => 1, 'steel ingot' => 0 })
+          end
+
+          # Forging stopped after 1 of 4 whole bronze ingots: the 3 unused
+          # ones are thrown away, since the next run buys for all 3 still owed.
+          it 'throws the whole ingots away when forging stops short on a task of one ingot per item' do
+            calls = run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', made: 1)
+            expect(calls).to eq([[:buy_ingots, 4, 'bronze', false], [:forge_item, 'dagger', 4, 'bronze', false],
+                                 [:repair, ['forging hammer'], forging_belt, true], [:trash, 'dagger', 'ingot', 'bronze', true]])
+            expect(run_task(npc, 'dagger', 3, 10, 'ingot', 'bronze', made: 0).last).to eq([:trash, 'dagger', 'ingot', 'steel', true])
+          end
+
+          it 'keeps nothing back on an exact bulk ingot that stops short either' do
+            expect(run_task(npc, 'dagger', 25, 4, 'ingot', 'bronze', made: 24).last).to eq([:trash, 'dagger', 'ingot', 'bronze', true])
+          end
+
+          it 'leaves @remainder alone when forging made every item, or says it made more' do
+            expect(run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', made: 4).last.last).to be(false)
+            expect(run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', made: 5).last.last).to be(false)
+          end
+
+          # The real buy-count, trash and dispose path on a full run whose last
+          # count went unanswered: craft_each reports 3 of 4, but all 4 whole
+          # ingots were used, so the bag holds only the player's 2 and none go.
+          it "throws away none of the player's ingots when a full run is undercounted" do
+            world = stock_world({ 'steel ingot' => 2 })
+            tm = build(settings: { forging_tools: [], forging_belt: forging_belt })
+            allow(tm).to receive(:buy_ingots) do |count, _|
+              tm.instance_variable_set(:@ingots_bought, count)
+              world[:bag]['steel ingot'] += count
+            end
+            allow(tm).to receive(:forge_item) do
+              world[:bag]['steel ingot'] -= 4
+              3
+            end
+            allow(tm).to receive(:repair)
+            tm.send(npc, 'dagger', 4, 10, 'ingot', 'bronze')
+            expect(DRCT).not_to have_received(:dispose)
+            expect(world[:bag]).to eq({ 'steel ingot' => 2 })
+          end
+
+          it 'throws away only the unused whole ingots, sparing the player\'s, when forging really stops short' do
+            world = stock_world({ 'bronze ingot' => 2 })
+            tm = build(settings: { forging_tools: [], forging_belt: forging_belt })
+            allow(tm).to receive(:buy_ingots) do |count, _|
+              tm.instance_variable_set(:@ingots_bought, count)
+              world[:bag]['bronze ingot'] += count
+            end
+            allow(tm).to receive(:forge_item) do
+              world[:bag]['bronze ingot'] -= 1
+              1
+            end
+            allow(tm).to receive(:repair)
+            tm.send(npc, 'dagger', 4, 5, 'ingot', 'bronze')
+            expect(DRCT).to have_received(:dispose).exactly(3).times
+            expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
           end
         end
       end
