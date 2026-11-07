@@ -676,6 +676,56 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # What single built-in subs do to the game lines they were written for. The
+  # golden catalog pins each entry as it stands, mistakes included; these pin
+  # the output a player should see.
+  describe 'built-in subs' do
+    include_context 'with a front end attached'
+
+    # Builds `guild`'s catalog with the real entry point and sends one server
+    # line through the registered hooks.
+    #
+    # @param line [String] a server line without its line ending
+    # @param guild [String] whose catalog to build
+    # @return [String, nil] what the hooks pass on for "#{line}\r\n"
+    # @example
+    #   hooked('The back of your neck prickles.', guild: 'Necromancer')
+    #   # => "The back of your neck prickles. (DO gained from being in a Holy area. Move away to avoid this hit.)\r\n"
+    def hooked(line, guild: 'Commoner')
+      build_catalog(guild)
+      run_hooks("#{line}\r\n".b)
+    end
+
+    # A double-quoted literal turns "\1" into byte 0x01 and "\b" into a
+    # backspace; a single-quoted one keeps the backslash for the regex engine.
+    it 'holds no control byte (0x00-0x1f) in any key or value of any catalog' do
+      offenders = combinations.flat_map do |combination|
+        build_combination(combination).filter_map do |source, _options, replacement|
+          [combination, source, replacement] if [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
+        end
+      end
+      expect(offenders).to be_empty, lambda {
+        "#{offenders.size} entr(y/ies) hold a control byte (a double-quoted \"\\1\" or \"\\b\"?):\n" \
+          "#{offenders.uniq { |entry| entry.drop(1) }.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
+    end
+
+    describe 'the Holy-area Divine Outrage warning' do
+      note = ' (DO gained from being in a Holy area. Move away to avoid this hit.)'
+      ['The back of your neck prickles.', 'You feel judged and hated.', 'Muddled thoughts of paranoia nag at you.',
+       'You are exposed and vulnerable in this place.', "You have a feeling that you aren't welcome here.",
+       'You worry for your safety and well-being.'].each do |sentence|
+        it "keeps \"#{sentence}\" and adds the DO note after it" do
+          expect(hooked(sentence, guild: 'Necromancer')).to eq("#{sentence}#{note}\r\n")
+        end
+      end
+
+      it 'needs the closing full stop, not just any character after the sentence' do
+        expect(hooked('You feel judged and hatedX', guild: 'Necromancer')).to eq("You feel judged and hatedX\r\n")
+      end
+    end
+  end
+
   describe 'reference-engine oracle' do
     include_context 'with a front end attached'
 
