@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.08.1'
+  VERSION = '2026.11.08.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1505,8 +1505,10 @@ class TaskMaster
     UserVars.taskmaster_last_seen[npc] = Room.current.id if found
   end
 
-  # Stopgap: remove once the lich-5 DRParser fix is released, see
-  # elanthia-online/dr-scripts#7993.
+  # Still needed once Lich repairs DRRoom from the full room view: a refresh
+  # while standing in the room arrives cut short with no view after it, so a
+  # taskmaster listed after the cut drops out of DRRoom.npcs until a LOOK.
+  # See elanthia-online/dr-scripts#7993.
   #
   # In a cluttered room the game cuts its room objects data short, ending it
   # "... and some other stuff." (or "and a lot of other stuff."). Lich builds
