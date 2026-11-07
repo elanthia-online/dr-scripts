@@ -212,6 +212,13 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # The harness has no front end, and the hook skips every key without one
+  # (see 'front end guard'), so groups that send lines through the hook
+  # include this.
+  shared_context 'with a front end attached' do
+    before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
+  end
+
   after do
     DownstreamHook.remove('textsub')
     TextSubs.clear
@@ -384,9 +391,7 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe "the 'textsub' hook" do
-    # The harness has no front end, and the hook skips every key without one
-    # (see 'front end guard').
-    before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
+    include_context 'with a front end attached'
 
     it "registers 'textsub', and the registered hook applies the catalog" do
       build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
@@ -486,9 +491,7 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'hook engine semantics' do
-    # The harness has no front end, and the hook skips every key without one
-    # (see 'front end guard').
-    before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
+    include_context 'with a front end attached'
 
     # Runs the real entry point, so the real 'textsub' hook is registered, then
     # swaps the built catalog for exactly `pairs` through the public TextSubs
@@ -672,9 +675,7 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'reference-engine oracle' do
-    # The harness has no front end, and the hook skips every key without one
-    # (see 'front end guard').
-    before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
+    include_context 'with a front end attached'
 
     samples = TextsubsCorpus.parse_samples(File.read(samples_path)).map(&:b)
     stream = File.binread(stream_path).lines
