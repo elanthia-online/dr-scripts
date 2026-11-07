@@ -170,12 +170,12 @@ RSpec.describe 'textsubs.lic' do
   end
 
   # The textsubs settings as profiles/base.yaml ships them: private_textsubs
-  # is nil, as base.yaml leaves it empty, and textsubs_spell_links is nil, as
-  # base.yaml does not set it.
+  # is nil, as base.yaml leaves it empty, and every flag is false.
+  # 'profiles/base.yaml' holds this table to the file.
   #
   # @return [Hash{String=>Object}] frozen default for every key textsubs.lic reads
   def textsubs_defaults
-    { 'private_textsubs' => nil, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
+    { 'private_textsubs' => nil, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => false,
       'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false }.freeze
   end
 
@@ -615,6 +615,33 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # profiles/base.yaml is where a player looks up what a setting does, and
+  # what get_settings answers for a key the player has not set. Every key
+  # textsubs reads has to be there: those the entry point reads by name
+  # (settings.<key>) and those a section's when: gate in the data file names.
+  # The script reads them once, when it starts.
+  describe 'profiles/base.yaml' do
+    base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
+    read_by_entry_point = File.read(File.expand_path('../textsubs.lic', __dir__)).scan(/\bsettings\.(\w+)/).flatten.uniq
+    gates = shipped_catalog['textsubs']['sections'].filter_map { |section| section['when'] }
+    read_by_gates = gates.flat_map { |gate| gate.values_at('setting', 'setting_off') }.compact.uniq
+    read = (read_by_entry_point | read_by_gates).freeze
+
+    it 'finds the keys textsubs reads in the script and in the data file' do
+      expect([read_by_entry_point, read_by_gates])
+        .to match([contain_exactly('integrate_shit_list_with_textsubs', 'private_textsubs'),
+                   contain_exactly('textsubs_spell_links', 'herb_textsubs', 'textsubs_use_plat_grouping')])
+    end
+
+    it 'defines every settings key textsubs reads' do
+      expect(read.reject { |key| base_profile.key?(key) }).to be_empty
+    end
+
+    it 'ships each of those keys with the value the specs build a default catalog with' do
+      expect(base_profile.slice(*read)).to eq(textsubs_defaults)
+    end
+  end
+
   describe 'settings gating' do
     flags = %w[textsubs_spell_links herb_textsubs textsubs_use_plat_grouping]
 
@@ -678,10 +705,11 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it 'treats an unset flag (nil, as base.yaml leaves textsubs_spell_links) like false' do
-      expect(build_catalog('Cleric', 'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false))
-        .to eq(build_catalog('Cleric', 'textsubs_spell_links' => false, 'herb_textsubs' => false,
-                                       'textsubs_use_plat_grouping' => false))
+    flags.each do |flag|
+      it "treats #{flag} unset (nil, as a key written with no value gives) like false" do
+        others = (flags - [flag]).to_h { |other| [other, false] }
+        expect(build_catalog('Cleric', others.merge(flag => nil))).to eq(build_catalog('Cleric', others.merge(flag => false)))
+      end
     end
 
     it 'links the guild spell list to the guild category only with textsubs_spell_links on' do

@@ -2642,7 +2642,11 @@ private_textsubs:
 integrate_shit_list_with_textsubs: false
 # turn on heal/remedy text subs by ingredient name: yelith (limb-IW) tonic
 herb_textsubs: false
+# split copper amounts at the platinum when adding coin commas: 12,3456 Kronars rather than 123,456
 textsubs_use_plat_grouping: false
+# link spells, spellbooks, magic feats and your guild's spell list to Elanthipedia
+# in spell lists (column-formatted) and the Active Spells window
+textsubs_spell_links: false
 
 # Settings for smoke script
 smoke:
