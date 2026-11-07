@@ -1619,14 +1619,14 @@ class TextSubs
 
   # The one writer of the catalog: add and elanthipedia reach it through store,
   # and add_catalog, add_private and prefer_private call it straight, as their
-  # keys are compiled already (a private key with its timeout). It writes
-  # write_target, under the lock, so no stage, unstage or install of another
-  # thread lands between choosing the Registry and counting the key. A key
-  # written to the installed catalog counts one generation per sub, after it is
-  # written, so the generation never runs ahead of the catalog; a key written
-  # to a staged Registry or this thread's own build is not in subs yet and
-  # counts none, as install counts that whole catalog once, when it swaps it
-  # in.
+  # keys are compiled already (a private key with its timeout). It writes one
+  # key to write_target, under the lock, so no stage, unstage or install of
+  # another thread lands between choosing the Registry and counting the key. A
+  # key written to the installed catalog then counts one generation, so a call
+  # is one key and one generation per sub and the generation never runs ahead
+  # of the catalog; a key written to a staged Registry or this thread's own
+  # build is not in subs yet and counts none, as install counts that whole
+  # catalog once, when it swaps it in.
   #
   # @param key [Regexp] the pattern
   # @param result [String] the gsub replacement
