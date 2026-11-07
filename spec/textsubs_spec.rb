@@ -165,19 +165,25 @@ RSpec.describe 'textsubs.lic' do
   # guard in spec_helper sees it. The ensure clause still runs on that unwind,
   # and raising there turns it into an ordinary failure of this example.
   #
+  # The rescue clause only notes that the hooks raised, and re-raises the same
+  # exception. $! cannot tell the two exits apart: run_hooks called while an
+  # exception is being rescued sees that exception in $! on a top-level return.
+  #
   # @param line [String] a binary server line
   # @return [String, nil] what the hooks pass on to the client
   # @raise [RuntimeError] when the hooks neither returned nor raised
   # @example
   #   run_hooks("You feel fine.\r\n".b) # => "You feel FINE.\r\n"
   def run_hooks(line)
-    returned = false
+    exit_by = :unwind
     output = DownstreamHook.run(line)
-    returned = true
+    exit_by = :return
     output
+  rescue Exception # rubocop:disable Lint/RescueException
+    exit_by = :raise
+    raise
   ensure
-    # $! is the exception in flight when the hook raised: let that one through.
-    unless returned || $!
+    if exit_by == :unwind
       raise "a DownstreamHook left without returning (a `return` in the hook proc where `next` belongs?); " \
             'unchecked, that would end the whole rspec run with status 0'
     end
@@ -375,6 +381,64 @@ RSpec.describe 'textsubs.lic' do
       expect(DownstreamHook.list).to include('other-script')
     ensure
       DownstreamHook.remove('other-script')
+    end
+  end
+
+  describe 'run_hooks' do
+    # Registers, as 'textsub', a hook proc made the way run_lic_entry makes
+    # textsubs.lic's: evaluated in a copy of TOPLEVEL_BINDING, so the `return`
+    # in it is a top-level return.
+    #
+    # @return [void]
+    def add_top_level_return_hook
+      DownstreamHook.add('textsub', eval('proc { |_server_string| return }', TOPLEVEL_BINDING.dup, __FILE__, __LINE__))
+    end
+
+    # Calls run_hooks and gives back what came out of it. A top-level return
+    # that gets past run_hooks would end rspec with status 0, so this has its
+    # own guard: the ensure clause turns that unwind into a failure of the
+    # example, whatever $! holds.
+    #
+    # @param line [String] a binary server line
+    # @return [String, nil, RuntimeError] the hooks' output, or the RuntimeError
+    #   run_hooks raised
+    # @raise [RuntimeError] when a top-level return got past run_hooks
+    def run_hooks_outcome(line)
+      outcome = :unwound
+      begin
+        outcome = run_hooks(line)
+      rescue RuntimeError => e
+        outcome = e
+      end
+      outcome
+    ensure
+      raise 'a top-level return in the hook got past run_hooks' if outcome == :unwound
+    end
+
+    it 'turns a top-level return in the hook into an error' do
+      add_top_level_return_hook
+      expect(run_hooks_outcome("You feel fine.\r\n".b)).to be_a(RuntimeError).and have_attributes(message: /left without returning/)
+    end
+
+    it 'turns a top-level return in the hook into an error when run_hooks is called while an exception is rescued' do
+      add_top_level_return_hook
+      outcome = begin
+        raise ArgumentError, 'an exception being rescued leaves $! set'
+      rescue ArgumentError
+        run_hooks_outcome("You feel fine.\r\n".b)
+      end
+      expect(outcome).to be_a(RuntimeError).and have_attributes(message: /left without returning/)
+    end
+
+    it 'lets an exception the hook raises through unchanged when run_hooks is called while an exception is rescued' do
+      # Not a StandardError, so DownstreamHook.run does not swallow it.
+      hook_error = Class.new(Exception) # rubocop:disable Lint/InheritException
+      DownstreamHook.add('textsub', proc { |_server_string| raise hook_error, 'from the hook' })
+      expect do
+        raise ArgumentError, 'an exception being rescued leaves $! set'
+      rescue ArgumentError
+        run_hooks("You feel fine.\r\n".b)
+      end.to raise_error(hook_error, 'from the hook')
     end
   end
 
