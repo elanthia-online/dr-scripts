@@ -233,7 +233,8 @@ RSpec.describe InventoryManager do
 
       expect(messages).to be_empty
       expect(manager).to have_received(:save_item_data).with('vault')
-      expect(manager.instance_variable_get(:@item_data)[:Alpha]).to eq(['Vault Inventory: (vault)', 'a steel box (vault)'])
+      # The header line is not indented, so it is never taken for an item.
+      expect(manager.instance_variable_get(:@item_data)[:Alpha]).to eq(['a steel box (in vault) (vault)'])
     end
 
     it 'does not treat an item named like the refusal as one' do
@@ -245,9 +246,286 @@ RSpec.describe InventoryManager do
       expect(manager).to have_received(:save_item_data).with('vault')
     end
   end
+
+  describe 'saving where each vault item is' do
+    let(:surfaces) { ['a brass hook', 'a steel wire rack', 'a small shelf', 'a top drawer', 'a middle drawer', 'a bottom drawer', 'a large shelf'] }
+    let(:ignores) { ['[', 'Roundtime', 'Vault Inventory', 'The last note'] }
+    let(:manager) do
+      described_class.allocate.tap do |m|
+        m.instance_variable_set(:@active_character, :Ecth)
+        m.instance_variable_set(:@item_data, { Ecth: ['an old row (vault)', 'a family row (Family)', 'a worn pack (worn) (character)'] })
+        m.instance_variable_set(:@inventory_ignores, ignores)
+        m.instance_variable_set(:@vault_surfaces, surfaces)
+      end
+    end
+
+    before do
+      allow(DRC).to receive(:message)
+      allow(manager).to receive(:save_item_data)
+    end
+
+    def saved_after(command_result, &scan)
+      allow(manager).to receive(:capture_command).and_return(command_result.map(&:dup))
+      scan.call
+      manager.instance_variable_get(:@item_data)[:Ecth]
+    end
+
+    context 'with VAULT STANDARD output as the game sends it' do
+      # Lines from Ecth's 2026-11-07 vault, XML links and number padding included.
+      let(:listing) do
+        [
+          'Vault Inventory:',
+          '     (1)  some <a exist="12575660" noun="stones">waermodi stones</a>',
+          '     (243) a <a exist="12575501" noun="bag">pristine white canvas duffel bag slung with a wide leather strap</a>',
+          '          (244) a <a exist="12575524" noun="belt">flame red weapons belt with a Warrior Mage Guild crest buckle</a>',
+          '          (9)  a <a exist="12575523" noun="backsheath">grey sharkskin backsheath</a>',
+          '     a <a exist="12575479" noun="shelf">large shelf</a>',
+          '     a <a exist="12575476" noun="drawer">top drawer</a>',
+          '     a <a exist="12575473" noun="hook">brass hook</a>',
+          '     (288) a <a exist="12575470" noun="sack">sea-green sack embroidered with seashells and starfish</a>',
+          '          (289) a <a exist="12575472" noun="towel">forest green towel embroidered with a golden dragon</a>',
+          'The last note indicates that your vault contains 579 items -- but as hurried as it was written, you can\'t be certain the number is absolutely accurate.',
+          'Roundtime: 5 sec.'
+        ]
+      end
+
+      it 'tags loose items in vault and contained items with their container too' do
+        expect(saved_after(listing) { manager.add_vault_standard }).to eq(
+          [
+            'a family row (Family)',
+            'a worn pack (worn) (character)',
+            'some waermodi stones (in vault) (vault)',
+            'a pristine white canvas duffel bag slung with a wide leather strap (in vault) (vault)',
+            'a flame red weapons belt with a Warrior Mage Guild crest buckle (in container - a pristine white canvas duffel bag slung with a wide leather strap) (in vault) (vault)',
+            'a grey sharkskin backsheath (in container - a pristine white canvas duffel bag slung with a wide leather strap) (in vault) (vault)',
+            'a sea-green sack embroidered with seashells and starfish (in vault) (vault)',
+            'a forest green towel embroidered with a golden dragon (in container - a sea-green sack embroidered with seashells and starfish) (in vault) (vault)'
+          ]
+        )
+      end
+
+      it 'drops empty furniture even when it is not in inventory_manager_vault_surfaces' do
+        manager.instance_variable_set(:@vault_surfaces, [])
+
+        saved = saved_after(listing) { manager.add_vault_standard }
+
+        expect(saved.grep(/shelf|drawer|hook/)).to be_empty
+      end
+
+      it 'skips the header and footer even with no ignores configured' do
+        manager.instance_variable_set(:@inventory_ignores, [])
+
+        saved = saved_after(listing) { manager.add_vault_standard }
+
+        expect(saved.grep(/Vault Inventory|last note|Roundtime/)).to be_empty
+        expect(saved.length).to eq(8)
+      end
+
+      it 'restarts sorter once saved' do
+        $running_scripts << 'sorter'
+        allow(manager).to receive(:stop_script) { $running_scripts.delete('sorter') }
+
+        saved_after(listing) { manager.add_vault_standard }
+
+        expect($started_scripts).to eq([['sorter']])
+        expect(manager).to have_received(:save_item_data).with('vault').once
+      end
+    end
+
+    context 'with items on vault furniture' do
+      let(:listing) do
+        [
+          'Vault Inventory:',
+          '     (1)  a steel nodachi',
+          '     a large shelf',
+          '          (2)  a windsteel mask',
+          '          (3)  a burlap sack',
+          '               (4)  a forest green towel',
+          '     a top drawer',
+          '          (5)  some sewing needles',
+          '     a brass hook',
+          '     (6)  a leather sling'
+        ]
+      end
+
+      it 'says which piece of furniture holds each one, and how' do
+        saved = saved_after(listing) { manager.add_vault_standard }
+
+        expect(saved.grep(/\(vault\)\z/)).to eq(
+          [
+            'a steel nodachi (in vault) (vault)',
+            'a windsteel mask (on a large shelf) (vault)',
+            'a burlap sack (on a large shelf) (vault)',
+            'a forest green towel (in container - a burlap sack) (on a large shelf) (vault)',
+            'some sewing needles (in a top drawer) (vault)',
+            'a leather sling (in vault) (vault)'
+          ]
+        )
+      end
+    end
+
+    context 'with deep or unusual nesting' do
+      let(:listing) do
+        [
+          'Vault Inventory:',
+          '     (1)  a backpack',
+          '          (2)  a pouch',
+          '               (3)  a box',
+          '                    (4)  a gem',
+          '          (5)  Toothy\'s lucky charm',
+          '          (6)  a rope',
+          '     (7)  a sword'
+        ]
+      end
+
+      it 'files every item under its real parent, however deep' do
+        saved = saved_after(listing) { manager.add_vault_standard }
+
+        expect(saved.grep(/\(vault\)\z/)).to eq(
+          [
+            'a backpack (in vault) (vault)',
+            'a pouch (in container - a backpack) (in vault) (vault)',
+            'a box (nested container - a pouch (in container - a backpack)) (in vault) (vault)',
+            'a gem (nested container - a box (nested container - a pouch (in container - a backpack))) (in vault) (vault)',
+            'Toothy\'s lucky charm (in container - a backpack) (in vault) (vault)',
+            'a rope (in container - a backpack) (in vault) (vault)',
+            'a sword (in vault) (vault)'
+          ]
+        )
+      end
+
+      it 'keeps an ignored container as the parent of what is inside it' do
+        manager.instance_variable_set(:@inventory_ignores, ['a pouch'])
+
+        saved = saved_after(listing) { manager.add_vault_standard }
+
+        expect(saved).not_to include(a_string_starting_with('a pouch '))
+        expect(saved).to include('a box (nested container - a pouch (in container - a backpack)) (in vault) (vault)')
+      end
+    end
+
+    context 'with the vault book, which numbers nothing' do
+      let(:listing) do
+        [
+          'Vault Inventory:',
+          '    a sea-green sack embroidered with seashells and starfish',
+          '      a forest green towel embroidered with a golden dragon',
+          '    a brass hook',
+          '    a large shelf',
+          '      a windsteel mask',
+          '    a deep emerald silk haversack adorned with an onyx crescent',
+          '      a sleek ice-veined leather thigh quiver wrapped in silversteel mesh'
+        ]
+      end
+
+      before do
+        allow(DRCI).to receive(:get_item_if_not_held?).and_return(true)
+        allow(DRCI).to receive(:stow_item?).and_return(true)
+      end
+
+      it 'finds the furniture by name and tags every item' do
+        allow(manager).to receive(:fput)
+
+        saved = saved_after(listing) { manager.add_vault_book }
+
+        expect(saved.grep(/\(vault\)\z/)).to eq(
+          [
+            'a sea-green sack embroidered with seashells and starfish (in vault) (vault)',
+            'a forest green towel embroidered with a golden dragon (in container - a sea-green sack embroidered with seashells and starfish) (in vault) (vault)',
+            'a windsteel mask (on a large shelf) (vault)',
+            'a deep emerald silk haversack adorned with an onyx crescent (in vault) (vault)',
+            'a sleek ice-veined leather thigh quiver wrapped in silversteel mesh (in container - a deep emerald silk haversack adorned with an onyx crescent) (in vault) (vault)'
+          ]
+        )
+      end
+    end
+
+    it 'tags the family vault the same way' do
+      saved = saved_after(['Vault Inventory:', '     (1)  a coil of rope', '          (2)  a hook']) { manager.add_vault_family }
+
+      expect(saved).to include('a coil of rope (in vault) (Family)', 'a hook (in container - a coil of rope) (in vault) (Family)')
+      expect(saved).not_to include('a family row (Family)')
+      expect(saved).to include('an old row (vault)')
+    end
+
+    it 'tags rummaged items as loose in the vault and skips the furniture' do
+      line = 'You rummage through a secure vault and see a steel hhr\'ata, a brass hook, a large shelf and a translucent blown-glass inkpot.'
+
+      saved = saved_after([line]) { manager.add_vault_regular_inv }
+
+      expect(saved.grep(/\(vault\)\z/)).to eq(
+        ["a steel hhr'ata (in vault) (vault)", 'a translucent blown-glass inkpot (in vault) (vault)']
+      )
+    end
+
+    it 'gives storage box rows no vault spot' do
+      saved = saved_after(['Storage Box Inventory:', '    a crate', '      a lid']) { manager.send(:check_inventory, 'read my storage book', /Storage/, 'caravan_box') }
+
+      # The parent's own tag is not asserted: outside Lich, String#to_s does not
+      # dup, so the old parser's container label picks it up here only.
+      expect(saved.last(2)).to match([eq('a crate (caravan_box)'), start_with('a lid (in container - a crate')])
+      expect(saved.grep(/in vault/)).to be_empty
+    end
+
+    it 'shows the spot but not the container chain in a plain search' do
+      row = 'a forest green towel (in container - a sea-green sack) (on a large shelf) (vault)'
+
+      expect(manager.strip_nesting(row)).to eq('a forest green towel (on a large shelf) (vault)')
+      expect(manager.strip_nesting('a windsteel mask (on a large shelf) (vault)')).to eq('a windsteel mask (on a large shelf) (vault)')
+    end
+  end
 end
 
 RSpec.describe InventoryManagerGui do
+  describe '.parse_row' do
+    it 'reads the spot of a loose vault item' do
+      row = described_class.parse_row('Ecth', 'a sea-green sack (in vault) (vault)')
+
+      expect(row.to_h.slice(:source, :name, :container, :location)).to eq(source: 'vault', name: 'a sea-green sack', container: nil, location: 'in vault')
+    end
+
+    it 'files an item sitting on furniture under that furniture' do
+      row = described_class.parse_row('Ecth', 'a windsteel mask (on a large shelf) (vault)')
+
+      expect(row.to_h.slice(:name, :container, :nested, :location)).to eq(name: 'a windsteel mask', container: 'a large shelf', nested: false, location: 'on a large shelf')
+    end
+
+    it 'keeps the real container of something in a bag on a shelf' do
+      row = described_class.parse_row('Ecth', 'a towel (nested container - a pouch (in container - a sack)) (in a top drawer) (Family)')
+
+      expect(row.to_h.slice(:source, :name, :container, :nested, :location)).to eq(source: 'Family', name: 'a towel', container: 'a pouch', nested: true, location: 'in a top drawer')
+    end
+
+    it 'reads rows saved before spots existed as it always did' do
+      row = described_class.parse_row('Ecth', 'a towel (in container - a sea-green sack) (vault)')
+
+      expect(row.to_h.slice(:name, :container, :location)).to eq(name: 'a towel', container: 'a sea-green sack', location: nil)
+    end
+
+    it 'looks for a spot only on vault rows' do
+      row = described_class.parse_row('Ecth', 'a rock (in a pinch) (character)')
+
+      expect(row.to_h.slice(:name, :location)).to eq(name: 'a rock (in a pinch)', location: nil)
+    end
+  end
+
+  describe '#detail_for' do
+    let(:gui) { described_class.allocate }
+
+    it 'names the shelf once for an item sitting on it' do
+      row = described_class.parse_row('Ecth', 'a windsteel mask (on a large shelf) (vault)')
+
+      expect(gui.detail_for(row, false)).to eq('on a large shelf')
+    end
+
+    it 'names the container and then the spot' do
+      row = described_class.parse_row('Ecth', 'a towel (in container - a sack) (in vault) (vault)')
+
+      expect(gui.detail_for(row, false)).to eq('in a sack, in vault')
+      expect(gui.detail_for(row, true)).to eq('in vault')
+    end
+  end
+
   describe '#refill' do
     # Stands in for Gtk::TreeStore: append_row only needs append to hand back
     # something it can index, so each appended row is a plain hash.

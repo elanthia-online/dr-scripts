@@ -250,6 +250,83 @@ class InventoryManager
   # skipping it hides why nothing was saved. Unanchored: the line can carry XML.
   VAULT_RENT_DUE = /You can't access your vault at this time\.\s+Rent is due\./
 
+  # The inventory types that hold a vault's contents, personal and family.
+  VAULT_TYPES = ['vault', 'Family'].freeze
+
+  # Commands whose output lists the vault as an indented tree: one item per
+  # line, the contents of a container indented one step under it.
+  VAULT_LISTINGS = ['vault standard', 'vault family', 'read my vault book'].freeze
+
+  # Where a vault row is when it is not on a piece of furniture.
+  VAULT_FLOOR = 'in vault'
+
+  # VAULT STANDARD and VAULT FAMILY number every item, padding short numbers:
+  # "(1)  a steel nodachi", "(10) a leather sling".
+  VAULT_ITEM_NUMBER = /\A\(\d+\)\s+/
+
+  # Furniture you put things in rather than on.
+  ENCLOSED_FURNITURE = /\b(?:drawers?|cabinet|chest|trunk|wardrobe|bin|basket|box|case)\z/i
+
+  # Turns a vault listing into rows that say where each item is:
+  #
+  #   loose in the vault       "a sack (in vault) (vault)"
+  #   on or in furniture       "a mask (on a large shelf) (vault)"
+  #   inside a container       "a towel (in container - a sack) (in vault) (vault)"
+  #   deeper in containers     "a pin (nested container - a towel (in container - a sack)) (in vault) (vault)"
+  #
+  # The last tag before the inventory type is always the item's spot in the
+  # vault: the vault itself, or the furniture its outermost container sits on.
+  # Nesting follows each line's indentation rather than fixed column counts, so
+  # the padding after short item numbers and names that start without an
+  # article don't matter. Furniture is never saved as an item. It is a line
+  # without an item number in a numbered listing (the game does not count it),
+  # or one named in inventory_manager_vault_surfaces, which the vault book needs
+  # because it numbers nothing.
+  def vault_listing_rows(lines, inventory_type)
+    entries = lines.filter_map do |line|
+      clean = clean_item_line(line)
+      next if clean.nil?
+
+      text = clean.strip
+      indent = clean[/\A\s*/].length
+      # Every item line is indented. Unindented lines are the header, the
+      # footer and roundtime, whatever inventory_manager_ignores says.
+      next if text.empty? || indent.zero?
+
+      numbered = text.match?(VAULT_ITEM_NUMBER)
+      { indent: indent, numbered: numbered, text: text.sub(VAULT_ITEM_NUMBER, '') }
+    end
+    numbered_listing = entries.any? { |entry| entry[:numbered] }
+
+    # The entries above the current line, outermost first. Each is the
+    # furniture or container that a deeper-indented line sits in.
+    holders = []
+    entries.each_with_object([]) do |entry, rows|
+      holders.pop while holders.any? && holders.last[:indent] >= entry[:indent]
+      item = entry[:text]
+
+      if holders.empty? && ((numbered_listing && !entry[:numbered]) || item.start_with?(*@vault_surfaces))
+        preposition = item.match?(ENCLOSED_FURNITURE) ? 'in' : 'on'
+        holders << { indent: entry[:indent], furniture: true, spot: "#{preposition} #{item}" }
+        next
+      end
+
+      spot = holders.first&.dig(:spot) || VAULT_FLOOR
+      containers = holders.reject { |holder| holder[:furniture] }
+      label = case containers.length
+              when 0 then item
+              when 1 then "#{item} (in container - #{containers.last[:label]})"
+              else "#{item} (nested container - #{containers.last[:label]})"
+              end
+      # Pushed even when ignored, so an ignored container's contents still
+      # name it rather than whatever came before it.
+      holders << { indent: entry[:indent], furniture: false, spot: spot, label: label }
+      next if item.start_with?(*@inventory_ignores)
+
+      rows << "#{label} (#{spot}) (#{inventory_type})"
+    end
+  end
+
   def check_inventory(command, end_pattern, inventory_type, rummage_length = 0, refusals: {})
     using_sorter = false
     if Script.running?('sorter')
@@ -296,10 +373,16 @@ class InventoryManager
       lines.reject! { |entry| entry.to_s.strip.match?(/\Anothing\.?\z/i) }
     end
 
+    if VAULT_LISTINGS.include?(command)
+      @item_data[@active_character].concat(vault_listing_rows(lines, inventory_type))
+      save_item_data(inventory_type)
+      start_script('sorter') if using_sorter && !Script.running?('sorter')
+      return
+    end
+
     container = ""
     sub_container = ""
     lines.each do |line|
-      line.sub!(/\(\d+\)/, '') if command == 'vault standard'
       # Game output carries XML noise (bold toggles, <d> command tags, prompts)
       # that used to leak into inventory.yaml verbatim. Clean it once, up front,
       # so the item text and the indentation checks below both see clean text.
@@ -340,8 +423,8 @@ class InventoryManager
         # We don't want the inventory_type here as it's extra noise, so we do a .to_s so container doesn't get updated by changing item later
         container = (item.include?("eddy") ? "eddy" : item).to_s
         item.concat(' (worn)')
-      elsif command == "read my storage book" || command == "read my vault book" || inventory_type == "shadow_servant"
-        # Vault book, storage book and shadow servant via PG all have same output formatting
+      elsif command == "read my storage book" || inventory_type == "shadow_servant"
+        # Storage book and shadow servant via PG have the vault book's formatting
         if clean_line =~ /\s{8,}(?:a|an|some|the|several|clusters|one) /
           item.concat(" (nested container - #{sub_container})")
         elsif clean_line =~ /\s{6}(?:a|an|some|the|several|clusters|one) /
@@ -350,16 +433,10 @@ class InventoryManager
         else
           container = item.to_s
         end
-      elsif command == 'vault standard'
-        # items in a container are prefixed by 11 spaces once the item count is removed
-        if clean_line =~ /\s{16,}(?:a|an|some|the|several|clusters|one) /
-          item.concat(" (nested container - #{sub_container})")
-        elsif clean_line =~ /\s{11}(?:a|an|some|the|several|clusters|one) /
-          item.concat(" (in container - #{container})")
-          sub_container = item.to_s
-        else
-          container = item.to_s
-        end
+      elsif VAULT_TYPES.include?(inventory_type) && command.start_with?('rummage')
+        # Rummaging only lists what is loose in the vault: neither the contents
+        # of containers nor what is on its furniture, which was skipped above.
+        item.concat(" (#{VAULT_FLOOR})")
       elsif inventory_type == 'home'
         if !item.start_with?("Attached:")
           item = clean_home_string(item)
@@ -932,13 +1009,19 @@ class InventoryManagerGui
     { key: :source,    label: 'Source' },
     { key: :name,      label: 'Item' },
     { key: :container, label: 'Container' },
+    { key: :location,  label: 'Location' },
     { key: :nested,    label: 'Nested' },
     { key: :worn,      label: 'Worn' },
     { key: :note,      label: 'Note' },
     { key: :raw,       label: 'Stored row' }
   ].freeze
 
-  Row = Struct.new(:character, :source, :name, :container, :nested, :worn, :note, :raw)
+  Row = Struct.new(:character, :source, :name, :container, :nested, :worn, :note, :raw, :location)
+
+  # A vault row's spot, the last tag before its inventory type: "(in vault)",
+  # "(on a large shelf)", "(in a top drawer)". Never "(in container - ...)",
+  # which is how a row saved before spots existed ends.
+  LOCATION_TAG = /\s\((#{Regexp.escape(InventoryManager::VAULT_FLOOR)}|(?:on|in) (?!container - )[^()]+)\)\z/
 
   # Splits a stored row back into its parts. The inventory_type is always the
   # final parenthetical and never contains nested parens; container annotations
@@ -961,6 +1044,12 @@ class InventoryManagerGui
       work = work[0...match.begin(0)]
     end
 
+    location = nil
+    if InventoryManager::VAULT_TYPES.include?(source) && (match = work.match(LOCATION_TAG))
+      location = match[1]
+      work = work[0...match.begin(0)]
+    end
+
     container = nil
     nested = false
     if (match = work.match(/\s\((nested container|in container) - /))
@@ -972,7 +1061,18 @@ class InventoryManagerGui
       work = work[0...match.begin(0)]
     end
 
-    Row.new(character, source, work.strip, container, nested, worn, note, raw.to_s)
+    # Something sitting straight on a shelf is held by the shelf, so the tree
+    # can file it there.
+    container ||= furniture_in(location)
+
+    Row.new(character, source, work.strip, container, nested, worn, note, raw.to_s, location)
+  end
+
+  # The furniture a location names, or nil for the vault itself.
+  def self.furniture_in(location)
+    return nil if location.nil? || location == InventoryManager::VAULT_FLOOR
+
+    location.sub(/\A(?:on|in) /, '')
   end
 
   # The immediate parent runs up to the first nested paren, so
@@ -1541,7 +1641,7 @@ class InventoryManagerGui
         visible = if needle.empty?
                     source_rows
                   else
-                    source_rows.select { |row| matcher.call(row.name) || matcher.call(row.container) }
+                    source_rows.select { |row| matcher.call(row.name) || matcher.call(row.container) || matcher.call(row.location) }
                   end
         next if visible.empty?
 
@@ -1625,7 +1725,11 @@ class InventoryManagerGui
     parts = []
     parts << 'worn' if row.worn
     parts << row.note if row.note
-    parts << "#{row.nested ? 'nested in' : 'in'} #{row.container}" if row.container && !nest
+    # The location already names the shelf an item sits straight on.
+    if row.container && !nest && row.container != self.class.furniture_in(row.location)
+      parts << "#{row.nested ? 'nested in' : 'in'} #{row.container}"
+    end
+    parts << row.location if row.location
     parts.join(', ')
   end
 
