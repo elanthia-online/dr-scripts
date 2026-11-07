@@ -1025,6 +1025,271 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_last_seen).to eq('poltu' => 16_290, 'zasele' => 16_146)
       end
     end
+
+    # In a cluttered room the game cuts its room objects data short ("... and
+    # some other stuff."), and Lich builds DRRoom from that data alone, so a
+    # taskmaster listed after the cut is not in DRRoom.npcs. Zasele on a
+    # littered Lithralia Street, 2026-11-07 (cite 6300, see
+    # spec/fixtures/taskmaster/log_lines.json). DRRoom holds what lich-5 makes
+    # of each logged room objs component (spec/fixtures/taskmaster/drroom.json);
+    # the game answers LOOK with logged lines.
+    describe 'a taskmaster listed after the cut in a cluttered room' do
+      let(:drroom) { JSON.parse(File.read(File.expand_path('fixtures/taskmaster/drroom.json', __dir__))) }
+      # Her room on arrival at 17:40:40: the data ends "and some other stuff."
+      # and leaves her out.
+      let(:cut_short) { drroom.fetch('6300:19') }
+      # Her room at 17:44:09, the ground partly cleared: she is in DRRoom.npcs.
+      let(:cleared) { drroom.fetch('6300:134') }
+      # The next room east, not cut short, no taskmaster.
+      let(:neighbour) { drroom.fetch('6300:96') }
+      # The room as LOOK shows it, with room descriptions on (17:44:07:
+      # description and listing on one line) and off (the 17:40:40 layout).
+      let(:described_look) { %w[6300:63 6300:64 6300:65 6300:66].map { |cite| ReplayGame.log(cite) } }
+      let(:brief_look) { %w[6300:23 6300:24 6300:25 6300:26].map { |cite| ReplayGame.log(cite) } }
+      # Installed before each example, so a LOOK nobody scripted is still
+      # answered (with silence) and recorded in game.sent.
+      let!(:game) { ReplayGame.new.install(self) }
+      let(:events) { [] }
+
+      # The listing line as the game would send it, without Zasele.
+      def listing_without_her
+        ReplayGame.code(ReplayGame.log('6300:24').text.sub(%r{<pushBold/><pushBold/><a exist="76029" noun="Zasele">Seamstress Zasele</a><popBold/><popBold/>, }, ''),
+                        from: '6300:24 with Seamstress Zasele taken out')
+      end
+
+      # Puts the character in a room showing `data`, as DRRoom would.
+      def in_room(data)
+        allow(DRRoom).to receive(:npcs) { data['npcs'] }
+        allow(DRRoom).to receive(:room_objs) { data['room_objs'] }
+      end
+
+      # A small world: each room shows its own DRRoom (the neighbour's unless
+      # given), walking changes the room. Walks and commands go to `events`
+      # in the order they happen.
+      # With moves: false every walk fails and the character stays put.
+      def search(room_data:, start_in:, moves: true)
+        tm = build
+        here = start_in
+        allow(Room).to receive(:current) { OpenStruct.new(id: here) }
+        allow(DRRoom).to receive(:npcs) { room_data.fetch(here, neighbour)['npcs'] }
+        allow(DRRoom).to receive(:room_objs) { room_data.fetch(here, neighbour)['room_objs'] }
+        allow(DRCT).to receive(:walk_to) do |room|
+          events << [:walk, room]
+          here = room if moves
+        end
+        allow(DRC).to receive(:bput) do |*args|
+          events << [:send, args.first, here]
+          game.bput(*args)
+        end
+        tm.find_npc(rooms, 'zasele')
+      end
+
+      { 'described' => :described_look, 'brief' => :brief_look }.each do |layout, look|
+        it "stops in her room and remembers it when LOOK (#{layout}) lists her after the cut" do
+          game.script('look', *send(look))
+          search(room_data: { 16_148 => cut_short }, start_in: 16_936)
+          expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:walk, 16_148], [:send, 'look', 16_148]])
+          expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_148)
+        end
+      end
+
+      it 'sends nothing extra when DRRoom lists her (as it will once Lich reads the full listing)' do
+        search(room_data: { 16_148 => cleared }, start_in: 16_936)
+        expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:walk, 16_148]])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_148)
+      end
+
+      it 'never looks when no room was cut short, even when she is nowhere' do
+        search(room_data: {}, start_in: 16_936)
+        expect(events.map(&:first).uniq).to eq([:walk])
+        expect(events.size).to eq(rooms.size)
+        expect(UserVars.taskmaster_last_seen).to eq({})
+      end
+
+      it 'walks on from a cut-short room whose LOOK does not list her, looking there only once' do
+        game.script('look', ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+        search(room_data: { 16_146 => cut_short, 16_150 => cleared }, start_in: 16_936)
+        expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:send, 'look', 16_146], [:walk, 16_148], [:walk, 16_150]])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_150)
+      end
+
+      it 'looks once, not twice, when she is in the last room on the list' do
+        game.script('look', *described_look)
+        search(room_data: { rooms.last => cut_short }, start_in: 16_936)
+        expect(events.count { |event| event.first == :send }).to eq(1)
+        expect(events.last).to eq([:send, 'look', rooms.last])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(rooms.last)
+      end
+
+      it 'looks once and walks nowhere when she is in the room it starts in' do
+        game.script('look', *described_look)
+        search(room_data: { 16_276 => cut_short }, start_in: 16_276)
+        expect(events).to eq([[:send, 'look', 16_276]])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_276)
+      end
+
+      it 'keeps the old last-seen room when LOOK in every cut-short room leaves her out' do
+        UserVars.taskmaster_last_seen = { 'zasele' => 16_150 }
+        2.times { game.script('look', ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26')) }
+        search(room_data: { 16_150 => cut_short, 16_153 => cut_short }, start_in: 16_936)
+        expect(events.select { |event| event.first == :send }).to eq([[:send, 'look', 16_150], [:send, 'look', 16_153]])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_150)
+      end
+
+      # search_order puts the last-seen room first, so a search that starts
+      # there checks it, "walks" to it (staying put) and checks it again.
+      # give_item, get_task and the rest search again from where she was
+      # last found, so this is the usual start.
+      it 'looks only once in the last-seen room it starts in when she has wandered off' do
+        UserVars.taskmaster_last_seen = { 'zasele' => 16_276 }
+        game.script('look', ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+        search(room_data: { 16_276 => cut_short, 16_277 => cleared }, start_in: 16_276)
+        expect(events).to eq([[:send, 'look', 16_276], [:walk, 16_276], [:walk, 16_277]])
+        expect(game.sent).to eq(['look'])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_277)
+      end
+
+      it 'looks only once in a cut-short room when every walk fails to leave it' do
+        game.script('look', ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+        search(room_data: { 16_936 => cut_short }, start_in: 16_936, moves: false)
+        expect(events.count { |event| event.first == :walk }).to eq(rooms.size)
+        expect(events.select { |event| event.first == :send }).to eq([[:send, 'look', 16_936]])
+        expect(UserVars.taskmaster_last_seen).to eq({})
+      end
+
+      it 'still reads DRRoom again in a room it has looked in, so she is found if she walks in' do
+        UserVars.taskmaster_last_seen = { 'zasele' => 16_276 }
+        game.script('look', ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+        checks = 0
+        tm = build
+        allow(Room).to receive(:current) { OpenStruct.new(id: 16_276) }
+        # Cut short and without her for the first check; she has arrived by the second.
+        allow(DRRoom).to receive(:npcs) { (checks += 1) > 1 ? ['Zasele'] : [] }
+        allow(DRRoom).to receive(:room_objs) { cut_short['room_objs'] }
+        allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }
+        tm.find_npc(rooms, 'zasele')
+        expect(events).to eq([[:walk, 16_276]])
+        expect(game.sent).to eq(['look'])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_276)
+      end
+
+      describe '#npc_here?' do
+        it 'sees the cut in "and a lot of other stuff." too, the wording of a cut-short container listing' do
+          in_room('npcs' => [], 'room_objs' => cut_short['room_objs'][0..-2] + ['lot of other stuff'])
+          game.script('look', *described_look)
+          expect(build.npc_here?('zasele')).to be(true)
+          expect(game.sent).to eq(['look'])
+        end
+
+        it 'sees the cut when nothing but the marker is left ("You also see some other stuff.")' do
+          in_room('npcs' => [], 'room_objs' => ['other stuff'])
+          game.script('look', *brief_look)
+          expect(build.npc_here?('zasele')).to be(true)
+        end
+
+        {
+          'an empty room'                             => [],
+          'a last object that only ends in the words' => ['woven sack', 'box of other stuff'],
+          'a last object that only starts with them'  => ['woven sack', 'other stuff pile'],
+          'the words on an object before the last'    => ['other stuff', 'woven sack'],
+          'the marker in other case'                  => ['woven sack', 'Other Stuff']
+        }.each do |case_name, room_objs|
+          it "does not look for #{case_name}" do
+            in_room('npcs' => [], 'room_objs' => room_objs)
+            expect(build.npc_here?('zasele')).to be(false)
+            expect(game.sent).to eq([])
+          end
+        end
+
+        it 'does not look for her when DRRoom lists her, even though the data was cut short' do
+          in_room('npcs' => ['Zasele'], 'room_objs' => cut_short['room_objs'])
+          expect(build.npc_here?('zasele')).to be(true)
+          expect(game.sent).to eq([])
+        end
+
+        it 'still looks when DRRoom lists another taskmaster but not her' do
+          in_room('npcs' => ['Poltu'], 'room_objs' => cut_short['room_objs'])
+          game.script('look', *described_look)
+          expect(build.npc_here?('zasele')).to be(true)
+        end
+
+        it 'stops at the exits line, without waiting out a timeout, when LOOK lists nothing' do
+          in_room(cut_short)
+          game.script('look', ReplayGame.log('6300:23'), ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+          expect(build.npc_here?('zasele')).to be(false)
+          expect(game.clock).to eq(0.0)
+        end
+
+        it 'says no, without raising, when LOOK gets no reply' do
+          in_room(cut_short)
+          game.script('look')
+          expect(build.npc_here?('zasele')).to be(false)
+          expect(game.clock).to eq(15.0)
+        end
+
+        it 'reads the listing, not the room description before it on the same line' do
+          in_room(cut_short)
+          described = ReplayGame.log('6300:64').text
+          desc, listing = described.split('  You also see', 2)
+          game.script('look', ReplayGame.code("#{desc} A statue of Seamstress Zasele stands nearby.  You also see a woven sack.",
+                                              from: "6300:64's description with Zasele named in it, and a listing without her"))
+          expect(listing).to include('Seamstress Zasele') # the logged line does list her
+          expect(build.npc_here?('zasele')).to be(false)
+        end
+
+        {
+          "an item named for her (Zasele's)" => "  You also see a woven sack, Zasele's woven sack and some wool yarn.",
+          'a hyphenated item (Zasele-)'      => '  You also see a Zasele-stamped sack.',
+          'a longer name'                    => '  You also see Seamstress Zaseleth and a woven sack.',
+          'her name in lower case'           => '  You also see a zasele doll.',
+          'another taskmaster'               => '  You also see Blacksmith Poltu and a woven sack.',
+          'a name with her name at its end'  => '  You also see a FauxZasele puppet and a woven sack.'
+        }.each do |case_name, listing|
+          it "does not take #{case_name} in the listing for her" do
+            in_room(cut_short)
+            game.script('look', ReplayGame.code(listing, from: 'listing shaped like 6300:24'), ReplayGame.log('6300:26'))
+            expect(build.npc_here?('zasele')).to be(false)
+          end
+        end
+
+        # Anyone in the room can say the words; between the LOOK and its
+        # listing their line must not be taken for the listing. The game
+        # quotes what players say, whisper and think.
+        {
+          'says'     => 'Bovi says, "You also see Seamstress Zasele."',
+          'asks'     => 'Bovi asks, "Hello.  You also see Seamstress Zasele?"',
+          'whispers' => 'Bovi whispers, "You also see Seamstress Zasele."',
+          'thinks'   => '[General][Bovi] "You also see Seamstress Zasele."'
+        }.each do |verb, spoken|
+          it "is not fooled by a player who #{verb} \"You also see ... Zasele\" before the listing" do
+            in_room(cut_short)
+            game.script('look', ReplayGame.code(spoken, from: 'speech in the shape of a player line, quoting 6300:24'),
+                        ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+            expect(build.npc_here?('zasele')).to be(false)
+          end
+        end
+
+        it 'does not take the words in the middle of another line for the listing' do
+          in_room(cut_short)
+          game.script('look', ReplayGame.code('A sign here reads You also see Seamstress Zasele.', from: 'a line quoting 6300:24 mid-sentence'),
+                      ReplayGame.log('6300:23'), listing_without_her, ReplayGame.log('6300:25'), ReplayGame.log('6300:26'))
+          expect(build.npc_here?('zasele')).to be(false)
+        end
+
+        it 'still finds her in the listing that follows a player quoting the words' do
+          in_room(cut_short)
+          game.script('look', ReplayGame.code('Bovi says, "You also see a woven sack."', from: 'speech in the shape of a player line, quoting 6300:24'),
+                      *described_look)
+          expect(build.npc_here?('zasele')).to be(true)
+        end
+
+        it 'finds her named last in the listing, before the full stop' do
+          in_room(cut_short)
+          game.script('look', ReplayGame.code('  You also see a woven sack and Seamstress Zasele.', from: 'listing shaped like 6300:24'))
+          expect(build.npc_here?('zasele')).to be(true)
+        end
+      end
+    end
   end
 
   describe 'reading a task' do
