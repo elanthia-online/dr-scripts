@@ -162,25 +162,40 @@ RSpec.describe 'textsubs.lic' do
   # (it writes its key itself). TracePoints record them, which leaves both
   # methods as they are; rspec-mocks wrappers on the ~100,000 calls of the 96
   # builds doubled the time of the builds. The add source is read by its
-  # position, so renaming TextSubs.add's parameter does not break the trace.
+  # position, so renaming TextSubs.add's parameter does not break the trace;
+  # its name is looked up once per build, not once per call.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
-  # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it:
-  #   :catalog, as build_combination returns it (an unfrozen string is copied
-  #   before it is frozen, so the record never shares a mutable string with
-  #   TextSubs.subs); :add_sources [Array<String>], the first argument of each
-  #   TextSubs.add call, in call order; :link_calls [Integer], the number of
+  # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
+  #   Every string in it is a frozen copy (see frozen_copy), so the record
+  #   never shares a mutable string with TextSubs.subs or with the caller of
+  #   TextSubs.add. :catalog, as build_combination returns it;
+  #   :add_sources [Array<String>], the first argument of each TextSubs.add
+  #   call, in call order; :link_calls [Integer], the number of
   #   TextSubs.elanthipedia calls
   def traced_build(combination)
     sources = []
     links = 0
-    adds = TracePoint.new(:call) { |trace| sources << trace.binding.local_variable_get(trace.parameters.first.last).to_s.freeze }
+    source_param = TextSubs.method(:add).parameters.first.last
+    adds = TracePoint.new(:call) { |trace| sources << frozen_copy(trace.binding.local_variable_get(source_param).to_s) }
     link_calls = TracePoint.new(:call) { links += 1 }
     catalog = adds.enable(target: TextSubs.method(:add)) do
       link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination) }
     end
-    { catalog: catalog.map { |entry| entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze }.freeze,
+    { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
       add_sources: sources.freeze, link_calls: links }.freeze
+  end
+
+  # A frozen value that shares no mutable object with the one given: a frozen
+  # value as it is, anything else a frozen copy. Freezing the given object
+  # itself would freeze a string the script still holds (String#to_s returns
+  # the receiver), and a later `<<` on it would raise FrozenError in whichever
+  # example built that combination first.
+  #
+  # @param value [Object] a catalog value (String or Integer) or an add source
+  # @return [Object] `value` when frozen, else a frozen dup of it
+  def frozen_copy(value)
+    value.frozen? ? value : value.dup.freeze
   end
 
   # Memoized traced_build, for examples that only read the returned catalog or
