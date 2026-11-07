@@ -616,13 +616,14 @@ RSpec.describe 'textsubs.lic' do
   end
 
   # profiles/base.yaml is where a player looks up what a setting does, and
-  # what get_settings answers for a key the player has not set. Every key
-  # textsubs reads has to be there: those the entry point reads by name
-  # (settings.<key>) and those a section's when: gate in the data file names.
-  # The script reads them once, when it starts.
-  describe 'profiles/base.yaml' do
+  # what get_settings answers for a key the player has not set, and the
+  # script's own header lists the settings it reads. Every key textsubs reads
+  # has to be in both: those the entry point reads by name (settings.<key>)
+  # and those a section's when: gate in the data file names.
+  describe 'the settings textsubs reads' do
     base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
-    read_by_entry_point = File.read(File.expand_path('../textsubs.lic', __dir__)).scan(/\bsettings\.(\w+)/).flatten.uniq
+    script_source = File.read(File.expand_path('../textsubs.lic', __dir__))
+    read_by_entry_point = script_source.scan(/\bsettings\.(\w+)/).flatten.uniq
     gates = shipped_catalog['textsubs']['sections'].filter_map { |section| section['when'] }
     read_by_gates = gates.flat_map { |gate| gate.values_at('setting', 'setting_off') }.compact.uniq
     read = (read_by_entry_point | read_by_gates).freeze
@@ -639,6 +640,23 @@ RSpec.describe 'textsubs.lic' do
 
     it 'ships each of those keys with the value the specs build a default catalog with' do
       expect(base_profile.slice(*read)).to eq(textsubs_defaults)
+    end
+
+    it "lists every one of them in the script's =begin header, each as a key - what it does line" do
+      header = script_source[/^=begin\n(.*?)^=end\n/m, 1]
+      expect(read.reject { |key| header.match?(/^ +#{key} - \S/) }).to be_empty
+    end
+  end
+
+  # Lich's Script splits a script into goto labels at every line that is a
+  # word and a colon alone (/^(\w+):$/), with no regard for =begin blocks, so
+  # a 'Settings:' line in the header would start a label. The check is broader
+  # than Lich's, indented and with trailing spaces, so a reindent or an
+  # editor cannot turn a near miss into one.
+  describe 'textsubs.lic source' do
+    it 'has no line Lich would read as a label' do
+      lines = File.readlines(File.expand_path('../textsubs.lic', __dir__)).each_with_index
+      expect(lines.filter_map { |line, index| "#{index + 1}: #{line.strip}" if line.match?(/^\s*\w+:\s*$/) }).to be_empty
     end
   end
 

@@ -1,6 +1,28 @@
 # quiet
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#textsubs
+
+  Rewrites game lines on their way to your front end: notes, links and coin
+  commas added to what you read. It changes only what front ends display.
+  Scripts still see the game's own text, nothing is sent to the game, and
+  with no front end attached every line is left alone.
+
+  The built-in subs live in data/base-textsubs.yaml. A copy at
+  data/custom/base-textsubs.yaml replaces that file whole.
+
+  The settings it reads from your character's YAML (profiles/base.yaml has
+  each one with its default) are read once, when textsubs starts, so a
+  change takes effect only after ;kill textsubs and ;textsubs again.
+    private_textsubs - your own subs, 'regex source': 'gsub replacement'
+    integrate_shit_list_with_textsubs - add (SL) after each <name>_shit.list name
+    textsubs_spell_links - Elanthipedia links for spells, spellbooks, magic
+      feats and your guild's spell list (the spellbook project, MikeLC 2025)
+    herb_textsubs - heal and remedy subs by ingredient name
+    textsubs_use_plat_grouping - coin commas split at the platinum
+
+  A sub another script adds with TextSubs.add lasts only until textsubs
+  restarts, as every start builds the subs from nothing. Put a sub you want
+  to keep in private_textsubs instead.
 =end
 
 no_pause_all
@@ -561,7 +583,9 @@ class TextSubs
 
   # Adds one substitution. A target already in the catalog keeps its place and
   # takes the new result. The sub is kept when the catalog is built again for
-  # a new guild (see reinstall).
+  # a new guild (see reinstall), but not when textsubs restarts: every start
+  # builds the catalog from nothing, so a sub a player wants to keep belongs
+  # in private_textsubs.
   #
   # @param target [String] regex source; it is compiled as is, not escaped
   # @param result [String] the gsub replacement, so '\1' refers to a capture
@@ -1115,6 +1139,7 @@ class TextSubs
         [alternatives.all? { |items| nonletter_only?(items) } ? :N : :A]
       end
 
+      # @param atom [Object] an item's atom
       # @return [Object, nil] atom when it is one path symbol, else nil
       def simple(atom)
         atom if atom == :N || atom == :B || (atom.is_a?(Array) && atom.first == :lit)
@@ -1303,6 +1328,7 @@ class TextSubs
         member
       end
 
+      # @param member [String] one member, as class_member returns it
       # @return [Boolean] whether a class member only ever matches a non-letter
       def nonletter_member?(member)
         return true if member == '\\d' || member == '\\s'
@@ -2149,31 +2175,6 @@ end
 # bad line of YAML neither ends the script here nor drops a sub later.
 private_subs, private_warnings = TextSubs::Sources::PrivateSubs.entries(settings.private_textsubs)
 private_warnings.each { |warning| echo warning }
-### SPELLBOOK PROJECT - MikeLC 2/15/2025 ###
-#
-# Creates elanthipedia weblinks for the spells and spellbooks
-# as long as it is in column-formatted mode.
-#
-# Also links the spells in your Active Spells Windows, creating
-# links for spells on your person (since they are not always in
-# your spellbook).
-#
-# In your YAML, set... 'textsubs_spell_links: true'
-#
-# *NOTE* If spellmonitor.lic is called before textsubs.lic, no issues.
-#
-#        If spellmonitor.lic is called after textsubs.lic, will break
-#        buff-watcher.lic, causing it to not register active spells on
-#        your person.
-#
-#		In-Game Fix: Kill and restart 'textsubs.lic'.
-#		    ;k textsubs
-#           ;textsubs
-#
-#        Autostart Fix: Ensure textsubs is the last script on the list.
-#			;e stop_autostart('textsubs')
-#			;e autostart('textsubs')
-#
 
 # The built-in subs live in data/base-textsubs.yaml (or a copy in
 # data/custom, which get_data reads instead). When that data cannot be used,
