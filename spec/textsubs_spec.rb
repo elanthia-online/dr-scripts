@@ -622,16 +622,17 @@ RSpec.describe 'textsubs.lic' do
 
     # The spell kinds put names into templates, so the patterns to check are
     # the ones Catalog builds, here for every guild with every setting on.
+    # Catalog.entries compiles every pattern it builds and raises on the
+    # first that does not compile, naming it.
     it 'holds only patterns that compile' do
       settings = OpenStruct.new(textsubs_spell_links: true, herb_textsubs: true, textsubs_use_plat_grouping: true)
-      patterns = guilds.flat_map { |guild| TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: guild, settings: settings)).map(&:first) }.uniq
-      broken = patterns.reject do |pattern|
-        Regexp.new(pattern)
-      rescue RegexpError
-        false
-      end
-      expect(broken).to be_empty
-      expect(patterns.size).to be > 1500
+      patterns = []
+      expect do
+        guilds.each do |guild|
+          patterns.concat(TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: guild, settings: settings)).map(&:first))
+        end
+      end.not_to raise_error
+      expect(patterns.uniq.size).to be > 1500
     end
 
     it 'gates the two coin-comma sections, and only them, on the three currency words' do
@@ -4713,6 +4714,13 @@ RSpec.describe 'textsubs.lic' do
         .to eq(TextSubs.subs.map { |key, value| [key.source, value] })
     ensure
       TextSubs.clear
+    end
+
+    it 'puts each link field where it belongs around a multi-word text' do
+      expect(TextSubs::LinkBuilder.pair("Damaris' Lullaby", pretext: '\S|^', postext: '\s*Slot', prelink: 'Spell:', poslink: '_page',
+                                                         preresult: '<', posresult: '>'))
+        .to eq(["(\\S|^)(Damaris' Lullaby)(\\s*Slot)",
+                %(<<a href="https://elanthipedia.play.net/Spell:Damaris'_Lullaby_page">Damaris' Lullaby</a>>)])
     end
 
     it 'puts underscores only in the page, keeping the spaces of the text and the regex' do
