@@ -74,6 +74,8 @@ RSpec.describe TaskMaster do
   # Returns the state; :gets counts the items taken out of the bag.
   def giving(responses, banked: nil)
     state = { holding: false, gets: 0 }
+    rope = OpenStruct.new(name: 'coil of burlap reinforced rope', noun: 'rope', id: '758800')
+    allow(GameObj).to receive(:right_hand) { state[:holding] ? rope : OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
     allow(DRCI).to receive(:in_hands?) { state[:holding] }
     allow(DRCI).to receive(:get_item?) do
       next false if banked && state[:gets] >= banked
@@ -2080,6 +2082,34 @@ RSpec.describe TaskMaster do
         expect(tm.turn_in_banked('rope', 3)).to eq(1)
 
         expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      # A sew that stopped after its study left the rope instructions in hand.
+      # DRCI.in_hands?('rope') matched them, so no rope came out of the bag,
+      # and five gives of nothing ("What is it you're trying to give?")
+      # stopped the task (2026-11-07).
+      it 'gets the rope out of the bag while rope instructions are held, and hands it in' do
+        tm = reader
+        empty = OpenStruct.new(name: 'Empty', noun: nil, id: nil)
+        rope = OpenStruct.new(name: 'coil of burlap reinforced rope', noun: 'rope', id: '758800')
+        hands = { right: OpenStruct.new(name: 'some reinforced rope instructions', noun: 'instructions', id: '758700'), left: nil }
+        bag = [rope]
+        allow(GameObj).to receive(:right_hand) { hands[:right] || empty }
+        allow(GameObj).to receive(:left_hand) { hands[:left] || empty }
+        # lich-5 matches a one-word name by DRC::Item#short_regex, /\bname/i.
+        allow(DRCI).to receive(:in_hands?) { |name| hands.values.compact.any? { |obj| obj.name.match?(/\b#{Regexp.escape(name)}/i) } }
+        allow(DRCI).to receive(:get_item?).with('rope', 'duffel bag') { bag.empty? ? false : (hands[:left] = bag.shift) && true }
+        game('give my rope to zasele' => lambda do |*|
+          next missed_give unless hands[:left] == rope
+
+          hands[:left] = nil
+          more_needed(1)
+        end)
+
+        expect(tm.turn_in_banked('rope', 2)).to eq(1)
+
+        expect(DRC).to have_received(:bput).with('give my rope to zasele', any_args).once
+        expect(hands[:right].noun).to eq('instructions')
       end
 
       context 'when the taskmaster wanders off' do
