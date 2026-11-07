@@ -35,8 +35,13 @@ class TextSubs
   # their lookahead needs Kronar, Dokora or Lirum, and without the gate they
   # scan from every digit to the end of the line.
   #
-  # One thread writes a Registry while others may read it, so readers never
-  # see the entries themselves, only a frozen snapshot of them.
+  # Readers never see the entries themselves, only a frozen snapshot of them,
+  # as the entries change while others read: through add, from whichever
+  # script calls it, and through drop, from the game thread the hook runs on.
+  # Two writers at once can lose one @version increment between them. That is
+  # still safe: each writer changes the entries before it reads @version, so a
+  # reader that sees the bumped number copies both changes, and a copy cached
+  # under the old number holds more than that number says and is rebuilt.
   #
   # @example
   #   registry = TextSubs::Registry.new
@@ -122,8 +127,8 @@ class TextSubs
     end
 
     # The entries as they stand, in order, as a frozen Hash. The same Hash
-    # comes back until the next add, so a reader calling once per line copies
-    # the catalog only after it changes.
+    # comes back until the next add or drop, so a reader calling once per
+    # line copies the catalog only after it changes.
     #
     # @return [Hash{Regexp=>String}] frozen, with frozen values
     def snapshot
@@ -146,8 +151,8 @@ class TextSubs
 
     # The snapshot and a TokenIndex over exactly its keys and gates, both from
     # the same copy, so the index never misses a key the snapshot holds. The
-    # index is built the first time it is asked for after an add, not on
-    # every add: the entry point adds ~1,600 subs and then asks once.
+    # index is built the first time it is asked for after an add or drop, not
+    # on every add: the entry point adds ~1,600 subs and then asks once.
     #
     # @return [Array(Hash{Regexp=>String}, TextSubs::TokenIndex)] frozen
     #   [snapshot, index]
@@ -220,6 +225,11 @@ class TextSubs
   # A cache keyed on the generation should read it before it reads subs: if a
   # change lands in between, the cache holds a newer catalog under an older
   # number and rebuilds on the next call, never the other way round.
+  #
+  # The hook thread counts a drop while a script may count an add, so two
+  # changes at once can count as one. The rule above still holds: both changes
+  # are in subs before either is counted, so the number they share is never
+  # older than the catalog a reader sees with it.
   #
   # @return [Integer] 0 until the catalog first changes in this session
   def self.generation
