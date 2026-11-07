@@ -34,7 +34,8 @@ require_relative '../test/textsubs_corpus'
 #     composite lines, each two of those samples joined by a space, that two or
 #     more keys of every guild catalog match; in a few of them the order the
 #     keys run in changes the output (a coin amount before a spell link, whose
-#     '>' turns the coin rule off; the two "a devastating hit" keys), so the
+#     '>' turns the coin rule off; a scroll label before a link to the same
+#     spell, which the link rule then finds inside the label), so the
 #     per-guild sweeps also pin the order of real keys, not just each key. The
 #     lines of samples_hand_added.jsonl come last;
 #   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
@@ -722,6 +723,20 @@ RSpec.describe 'textsubs.lic' do
 
       it 'needs the closing full stop, not just any character after the sentence' do
         expect(hooked('You feel judged and hatedX', guild: 'Necromancer')).to eq("You feel judged and hatedX\r\n")
+      end
+    end
+
+    # The game tells tier 18 from tier 17 only by the "(That'll leave a mark!)"
+    # after the hit, so the two keys must see real parentheses there.
+    describe 'the devastating-hit tiers' do
+      it 'labels a devastating hit (17/23) and nothing else' do
+        expect(hooked("The punch lands a devastating hit to the goblin's chest."))
+          .to eq("The punch lands a devastating hit (17/23) to the goblin's chest.\r\n")
+      end
+
+      it "labels a devastating hit (That'll leave a mark!) (18/23) and nothing else" do
+        expect(hooked("The punch lands a devastating hit (That'll leave a mark!) to the goblin's chest."))
+          .to eq("The punch lands a devastating hit (That'll leave a mark!) (18/23) to the goblin's chest.\r\n")
       end
     end
   end
