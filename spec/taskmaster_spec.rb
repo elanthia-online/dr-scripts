@@ -1688,11 +1688,12 @@ RSpec.describe TaskMaster do
       # each item owed: a 1-use replacement in front of the task's 2-use set,
       # 2 ropes owed, stopped with "Already asked" (2026-11-07).
       describe 'several sets carried' do
-        # The bag as the game keeps it, each set given as its uses left: a GET
-        # takes the set at the front, or by ordinal the one that many places
-        # in ("get my second rope instructions from my duffel bag"), and a set
-        # put back goes to the front (the next GET took the set put away
-        # last, 2026-11-07). With two sets held, READ reads the first one
+        # The bag as the game keeps it, each set given as its uses left, or
+        # :foreign for one written for someone else, which the trash takes: a
+        # GET takes the set at the front, or by ordinal the one that many
+        # places in ("get my second rope instructions from my duffel bag"),
+        # and a set put back goes to the front (the next GET took the set put
+        # away last, 2026-11-07). With two sets held, READ reads the first one
         # taken (which one the game reads is not in the logs).
         def carried(bag, held: [])
           tm = reader
@@ -1710,7 +1711,10 @@ RSpec.describe TaskMaster do
             world[:bag].unshift(world[:hands].shift) unless world[:hands].empty?
             true
           end
+          allow(DRCI).to receive(:dispose_trash) { !world[:hands].shift.nil? }
           game('read my rope instructions' => lambda do |*|
+            next "You can't read the ink printed on the rope instructions.  They were written by or for someone else." if world[:hands].first == :foreign
+
             "These instructions appear to be very fragile and will wear out quickly when studied.  They have only #{world[:hands].first} uses remaining."
           end)
           [tm, world]
@@ -1723,6 +1727,21 @@ RSpec.describe TaskMaster do
           tm.ensure_instructions('rope', 2)
 
           expect(DRCI).to have_received(:get_item?).with('second rope instructions', 'duffel bag')
+          expect(world).to eq(bag: [1], hands: [2])
+        end
+
+        # Review of #7988: a binned set leaves the bag, so it must not move the
+        # ordinal on. Counted, the next get asked for a third set that was not
+        # there, missed the good one behind and asked Zasele again.
+        it 'reads on past a short set and a binned foreign set to the good set behind them' do
+          tm, world = carried([1, :foreign, 2])
+          expect(tm).not_to receive(:request_replacement)
+
+          tm.ensure_instructions('rope', 2)
+
+          expect(DRCI).to have_received(:dispose_trash).once
+          expect(DRCI).to have_received(:get_item?).with('second rope instructions', 'duffel bag').twice
+          expect(DRCI).not_to have_received(:get_item?).with('third rope instructions', 'duffel bag')
           expect(world).to eq(bag: [1], hands: [2])
         end
 
