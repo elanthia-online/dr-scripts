@@ -303,4 +303,62 @@ RSpec.describe 'textsubs.lic' do
       DownstreamHook.remove('other-script')
     end
   end
+
+  describe 'hook engine semantics' do
+    # Runs the real entry point, so the real 'textsub' hook is registered, then
+    # swaps the built catalog for exactly `pairs` through the public TextSubs
+    # API, so the example controls every key the hook can see.
+    #
+    # @param pairs [Array<Array(String, String)>] [target, result] pairs, added in order
+    # @return [void]
+    def install_catalog(*pairs)
+      build_catalog('Commoner')
+      TextSubs.clear
+      pairs.each { |target, result| TextSubs.add(target, result) }
+    end
+
+    # @param line [String] a server line; sent as the binary string Lich hands hooks
+    # @return [String, nil] what the downstream hooks pass on to the client
+    def through_hook(line)
+      DownstreamHook.run(line.b)
+    end
+
+    it 'does not fire a key that matches only after an earlier key rewrote the line' do
+      install_catalog(%w[cat dog], %w[dog bird])
+      expect(through_hook("The cat sleeps.\r\n")).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'does nothing for a key that matched the original line but no longer matches it' do
+      # 'c' matches "The cat sleeps." but not "The dog sleeps.", which is what
+      # it sees after 'cat' ran; it never gets to turn "cat" into "kat".
+      install_catalog(%w[cat dog], %w[c k])
+      expect(through_hook("The cat sleeps.\r\n")).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'applies the selected keys in insertion order, each to the output of the one before' do
+      # In reverse order the line would read "blue green"; applied each to the
+      # original line, "red green".
+      install_catalog(%w[red blue], %w[blue green])
+      expect(through_hook("red blue\r\n")).to eq("green green\r\n")
+    end
+
+    it 'keeps the first slot for a key added twice, with the value of the last add' do
+      # Moving 'cat' behind 'c' would give "The kat sleeps."; keeping the
+      # first value, "The dog sleeps."
+      install_catalog(%w[cat dog], %w[c k], %w[cat lion])
+      expect(through_hook("The cat sleeps.\r\n")).to eq("The lion sleeps.\r\n")
+    end
+
+    it 'keeps the \r\n line ending and the binary encoding of a rewritten line' do
+      install_catalog(['fine\.', 'FINE.'])
+      output = through_hook("You feel fine.\r\n")
+      expect(output).to eq("You feel FINE.\r\n")
+      expect(output.encoding).to eq(Encoding::ASCII_8BIT)
+    end
+
+    it 'returns a line that no key matches byte for byte' do
+      install_catalog(%w[cat dog])
+      expect(through_hook("A bird sings.\r\n")).to eq("A bird sings.\r\n")
+    end
+  end
 end
