@@ -28,13 +28,25 @@ require 'tmpdir'
 # the hook has to give the same output for every guild catalog over two
 # committed inputs, both synthetic (no real player names):
 #   - samples.jsonl holds one JSON string per line, expanded from the catalog's
-#     own regex sources (every alternative of an entry it could reach), so every
-#     key of every guild catalog is matched by at least one sample;
+#     own regex sources (up to two alternatives per entry), so every key of
+#     every guild catalog is matched by at least one sample. It ends with
+#     composite lines, each two of those samples joined by a space, that two or
+#     more keys of every guild catalog match; in a few of them the order the
+#     keys run in changes the output (a coin amount before a spell link, whose
+#     '>' turns the coin rule off; the two "a devastating hit" keys), so the
+#     per-guild sweeps also pin the order of real keys, not just each key;
 #   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
 #     room objs with exist ids, prompts, roundTime, coin and wealth lines and a
 #     49 KB digit-heavy inventoryManager line), every line ending in \r\n.
 # The samples are inputs, not output: they are not regenerated when the catalog
 # changes. A new or rewritten pattern adds a line to samples.jsonl.
+#
+# What the real catalogs cannot pin: on no corpus line does a key create a
+# match for a key that runs after it (the only two such pairs a search of every
+# key's output on its own samples found run the other way round), so an engine
+# that checks each key against the changing line instead of the original gives
+# the same output on every corpus line. The hand-made catalogs in 'hook engine
+# semantics' pin that rule.
 
 load_lic_class('textsubs.lic', 'TextSubs')
 
@@ -457,6 +469,21 @@ RSpec.describe 'textsubs.lic' do
           "#{unmatched.size} #{guild} key(s) match no line of samples.jsonl; add a sample for each:\n" \
             "#{unmatched.map { |key| "  #{key.source}" }.join("\n")}"
         }
+      end
+
+      # Without lines that several keys match, and some where their order
+      # matters, the sweep above holds each real key to the reference on its
+      # own and a reordered engine would still pass it. Running reference_apply
+      # over the catalog reversed is exactly such an engine.
+      it "holds lines that two or more #{guild} keys match, in some of which the key order changes the output" do
+        build_catalog(guild, every_flag_on)
+        subs = TextSubs.subs
+        reversed = subs.to_a.reverse.to_h
+        shared = samples.select { |sample| subs.keys.count { |key| key.match?(sample) } >= 2 }
+        order_sensitive = shared.reject { |line| reference_apply(reversed, line) == reference_apply(subs, line) }
+        expect(shared.size).to be >= 50, "only #{shared.size} sample(s) are matched by two or more #{guild} keys"
+        expect(order_sensitive.size).to be >= 4,
+                                        "only #{order_sensitive.size} sample(s) give another output with the #{guild} keys reversed"
       end
     end
 
