@@ -830,6 +830,28 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
+    # Raw server lines end in \r\n and Ruby's '$' matches only before \n, so
+    # these two end-anchored keys have to allow the \r in front of it.
+    describe 'the end-anchored Ranger howl tiers' do
+      [["You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's " \
+        'first song twitter sweetly from within you.', '4/15'],
+       ["You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right.", '7/15']].each do |howl, tier|
+        it "labels the (#{tier}) howl on a line that ends in \\r\\n" do
+          expect(hooked(howl, guild: 'Ranger')).to eq("#{howl} (#{tier})\r\n")
+        end
+
+        it "labels the (#{tier}) howl on a line that ends in a bare \\n" do
+          build_catalog('Ranger')
+          expect(run_hooks("#{howl}\n".b)).to eq("#{howl} (#{tier})\n")
+        end
+
+        it "leaves the (#{tier}) howl alone when more text follows it on the line" do
+          line = "#{howl}  You cough."
+          expect(hooked(line, guild: 'Ranger')).to eq("#{line}\r\n")
+        end
+      end
+    end
+
     # The game wraps the gavel's sound in literal asterisks, so the key has to
     # escape them: unescaped, ' *' and 'D*' are quantifiers.
     describe 'the Thief (13/13) gavel warning' do
