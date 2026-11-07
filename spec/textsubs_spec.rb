@@ -821,19 +821,19 @@ RSpec.describe 'textsubs.lic' do
     # value is lost without a word ('jadice' was added as limb-ES and then
     # as limb-EW). TextSubs.elanthipedia writes its own keys, so every call
     # to either method has to leave one more key behind.
+    #
+    # TracePoints count the calls: they leave both methods as they are, and
+    # rspec-mocks wrappers on the ~100,000 calls of the 96 builds doubled the
+    # time of this example.
     it 'adds every key source once in every combination' do
       offenders = combinations.filter_map do |combination|
         sources = []
         links = 0
-        allow(TextSubs).to receive(:add).and_wrap_original do |original, target, result|
-          sources << target.to_s
-          original.call(target, result)
+        adds = TracePoint.new(:call) { |trace| sources << trace.binding.local_variable_get(:target).to_s }
+        link_calls = TracePoint.new(:call) { links += 1 }
+        size = adds.enable(target: TextSubs.method(:add)) do
+          link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination).size }
         end
-        allow(TextSubs).to receive(:elanthipedia).and_wrap_original do |original, *args|
-          links += 1
-          original.call(*args)
-        end
-        size = build_combination(combination).size
         repeated = sources.tally.select { |_, count| count > 1 }.keys
         [combination, repeated, sources.size + links, size] unless repeated.empty? && sources.size + links == size
       end
