@@ -548,6 +548,9 @@ RSpec.describe 'textsubs.lic' do
     composites = TextsubsCorpus.composite_samples(expanded)
     generated = expanded + composites
     hand_added = TextsubsCorpus.parse_samples(File.read(hand_added_path))
+    # The indexes in `samples` of the composite lines.
+    composite_lines = composites.map(&:b).to_set
+    composite_indexes = samples.each_index.select { |at| composite_lines.include?(samples[at]) }
 
     # For each corpus line, the keys of `subs` that match it, in catalog order:
     # what reference_apply's select step gives for the line.
@@ -730,6 +733,8 @@ RSpec.describe 'textsubs.lic' do
         order_sensitive = shared.reject do |at|
           apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
         end
+        thin = composite_indexes.reject { |at| selected[at].size >= 2 }
+        expect(thin.map { |at| samples[at] }).to eq([]), "every composite sample must be matched by two or more #{guild} keys"
         expect(shared.size).to be >= 50, "only #{shared.size} sample(s) are matched by two or more #{guild} keys"
         expect(order_sensitive.size).to be >= 4,
                                         "only #{order_sensitive.size} sample(s) give another output with the #{guild} keys reversed"
@@ -748,19 +753,34 @@ RSpec.describe 'textsubs.lic' do
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
       mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
       expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping on)', mismatches) }
+      # The per-guild key order examples check the composites with plat
+      # grouping off; its two coin rules have to match them too.
+      selected = selected_keys(TextSubs.subs, corpus_matches, corpus.size)
+      expect(composite_indexes.reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }).to eq([])
     end
 
     # The sweeps above take reference_apply's select step from corpus_matches.
-    # Here reference_apply itself runs on every corpus line, after another
-    # catalog has filled the lookup, so a fault in the lookup (a key missed, a
-    # wrong order, a stale entry) fails this example.
+    # Here it is held to reference_apply's own select (key =~ line). Every line
+    # the lookup lists for a key of any catalog has to match the key: gsub!
+    # with a key that does not match changes nothing, so an extra line would
+    # pass every output comparison and pad the key coverage and key order
+    # examples. reference_apply runs on every corpus line with the Trader
+    # catalog; the keys its select step picks (recorded from a copy of the
+    # catalog, so the regexes run once) have to be the looked-up ones, in
+    # catalog order, and its output the looked-up output.
     it 'looks up the same select step reference_apply runs, on every corpus line' do
-      build_catalog('Bard', every_flag_on)
-      looked_up_reference(TextSubs.subs, corpus, corpus_matches)
+      extra = every_key.select { |key| corpus_matches[key].any? { |at| (key =~ corpus[at]).nil? } }
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
       subs = TextSubs.subs
+      selections = []
+      recording = subs.dup
+      recording.define_singleton_method(:select) { |&block| super(&block).tap { |matches| selections << matches.keys } }
       looked_up = looked_up_reference(subs, corpus, corpus_matches)
-      differ = corpus.each_index.reject { |at| looked_up[at] == reference_apply(subs, corpus[at]) }
+      differ = corpus.each_index.reject { |at| looked_up[at] == reference_apply(recording, corpus[at]) }
+      selected = selected_keys(subs, corpus_matches, corpus.size)
+      expect(extra.map(&:source)).to eq([])
+      expect(selections.size).to eq(corpus.size)
+      expect(corpus.each_index.reject { |at| selected[at] == selections[at] }.map { |at| corpus[at] }).to eq([])
       expect(looked_up.each_index.count { |at| looked_up[at] != corpus[at] }).to be > 1_000
       expect(differ.map { |at| corpus[at] }).to eq([])
     end
