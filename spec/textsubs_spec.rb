@@ -1158,6 +1158,15 @@ RSpec.describe 'textsubs.lic' do
           .to eq("You recall proficiency with the #{link} of:\r\n")
       end
     end
+
+    # The Trader starlight ladder puts each counter before the full stop;
+    # the (1/9) rung used to put the stop inside the parentheses.
+    describe 'the Trader starlight (1/9) note' do
+      it 'puts the full stop after the counter' do
+        expect(hooked('A bare flicker of starlight plays within your aura.', guild: 'Trader'))
+          .to eq("A bare flicker of starlight plays within your aura (1/9).\r\n")
+      end
+    end
   end
 
   describe 'reference-engine oracle' do

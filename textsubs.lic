@@ -1384,7 +1384,7 @@ TextSubs.add("#{spell_recognition} (Butcher\'s Eye|Philosopher\'s Preservation|K
 
 if DRStats.trader?
   TextSubs.add('The smallest hint of starlight flickers within your aura.', 'The smallest hint of starlight flickers within your aura (0/9).')
-  TextSubs.add('A bare flicker of starlight plays within your aura.', 'A bare flicker of starlight plays within your aura (1/9.)')
+  TextSubs.add('A bare flicker of starlight plays within your aura.', 'A bare flicker of starlight plays within your aura (1/9).')
   TextSubs.add('A faint amount of starlight illuminates your aura.', 'A faint amount of starlight illuminates your aura (2/9).')
   TextSubs.add('Your aura pulses slowly with starlight.', 'Your aura pulses slowly with starlight (3/9).')
   TextSubs.add('A steady pulse of starlight runs through your aura.', 'A steady pulse of starlight runs through your aura (4/9).')
