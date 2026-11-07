@@ -101,11 +101,16 @@ class TextSubs
   end
 
   # Makes registry the catalog that add, elanthipedia, subs and apply use, in
-  # one assignment, so a reader sees either the old catalog or the new one.
-  # It swaps the catalog in first and counts the change after, the same order
-  # store keeps, so the generation never runs ahead of subs. The entry point
-  # installs a fresh Registry on every start, so a restart never inherits the
-  # keys of the run before it.
+  # one assignment, so a reader sees either the old Registry or the new one,
+  # never a mix of the two. It swaps the catalog in first and counts the
+  # change after, the same order store keeps, so the generation never runs
+  # ahead of subs. The swap is only as complete as registry is: the entry
+  # point installs an empty Registry on every start, so a restart never
+  # inherits the keys of the run before it, and then adds the catalog into it
+  # while it is installed.
+  # Until the last add, subs shows a catalog that is still growing; the
+  # 'textsub' hook is registered after that, so apply never runs on a partial
+  # catalog.
   #
   # An add that runs on another thread while install swaps the catalog may
   # land in the Registry being replaced.
