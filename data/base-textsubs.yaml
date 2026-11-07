@@ -330,13 +330,13 @@ textsubs:
         - [3, 'you''ve made good progress toward your goal\.']
         - [4, 'you are on the verge of learning something useful\.']
 
-    - name: 'hit tier 0'
+    - name: 'hit tiers, harmless and glancing'
       subs:
         - ['(a|an) (benign|brushing|gentle|grazing|harmless|ineffective|skimming) (blow|hit|strike)', '\1 \2 (0/23) \3']
         # correction for bad glancing blow label receiving a glancing (0/23) blow
         - ['(?<!receiving )(a|an) (glancing) (blow|hit|strike)', '\1 \2 (0/23) \3']
 
-    - name: 'hit tiers 1-16'
+    - name: 'hit tiers'
       kind: 'ladder'
       of: 23
       steps:
@@ -357,11 +357,11 @@ textsubs:
         - [15, 'a demolishing hit']
         - [16, 'a spine-rattling strike']
 
-    - name: 'hit tier 17'
+    - name: 'hit tiers, devastating without a mark'
       subs:
         - ['a devastating hit(?! \(That''ll leave a mark!\))', 'a devastating hit (17/23)']
 
-    - name: 'hit tiers 18-23'
+    - name: 'hit tiers, leaving a mark and worse'
       kind: 'ladder'
       of: 23
       steps:
@@ -383,7 +383,7 @@ textsubs:
         - ['streams of golden mana echo through your body.', 'streams of golden mana echo through your body. (Holy)']
         - ['streams of unholy black mana leave you feeling feverish.', 'streams of unholy black mana leave you feeling feverish. (Arcane)']
 
-    - name: 'Cleric devotion 1-14'
+    - name: 'Cleric devotion'
       when:
         guilds: ['Cleric']
       kind: 'ladder'
@@ -405,7 +405,7 @@ textsubs:
         - [13, 'After a moment, you see a vision of your god who calls to you by name, "Come here, my child, and I will show you things of wonder\."']
         - [14, 'After a moment, you see a vision of your god who calls to you by name, "My child, though you may not always see my face, I am pleased with thee and thy efforts\."']
 
-    - name: 'Cleric devotion 15-16'
+    - name: 'Cleric devotion, clear vision and presence'
       when:
         guilds: ['Cleric']
       subs:
@@ -471,7 +471,7 @@ textsubs:
         - ['^You take in a deep breath to howl loudly, but instead cough and choke on the air around you\.', 'You take in a deep breath to howl loudly, but instead cough and choke on the air around you. (6/15)']
         - ['^You howl quietly to yourself, echoing a soft, desolate sound that doesn''t sound quite right\.(?=\r?$)', 'You howl quietly to yourself, echoing a soft, desolate sound that doesn''t sound quite right. (7/15)']
 
-    - name: 'Ranger howl 8-13'
+    - name: 'Ranger howl'
       when:
         guilds: ['Ranger']
       kind: 'ladder'
@@ -485,7 +485,7 @@ textsubs:
         - [12, 'You howl like a wolf calling the pack!']
         - [13, 'You inhale and howl strongly, the cacophonous sounds reverberating around you\.']
 
-    - name: 'Ranger howl 14-15'
+    - name: 'Ranger howl, calling the hunt and mastery'
       when:
         guilds: ['Ranger']
       subs:
@@ -662,7 +662,7 @@ textsubs:
         - ['small (quantity|number) remains to be found', 'small \1 (1/5) remains to be found']
         - ['scattering of (resources|trees) remains to be found', 'scattering of \1 (0/5) remains to be found']
 
-    - name: 'encumbrance 0-9'
+    - name: 'encumbrance'
       kind: 'ladder'
       prefix: 'Encumbrance :'
       of: 11
@@ -678,7 +678,7 @@ textsubs:
         - [8, 'Extremely Overburdened']
         - [9, 'Tottering Under Burden']
 
-    - name: 'encumbrance 10-11'
+    - name: 'encumbrance, barely moving'
       subs:
         - ['Encumbrance : Are you even able to move?', 'Encumbrance : Are you even able to move? (10/11)']
         - ['Encumbrance : It''s amazing you aren''t squashed!', 'Encumbrance : It''s amazing you aren''t squashed! (11/11)']
@@ -803,13 +803,13 @@ textsubs:
         - [-2, 'moderately detrimental']
         - [-1, 'slightly detrimental']
 
-    - name: 'Warrior Mage charge 1'
+    - name: 'Warrior Mage charge, a useless trace'
       when:
         guilds: ['Warrior Mage']
       subs:
         - ['You sense nothing out of the ordinary\.  Only magic could detect the useless trace of (.*) still in your system\.', 'You sense nothing out of the ordinary. Only magic could detect the useless trace of \1 still in your system. (1/12)']
 
-    - name: 'Warrior Mage charge 2-11'
+    - name: 'Warrior Mage charge'
       when:
         guilds: ['Warrior Mage']
       kind: 'ladder'
@@ -826,7 +826,7 @@ textsubs:
         - [10, 'Extraplanar power crackles within your body, leaving you feeling acutely ill\.']
         - [11, 'Your body sings and crackles with a barely contained charge, destroying what little cenesthesia you had left\.']
 
-    - name: 'Warrior Mage charge 12'
+    - name: 'Warrior Mage charge, at the limit'
       when:
         guilds: ['Warrior Mage']
       subs:
@@ -845,7 +845,7 @@ textsubs:
         - ['sinister black streaks\.', 'sinister black streaks (2/7).']
 
     # Soul Pool
-    - name: 'Paladin soul pool 8-11'
+    - name: 'Paladin soul pool brightens'
       when:
         guilds: ['Paladin']
       kind: 'ladder'
@@ -858,13 +858,13 @@ textsubs:
         - [9, 'an inner light, which lingers for a few moments before returning to its normal state\.']
         - [8, 'an inner light, which lingers for a moment\.']
 
-    - name: 'Paladin soul pool 7'
+    - name: 'Paladin soul pool pulses rapidly'
       when:
         guilds: ['Paladin']
       subs:
         - ['It pulses rapidly with an inner light\.', 'It pulses rapidly with an inner light. (7/11).']
 
-    - name: 'Paladin soul pool 3-6'
+    - name: 'Paladin soul pool pulses and flickers'
       when:
         guilds: ['Paladin']
       kind: 'ladder'
@@ -876,7 +876,7 @@ textsubs:
         - [4, 'It flickers with an inner light\.']
         - [3, 'It briefly flickers with an inner light\.']
 
-    - name: 'Paladin soul pool 1-2'
+    - name: 'Paladin soul pool faintest flicker'
       when:
         guilds: ['Paladin']
       subs:
@@ -884,13 +884,13 @@ textsubs:
         - ['You believe you catch the faintest flicker of light. You might have imagined it\.', 'You believe you catch the faintest flicker of light. You might have imagined it (1/11).']
 
     # Bard song assessment: one key per whole message, so each gets one counter
-    - name: 'Bard song assessment'
+    - name: 'Bard song assessment, stopped after the first lines'
       when:
         guilds: ['Bard']
       subs:
         - ['You stop only after those first few lines, however, unable to remember any more\.', 'You stop only after those first few lines, however, unable to remember any more (1/7).']
 
-    - name: 'Bard song assessment 1-4'
+    - name: 'Bard song assessment'
       when:
         guilds: ['Bard']
       kind: 'ladder'
@@ -902,7 +902,7 @@ textsubs:
         - [3, 'You feel a bit tired as you finish, but grin despite that for the ease at which you sang\.']
         - [4, 'You bring the song to a close, bowing your head\.']
 
-    - name: 'Bard song assessment 5-7'
+    - name: 'Bard song assessment, the top three steps'
       when:
         guilds: ['Bard']
       subs:
@@ -1161,7 +1161,7 @@ textsubs:
         - ['Worm''s Mist']
         - ['Butcher''s Eye', 'Philosopher''s Preservation', 'Kura-Silma', 'Ivory Mask']
 
-    - name: 'Trader starlight 0-7'
+    - name: 'Trader starlight'
       when:
         guilds: ['Trader']
       kind: 'ladder'
@@ -1177,7 +1177,7 @@ textsubs:
         - [6, 'Strong pulses of starlight flare within your aura.']
         - [7, 'Your aura seethes with brilliant starlight.']
 
-    - name: 'Trader starlight 8-9'
+    - name: 'Trader starlight, blinding and beyond'
       when:
         guilds: ['Trader']
       subs:
@@ -1215,7 +1215,7 @@ textsubs:
         - ['a small aura of beautiful flames', 'a small aura of beautiful flames (3/13)']
         - ['a bright aura of beautiful flames\.', 'a bright aura of beautiful flames (4/13).']
 
-    - name: 'Barbarian inner fire 5-13'
+    - name: 'Barbarian inner fire, extending flames'
       when:
         guilds: ['Barbarian']
       kind: 'ladder'
