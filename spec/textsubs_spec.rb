@@ -735,6 +735,13 @@ RSpec.describe 'textsubs.lic' do
         expect(run_hooks("Bob's friend Bobby waves to Bob.\r\n".b)).to eq("Bob (SL)'s friend Bobby waves to Bob (SL).\r\n")
       end
 
+      it 'still tags the other names when a hand edit left a byte that is not UTF-8' do
+        catalog = catalog_with_shit_list("\xE9lise,note\nbob\nzorvex,stole my kill\n".b, integrate: true)
+        expect(catalog.first(3).map(&:last)).to eq(["\xE9lise (SL)".b, 'Bob (SL)', 'Zorvex (SL)'])
+        expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
+        expect(run_hooks("Zorvex just arrived.\r\n".b)).to eq("Zorvex (SL) just arrived.\r\n")
+      end
+
       it 'matches a name as plain text, so a regex character in it stands for itself' do
         catalog_with_shit_list("o.k,odd name\n", integrate: true)
         expect(run_hooks("Oxk waves.\r\n".b)).to eq("Oxk waves.\r\n")

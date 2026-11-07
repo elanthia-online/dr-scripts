@@ -1378,11 +1378,16 @@ class TextSubs
       # would compile to a pattern that matches the end of every line or
       # between every two characters of it.
       #
+      # Each line is read as bytes (ASCII-8BIT), the way game lines arrive,
+      # so a hand-edited byte that is not UTF-8 cannot raise and end the
+      # script before any sub is installed.
+      #
       # @param io [#each_line] the open file
-      # @return [Array<String>] frozen: each name stripped and capitalized
+      # @return [Array<String>] frozen: each name stripped and capitalized,
+      #   in ASCII-8BIT
       def self.names(io)
         io.each_line.filter_map do |line|
-          name = line.split(',', 2).first.to_s.strip
+          name = line.b.split(',', 2).first.to_s.strip
           name.capitalize.freeze unless name.empty?
         end.freeze
       end
