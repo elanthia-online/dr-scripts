@@ -9,14 +9,15 @@ no_kill_all
 # The text substitution catalog and the engine that applies it to game lines.
 #
 # The script's entry point stages a fresh, empty Registry on every start,
-# fills it through add (the shit list, private_textsubs, then the built-in
-# subs Catalog reads from data/base-textsubs.yaml), installs it whole, and only
-# then registers a 'textsub' DownstreamHook (persist: false, so Lich removes it
-# when the script ends, and priority hook_priority, so it runs after every
-# default-priority hook) that hands every server line to apply while a front
-# end is attached. Until the install, apply serves the empty catalog the class
-# body installed when the start evaluated it. The script then waits in watch,
-# which ends it once that hook is gone.
+# fills it (the shit list, private_textsubs, then the built-in subs Catalog
+# reads from data/base-textsubs.yaml, after which prefer_private gives a
+# private key the catalog also has its private value back), installs it
+# whole, and only then registers a 'textsub' DownstreamHook (persist: false,
+# so Lich removes it when the script ends, and priority hook_priority, so it
+# runs after every default-priority hook) that hands every server line to
+# apply while a front end is attached. Until the install, apply serves the
+# empty catalog the class body installed when the start evaluated it. The
+# script then waits in watch, which ends it once that hook is gone.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
@@ -1564,13 +1565,37 @@ class TextSubs
   end
 
   # Adds the private_textsubs entries, in order. They go in ahead of the
-  # built-in catalog, so each keeps the first position its key gets.
+  # built-in catalog, so each keeps the first position its key gets; a key the
+  # catalog adds again takes the built-in value until prefer_private gives it
+  # back.
   #
   # @param entries [Array<Array(Regexp, String)>] the entries of
   #   Sources::PrivateSubs.entries
   # @return [Array<Array(Regexp, String)>] entries
   def self.add_private(entries)
     entries.each { |key, replacement| store_key(key, replacement) }
+  end
+
+  # Gives each private key whose value a later add replaced (a built-in sub
+  # with the same regex source) its private replacement back, in the place
+  # the key already holds, without the built-in's gate. A private sub is the
+  # player's own choice, so it wins over the shipped one. It reads and writes
+  # the catalog being built: the staged Registry on a start (see stage).
+  #
+  # @param entries [Array<Array(Regexp, String)>] the entries add_private added
+  # @return [Array<String>] one warning per key given back, naming it; empty
+  #   when no key was replaced, or only by the same text
+  # @example After add_private([[/You feel fine/, 'MINE']]) and a built-in add of 'You feel fine'
+  #   TextSubs.prefer_private([[/You feel fine/, 'MINE']])
+  #   # => ["private_textsubs \"You feel fine\" is also a built-in sub; your replacement is used instead of the built-in one."]
+  def self.prefer_private(entries)
+    entries.filter_map do |key, replacement|
+      catalog = write_target.snapshot
+      next if !catalog.key?(key) || catalog[key] == replacement
+
+      store_key(key, replacement)
+      "private_textsubs #{key.source.inspect} is also a built-in sub; your replacement is used instead of the built-in one."
+    end
   end
 
   # Compiles target unescaped and hands the key to store_key, for add and
@@ -1588,16 +1613,16 @@ class TextSubs
     store_key(/#{target}/, result)
   end
 
-  # The one writer of the catalog: add and elanthipedia reach it through
-  # store, and add_catalog and add_private call it straight, as their keys
-  # are compiled already (a private key with its timeout). It writes
+  # The one writer of the catalog: add and elanthipedia reach it through store,
+  # and add_catalog, add_private and prefer_private call it straight, as their
+  # keys are compiled already (a private key with its timeout). It writes
   # write_target, under the lock, so no stage, unstage or install of another
   # thread lands between choosing the Registry and counting the key. A key
-  # written to the installed catalog counts one generation per sub, after it
-  # is written, so the generation never runs ahead of the catalog; a key
-  # written to a staged Registry or this thread's own build is not in subs
-  # yet and counts none, as install counts that whole catalog once, when it
-  # swaps it in.
+  # written to the installed catalog counts one generation per sub, after it is
+  # written, so the generation never runs ahead of the catalog; a key written
+  # to a staged Registry or this thread's own build is not in subs yet and
+  # counts none, as install counts that whole catalog once, when it swaps it
+  # in.
   #
   # @param key [Regexp] the pattern
   # @param result [String] the gsub replacement
@@ -1614,9 +1639,9 @@ class TextSubs
     result
   end
 
-  # The Registry an add writes: this thread's own build while it has one
-  # (see stage), else the staged Registry while there is one, else the
-  # installed one.
+  # The catalog being built, which an add writes: this thread's own build
+  # while it has one (see stage), else the staged Registry while there is
+  # one, else the installed one.
   #
   # @return [TextSubs::Registry]
   def self.write_target
@@ -1697,6 +1722,7 @@ end
 catalog_problem = TextSubs.add_catalog(get_data('textsubs').textsubs, TextSubs::Context.new(guild: DRStats.guild, settings: settings),
                                        file: catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml'))
 echo catalog_problem if catalog_problem
+TextSubs.prefer_private(private_subs).each { |warning| echo warning }
 
 # nil when a newer start superseded this one: it installs its catalog and
 # registers its hook, so this run ends here (see TextSubs.install).

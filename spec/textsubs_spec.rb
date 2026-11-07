@@ -710,6 +710,9 @@ RSpec.describe 'textsubs.lic' do
   describe 'private_textsubs' do
     include_context 'with a front end attached'
 
+    # A built-in sub every guild gets, some way into the catalog.
+    durability = 'Assessing the (.*) durability, you determine (it is|is|they are|are) extremely weak and easily damaged'
+
     it 'adds each private pair, in order, ahead of the built-in catalog, saying nothing' do
       private_subs = { 'You feel fine' => 'You feel FINE', 'a (\w+) widget' => 'a \1 gadget' }
       catalog = build_catalog('Commoner', 'private_textsubs' => private_subs)
@@ -771,6 +774,39 @@ RSpec.describe 'textsubs.lic' do
         expect(displayed_messages).to eq(["#{warning}, not a mapping of 'old text': 'new text'; it is ignored."])
         expect(DownstreamHook.list).to include('textsub')
         expect(catalog).to eq(build_catalog('Commoner'))
+      end
+    end
+
+    describe 'a key that is also a built-in sub' do
+      it 'keeps the private slot and the private value, and says so once' do
+        plain = build_catalog('Commoner')
+        expect(plain.index { |source, _, _| source == durability }).to be > 10
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { durability => 'MINE: \1 (1/18)' })
+
+        expect(catalog.first).to eq([durability, 0, 'MINE: \1 (1/18)'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(TextSubs.subs.keys.first.timeout).to eq(1.0)
+        expect(displayed_messages).to eq(["private_textsubs #{durability.inspect} is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+        line = "Assessing the sword durability, you determine it is extremely weak and easily damaged.\r\n".b
+        expect(run_hooks(line)).to eq("MINE: sword (1/18).\r\n")
+      end
+
+      it 'says nothing when the private replacement is the built-in one' do
+        builtin = build_catalog('Commoner').find { |source, _, _| source == durability }.last
+        catalog = build_catalog('Commoner', 'private_textsubs' => { durability => builtin })
+        expect(catalog.first).to eq([durability, 0, builtin])
+        expect(displayed_messages).to be_empty
+      end
+    end
+
+    it 'puts shit-list entries before private ones' do
+      Dir.mktmpdir('textsubs-shit-list') do |dir|
+        File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
+        settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
+        catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
+        expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
       end
     end
   end
@@ -1212,11 +1248,25 @@ RSpec.describe 'textsubs.lic' do
       # Script.at_exit: another spec replaces the top-level before_dying.
       dying = []
       allow(TOPLEVEL_BINDING.receiver).to(receive(:before_dying)) { |&block| dying << block }
+      # A private_textsubs key that is not regex source is skipped with a
+      # warning now, so the build is made to die on its second write to the
+      # staged Registry instead, as a build stopped (;kill) or broken partway
+      # would.
+      build_died = Class.new(StandardError)
+      allow(TextSubs).to(receive(:stage).and_wrap_original do |original, registry|
+        writes = 0
+        registry.define_singleton_method(:add) do |*args, **options|
+          raise build_died, 'the build died partway' if (writes += 1) == 2
+
+          super(*args, **options)
+        end
+        original.call(registry)
+      end)
       installed = TextSubs.subs
       expect(installed).to eq({})
-      private_subs = { 'You feel fine' => 'You feel FINE', '(' => 'not valid regex source' }
 
-      expect { build_catalog('Commoner', 'private_textsubs' => private_subs) }.to raise_error(RegexpError)
+      expect { build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' }) }
+        .to raise_error(build_died)
       expect(TextSubs.subs).to equal(installed)
       dying.each(&:call)
 
@@ -3211,6 +3261,45 @@ RSpec.describe 'textsubs.lic' do
       expect(result).to all(be_frozen)
       expect(result.first).to all(be_frozen)
       expect(value).to eq('fine' => 'FINE')
+    end
+  end
+
+  describe 'TextSubs.prefer_private' do
+    before { TextSubs.clear }
+
+    let(:context) { TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new) }
+
+    it 'gives a replaced private key its value back in its own place, once, counting one generation' do
+      entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE', 'cat' => 'kitten')
+      TextSubs.add_private(entries)
+      TextSubs.add('dog', 'hound')
+      TextSubs.add('fine', 'FINE')
+      generation = TextSubs.generation
+
+      expect(TextSubs.prefer_private(entries)).to eq(['private_textsubs "fine" is also a built-in sub; your replacement is used instead of the built-in one.'])
+      expect(TextSubs.subs.to_a).to eq([[/fine/, 'MINE'], [/cat/, 'kitten'], [/dog/, 'hound']])
+      expect(TextSubs.subs.keys.first.timeout).to eq(1.0)
+      expect(TextSubs.generation).to eq(generation + 1)
+
+      expect(TextSubs.prefer_private(entries)).to eq([])
+      expect(TextSubs.generation).to eq(generation + 1)
+    end
+
+    it 'drops the gate a built-in section gave the key' do
+      entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE')
+      TextSubs.add_private(entries)
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'gated', 'requires_any' => ['Kronar'], 'subs' => [%w[fine FINE]] }] }
+      TextSubs.add_catalog(gated, context, file: 'f')
+
+      TextSubs.prefer_private(entries)
+      expect(TextSubs.apply(+'fine')).to eq('MINE')
+    end
+
+    it 'leaves a key alone that is no longer in the catalog' do
+      entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE')
+      TextSubs.add('cat', 'dog')
+      expect(TextSubs.prefer_private(entries)).to eq([])
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
     end
   end
 
