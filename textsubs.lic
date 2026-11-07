@@ -27,6 +27,13 @@ class TextSubs
   # it applies. A key added again keeps its first position and takes the last
   # value, exactly as a Hash does.
   #
+  # A key may also carry a gate: words one of which a line must hold before
+  # the engine runs the key's regex at all. The gate is a promise about the
+  # pattern, that it cannot match a line holding none of the words, so it
+  # saves time and never changes a result. The coin-comma keys carry one:
+  # their lookahead needs Kronar, Dokora or Lirum, and without the gate they
+  # scan from every digit to the end of the line.
+  #
   # One thread writes a Registry while others may read it, so readers never
   # see the entries themselves, only a frozen snapshot of them.
   #
@@ -36,26 +43,55 @@ class TextSubs
   #   registry.add(/c/, 'k')
   #   registry.add(/cat/, 'lion')
   #   registry.snapshot # => {/cat/=>"lion", /c/=>"k"} (frozen)
+  # @example A gated key
+  #   registry.add(/\d+(?=.*Kronar)/, '\&!', requires_any: ['Kronar'])
+  #   registry.gates # => {/\d+(?=.*Kronar)/=>["Kronar"]} (frozen)
   class Registry
+    # Checks a gate's shape. The words have to be ASCII: the engine looks for
+    # them in binary game lines, and include? raises on a non-ASCII String
+    # there.
+    #
+    # @param words [Object] a requires_any value
+    # @return [nil]
+    # @raise [ArgumentError] unless words is nil or a non-empty list of
+    #   non-empty ASCII Strings
+    def self.check_requires_any(words)
+      return if words.nil?
+      return if words.is_a?(Array) && !words.empty? && words.all? { |word| word.is_a?(String) && !word.empty? && word.ascii_only? }
+
+      raise ArgumentError, "requires_any must be a non-empty list of non-empty ASCII words, not #{words.inspect}"
+    end
+
     # @return [Registry] an empty registry
     def initialize
       @entries = {}
+      @gates = {}
       @version = 0
       @snapshot = nil
     end
 
     # Adds one substitution, or gives a key already present its new value in
-    # the position it already holds.
+    # the position it already holds. The gate goes the same way as the value:
+    # the last add of a key sets it, or drops it when it has none.
     #
     # @param key [Regexp] the pattern
     # @param result [String] the gsub replacement; the registry keeps a frozen
     #   copy, so changing the caller's String later does not reach it
+    # @param requires_any [Array<String>, nil] words one of which a line must
+    #   hold for key to match it (see the class comment); kept as a frozen copy
     # @return [String] result, as given
-    # @raise [ArgumentError] when key is not a Regexp
-    def add(key, result)
+    # @raise [ArgumentError] when key is not a Regexp or requires_any is
+    #   malformed; the registry is left as it was
+    def add(key, result, requires_any: nil)
       raise ArgumentError, "TextSubs::Registry keys are Regexps, not #{key.class}" unless key.is_a?(Regexp)
 
+      self.class.check_requires_any(requires_any)
       @entries[key] = result.dup.freeze
+      if requires_any
+        @gates[key] = requires_any.map { |word| word.dup.freeze }.freeze
+      else
+        @gates.delete(key)
+      end
       @version += 1
       result
     end
@@ -64,19 +100,38 @@ class TextSubs
     # comes back until the next add, so a reader calling once per line copies
     # the catalog only after it changes.
     #
-    # The version is read before the entries are copied: an add that lands in
-    # between leaves a snapshot that holds more than its version says, which
-    # is thrown away on the next call, never one that holds less.
-    #
     # @return [Hash{Regexp=>String}] frozen, with frozen values
     def snapshot
-      version = @version
-      cached = @snapshot
-      return cached.last if cached && cached.first == version
+      cached[1]
+    end
 
-      entries = @entries.dup.freeze
-      @snapshot = [version, entries].freeze
-      entries
+    # The gated keys and their words, from the same copy as snapshot.
+    #
+    # A reader that calls snapshot and then gates, with an add in between,
+    # gets gates newer than the entries. That is safe: a gate for a key the
+    # entries do not hold selects nothing, a gate the add gave a key they do
+    # hold is a promise about that same pattern, and a gate the add dropped
+    # only makes the engine run a regex it could have skipped.
+    #
+    # @return [Hash{Regexp=>Array<String>}] frozen, with frozen word lists;
+    #   empty when no key is gated
+    def gates
+      cached[2]
+    end
+
+    private
+
+    # The version is read before the entries are copied: an add that lands in
+    # between leaves a copy that holds more than its version says, which is
+    # thrown away on the next call, never one that holds less.
+    #
+    # @return [Array(Integer, Hash, Hash)] frozen [version, entries, gates]
+    def cached
+      version = @version
+      copy = @snapshot
+      return copy if copy && copy.first == version
+
+      @snapshot = [version, @entries.dup.freeze, @gates.dup.freeze].freeze
     end
   end
 
@@ -296,7 +351,8 @@ class TextSubs
   # @example After TextSubs.add('fine', 'FINE')
   #   TextSubs.apply(+"You feel fine.\r\n") # => "You feel FINE.\r\n"
   def self.apply(line)
-    Engine.apply(subs, line)
+    registry = @@registry
+    Engine.apply(registry.snapshot, line, gates: registry.gates)
   end
 
   # The matching engine behind TextSubs.apply, kept apart from the catalog so
@@ -310,14 +366,29 @@ class TextSubs
     # Selection uses match?, which builds no MatchData and sets no $~: nothing
     # reads the match, only whether there is one.
     #
+    # A gated key whose words the original line holds none of is left out
+    # before selection, so its regex never runs on that line. The gate is
+    # trusted, not checked: a key gated on a word it does not need would miss
+    # lines it matches.
+    #
     # @param subs [Hash{Regexp=>String}] ordered keys and their replacements
     # @param line [String] the line to rewrite
+    # @param gates [Hash{Regexp=>Array<String>}] gated keys of subs and their
+    #   words (Registry#gates); a gate for a key subs does not hold is ignored
     # @return [String] the same String, rewritten in place
     # @raise [FrozenError] when a key matches a frozen line
     # @example
     #   TextSubs::Engine.apply({ /cat/ => 'dog', /dog/ => 'bird' }, +'The cat.') # => "The dog."
-    def self.apply(subs, line)
-      matches = subs.select { |key, _| key.match?(line) }
+    # @example A gate the line does not meet
+    #   TextSubs::Engine.apply({ /\d+/ => '#' }, +'7 coins', gates: { /\d+/ => ['Kronar'] }) # => "7 coins"
+    def self.apply(subs, line, gates: {})
+      # Hash#except keeps the order of subs. On most lines its copy costs
+      # about what skipping the gated regexes saves, and on a long
+      # digit-heavy line the skip saves far more; a gate lookup per key would
+      # cost more on every line.
+      skipped = gates.filter_map { |key, words| key unless words.any? { |word| line.include?(word) } }
+      candidates = skipped.empty? ? subs : subs.except(*skipped)
+      matches = candidates.select { |key, _| key.match?(line) }
       matches.each { |target, result| line.gsub!(target, result) }
       line
     end
@@ -437,8 +508,12 @@ class TextSubs
   #       when:                          # optional, see Context
   #         guilds: ['Necromancer']
   #       kind: 'pairs'                  # optional, 'pairs' by default
+  #       requires_any: ['Kronar']       # optional, see Registry
   #       subs:
   #         - ['regex source', 'gsub replacement']
+  #
+  # requires_any gates every sub of the section: a line holding none of the
+  # words skips their regexes. It must only name words each pattern needs.
   #
   # The other kind, 'guild_spells_link', is the one sub whose replacement
   # names the character's guild. Its fields are pattern, preresult, prelink,
@@ -463,7 +538,7 @@ class TextSubs
 
     # @return [Array<String>] the keys every kind of section may hold, frozen
     def self.section_keys
-      %w[name when kind].freeze
+      %w[name when kind requires_any].freeze
     end
 
     # The subs data gives a character, in order, as regex source: the same
@@ -476,7 +551,8 @@ class TextSubs
     #   nil when the file is missing or did not parse
     # @param context [TextSubs::Context] the guild and settings to gate on
     # @return [Array<Array(String, String, Hash)>] [regex source, replacement,
-    #   meta] for each sub, where meta is a frozen { section: name }
+    #   meta] for each sub, where meta is a frozen { section: name }, plus
+    #   requires_any: words when the section has a gate
     # @raise [ArgumentError] naming the first problem found anywhere in data,
     #   including in sections context does not select
     # @example
@@ -503,7 +579,7 @@ class TextSubs
     # @param context [TextSubs::Context] the guild and settings to gate on
     # @return [Array<Array(Regexp, String, Hash)>] [key, replacement, meta]
     #   for each sub, where the key is frozen and meta is a frozen
-    #   { section: name }
+    #   { section: name }, plus requires_any: words when the section has a gate
     # @raise [ArgumentError] naming the first problem found anywhere in data,
     #   including in sections context does not select
     # @example
@@ -560,6 +636,7 @@ class TextSubs
       raise ArgumentError, "has no #{missing.join(', ')}" unless missing.empty?
 
       Context.check_gate(section['when'])
+      Registry.check_requires_any(section['requires_any'])
       kind == 'pairs' ? check_pairs(section['subs']) : check_link(section)
     rescue ArgumentError => e
       label = section.is_a?(Hash) && section['name'].is_a?(String) ? " (#{section['name']})" : ''
@@ -605,7 +682,7 @@ class TextSubs
     # @param context [TextSubs::Context]
     # @return [Array<Array(String, String, Hash)>] its subs
     def self.expand(section, context)
-      meta = { section: section['name'] }.freeze
+      meta = { section: section['name'], requires_any: section['requires_any'] }.compact.freeze
       return section['subs'].map { |pattern, replacement| [pattern, replacement, meta] } unless section['kind'] == 'guild_spells_link'
 
       guild = context.guild.to_s
@@ -710,10 +787,11 @@ class TextSubs
 
   # Adds the built-in subs the catalog data gives the character, in order,
   # each under the key Catalog.keyed_entries compiled while it checked the
-  # data, so no pattern is compiled a second time. Data that cannot be used
-  # adds nothing at all, never part of a catalog, and the caller shows the
-  # message this returns: the script then runs with the private_textsubs and
-  # shit-list subs alone.
+  # data, so no pattern is compiled a second time, and each with its
+  # section's requires_any gate. Data that cannot be used adds nothing at
+  # all, never part of a catalog, and the caller shows the message this
+  # returns: the script then runs with the private_textsubs and shit-list
+  # subs alone.
   #
   # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs')
   # @param context [TextSubs::Context] the guild and settings to gate on
@@ -730,7 +808,7 @@ class TextSubs
       "with schema: #{Catalog.schema}; update dr-scripts, or fix or remove a copy in data/custom. " \
       'Only private_textsubs and shit-list subs are active.'
   else
-    entries.each { |key, replacement, _meta| store_key(key, replacement) }
+    entries.each { |key, replacement, meta| store_key(key, replacement, requires_any: meta[:requires_any]) }
     nil
   end
 
@@ -739,11 +817,14 @@ class TextSubs
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
+  # @param requires_any [Array<String>, nil] the key's gate (see Registry);
+  #   only the catalog data sets one, so add keeps its two arguments
   # @return [String] result
   # @raise [RegexpError] when target is not valid regex source; the catalog
   #   and the generation are left as they were
-  def self.store(target, result)
-    store_key(/#{target}/, result)
+  # @raise [ArgumentError] when requires_any is malformed; likewise
+  def self.store(target, result, requires_any: nil)
+    store_key(/#{target}/, result, requires_any: requires_any)
   end
 
   # The one writer of the catalog: add and elanthipedia reach it through
@@ -751,20 +832,21 @@ class TextSubs
   # already. It writes write_target, under the lock, so no stage, unstage or
   # install of another thread lands between choosing the Registry and
   # counting the key. A key written to the installed catalog counts one
-  # generation, after it is written, so the generation never runs ahead of
-  # the catalog; a key written to a staged Registry or this thread's own
-  # build is not in subs yet and counts none, as install counts that whole
+  # generation per sub, after it is written, so the generation never runs
+  # ahead of the catalog; a key written to a staged Registry or this thread's
+  # own build is not in subs yet and counts none, as install counts that whole
   # catalog once, when it swaps it in.
   #
   # @param key [Regexp] the pattern
   # @param result [String] the gsub replacement
+  # @param requires_any [Array<String>, nil] the key's gate (see Registry)
   # @return [String] result
-  # @raise [ArgumentError] when key is not a Regexp; the catalog and the
-  #   generation are left as they were
-  def self.store_key(key, result)
+  # @raise [ArgumentError] when key is not a Regexp or requires_any is
+  #   malformed; the catalog and the generation are left as they were
+  def self.store_key(key, result, requires_any: nil)
     @@lock.synchronize do
       registry = write_target
-      registry.add(key, result)
+      registry.add(key, result, requires_any: requires_any)
       @@generation += 1 if registry.equal?(@@registry)
     end
     result

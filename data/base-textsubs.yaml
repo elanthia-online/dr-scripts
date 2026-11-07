@@ -16,6 +16,9 @@
 #   not_guilds: ['Thief']        the guild is none of these
 #   setting: 'herb_textsubs'     the setting is on
 #   setting_off: 'herb_textsubs' the setting is off or unset
+# A section may have requires_any: ['Word', ...], words one of which a line
+# must hold before its patterns run at all. It saves time and must never
+# change a result, so list only words every pattern of the section needs.
 # The guild_spells_link kind is the one sub that names the guild in its
 # replacement: preresult, then a link to prelink + guild + poslink, then
 # posresult.
@@ -1347,6 +1350,7 @@ textsubs:
     - name: 'coin commas with platinum grouping'
       when:
         setting: 'textsubs_use_plat_grouping'
+      requires_any: ['Kronar', 'Dokora', 'Lirum']
       subs:
         - ['(?!.*>)\d{1,3}(?=((\d{3})*(\d{4}))(?!\d)(?! platinum).*(Kronar|Dokora|Lirum))', '\&,']
         - ['(?!.*>)\d{1,3}(?=(\d{3})+(?!\d) platinum.*(Kronar|Dokora|Lirum))', '\&,']
@@ -1354,6 +1358,7 @@ textsubs:
     - name: 'coin commas'
       when:
         setting_off: 'textsubs_use_plat_grouping'
+      requires_any: ['Kronar', 'Dokora', 'Lirum']
       subs:
         - ['(?!.*>)\d{1,3}(?=(\d{3})+(?!\d).*(Kronar|Dokora|Lirum))', '\&,']
 
