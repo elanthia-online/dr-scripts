@@ -607,6 +607,66 @@ RSpec.describe 'aesthene.lic' do
       end
     end
 
+    describe 'remembered guesses' do
+      # TRALE against POACH leaves five known answers (A third; no T, R, L or E).
+      let(:solver) { AestheneSolver.new(%w[POACH COACH GNASH SWAMP CHAOS], %w[PANSY QUERY]) }
+
+      before { allow(solver).to receive(:best_guess).and_call_original }
+
+      it 'scores a lock state once and reuses the guess when it comes round again' do
+        solver.observe([row_for('TRALE', 'POACH')])
+        first = solver.next_guess(5)
+        # A later lock: same first row, new Row objects.
+        solver.observe([row_for('TRALE', 'POACH')])
+        expect(solver.next_guess(5)).to eq(first)
+        expect(solver).to have_received(:best_guess).once
+      end
+
+      it 'gives the guess a fresh solver would' do
+        solver.observe([row_for('TRALE', 'POACH')])
+        solver.next_guess(5)
+        solver.observe([row_for('TRALE', 'POACH')])
+        fresh = AestheneSolver.new(%w[POACH COACH GNASH SWAMP CHAOS], %w[PANSY QUERY])
+        fresh.observe([row_for('TRALE', 'POACH')])
+        expect(solver.next_guess(5)).to eq(fresh.next_guess(5))
+      end
+
+      it 'scores a different first row again' do
+        solver.observe([row_for('TRALE', 'POACH')])
+        solver.next_guess(5)
+        solver.observe([row_for('BUNKS', 'POACH')])
+        solver.next_guess(5)
+        expect(solver).to have_received(:best_guess).twice
+      end
+
+      it 'tells apart the same guess with different marks' do
+        # TRALE marks POACH/COACH (A third) differently from BEGIN/OPENS (E
+        # elsewhere); each leaves two answers, so both are scored.
+        two_groups = AestheneSolver.new(%w[POACH COACH BEGIN OPENS], [])
+        allow(two_groups).to receive(:best_guess).and_call_original
+        two_groups.observe([row_for('TRALE', 'POACH')])
+        two_groups.next_guess(5)
+        two_groups.observe([row_for('TRALE', 'BEGIN')])
+        two_groups.next_guess(5)
+        expect(two_groups).to have_received(:best_guess).twice
+      end
+
+      it 'keys on the rows left as well as the rows' do
+        solver.observe([row_for('TRALE', 'POACH')])
+        solver.next_guess(5)
+        solver.next_guess(2)
+        expect(solver).to have_received(:best_guess).twice
+      end
+
+      it 'keeps no entry for states answered without scoring' do
+        # Two rows leave POACH alone, so next_guess returns it without scoring.
+        solver.observe([row_for('TRALE', 'POACH'), row_for('COACH', 'POACH')])
+        expect(solver.next_guess(4)).to eq('POACH')
+        expect(solver.instance_variable_get(:@guess_cache)).to be_empty
+        expect(solver).not_to have_received(:best_guess)
+      end
+    end
+
     describe '#next_guess' do
       it 'guesses the only candidate' do
         solver = AestheneSolver.new(%w[POACH], [])
