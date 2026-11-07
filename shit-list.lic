@@ -41,6 +41,13 @@ class ShitListRecorder
     end
   end
 
+  # Appends a name to the list, then restarts textsubs (see #restart_textsubs)
+  # so the new name gets its (SL) tag. Exits without writing the name or
+  # textsubs when the name is already listed.
+  #
+  # @param name [String] lower-case character name to add
+  # @param desc [String] why the name was added
+  # @return [void]
   def add_new_shitter(name, desc)
     File.open(@file_name, 'a+') do |file|
       file.each do |line|
@@ -73,6 +80,12 @@ class ShitListRecorder
     respond output.sort if output.length > 1
   end
 
+  # Removes an exact name from the list. Only when a name was actually removed
+  # does it restart textsubs (see #restart_textsubs) so the (SL) tag goes;
+  # otherwise it says the name could not be found and leaves textsubs alone.
+  #
+  # @param name [String] lower-case character name to remove
+  # @return [void]
   def remove_shitter(name)
     name_removed = false
     shit_list_array = File.readlines(@file_name)
@@ -109,6 +122,10 @@ class ShitListRecorder
     respond output.sort
   end
 
+  # Empties the list, then restarts textsubs (see #restart_textsubs) so every
+  # (SL) tag goes.
+  #
+  # @return [void]
   def clear_list
     File.open(@file_name, 'w') {}
 
