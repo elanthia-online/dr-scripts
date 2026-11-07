@@ -12,6 +12,9 @@
     ;aesthene full all - keep going until you have no time slips left.
                        A run of several slips stops early at a lock it can't
                        solve, so no more slips are spent on it.
+                     When a full run ends, the script walks you back to the
+                     room you started it in. It stays put after a lock it
+                     couldn't solve, so you can finish that lock by hand.
     ;aesthene solve  - attune to (or resume) the time lock in your room and
                        solve it. Use this when you already have a redeemed pass.
     ;aesthene check  - read the lock in your room and list the answers that are
@@ -490,7 +493,8 @@ class Aesthene
     elsif args.solve
       attune_and_solve
     else
-      run_slips(slip_limit(args.count))
+      start_room = Room.current.id
+      return_to(start_room) if run_slips(slip_limit(args.count))
     end
   end
 
@@ -538,10 +542,11 @@ class Aesthene
   # spend another slip each time round.
   #
   # @param limit [Integer, Float] slips to run; Float::INFINITY for all
-  # @return [void]
+  # @return [Boolean] false when the run stopped at a lock it could not solve
   def run_slips(limit)
     solved = 0
     stop = nil
+    unsolved = false
     begin
       while solved < limit
         unless redeem_slip(first: solved.zero?)
@@ -549,15 +554,32 @@ class Aesthene
           break
         end
         unless attune_and_solve
+          unsolved = true
           stop = "stopped at a lock it couldn't solve, so no more slips are spent"
           break
         end
         solved += 1
       end
+      !unsolved
     ensure
       # Also runs when a step aborts part-way, so the count is not lost.
       report_run(solved, stop) if limit > 1 && (solved.positive? || stop)
     end
+  end
+
+  # Walks back to the room the run started in.
+  #
+  # @param room [Integer, nil] the starting room's id; nil when it was not a
+  #   mapped room
+  # @return [void]
+  def return_to(room)
+    if room.nil?
+      DRC.message("aesthene: the room you started in isn't mapped, so you're staying here.")
+      return
+    end
+    return if Room.current.id == room
+
+    DRC.message("aesthene: couldn't walk back to room #{room}, where you started.") unless DRCT.walk_to(room)
   end
 
   # Walks to the Timekeeper, redeems one time slip and asks to be shown to a
