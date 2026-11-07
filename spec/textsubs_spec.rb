@@ -1281,6 +1281,20 @@ RSpec.describe 'textsubs.lic' do
         expect(TextSubs::Engine.apply({ /CAT/ => 'dog' }, +'The Cat.')).to eq('The Cat.')
       end
 
+      # An index already holds its gates, so gates passed beside it would be
+      # dropped without a word; even an empty Hash is refused, since it says
+      # the caller meant to choose the gates.
+      it 'refuses gates passed beside an index, and leaves the line alone' do
+        subs = { /cat/ => 'dog' }.freeze
+        index = TextSubs::TokenIndex.new(subs.keys)
+        line = +'The cat.'
+        expect { TextSubs::Engine.apply(subs, line, gates: { /cat/ => ['Kronar'] }, index: index) }
+          .to raise_error(ArgumentError, /not both/)
+        expect { TextSubs::Engine.apply(subs, line, gates: {}, index: index) }.to raise_error(ArgumentError)
+        expect(line).to eq('The cat.')
+        expect(TextSubs::Engine.apply(subs, line, index: index)).to eq('The dog.')
+      end
+
       # The engine trusts a gate, so a key gated on a word its pattern does not
       # need shows which lines the gate lets through: it stays silent on a line
       # it matches when that line holds none of the words.

@@ -401,22 +401,26 @@ class TextSubs
     #
     # @param subs [Hash{Regexp=>String}] ordered keys and their replacements
     # @param line [String] the line to rewrite
-    # @param gates [Hash{Regexp=>Array<String>}] gated keys of subs and their
-    #   words (Registry#gates); a gate for a key subs does not hold is
-    #   ignored. Read only when no index is given.
+    # @param gates [Hash{Regexp=>Array<String>}, nil] gated keys of subs and
+    #   their words (Registry#gates); a gate for a key subs does not hold is
+    #   ignored. Only for the one-off path: an index already holds its gates.
     # @param index [TextSubs::TokenIndex, nil] an index over exactly the keys
-    #   of subs and gates; nil builds one for this call, which parses every
-    #   key, so a caller that runs many lines through one catalog passes it
-    #   (Registry#indexed_snapshot)
+    #   of subs and their gates; nil builds one for this call, which parses
+    #   every key, so a caller that runs many lines through one catalog
+    #   passes it (Registry#indexed_snapshot)
     # @return [String] the same String, rewritten in place
+    # @raise [ArgumentError] when both gates and index are given, since the
+    #   gates would be silently ignored
     # @raise [FrozenError] when a key matches a frozen line
     # @raise [KeyError] when index names a key subs does not hold
     # @example
     #   TextSubs::Engine.apply({ /cat/ => 'dog', /dog/ => 'bird' }, +'The cat.') # => "The dog."
     # @example A gate the line does not meet
     #   TextSubs::Engine.apply({ /\d+/ => '#' }, +'7 coins', gates: { /\d+/ => ['Kronar'] }) # => "7 coins"
-    def self.apply(subs, line, gates: {}, index: nil)
-      index ||= TokenIndex.new(subs.keys, gates)
+    def self.apply(subs, line, gates: nil, index: nil)
+      raise ArgumentError, 'pass gates: or index:, not both: an index already holds its gates' if gates && index
+
+      index ||= TokenIndex.new(subs.keys, gates || {})
       matches = index.candidates(line).select { |key| key.match?(line) }
       matches.each { |key| line.gsub!(key, subs.fetch(key)) }
       line
