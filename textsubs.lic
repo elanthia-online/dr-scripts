@@ -307,6 +307,9 @@ class TextSubs
     # only matches after an earlier key rewrote the line does not fire, and a
     # selected key that no longer matches changes nothing.
     #
+    # Selection uses match?, which builds no MatchData and sets no $~: nothing
+    # reads the match, only whether there is one.
+    #
     # @param subs [Hash{Regexp=>String}] ordered keys and their replacements
     # @param line [String] the line to rewrite
     # @return [String] the same String, rewritten in place
@@ -314,7 +317,7 @@ class TextSubs
     # @example
     #   TextSubs::Engine.apply({ /cat/ => 'dog', /dog/ => 'bird' }, +'The cat.') # => "The dog."
     def self.apply(subs, line)
-      matches = subs.select { |key, _| key =~ line }
+      matches = subs.select { |key, _| key.match?(line) }
       matches.each { |target, result| line.gsub!(target, result) }
       line
     end
