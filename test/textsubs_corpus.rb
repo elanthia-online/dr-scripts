@@ -282,7 +282,10 @@ module TextsubsCorpus
     (0...[committed.size, expected.size].max).find { |index| committed[index] != expected[index] }
   end
 
-  # The every-run check of samples.jsonl.
+  # The every-run check of samples.jsonl. When regenerating would drop lines
+  # of `content` (a line added straight to samples.jsonl, or one a rebase
+  # brought back), the message names them first, before it says to
+  # regenerate.
   #
   # @param content [String] samples.jsonl content
   # @param generated [Array<String>] the expanded samples, then the composite
@@ -297,14 +300,42 @@ module TextsubsCorpus
              "delete them there: #{redundant.inspect}"
     end
 
+    lines = samples_lines(generated, hand_added)
     committed = content.lines
-    expected = samples_jsonl(samples_lines(generated, hand_added)).lines
+    expected = samples_jsonl(lines).lines
     at = first_difference(committed, expected)
     return unless at
 
-    "samples.jsonl line #{at + 1} is #{committed[at].inspect}, the generator puts #{expected[at].inspect} there; " \
-      'regenerate it with TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb ' \
-      '(hand-added lines go in samples_hand_added.jsonl)'
+    [drop_warning(content, lines), line_difference(committed, expected, at),
+     'regenerate it with TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb ' \
+     '(hand-added lines go in samples_hand_added.jsonl)'].compact.join('; ')
+  end
+
+  # @param content [String] samples.jsonl content
+  # @param lines [Array<String>] the lines a regeneration writes (see
+  #   {.samples_lines})
+  # @return [String, nil] a warning naming every line of `content` that
+  #   writing `lines` drops, or nil when it drops none. The dropped lines are
+  #   either generated lines a catalog change no longer makes, or lines added
+  #   to samples.jsonl by hand, which belong in samples_hand_added.jsonl.
+  def self.drop_warning(content, lines)
+    dropped = parse_samples(content) - lines
+    return if dropped.empty?
+
+    "regenerating samples.jsonl drops #{dropped.size} line(s) that neither the generator nor " \
+      'samples_hand_added.jsonl makes; move any added by hand to samples_hand_added.jsonl (after a regeneration, ' \
+      "copy them from this list): #{dropped.inspect}"
+  end
+
+  # @param committed [Array<String>] the lines of samples.jsonl
+  # @param expected [Array<String>] the lines the generator gives
+  # @param at [Integer] the index of the first line where they differ
+  # @return [String] the two lines at `at`, either side saying so when its
+  #   file has ended
+  def self.line_difference(committed, expected, at)
+    found = committed[at] ? "line #{at + 1} is #{committed[at].inspect}" : "has no line #{at + 1} (end of file)"
+    wanted = expected[at] ? expected[at].inspect : 'nothing (end of file)'
+    "samples.jsonl #{found}, the generator puts #{wanted} there"
   end
 
   # @param lines [Array<String>]

@@ -51,7 +51,9 @@ require_relative '../test/textsubs_corpus'
 # and reviews the diff. To pin a pattern with a line the generator does not
 # make, add it to samples_hand_added.jsonl (one JSON string per line, matched
 # by some key of some guild catalog) and regenerate; nothing writes that file,
-# so a hand-added line is never dropped.
+# so a hand-added line is never dropped. A line added straight to
+# samples.jsonl is: the every-run check names it before it says to regenerate,
+# and the writer names every line it drops.
 #
 # What the real catalogs cannot pin: on no corpus line does a key create a
 # match for a key that runs after it (the only two such pairs a search of every
@@ -665,7 +667,12 @@ RSpec.describe 'textsubs.lic' do
           end
           expect(thin).to eq([]), 'each composite sample must be matched by two or more keys of every catalog with spell links and herbs on'
 
-          File.write(samples_path, TextsubsCorpus.samples_jsonl(TextsubsCorpus.samples_lines(generated, hand_added)))
+          lines = TextsubsCorpus.samples_lines(generated, hand_added)
+          # Names every line the rewrite drops, so a line added straight to
+          # samples.jsonl is not lost without a word.
+          dropped = TextsubsCorpus.drop_warning(File.read(samples_path), lines)
+          warn dropped if dropped
+          File.write(samples_path, TextsubsCorpus.samples_jsonl(lines))
           File.binwrite(stream_path, TextsubsCorpus.stream)
         end
       else
@@ -711,6 +718,28 @@ RSpec.describe 'textsubs.lic' do
         expect(TextsubsCorpus.samples_fault(in_order, generated, hand)).to be_nil
         expect(TextsubsCorpus.samples_fault(moved, generated, hand)).to start_with('samples.jsonl line 101 is "\"HAND line pinning a pattern\"')
         expect(TextsubsCorpus.samples_fault(dropped, generated, hand)).to start_with("samples.jsonl line #{generated.size + 1} ")
+      end
+
+      it 'names first the lines regenerating drops, then where samples.jsonl ends early or runs on' do
+        generated = corpus_generator[:generated]
+        hand = ['HAND line']
+        stray = 'STRAY line added straight to samples.jsonl'
+        runs_on = TextsubsCorpus.samples_fault(TextsubsCorpus.samples_jsonl(generated + hand + [stray]), generated, hand)
+        ends_early = TextsubsCorpus.samples_fault(TextsubsCorpus.samples_jsonl(generated), generated, hand)
+        stray_line = "#{stray.to_json}\n".inspect
+        hand_line = "#{hand.first.to_json}\n".inspect
+        expect(runs_on).to start_with('regenerating samples.jsonl drops 1 line(s) that neither the generator nor ' \
+                                      'samples_hand_added.jsonl makes; move any added by hand to samples_hand_added.jsonl')
+          .and include(": #{[stray].inspect}; samples.jsonl line #{generated.size + 2} is #{stray_line}, " \
+                       'the generator puts nothing (end of file) there; regenerate it')
+        expect(ends_early).to start_with("samples.jsonl has no line #{generated.size + 1} (end of file), " \
+                                         "the generator puts #{hand_line} there; regenerate it")
+      end
+
+      it 'names every line of samples.jsonl a regeneration drops, and nothing when it drops none' do
+        content = TextsubsCorpus.samples_jsonl(['kept', 'no longer generated', 'added by hand'])
+        expect(TextsubsCorpus.drop_warning(content, ['kept', 'new'])).to end_with(['no longer generated', 'added by hand'].inspect)
+        expect(TextsubsCorpus.drop_warning(content, ['added by hand', 'new', 'no longer generated', 'kept'])).to be_nil
       end
 
       it 'fails a hand-added line that is there twice or that the generator makes too' do
