@@ -1865,7 +1865,7 @@ class TextSubs
 
       # @param section [Hash] a ladder section
       # @param _spells [TextSubs::SpellTable] unused
-      # @return [nil]
+      # @return [Array<Regexp>] the step patterns, compiled, in list order
       # @raise [ArgumentError] when style, anchor or prefix is not a quoted
       #   string, style is unknown, anchor is not '^', of is not a positive
       #   whole number, steps is not a non-empty list of [n, 'phrase'] pairs,
@@ -1883,9 +1883,9 @@ class TextSubs
         repeated = steps.map(&:first).tally.select { |_, count| count > 1 }.keys
         raise ArgumentError, "uses step number(s) #{repeated.join(', ')} more than once" unless repeated.empty?
 
-        subs = expand(section, nil, nil)
-        Generators.check_patterns(subs)
-        check_distinct(section, subs)
+        patterns = Generators.check_patterns(expand(section, nil, nil))
+        check_distinct(section, patterns)
+        patterns
       end
 
       # @param section [Hash] a checked ladder section
@@ -1963,14 +1963,13 @@ class TextSubs
       # matches the other's pattern, yet that line gets both counters.
       #
       # @param section [Hash] a ladder section, its steps checked
-      # @param subs [Array<Array(String, String)>] its expansion, the
-      #   patterns compiled
+      # @param patterns [Array<Regexp>] its expansion's patterns, compiled,
+      #   one per step in list order
       # @return [nil]
       # @raise [ArgumentError] naming the first step whose text another
       #   step's pattern matches, and those steps, each by its place in the
       #   list and its n
-      def self.check_distinct(section, subs)
-        patterns = subs.map { |pattern, _| Regexp.new(pattern) }
+      def self.check_distinct(section, patterns)
         steps = section['steps']
         label = ->(index) { "steps #{index + 1} (n #{steps[index].first})" }
         steps.each_with_index do |(_, phrase), index|
