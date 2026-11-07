@@ -94,6 +94,8 @@ AESTHENE_POACH_PROBE_ROWS = [
 # interleaved with every grid, as they were in the logs.
 class AestheneFakeLock
   NOISE = ['A traveler just arrived.', '[multi]>get my multiplier'].freeze
+  # Marks as the game prints them: hit +X+, present _X_, absent *X*.
+  TILE_MARKS = { hit: '+', present: '_', absent: '*' }.freeze
 
   # @return [Array<String>] every command the script sent, in order
   attr_reader :commands
@@ -237,13 +239,10 @@ class AestheneFakeLock
       [' +-----+-----+-----+-----+-----+', "[#{rows.size} of the 6 rows are locked into place.]"]
   end
 
+  # Marks each tile the way the lock does (AestheneSolver.lock_marks), which
+  # is not Wordle's way for a guess that repeats a letter.
   def row_line(guess)
-    code = AestheneSolver.feedback_code(guess, @answer)
-    marks = Array.new(5) do
-      mark = ['*', '_', '+'][code % 3]
-      code /= 3
-      mark
-    end.reverse
+    marks = AestheneSolver.lock_marks(guess, @answer).map { |mark| TILE_MARKS.fetch(mark) }
     ' | ' + guess.chars.zip(marks).map { |letter, mark| "#{mark}#{letter}#{mark}" }.join(' | ') + ' |'
   end
 
@@ -626,6 +625,21 @@ RSpec.describe 'aesthene.lic' do
         stub_const('AestheneSolver::SCORING_VERSION', AestheneSolver::SCORING_VERSION + 1)
         expect(AestheneSolver.digest(%w[POACH COACH], %w[PANSY], 'TRALE')).not_to eq(base)
       end
+
+      # Scoring with the game's marks instead of Wordle's, but forgetting to
+      # bump SCORING_VERSION, must still retire a table built by the old code.
+      it 'changes when feedback_code marks repeated letters differently, with no version bump' do
+        before = AestheneSolver.digest(%w[FAIRY PSALM], %w[PANSY], 'TRALE')
+        allow(AestheneSolver).to receive(:feedback_code) do |guess, answer|
+          AestheneSolver.lock_marks(guess, answer).reduce(0) { |code, mark| (code * 3) + %i[absent present hit].index(mark) }
+        end
+        expect(AestheneSolver.digest(%w[FAIRY PSALM], %w[PANSY], 'TRALE')).not_to eq(before)
+      end
+
+      it 'stays the same for a feedback_code that gives the same marks' do
+        allow(AestheneSolver).to receive(:feedback_code).and_call_original
+        expect(AestheneSolver.digest(%w[POACH COACH], %w[PANSY], 'TRALE')).to eq(base)
+      end
     end
 
     describe '.lock_marks' do
@@ -768,6 +782,14 @@ RSpec.describe 'aesthene.lic' do
         guess = solver.next_guess(2)
         codes = candidates.map { |answer| AestheneSolver.feedback_code(guess, answer) }
         expect(codes.uniq.size).to eq(candidates.size)
+      end
+
+      # With two rows left the solver maximizes the chance the last row is
+      # forced. Any -ATCH guess leaves the other four together (2 of 5 sure);
+      # TPMRS sets PATCH and MATCH apart (3 of 5), so it wins.
+      it 'with two rows left, prefers the guess that forces the most last rows' do
+        solver = AestheneSolver.new(%w[BATCH HATCH LATCH MATCH PATCH], [])
+        expect(solver.next_guess(2)).to eq('TPMRS')
       end
 
       it 'is deterministic for the same candidates' do
@@ -1495,6 +1517,13 @@ RSpec.describe 'aesthene.lic' do
       stub_const('Aesthene::SOLVE_GRACE', 0.05)
     end
 
+    # Rows copied from a live log, so the stand-in marks as the real lock does
+    # (no letter counting) rather than as Wordle would.
+    it 'uses a stand-in lock that marks repeated letters as the live lock did' do
+      expect(AestheneFakeLock.new('FAIRY').send(:row_line, 'HAMAR')).to eq(' | *H* | +A+ | *M* | _A_ | _R_ |')
+      expect(AestheneFakeLock.new('PSALM').send(:row_line, 'SMALL')).to eq(' | _S_ | _M_ | +A+ | +L+ | _L_ |')
+    end
+
     it 'redeems, attunes and solves a known answer with ;aesthene full' do
       lock = AestheneFakeLock.new('POACH')
       run_script(lock, :full)
@@ -1671,10 +1700,13 @@ RSpec.describe 'aesthene.lic' do
         answers.each_slice(4).map(&:first).each { |answer| expect(solver.solve_offline(answer).last).to eq(answer) }
       end
 
-      # Slow (a few seconds): rescores a sample of entries with the real code,
-      # which the digest alone cannot vouch for.
-      it 'holds what the solver computes for a sample of states' do
-        guesses.keys.each_slice(30).map(&:first).each do |key|
+      # Slow (a few seconds): rescores entries with the real code, which the
+      # digest alone cannot vouch for. Every later-row entry is cheap to
+      # rescore; second-row entries take about half a second each, so only a
+      # sample of those.
+      it 'holds what the solver computes for its states' do
+        second_row, later_rows = guesses.keys.partition { |key| key.count('|') == 1 }
+        (second_row.each_slice(20).map(&:first) + later_rows).each do |key|
           *row_texts, rows_left = key.split('|')
           rows = row_texts.map do |text|
             guess, marks = text.split(':')
