@@ -1829,8 +1829,10 @@ class TextSubs
     # regex source, and the replacement is that text with each backslash
     # escape taken out. A phrase is therefore literal text: a regex
     # metacharacter but '.' must be escaped, and a backslash may only escape
-    # a punctuation mark, so the text the pattern matches is the text the
-    # replacement writes back.
+    # a punctuation mark, so the replacement writes back the text the pattern
+    # matched, but for an unescaped '.': that matches any character and is
+    # written back as '.'. No step's text may be matched by another step's
+    # pattern, as one of the two would then lose its counter.
     #
     # @example
     #   section = { 'name' => 'butchery', 'kind' => 'ladder', 'prefix' => 'manage to extract a', 'of' => 10,
@@ -1866,8 +1868,9 @@ class TextSubs
       #   string, style is unknown, anchor is not '^', of is not a positive
       #   whole number, steps is not a non-empty list of [n, 'phrase'] pairs,
       #   an n is out of range or used twice, a phrase or the prefix is not
-      #   literal text, a before_period phrase does not end in a full stop, or
-      #   a pattern does not compile
+      #   literal text, a before_period phrase does not end in a full stop, a
+      #   pattern does not compile, or a step's text is matched by another
+      #   step's pattern
       def self.check(section, _spells)
         Generators.check_strings(section, optional_fields)
         check_options(section)
@@ -1878,7 +1881,9 @@ class TextSubs
         repeated = steps.map(&:first).tally.select { |_, count| count > 1 }.keys
         raise ArgumentError, "uses step number(s) #{repeated.join(', ')} more than once" unless repeated.empty?
 
-        Generators.check_patterns(expand(section, nil, nil))
+        subs = expand(section, nil, nil)
+        Generators.check_patterns(subs)
+        check_distinct(section, subs)
       end
 
       # @param section [Hash] a checked ladder section
@@ -1947,18 +1952,50 @@ class TextSubs
                              'but . with a backslash, and escape nothing else'
       end
 
+      # Two steps whose patterns match one text would put both counters on
+      # that line, or, with one pattern, share one key so that only the later
+      # step survives. Each step's text is its pattern's match, so it is
+      # enough to try every other pattern on it.
+      #
+      # @param section [Hash] a ladder section, its steps checked
+      # @param subs [Array<Array(String, String)>] its expansion, the
+      #   patterns compiled
+      # @return [nil]
+      # @raise [ArgumentError] naming the first step whose text another
+      #   step's pattern matches, and those steps
+      def self.check_distinct(section, subs)
+        patterns = subs.map { |pattern, _| Regexp.new(pattern) }
+        section['steps'].each_with_index do |(_, phrase), index|
+          text = literal(phrase_source(section, phrase))
+          others = patterns.each_index.select { |other| other != index && patterns[other].match?(text) }
+          next if others.empty?
+
+          raise ArgumentError, "steps #{index + 1} phrase #{phrase.inspect} is also matched by steps " \
+                               "#{others.map(&:succ).join(', ')}, so one of them would lose its counter"
+        end
+        nil
+      end
+
+      # @param section [Hash] a ladder section
+      # @param phrase [String] one step's phrase
+      # @return [String] the phrase with the prefix and a space before it:
+      #   the pattern without its anchor
+      def self.phrase_source(section, phrase)
+        [section['prefix'], phrase].compact.join(' ')
+      end
+
       # @param section [Hash] a checked ladder section
       # @param n [Integer] the step's place on the scale
       # @param phrase [String] the step's phrase
       # @return [Array(String, String)] the step's pattern and replacement
       def self.step_sub(section, n, phrase)
-        source = [section['prefix'], phrase].compact.join(' ')
+        source = phrase_source(section, phrase)
         text = literal(source)
         counter = "(#{n}/#{section['of']})"
         replacement = section['style'] == 'before_period' ? "#{text.delete_suffix('.')} #{counter}." : "#{text} #{counter}"
         ["#{section['anchor']}#{source}", replacement]
       end
-      private_class_method :check_options, :check_step, :check_literal, :step_sub
+      private_class_method :check_options, :check_step, :check_literal, :check_distinct, :phrase_source, :step_sub
     end
 
     # The 'guild_spells_link' kind, the one sub whose replacement names the

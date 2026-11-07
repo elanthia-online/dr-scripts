@@ -4794,6 +4794,36 @@ RSpec.describe 'textsubs.lic' do
           .to raise_error(ArgumentError, 'section 1 (scale) uses step number(s) 1, 2 more than once')
       end
 
+      # Two subs with one pattern share one key, so the later one alone
+      # survives; and when one step's pattern also matches another step's
+      # text, both counters land on that line. Either way a step loses its
+      # counter, so the load refuses the ladder.
+      it 'refuses a phrase repeated in another step, naming both steps' do
+        expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit'], [3, 'a miss'], [2, 'a hit']]) }
+          .to raise_error(ArgumentError, 'section 1 (scale) steps 1 phrase "a hit" is also matched by steps 3, ' \
+                                         'so one of them would lose its counter')
+      end
+
+      it "refuses a phrase that another step's pattern also matches, whichever comes first" do
+        message = 'section 1 (scale) steps %d phrase "a hit hard" is also matched by steps %d, so one of them would lose its counter'
+        expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit'], [2, 'a hit hard']]) }
+          .to raise_error(ArgumentError, format(message, 2, 1))
+        expect { ladder_pairs('of' => 5, 'steps' => [[2, 'a hit hard'], [1, 'a hit']]) }
+          .to raise_error(ArgumentError, format(message, 1, 2))
+      end
+
+      it "checks the overlap on the prefixed text and leaves the anchor to rule out a match inside another step's text" do
+        expect { ladder_pairs('prefix' => 'You land', 'of' => 5, 'steps' => [[1, 'a hit'], [2, 'a hit hard']]) }
+          .to raise_error(ArgumentError, /steps 2 phrase "a hit hard" is also matched by steps 1/)
+        pairs = ladder_pairs('anchor' => '^', 'of' => 5, 'steps' => [[1, 'a hit'], [2, 'you take a hit']])
+        expect(pairs.map(&:last)).to eq(['a hit (1/5)', 'you take a hit (2/5)'])
+      end
+
+      it "refuses an unescaped '.' that matches another step's text, as it matches any character" do
+        expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit.'], [2, 'a hit!']]) }
+          .to raise_error(ArgumentError, /steps 2 phrase "a hit!" is also matched by steps 1/)
+      end
+
       {
         'an unknown style'             => [{ 'style' => 'prepend' }, /has unknown style "prepend"; styles are append, before_period\z/],
         'a style that is not a string' => [{ 'style' => 1 }, /'style' must be a quoted string, not 1/],
