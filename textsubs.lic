@@ -787,7 +787,10 @@ end
 # data/custom, which get_data reads instead). When that data cannot be used,
 # none of it is added and the script says so once.
 catalog_override = TextSubs.catalog_override(SCRIPT_DIR)
-echo "Reading the built-in subs from #{catalog_override}, which replaces data/base-textsubs.yaml." if catalog_override
+if catalog_override
+  echo "Reading the built-in subs from #{catalog_override}, which replaces data/base-textsubs.yaml " \
+       "(it must be a 'textsubs:' mapping with schema: #{TextSubs::Catalog.schema})."
+end
 catalog_problem = TextSubs.add_catalog(get_data('textsubs').textsubs, TextSubs::Context.new(guild: DRStats.guild, settings: settings),
                                        file: catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml'))
 echo catalog_problem if catalog_problem

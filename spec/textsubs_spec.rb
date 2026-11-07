@@ -708,7 +708,10 @@ RSpec.describe 'textsubs.lic' do
 
       it 'says once that it reads the copy, and builds the catalog get_data gives' do
         from_copy = build_catalog('Commoner')
-        expect(displayed_messages).to eq(["Reading the built-in subs from #{@custom}, which replaces data/base-textsubs.yaml."])
+        expect(displayed_messages).to eq(
+          ["Reading the built-in subs from #{@custom}, which replaces data/base-textsubs.yaml " \
+           "(it must be a 'textsubs:' mapping with schema: 1)."]
+        )
 
         stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
         expect(from_copy).to eq(build_catalog('Commoner'))
