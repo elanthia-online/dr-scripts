@@ -472,6 +472,9 @@ class TextSubs
     #   data = { 'schema' => 1, 'sections' => [{ 'name' => 'all', 'subs' => [['fine', 'FINE']] }] }
     #   TextSubs::Catalog.entries(data, context) # => [['fine', 'FINE', { section: 'all' }]]
     def self.entries(data, context)
+      # check has validated every gate already, so allows? checks each one a
+      # second time. That is deliberate: allows? is public and stays safe on
+      # its own, and the repeat costs nothing at catalog size.
       check(data).select { |section| context.allows?(section['when']) }
                  .flat_map { |section| expand(section, context) }
     end
@@ -601,6 +604,10 @@ class TextSubs
   # Links text to the Elanthipedia page of the same name, with underscores
   # between the words (MikeLC 2/15/2025; thanks to Tysong for the "how to
   # hyperlink" help).
+  #
+  # Kept as public API for players' own scripts: the built-in catalog no
+  # longer calls it, as data/base-textsubs.yaml stores each link already
+  # expanded into a [pattern, replacement] pair.
   #
   # The key is three capture groups, (pretext)(text)(postext), so the context
   # around the text can be matched and put back. pretext, text and postext

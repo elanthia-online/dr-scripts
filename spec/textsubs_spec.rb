@@ -698,7 +698,10 @@ RSpec.describe 'textsubs.lic' do
         Dir.mktmpdir('textsubs-script-dir') do |dir|
           @custom = File.join(dir, 'data', 'custom', 'base-textsubs.yaml')
           FileUtils.mkdir_p(File.dirname(@custom))
-          File.write(@custom, "textsubs:\n")
+          # A real copy of the shipped file. get_data is stubbed, so the
+          # script only checks that this file exists; what it builds comes
+          # from $test_data, which each example sets.
+          FileUtils.cp(catalog_path, @custom)
           @script_dir = dir
           example.run
         end
