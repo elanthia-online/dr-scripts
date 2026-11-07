@@ -1183,6 +1183,13 @@ RSpec.describe 'textsubs.lic' do
           expect(hooked("It is of #{quality} quality."))
             .to eq("It is of #{quality} (#{tier}/12) quality.\r\n")
         end
+
+        # Without 'of' and 'quality' the empty alternatives match, so this
+        # pins that both are written back from the match, never hardcoded.
+        it "adds (#{tier}/12) to a bare 'are #{quality}' with no 'of' or 'quality'" do
+          expect(hooked("They are #{quality}."))
+            .to eq("They are #{quality} (#{tier}/12).\r\n")
+        end
       end
     end
   end
