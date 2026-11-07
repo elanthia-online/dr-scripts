@@ -948,23 +948,23 @@ RSpec.describe 'textsubs.lic' do
         expect(hooked(line, guild: 'Thief')).to eq("#{line}\r\n")
       end
     end
+
     # Two Bard blocks used to hold a song ladder each: one keyed on the end of
     # every message, one on the whole message, so a Bard got each counter
     # twice ("bowing your head (4/7). (4/7)"). Every message gets its counter
     # once, before the full stop.
     describe 'the Bard song assessment' do
-      ['You stop only after those first few lines, however, unable to remember any more|1',
-       'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway|1',
-       'At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, ' \
-       'but pick it up a moment later and bring it to a strong conclusion|2',
-       'You feel a bit tired as you finish, but grin despite that for the ease at which you sang|3',
-       'You bring the song to a close, bowing your head|4',
-       'Your voice carries strongly on the air as you effortlessly recite the Common words so that all may hear, ' \
-       'bowing your head as they come to a close|5',
-       'Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride ' \
-       'as it comes to a close|6',
-       'When the song finally comes to a close, you bow your head, your ears ringing in the silence|7'].each do |row|
-        message, tier = row.split('|')
+      [['You stop only after those first few lines, however, unable to remember any more', 1],
+       ['Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway', 1],
+       ['At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, ' \
+        'but pick it up a moment later and bring it to a strong conclusion', 2],
+       ['You feel a bit tired as you finish, but grin despite that for the ease at which you sang', 3],
+       ['You bring the song to a close, bowing your head', 4],
+       ['Your voice carries strongly on the air as you effortlessly recite the Common words so that all may hear, ' \
+        'bowing your head as they come to a close', 5],
+       ['Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride ' \
+        'as it comes to a close', 6],
+       ['When the song finally comes to a close, you bow your head, your ears ringing in the silence', 7]].each do |message, tier|
         it "labels \"#{message[0, 40]}...\" (#{tier}/7) once" do
           expect(hooked("#{message}.", guild: 'Bard')).to eq("#{message} (#{tier}/7).\r\n")
         end
