@@ -394,6 +394,14 @@ RSpec.describe InventoryManager do
         )
       end
 
+      it 'keeps a numbered item named like furniture as an item' do
+        saved = saved_after(['Vault Inventory:', '     (1)  a brass hookah', '          (2)  a pipe bowl']) { manager.add_vault_standard }
+
+        expect(saved.grep(/\(vault\)\z/)).to eq(
+          ['a brass hookah (in vault) (vault)', 'a pipe bowl (in container - a brass hookah) (in vault) (vault)']
+        )
+      end
+
       it 'keeps an ignored container as the parent of what is inside it' do
         manager.instance_variable_set(:@inventory_ignores, ['a pouch'])
 
@@ -568,6 +576,14 @@ RSpec.describe InventoryManagerGui do
 
     it 'anchors a regex to the item name, not the stored row' do
       expect(items_for('/sack$/')).to eq(['a Blue sack'])
+    end
+
+    it 'finds items on furniture by the furniture, but not the whole vault by "vault"' do
+      rows << described_class.parse_row('Beta', 'a windsteel mask (on a large shelf) (vault)')
+      rows << described_class.parse_row('Beta', 'a loose rope (in vault) (vault)')
+
+      expect(items_for('shelf')).to eq(['a windsteel mask'])
+      expect(items_for('vault')).to be_empty
     end
 
     it 'also matches a regex against the container' do

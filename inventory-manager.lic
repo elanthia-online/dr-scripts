@@ -278,10 +278,10 @@ class InventoryManager
   # vault: the vault itself, or the furniture its outermost container sits on.
   # Nesting follows each line's indentation rather than fixed column counts, so
   # the padding after short item numbers and names that start without an
-  # article don't matter. Furniture is never saved as an item. It is a line
-  # without an item number in a numbered listing (the game does not count it),
-  # or one named in inventory_manager_vault_surfaces, which the vault book needs
-  # because it numbers nothing.
+  # article don't matter. Furniture is never saved as an item. In a numbered
+  # listing it is a line without an item number (the game does not count it).
+  # The vault book numbers nothing, so there it is a line named in
+  # inventory_manager_vault_surfaces.
   def vault_listing_rows(lines, inventory_type)
     entries = lines.filter_map do |line|
       clean = clean_item_line(line)
@@ -305,7 +305,10 @@ class InventoryManager
       holders.pop while holders.any? && holders.last[:indent] >= entry[:indent]
       item = entry[:text]
 
-      if holders.empty? && ((numbered_listing && !entry[:numbered]) || item.start_with?(*@vault_surfaces))
+      # A number proves a line is an item, so the surfaces list, which would
+      # take "a brass hookah" for "a brass hook", is only for unnumbered listings.
+      furniture = numbered_listing ? !entry[:numbered] : item.start_with?(*@vault_surfaces)
+      if holders.empty? && furniture
         preposition = item.match?(ENCLOSED_FURNITURE) ? 'in' : 'on'
         holders << { indent: entry[:indent], furniture: true, spot: "#{preposition} #{item}" }
         next
@@ -1641,7 +1644,7 @@ class InventoryManagerGui
         visible = if needle.empty?
                     source_rows
                   else
-                    source_rows.select { |row| matcher.call(row.name) || matcher.call(row.container) || matcher.call(row.location) }
+                    source_rows.select { |row| matcher.call(row.name) || matcher.call(row.container) }
                   end
         next if visible.empty?
 
