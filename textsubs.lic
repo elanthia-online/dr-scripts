@@ -1371,7 +1371,7 @@ class TextSubs
     # @example
     #   names = TextSubs::Sources::ShitList.names(StringIO.new("bob,stole my kill\n\nqUIMBLE\n"))
     #   # => ["Bob", "Quimble"]
-    #   TextSubs::Sources::ShitList.sub(names.first) # => ["Bob", "Bob (SL)"]
+    #   TextSubs::Sources::ShitList.sub(names.first) # => ["\\bBob\\b", "Bob (SL)"]
     class ShitList
       # The names in a shit-list file, in order. A line with no name (blank,
       # only spaces, or a note after an empty name) gives none: its name
@@ -1388,12 +1388,15 @@ class TextSubs
       end
 
       # The sub that tags one name. The name is matched as plain text, so a
-      # regex character in it stands for itself.
+      # regex character in it stands for itself, and as a whole word, so
+      # 'Bob' tags neither 'Bobby' nor 'McBob'. (A name that starts or ends
+      # with a character other than a letter, digit or underscore then only
+      # matches next to one; player names are letters.)
       #
       # @param name [String] one of names
       # @return [Array(String, String)] frozen [regex source, gsub replacement]
       def self.sub(name)
-        [Regexp.escape(name), "#{name} (SL)"].freeze
+        ["\\b#{Regexp.escape(name)}\\b", "#{name} (SL)"].freeze
       end
     end
 

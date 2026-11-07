@@ -474,7 +474,7 @@ RSpec.describe 'textsubs.lic' do
           Dir.chdir(dir) do
             first = build_catalog('Ranger', 'herb_textsubs' => true, 'integrate_shit_list_with_textsubs' => true,
                                             'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
-            expect(first.map(&:first)).to include('Zorvex', 'You feel fine', 'nilos')
+            expect(first.map(&:first)).to include('\\bZorvex\\b', 'You feel fine', 'nilos')
           end
         end
 
@@ -695,7 +695,7 @@ RSpec.describe 'textsubs.lic' do
 
     it 'adds a capitalized "(SL)" entry per name, ahead of the built-in catalog' do
       catalog = catalog_with_shit_list("zorvex,stole my kill\nqUIMBLE,spammer\n", integrate: true)
-      expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['Quimble', 0, 'Quimble (SL)']])
+      expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['\\bQuimble\\b', 0, 'Quimble (SL)']])
       expect(catalog.drop(2)).to eq(plain_catalog)
     end
 
@@ -709,7 +709,7 @@ RSpec.describe 'textsubs.lic' do
 
     it 'skips a blank line, a line of spaces and a note with no name, keeping the names around them' do
       catalog = catalog_with_shit_list("zorvex,stole my kill\n\n \t \n, no name here\nquimble,spammer\n\n", integrate: true)
-      expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['Quimble', 0, 'Quimble (SL)']])
+      expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['\\bQuimble\\b', 0, 'Quimble (SL)']])
       expect(catalog.drop(2)).to eq(plain_catalog)
     end
 
@@ -727,6 +727,12 @@ RSpec.describe 'textsubs.lic' do
         expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
         expect(run_hooks("Quimble just arrived.\r\n".b)).to eq("Quimble (SL) just arrived.\r\n")
         expect(run_hooks("Zorvex just arrived.\r\n".b)).to eq("Zorvex (SL) just arrived.\r\n")
+      end
+
+      it 'tags a name only as a whole word' do
+        catalog_with_shit_list("bob,stole my kill\n", integrate: true)
+        expect(run_hooks("Bobby and McBob just arrived.\r\n".b)).to eq("Bobby and McBob just arrived.\r\n")
+        expect(run_hooks("Bob's friend Bobby waves to Bob.\r\n".b)).to eq("Bob (SL)'s friend Bobby waves to Bob (SL).\r\n")
       end
 
       it 'matches a name as plain text, so a regex character in it stands for itself' do
@@ -939,7 +945,7 @@ RSpec.describe 'textsubs.lic' do
         File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
         settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
         catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
-        expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+        expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
       end
     end
   end
@@ -988,7 +994,7 @@ RSpec.describe 'textsubs.lic' do
         end
 
         it 'keeps the shit-list and private subs, adds nothing else, and still registers the hook' do
-          expect(start_with_shit_list_and_private_sub).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+          expect(start_with_shit_list_and_private_sub).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
           expect(DownstreamHook.list).to include('textsub')
           expect(run_hooks("You feel fine, Zorvex.\r\n".b)).to eq("You feel FINE, Zorvex (SL).\r\n")
         end
@@ -3370,9 +3376,9 @@ RSpec.describe 'textsubs.lic' do
       expect(names).to all(be_frozen)
     end
 
-    it 'makes a sub that matches the name literally and tags it' do
+    it 'makes a sub that matches the name literally, as a whole word, and tags it' do
       sub = TextSubs::Sources::ShitList.sub('O.k')
-      expect(sub).to eq(['O\\.k', 'O.k (SL)'])
+      expect(sub).to eq(['\\bO\\.k\\b', 'O.k (SL)'])
       expect(sub).to be_frozen
     end
   end
