@@ -34,7 +34,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.7'
+  VERSION = '2026.11.07.8'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -739,9 +739,15 @@ class TaskMaster
   end
 
   # A Poltu or Bradyn metal task: buy the metal, forge the items, send the
-  # forging tools for repair and throw away any metal left over. The
+  # forging tools for repair and throw away any metal left over. When forging
+  # stops short, the metal is thrown away even on a task of whole ingots (one
+  # per item, which leaves nothing on a full run): the run hands in what was
+  # made and exits, and the next run buys metal for every item still owed,
+  # so unused ingots kept now would only pile up in crafting_container. The
   # ingots in crafting_container are counted before buying, so the player's
-  # own are not thrown away with the task's (leftover_ingots).
+  # own are not thrown away with the task's (trash_task_ingots), and a short
+  # count after a full run (RUMMAGE unanswered) throws away nothing: the
+  # task's ingots were all used.
   #
   # @param item [String] item noun from the task journal
   # @param count [Integer] how many items to make
@@ -752,7 +758,8 @@ class TaskMaster
   def forge_metal_task(item, count, volume_per_item, base, type)
     @ingots_before = carried_ingots
     type = buy_metal(count, volume_per_item, type)
-    forge_item(item, count, type)
+    made = forge_item(item, count, type)
+    @remainder = true if made.to_i < count
     repair(@settings.forging_tools, @settings.forging_belt)
     trash(item, base, type)
   end
