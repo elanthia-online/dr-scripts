@@ -34,6 +34,20 @@ module CTGameLine
   end
 end
 
+# Live, hostile creatures (keyed by stable <crtrStatus> id) minus any that an
+# `ignored_npcs` entry names by noun or full name (CreatureInstance#matches?,
+# case-insensitive). Player pets live in that list, so they never become
+# appraisal or manipulation targets.
+module CTTargets
+  def self.unignored(ignored_npcs)
+    ignored = Array(ignored_npcs)
+    Lich::DragonRealms::Creature.targets.reject do |creature|
+      (creature.noun && ignored.include?(creature.noun)) ||
+        ignored.any? { |entry| creature.matches?(entry) }
+    end
+  end
+end
+
 class SetupProcess
   def initialize(settings, equipment_manager)
     @equipment_manager = equipment_manager
@@ -3728,16 +3742,11 @@ class ManipulateProcess
 
   private
 
-  # Live, hostile creatures we may manipulate this tick, keyed by stable
-  # <crtrStatus> id, minus those an ignore entry names by noun or full name
-  # (CreatureInstance#matches?, case-insensitive). Constructs are still counted here
-  # (matching the pre-migration threshold, which read the hostility-agnostic
-  # game_state.npcs) but skipped in #manipulate below.
+  # Creatures we may manipulate this tick (CTTargets.unignored). Constructs are
+  # still counted here (matching the pre-migration threshold, which read the
+  # hostility-agnostic game_state.npcs) but skipped in #manipulate below.
   def manipulable_targets
-    Lich::DragonRealms::Creature.targets.reject do |creature|
-      (creature.noun && @ignored_npcs.include?(creature.noun)) ||
-        @ignored_npcs.any? { |entry| creature.matches?(entry) }
-    end
+    CTTargets.unignored(@ignored_npcs)
   end
 
   def should_manipulate?
@@ -3838,6 +3847,9 @@ class TrainerProcess
       end
 
     @no_app = []
+
+    @ignored_npcs = settings.ignored_npcs || []
+    echo("  @ignored_npcs: #{@ignored_npcs}") if $debug_mode_ct
 
     @dont_stalk = settings.dont_stalk
     echo("  @dont_stalk: #{@dont_stalk}") if $debug_mode_ct
@@ -4301,7 +4313,7 @@ class TrainerProcess
   def appraise(game_state, modifier)
     return if game_state.retreating?
 
-    target = Lich::DragonRealms::Creature.targets.find { |c| !@no_app.include?(c.id) }
+    target = CTTargets.unignored(@ignored_npcs).find { |c| !@no_app.include?(c.id) }
     return unless target
     return if DRSkill.getrank('Appraisal') < 76
     return if DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what') != 'Perhaps that'
