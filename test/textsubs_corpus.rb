@@ -6,15 +6,17 @@ require 'regexp_parser'
 # Builds the two synthetic inputs spec/textsubs_spec.rb holds the textsubs hook
 # to, so both fixtures can be regenerated and audited:
 # - spec/fixtures/textsubs/samples.jsonl: lines expanded from the catalog's own
-#   regex sources, then composite lines that join two of them, then the
-#   hand-added lines (see {.samples_lines});
+#   regex sources, then composite lines that join two of them, then the lines
+#   of samples_hand_added.jsonl (see {.samples_lines});
 # - spec/fixtures/textsubs/synthetic_stream.xml: a hand-written XML stream plus
 #   one generated 49 KB digit-heavy inventoryManager line (see {.stream}).
 #
 # Everything here is invented or taken from catalog regex sources already in
 # the repo: no player names, ids or rooms from real logs.
 #
-# Regenerate both with
+# The samples come from catalog_entries.jsonl, so after a catalog change
+# regenerate that first, then these two, in separate runs:
+#   TEXTSUBS_GOLDEN_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
 #   TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
 module TextsubsCorpus
   # Turns a regex source into one concrete string the regex is meant to match.
@@ -246,31 +248,63 @@ module TextsubsCorpus
                            'widen it in test/textsubs_corpus.rb to match a sample of the new wording'
   end
 
-  # @param entries [Array<Array(String, Integer, String)>] catalog_entries.jsonl rows
-  # @return [Array<String>] the expanded samples, then the composite lines
-  def self.generated_samples(entries)
-    expanded = expanded_samples(entries)
-    (expanded + composite_samples(expanded)).uniq
-  end
-
-  # The lines of samples.jsonl: the generated samples, then every line of the
-  # current file the generator does not make, in file order. Lines are added
-  # by hand at the end of the file; regenerating never drops them, and a
-  # generated line a catalog change no longer makes is kept there too, for a
-  # person to delete or keep.
+  # The lines of samples.jsonl: the generated samples, then the hand-added
+  # ones (samples_hand_added.jsonl), in that file's order. A hand-added line
+  # lives only in its own file, which nothing writes, so regenerating never
+  # drops it; a generated line a catalog change no longer makes leaves
+  # samples.jsonl on the next regeneration.
   #
-  # @param generated [Array<String>] from generated_samples
-  # @param current [Array<String>] the samples in the file now
+  # @param generated [Array<String>] the expanded samples, then the composite
+  #   lines
+  # @param hand_added [Array<String>] the lines of samples_hand_added.jsonl
   # @return [Array<String>]
-  def self.samples_lines(generated, current)
-    generated + hand_added(generated, current)
+  def self.samples_lines(generated, hand_added)
+    generated + hand_added
   end
 
-  # @param generated [Array<String>] from generated_samples
-  # @param current [Array<String>] the samples in the file now
-  # @return [Array<String>] the lines of `current` the generator does not make
-  def self.hand_added(generated, current)
-    current - generated
+  # samples.jsonl holds each line once, so a hand-added line must be new.
+  #
+  # @param generated [Array<String>] the expanded samples, then the composite
+  #   lines
+  # @param hand_added [Array<String>] the lines of samples_hand_added.jsonl
+  # @return [Array<String>] the hand-added lines that are there more than once
+  #   or that the generator makes too: delete them from samples_hand_added.jsonl
+  def self.redundant_hand_added(generated, hand_added)
+    (hand_added.tally.select { |_line, count| count > 1 }.keys + (hand_added & generated)).uniq
+  end
+
+  # @param committed [Array<String>] the lines of a committed fixture
+  # @param expected [Array<String>] the lines the generator gives
+  # @return [Integer, nil] the index of the first line where they differ (one
+  #   past the end of the shorter, when one is a prefix of the other), or nil
+  #   when they are the same
+  def self.first_difference(committed, expected)
+    (0...[committed.size, expected.size].max).find { |index| committed[index] != expected[index] }
+  end
+
+  # The every-run check of samples.jsonl.
+  #
+  # @param content [String] samples.jsonl content
+  # @param generated [Array<String>] the expanded samples, then the composite
+  #   lines
+  # @param hand_added [Array<String>] the lines of samples_hand_added.jsonl
+  # @return [String, nil] what is wrong, or nil when `content` is the generated
+  #   samples followed by the hand-added ones, each line once
+  def self.samples_fault(content, generated, hand_added)
+    redundant = redundant_hand_added(generated, hand_added)
+    unless redundant.empty?
+      return "samples_hand_added.jsonl holds these lines more than once, or the generator makes them too; " \
+             "delete them there: #{redundant.inspect}"
+    end
+
+    committed = content.lines
+    expected = samples_jsonl(samples_lines(generated, hand_added)).lines
+    at = first_difference(committed, expected)
+    return unless at
+
+    "samples.jsonl line #{at + 1} is #{committed[at].inspect}, the generator puts #{expected[at].inspect} there; " \
+      'regenerate it with TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb ' \
+      '(hand-added lines go in samples_hand_added.jsonl)'
   end
 
   # @param lines [Array<String>]
