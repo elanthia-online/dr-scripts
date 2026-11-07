@@ -167,13 +167,13 @@ RSpec.describe 'textsubs.lic' do
     TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }
   end
 
-  # The textsubs settings as profiles/base.yaml ships them, except
-  # private_textsubs: {} instead of nil because the harness has no nilclass
-  # patch. textsubs_spell_links stays nil, as base.yaml leaves it unset.
+  # The textsubs settings as profiles/base.yaml ships them: private_textsubs
+  # is nil, as base.yaml leaves it empty, and textsubs_spell_links is nil, as
+  # base.yaml does not set it.
   #
   # @return [Hash{String=>Object}] frozen default for every key textsubs.lic reads
   def textsubs_defaults
-    { 'private_textsubs' => {}, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
+    { 'private_textsubs' => nil, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
       'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false }.freeze
   end
 
