@@ -1832,7 +1832,9 @@ class TextSubs
     # a punctuation mark, so the replacement writes back the text the pattern
     # matched, but for an unescaped '.': that matches any character and is
     # written back as '.'. No step's text may be matched by another step's
-    # pattern, as one of the two would then lose its counter.
+    # pattern, as one of the two would then lose its counter. The load does
+    # not catch two phrases that overlap end to start, as 'a hit' and
+    # 'hit hard', which a line holding 'a hit hard' would give both counters.
     #
     # @example
     #   section = { 'name' => 'butchery', 'kind' => 'ladder', 'prefix' => 'manage to extract a', 'of' => 10,
@@ -1954,8 +1956,11 @@ class TextSubs
 
       # Two steps whose patterns match one text would put both counters on
       # that line, or, with one pattern, share one key so that only the later
-      # step survives. Each step's text is its pattern's match, so it is
-      # enough to try every other pattern on it.
+      # step survives. Each step's text is its pattern's match, so trying
+      # every other pattern on it covers a line that carries one step's
+      # message. It does not cover a line where one phrase ends inside
+      # another, as 'a hit' and 'hit hard' in 'a hit hard': neither text
+      # matches the other's pattern, yet that line gets both counters.
       #
       # @param section [Hash] a ladder section, its steps checked
       # @param subs [Array<Array(String, String)>] its expansion, the
