@@ -61,7 +61,7 @@ RSpec.describe 'textsubs.lic' do
     TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }
   end
 
-  # The textsubs settings as data/base.yaml ships them, except
+  # The textsubs settings as profiles/base.yaml ships them, except
   # private_textsubs: {} instead of nil because the harness has no nilclass
   # patch. textsubs_spell_links stays nil, as base.yaml leaves it unset.
   #
