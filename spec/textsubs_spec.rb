@@ -769,22 +769,51 @@ RSpec.describe 'textsubs.lic' do
       }
     end
 
-    # Keys are unanchored and gsub! replaces only what they match, so a
-    # leading wildcard swallows whatever came before the message on the line
-    # (XML tags, other text), and a value that does not put it back deletes
-    # it. The wildcard may be bare ('.*'), in a non-capturing group
-    # ('(?:.*)') or in group 1 ('(.*)'), lazy or not, after an optional '^'
-    # or '\A'; the value puts it back with \0, \& or (group 1 only) \1.
-    it "holds no key in any catalog that starts with a '.*' or '.+' its value drops" do
-      leading_wildcard = /\A(?:\^|\\A)?(?:\.[*+]\??|\(\?:\.[*+]\??\)|(?<captured>\(\.[*+]\??\)))/
+    # Whether a catalog key starts with a wildcard. Keys are unanchored and
+    # gsub! replaces only what they match, so a leading wildcard swallows
+    # whatever came before the message on the line (XML tags, other text):
+    # a value that drops it deletes that text, and one that puts it back
+    # gains nothing a key without it could not do. Either way no key needs one.
+    #
+    # The wildcard is any character ('.', '\X', '\N') or any character but
+    # a few: a negated class ('[^\n]'), shorthand ('\S', '\W', '\D', '\H')
+    # or property ('\P{...}'), under '*', '+' or a '{m,n}' range, lazy or
+    # not. A positive class ('[a-z]*', '\s*') is not a wildcard.
+    # It may follow an optional '^' or '\A', inline flags ('(?i)') and any
+    # number of opening groups: plain, non-capturing, named or flag-scoped
+    # ('(', '(?:', '(?<name>', '(?i:'). Lookarounds ('(?!.*>)') consume
+    # nothing and do not count.
+    #
+    # @param source [String] a catalog key's regex source
+    # @return [Boolean] true when the key opens with a wildcard
+    # @example
+    #   leading_wildcard?('(?<before>.*)You feel')   # => true
+    #   leading_wildcard?('(?!.*>)\d{1,3}')           # => false
+    def leading_wildcard?(source)
+      source.match?(
+        /\A(?:\^|\\A)?(?:\(\?[imx-]+\))*(?:\((?:\?(?::|<[A-Za-z_]\w*>|'[A-Za-z_]\w*'|[imx-]+:))?)*
+         (?:\.|\[\^(?:\\.|[^\]\\])*\]|\\[SWDHNX]|\\P\{[^}]*\})(?:[*+]|\{\d*,\d*\})/x
+      )
+    end
+
+    it 'counts each form of leading wildcard as one, and a literal or a later wildcard as none' do
+      wildcards = ['.*You feel', '.+You feel', '.*?You feel', '^.*You feel', '\A.+?You feel', '(?:.*)You feel',
+                   '(.*)You feel', '(.+?)You feel', '(?<before>.*)You feel', "(?'before'.*)You feel", '((?:.*))You feel',
+                   '.{0,}You feel', '.{1,40}You feel', '[^\n]*You feel', '[^\]]+You feel', '\S*You feel',
+                   '\P{Space}*You feel', '\X*You feel', '(?m).*You feel', '(?i).*You feel', '(?i:.*)You feel']
+      literals = ['You feel (.*) fine', '^You feel', '^(You feel)', '(^)(Fae Arts)(:)', '\.\.\. You feel', '\.*You feel',
+                  '(?!.*>)\d{1,3}', '(?<!receiving )(a|an) (glancing)', '(?=.*You)You feel', '(?i)You feel', '.You feel',
+                  '.{3}You feel', '[a-z]*You feel', '\s*You feel', '\p{Alpha}*You feel']
+
+      expect(wildcards.reject { |source| leading_wildcard?(source) }).to be_empty
+      expect(literals.select { |source| leading_wildcard?(source) }).to be_empty
+    end
+
+    it 'holds no key in any catalog that starts with a wildcard' do
       offenders = combinations.flat_map do |combination|
-        catalog_of(combination).filter_map do |source, _options, replacement|
-          wildcard = leading_wildcard.match(source) or next
-          kept = replacement.match?(/\\[0&]/) || (wildcard[:captured] && replacement.match?(/\\1(?!\d)/))
-          [combination['guild'], source] unless kept
-        end
+        catalog_of(combination).filter_map { |source, _options, _replacement| [combination['guild'], source] if leading_wildcard?(source) }
       end
-      expect(offenders.uniq).to be_empty, -> { "keys that drop the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
+      expect(offenders.uniq).to be_empty, -> { "keys that swallow the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
     end
 
     describe 'the RoC/RoG aura notes' do
