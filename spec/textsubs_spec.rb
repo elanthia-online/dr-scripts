@@ -1707,7 +1707,10 @@ RSpec.describe 'textsubs.lic' do
     # Each construct below makes the parser give up and check the key on
     # every line. Next to each is a line the key matches that does not hold,
     # as a whole token, the word a naive reading of the source would key it
-    # on, so an index built on that reading would skip the line.
+    # on, so an index built on that reading would skip the line. The
+    # numbered back-reference, (?i) and {n}? / {n}+ rows guard against a
+    # plausible naive extractor only: a stricter one that refuses those
+    # constructs outright would already check such keys on every line.
     {
       'a hex escape'                    => ['\x41bc def', 'Abc def', 'bc'],
       'an octal escape'                 => ['\101bc def', 'Abc def', 'bc'],
