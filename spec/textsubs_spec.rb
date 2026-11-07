@@ -544,14 +544,25 @@ RSpec.describe 'textsubs.lic' do
       tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.any? { |key| key.equal?(scalar) } }
     end
 
+    # The value scalars written plain on purpose: the number under a schema
+    # key, and a spell's `signature: true`, written exactly so.
+    #
+    # @param tree [Psych::Nodes::Node]
+    # @return [Array<Psych::Nodes::Scalar>]
+    def plain_by_design(tree)
+      tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+        mapping.children.each_slice(2).filter_map do |key, value|
+          value if key.value == 'schema' || (key.value == 'signature' && value.is_a?(Psych::Nodes::Scalar) && value.value == 'true')
+        end
+      end
+    end
+
     # @param tree [Psych::Nodes::Node]
     # @return [Array<String>] "line N: value" for each value scalar not in
-    #   single quotes, but the number under a schema key
+    #   single quotes, but those plain_by_design allows
     def unquoted_values(tree)
-      schema_numbers = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
-        mapping.children.each_slice(2).select { |key, _| key.value == 'schema' }.map(&:last)
-      end
-      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || schema_numbers.any? { |number| number.equal?(scalar) } }
+      allowed = plain_by_design(tree)
+      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || allowed.any? { |plain| plain.equal?(scalar) } }
                          .map { |scalar| "line #{scalar.start_line + 1}: #{scalar.value}" }
     end
 
@@ -564,12 +575,12 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it 'writes every pattern, replacement, name, guild and setting in single quotes' do
+    it 'writes every pattern, replacement, name, guild, setting and spell field in single quotes' do
       expect(unquoted_values(document)).to be_empty, -> { "not single-quoted:\n  #{unquoted_values(document).first(10).join("\n  ")}" }
       expect(value_scalars(document).size).to be > 3000
     end
 
-    it 'takes a plain, a double-quoted and a block scalar for unquoted, but not the schema number' do
+    it "takes a plain, a double-quoted and a block scalar for unquoted, but not the schema number or 'signature: true'" do
       tree = Psych.parse(<<~YAML)
         textsubs:
           schema: 1
@@ -581,8 +592,11 @@ RSpec.describe 'textsubs.lic' do
               subs:
                 - ["\\\\1", 'ok']
                 - [1, 'one']
+          spells:
+            - {name: 'Halo', signature: true, tier: basic}
+            - {name: 'Burden', signature: yes}
       YAML
-      expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1'])
+      expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1', 'line 12: basic', 'line 13: yes'])
     end
 
     it 'repeats no key in any mapping' do
@@ -606,8 +620,11 @@ RSpec.describe 'textsubs.lic' do
       expect(names.tally.select { |_, count| count > 1 }).to be_empty
     end
 
+    # The spell kinds put names into templates, so the patterns to check are
+    # the ones Catalog builds, here for every guild with every setting on.
     it 'holds only patterns that compile' do
-      patterns = data['sections'].flat_map { |section| section.key?('subs') ? section['subs'].map(&:first) : [section['pattern']] }
+      settings = OpenStruct.new(textsubs_spell_links: true, herb_textsubs: true, textsubs_use_plat_grouping: true)
+      patterns = guilds.flat_map { |guild| TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: guild, settings: settings)).map(&:first) }.uniq
       broken = patterns.reject do |pattern|
         Regexp.new(pattern)
       rescue RegexpError
@@ -626,6 +643,58 @@ RSpec.describe 'textsubs.lic' do
 
     it 'is schema 1, the schema this textsubs.lic reads' do
       expect(data['schema']).to eq(TextSubs::Catalog.schema)
+    end
+
+    # The spells table is the one copy of each spell's name and labels; these
+    # read the shipped file straight, so they do not lean on the checks
+    # Catalog makes when it loads it.
+    describe 'its spells table' do
+      let(:spells) { TextSubs::SpellTable.new(data['spells']) }
+      let(:table_names) { data['spells'].map { |row| row['name'] } }
+      let(:scroll_names) { data['sections'].select { |section| section['kind'] == 'scroll_labels' }.flat_map { |section| section['names'] } }
+      let(:groups) { data['sections'].select { |section| section['kind'] == 'spell_recognition' }.flat_map { |section| section['groups'] } }
+
+      it 'lists every spell a scroll label or recognition sub names, spelt the same way' do
+        named = scroll_names.grep(String) + groups.flatten
+        expect(named - table_names).to be_empty
+        expect(named.size).to be > 500
+      end
+
+      it 'gives the names of each recognition group one label' do
+        mixed = groups.reject { |group| group.map { |name| spells.recognition_label(name) }.uniq.size == 1 }
+        expect(mixed).to be_empty
+        expect(groups.size).to be > 200
+      end
+
+      # An override keeps a sub whose text the table spells otherwise, so the
+      # catalog stays the same; each is a follow-up to settle against the game.
+      # A new one has to be added here, where a review sees it.
+      it "holds only the pinned overrides, each for a name the table spells otherwise" do
+        overrides = (scroll_names + groups.flatten).grep(Hash)
+        expect(overrides).to eq([{ 'name' => "Damaris's Lullaby", 'label' => 'Bard' }])
+        expect(table_names).to include("Damaris' Lullaby")
+        expect(table_names & overrides.map { |override| override['name'] }).to be_empty
+      end
+
+      it 'links each spellbook and spell just as TextSubs.elanthipedia does with the same arguments' do
+        link_sections = data['sections'].select { |section| %w[wiki_links spell_links].include?(section['kind']) }
+        calls = link_sections.flat_map do |section|
+          texts = section['kind'] == 'spell_links' ? table_names : section['texts']
+          arguments = [section.fetch('pretext', ''), section.fetch('postext', ''), section.fetch('prelink', ''), section.fetch('poslink', ''),
+                       section.fetch('preresult', '\1'), section.fetch('posresult', '\3')]
+          texts.map { |text| [text, *arguments] }
+        end
+        TextSubs.clear
+        calls.each { |arguments| TextSubs.elanthipedia(*arguments) }
+        expected = TextSubs.subs.map { |key, value| [key.source, value] }
+
+        context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(textsubs_spell_links: true))
+        names = link_sections.map { |section| section['name'] }
+        actual = TextSubs::Catalog.entries(data, context).select { |_, _, meta| names.include?(meta[:section]) }
+        expect(actual.map { |source, replacement, _meta| [source, replacement] }).to eq(expected)
+        expect(expected.size).to eq(table_names.size + link_sections.sum { |section| section.fetch('texts', []).size })
+        expect(expected.size).to be > 400
+      end
     end
   end
 
