@@ -180,6 +180,8 @@ RSpec.describe 'textsubs.lic' do
   # @param line [String] a binary server line
   # @return [String, nil] what the hooks pass on to the client
   # @raise [RuntimeError] when the hooks neither returned nor raised
+  # @raise [Exception] whatever a hook raises that DownstreamHook.run does not
+  #   rescue (it rescues StandardError), unchanged
   # @example
   #   run_hooks("You feel fine.\r\n".b) # => "You feel FINE.\r\n"
   def run_hooks(line)
@@ -402,25 +404,27 @@ RSpec.describe 'textsubs.lic' do
       DownstreamHook.add('textsub', eval('proc { |_server_string| return }', TOPLEVEL_BINDING.dup, __FILE__, __LINE__))
     end
 
-    # Calls run_hooks and gives back what came out of it. A top-level return
-    # that gets past run_hooks would end rspec with status 0, so this has its
-    # own guard: the ensure clause turns that unwind into a failure of the
-    # example, whatever $! holds.
+    # Calls run_hooks and gives back what came out of it, value or exception.
+    # A top-level return that gets past run_hooks would end rspec with status
+    # 0, so this has its own guard: `finished` is set only once run_hooks has
+    # returned or raised, and the ensure clause turns any other exit into a
+    # failure of the example, whatever $! holds.
     #
     # @param line [String] a binary server line
-    # @return [String, nil, RuntimeError] the hooks' output, or the RuntimeError
+    # @return [String, nil, Exception] the hooks' output, or the exception
     #   run_hooks raised
     # @raise [RuntimeError] when a top-level return got past run_hooks
     def run_hooks_outcome(line)
-      outcome = :unwound
-      begin
-        outcome = run_hooks(line)
-      rescue RuntimeError => e
-        outcome = e
+      finished = false
+      outcome = begin
+        run_hooks(line)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        e
       end
+      finished = true
       outcome
     ensure
-      raise 'a top-level return in the hook got past run_hooks' if outcome == :unwound
+      raise 'a top-level return in the hook got past run_hooks' unless finished
     end
 
     it 'turns a top-level return in the hook into an error' do
