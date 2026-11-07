@@ -12,9 +12,107 @@
 #   stored here. spec/aesthene_spec.rb fails if it no longer matches what the
 #   solver computes from these lists.
 #
+# guess_table: every guess the solver would otherwise have to score while
+#   solving a known answer, keyed by lock state ("TRALE:aahaa|5" is TRALE
+#   marked absent, absent, hit, absent, absent with five rows left). The script
+#   uses it only when its digest matches these lists, the opening and the
+#   solver's scoring settings; otherwise (including when a character adds
+#   aesthene_lock_answers) it computes guesses as usual. Regenerate it with
+#   `ruby util/aesthene_guess_table.rb` after changing anything above;
+#   spec/aesthene_spec.rb fails while the digest is stale.
+#
 # Entries are five ASCII letters; the script upcases and validates on load,
 # so case does not matter.
 opening: TRALE
+guess_table:
+  digest: 390b33d712c2c136f02e626d0ca119267419710d402398c3709937d597a87f93
+  guesses:
+    'TRALE:aaaaa|5': NIKOS
+    'TRALE:aaaah|5': COINS
+    'TRALE:aaaah|COINS:aaaaa|4': JUDGE
+    'TRALE:aaaah|COINS:aahhp|4': SHINE
+    'TRALE:aaaah|COINS:apaaa|4': EVOKE
+    'TRALE:aaaap|5': BISON
+    'TRALE:aaaap|BISON:aaapp|4': MONEY
+    'TRALE:aaaha|5': ZILLS
+    'TRALE:aaahh|5': VOILE
+    'TRALE:aaahp|5': SHELL
+    'TRALE:aaapa|5': BILUS
+    'TRALE:aaapa|BILUS:aapha|4': GHOUL
+    'TRALE:aaapa|BILUS:appap|4': SLICK
+    'TRALE:aaaph|5': MOVIN
+    'TRALE:aaapp|5': BONES
+    'TRALE:aaapp|BONES:aaahp|4': SLEEP
+    'TRALE:aahaa|5': SKIMP
+    'TRALE:aahah|5': PONDS
+    'TRALE:aahap|5': HEAVY
+    'TRALE:aahha|5': SMALL
+    'TRALE:aahhh|5': SHALE
+    'TRALE:aahpa|5': CLIPS
+    'TRALE:aahph|5': BLAME
+    'TRALE:aapaa|5': BASIN
+    'TRALE:aapaa|BASIN:ahaah|4': WAGON
+    'TRALE:aapaa|BASIN:apaap|4': PUNKA
+    'TRALE:aapaa|BASIN:hhaaa|4': BAWDY
+    'TRALE:aapah|5': PANGS
+    'TRALE:aapap|5': DYNES
+    'TRALE:aaphh|5': MAPLE
+    'TRALE:aappa|5': KASAI
+    'TRALE:aappa|KASAI:apapp|4': ALIGN
+    'TRALE:aapph|5': SALVE
+    'TRALE:aappp|5': GALLS
+    'TRALE:ahaaa|5': BISON
+    'TRALE:ahaah|5': PONDS
+    'TRALE:ahaap|5': GREED
+    'TRALE:ahhaa|5': BCDGN
+    'TRALE:ahhah|5': GRACE
+    'TRALE:ahpaa|5': ARRAY
+    'TRALE:ahpap|5': BREAM
+    'TRALE:apaaa|5': VINUS
+    'TRALE:apaah|5': HORSE
+    'TRALE:apaah|HORSE:ahhah|4': FORGE
+    'TRALE:apaap|5': RICES
+    'TRALE:apaap|RICES:paahp|4': SEWER
+    'TRALE:apaap|RICES:paapa|4': PERKY
+    'TRALE:apaap|RICES:phaha|4': FIBER
+    'TRALE:apapp|5': ELDER
+    'TRALE:aphaa|5': SWORD
+    'TRALE:aphaa|SWORD:haaha|4': SHARP
+    'TRALE:aphap|5': BEARD
+    'TRALE:appaa|5': HAMAR
+    'TRALE:appaa|HAMAR:ahaph|4': FAVOR
+    'TRALE:appaa|HAMAR:ahapp|4': SPINA
+    'TRALE:appaa|HAMAR:apahh|4': CIGAR
+    'TRALE:appah|5': BIRDS
+    'TRALE:appap|5': SPRER
+    'TRALE:apppa|5': LARCH
+    'TRALE:apppp|5': REGAL
+    'TRALE:haaaa|5': POSUN
+    'TRALE:haaah|5': TITHE
+    'TRALE:haaap|5': THEFT
+    'TRALE:haahh|5': TULLE
+    'TRALE:hapaa|5': GOINA
+    'TRALE:hhaaa|5': TROUT
+    'TRALE:hhaaa|TROUT:hhapp|4': TRUNK
+    'TRALE:hpaaa|5': THROW
+    'TRALE:hppaa|5': TURSA
+    'TRALE:paaaa|5': SHIFT
+    'TRALE:paaaa|SHIFT:haaah|4': SCOUT
+    'TRALE:paaah|5': SPITE
+    'TRALE:paaap|5': SCENT
+    'TRALE:paapa|5': LIGHT
+    'TRALE:paaph|5': LITHE
+    'TRALE:pahaa|5': GPINS
+    'TRALE:pahah|5': AGATE
+    'TRALE:pahap|5': FEAST
+    'TRALE:pahph|5': PLATE
+    'TRALE:papaa|5': HASTA
+    'TRALE:pappp|5': METAL
+    'TRALE:phaaa|5': FROST
+    'TRALE:phhaa|5': WRATH
+    'TRALE:ppaaa|5': FIRST
+    'TRALE:pppaa|5': SITAR
+    'TRALE:pppap|5': WATER
 lock_answers:
 - ABBEY
 - AGATE

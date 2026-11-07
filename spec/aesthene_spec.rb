@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'digest'
 require 'yaml'
 
 require_relative 'spec_helper'
@@ -607,6 +608,83 @@ RSpec.describe 'aesthene.lic' do
       end
     end
 
+    describe '.digest' do
+      let!(:base) { AestheneSolver.digest(%w[POACH COACH], %w[PANSY], 'TRALE') }
+
+      it 'is stable for the same inputs' do
+        expect(AestheneSolver.digest(%w[POACH COACH], %w[PANSY], 'TRALE')).to eq(base)
+      end
+
+      it 'changes with the answers, their order, the dictionary or the opening' do
+        expect(AestheneSolver.digest(%w[POACH COACH CHAOS], %w[PANSY], 'TRALE')).not_to eq(base)
+        expect(AestheneSolver.digest(%w[COACH POACH], %w[PANSY], 'TRALE')).not_to eq(base)
+        expect(AestheneSolver.digest(%w[POACH COACH], %w[PANSY QUERY], 'TRALE')).not_to eq(base)
+        expect(AestheneSolver.digest(%w[POACH COACH], %w[PANSY], 'SLATE')).not_to eq(base)
+      end
+
+      it 'changes with the scoring version' do
+        stub_const('AestheneSolver::SCORING_VERSION', AestheneSolver::SCORING_VERSION + 1)
+        expect(AestheneSolver.digest(%w[POACH COACH], %w[PANSY], 'TRALE')).not_to eq(base)
+      end
+    end
+
+    describe '.lock_marks' do
+      # Rows copied from live logs; the game does not count repeated letters.
+      it 'marks a repeated letter present when the answer has it once (HAMAR/FAIRY)' do
+        expect(AestheneSolver.lock_marks('HAMAR', 'FAIRY')).to eq(%i[absent hit absent present present])
+      end
+
+      it 'marks the extra copy of a hit letter present (SMALL/PSALM)' do
+        expect(AestheneSolver.lock_marks('SMALL', 'PSALM')).to eq(%i[present present hit hit present])
+      end
+
+      it 'marks hits and letters not in the answer as Wordle does' do
+        expect(AestheneSolver.lock_marks('TRALE', 'SPAWN')).to eq(%i[absent absent hit absent absent])
+        expect(AestheneSolver.lock_marks('SPAWN', 'SPAWN')).to all(eq(:hit))
+      end
+    end
+
+    describe '.state_key' do
+      it 'writes each row as guess:marks, then the rows left' do
+        rows = [row_for('TRALE', 'POACH'), row_for('BUNKS', 'POACH')]
+        expect(AestheneSolver.state_key(rows, 4)).to eq('TRALE:aahaa|BUNKS:aaaaa|4')
+      end
+    end
+
+    describe 'a guess table' do
+      let(:answers) { %w[POACH COACH GNASH SWAMP CHAOS BEGIN OPENS] }
+      let(:table) { AestheneSolver.build_table(answers, %w[PANSY QUERY], 'TRALE') }
+
+      it 'answers a state from the table without scoring' do
+        solver = AestheneSolver.new(answers, %w[PANSY QUERY], opening: 'TRALE', table: { 'TRALE:aahaa|5' => 'ZZZZZ' })
+        allow(solver).to receive(:best_guess)
+        solver.observe([row_for('TRALE', 'POACH')])
+        expect(solver.next_guess(5)).to eq('ZZZZZ')
+        expect(solver).not_to have_received(:best_guess)
+      end
+
+      it 'lets the solver solve every known answer without scoring once built' do
+        solver = AestheneSolver.new(answers, %w[PANSY QUERY], opening: 'TRALE', table: table)
+        allow(solver).to receive(:best_guess).and_raise('scored a state the table should cover')
+        answers.each { |answer| expect(solver.solve_offline(answer).last).to eq(answer) }
+      end
+
+      it 'holds the guesses an untabled solver makes' do
+        answers.each do |answer|
+          expect(AestheneSolver.new(answers, %w[PANSY QUERY], opening: 'TRALE', table: table).solve_offline(answer))
+            .to eq(AestheneSolver.new(answers, %w[PANSY QUERY], opening: 'TRALE').solve_offline(answer))
+        end
+      end
+
+      it 'does not change the table it was given' do
+        given = { 'TRALE:aahaa|5' => 'COACH' }
+        solver = AestheneSolver.new(answers, %w[PANSY QUERY], opening: 'TRALE', table: given)
+        solver.observe([row_for('TRALE', 'BEGIN')])
+        solver.next_guess(5)
+        expect(given).to eq('TRALE:aahaa|5' => 'COACH')
+      end
+    end
+
     describe 'remembered guesses' do
       # TRALE against POACH leaves five known answers (A third; no T, R, L or E).
       let(:solver) { AestheneSolver.new(%w[POACH COACH GNASH SWAMP CHAOS], %w[PANSY QUERY]) }
@@ -902,6 +980,41 @@ RSpec.describe 'aesthene.lic' do
         built = instance.build_solver(OpenStruct.new(lock_answers: %w[CLOAK CORAL POACH], dictionary: [], opening: 'raises'), OpenStruct.new)
         expect(built.next_guess(6)).not_to eq('RAISES')
         expect(built.next_guess(6)).to match(/\A[A-Z]{5}\z/)
+      end
+
+      context 'with a guess table' do
+        let(:answers) { %w[POACH COACH GNASH SWAMP CHAOS] }
+        let(:table_data) do
+          OpenStruct.new(lock_answers: answers, dictionary: %w[PANSY QUERY], opening: 'TRALE',
+                         guess_table: { 'digest'  => AestheneSolver.digest(answers, %w[PANSY QUERY], 'TRALE'),
+                                        'guesses' => { 'TRALE:aahaa|5' => 'ZZZZZ' } })
+        end
+
+        def second_guess(solver)
+          solver.observe([row_for('TRALE', 'POACH')])
+          solver.next_guess(5)
+        end
+
+        it 'uses it when its digest matches the lists' do
+          expect(second_guess(instance.build_solver(table_data, OpenStruct.new))).to eq('ZZZZZ')
+        end
+
+        it 'ignores it when the character adds answers' do
+          built = instance.build_solver(table_data, OpenStruct.new(aesthene_lock_answers: %w[cheap]))
+          expect(second_guess(built)).not_to eq('ZZZZZ')
+        end
+
+        it 'ignores it when its digest is stale' do
+          table_data.guess_table = table_data.guess_table.merge('digest' => 'stale')
+          expect(second_guess(instance.build_solver(table_data, OpenStruct.new))).not_to eq('ZZZZZ')
+        end
+
+        it 'ignores a malformed table' do
+          table_data.guess_table = { 'digest' => table_data.guess_table['digest'], 'guesses' => %w[ZZZZZ] }
+          expect(second_guess(instance.build_solver(table_data, OpenStruct.new))).not_to eq('ZZZZZ')
+          table_data.guess_table = 'junk'
+          expect(second_guess(instance.build_solver(table_data, OpenStruct.new))).not_to eq('ZZZZZ')
+        end
       end
 
       it 'still runs from additions alone when the data file is missing' do
@@ -1539,6 +1652,39 @@ RSpec.describe 'aesthene.lic' do
       answers, = AestheneWords.answers(data['lock_answers'], nil)
       dictionary = AestheneWords.dictionary(data['dictionary'], answers)
       expect(AestheneSolver.new(answers, dictionary).next_guess(6)).to eq(data['opening'])
+    end
+
+    describe 'the guess table' do
+      let(:answers) { AestheneWords.answers(data['lock_answers'], nil).first }
+      let(:dictionary) { AestheneWords.dictionary(data['dictionary'], answers) }
+      let(:guesses) { data.dig('guess_table', 'guesses') }
+
+      it 'was built for these lists (else run ruby util/aesthene_guess_table.rb)' do
+        expect(data.dig('guess_table', 'digest')).to eq(AestheneSolver.digest(answers, dictionary, data['opening']))
+      end
+
+      # The generator covers every answer by construction and the digest ties
+      # the table to it; a quarter of the answers keeps this check to seconds.
+      it 'covers the known answers, so none needs scoring' do
+        solver = AestheneSolver.new(answers, dictionary, opening: data['opening'], table: guesses)
+        allow(solver).to receive(:best_guess).and_raise('scored a state the table should cover')
+        answers.each_slice(4).map(&:first).each { |answer| expect(solver.solve_offline(answer).last).to eq(answer) }
+      end
+
+      # Slow (a few seconds): rescores a sample of entries with the real code,
+      # which the digest alone cannot vouch for.
+      it 'holds what the solver computes for a sample of states' do
+        guesses.keys.each_slice(30).map(&:first).each do |key|
+          *row_texts, rows_left = key.split('|')
+          rows = row_texts.map do |text|
+            guess, marks = text.split(':')
+            AestheneGrid::Row.new(guess, marks.chars.map { |mark| AestheneSolver::KEY_MARKS.key(mark) })
+          end
+          solver = AestheneSolver.new(answers, dictionary, opening: data['opening'])
+          solver.observe(rows)
+          expect(solver.next_guess(rows_left.to_i)).to eq(guesses[key]), key
+        end
+      end
     end
 
     it 'loads FALSE as a word, not a boolean' do
