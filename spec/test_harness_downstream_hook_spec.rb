@@ -11,8 +11,12 @@
 # in an example body would unwind the example instead of handing on the line.
 RSpec.describe 'test harness DownstreamHook' do
   hook_names = %w[harness-a harness-b harness-c harness-d]
+  # Twenty names: MRI's sort_by happens to keep equal keys in order for small
+  # arrays (up to about 16 entries), so only a list this long proves that the
+  # registration index, not luck, breaks priority ties.
+  band_names = (1..20).map { |n| format('harness-band-%02d', n) }
 
-  after { hook_names.each { |name| DownstreamHook.remove(name) } }
+  after { (hook_names + band_names).each { |name| DownstreamHook.remove(name) } }
 
   # @param name [String] hook name, also appended to the line and to calls
   # @param calls [Array<String>] receives +name+ each time the hook runs
@@ -52,6 +56,17 @@ RSpec.describe 'test harness DownstreamHook' do
 
       DownstreamHook.run('line')
       expect(calls).to eq(%w[harness-b harness-d harness-a harness-c])
+    end
+
+    it 'keeps registration order inside interleaved bands even with twenty hooks' do
+      calls = []
+      band_names.each_with_index do |name, index|
+        DownstreamHook.add(name, tagging_hook(name, calls), priority: index.even? ? 0 : -100)
+      end
+      odd_numbered, even_numbered = band_names.partition.with_index { |_name, index| index.even? }
+
+      DownstreamHook.run('line')
+      expect(calls).to eq(odd_numbered + even_numbered)
     end
 
     it 'orders a fractional priority between its integer neighbours' do
