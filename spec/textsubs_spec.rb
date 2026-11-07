@@ -556,15 +556,30 @@ RSpec.describe 'textsubs.lic' do
     # Every key of every catalog a player can run: the golden fixture's
     # entries, which the golden examples hold to what the script builds.
     every_key = entries.map { |source, options, _replacement| Regexp.new(source, options) }.uniq
-    # What the generator makes of today's catalog; 'corpus fixtures' checks
-    # that samples.jsonl is these lines, then the hand-added ones.
-    expanded = TextsubsCorpus.expanded_samples(entries)
-    composites = TextsubsCorpus.composite_samples(expanded)
-    generated = expanded + composites
+    # What the generator makes of today's catalog, each part worked out the
+    # first time an example asks for it:
+    # - :expanded, the samples expanded from the catalog's regex sources;
+    # - :composites, the composite lines joined from them;
+    # - :generated, both in order ('corpus fixtures' checks that samples.jsonl
+    #   is these lines, then the hand-added ones);
+    # - :composite_indexes, the indexes in `samples` of the composite lines.
+    # Not worked out while the file loads: a generator error (a catalog change
+    # leaving a COMPOSITE_FAMILIES pattern with no sample to match) then fails
+    # the examples that need the generator, not the loading of every spec file
+    # in the run.
+    corpus_generator = Hash.new do |generator, part|
+      generator[part] =
+        case part
+        when :expanded then TextsubsCorpus.expanded_samples(entries)
+        when :composites then TextsubsCorpus.composite_samples(generator[:expanded])
+        when :generated then generator[:expanded] + generator[:composites]
+        when :composite_indexes
+          composite_lines = generator[:composites].map(&:b).to_set
+          samples.each_index.select { |at| composite_lines.include?(samples[at]) }
+        else raise KeyError, "the generator makes no #{part.inspect}"
+        end
+    end
     hand_added = TextsubsCorpus.parse_samples(File.read(hand_added_path))
-    # The indexes in `samples` of the composite lines.
-    composite_lines = composites.map(&:b).to_set
-    composite_indexes = samples.each_index.select { |at| composite_lines.include?(samples[at]) }
 
     # For each corpus line, the keys of `subs` that match it, in catalog order:
     # what reference_apply's select step gives for the line.
@@ -635,6 +650,8 @@ RSpec.describe 'textsubs.lic' do
           # could come from the catalog_entries.jsonl the golden writer replaces.
           expect(ENV.fetch('TEXTSUBS_GOLDEN_WRITE', nil)).not_to eq('1'),
                                                                  'run TEXTSUBS_GOLDEN_WRITE=1 first, then TEXTSUBS_CORPUS_WRITE=1 on its own'
+          generated = corpus_generator[:generated]
+          composites = corpus_generator[:composites]
           redundant = TextsubsCorpus.redundant_hand_added(generated, hand_added)
           expect(redundant).to eq([]), "delete these from samples_hand_added.jsonl (repeated, or generated): #{redundant.inspect}"
           # The every-run examples check this for the flags-on catalogs with plat
@@ -653,7 +670,7 @@ RSpec.describe 'textsubs.lic' do
         end
       else
         it 'holds the generated samples, then the lines of samples_hand_added.jsonl, each line once' do
-          fault = TextsubsCorpus.samples_fault(File.read(samples_path), generated, hand_added)
+          fault = TextsubsCorpus.samples_fault(File.read(samples_path), corpus_generator[:generated], hand_added)
           expect(fault).to be_nil, fault
         end
 
@@ -675,7 +692,7 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'names the constant and the pattern when no expanded sample is left for a composite part' do
-        expect { TextsubsCorpus.composite_samples(expanded.grep_v(/\AEncumbrance : /)) }
+        expect { TextsubsCorpus.composite_samples(corpus_generator[:expanded].grep_v(/\AEncumbrance : /)) }
           .to raise_error(ArgumentError, %r{\ACOMPOSITE_FAMILIES pattern /\\AEncumbrance : Burdened\\b/ matches no expanded sample})
       end
 
@@ -686,6 +703,7 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'fails a samples.jsonl that moved a hand-added line into the generated ones, or dropped it' do
+        generated = corpus_generator[:generated]
         hand = ['HAND line pinning a pattern', 'HAND line at the end']
         in_order = TextsubsCorpus.samples_jsonl(generated + hand)
         moved = TextsubsCorpus.samples_jsonl(generated.dup.insert(100, hand.first) + hand.drop(1))
@@ -696,6 +714,7 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'fails a hand-added line that is there twice or that the generator makes too' do
+        generated = corpus_generator[:generated]
         hand = ['HAND line', generated.first, 'HAND line']
         fault = TextsubsCorpus.samples_fault(TextsubsCorpus.samples_jsonl(generated + hand), generated, hand)
         expect(fault).to start_with('samples_hand_added.jsonl holds these lines more than once')
@@ -747,7 +766,7 @@ RSpec.describe 'textsubs.lic' do
         order_sensitive = shared.reject do |at|
           apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
         end
-        thin = composite_indexes.reject { |at| selected[at].size >= 2 }
+        thin = corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }
         expect(thin.map { |at| samples[at] }).to eq([]), "every composite sample must be matched by two or more #{guild} keys"
         expect(shared.size).to be >= 50, "only #{shared.size} sample(s) are matched by two or more #{guild} keys"
         expect(order_sensitive.size).to be >= 4,
@@ -770,7 +789,7 @@ RSpec.describe 'textsubs.lic' do
       # The per-guild key order examples check the composites with plat
       # grouping off; its two coin rules have to match them too.
       selected = selected_keys(TextSubs.subs, corpus_matches, corpus.size)
-      expect(composite_indexes.reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }).to eq([])
+      expect(corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }).to eq([])
     end
 
     # The sweeps above take reference_apply's select step from corpus_matches.
