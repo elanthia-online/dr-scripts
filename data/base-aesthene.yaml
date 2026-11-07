@@ -330,6 +330,7 @@ lock_answers:
 - SNEAK
 - SNICK
 - SNIPE
+- SPAWN
 - SPEAR
 - SPIKE
 - SPIKY
@@ -10360,7 +10361,6 @@ dictionary:
 - SPATE
 - SPATH
 - SPATS
-- SPAWN
 - SPAYS
 - SPCLU
 - SPEAJ
