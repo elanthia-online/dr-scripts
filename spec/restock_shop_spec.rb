@@ -98,6 +98,21 @@ RSpec.describe ShopRestock do
       instance.send(:check_surfaces)
     end
 
+    # volume_of looks an item up by noun with DRCC.recipe_lookup, whose
+    # pick-one menu has no timeout; "glaive" must not also find the
+    # short-hafted glaive made from instructions.
+    it 'leaves weapons made from instructions out of the recipes it restocks from' do
+      book = { 'name' => 'a metal glaive', 'noun' => 'glaive', 'volume' => 10 }
+      instructions = { 'name' => 'a metal short-hafted glaive', 'noun' => 'glaive', 'volume' => 8, 'instructions' => true }
+      allow(instance).to receive(:get_data).and_return(OpenStruct.new(crafting_recipes: [book, instructions]))
+      item['recipe'] = 'glaive'
+      stub_bput('look rack' => [["There's nothing on the rack."]])
+
+      instance.send(:check_surfaces)
+
+      expect(instance.instance_variable_get(:@recipes)).to eq([book])
+    end
+
     it 'does nothing when the game lists the item on the surface' do
       stub_bput('look rack' => [[stocked_reply]])
       expect(DRCM).not_to receive(:ensure_copper_on_hand)

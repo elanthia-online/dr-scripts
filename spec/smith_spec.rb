@@ -149,13 +149,12 @@ RSpec.describe Smith do
       allow(instance).to receive(:smith)
     end
 
-    it 'looks the recipe up among smithing recipes only and makes it' do
+    it 'looks a book recipe name up among the smithing book recipes only and makes it' do
       instance.send(:initialize)
 
       expect(DRCC).to have_received(:recipe_lookup) do |candidates, typed|
         expect(typed).to eq('metal morning star')
-        expect(candidates.size).to eq(SmithSpecData.smithing_recipes.size)
-        expect(candidates.size).to be < SmithSpecData.recipes.size
+        expect(candidates).to eq(SmithSpecData.smithing_recipes.reject { |recipe| recipe['instructions'] })
       end
       expect(instance).to have_received(:smith).with(having_attributes(material: 'steel'), morning_star)
     end
@@ -183,6 +182,44 @@ RSpec.describe Smith do
   # With use_private_forge, forge.lic walks to and rents the private forge on
   # every run: in the logs it read the notice seconds after smith had. smith
   # leaves that to forge.lic and only finds a public anvil.
+  # DRCC.recipe_lookup matches /<typed>/i and shows a pick-one menu (no
+  # timeout) when several names match and none equals the typed text.
+  describe '#find_recipe' do
+    let(:candidates) { [] }
+
+    before do
+      $test_data[:recipes] = OpenStruct.new(crafting_recipes: SmithSpecData.recipes)
+      allow(DRCC).to receive(:recipe_lookup) { |recipes, _typed| candidates.replace(recipes) }
+    end
+
+    def matches_for(typed)
+      Smith.allocate.send(:find_recipe, typed)
+      candidates.select { |recipe| recipe['name'] =~ /#{typed}/i }.map { |recipe| recipe['name'] }
+    end
+
+    it 'finds the book recipe alone for a bare noun an instructions weapon shares (no menu)' do
+      expect(matches_for('glaive')).to eq(['a metal glaive'])
+      expect(matches_for('iltesh')).to eq(['a metal iltesh'])
+      expect(matches_for('kudalata')).to eq(['a metal kudalata'])
+      expect(matches_for('recade')).to eq(['a metal recade'])
+    end
+
+    it 'finds the instructions weapon by a name no book recipe matches' do
+      expect(matches_for('short-hafted glaive')).to eq(['a metal short-hafted glaive'])
+      expect(matches_for('serrated iltesh')).to eq(['a metal serrated iltesh'])
+      expect(matches_for('imperial spear')).to eq(['a metal Imperial spear'])
+      expect(matches_for('sterak axe')).to eq(['a metal sterak axe'])
+    end
+
+    it 'still offers both naginatas for the bare noun, as both are instructions weapons' do
+      expect(matches_for('naginata')).to eq(['a metal long-handled naginata', 'a metal serrated naginata'])
+    end
+
+    it 'offers the same book recipes as before for a noun book recipes already shared (spear)' do
+      expect(matches_for('spear')).to eq(SmithSpecData.smithing_recipes.reject { |recipe| recipe['instructions'] }.map { |recipe| recipe['name'] }.grep(/spear/i))
+    end
+  end
+
   describe 'getting to a workplace' do
     before do
       forge_runs_end_holding('steel morning star')
@@ -212,9 +249,10 @@ RSpec.describe Smith do
       expect(forge_runs.first).not_to include('skip', 'here')
     end
 
-    it "stays in the room with 'here': no anvil search, no walking, no parts, and it forges" do
+    it "stays in the room with 'here' and every part in the bag: no anvil search, no walking, no buying, no coin" do
       instance = build_smith
       allow(instance).to receive(:buy_parts)
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft', 'flask of oil'])
       allow(DRCT).to receive(:walk_to)
       allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
 
@@ -223,11 +261,22 @@ RSpec.describe Smith do
       expect(DRCC).not_to have_received(:find_anvil)
       expect(DRCT).not_to have_received(:walk_to)
       expect(instance).not_to have_received(:buy_parts)
+      expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+      expect(forge_runs.size).to eq(1)
+    end
+
+    it "doesn't list the bag with 'here' for a recipe without parts" do
+      allow(DRCI).to receive(:get_item_list)
+
+      build_smith.smith(smith_args(here: 'here'), morning_star.except('part'))
+
+      expect(DRCI).not_to have_received(:get_item_list)
       expect(forge_runs.size).to eq(1)
     end
 
     it "tells every forge run to skip restocking and stay put with 'here'" do
       forge_runs_end_holding('steel morning star', 'steel morning star')
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
 
       build_smith.smith(smith_args(here: 'here', temper: 'temper'), morning_star)
 
@@ -257,6 +306,383 @@ RSpec.describe Smith do
       instance.smith(smith_args, morning_star)
 
       expect(calls).to eq([[:oil, 'oil', 4436, 6, 'duffel bag', bag_items, belt], ['buff'], ['forge']])
+    end
+  end
+
+  # Kurtus, 2026-08-28, in the Shard private forge (51058): forge.lic stopped
+  # on "You need another finished long wooden pole"; the pole was bought by
+  # hand at 4436 and the spear resumed. 'here' now buys a missing part and
+  # walks back before forging.
+  describe "'here' with a part missing from the bag" do
+    let(:instance) { build_smith }
+    # A room that is not the town's private forge (Shard's is 51058).
+    let(:start_room) { 8_775 }
+    let(:events) { [] }
+
+    before do
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: start_room))
+      allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }.and_return(true)
+      allow(DRCT).to receive(:buy_item) { |room, part| events << [:buy, room, part] }
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['flask of oil'])
+      allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+        next unless name == 'forge'
+
+        events << [:forge]
+        forge_runs << args
+        $right_hand = 'steel morning star'
+      end
+    end
+
+    context 'when the purchase works' do
+      before do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      it 'carries the parts budget, buys the part, walks back, then forges there' do
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(Smith::PARTS_COPPER, settings, 'Shard')
+        expect(events).to eq([[:buy, 4436, 'haft'], [:walk, start_room], [:forge]])
+        expect(forge_runs.first).to include('skip', 'here')
+      end
+
+      it 'still looks for no public anvil' do
+        expect(DRCC).not_to have_received(:find_anvil)
+      end
+    end
+
+    context 'when the purchase fails' do
+      before do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it "walks back to the room 'here' started in and says what failed" do
+        expect(DRCT).to have_received(:walk_to).with(start_room)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not buy a haft/)
+      end
+    end
+
+    context 'when the room is unknown' do
+      before do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil))
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'buys nothing, fetches no coin, and says why' do
+        expect(DRCT).not_to have_received(:buy_item)
+        expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /needs a known room to come back to/)
+      end
+    end
+
+    it 'buys the part and the ingot on one trip with buy' do
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCI).to receive(:exists?).and_return(false)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+      allow(DRCC).to receive(:crafting_cost).and_return(6_200)
+
+      instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
+
+      expect(events).to eq([[:buy, 4436, 'haft'], [:order, 17_119, 13], [:walk, start_room], [:forge]])
+    end
+
+    it 'still fetches the ingot and walks back with buy when every part is in the bag' do
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCI).to receive(:exists?).and_return(false)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+      allow(DRCC).to receive(:crafting_cost).and_return(6_200)
+
+      instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
+
+      expect(events).to eq([[:order, 17_119, 13], [:walk, start_room], [:forge]])
+    end
+
+    it 'buys the leather strip reinforce needs' do
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+
+      instance.smith(smith_args(here: 'here', reinforce: 'reinforce'), morning_star)
+
+      strip_shop = SmithSpecData.crafting.dig('recipe_parts', 'leather strip', 'Shard', 'part-room')
+      # The item run, then the reinforce run.
+      expect(events).to eq([[:buy, strip_shop, 'leather strip'], [:walk, start_room], [:forge], [:forge]])
+    end
+
+    # forge.lic gets each part with DRCI.get_item?(part), from anywhere.
+    context 'when the part is carried outside the crafting container' do
+      before { allow(DRCI).to receive(:exists?).with('haft').and_return(true) }
+
+      it 'counts it as carried: no coin, no shopping, no walking, and it forges' do
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+        expect(events).to eq([[:forge]])
+      end
+
+      it 'does the same when the crafting container cannot be listed' do
+        allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(nil)
+
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(events).to eq([[:forge]])
+      end
+
+      it 'buys by the container count when the recipe needs that part twice (a tap cannot count)' do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+
+        instance.smith(smith_args(here: 'here'), morning_star.merge('part' => %w[haft haft]))
+
+        expect(events.count { |event| event.first == :buy }).to eq(2)
+      end
+    end
+
+    # mrhoribu, #7979: a brigandine hauberk needs a large padding and two
+    # small paddings. With one of each in the bag, 'tap my small padding'
+    # finds the bagged one, so the tap can't stand for the second.
+    it 'buys the second of a doubled part when the bag holds one' do
+      hauberk = SmithSpecData.recipe('a brigandine hauberk')
+      expect(hauberk['part']).to eq(['large padding', 'small padding', 'small padding'])
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['large padding', 'small padding'])
+      allow(DRCI).to receive(:exists?).with('small padding').and_return(true)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+
+      instance.smith(smith_args(here: 'here'), hauberk)
+
+      # Shard's leather shop sells small padding as order 11 (base-crafting recipe_parts).
+      expect(events).to eq([[:order, 10_939, 11], [:walk, start_room], [:forge]])
+    end
+
+    # Kurtus, 2026-08-28: go2 walked back into the Shard private forge
+    # through the guarded archway ("The sentry nods and allows you to pass.").
+    context "when 'here' started in the town's private forge" do
+      before do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCC).to receive(:go_to_private_forge) { events << [:private_forge] }.and_return(true)
+      end
+
+      it 'goes back in through DRCC.go_to_private_forge, which tries the door and carries the rental cost' do
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(DRCC).to have_received(:go_to_private_forge).with('Shard', settings)
+        expect(events).to eq([[:buy, 4436, 'haft'], [:private_forge], [:forge]])
+      end
+
+      it 'stops when that does not get back in' do
+        allow(DRCC).to receive(:go_to_private_forge).and_return(false)
+
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(forge_runs).to be_empty
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 51058 after shopping/)
+      end
+    end
+
+    context 'when the walk back does not get there' do
+      before do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }.and_return(false)
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'says so instead of forging where the walk ended' do
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 8775 after shopping/)
+      end
+    end
+  end
+
+  # Weaponsmithing recipes made from loose instructions (base-recipes.yaml
+  # instructions: true). Kurtus, 2026-08-28: ';forge instructions telothian
+  # spear' got "some Imperial spear instructions" ("You get some Imperial
+  # spear instructions from inside your traveler's pack."), and 'tap my
+  # spear' read "You tap an unfinished telothian Imperial spear inside your
+  # traveler's pack."; the tap replies below follow that form.
+  describe 'a recipe made from instructions' do
+    let(:instance) { build_smith }
+    let(:spear) { SmithSpecData.recipe('a metal Imperial spear') }
+    let(:long_naginata) { SmithSpecData.recipe('a metal long-handled naginata') }
+
+    before do
+      $test_data[:recipes] = OpenStruct.new(crafting_recipes: SmithSpecData.recipes)
+      allow(DRCT).to receive(:buy_item)
+      allow(DRCT).to receive(:walk_to).and_return(true)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return([])
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+    end
+
+    def carrying_instructions(tap_reply)
+      allow(DRCI).to receive(:tap).with('spear instructions').and_return(tap_reply)
+      allow(DRCI).to receive(:tap).with('naginata instructions').and_return(tap_reply)
+    end
+
+    context 'when the instructions are carried' do
+      before do
+        carrying_instructions("You tap some Imperial spear instructions inside your traveler's pack.")
+        forge_runs_end_holding('telothian Imperial spear', 'telothian Imperial spear')
+        instance.smith(smith_args(material: 'telothian', here: 'here', temper: 'temper'), spear)
+      end
+
+      it "runs forge.lic's instructions form, then tempers, staying put" do
+        expect(forge_runs).to eq([%w[instructions telothian spear skip here], %w[temper spear skip here]])
+      end
+
+      it 'buys the long pole the instructions list and comes back first' do
+        expect(DRCT).to have_received(:buy_item).with(4436, 'long pole').ordered
+        expect(DRCT).to have_received(:walk_to).with(51_058).ordered
+      end
+    end
+
+    it 'passes no chapter or recipe name to forge.lic without here' do
+      carrying_instructions("You tap some Imperial spear instructions inside your traveler's pack.")
+      forge_runs_end_holding('telothian Imperial spear')
+
+      instance.smith(smith_args(material: 'telothian'), spear)
+
+      expect(forge_runs).to eq([%w[instructions telothian spear]])
+    end
+
+    context 'when no instructions of that noun are carried' do
+      before do
+        carrying_instructions('What were you referring to?')
+        forge_runs_end_holding('telothian Imperial spear')
+        instance.smith(smith_args(material: 'telothian', here: 'here'), spear)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'buys nothing, fetches no coin, and names the instructions forge needs' do
+        expect(DRCT).not_to have_received(:buy_item)
+        expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /You don't carry any spear instructions, which forge needs to make a metal Imperial spear/)
+      end
+    end
+
+    context "when 'my naginata instructions' is the other naginata" do
+      before do
+        carrying_instructions('You tap some Serrated naginata instructions inside your duffel bag.')
+        forge_runs_end_holding('steel naginata')
+        instance.smith(smith_args(here: 'here'), long_naginata)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'buys nothing and names the set forge would study' do
+        expect(DRCT).not_to have_received(:buy_item)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /is another kind \(You tap some Serrated naginata instructions/)
+      end
+    end
+
+    it "accepts an instructions set whose name adds words around the recipe's (metal ... instructions)" do
+      carrying_instructions('You tap some metal long-handled naginata instructions inside your duffel bag.')
+
+      expect(instance.instructions_carried?(long_naginata)).to be true
+    end
+
+    # DRCC may get the one matching set in the crafting container by id
+    # instead of by the name smith tapped.
+    context 'when the noun is shared and the crafting container holds the other kind' do
+      before do
+        carrying_instructions('You tap some metal long-handled naginata instructions inside your traveler\'s pack.')
+        allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['some Serrated naginata instructions', 'long pole'])
+        forge_runs_end_holding('steel naginata')
+        instance.smith(smith_args(here: 'here'), long_naginata)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'buys nothing and names the set in the container' do
+        expect(DRCT).not_to have_received(:buy_item)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Your duffel bag also holds some Serrated naginata instructions/)
+      end
+    end
+
+    it 'accepts a shared noun when the crafting container holds only sets of the right kind' do
+      carrying_instructions('You tap some metal long-handled naginata instructions inside your duffel bag.')
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['some metal long-handled naginata instructions'])
+
+      expect(instance.instructions_carried?(long_naginata)).to be true
+    end
+
+    it 'does not list the container for a noun no other instructions recipe uses' do
+      carrying_instructions("You tap some Imperial spear instructions inside your traveler's pack.")
+      allow(DRCI).to receive(:get_item_list)
+
+      expect(instance.instructions_carried?(spear)).to be true
+      expect(DRCI).not_to have_received(:get_item_list)
+    end
+
+    it 'treats an empty tap reply as no instructions carried' do
+      carrying_instructions(nil)
+
+      expect(instance.instructions_carried?(spear)).to be false
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /You don't carry any spear instructions/)
+    end
+
+    it 'never taps for a book recipe' do
+      allow(DRCI).to receive(:tap)
+      forge_runs_end_holding('steel morning star')
+      parts_already_carried(instance)
+
+      instance.smith(smith_args, morning_star)
+
+      expect(DRCI).not_to have_received(:tap)
+      expect(forge_runs.first.first(3)).to eq(['weaponsmithing', 5, 'a metal morning star'])
+    end
+  end
+
+  describe 'the shipped instructions recipes' do
+    let(:instruction_recipes) { SmithSpecData.smithing_recipes.select { |recipe| recipe['instructions'] } }
+
+    it 'are the 19 weapons of the Special Instructions list' do
+      expect(instruction_recipes.size).to eq(19)
+      expect(instruction_recipes.map { |recipe| recipe['type'] }.uniq).to eq(['weaponsmithing'])
+    end
+
+    it 'have no chapter, are never work orders, and give a noun and a volume' do
+      instruction_recipes.each do |recipe|
+        expect(recipe).to include('chapter' => nil, 'work_order' => false)
+        expect(recipe['noun']).to match(/\A[\w-]+\z/)
+        expect(recipe['volume']).to be_a(Integer).and be_positive
+      end
+    end
+
+    # instructions_carried? reads the recipe name, less the article and
+    # "metal", in the tapped set's name; forge.lic gets "<noun> instructions".
+    it 'name the weapon by words that end in the noun forge.lic uses' do
+      instruction_recipes.each do |recipe|
+        kind = recipe['name'].sub(/\Aa metal /, '')
+        expect(kind).to end_with(recipe['noun'])
+      end
+    end
+
+    # recipe_lookup takes the typed name as a pattern; one match means no menu.
+    it 'are each found alone by their name without the article' do
+      instruction_recipes.each do |recipe|
+        typed = recipe['name'].sub(/\Aa metal /, '')
+        expect(SmithSpecData.smithing_recipes.count { |other| other['name'] =~ /#{typed}/i }).to eq(1), typed
+      end
+    end
+
+    it 'keep the volumes and parts the instructions list (Imperial spear, sterak axe)' do
+      expect(SmithSpecData.recipe('a metal Imperial spear')).to include('noun' => 'spear', 'volume' => 13, 'part' => ['long pole'])
+      expect(SmithSpecData.recipe('a metal sterak axe')).to include('noun' => 'axe', 'volume' => 9, 'part' => ['haft'])
+    end
+
+    # Kurtus, 2026-11-07, 'read my inst' on some well-written hawkbill
+    # instructions: "(1) refined metal ingot (1 volume)", "(1) finished wooden hilt".
+    it 'keep the hawkbill parts read from its instructions in game' do
+      expect(SmithSpecData.recipe('a metal hawkbill')).to include('noun' => 'hawkbill', 'volume' => 1, 'part' => ['hilt'])
     end
   end
 
@@ -632,7 +1058,7 @@ RSpec.describe Smith do
 
       it "comes back to the starting room after shopping with 'here'" do
         allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
-        allow(DRCT).to receive(:walk_to)
+        allow(DRCT).to receive(:walk_to).and_return(true)
 
         instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
 
@@ -811,19 +1237,19 @@ RSpec.describe Smith do
     before { allow(DRCC).to receive(:crafting_cost).and_return(6_200) }
 
     it 'carries the parts budget when not buying an ingot' do
-      instance.fund_run(morning_star, ['haft'], nil, nil)
+      instance.fund_run(morning_star, ['haft'], nil, true)
 
       expect(DRCM).to have_received(:ensure_copper_on_hand).with(Smith::PARTS_COPPER, settings, 'Shard')
     end
 
-    it "fetches nothing with 'here' and no ingot to buy" do
-      instance.fund_run(morning_star, ['haft'], nil, 'here')
+    it 'fetches nothing with no part or ingot to buy' do
+      instance.fund_run(morning_star, ['haft'], nil, false)
 
       expect(DRCM).not_to have_received(:ensure_copper_on_hand)
     end
 
-    it "still pays for a bought ingot with 'here'" do
-      instance.fund_run(morning_star, ['haft'], { 'stock-number' => 13 }, 'here')
+    it 'still pays for a bought ingot when no part is bought' do
+      instance.fund_run(morning_star, ['haft'], { 'stock-number' => 13 }, false)
 
       expect(DRCM).to have_received(:ensure_copper_on_hand).with(6_200, settings, 'Shard')
     end

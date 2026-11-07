@@ -970,7 +970,7 @@ RSpec.describe WorkOrders do
   # pick one, even when a workorder_recipes pattern matches its name.
   describe '#work_order_recipes' do
     let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
-    let(:instructions_names) { recipes.select { |recipe| recipe['instructions'] }.map { |recipe| recipe['name'] } }
+    let(:instructions_names) { recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'remedies' }.map { |recipe| recipe['name'] } }
     let(:disciplines) { %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing tinkering] }
 
     before do
@@ -999,6 +999,14 @@ RSpec.describe WorkOrders do
       [['salve'], ['marram'], ['liniment', 'curative', 'potion'], ['a '], ['.']].each do |patterns|
         names = picked('remedies', overrides: { 'remedies' => patterns })
         expect(names & instructions_names).to eq([])
+      end
+    end
+
+    it 'never picks a weapon made from instructions, whatever workorder_recipes pattern matches its name' do
+      weapons = recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'weaponsmithing' }.map { |recipe| recipe['name'] }
+      expect(weapons).to include('a metal sterak axe')
+      [{}, { 'weaponsmithing' => ['.'] }, { 'weaponsmithing' => ['sterak', 'naginata'] }].each do |overrides|
+        expect(picked('weaponsmithing', overrides: overrides) & weapons).to eq([]), overrides.inspect
       end
     end
 

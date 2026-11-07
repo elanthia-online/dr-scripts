@@ -114,8 +114,12 @@ RSpec.describe TaskMaster do
   #
   # @return [Hash] :bag (pieces left per stock), :hands, :floor (pieces
   #   dropped), :sent (commands)
-  def stock_world(pieces, worn_leathers: false, refuse: false, bag_full: false, no_floor: false, hands: {})
-    world = { bag: pieces.dup, hands: { right: nil, left: nil }.merge(hands), floor: [], sent: [] }
+  # rummage: whether RUMMAGE /C <noun> in the duffel bag answers, listing the
+  # bag's pieces of that noun. others: other containers' pieces by container
+  # name, e.g. { 'backpack' => { 'bronze ingot' => 2 } }.
+  def stock_world(pieces, worn_leathers: false, refuse: false, bag_full: false, no_floor: false, hands: {}, rummage: true, others: {})
+    world = { bag: pieces.dup, hands: { right: nil, left: nil }.merge(hands), floor: [], sent: [], others: others.transform_values(&:dup) }
+    contents = ->(container) { container == 'duffel bag' ? world[:bag] : world[:others][container] }
     next_id = 2_222_485
     allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
     allow(GameObj).to receive(:left_hand) { world[:hands][:left] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
@@ -126,33 +130,37 @@ RSpec.describe TaskMaster do
     worn = ->(ref) { worn_leathers && ref.start_with?('my ') && 'leathers'.start_with?(ref.delete_prefix('my ')) }
     reply = lambda do |command|
       case command
-      when /\Aget my (.+) from my duffel bag\z/
+      when /\Aget my (.+) from my (.+)\z/
         stock = Regexp.last_match(1)
+        from = contents.call(Regexp.last_match(2))
         hand = world[:hands].find { |_, obj| obj.nil? }&.first
         next 'You need a free hand to pick that up.' unless hand
-        next 'What were you referring to?' unless world[:bag].fetch(stock, 0).positive?
+        next 'What were you referring to?' unless from&.fetch(stock, 0)&.positive?
 
-        world[:bag][stock] -= 1
+        from[stock] -= 1
         world[:hands][hand] = OpenStruct.new(name: stock, noun: stock.split.last, id: (next_id += 1).to_s)
-        "You get some #{stock} from inside your duffel bag."
-      when /\Aput (my \w+(?: \w+)?|#\d+) in (my bucket|bin|my duffel bag)\z/
+        "You get some #{stock} from inside your #{Regexp.last_match(2)}."
+      when /\Aput (my \w+(?: \w+)?|#\d+) in (my bucket|bin|my .+)\z/
         ref = Regexp.last_match(1)
         into = Regexp.last_match(2)
+        # A container of ours (the duffel bag or one of others), else a bin.
+        container = %w[bin my\ bucket].include?(into) ? nil : contents.call(into.delete_prefix('my '))
+        next '' if container.nil? && !%w[bin my\ bucket].include?(into)
         next 'Perhaps you should be holding that first.' if worn.call(ref)
 
         hand = held.call(ref)
         next 'What were you referring to?' unless hand
 
         piece = world[:hands][hand]
-        if into == 'my duffel bag'
-          next "There isn't any more room in the duffel bag for that." if bag_full
+        if container
+          next "There isn't any more room in the duffel bag for that." if bag_full && into == 'my duffel bag'
 
-          world[:bag][piece.name] = world[:bag].fetch(piece.name, 0) + 1
+          container[piece.name] = container.fetch(piece.name, 0) + 1
         elsif refuse
           next "There isn't any more room in the #{into.delete_prefix('my ')} for that."
         end
         world[:hands][hand] = nil
-        into == 'my duffel bag' ? "You put your #{piece.noun} in your duffel bag." : "You drop your #{piece.noun} in a #{into.delete_prefix('my ')}."
+        container ? "You put your #{piece.noun} in your #{into.delete_prefix('my ')}." : "You drop your #{piece.noun} in a #{into.delete_prefix('my ')}."
       when /\Adrop (#\d+)\z/
         hand = held.call(Regexp.last_match(1))
         next 'What were you referring to?' unless hand
@@ -161,6 +169,13 @@ RSpec.describe TaskMaster do
         world[:floor] << world[:hands][hand].name
         world[:hands][hand] = nil
         'You drop some stock.'
+      when %r{\Arummage /C (\S+) in my (.+)\z}
+        noun = Regexp.last_match(1)
+        held_in = contents.call(Regexp.last_match(2))
+        next '' unless rummage && held_in
+
+        names = held_in.flat_map { |name, count| name.split.last == noun ? ["a #{name}"] * count : [] }
+        rummaged_bag(noun, names)
       when 'tap my bucket'
         'You drum your fingers on the bucket rhythmically.'
       else
@@ -1782,8 +1797,255 @@ RSpec.describe TaskMaster do
 
       it 'takes leftover ingots to the forge bin' do
         stock_world({ 'bronze ingot' => 1 })
-        build(remainder: true).trash('hammer', 'ingot', 'bronze')
+        build(remainder: true, ingots_bought: 1, ingots_before: { 'bronze ingot' => 0, 'steel ingot' => 0 }).trash('hammer', 'ingot', 'bronze')
         expect(DRCT).to have_received(:dispose).with('#2222486', 793)
+      end
+
+      describe "sparing the player's own ingots" do
+        # before: what the bag held before the metal was bought (nil: unknown).
+        def trash_metal(bag, bought:, before:, metal: 'bronze', **world_options)
+          world = stock_world(bag, **world_options)
+          build(remainder: true, ingots_bought: bought, ingots_before: before).trash('hammer', 'ingot', metal)
+          world
+        end
+
+        it "throws away only the task's leftover when the bag also holds the player's own" do
+          world = trash_metal({ 'bronze ingot' => 3 }, bought: 1, before: { 'bronze ingot' => 2, 'steel ingot' => 0 })
+          expect(DRCT).to have_received(:dispose).once
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+        end
+
+        it 'throws away every unused whole ingot of a task that stopped short, and no more' do
+          world = trash_metal({ 'steel ingot' => 4 }, bought: 3, before: { 'bronze ingot' => 0, 'steel ingot' => 1 }, metal: 'steel')
+          expect(DRCT).to have_received(:dispose).exactly(3).times
+          expect(world[:bag]).to eq({ 'steel ingot' => 1 })
+        end
+
+        it 'never throws away more than the task bought, whatever else the bag gained' do
+          world = trash_metal({ 'bronze ingot' => 5 }, bought: 1, before: { 'bronze ingot' => 0, 'steel ingot' => 0 })
+          expect(DRCT).to have_received(:dispose).once
+          expect(world[:bag]).to eq({ 'bronze ingot' => 4 })
+        end
+
+        it 'throws away nothing when the bag holds no more than before (forge used a kept one)' do
+          world = trash_metal({ 'bronze ingot' => 2 }, bought: 1, before: { 'bronze ingot' => 2, 'steel ingot' => 0 })
+          expect(DRCT).not_to have_received(:dispose)
+          expect(world[:sent]).not_to include('get my bronze ingot from my duffel bag')
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+        end
+
+        it 'throws away at most what the task bought when the counts are unknown' do
+          world = trash_metal({ 'bronze ingot' => 3 }, bought: 1, before: nil)
+          expect(DRCT).to have_received(:dispose).once
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+
+          world = trash_metal({ 'bronze ingot' => 3 }, bought: 1, before: { 'bronze ingot' => 0, 'steel ingot' => 0 }, rummage: false)
+          expect(world[:sent].count { |command| command.start_with?('rummage') }).to eq(2)
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+        end
+
+        it 'says once a run how many stay in the bag as the player\'s' do
+          world = trash_metal({ 'bronze ingot' => 3 }, bought: 1, before: { 'bronze ingot' => 2, 'steel ingot' => 0 })
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+          expect(DRC).to have_received(:message).with('2 bronze ingots stay in your duffel bag. They were there before the task bought its metal, so taskmaster keeps them as yours. If any are leftovers from a run that stopped, throw them away by hand.')
+
+          stock_world({ 'steel ingot' => 2 })
+          tm = build(remainder: true, ingots_bought: 1, ingots_before: { 'bronze ingot' => 0, 'steel ingot' => 1 })
+          tm.trash('hammer', 'ingot', 'steel')
+          tm.trash('hammer', 'ingot', 'steel')
+          expect(DRC).to have_received(:message).with(a_string_starting_with('1 steel ingot stays in your duffel bag.')).once
+        end
+
+        it 'says nothing when none of the metal stays, or the counts are unknown' do
+          trash_metal({ 'bronze ingot' => 1 }, bought: 1, before: { 'bronze ingot' => 0, 'steel ingot' => 0 })
+          trash_metal({ 'bronze ingot' => 3 }, bought: 1, before: nil)
+          trash_metal({ 'bronze ingot' => 3 }, bought: 1, before: { 'bronze ingot' => 2, 'steel ingot' => 0 }, rummage: false)
+          expect(DRC).not_to have_received(:message).with(a_string_including('stay'))
+        end
+
+        it 'counts a piece it could not throw away among those that stay' do
+          world = trash_metal({ 'bronze ingot' => 2 }, bought: 1, before: { 'bronze ingot' => 1, 'steel ingot' => 0 }, refuse: true)
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+          expect(DRC).to have_received(:message).with(a_string_starting_with('2 bronze ingots stay in your duffel bag.'))
+        end
+
+        it 'dispose_leftovers says how many pieces went in the bin' do
+          stock_world({ 'burlap cloth' => 3 })
+          expect(build.send(:dispose_leftovers, 'burlap cloth', 14_886, 2)).to eq(2)
+          world = stock_world({ 'burlap cloth' => 3 }, refuse: true)
+          expect(build.send(:dispose_leftovers, 'burlap cloth', 14_886)).to eq(0)
+          expect(world[:bag]).to eq({ 'burlap cloth' => 3 })
+        end
+
+        it 'still throws away every leftover piece of cloth, which is never the player\'s' do
+          world = stock_world({ 'burlap cloth' => 3 })
+          build(remainder: true, ingots_bought: 1, ingots_before: { 'bronze ingot' => 0, 'steel ingot' => 0 }).trash('rope', 'cloth', 'burlap')
+          expect(world[:bag]).to eq({ 'burlap cloth' => 0 })
+        end
+      end
+
+      describe 'what the buyers note for leftover_ingots' do
+        before do
+          allow(DRCM).to receive(:ensure_copper_on_hand)
+          allow(DRCT).to receive(:order_item)
+          allow(DRCC).to receive(:stow_crafting_item)
+        end
+
+        it 'notes every ingot buy_ingots buys, and the one bulk ingot bingots buys' do
+          tm = build(stockdata: { 'bronze' => { 'stock-value' => 562, 'stock-number' => 11 } })
+          tm.send(:buy_ingots, 4, 'bronze')
+          expect(tm.instance_variable_get(:@ingots_bought)).to eq(4)
+          tm.send(:bingots, 3)
+          expect(tm.instance_variable_get(:@ingots_bought)).to eq(1)
+        end
+      end
+
+      describe '#bin_stray_ingots (task_bin_metal_from)' do
+        def sweeper(from, **ivars)
+          build(settings: { task_bin_metal_from: from }, **ivars)
+        end
+
+        def swept_messages
+          messages = []
+          allow(DRC).to receive(:message) { |text| messages << text }
+          messages
+        end
+
+        it 'bins every bronze and steel ingot in the named container by id at the forge bin, then says to unset it' do
+          messages = swept_messages
+          world = stock_world({ 'bronze ingot' => 1 }, others: { 'backpack' => { 'bronze ingot' => 3, 'steel ingot' => 1, 'tyrium ingot' => 2 } })
+          sweeper('backpack').send(:bin_stray_ingots)
+          expect(DRCT).to have_received(:dispose).with(/\A#\d+\z/, 793).exactly(4).times
+          expect(world[:others]['backpack']).to eq({ 'bronze ingot' => 0, 'steel ingot' => 0, 'tyrium ingot' => 2 })
+          expect(world[:bag]).to eq({ 'bronze ingot' => 1 })
+          expect(messages).to eq(['task_bin_metal_from: threw away 4 bronze and steel ingots from your backpack; none are left there. Unset it now, or it bins your own ingots there on every run.'])
+        end
+
+        it 'drops a leading "my" from the setting' do
+          world = stock_world({}, others: { 'backpack' => { 'bronze ingot' => 1 } })
+          sweeper('my backpack').send(:bin_stray_ingots)
+          expect(world[:sent]).to include('get my bronze ingot from my backpack')
+          expect(world[:sent].grep(/my my/)).to eq([])
+        end
+
+        it 'is done for the run once the container is empty, so a repeat or cycle run does not ask again' do
+          world = stock_world({}, others: { 'backpack' => { 'bronze ingot' => 1 } })
+          tm = sweeper('backpack')
+          tm.send(:bin_stray_ingots)
+          world[:sent].clear
+          tm.send(:bin_stray_ingots)
+          expect(world[:sent]).to eq([])
+        end
+
+        it 'does nothing unset or blank' do
+          [nil, '', '  '].each do |from|
+            world = stock_world({}, others: { 'backpack' => { 'bronze ingot' => 1 } })
+            sweeper(from).send(:bin_stray_ingots)
+            expect(world[:sent]).to eq([])
+          end
+        end
+
+        it 'leaves alone any container with the same noun as crafting_container, saying why' do
+          messages = swept_messages
+          ['duffel bag', 'bag', 'heavy duffel bag', 'silk bag', 'my bag', 'travel.bag'].each do |from|
+            world = stock_world({ 'bronze ingot' => 2 })
+            sweeper(from).send(:bin_stray_ingots)
+            expect(world[:sent]).to eq([]), "swept for #{from}"
+            expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+          end
+          expect(messages.size).to eq(6)
+          expect(messages).to all(include('has the same noun as your crafting_container (duffel bag)', 'nothing is swept'))
+        end
+
+        it 'stops the whole sweep at an ingot the bin refuses, puts it back where it came from, and tries again next time' do
+          messages = swept_messages
+          world = stock_world({}, refuse: true, others: { 'backpack' => { 'bronze ingot' => 2, 'steel ingot' => 1 } })
+          tm = sweeper('backpack')
+          tm.send(:bin_stray_ingots)
+          expect(world[:sent].grep(/\Aget /)).to eq(['get my bronze ingot from my backpack'])
+          expect(world[:sent]).to include('put #2222486 in my backpack')
+          expect(world[:others]['backpack']).to eq({ 'bronze ingot' => 2, 'steel ingot' => 1 })
+          expect(world[:bag]).to eq({})
+          expect(world[:hands].values).to all(be_nil)
+          expect(messages.last).to eq('task_bin_metal_from: threw away 0 bronze and steel ingots from your backpack, and could not finish (see above, or check that you carry a backpack). It tries again before the next metal task.')
+
+          world[:sent].clear
+          tm.send(:bin_stray_ingots)
+          expect(world[:sent]).to include('get my bronze ingot from my backpack')
+        end
+
+        it 'never says to unset it while the hands are full, and tries again once they are free' do
+          messages = swept_messages
+          full = OpenStruct.new(name: 'iron chisels', noun: 'chisels', id: '1')
+          world = stock_world({}, hands: { right: full, left: full }, others: { 'backpack' => { 'bronze ingot' => 2 } })
+          tm = sweeper('backpack')
+          tm.send(:bin_stray_ingots)
+          expect(messages).to include('Both hands are full, so the leftover bronze ingot stays in your backpack. Empty your hands to get rid of it.')
+          expect(messages.grep(/Unset it now/)).to eq([])
+          expect(world[:others]['backpack']).to eq({ 'bronze ingot' => 2 })
+
+          world[:hands] = { right: nil, left: nil }
+          tm.send(:bin_stray_ingots)
+          expect(world[:others]['backpack']).to eq({ 'bronze ingot' => 0 })
+          expect(messages.last).to include('threw away 2 bronze and steel ingots from your backpack; none are left there. Unset it now')
+        end
+
+        it 'tries again next time when the container cannot be counted' do
+          messages = swept_messages
+          world = stock_world({}, rummage: false, others: { 'backpack' => { 'bronze ingot' => 1 } })
+          tm = sweeper('backpack')
+          tm.send(:bin_stray_ingots)
+          expect(world[:others]['backpack']).to eq({ 'bronze ingot' => 0 })
+          expect(messages.last).to include('could not finish')
+          world[:sent].clear
+          tm.send(:bin_stray_ingots)
+          expect(world[:sent]).not_to be_empty
+        end
+
+        it 'stops the run before any metal is bought when a swept ingot is still in hand' do
+          messages = swept_messages
+          world = stock_world({}, refuse: true, others: { 'backpack' => { 'bronze ingot' => 1, 'steel ingot' => 1 } })
+          allow(DRCI).to receive(:put_away_item?).and_return(false)
+          tm = build(settings: { task_bin_metal_from: 'backpack', forging_tools: [] })
+          allow(tm).to receive(:bingots)
+          expect { tm.send(:forge_metal_task, 'dagger', 3, 6, 'ingot', 'bronze') }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:bingots)
+          expect(world[:sent].grep(/\Aget /)).to eq(['get my bronze ingot from my backpack'])
+          expect(messages.last).to eq('task_bin_metal_from: threw away 0 bronze and steel ingots from your backpack, but a swept ingot may still be in your hand (#2222486). Stopping before buying any metal.')
+        end
+
+        it 'runs before the metal is counted and bought on a metal task' do
+          tm = build(settings: { forging_tools: [], task_bin_metal_from: 'backpack' }, stockdata: { 'steel' => { 'stock-volume' => 10 } })
+          order = []
+          allow(tm).to receive(:bin_stray_ingots) { order << :sweep }
+          allow(tm).to receive(:carried_ingots) { order << :count && nil }
+          allow(tm).to receive(:bingots) { order << :buy }
+          allow(tm).to receive(:forge_item) { 3 }
+          allow(tm).to receive(:repair)
+          allow(tm).to receive(:trash)
+          tm.send(:forge_metal_task, 'dagger', 3, 6, 'ingot', 'bronze')
+          expect(order).to eq(%i[sweep count buy])
+        end
+      end
+
+      describe '#carried_ingots' do
+        it 'counts each task metal in one RUMMAGE, by its whole name' do
+          world = stock_world({ 'bronze ingot' => 2, 'steel ingot' => 1, 'tyrium ingot' => 3 })
+          expect(build.send(:carried_ingots)).to eq({ 'bronze ingot' => 2, 'steel ingot' => 1 })
+          expect(world[:sent]).to eq(['rummage /C ingot in my duffel bag'])
+        end
+
+        it 'counts another container when given one' do
+          world = stock_world({ 'bronze ingot' => 2 }, others: { 'backpack' => { 'steel ingot' => 3 } })
+          expect(build.send(:carried_ingots, 'backpack')).to eq({ 'bronze ingot' => 0, 'steel ingot' => 3 })
+          expect(world[:sent]).to eq(['rummage /C ingot in my backpack'])
+        end
+
+        it 'asks twice, then gives nil, when RUMMAGE goes unanswered' do
+          world = stock_world({ 'bronze ingot' => 2 }, rummage: false)
+          expect(build.send(:carried_ingots)).to be_nil
+          expect(world[:sent]).to eq(['rummage /C ingot in my duffel bag'] * 2)
+        end
       end
 
       # Before, the result of the disposal was ignored: the refused piece
@@ -1929,16 +2191,23 @@ RSpec.describe TaskMaster do
     describe 'Poltu and Bradyn tasks' do
       let(:forging_belt) { { 'name' => 'forging belt', 'items' => [] } }
       let(:engineering_belt) { { 'name' => 'engineering belt', 'items' => [] } }
+      # The real stock table: buy_metal reads the steel ingot's volume from it.
+      let(:shop_stock) { YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['stock'] }
 
       # Runs the taskmaster's real task method with buying, crafting, repair and
       # disposal stubbed to record their calls, each with the @remainder flag as
       # it stood then. remainder: the flag before the task.
-      def run_task(npc, item, count, volume_per_item, base, type, remainder: false)
+      # made: how many items forge_item reports (every one when nil).
+      def run_task(npc, item, count, volume_per_item, base, type, remainder: false, made: nil)
         tm = build(settings: { forging_tools: ['forging hammer'], forging_belt: forging_belt, engineering_belt: engineering_belt, shaping_tools: ['wood shaper'] },
-                   remainder: remainder)
+                   remainder: remainder, stockdata: shop_stock)
         calls = []
         %i[buy_ingots bingots buy_rocks buy_stackables forge_item carve_stone carve_bone shape_item repair trash].each do |step|
           allow(tm).to receive(step) { |*step_args| calls << [step, *step_args, tm.instance_variable_get(:@remainder)] }
+        end
+        allow(tm).to receive(:forge_item) do |*step_args|
+          calls << [:forge_item, *step_args, tm.instance_variable_get(:@remainder)]
+          made || count
         end
         allow(DRC).to receive(:right_hand).and_return('iron chisels')
         tm.send(npc, item, count, volume_per_item, base, type)
@@ -1965,8 +2234,17 @@ RSpec.describe TaskMaster do
             [17, 3]  => [[:bingots, 2], 'bronze', true],
             [9, 6]   => [[:bingots, 2], 'bronze', true],
             [1, 51]  => [[:bingots, 2], 'bronze', true],
-            [25, 2]  => [[:buy_ingots, 1, 'steel'], 'steel', true],
-            [3, 4]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [5, 2]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [2, 4]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [1, 1]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [1, 7]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [1, 9]   => [[:buy_ingots, 1, 'steel'], 'steel', true],
+            [2, 6]   => [[:bingots, 1], 'bronze', true],
+            # Small items that don't fit in one 10-volume steel ingot: the
+            # 50-volume bronze one, not a steel ingot that runs out.
+            [11, 1]  => [[:bingots, 1], 'bronze', true],
+            [3, 4]   => [[:bingots, 1], 'bronze', true],
+            [25, 2]  => [[:bingots, 1], 'bronze', true],
             [8, 6]   => [[:bingots, 1], 'bronze', true],
             [3, 6]   => [[:bingots, 1], 'bronze', true],
             [1, 50]  => [[:bingots, 1], 'bronze', true]
@@ -1980,6 +2258,74 @@ RSpec.describe TaskMaster do
           it 'leaves @remainder as it was on tasks of exactly one ingot per item' do
             expect(run_task(npc, 'dagger', 3, 10, 'ingot', 'bronze', remainder: true).last.last).to be(true)
             expect(run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', remainder: true).last.last).to be(true)
+          end
+
+          it "counts the bag's ingots before it buys any" do
+            tm = build(settings: { forging_tools: [], forging_belt: forging_belt }, stockdata: shop_stock)
+            order = []
+            allow(tm).to receive(:carried_ingots) { order << :count && { 'bronze ingot' => 1, 'steel ingot' => 0 } }
+            allow(tm).to receive(:bingots) { order << :buy }
+            allow(tm).to receive(:forge_item) { 3 }
+            allow(tm).to receive(:repair)
+            allow(tm).to receive(:trash)
+            tm.send(npc, 'dagger', 3, 6, 'ingot', 'bronze')
+            expect(order).to eq(%i[count buy])
+            expect(tm.instance_variable_get(:@ingots_before)).to eq({ 'bronze ingot' => 1, 'steel ingot' => 0 })
+          end
+
+          # Forging stopped after 1 of 4 whole bronze ingots: the 3 unused
+          # ones are thrown away, since the next run buys for all 3 still owed.
+          it 'throws the whole ingots away when forging stops short on a task of one ingot per item' do
+            calls = run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', made: 1)
+            expect(calls).to eq([[:buy_ingots, 4, 'bronze', false], [:forge_item, 'dagger', 4, 'bronze', false],
+                                 [:repair, ['forging hammer'], forging_belt, true], [:trash, 'dagger', 'ingot', 'bronze', true]])
+            expect(run_task(npc, 'dagger', 3, 10, 'ingot', 'bronze', made: 0).last).to eq([:trash, 'dagger', 'ingot', 'steel', true])
+          end
+
+          it 'keeps nothing back on an exact bulk ingot that stops short either' do
+            expect(run_task(npc, 'dagger', 25, 4, 'ingot', 'bronze', made: 24).last).to eq([:trash, 'dagger', 'ingot', 'bronze', true])
+          end
+
+          it 'leaves @remainder alone when forging made every item, or says it made more' do
+            expect(run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', made: 4).last.last).to be(false)
+            expect(run_task(npc, 'dagger', 4, 5, 'ingot', 'bronze', made: 5).last.last).to be(false)
+          end
+
+          # The real buy-count, trash and dispose path on a full run whose last
+          # count went unanswered: craft_each reports 3 of 4, but all 4 whole
+          # ingots were used, so the bag holds only the player's 2 and none go.
+          it "throws away none of the player's ingots when a full run is undercounted" do
+            world = stock_world({ 'steel ingot' => 2 })
+            tm = build(settings: { forging_tools: [], forging_belt: forging_belt })
+            allow(tm).to receive(:buy_ingots) do |count, _|
+              tm.instance_variable_set(:@ingots_bought, count)
+              world[:bag]['steel ingot'] += count
+            end
+            allow(tm).to receive(:forge_item) do
+              world[:bag]['steel ingot'] -= 4
+              3
+            end
+            allow(tm).to receive(:repair)
+            tm.send(npc, 'dagger', 4, 10, 'ingot', 'bronze')
+            expect(DRCT).not_to have_received(:dispose)
+            expect(world[:bag]).to eq({ 'steel ingot' => 2 })
+          end
+
+          it 'throws away only the unused whole ingots, sparing the player\'s, when forging really stops short' do
+            world = stock_world({ 'bronze ingot' => 2 })
+            tm = build(settings: { forging_tools: [], forging_belt: forging_belt })
+            allow(tm).to receive(:buy_ingots) do |count, _|
+              tm.instance_variable_set(:@ingots_bought, count)
+              world[:bag]['bronze ingot'] += count
+            end
+            allow(tm).to receive(:forge_item) do
+              world[:bag]['bronze ingot'] -= 1
+              1
+            end
+            allow(tm).to receive(:repair)
+            tm.send(npc, 'dagger', 4, 5, 'ingot', 'bronze')
+            expect(DRCT).to have_received(:dispose).exactly(3).times
+            expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
           end
         end
       end

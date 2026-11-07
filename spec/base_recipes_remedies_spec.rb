@@ -155,7 +155,8 @@ end
 # a book recipe before.
 RSpec.describe 'data/base-recipes.yaml instructions remedies' do
   all_recipes = YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes']
-  instructions = all_recipes.select { |recipe| recipe['instructions'] }
+  # The weaponsmithing instructions recipes (smith.lic) are not remedies.
+  instructions = all_recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'remedies' }
   remedies = all_recipes.select { |recipe| recipe['type'] == 'remedies' }
   # base-recipes.yaml as it was before this data: the instructions recipes
   # are the only entries it adds.
@@ -336,8 +337,10 @@ RSpec.describe 'data/base-recipes.yaml instructions remedies' do
       expect(changed).to be_empty
     end
 
-    it 'leaves every selection by a type other than remedies untouched (smith.lic:418, trade.lic:2068/2187, workorders.lic)' do
-      other_types = before.map { |recipe| recipe['type'] }.uniq - ['remedies']
+    # Weaponsmithing also gains the instructions weapons smith.lic makes;
+    # spec/smith_spec.rb covers how smith and restock-shop look them up.
+    it 'leaves every selection by a type other than remedies and weaponsmithing untouched (trade.lic:2068/2187, workorders.lic)' do
+      other_types = before.map { |recipe| recipe['type'] }.uniq - %w[remedies weaponsmithing]
       changed = other_types.reject { |type| all_recipes.select { |recipe| recipe['type'] == type } == before.select { |recipe| recipe['type'] == type } }
       expect(changed).to be_empty
     end

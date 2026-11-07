@@ -1394,6 +1394,7 @@ module Harness
       def in_left_hand?(*_args); false; end
       def in_right_hand?(*_args); false; end
       def exists?(*_args); false; end
+      def tap(*_args); nil; end
       def lift?(*_args); false; end
       def wearing?(*_args); false; end
       def inside?(*_args); false; end
