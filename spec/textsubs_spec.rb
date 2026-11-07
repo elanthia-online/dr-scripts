@@ -136,21 +136,52 @@ RSpec.describe 'textsubs.lic' do
   # TextSubs.subs to hold the catalog call build_combination instead.
   built_catalogs = {}
 
+  # The stubs active in this example that could change what build_catalog
+  # builds: any stub on DRStats (the guild predicates), File (run_lic_entry
+  # reads the script through it, and the shit-list branch reads a file), or the
+  # top-level object (get_settings), and any stub on TextSubs except
+  # client_attached?, which the script reads only inside the hook.
+  #
+  # @return [Array<String>] one label per stubbed object or TextSubs method;
+  #   empty when nothing that catalog building reads is stubbed
+  def stubs_on_catalog_reads
+    space = RSpec::Mocks.space
+    stubbed = { 'DRStats' => DRStats, 'File' => File, 'the top-level object' => TOPLEVEL_BINDING.receiver }
+              .select { |_label, input| space.registered?(input) }.keys
+    return stubbed unless space.registered?(TextSubs)
+
+    proxy = space.proxy_for(TextSubs)
+    stubbed + (TextSubs.singleton_methods - [:client_attached?])
+              .select { |name| proxy.method_double_if_exists_for_message(name) }
+              .map { |name| "TextSubs.#{name}" }
+  end
+
   # Memoized build_combination, for examples that only read the returned
   # catalog. Whether TextSubs.subs holds that catalog afterwards depends on
   # whether this call built it, so callers must not rely on TextSubs.subs
   # either way; examples that need it call build_combination.
   #
-  # The first caller of a combination builds it, in its own context, under
-  # random order. Do not call this from a group that stubs anything catalog
-  # building reads, or that stub leaks into every later caller's catalog.
+  # Under --order random (as the seed gate runs it) any caller may be the first
+  # to ask for a combination, and the first caller builds it in its own
+  # context, so a stub on something catalog building reads would leak into
+  # every later caller's catalog. Every call therefore refuses to run while
+  # such a stub is active (see stubs_on_catalog_reads), cached or not, so a
+  # caller in a stubbing group fails on every run, whatever the order.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Array<Array(String, Integer, String)>] that combination's catalog,
   #   deep-frozen (outer array, entries and their strings), because every
   #   caller shares it. An unfrozen string is copied before it is frozen, so
   #   the cache never shares a mutable string with TextSubs.subs.
+  # @raise [RuntimeError] when a stub on something catalog building reads is
+  #   active in the calling example
   define_method(:catalog_of) do |combination|
+    stubbed = stubs_on_catalog_reads
+    unless stubbed.empty?
+      raise "catalog_of: #{stubbed.join(', ')} stubbed here would change the shared catalog; " \
+            'call build_combination in this group instead'
+    end
+
     built_catalogs[combination] ||= build_combination(combination).map do |entry|
       entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze
     end.freeze
